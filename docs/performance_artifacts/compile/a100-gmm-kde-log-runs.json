@@ -1,5 +1,5 @@
 {
- "description": "First and warm checkpointed compact predictions, 30 s at 2 cm, 8 clusterless electrodes at 20 Hz with four waveform features; GMM uses 120 s of encoding (its fit is singular with 10 s), log-space KDE 10 s. Compilations are attributed by function from JAX compile logs. det-* runs disable XLA GPU autotuning so kernel choice is the same in every process; other runs use the default autotuning. Runs other than final-gmm* used an earlier copy of benchmarks/profile_compilations.py (state probabilities saved as states.npy).",
+ "description": "First and warm checkpointed compact predictions, 30 s at 2 cm, 8 clusterless electrodes at 20 Hz with four waveform features; GMM uses 120 s of encoding (its fit is singular with 10 s), log-space KDE 10 s. Compilations are attributed by function from JAX compile logs. det-* runs disable XLA GPU autotuning so kernel choice is the same in every process; other runs use the default autotuning. Runs other than *final-gmm* used an earlier copy of benchmarks/profile_compilations.py (state probabilities saved as states.npy).",
  "runs": {
   "base-gmm": {
    "algorithm": "clusterless_gmm",
@@ -297,7 +297,7 @@
     4.5197092378512025
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels, GMM spikes padded to powers of two (not adopted)",
+   "source": "compiled GMM kernels, spikes padded to powers of two (not adopted)",
    "xla_flags": null,
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
@@ -372,7 +372,7 @@
     4.589354617521167
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels, GMM spikes padded to powers of two (not adopted)",
+   "source": "compiled GMM kernels, spikes padded to powers of two (not adopted)",
    "xla_flags": null,
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
@@ -447,7 +447,7 @@
     4.378051334992051
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels, GMM spikes padded to powers of two (not adopted)",
+   "source": "compiled GMM kernels, spikes padded to powers of two (not adopted)",
    "xla_flags": "--xla_gpu_autotune_level=0",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
@@ -528,7 +528,7 @@
     4.182691179215908
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave)",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
   "final-gmm-2": {
@@ -608,7 +608,7 @@
     4.216362101957202
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave)",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
   "det-final-gmm": {
@@ -688,7 +688,7 @@
     4.012435842305422
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave)",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
   "base-kdelog": {
@@ -912,7 +912,7 @@
     3.2586963921785355
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "source": "compiled log-space KDE kernels as committed",
    "xla_flags": null,
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
@@ -987,7 +987,7 @@
     3.2457439666613936
    ],
    "warm_compilations": 0,
-   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "source": "compiled log-space KDE kernels as committed",
    "xla_flags": "--xla_gpu_autotune_level=0",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   }
@@ -995,31 +995,43 @@
  "state_probability_comparisons": {
   "base-gmm vs base-gmm-2": {
    "max_abs_state_probability_difference": 2.980232238769531e-07,
-   "same_most_likely_state_fraction": 1.0
+   "rows_with_different_most_likely_state": 0,
+   "rows": 15000
   },
   "final-gmm vs final-gmm-2": {
    "max_abs_state_probability_difference": 0.00036960840225219727,
-   "same_most_likely_state_fraction": 1.0
+   "rows_with_different_most_likely_state": 0,
+   "rows": 15000
   },
   "base-gmm vs final-gmm": {
    "max_abs_state_probability_difference": 0.0003693699836730957,
-   "same_most_likely_state_fraction": 1.0
+   "rows_with_different_most_likely_state": 0,
+   "rows": 15000
   },
   "det-base-gmm vs det-final-gmm": {
    "max_abs_state_probability_difference": 5.066394805908203e-07,
-   "same_most_likely_state_fraction": 1.0
+   "rows_with_different_most_likely_state": 0,
+   "rows": 15000
   },
   "det-base-gmm vs det-new-gmm": {
    "max_abs_state_probability_difference": 5.066394805908203e-07,
-   "same_most_likely_state_fraction": 1.0
+   "rows_with_different_most_likely_state": 0,
+   "rows": 15000
   },
   "base-kdelog vs new-kdelog": {
    "max_abs_state_probability_difference": 4.5239925384521484e-05,
-   "same_most_likely_state_fraction": 0.9999333333333333
+   "rows_with_different_most_likely_state": 1,
+   "rows": 15000
   },
   "det-base-kdelog vs det-new-kdelog": {
    "max_abs_state_probability_difference": 0.0,
-   "same_most_likely_state_fraction": 1.0
+   "rows_with_different_most_likely_state": 0,
+   "rows": 15000
+  },
+  "base-kdelog vs det-base-kdelog": {
+   "max_abs_state_probability_difference": 4.526972770690918e-05,
+   "rows_with_different_most_likely_state": 1,
+   "rows": 15000
   }
  }
 }

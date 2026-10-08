@@ -578,8 +578,13 @@ work. Padding them to powers of two, as the KDE paths do, left the A100 warm
 time within autotuning variation (4.52-4.60 s with default autotuning,
 4.36-4.39 s without) but made CPU warm predictions 6-9% slower. Four sizes per
 octave (at most 25% padding up to one block) removed that cost: on CPU, 10 s
-at 4 cm took 2.64-2.73 s against 2.66-2.70 s before, interleaved, with
-bitwise-identical state probabilities. Log-space KDE on CPU (30 s at 2 cm)
+at 4 cm took 2.64-2.73 s against 2.66-2.71 s before, interleaved, with
+bitwise-identical state probabilities. Above one block, every padded
+clusterless kernel (including the default KDE) now pads the number of blocks
+to four sizes per octave rather than powers of two, which bounds the padded
+intensity array at a quarter more blocks; the detector default block size
+(10,000 spikes) never reached this regime in these workloads. Log-space KDE
+on CPU (30 s at 2 cm)
 took 17.8 s instead of 38.4 s for the first prediction and 15.8 s instead of
 21.0-21.3 s once compiled.
 
@@ -588,13 +593,16 @@ versions use the same kernels: GMM state probabilities moved by at most
 5.1e-7, and log-space KDE state probabilities were bitwise identical. With the
 default autotuning, separate runs of the new GMM code differed by up to
 3.7e-4, as much as old-versus-new, with the same most likely state at every
-bin. Against an eager per-spike reference, likelihoods agree to 2.7e-7 (GMM)
-and 3.7e-7 (log-space KDE) relative in float32, and to 6.3e-16 in float64, on
-JAX 0.9.0 and 0.11.2. The GMM `bin_tile_size` path and the log-space KDE
+bin. Log-space KDE old-versus-new differed by 4.5e-5, with the most likely
+state changed in 1 of 15,000 bins; the previous code alone differed by the
+same amounts with autotuning on versus off. Against an eager per-spike
+reference, float32 likelihoods agree to 2.7e-7 (GMM) and 3.7e-7 (log-space
+KDE) relative, and float64 to 4.4e-16 and 6.3e-16, on JAX 0.9.0 and 0.11.2. The GMM `bin_tile_size` path and the log-space KDE
 streaming and encoding-tiled paths are unchanged.
 
-Records: [A100 runs and state comparisons](performance_artifacts/compile/a100-gmm-kde-log-runs.json)
-and [CPU runs](performance_artifacts/compile/cpu-gmm-kde-log-runs.json),
+Records: [A100 runs and state comparisons](performance_artifacts/compile/a100-gmm-kde-log-runs.json),
+[CPU runs](performance_artifacts/compile/cpu-gmm-kde-log-runs.json) and
+[likelihood agreement](performance_artifacts/compile/numerics-gmm-kde-log.txt),
 measured with `benchmarks/profile_compilations.py` (the A100 runs before the
 final GMM runs used an earlier copy that took the benchmark directory as an
 argument).

@@ -8,10 +8,11 @@ model and parameter estimation (EM). How the decoding modes work is described in
 All numbers come from the benchmark workloads in
 [performance_validation.md](performance_validation.md): a simulated 180 × 180 cm
 arena, 2 ms bins, 64 sorted units at 5 Hz or 8 clusterless electrodes at 20 Hz
-with four waveform features. They were measured on an A100 80 GB and on an Apple
-M1 Max laptop (10 cores, 64 GB). No 24 GB card was used: 24 GB memory figures
-come from an A100 with its allocator capped, so speed on a 24 GB card is
-unmeasured. Your populations, encoding length and grid change these numbers;
+with four waveform features, using the default likelihoods (sorted and
+clusterless KDE); memory for the other likelihood algorithms was not measured.
+The runs used an A100 80 GB and an Apple M1 Max laptop (10 cores, 64 GB). No
+24 GB card was used: 24 GB memory figures come from an A100 with its allocator
+capped, so speed on a 24 GB card is unmeasured. Your populations, encoding length and grid change these numbers;
 time a short segment of your own data before a long run.
 
 ## Summary
@@ -79,8 +80,9 @@ the times you need.
 
 **Large populations.** The first prediction includes compilation, which grows
 with the number of distinct electrode and unit sizes. With 128 clusterless
-electrodes, a 30 s first prediction took 29 s on the A100 (6.9 s once
-compiled). JAX's persistent compilation cache
+electrodes at equal rates, a 30 s first prediction took 29 s on the A100
+(6.9 s once compiled); with rates spread 8× across electrodes it took 131 s
+(5.6 s once compiled). JAX's persistent compilation cache
 (`jax.config.update("jax_compilation_cache_dir", "<path>")`) reuses compiled
 code across processes, but only when array shapes repeat exactly, for example
 when decoding the same recording again.
@@ -99,7 +101,7 @@ of recording; at 4 cm, about 0.53 GB.
 
 Measured with 60 s sessions and 3 EM iterations:
 
-| Machine | Grid | Run time | Device memory | Host RAM |
+| Machine | Grid | Run time after compilation | Device memory | Host RAM |
 | --- | --- | ---: | ---: | ---: |
 | A100 (shared with other jobs) | 4 cm | 147–168 s | 3.9 GB | 8.3–8.4 GB |
 | A100 (shared with other jobs) | 2 cm | 604 s (sorted), 1,281–1,364 s (clusterless) | 15.5 GB | 24 GB |
@@ -107,10 +109,11 @@ Measured with 60 s sessions and 3 EM iterations:
 
 Only one session length was measured per grid, so how fast memory grows is an
 estimate: the smoother holds at least three of these arrays, so each extra
-minute adds at least 6 GB at 2 cm and 1.6 GB at 4 cm. A 24 GB card fits 60 s at 2 cm but probably not much more.
-For longer sessions, estimate parameters on a segment that fits, or on a coarser
-grid, and check the peak with `XLA_PYTHON_CLIENT_MEM_FRACTION` first. Host RAM
-also grows, because the posteriors are copied to the host.
+minute adds at least 6 GB at 2 cm and 1.6 GB at 4 cm. A 24 GB card fits 60 s
+at 2 cm but probably not much more. For longer sessions, estimate parameters on
+a segment that fits, or on a coarser grid, and check the peak with
+`XLA_PYTHON_CLIENT_MEM_FRACTION` first. Host RAM also grows, because the
+posteriors are copied to the host.
 
 Every EM call refits the environment and computes graph distances between all
 bins, which takes about 10 s at 4 cm and 170 s at 2 cm on the M1 Max. At 1 cm
