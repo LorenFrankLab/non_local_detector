@@ -230,7 +230,6 @@ precision, process peaks and disk usage. `--platform gpu` fails if CUDA is
 unavailable. Shortened recordings and synthetic populations establish only the
 configurations recorded in their reports; CPU measurements do not qualify CUDA
 or smaller GPU hardware. Full-hour production claims require measured runs at
-1 cm and 2 cm and declared host/device/disk budgets. A known correctness issue
-remains in unoccupied MRF components. See the
+1 cm and 2 cm and declared host/device/disk budgets. See the
 [validation record](performance_validation.md) for measured configurations,
 source provenance and limits.

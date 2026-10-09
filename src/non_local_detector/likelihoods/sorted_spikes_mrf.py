@@ -57,6 +57,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import RATE_EPS_HZ, validate_weights
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
+    connected_component_labels,
     environment_graph,
     n_connected_components,
 )
@@ -712,6 +713,46 @@ def select_penalty_by_reml(
     return float(np.exp(result.x)), float(result.fun)
 
 
+def _floor_unoccupied_components(
+    rate_interior: np.ndarray,
+    coeffs: np.ndarray,
+    unoccupied_bins: np.ndarray,
+    basis: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Give connected components with zero exposure the zero-exposure rate.
+
+    A component with no exposure contributes nothing to the Poisson likelihood, and
+    its null (constant) mode is unpenalized, so the fit leaves that mode at the
+    global warm-start rate. Its rate is unidentified: set it to ``RATE_EPS_HZ``, as
+    an all-zero-exposure fit and ``sorted_spikes_diffusion`` do, and zero the
+    coefficients of its basis modes (every mode is local to one component). Other
+    components are untouched.
+
+    Parameters
+    ----------
+    rate_interior : np.ndarray, shape (n_interior, n_neurons)
+        Fitted rates in Hz, in ``node_order``.
+    coeffs : np.ndarray, shape (rank, n_neurons)
+        Fitted basis coefficients.
+    unoccupied_bins : np.ndarray, shape (n_interior,)
+        True for bins in a connected component with zero total exposure.
+    basis : np.ndarray, shape (n_interior, rank)
+        Component-local eigenmodes used by the fit.
+
+    Returns
+    -------
+    rate_interior : np.ndarray, shape (n_interior, n_neurons)
+    coeffs : np.ndarray, shape (rank, n_neurons)
+    """
+    # A mode with no entry outside the unoccupied components describes only them.
+    unoccupied_modes = ~np.any(np.asarray(basis)[~unoccupied_bins] != 0.0, axis=0)
+    rate_interior = np.array(rate_interior)
+    rate_interior[unoccupied_bins] = RATE_EPS_HZ
+    coeffs = np.array(coeffs)
+    coeffs[unoccupied_modes] = 0.0
+    return rate_interior, coeffs
+
+
 def fit_sorted_spikes_mrf_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -822,6 +863,15 @@ def fit_sorted_spikes_mrf_encoding_model(
         Note ``occupancy`` here is the raw exposure field (weighted interior-bin
         counts), NOT the integral-one density ``sorted_spikes_diffusion`` stores; it is
         carried only for contract parity and is unused in prediction.
+
+    Warns
+    -----
+    UserWarning
+        If some, but not all, connected components of the interior graph have
+        exactly zero exposure. Their rates are unidentified, so spike counts binned
+        there are ignored, their place fields are set to ``RATE_EPS_HZ`` and their
+        modes' coefficients to zero. All-zero exposure gives the same place fields
+        without a warning.
     """
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -845,7 +895,7 @@ def fit_sorted_spikes_mrf_encoding_model(
     if rank is not None:
         rank = _as_positive_int("rank", rank)
 
-    _, node_order, bin_sizes = environment_graph(environment)
+    graph, node_order, bin_sizes = environment_graph(environment)
     # Cap the default basis size to bound the dense per-neuron Hessian cost (a
     # performance choice; mgcv's mrf default is full rank -- see the `rank` docstring).
     # Keep at least n_components modes, though: cached_eigenbasis requires
@@ -905,6 +955,24 @@ def fit_sorted_spikes_mrf_encoding_model(
         penalty_selected_by_reml = False
         diagnostics = {"n_iter": 0, "converged": True, "max_step": 0.0}
     else:
+        component_labels = connected_component_labels(graph)
+        unoccupied_components = (
+            np.bincount(component_labels, weights=occupancy_field) == 0.0
+        )
+        unoccupied_bins = unoccupied_components[component_labels]
+        if unoccupied_components.any():
+            warnings.warn(
+                f"{int(unoccupied_components.sum())} of {unoccupied_components.size} "
+                f"connected components of the environment have zero encoding "
+                f"exposure; their rates are unidentified and set to the zero-exposure "
+                f"floor ({RATE_EPS_HZ:.1e} Hz).",
+                UserWarning,
+                stacklevel=2,
+            )
+            # Spikes binned where there is no exposure carry no rate information and
+            # would push that component's unpenalized null mode without bound.
+            counts = np.where(unoccupied_bins[:, np.newaxis], 0.0, counts)
+
         penalty_selected_by_reml = penalty is None and counts.shape[1] > 0
         if penalty_selected_by_reml:
             penalty, reml_objective = select_penalty_by_reml(
@@ -948,6 +1016,10 @@ def fit_sorted_spikes_mrf_encoding_model(
         rate_interior = np.exp(
             eta
         )  # (n_interior, n_neurons); eta is clipped in the fit
+        if unoccupied_components.any():
+            rate_interior, coeffs = _floor_unoccupied_components(
+                rate_interior, coeffs, unoccupied_bins, basis
+            )
     place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
         _assemble_place_fields(rate_interior, node_order, n_total_bins)
     )
