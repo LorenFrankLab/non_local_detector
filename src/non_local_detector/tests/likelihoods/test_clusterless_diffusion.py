@@ -1793,6 +1793,7 @@ def test_benchmark_diffusion_vs_kde_large_grid():
     )
 
 
+@pytest.mark.unit
 def test_encoding_spikes_are_bin_sorted_and_legacy_unsorted_models_still_predict():
     """Fit stores bin-sorted encoding spikes; older unsorted models agree."""
     s = _sim(seed=4)

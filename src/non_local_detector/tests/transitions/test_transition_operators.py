@@ -46,6 +46,7 @@ def environment(shape=(5, 7), name="", holes=True):
     return env
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("direction", [None, "outward"])
 def test_auto_manifold_fallback_preserves_deferred_topology(direction):
     kwargs = {"place_bin_size": 1.0, "position_range": ((0.0, 5.0), (0.0, 6.0))}
@@ -111,6 +112,7 @@ def test_dense_manifold_random_walk_uses_deferred_graph_distances(direction):
     assert not np.allclose(lazy, euclidean)
 
 
+@pytest.mark.unit
 def test_manifold_fallback_cumulative_distance_and_block_budget_preflight(monkeypatch):
     position = np.array([[0.0, 0.0], [3.0, 4.0]])
     env = Environment(place_bin_size=1.0).fit_place_grid(
@@ -132,6 +134,7 @@ def test_manifold_fallback_cumulative_distance_and_block_budget_preflight(monkey
     assert calls == []
 
 
+@pytest.mark.unit
 def test_invalid_scalar_gaussian_shape_is_rejected_before_dense_allocation(monkeypatch):
     env = environment((3, 4))
 
@@ -148,6 +151,7 @@ def test_invalid_scalar_gaussian_shape_is_rejected_before_dense_allocation(monke
         )
 
 
+@pytest.mark.unit
 def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
     class Custom:
         def make_state_transition(self, environments):
@@ -166,6 +170,7 @@ def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
         )
 
 
+@pytest.mark.unit
 def test_slotted_custom_transition_preserves_explicit_eager_dense_fallback():
     class Custom:
         __slots__ = ()
@@ -180,6 +185,7 @@ def test_slotted_custom_transition_preserves_explicit_eager_dense_fallback():
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), np.eye(12))
 
 
+@pytest.mark.unit
 def test_slotted_custom_never_receives_a_temporary_dense_environment():
     class Custom:
         __slots__ = ("environment",)
@@ -204,6 +210,7 @@ def test_slotted_custom_never_receives_a_temporary_dense_environment():
     assert isinstance(env.distance_between_nodes_, LazyGraphDistances)
 
 
+@pytest.mark.unit
 def test_gaussian_forward_large_finite_input_with_disjoint_axis_mask():
     env = environment((2, 2), holes=False)
     env.is_track_interior_ = np.array([[False, True], [True, False]])
@@ -217,6 +224,7 @@ def test_gaussian_forward_large_finite_input_with_disjoint_axis_mask():
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=0)
 
 
+@pytest.mark.unit
 def test_gaussian_backward_tiny_finite_input_with_disjoint_axis_mask():
     env = environment((2, 2), holes=False)
     env.is_track_interior_ = np.array([[False, True], [True, False]])
@@ -228,6 +236,7 @@ def test_gaussian_backward_tiny_finite_input_with_disjoint_axis_mask():
     np.testing.assert_allclose(operator.backward(values), expected, rtol=1e-6, atol=0)
 
 
+@pytest.mark.unit
 def test_scaled_subnormal_valid_terms_reject_before_their_row_sum_underflows():
     # All original nearest valid PDFs are normal float64. The projected axis
     # maxima lie in holes, leaving individually subnormal float32 terms even
@@ -250,6 +259,7 @@ def test_scaled_subnormal_valid_terms_reject_before_their_row_sum_underflows():
         )
 
 
+@pytest.mark.unit
 def test_original_float64_pdf_overflow_is_rejected_or_preserved_by_dense_fallback():
     env = environment((2, 2), holes=False)
     transition = RandomWalk(movement_var=1e-310)
@@ -807,6 +817,7 @@ def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_paramete
             np.testing.assert_allclose(left, right, rtol=1e-12, atol=1e-13)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("all_impossible", [False, True])
 @pytest.mark.parametrize("fused", [False, True])
 def test_hmm_boundary_gradients_match_dense_reference(all_impossible, fused):

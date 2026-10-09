@@ -22,6 +22,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.tests.conftest import precision_mode
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("sigma_kind", ["float32", "float64", "weak"])
 def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
     with precision_mode(True):
@@ -42,6 +43,7 @@ def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
         np.testing.assert_allclose(actual, reference, rtol=1e-14, atol=1e-14)
 
 
+@pytest.mark.unit
 def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
     with precision_mode(False):
         sigma = np.float32(1e38)
@@ -57,6 +59,7 @@ def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
         )
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("x64", [False, True])
 def test_integer_gaussian_and_kde_inputs_use_floating_arithmetic(x64):
     with precision_mode(x64):
@@ -504,6 +507,7 @@ def _barrier_operand_sizes(jaxpr):
     return sizes
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("x64", [False, True])
 def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
     from non_local_detector.likelihoods.common import _log_kernel_matrix
