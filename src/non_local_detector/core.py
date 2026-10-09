@@ -443,6 +443,14 @@ def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
     return jnp.where(denominator != 0.0, numerator / safe_denominator, 0.0)
 
 
+# Time steps per scan iteration in the dense filter and smoother. On GPU each
+# step is a few small kernels, so the per-iteration loop overhead dominates
+# small state spaces: unrolling 8 steps made 514-bin scans 1.7x faster on an
+# A100 (21.7 -> 12.6 us per filter step) with no change on CPU. Larger unrolls
+# compile more slowly without further gain.
+_HMM_SCAN_UNROLL = 8
+
+
 def _filter_impl(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
@@ -465,7 +473,9 @@ def _filter_impl(
 
         return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
 
-    return jax.lax.scan(_step, (0.0, initial_distribution), log_likelihoods)
+    return jax.lax.scan(
+        _step, (0.0, initial_distribution), log_likelihoods, unroll=_HMM_SCAN_UNROLL
+    )
 
 
 # JIT-compiled non-donating implementation (safe to reuse inputs across calls)
@@ -598,6 +608,7 @@ def _smoother_impl(
         initial,
         (filtered_probs, ind),
         reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
     )[1]
 
 
@@ -1243,6 +1254,7 @@ def _filter_covariate_dependent_impl(
         _step,
         (0.0, initial_distribution),
         (log_likelihoods, discrete_transition_matrix),
+        unroll=_HMM_SCAN_UNROLL,
     )
 
 
@@ -1378,6 +1390,7 @@ def _smoother_covariate_dependent_impl(
         initial,
         (filtered_probs, discrete_transition_matrix, ind),
         reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
     )[1]
 
 
