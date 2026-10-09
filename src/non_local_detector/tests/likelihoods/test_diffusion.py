@@ -643,18 +643,28 @@ def test_to_density_divides_mass_fractions_by_bin_volume():
 
 @pytest.mark.unit
 def test_to_density_equal_volumes_match_volume_weighted_normalization():
-    """With equal volumes, mass and volume-weighted normalization agree to a few ulp.
+    """With equal volumes, mass and volume-weighted normalization agree to rounding.
 
     Equal-volume grids (the usual N-D case) therefore keep their previous fields.
+    The formulas are algebraically equal and differ only in rounding. Summing n
+    non-negative terms in any order has relative error at most (n - 1)u, so the
+    volume-weighted form (n products, one sum, one quotient) and the mass form (one
+    sum, two quotients) differ by at most (3n + 1)u. The summation order, and with
+    it the exact ulp count, depends on the BLAS build and CPU.
     """
     rng = np.random.default_rng(0)
-    smoothed = rng.uniform(0.0, 5.0, size=(40, 3))
-    bin_sizes = np.full(40, 2.5**2)
+    n_bins = 40
+    smoothed = rng.uniform(0.0, 5.0, size=(n_bins, 3))
+    bin_sizes = np.full(n_bins, 2.5**2)
 
     volume_weighted = smoothed / (bin_sizes @ smoothed)
 
-    np.testing.assert_array_max_ulp(
-        to_density(smoothed, bin_sizes), volume_weighted, maxulp=4
+    unit_roundoff = np.finfo(np.float64).eps / 2
+    np.testing.assert_allclose(
+        to_density(smoothed, bin_sizes),
+        volume_weighted,
+        rtol=(3 * n_bins + 1) * unit_roundoff,
+        atol=0.0,
     )
 
 
