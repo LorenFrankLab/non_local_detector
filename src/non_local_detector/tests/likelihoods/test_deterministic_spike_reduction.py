@@ -39,10 +39,14 @@ def ordered_reference(values, ids, n_rows):
 
 
 def assert_within_pairwise_bound(actual, values, ids, n_rows):
-    """``actual`` is within the pairwise-summation bound of the float64 row sums.
+    """``actual`` is within a log-depth summation bound of the float64 row sums.
 
-    The bound is ``(ceil(log2 n) + 2)`` float32 roundings of each row's summed
-    magnitude, which any fixed summation tree over ``n`` values satisfies.
+    The bound is ``(ceil(log2 n) + 2)`` float32 epsilons times each row's summed
+    magnitude. A summation tree of depth ``d`` has error at most ``d`` unit
+    roundoffs of that magnitude, so the bound covers balanced trees such as
+    ``jax.lax.associative_scan``'s (depth at most ``2 * ceil(log2 n)``) but not
+    sequential, depth ``n - 1``, summation. Padding ``n`` up to a power of two
+    leaves ``ceil(log2 n)`` unchanged.
     """
     values = np.asarray(values, np.float64)
     exact = np.zeros((n_rows, *values.shape[1:]))
