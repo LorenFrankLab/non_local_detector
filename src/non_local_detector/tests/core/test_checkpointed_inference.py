@@ -14,8 +14,16 @@ from non_local_detector.core import (
     smoother_covariate_dependent,
 )
 from non_local_detector.result_store import open_result_store
+from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def x64():
+    """Enable float64 for the rest of the test."""
+    with precision_mode(True):
+        yield
 
 
 def problem(covariate=False, n_time=13):
@@ -347,14 +355,12 @@ def _wrapping_checksum(values):
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype):
-    import jax
-
+def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype, request):
     from non_local_detector.checkpointed_inference import _prepare_chunk
     from non_local_detector.core import _degenerate_and_nan_masks
 
-    if dtype == np.float64 and not jax.config.x64_enabled:
-        pytest.skip("requires actual enabled float64")
+    if dtype == np.float64:
+        request.getfixturevalue("x64")
     rng = np.random.default_rng(3)
     values = rng.normal(scale=1e3, size=(7, 5)).astype(dtype)
     values[1] = -np.inf
@@ -454,13 +460,7 @@ def test_checkpoint_directory_failure_leaves_no_output_staging(tmp_path):
     assert not list(tmp_path.glob(".result-*"))
 
 
-def test_float64_matches_the_original_dense_precision_path(tmp_path):
-    import jax
-
-    if not jax.config.x64_enabled:
-        pytest.skip(
-            "requires actual enabled float64; separately exercised with JAX_ENABLE_X64=1"
-        )
+def test_float64_matches_the_original_dense_precision_path(tmp_path, x64):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     initial = initial.astype("float64")
     ll = ll.astype("float64")
@@ -729,11 +729,11 @@ def test_descending_unsigned_selected_rows_are_rejected_before_callbacks():
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("chunk_size", [1, 4, 13, 20])
 @pytest.mark.parametrize("kind", ["finite", "impossible", "nan", "positive_inf"])
-def test_stable_preserves_dense_probabilities(tmp_path, dtype, chunk_size, kind):
-    import jax
-
-    if dtype == np.float64 and not jax.config.x64_enabled:
-        pytest.skip("requires actual enabled float64")
+def test_stable_preserves_dense_probabilities(
+    tmp_path, dtype, chunk_size, kind, request
+):
+    if dtype == np.float64:
+        request.getfixturevalue("x64")
     rng = np.random.default_rng(7701)
     initial = np.array([0.2, 0.3, 0.1, 0.4], dtype=dtype)
     transition = rng.uniform(0.05, 1, (4, 4)).astype(dtype)
@@ -976,11 +976,7 @@ def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monke
 
 
 @pytest.mark.parametrize("tail", [[], [np.nan], [-np.inf]])
-def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail):
-    import jax
-
-    if not jax.config.x64_enabled:
-        pytest.skip("requires actual enabled float64")
+def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail, x64):
     ll = np.array([1e308, 1e308, *tail], np.float64)[:, None]
     calls = []
 
