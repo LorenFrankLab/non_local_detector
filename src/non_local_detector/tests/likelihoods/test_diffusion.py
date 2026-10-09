@@ -612,8 +612,12 @@ def test_diffuse_matches_analytic_gaussian_2d():
     assert rel_err.max() < 0.02
 
 
-def test_to_density_integrates_to_one_uniform_and_nonuniform():
-    """to_density normalizes each column to ∫=1; zero-mass columns -> zeros."""
+def test_to_density_divides_mass_fractions_by_bin_volume():
+    """to_density treats columns as per-bin masses: density_i = (m_i / Σm) / v_i.
+
+    Hand-computed for non-uniform volumes. A column normalized by ``Σ v_i m_i``
+    also integrates to one, so the integral alone does not pin the conversion.
+    """
     smoothed = np.array(
         [
             [2.0, 0.0, 1.0],
@@ -621,22 +625,45 @@ def test_to_density_integrates_to_one_uniform_and_nonuniform():
             [6.0, 0.0, 1.0],
         ]
     )
-    # Non-uniform bin volumes.
     bin_sizes = np.array([0.5, 2.0, 1.0])
 
     density = to_density(smoothed, bin_sizes)
 
-    integral = bin_sizes @ density
-    # Column 1 is all-zero -> stays zero (integral 0); others integrate to 1.
-    np.testing.assert_allclose(integral, [1.0, 0.0, 1.0], atol=1e-12)
+    # Column 0: masses [2, 4, 6] / 12 = [1/6, 1/3, 1/2], divided by the volumes.
+    # Column 2: masses [1, 3, 1] / 5 = [0.2, 0.6, 0.2], divided by the volumes.
+    np.testing.assert_allclose(density[:, 0], [1 / 3, 1 / 6, 1 / 2], rtol=1e-14)
+    np.testing.assert_allclose(density[:, 2], [0.4, 0.3, 0.2], rtol=1e-14)
+    # Zero-mass columns map to zeros; the others integrate to one.
     np.testing.assert_array_equal(density[:, 1], 0.0)
-    # Uniform bins reduce to divide-by-sum.
+    np.testing.assert_allclose(bin_sizes @ density, [1.0, 0.0, 1.0], atol=1e-12)
+    # Uniform unit bins reduce to divide-by-sum.
     uniform = to_density(smoothed[:, [0]], np.ones(3))
     np.testing.assert_allclose(uniform.ravel(), smoothed[:, 0] / smoothed[:, 0].sum())
 
 
+@pytest.mark.unit
+def test_to_density_equal_volumes_match_volume_weighted_normalization():
+    """With equal volumes, mass and volume-weighted normalization agree to a few ulp.
+
+    Equal-volume grids (the usual N-D case) therefore keep their previous fields.
+    """
+    rng = np.random.default_rng(0)
+    smoothed = rng.uniform(0.0, 5.0, size=(40, 3))
+    bin_sizes = np.full(40, 2.5**2)
+
+    volume_weighted = smoothed / (bin_sizes @ smoothed)
+
+    np.testing.assert_array_max_ulp(
+        to_density(smoothed, bin_sizes), volume_weighted, maxulp=4
+    )
+
+
 def test_to_density_nonuniform_matches_oracle():
-    """On a non-uniform 1D chain, diffuse+to_density matches an independent oracle."""
+    """On a non-uniform 1D chain, diffuse+to_density matches an independent oracle.
+
+    The oracle smooths with ``expm_multiply`` and converts the resulting per-bin
+    masses to density as ``(mass / total mass) / volume``.
+    """
     import scipy.sparse.linalg
 
     rng = np.random.default_rng(1)
@@ -661,7 +688,7 @@ def test_to_density_nonuniform_matches_oracle():
     t = 1.5**2 / 2.0
     oracle = scipy.sparse.linalg.expm_multiply(-t * L, field.ravel())
     oracle = np.clip(oracle, 0.0, None)
-    oracle_density = oracle / (bin_sizes @ oracle)
+    oracle_density = oracle / oracle.sum() / bin_sizes
 
     np.testing.assert_allclose(density.ravel(), oracle_density, atol=1e-8)
     np.testing.assert_allclose(bin_sizes @ density.ravel(), 1.0, atol=1e-12)

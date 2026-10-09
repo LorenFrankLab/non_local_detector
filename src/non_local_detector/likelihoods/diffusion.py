@@ -567,28 +567,28 @@ def heat_kernel_apply(
 
 
 def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
-    """Normalize each column of ``smoothed`` to an integral-one density.
+    """Convert each column of per-bin masses to an integral-one density.
 
-    ``exp(-t L)`` conserves field *sums*, not the area integral; on non-uniform
-    bins these differ. Each column is divided by its mass ``Σ bin_sizes_i *
-    smoothed_i`` so that ``bin_sizes @ density == 1``. Columns with zero mass map
-    to all zeros.
+    ``exp(-t L)`` conserves field *sums*, so smoothed count fields hold the mass
+    in each bin. Bin ``i`` gets ``(smoothed_i / Σ smoothed) / bin_sizes_i``, so
+    ``bin_sizes @ density == 1`` and ``bin_sizes * density`` is the fraction of
+    the column's mass in each bin. Columns with zero mass map to all zeros.
 
     Parameters
     ----------
     smoothed : np.ndarray, shape (n_bins, n_fields)
-        Smoothed (non-negative) count fields.
+        Smoothed (non-negative) per-bin masses, e.g. weighted counts or seconds.
     bin_sizes : np.ndarray, shape (n_bins,)
-        Per-bin volumes (1D width, 2D area, ...).
+        Positive per-bin volumes (1D width, 2D area, ...).
 
     Returns
     -------
     density : np.ndarray, shape (n_bins, n_fields)
         Column-normalized densities; zero-mass columns are zero.
     """
-    mass = bin_sizes @ smoothed  # (n_fields,)
+    mass = smoothed.sum(axis=0)  # (n_fields,)
     safe = np.where(mass > 0, mass, 1.0)
-    return np.where(mass > 0, smoothed / safe, 0.0)
+    return np.where(mass > 0, smoothed / safe / bin_sizes[:, np.newaxis], 0.0)
 
 
 def environment_graph(

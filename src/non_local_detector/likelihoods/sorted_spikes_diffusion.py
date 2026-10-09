@@ -548,7 +548,9 @@ def fit_sorted_spikes_diffusion_encoding_model(
     )
 
     # Diffuse occupancy + all neuron fields in a single batched matmul, then
-    # normalize each column to an integral-one density. Per-component labels keep
+    # convert each column of per-bin masses to an integral-one density. Bin volumes
+    # cancel in marginal / occupancy, so the rate is smoothed spike count over
+    # smoothed exposure seconds even on unequal bins. Per-component labels keep
     # truncated-rank smoothing from moving mass across disconnected components.
     fields = np.column_stack([occupancy_field, *spike_fields])
     density = to_density(
