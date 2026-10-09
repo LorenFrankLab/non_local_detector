@@ -38,6 +38,24 @@ def ordered_reference(values, ids, n_rows):
     return output
 
 
+def assert_within_pairwise_bound(actual, values, ids, n_rows):
+    """``actual`` is within the pairwise-summation bound of the float64 row sums.
+
+    The bound is ``(ceil(log2 n) + 2)`` float32 roundings of each row's summed
+    magnitude, which any fixed summation tree over ``n`` values satisfies.
+    """
+    values = np.asarray(values, np.float64)
+    exact = np.zeros((n_rows, *values.shape[1:]))
+    magnitude = np.zeros((n_rows, *values.shape[1:]))
+    for row, value in zip(ids, values, strict=True):
+        if 0 <= row < n_rows:
+            exact[row] += value
+            magnitude[row] += np.abs(value)
+    n_values = len(ids)
+    bound = (np.ceil(np.log2(n_values)) + 2) * np.finfo(np.float32).eps * magnitude
+    assert np.all(np.abs(np.asarray(actual, np.float64) - exact) <= bound)
+
+
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -133,7 +151,7 @@ def test_values_gradient_gathers_owned_rows_and_drops_invalid_entries(
     np.testing.assert_array_equal(gradient, expected)
 
 
-def test_repeated_unequal_float_rows_are_bitwise_identical():
+def test_repeated_unequal_float_rows_are_bitwise_identical(reduction_path):
     rng = np.random.default_rng(7612)
     ids = np.repeat(np.arange(10), 7)
     order = rng.permutation(len(ids))
@@ -142,7 +160,12 @@ def test_repeated_unequal_float_rows_are_bitwise_identical():
     selected = selection(ids, 12)
     values = jnp.asarray(values)
     reference = np.asarray(sum_spikes_into_rows(values, selected)).copy()
-    np.testing.assert_array_equal(reference, ordered_reference(values, ids, 12))
+    if common._reduces_sequentially(values):
+        # XLA:CPU scatter adds rows in input order.
+        np.testing.assert_array_equal(reference, ordered_reference(values, ids, 12))
+    else:
+        # The segmented scan sums in a fixed tree, not input order.
+        assert_within_pairwise_bound(reference, values, ids, 12)
     for _ in range(50):
         actual = np.asarray(sum_spikes_into_rows(values, selected))
         np.testing.assert_array_equal(actual.view(np.uint32), reference.view(np.uint32))
@@ -211,18 +234,10 @@ def test_deterministic_segment_sum_matches_float64_reference(is_sorted, tail):
     if is_sorted:
         ids = np.sort(ids)
     values = rng.normal(size=(n_values, *tail)).astype(np.float32)
-    exact = np.zeros((n_segments, *tail))
-    magnitude = np.zeros((n_segments, *tail))
-    for row, value in zip(ids, values.astype(np.float64), strict=True):
-        if 0 <= row < n_segments:
-            exact[row] += value
-            magnitude[row] += np.abs(value)
     actual = deterministic_segment_sum(
         jnp.asarray(values), jnp.asarray(ids, jnp.int32), n_segments, is_sorted
     )
-    # Pairwise-summation bound: (ceil(log2 n) + 2) roundings of the magnitude.
-    bound = (np.ceil(np.log2(n_values)) + 2) * np.finfo(np.float32).eps * magnitude
-    assert np.all(np.abs(np.asarray(actual, np.float64) - exact) <= bound)
+    assert_within_pairwise_bound(actual, values, ids, n_segments)
 
 
 def test_deterministic_segment_sum_is_bitwise_repeatable():
