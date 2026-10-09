@@ -631,6 +631,9 @@ class LazyDenseTransition:
         if key is Ellipsis:
             key = (slice(None), slice(None))
         if not isinstance(key, tuple):
+            if np.ndim(key) > 1 and np.asarray(key).dtype == bool:
+                # A full-shape mask selects elements, not rows.
+                return np.asarray(self)[key]
             key = (key, slice(None))
         if len(key) != 2 or any(item is None or item is Ellipsis for item in key):
             return np.asarray(self)[key]

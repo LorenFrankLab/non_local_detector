@@ -541,6 +541,10 @@ def test_supported_construction_and_pickle_never_call_dense_builders(monkeypatch
         np.asarray(restored)
     # A small indexed read must not require the entire combined matrix.
     np.testing.assert_array_equal(view[:2, :2], np.ones((2, 2)))
+    # A full-shape Boolean mask selects elements, as in NumPy.
+    small = LazyDenseTransition(operator.restricted(np.arange(operator.n_bins) < 3))
+    mask = np.eye(3, dtype=bool) | np.eye(3, k=1, dtype=bool)
+    np.testing.assert_array_equal(small[mask], np.asarray(small)[mask])
 
 
 @pytest.mark.unit

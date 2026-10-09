@@ -42,6 +42,7 @@ def graph_fixture():
         ([-1, 0], [0, -1]),
         ([], []),
         (np.array([True, False, True, False, False, False, False]), slice(2, 4)),
+        np.arange(49).reshape(7, 7) % 3 == 0,
     ],
 )
 def test_graph_selections_are_exact(key):
