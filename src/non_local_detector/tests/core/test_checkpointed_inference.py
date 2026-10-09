@@ -480,8 +480,14 @@ def test_float64_matches_the_original_dense_precision_path(tmp_path, x64):
         evidence_accumulation="reference",
     )
     assert result.dataset.acausal_posterior.dtype == np.float64
-    np.testing.assert_array_equal(result.dataset.acausal_posterior, acausal)
-    np.testing.assert_array_equal(result.marginal_log_likelihood, evidence)
+    # Separately compiled programs round float64 differently on some x86 CI
+    # runners (up to 1 ulp, 5.4e-16 relative), so compare at float64 rounding.
+    np.testing.assert_allclose(
+        result.dataset.acausal_posterior, acausal, rtol=1e-14, atol=1e-15
+    )
+    np.testing.assert_allclose(
+        result.marginal_log_likelihood, evidence, rtol=1e-14, atol=1e-15
+    )
 
 
 def test_result_centers_use_original_overflow_safe_native_formula():
