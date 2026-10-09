@@ -2000,7 +2000,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'" },
     { name = "hypothesis", marker = "extra == 'test'" },
     { name = "ipython", marker = "extra == 'dev'" },
-    { name = "jax", specifier = ">=0.4.27" },
+    { name = "jax", specifier = ">=0.4.32" },
     { name = "jax", extras = ["cuda"], marker = "extra == 'gpu'" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mypy", marker = "extra == 'dev'" },
