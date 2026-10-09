@@ -296,6 +296,37 @@ def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
     np.testing.assert_allclose(result[3], np.log(0.002) - 0.002, rtol=1e-6, atol=1e-6)
 
 
+def test_local_glm_blocks_read_their_own_design_rows(monkeypatch):
+    """Each count block of an offset request uses its own decode bins' design."""
+    monkeypatch.setattr(
+        sorted_spikes_glm,
+        "make_spline_predict_matrix",
+        lambda info, points: jnp.column_stack((jnp.ones(len(points)), points[:, 0])),
+    )
+    kwargs = {
+        "position_time": np.array([0.0, 6.0]),
+        "position": np.array([[0.0], [1.0]]),
+        "spike_times": [np.sort(np.random.default_rng(5).uniform(0, 6, 400))],
+        "environment": None,
+        "coefficients": jnp.array([[np.log(5.0), 3.0]]),
+        "emission_design_info": None,
+        "place_fields": np.ones((1, 1)),
+        "no_spike_part_log_likelihood": np.ones(1),
+        "is_track_interior": np.ones(1, bool),
+        "disable_progress_bar": True,
+        "is_local": True,
+        "time_edges": np.arange(3001) * 0.002,
+    }
+    full = sorted_spikes_glm.predict_sorted_spikes_glm_log_likelihood(**kwargs)
+    small_count_blocks(monkeypatch, 1)
+    rows = record_rows(monkeypatch, sorted_spikes_glm, "_local_glm_log_likelihood")
+    blocked = sorted_spikes_glm.predict_sorted_spikes_glm_log_likelihood(
+        **kwargs, row_slice=slice(37, 337)
+    )
+    assert len(rows) == 5
+    np.testing.assert_array_equal(blocked, full[37:337])
+
+
 @pytest.mark.parametrize("x64", [False, True])
 def test_compiled_local_kde_accepts_vector_positions(x64):
     with precision_mode(x64):
