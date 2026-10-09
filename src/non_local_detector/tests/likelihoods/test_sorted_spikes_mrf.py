@@ -9,6 +9,8 @@ independent per-neuron reference, the eigenvalue-ridge penalty, occupancy-offset
 robustness, REML field recovery, no cross-wall leakage, and the encoding contract.
 """
 
+import warnings
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -17,8 +19,10 @@ import scipy.linalg
 from non_local_detector import time_edges_from_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
+from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
+    cached_eigenbasis,
     diffusion_eigenbasis,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
@@ -741,6 +745,120 @@ def test_zero_effective_weight_returns_eps_place_fields():
     # EPS floor (~1e-15), not a spurious intercept rate.
     assert np.all(place_fields[:, interior] < 1e-10)
     assert not encoding["mrf_penalty_selected_by_reml"]
+
+
+def _fit_two_rooms_with_right_room_weights(right_room_weights):
+    """Fit two neurons in ``make_two_room_env`` with given right-room sample weights.
+
+    Left-room samples keep weight one. Returns ``(encoding, right_bins)`` where
+    ``right_bins`` is a boolean mask over interior bins in ``node_order``.
+    """
+    env, position = make_two_room_env()
+    time = np.arange(position.shape[0]) / 100.0
+    rng = np.random.default_rng(1)
+    spike_times = [time[rng.random(time.shape[0]) < 0.05] for _ in range(2)]
+    in_right_room = position[:, 0] > 20.0
+    weights = np.where(in_right_room, right_room_weights, 1.0)
+
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        weights=weights,
+        penalty=1.0,
+    )
+    node_order = np.asarray(encoding["node_order"])
+    right_bins = env.place_bin_centers_[node_order, 0] > 20.0
+    return encoding, right_bins
+
+
+@pytest.mark.unit
+def test_unoccupied_component_returns_eps_place_fields_and_warns():
+    """A disconnected component with zero exposure has an unidentified rate.
+
+    Its null mode is unpenalized and absent from the likelihood, so the fit would
+    keep the global warm-start rate there. It must instead get the backend's
+    zero-exposure rate (EPS, as for an all-zero fit and in sorted_spikes_diffusion),
+    zero coefficients for its modes, and a warning naming the component count.
+    """
+    weights = np.zeros(24000)
+    with pytest.warns(UserWarning, match="1 of 2 connected components"):
+        encoding, right_bins = _fit_two_rooms_with_right_room_weights(weights)
+
+    node_order = np.asarray(encoding["node_order"])
+    place_fields = np.asarray(encoding["place_fields"])[:, node_order]
+    np.testing.assert_array_equal(place_fields[:, right_bins], np.float32(RATE_EPS_HZ))
+    assert np.all(place_fields[:, ~right_bins] > 1e-3)
+    # Non-local prediction reads the cached interior log fields, in node_order.
+    log_fields = np.asarray(encoding["interior_log_place_fields"])
+    np.testing.assert_allclose(
+        log_fields[:, right_bins], np.log(np.float32(RATE_EPS_HZ)), rtol=1e-6
+    )
+
+    # Basis modes are component-local; the right room's modes carry no coefficient.
+    _, basis = cached_eigenbasis(encoding["environment"], encoding["mrf_rank"])
+    right_modes = ~np.any(np.asarray(basis)[~right_bins] != 0.0, axis=0)
+    assert right_modes.any()
+    coefficients = np.asarray(encoding["mrf_coefficients"])
+    np.testing.assert_array_equal(coefficients[right_modes], 0.0)
+    assert np.any(coefficients[~right_modes] != 0.0)
+
+
+@pytest.mark.unit
+def test_spike_counts_in_unoccupied_component_are_ignored(monkeypatch):
+    """Spike counts binned in a zero-exposure component carry no rate information.
+
+    Spike and exposure weights differ (spike weights are interpolated at spike
+    times), so a zero-exposure component can still receive counts. They would push
+    its unpenalized null mode without bound and stall the Newton fit, so the fit
+    must ignore them: same place fields as without them, and no convergence warning.
+    """
+    import non_local_detector.likelihoods.sorted_spikes_mrf as mrf_module
+
+    weights = np.zeros(24000)
+    with pytest.warns(UserWarning, match="connected components"):
+        reference, right_bins = _fit_two_rooms_with_right_room_weights(weights)
+
+    pixellate = mrf_module.pixellate_interior_fields
+
+    def pixellate_with_unexposed_spike(*args, **kwargs):
+        occupancy, spike_fields, mean_rates = pixellate(*args, **kwargs)
+        spike_fields[0] = spike_fields[0].copy()
+        spike_fields[0][np.flatnonzero(right_bins)[0]] += 3.0
+        return occupancy, spike_fields, mean_rates
+
+    monkeypatch.setattr(
+        mrf_module, "pixellate_interior_fields", pixellate_with_unexposed_spike
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        encoding, _ = _fit_two_rooms_with_right_room_weights(weights)
+
+    messages = [str(warning.message) for warning in caught]
+    assert not any("did not converge" in message for message in messages)
+    assert encoding["mrf_converged"]
+    np.testing.assert_array_equal(
+        np.asarray(encoding["place_fields"]), np.asarray(reference["place_fields"])
+    )
+
+
+@pytest.mark.unit
+def test_component_with_any_exposure_is_fit_not_floored():
+    """'Unoccupied' means exactly zero exposure: one exposed right-room sample with
+    the neurons' spikes is information, so that component is fit, not EPS-floored,
+    and no unoccupied-component warning is raised."""
+    env, position = make_two_room_env()
+    weights = np.zeros(position.shape[0])
+    weights[np.flatnonzero(position[:, 0] > 20.0)[0]] = 1.0
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message=".*connected components.*")
+        encoding, right_bins = _fit_two_rooms_with_right_room_weights(weights)
+
+    node_order = np.asarray(encoding["node_order"])
+    place_fields = np.asarray(encoding["place_fields"])[:, node_order]
+    assert np.all(np.isfinite(place_fields))
+    assert np.all(place_fields[:, right_bins] > 1e3 * RATE_EPS_HZ)
 
 
 def test_default_rank_covers_disconnected_components(monkeypatch):
