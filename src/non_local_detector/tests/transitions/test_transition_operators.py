@@ -297,6 +297,26 @@ def default_layout(local_std=None):
     return env, observations, transitions, sizes, mask
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("allow_dense_fallback", [False, True])
+def test_scalar_to_spatial_transition_without_environment_is_rejected(
+    allow_dense_fallback,
+):
+    """Like the dense constructor, never broadcast a scalar Discrete block."""
+    env = environment()
+    count = len(env.place_bin_centers_)
+    transitions = [[Discrete(), Discrete()], [Discrete(), RandomWalk()]]
+    with pytest.raises(ValueError, match="environment_name"):
+        dense_reference(transitions, [env], (1, count))
+    with pytest.raises(ValueError, match="environment_name"):
+        build_transition_operator(
+            transitions,
+            [env],
+            (1, count),
+            allow_dense_fallback=allow_dense_fallback,
+        )
+
+
 def assert_products(operator, dense, dtype):
     rng = np.random.default_rng(20261006)
     left = rng.uniform(0.01, 1.0, dense.shape[0]).astype(dtype)

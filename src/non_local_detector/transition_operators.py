@@ -835,8 +835,11 @@ def _structured_block(transition, environments, source_size, target_size):
         )
     if source_size == 1 and target_size > 1:
         if not hasattr(transition, "environment_name"):
-            raise UnsupportedTransitionError(
-                "Scalar-to-spatial transition needs the original environment_name"
+            # A configuration error, as in the dense constructor: no fallback
+            # may broadcast a scalar block across the destination bins.
+            raise ValueError(
+                "Transition must have an environment_name attribute for discrete "
+                "to continuous transitions"
             )
         destination = _mask(
             _find_environment(environments, transition.environment_name)
