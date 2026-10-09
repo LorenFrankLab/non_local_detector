@@ -29,6 +29,9 @@ import psutil
 from non_local_detector.checkpointed_inference import checkpointed_forward_backward
 from non_local_detector.core import filter, smoother
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_prediction_modes import provenance  # noqa: E402
+
 
 def parse():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -161,6 +164,7 @@ def worker(args):
         "evidence": evidence,
         "posterior_sum_checksum": float(outputs.sum()),
         "jax_version": jax.__version__,
+        **provenance(__file__),
         "numpy_version": np.__version__,
         "python": sys.version,
         "cpu": platform.processor(),
@@ -207,7 +211,6 @@ def main():
         )
         results.append(json.loads(completed.stdout.strip().splitlines()[-1]))
     report = {
-        "baseline_revision": "fe1b2e9",
         "seed": 701,
         "protocol": "Independent processes, randomized variant order, five or more synchronized warm end-to-end repetitions; memory includes compilation; not a paired interleaved timing claim",
         "workload": "Deterministic analytical likelihood, stationary dense transition; not a neural-backend or full-hour qualification",

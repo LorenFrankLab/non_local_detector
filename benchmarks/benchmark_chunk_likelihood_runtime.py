@@ -22,6 +22,7 @@ import argparse
 import inspect
 import json
 import statistics
+import sys
 import time
 from functools import partial
 from pathlib import Path
@@ -36,6 +37,9 @@ from non_local_detector.likelihoods import (
     common,
 )
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_prediction_modes import provenance  # noqa: E402
 
 BACKENDS = (
     "sorted_spikes_kde",
@@ -208,7 +212,14 @@ def main():
                 print(json.dumps(row), flush=True)
                 rows.append(row)
                 np.save(output / f"{name}_{duration}_{local}.npy", result)
-    (output / "timings.json").write_text(json.dumps(rows, indent=2))
+    report = {
+        "backend": jax.default_backend(),
+        "device": str(jax.devices()[0]),
+        "jax": jax.__version__,
+        **provenance(__file__),
+        "rows": rows,
+    }
+    (output / "timings.json").write_text(json.dumps(report, indent=2))
 
 
 if __name__ == "__main__":

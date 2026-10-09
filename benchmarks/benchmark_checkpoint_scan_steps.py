@@ -27,7 +27,7 @@ import numpy as np
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import workload  # noqa: E402
+from compare_prediction_modes import provenance, workload  # noqa: E402
 
 
 def count_kernels(compiled_text):
@@ -141,6 +141,7 @@ def main():
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
+        **provenance(__file__),
     }
     for name, function, lowered in (
         (

@@ -30,6 +30,7 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_prediction_modes import (  # noqa: E402
     device_peak_bytes,
+    provenance,
     set_population_defaults,
     workload,
 )
@@ -116,6 +117,7 @@ def main():
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
+        **provenance(__file__),
         "host": platform.node(),
         "status": "started",
     }

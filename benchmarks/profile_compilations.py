@@ -27,7 +27,11 @@ import numpy as np
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import set_population_defaults, workload  # noqa: E402
+from compare_prediction_modes import (  # noqa: E402
+    provenance,
+    set_population_defaults,
+    workload,
+)
 
 COMPILE_MESSAGE = re.compile(r"Finished XLA compilation of (\S+) in ([0-9.e-]+) sec")
 
@@ -149,7 +153,7 @@ def main():
         "backend": jax.default_backend(),
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
-        "xla_flags": os.environ.get("XLA_FLAGS"),
+        **provenance(__file__),
         "fit_seconds": fit_seconds,
         "first_predict_seconds": first_seconds,
         "first_compilations": sum(first_counts.values()),

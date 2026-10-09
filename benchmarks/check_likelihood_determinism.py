@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import time
 import warnings
@@ -25,6 +26,9 @@ os.environ.setdefault("TQDM_DISABLE", "1")  # quiet per-electrode progress bars
 
 import jax  # noqa: E402
 import numpy as np  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_prediction_modes import provenance  # noqa: E402
 
 ALGORITHMS = (
     "clusterless_kde",
@@ -119,9 +123,8 @@ def main():
     report = {
         "backend": backend,
         "device": str(jax.devices()[0]),
-        "device_kind": jax.devices()[0].device_kind,
         "jax": jax.__version__,
-        "x64": jax.config.x64_enabled,
+        **provenance(__file__),
         "repetitions": args.repetitions,
         "all_bitwise_identical": all(case["distinct_sha256"] == 1 for case in cases),
         "cases": cases,

@@ -25,6 +25,8 @@ New and updated scripts follow the
 - Check outputs against a reference while timing them.
 - Record the device, JAX version, x64 setting and a hash of the measured source
   in the report, so results stay attributable after the code changes.
+  `compare_prediction_modes.provenance(__file__)` returns the package-source and
+  script hashes, x64 setting, `XLA_FLAGS` and device kind.
 - For memory, record XLA's compiled buffer sizes (`memory_analysis()`) or device
   peaks. Use an xprof trace for transient workspace and kernel-level time.
 

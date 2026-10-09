@@ -115,6 +115,34 @@ def set_population_defaults(args):
         args.spike_rate = 5.0 if args.family == "sorted" else 20.0
 
 
+def provenance(script):
+    """Hashes, precision and device that identify what a report measured.
+
+    Call after configuring x64 so the recorded setting is the one measured.
+    """
+    import hashlib
+
+    import jax
+
+    import non_local_detector
+
+    root = Path(non_local_detector.__file__).resolve().parent
+    files = {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*.py"))
+        if "tests" not in path.relative_to(root).parts
+    }
+    return {
+        "package_source_sha256": hashlib.sha256(
+            json.dumps(files, sort_keys=True).encode()
+        ).hexdigest(),
+        "script_sha256": hashlib.sha256(Path(script).read_bytes()).hexdigest(),
+        "x64": jax.config.x64_enabled,
+        "xla_flags": os.environ.get("XLA_FLAGS", ""),
+        "device_kind": jax.local_devices()[0].device_kind,
+    }
+
+
 def device_peak_bytes(jax):
     stats = jax.local_devices()[0].memory_stats() or {}
     return stats.get("peak_bytes_in_use")
@@ -240,7 +268,7 @@ def main():
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
-        "x64": jax.config.x64_enabled,
+        **provenance(__file__),
         "package_path": str(Path(non_local_detector.__file__).parent),
         "host": platform.node(),
         "status": "started",

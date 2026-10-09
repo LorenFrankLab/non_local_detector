@@ -26,6 +26,7 @@ import cProfile
 import io
 import json
 import os
+import platform
 import pstats
 import sys
 import time
@@ -39,7 +40,11 @@ import numpy as np
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import set_population_defaults, workload  # noqa: E402
+from compare_prediction_modes import (  # noqa: E402
+    provenance,
+    set_population_defaults,
+    workload,
+)
 
 
 def main():
@@ -217,6 +222,8 @@ def main():
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
+        **provenance(__file__),
+        "host": platform.node(),
         "uninstrumented_warm_seconds": uninstrumented,
         "instrumented_seconds": instrumented,
         "stage_seconds": stages,
