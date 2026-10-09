@@ -15,10 +15,10 @@ import pytest
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
-    _transition_pair_stats_jax,
     DiscreteStationaryCustom,
     _estimate_discrete_transition,
     _state_aggregation_matrix,
+    _transition_pair_stats_jax,
     estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_counts_from_factorized_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
