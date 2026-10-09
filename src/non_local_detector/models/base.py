@@ -2724,6 +2724,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     upper <= stop + upper_tol
                 )
             selected = np.flatnonzero(mask)
+            if selected.size == 0:
+                raise ValidationError(
+                    "selected_intervals select no complete decode bins",
+                    got=f"{len(intervals)} interval(s)",
+                    hint=(
+                        "Intervals are in seconds and select bins whose start and "
+                        f"stop edges both lie inside one; the recording spans "
+                        f"[{edges[0]}, {edges[-1]}] in bins of {edges[1] - edges[0]}."
+                    ),
+                )
         outputs = {"acausal_state_probabilities"}
         if output_mode == "spatial":
             outputs.add("acausal_posterior")

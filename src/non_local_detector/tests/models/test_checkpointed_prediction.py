@@ -7,6 +7,7 @@ from non_local_detector import (
     DiscreteNonStationaryDiagonal,
     RandomWalk,
 )
+from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.integration
 
@@ -100,6 +101,21 @@ def test_checkpoint_options_do_not_silently_use_dense_prediction(
         model.predict(**predict, chunk_size=64)
     with pytest.raises(ValueError, match="result_path"):
         model.predict(**predict, inference_mode="checkpointed", output_mode="spatial")
+
+
+@pytest.mark.parametrize("interval", [[1000.0, 1001.0], [0.0, 1e-6]])
+def test_selected_intervals_that_select_no_bins_are_rejected(
+    checkpoint_recording, interval
+):
+    model, fit, predict = checkpoint_recording("sorted")
+    model.fit(**fit)
+    with pytest.raises(ValidationError, match="select no"):
+        model.predict(
+            **predict,
+            inference_mode="checkpointed",
+            output_mode="compact",
+            selected_intervals=[interval],
+        )
 
 
 @pytest.mark.parametrize("options", [{"cache_likelihood": True}, {"n_chunks": 2}])
