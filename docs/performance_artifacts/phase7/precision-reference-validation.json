@@ -222,5 +222,36 @@
       "reference_max_row_sum_error": 8.881784197001252e-16,
       "all_finite_and_nonnegative": true
     }
-  ]
+  ],
+  "validation": {
+    "full_suite": {
+      "python": "3.13.13",
+      "jax": "0.9.0",
+      "passed": 3410,
+      "skipped": 7,
+      "seconds": 929.54,
+      "log_sha256": "3c20b0bcf295dfa196448e605bc54e97ee41556ac63a14be5e889074d57979e5"
+    },
+    "minimum_stack_controls": {
+      "python": "3.11.15",
+      "jax": "0.6.2",
+      "numpy": "1.26.4",
+      "scipy": "1.12.0",
+      "xarray": "2023.8.0",
+      "passed": 482,
+      "seconds": 79.15,
+      "final_precision_tests_rerun": 5
+    },
+    "minimum_jax_ci": {
+      "python": "3.10",
+      "jax": "0.6.2",
+      "passed": 483,
+      "seconds": 199.6,
+      "head": "ff6905160c87d94a212d21bb29f7d69035c1a8eb",
+      "job": "https://github.com/LorenFrankLab/non_local_detector/actions/runs/37961563671/job/113925408248"
+    },
+    "review": "Independent code review approved; five precision tests passed independently; first/middle/final chunks of both real 30-second workloads have bit-identical float32 likelihoods when prepared with x64 enabled versus disabled.",
+    "quality": "Ruff lint and formatting passed on all source files and modified benchmark; uv lock --check --offline passed.",
+    "goldens_tolerances_convergence": "Unchanged."
+  }
 }

@@ -251,8 +251,11 @@ budgets. Ten-second encoding does not qualify large encoding populations;
 encoding-kernel streaming is an explicit separate option with its own checks.
 Smaller GPUs, full-hour covariate workloads, EM and Viterbi need separate
 qualification. Phase 8 volume/MRF work remains separate.
-Declared dependency floors (Python 3.10, JAX 0.4.27, NumPy 1.25 and SciPy 1.10)
-were not exercised by the older-stack checks.
+The dependency floors declared at the time of the S2/S4/S6 qualification
+(Python 3.10, JAX 0.4.27, NumPy 1.25 and SciPy 1.10) were not exercised by
+those older-stack checks. The current JAX floor and its dedicated compatibility
+checks are recorded under [precision reference validation](#precision-reference-validation);
+the NumPy/SciPy floor combinations remain outside that qualification.
 
 GPU snapshot S4 contains 60 Python files with aggregate SHA-256
 `11baf69a8a8c84c9974d9f44b768b9583e098a576ad0ac7b4cdbacefb073112b`.
@@ -660,3 +663,11 @@ rules; having the primitive alone is insufficient. The pinned 0.6.2 stack passed
 482 likelihood, prediction, transition and checkpoint controls, and the final
 five precision-reference tests passed separately after reporting refinements.
 CI gates builds on a focused minimum-JAX job as well as the existing full suites.
+The new Python 3.10 / JAX 0.6.2 CI gate passed all **483 tests** on `ff69051`
+([job](https://github.com/LorenFrankLab/non_local_detector/actions/runs/37961563671/job/113925408248)).
+The complete local Python 3.13.13 / JAX 0.9.0 suite passed **3,410 tests, seven
+skipped** in 929.54 seconds. Golden regression data, existing tolerances and
+convergence criteria are unchanged; Ruff lint/format and lock consistency checks
+also pass. Independent review approved the fixes and verified bitwise equality
+of float32 likelihoods prepared with x64 enabled versus disabled on first,
+middle and final chunks of both 30-second workloads.
