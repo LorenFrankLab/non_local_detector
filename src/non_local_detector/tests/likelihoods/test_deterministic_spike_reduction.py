@@ -17,18 +17,6 @@ from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture(params=["sequential", "segmented_scan"])
-def reduction_path(request, monkeypatch):
-    """Run on CPU's sequential scatter and on the off-CPU segmented scan."""
-    if request.param == "segmented_scan":
-        monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
-        jax.clear_caches()
-        yield request.param
-        jax.clear_caches()
-    else:
-        yield request.param
-
-
 def dtype_precision(dtype):
     """``precision_mode`` with x64 enabled for 64-bit dtypes."""
     return precision_mode(np.dtype(dtype).itemsize > 4 and dtype != np.complex64)

@@ -1794,8 +1794,14 @@ def test_benchmark_diffusion_vs_kde_large_grid():
 
 
 @pytest.mark.unit
-def test_encoding_spikes_are_bin_sorted_and_legacy_unsorted_models_still_predict():
-    """Fit stores bin-sorted encoding spikes; older unsorted models agree."""
+def test_encoding_spikes_are_bin_sorted_and_legacy_unsorted_models_still_predict(
+    reduction_path,
+):
+    """Fit stores bin-sorted encoding spikes; older unsorted models agree.
+
+    The segmented scan requires the sorted ids that predict re-sorts legacy
+    models into; CPU's sequential scatter does not.
+    """
     s = _sim(seed=4)
     encoding = _fit(s)
     for bins in encoding["encoding_bin_indices"]:
