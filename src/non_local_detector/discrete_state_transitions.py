@@ -373,48 +373,46 @@ def _transition_pair_stats_jax(
     )
 
     if is_stationary:
-
-        def step(joint_sum, inputs):
-            causal_t, predictive_next, acausal_next = inputs
-            counts_t = aggregate(
-                causal_t,
-                predictive_next,
-                acausal_next,
-                transition_matrix,
-            )
-            return joint_sum + counts_t, None
-
-        joint_sum, _ = jax.lax.scan(
-            step,
-            initial_counts,
-            (
-                causal_posterior[:-1],
-                predictive_posterior[1:],
-                acausal_posterior[1:],
-            ),
+        # A stationary transition factors out of the sum over time:
+        # sum_t causal_t[i] W[i, j] ratio_{t+1}[j] = W[i, j] * (C^T R)[i, j].
+        # One contraction over rows replaces a scan whose per-step loop
+        # overhead dominates on GPU, and sums in blocks rather than one
+        # running float32 total. It holds one bins x bins matrix, the size of
+        # the dense transition this path already uses.
+        ratio = _safe_ratio_jax(acausal_posterior[1:], predictive_posterior[1:])
+        pair_sum = jnp.matmul(
+            causal_posterior[:-1].T, ratio, precision=jax.lax.Precision.HIGHEST
         )
-    else:
-
-        def step(joint_sum, inputs):
-            causal_t, predictive_next, acausal_next, transition_t = inputs
-            counts_t = aggregate(
-                causal_t,
-                predictive_next,
-                acausal_next,
-                transition_t,
+        if is_factorized:
+            weighted = continuous_transition_matrix * pair_sum
+            counts = _aggregate_xi_by_state_jax(weighted, state_ind, n_states)
+            counts = counts * transition_matrix
+        else:
+            counts = _aggregate_xi_by_state_jax(
+                transition_matrix * pair_sum, state_ind, n_states
             )
-            return joint_sum + counts_t, None
+        return counts.astype(initial_counts.dtype)
 
-        joint_sum, _ = jax.lax.scan(
-            step,
-            initial_counts,
-            (
-                causal_posterior[:-1],
-                predictive_posterior[1:],
-                acausal_posterior[1:],
-                transition_matrix[:-1],
-            ),
+    def step(joint_sum, inputs):
+        causal_t, predictive_next, acausal_next, transition_t = inputs
+        counts_t = aggregate(
+            causal_t,
+            predictive_next,
+            acausal_next,
+            transition_t,
         )
+        return joint_sum + counts_t, None
+
+    joint_sum, _ = jax.lax.scan(
+        step,
+        initial_counts,
+        (
+            causal_posterior[:-1],
+            predictive_posterior[1:],
+            acausal_posterior[1:],
+            transition_matrix[:-1],
+        ),
+    )
 
     return joint_sum
 

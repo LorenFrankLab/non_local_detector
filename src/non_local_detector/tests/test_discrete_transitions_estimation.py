@@ -8,11 +8,14 @@ Tests the core EM algorithm functions:
 
 from unittest.mock import patch
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
+    _transition_pair_stats_jax,
     DiscreteStationaryCustom,
     _estimate_discrete_transition,
     _state_aggregation_matrix,
@@ -467,6 +470,99 @@ class TestExpandedDiscreteTransitionCounts:
         )
 
         np.testing.assert_allclose(response, expected, atol=1e-6)
+
+    @staticmethod
+    def _stationary_posteriors(rng, n_time, n_bins, state_ind, n_states):
+        causal = rng.random((n_time, n_bins))
+        causal /= causal.sum(axis=1, keepdims=True)
+        continuous_transition = rng.random((n_bins, n_bins)) ** 4
+        # An unreachable target column gives exact zero predictive probability.
+        continuous_transition[:, -1] = 0.0
+        continuous_transition /= continuous_transition.sum(axis=1, keepdims=True)
+        discrete_transition = rng.random((n_states, n_states))
+        discrete_transition /= discrete_transition.sum(axis=1, keepdims=True)
+        full_transition = (
+            continuous_transition * discrete_transition[np.ix_(state_ind, state_ind)]
+        )
+        predictive = causal @ full_transition
+        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
+        acausal /= acausal.sum(axis=1, keepdims=True)
+        return (
+            causal,
+            predictive,
+            acausal,
+            continuous_transition,
+            discrete_transition,
+            full_transition,
+        )
+
+    @pytest.mark.parametrize("is_factorized", [True, False])
+    def test_stationary_counts_do_not_loop_over_time(self, is_factorized):
+        """Stationary counts are one contraction over time, not a scan.
+
+        A 709k-row scan spent 11 s per EM iteration on an A100 for 514 state
+        bins, bound by per-step loop overhead.
+        """
+        rng = np.random.default_rng(31)
+        state_ind = np.array([0, 0, 1, 2, 2])
+        causal, predictive, acausal, continuous, discrete, full = (
+            self._stationary_posteriors(rng, 9, 5, state_ind, 3)
+        )
+        transition, operator = (
+            (discrete, continuous) if is_factorized else (full, np.empty((0, 0)))
+        )
+        traced = jax.make_jaxpr(
+            lambda c, p, a: _transition_pair_stats_jax(
+                c,
+                p,
+                a,
+                jnp.asarray(transition),
+                jnp.asarray(operator),
+                jnp.asarray(state_ind),
+                3,
+                is_factorized=is_factorized,
+                is_stationary=True,
+                return_time_series=False,
+            )
+        )(causal, predictive, acausal)
+
+        def primitives(jaxpr):
+            for eqn in jaxpr.eqns:
+                yield eqn.primitive.name
+                for value in eqn.params.values():
+                    for sub in value if isinstance(value, (tuple, list)) else (value,):
+                        inner = getattr(sub, "jaxpr", sub)
+                        if hasattr(inner, "eqns"):
+                            yield from primitives(inner)
+
+        names = set(primitives(traced.jaxpr))
+        assert not names & {"scan", "while"}, sorted(names)
+
+    @pytest.mark.parametrize("factorized", [True, False])
+    def test_stationary_counts_over_many_rows_match_float64(self, factorized):
+        """A long float32 sum over rows stays close to the float64 counts."""
+        rng = np.random.default_rng(32)
+        n_time, n_bins, n_states = 20_000, 30, 3
+        state_ind = np.repeat(np.arange(n_states), n_bins // n_states)
+        posteriors = self._stationary_posteriors(
+            rng, n_time, n_bins, state_ind, n_states
+        )
+        causal, predictive, acausal, continuous, discrete, full = posteriors
+        assert np.any(predictive == 0.0)
+        expected = _expanded_responses_numpy_reference(
+            causal, predictive, acausal, full, state_ind
+        ).sum(axis=0)
+        as32 = [np.asarray(array, np.float32) for array in posteriors]
+        if factorized:
+            counts = estimate_discrete_transition_counts_from_factorized_posteriors(
+                *as32[:3], as32[3], as32[4], state_ind
+            )
+        else:
+            counts = estimate_discrete_transition_counts_from_expanded_posteriors(
+                *as32[:3], as32[5], state_ind
+            )
+
+        np.testing.assert_allclose(counts, expected, rtol=1e-5)
 
     def test_factorized_counts_match_numpy_reference(self):
         """The stationary factorized JAX count helper should preserve answers."""
