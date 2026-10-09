@@ -17,6 +17,10 @@ chunked
 compact
     ``predict(inference_mode="checkpointed", output_mode="compact")`` with
     structured transitions: state probabilities only, bounded working memory.
+reference64
+    Benchmark-only float64 HMM inference with the same fitted model and
+    float32 likelihood values as an x64-disabled run. Requires ``JAX_ENABLE_X64=1``;
+    records source and promoted likelihood dtypes. Native compact stays float32.
 
 Example::
 
@@ -25,13 +29,17 @@ Example::
 """
 
 import argparse
+import hashlib
 import inspect
 import json
 import os
 import platform
 import threading
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import psutil
@@ -40,6 +48,133 @@ import psutil
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 SAMPLE_RATE = 500  # decode bins per second
+
+
+@contextmanager
+def float32_computation() -> Iterator[None]:
+    """Use the normal float32 path across supported JAX versions, then restore."""
+    import jax
+
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", False)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def output_dtypes(result: Any) -> dict[str, str]:
+    """Record array precision independently of JAX's global x64 setting."""
+    return {name: str(result[name].dtype) for name in sorted(result.data_vars)}
+
+
+def _prepare_reference_likelihood(model: Any, predict: dict) -> Callable:
+    """Bind the same global-edge preparation used by native prediction."""
+    from non_local_detector.models.base import _prepare_likelihood_callback
+    from non_local_detector.time_edges import _DecodeTimeGrid
+
+    edges = predict["time_edges"]
+    args = (predict["position_time"], predict["position"], predict["spike_times"])
+    if "spike_waveform_features" in predict:
+        args += (predict["spike_waveform_features"],)
+    prepared = _prepare_likelihood_callback(
+        model.compute_log_likelihood,
+        edges,
+        has_no_spike=any(obs.is_no_spike for obs in model.observation_models),
+        log_likelihood_args=args,
+        _time_grid=_DecodeTimeGrid.from_validated_edges(
+            edges, uniform_width=(edges[-1] - edges[0]) / (len(edges) - 1)
+        ),
+    )
+    centers = (edges[:-1] + edges[1:]) / 2
+
+    def likelihood(
+        full_edges: np.ndarray, *, row_slice: slice, is_missing: np.ndarray
+    ) -> Any:
+        return prepared(centers, *args, row_slice=row_slice, is_missing=is_missing)
+
+    return likelihood
+
+
+def reference64_prediction(
+    model: Any,
+    predict: dict,
+    *,
+    chunk_size: int,
+    checkpoint_dir: Path,
+) -> tuple[Any, dict[str, list[str]]]:
+    """Run a bounded float64 reference without changing native prediction's API.
+
+    Keep fitted model values fixed and evaluate likelihoods with x64 disabled,
+    then promote inputs before inference. This isolates HMM precision from
+    fitting and likelihood precision; it is not an end-to-end float64 oracle.
+    """
+    import jax
+
+    from non_local_detector.checkpointed_inference import checkpointed_forward_backward
+    from non_local_detector.models.base import _missing_bins
+
+    if not jax.config.x64_enabled:
+        raise ValueError("reference64 requires JAX_ENABLE_X64=1")
+    interior = model.is_track_interior_state_bins_
+    operator = model._continuous_transition_operator_.restricted(interior)
+    operator = operator.bind_discrete(model.discrete_state_transitions_).fused()
+    initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
+
+    def promote(leaf: Any) -> Any:
+        array = np.asarray(leaf)
+        return array.astype(np.float64) if array.dtype.kind == "f" else leaf
+
+    operator = jax.tree_util.tree_map(promote, operator)
+    transition_dtypes = sorted(
+        {
+            str(np.asarray(leaf).dtype)
+            for leaf in jax.tree_util.tree_leaves(operator)
+            if np.asarray(leaf).dtype.kind == "f"
+        }
+    )
+    if transition_dtypes != ["float64"]:
+        raise ValueError("reference64 transition inputs must actually be float64")
+    prepared = _prepare_reference_likelihood(model, predict)
+    observed_dtypes: set[str] = set()
+    inference_dtypes: set[str] = set()
+
+    def likelihood(
+        full_edges: np.ndarray, *, row_slice: slice, is_missing: np.ndarray
+    ) -> Any:
+        with float32_computation():
+            values = prepared(full_edges, row_slice=row_slice, is_missing=is_missing)
+        observed_dtypes.add(str(values.dtype))
+        promoted = values.astype(np.float64)
+        inference_dtypes.add(str(promoted.dtype))
+        if promoted.dtype != np.float64:
+            raise ValueError("reference64 likelihood input must actually be float64")
+        return promoted
+
+    result = checkpointed_forward_backward(
+        predict["time_edges"],
+        initial,
+        likelihood,
+        transition_operator=operator,
+        state_ind=model.state_ind_[interior],
+        n_states=len(model.state_names),
+        is_missing=_missing_bins(
+            predict["time_edges"],
+            predict.get("is_missing"),
+            predict["position_time"],
+            predict["position"],
+        ),
+        chunk_size=chunk_size,
+        checkpoint_dir=checkpoint_dir,
+        dtype=np.float64,
+    ).dataset
+    if set(output_dtypes(result).values()) != {"float64"}:
+        raise ValueError("reference64 posterior must actually be float64")
+    return result, {
+        "likelihood_compute_dtypes": sorted(observed_dtypes),
+        "likelihood_inference_dtypes": sorted(inference_dtypes),
+        "transition_inference_dtypes": transition_dtypes,
+    }
 
 
 def workload(args):
@@ -115,13 +250,32 @@ def set_population_defaults(args):
         args.spike_rate = 5.0 if args.family == "sorted" else 20.0
 
 
+def input_fingerprint(fit: dict, predict: dict) -> str:
+    """Hash actual seeded inputs before adding mode-specific keyword arguments."""
+
+    def describe(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            return {
+                "shape": value.shape,
+                "dtype": str(value.dtype),
+                "sha256": hashlib.sha256(value.tobytes()).hexdigest(),
+            }
+        if isinstance(value, dict):
+            return {key: describe(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [describe(item) for item in value]
+        return value
+
+    return hashlib.sha256(
+        json.dumps(describe([fit, predict]), sort_keys=True).encode()
+    ).hexdigest()
+
+
 def provenance(script):
     """Hashes, precision and device that identify what a report measured.
 
     Call after configuring x64 so the recorded setting is the one measured.
     """
-    import hashlib
-
     import jax
 
     import non_local_detector
@@ -152,7 +306,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", choices=["sorted", "clusterless"], default="sorted")
     parser.add_argument(
-        "--mode", choices=["dense", "chunked", "compact"], default="dense"
+        "--mode",
+        choices=["dense", "chunked", "compact", "reference64"],
+        default="dense",
     )
     parser.add_argument("--duration", type=float, default=10.0, help="seconds")
     parser.add_argument("--encoding-duration", type=float, default=10.0)
@@ -196,10 +352,13 @@ def main():
     )
 
     backend = jax.default_backend()
+    if args.mode == "reference64" and not jax.config.x64_enabled:
+        parser.error("reference64 requires JAX_ENABLE_X64=1")
     if args.require_backend and backend != args.require_backend:
         parser.error(f"default backend is {backend}, not {args.require_backend}")
     args.output.mkdir(parents=True, exist_ok=True)
     fit_kwargs, predict_kwargs = workload(args)
+    input_sha256 = input_fingerprint(fit_kwargs, predict_kwargs)
     detector = (
         NonLocalSortedSpikesDetector
         if args.family == "sorted"
@@ -227,17 +386,18 @@ def main():
     n_rows = len(predict_kwargs["time_edges"]) - 1
     if args.mode == "chunked":
         predict_kwargs["n_chunks"] = max(1, int(np.ceil(n_rows / args.chunk_rows)))
-    elif args.mode == "compact":
+    elif args.mode in {"compact", "reference64"}:
         if "inference_mode" not in predict_parameters:
             parser.error("this checkout has no checkpointed inference (compact mode)")
         fit_kwargs["transition_representation"] = "structured"
-        predict_kwargs.update(
-            inference_mode="checkpointed",
-            output_mode="compact",
-            checkpoint_dir=args.output / "checkpoints",
-        )
-        if args.checkpoint_chunk_size is not None:
-            predict_kwargs["chunk_size"] = args.checkpoint_chunk_size
+        if args.mode == "compact":
+            predict_kwargs.update(
+                inference_mode="checkpointed",
+                output_mode="compact",
+                checkpoint_dir=args.output / "checkpoints",
+            )
+            if args.checkpoint_chunk_size is not None:
+                predict_kwargs["chunk_size"] = args.checkpoint_chunk_size
 
     process = psutil.Process()
     peak_rss = [process.memory_info().rss]
@@ -261,9 +421,13 @@ def main():
         "rate_spread": args.rate_spread,
         "algorithm": args.algorithm,
         "encoding_duration_s": args.encoding_duration,
+        "input_sha256": input_sha256,
+        "fit_x64": False if args.mode == "reference64" else jax.config.x64_enabled,
         "chunk_rows": args.chunk_rows if args.mode == "chunked" else None,
         "checkpoint_chunk_size": (
-            args.checkpoint_chunk_size if args.mode == "compact" else None
+            args.checkpoint_chunk_size
+            if args.mode in {"compact", "reference64"}
+            else None
         ),
         "backend": backend,
         "device": str(jax.local_devices()[0]),
@@ -275,10 +439,17 @@ def main():
     }
     try:
         start = time.perf_counter()
-        model.fit(**fit_kwargs)
+        if args.mode == "reference64":
+            with float32_computation():
+                model.fit(**fit_kwargs)
+        else:
+            model.fit(**fit_kwargs)
         report["fit_seconds"] = time.perf_counter() - start
         report["state_bins"] = int(model.state_ind_.shape[0])
-        if args.mode == "compact" and args.checkpoint_chunk_size is None:
+        if (
+            args.mode in {"compact", "reference64"}
+            and args.checkpoint_chunk_size is None
+        ):
             try:
                 from non_local_detector.checkpointed_inference import (
                     default_chunk_size,
@@ -287,10 +458,24 @@ def main():
                 report["checkpoint_chunk_size"] = 256
             else:
                 report["checkpoint_chunk_size"] = default_chunk_size(
-                    int(np.count_nonzero(model.is_track_interior_state_bins_))
+                    int(np.count_nonzero(model.is_track_interior_state_bins_)),
+                    np.float64 if args.mode == "reference64" else np.float32,
                 )
+
+        def predict_once() -> Any:
+            if args.mode == "reference64":
+                dataset, dtypes = reference64_prediction(
+                    model,
+                    predict_kwargs,
+                    chunk_size=report["checkpoint_chunk_size"],
+                    checkpoint_dir=args.output / "checkpoints",
+                )
+                report.update(dtypes)
+                return dataset
+            return model.predict(**predict_kwargs)
+
         start = time.perf_counter()
-        result = model.predict(**predict_kwargs)
+        result = predict_once()
         states = np.asarray(result["acausal_state_probabilities"])
         report["compile_and_first_predict_seconds"] = time.perf_counter() - start
         warm = []
@@ -299,7 +484,7 @@ def main():
             if profile:
                 jax.profiler.start_trace(str(args.profile_dir))
             start = time.perf_counter()
-            result = model.predict(**predict_kwargs)
+            result = predict_once()
             states = np.asarray(result["acausal_state_probabilities"])
             warm.append(time.perf_counter() - start)
             if profile:
@@ -309,6 +494,12 @@ def main():
             float(np.median(warm)) / args.duration if warm else None
         )
         report["output_variables"] = sorted(result.data_vars)
+        report["output_dtypes"] = output_dtypes(result)
+        report["reference_scope"] = (
+            "float64 HMM inference; fixed fit with JAX x64 disabled, float32 likelihood values"
+            if args.mode == "reference64"
+            else None
+        )
         report["output_bytes"] = int(
             sum(np.asarray(result[name]).nbytes for name in result.data_vars)
         )

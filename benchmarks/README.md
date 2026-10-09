@@ -27,6 +27,13 @@ New and updated scripts follow the
   in the report, so results stay attributable after the code changes.
   `compare_prediction_modes.provenance(__file__)` returns the package-source and
   script hashes, x64 setting, `XLA_FLAGS` and device kind.
+- Record actual output dtypes as well as x64 configuration. Native checkpointed
+  posteriors remain float32 when x64 is enabled. `compare_prediction_modes.py
+  --mode reference64` runs the numerical HMM in float64 after promoting fixed
+  float32 likelihood values and fixed fitted model parameters; it measures inference
+  precision, not end-to-end float64 fitting or likelihood accuracy. Set
+  `JAX_ENABLE_X64=1` and pair with an x64-disabled compact run at the same chunk
+  size. Reports distinguish likelihood computation from inference-input dtypes.
 - For memory, record XLA's compiled buffer sizes (`memory_analysis()`) or device
   peaks. Use an xprof trace for transient workspace and kernel-level time.
 
@@ -49,7 +56,7 @@ names.
 
 | Script | Measures | Typical use |
 | --- | --- | --- |
-| `compare_prediction_modes.py` | One fit and prediction of a simulated 2-D recording: fit time, compile and warm prediction time, peak host RSS and device memory, and saved state probabilities. Modes are `dense`, `chunked` (`n_chunks`) and checkpointed `compact`. `--algorithm` selects a likelihood and `--rate-spread` gives units different spike rates. Works on older checkouts via `PYTHONPATH` and refuses modes they lack. | One configuration per process: `--family --mode --duration --arena --bin-size` |
+| `compare_prediction_modes.py` | One fit and prediction of a simulated 2-D recording: fit time, compile and warm prediction time, peak host RSS and device memory, saved state probabilities and actual output dtypes. Modes are `dense`, `chunked` (`n_chunks`), checkpointed `compact`, and benchmark-only `reference64` HMM inference with fixed float32 observations. `--algorithm` selects a likelihood and `--rate-spread` gives units different spike rates. Works on older checkouts via `PYTHONPATH` and refuses modes they lack. | One configuration per process: `--family --mode --duration --arena --bin-size` |
 | `benchmark_em.py` | EM parameter estimation (`estimate_parameters`) on the same simulated session: first and warm wall time, iterations, marginal log-likelihoods, peak host RSS and device memory. EM uses the dense filter/smoother. | `--family --duration --bin-size --max-iter [--algorithm]` |
 | `profile_checkpointed_prediction.py` | Splits one warm checkpointed compact prediction into stages: local, non-local and no-spike likelihoods (forward pass and replay), forward/backward kernels, checkpoint I/O and the remainder. Uses the `compare_prediction_modes.py` workload. | Finding bottlenecks: `--family --duration --bin-size` |
 | `profile_compilations.py` | XLA compilations during a first checkpointed compact prediction of the same workload, by function (count and seconds), then warm prediction time; saves state probabilities for comparison between source trees. `--algorithm` selects a likelihood. | Compile-time changes: `--family --algorithm --encoding-duration` |
