@@ -11,6 +11,8 @@ robustness, REML field recovery, no cross-wall leakage, and the encoding contrac
 
 import warnings
 
+import jax
+import jax.numpy as jnp
 import networkx as nx
 import numpy as np
 import pytest
@@ -32,6 +34,8 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
 from non_local_detector.likelihoods.sorted_spikes_mrf import (
+    _newton_fit_jax,
+    _reml_score_jax,
     fit_sorted_spikes_mrf_encoding_model,
     mrf_penalized_poisson_fit,
     mrf_reml_objective,
@@ -228,6 +232,59 @@ def test_population_recovers_distinct_place_fields():
             counts[:, neuron], occupancy, basis, penalty_weights, penalty
         )
         np.testing.assert_allclose(coeffs[:, neuron], expected, atol=1e-4)
+
+
+def _dot_general_precisions(jaxpr):
+    """Precision of every ``dot_general`` in ``jaxpr`` and its nested jaxprs."""
+    precisions = []
+    for eqn in jaxpr.eqns:
+        if eqn.primitive.name == "dot_general":
+            precisions.append(eqn.params["precision"])
+        for value in eqn.params.values():
+            for sub in value if isinstance(value, (tuple, list)) else (value,):
+                inner = getattr(sub, "jaxpr", sub)
+                if hasattr(inner, "eqns"):
+                    precisions.extend(_dot_general_precisions(inner))
+    return precisions
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stage", ["newton", "reml"])
+def test_fit_contractions_request_highest_precision(stage):
+    """Every MRF fit and REML contraction requests HIGHEST precision.
+
+    Without it, CUDA may evaluate float32 products in TF32, which moved A100
+    coefficients by up to 2e-3 from the float64 reference. CPU always computes
+    full float32, so CPU CI checks the request in the traced program instead.
+    """
+    dtype = jnp.float32
+    counts = jnp.ones((20, 3), dtype)
+    occupancy = jnp.ones(20, dtype)
+    basis = jnp.ones((20, 6), dtype)
+    penalty_diag = jnp.ones(6, dtype)
+    tol = jnp.asarray(1e-8, dtype)
+    if stage == "newton":
+        traced = jax.make_jaxpr(
+            lambda *args: _newton_fit_jax(*args, max_iter=5, tol=tol)
+        )(counts, occupancy, basis, penalty_diag)
+    else:
+        traced = jax.make_jaxpr(
+            lambda log_penalty: _reml_score_jax(
+                log_penalty,
+                counts,
+                occupancy,
+                basis,
+                penalty_diag,
+                jnp.asarray(5.0, dtype),
+                5,
+                tol,
+            )
+        )(jnp.asarray(0.0, dtype))
+
+    precisions = _dot_general_precisions(traced.jaxpr)
+    assert precisions
+    highest = (jax.lax.Precision.HIGHEST, jax.lax.Precision.HIGHEST)
+    assert all(precision == highest for precision in precisions), precisions
 
 
 def test_reml_robust_to_ill_conditioned_hessian():
