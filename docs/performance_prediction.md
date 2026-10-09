@@ -165,11 +165,14 @@ Nonseparable covariance, graph/diffusion movement, directional movement,
 empirical movement and custom transitions require a dense fallback unless a
 specific proven operator applies. `transition_representation="auto"` permits
 that fallback under `max_dense_transition_bytes` (256 MiB by default). The budget
-covers the sum of retained fallback blocks. A fallback does not carry a
-structured-memory guarantee. Unsupported extreme Gaussian underflow cases are
-reported explicitly rather than changing their probabilities.
+covers the sum of retained fallback blocks plus the temporary dense graph
+distances that manifold `RandomWalk` fallbacks need. A fallback does not carry a
+structured-memory guarantee. Gaussian blocks whose structured product would
+underflow raise `UnsupportedTransitionError` with `"structured"` and use the
+budgeted dense fallback with `"auto"`; neither changes their probabilities.
 
-Opaque custom constructors require legacy eager environments; auto mode rejects
+Opaque custom constructors require the dense representation, with eager
+all-pairs graph distances; auto mode rejects
 them when graph distances are deferred because their distance-access contract
 is unverified. A feasible explicit dense fit can still use them with checkpointed
 prediction, but does not avoid dense setup or bound arbitrary custom workspace.
@@ -203,19 +206,21 @@ Actual float64 posterior qualification belongs to the pure numerical core with
 x64 enabled.
 
 Configure CUDA allocator reservation before starting Python when enforcing a
-device budget. The benchmark defaults to
+device budget. `benchmarks/benchmark_native_pipeline.py` defaults to
 `XLA_PYTHON_CLIENT_PREALLOCATE=false` and reports active, reserved and pooled
-allocation separately. The recorded A100 runs used an allocator fraction of
-0.08 plus device-wide NVML measurements; that fraction is specific to an 80 GB
+allocation separately. The hour-scale A100 qualification runs used an allocator
+fraction of 0.08 plus device-wide NVML measurements; that fraction is specific to an 80 GB
 card. Application working memory, CUDA context and filesystem cache need
 separate accounting.
 
 Repeated CUDA predictions in separate processes are not bitwise identical by
 default, because XLA autotuning chooses kernels in each process. For the
 benchmark workload in the [validation record](performance_validation.md), state
-probabilities from separate runs of unchanged code differed by up to 3.1e-4.
-Setting `XLA_FLAGS=--xla_gpu_autotune_level=0` before starting Python made three
-A100 runs bitwise identical without changing their prediction time. Within one
+probabilities from separate runs of unchanged code differed by up to 3.1e-4
+(sorted KDE) and 6.3e-4 (clusterless GMM). Setting
+`XLA_FLAGS=--xla_gpu_autotune_level=0` before starting Python made three A100
+runs bitwise identical; warm prediction time stayed within about 5%, and first
+calls took 20–32% less time. Within one
 process, checkpoint replay is deterministic and checked.
 
 Run `benchmarks/benchmark_native_pipeline.py` for native pipeline measurements and
@@ -225,8 +230,8 @@ precision, process peaks and disk usage. `--platform gpu` fails if CUDA is
 unavailable. Shortened recordings and synthetic populations establish only the
 configurations recorded in their reports; CPU measurements do not qualify CUDA
 or smaller GPU hardware. Full-hour production claims require measured runs at
-both spatial sizes and declared host/device/disk budgets. Known correctness
-issues in the sorted diffusion likelihood's bin volumes and in unoccupied MRF
-components are tracked separately. See the
+1 cm and 2 cm and declared host/device/disk budgets. Known correctness issues
+remain in the sorted diffusion likelihood's bin volumes and in unoccupied MRF
+components. See the
 [validation record](performance_validation.md) for measured configurations,
 source provenance and limits.

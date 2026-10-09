@@ -5,15 +5,19 @@ with 24 GB of memory, and a CPU-only computer. It covers decoding with a fitted
 model and parameter estimation (EM). How the decoding modes work is described in
 [performance_prediction.md](performance_prediction.md).
 
-All numbers come from the benchmark workloads in
+Decoding numbers come from the benchmark workloads in
 [performance_validation.md](performance_validation.md): a simulated 180 × 180 cm
-arena, 2 ms bins, 64 sorted units at 5 Hz or 8 clusterless electrodes at 20 Hz
-with four waveform features, using the default likelihoods (sorted and
-clusterless KDE); memory for the other likelihood algorithms was not measured.
-The runs used an A100 80 GB and an Apple M1 Max laptop (10 cores, 64 GB). No
-24 GB card was used: 24 GB memory figures come from an A100 with its allocator
-capped, so speed on a 24 GB card is unmeasured. Your populations, encoding length and grid change these numbers;
-time a short segment of your own data before a long run.
+arena, 2 ms bins, 10 s of encoding, 64 sorted units at 5 Hz or 8 clusterless
+electrodes at 20 Hz with four waveform features, using the default likelihoods
+(sorted and clusterless KDE), float32 and JAX 0.9.0; memory for the other
+likelihood algorithms was not measured. EM, allocator-pool and graph-distance
+numbers come from `docs/performance_artifacts/em/` (the same populations, 60 s
+sessions, 3 EM iterations). The runs used an A100 80 GB and an Apple M1 Max
+laptop (10 cores, 64 GB). No 24 GB card was used: decoding was checked on the
+A100 with its allocator limited to 4 GB and 8 GB pools, and the 24 GB EM entries
+compare an uncapped A100 peak with 24 GB. Speed on a 24 GB card is unmeasured.
+Your populations, encoding length and grid change these numbers; time a short
+segment of your own data before a long run.
 
 ## Summary
 
@@ -21,9 +25,9 @@ time a short segment of your own data before a long run.
 | --- | --- | --- | --- |
 | Decoding mode | Structured fit, checkpointed prediction | Same | Same |
 | `chunk_size` | Default | Default | Default; `256` cuts RAM about 3× at similar speed |
-| Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB cap | 3.3–4.0 GB of RAM at 2 cm (about 1 GB with `chunk_size=256`) |
-| Decoding one hour at 2 cm | 6 min (sorted), 11 min (clusterless) | Not measured | About 30 min (projected from 30 s runs) |
-| EM | 60 s at 2 cm used 15.5 GB of device memory | 60 s at 2 cm fits; longer sessions need a coarser grid or a shorter segment | 60 s at 4 cm took 8 min and 10 GB of RAM |
+| Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB pool | 3.3–3.5 GB of RAM at 2 cm (4.0 GB with 256 units; about 1 GB with `chunk_size=256`) |
+| Decoding one hour at 2 cm | 6 min (sorted), 11 min (clusterless), including compilation | Not measured | About 30 min (projected from 30 s runs) |
+| EM | 60 s at 2 cm used 15.5 GB of device memory | 60 s at 2 cm should fit (15.5 GB on the A100); longer sessions need a coarser grid or a shorter segment | 60 s at 4 cm took 8–9 min and 10 GB of RAM |
 | Precision | float32 (default) | float32; float64 is slow on most 24 GB cards | float32 |
 
 ## GPU setup
@@ -39,10 +43,11 @@ Set these environment variables before starting Python:
   `XLA_PYTHON_CLIENT_MEM_FRACTION` to the budget's share of the card. For
   example, `0.30` on an 80 GB card gives 24 GB, which is how you can check
   whether a run will fit on a 24 GB card.
-- `XLA_FLAGS=--xla_gpu_autotune_level=0` makes repeated runs in separate
-  processes bitwise identical. It didn't change prediction time on the A100.
-  Without it, state probabilities from separate runs of unchanged code differed
-  by up to 3.1e-4.
+- `XLA_FLAGS=--xla_gpu_autotune_level=0` made three A100 runs of the benchmark
+  workload in separate processes bitwise identical. Warm prediction time stayed
+  within about 5%, and first calls took 20–32% less time. Without it, state
+  probabilities from separate runs of unchanged code differed by up to 3.1e-4
+  (sorted KDE) and 6.3e-4 (clusterless GMM).
 
 ## Decoding
 
@@ -53,24 +58,26 @@ depends on `chunk_size` and the grid, not on recording length. Run time is
 proportional to recording length.
 
 **Memory.** With the default `chunk_size`, 120 s recordings at 1 cm and 2 cm
-peaked at 1.36–1.38 GB of device memory. They ran within a 4 GB allocator cap,
-so any of these GPUs has room to spare. One hour on the A100 peaked at 1.36–1.48
-GB of device memory and 1.6–4.6 GB of host RAM. Device memory rose only when the
-encoding data were large: with 30 minutes of encoding, peaks were 3.7 GB
-(sorted) and 5.1 GB (clusterless), including fitting.
+peaked at 1.36–1.38 GB of device memory, the same with 4 GB and 8 GB allocator
+pools, so any of these GPUs has room to spare. One hour on the A100 peaked at
+1.36–1.48 GB of device memory and 1.6–4.6 GB of host RAM. Device memory rose
+only when the encoding data were large: with 30 minutes of encoding, peaks were
+3.7 GB for either family, including fitting (clusterless peaked at 5.1 GB before
+the compiled clusterless KDE likelihood).
 
 On a CPU, chunks live in RAM: 30 s at 2 cm peaked at 3.3–3.5 GB with the default
-`chunk_size` (64 sorted units or 8 electrodes; 4.0 GB with 256 units). With
+`chunk_size` (64 sorted units or 8 electrodes, the upper end with rates spread
+8×; 4.0 GB with 256 units). With
 `chunk_size=256` the peak fell to 1.1 GB (sorted) and 1.0 GB (clusterless) at
 about the same speed (15.1–16.1 s against 15.7–15.9 s).
 
 **Speed.** On the A100, one hour at 2 cm took 364 s (sorted) and 681 s
 (clusterless), including compilation; after compilation, each recording second
-costs 0.096 s and 0.14 s. These hour runs predate the latest clusterless
-changes, which made 30 s clusterless runs faster. Once compiled, a 30 s sorted
+costs 0.096 s and 0.14 s. These hour runs predate the compiled clusterless KDE
+likelihood, which made 30 s clusterless runs faster. Once compiled, a 30 s sorted
 recording took 2.5 s at 4 cm, 2.95 s at 2 cm and 4.3 s at 1 cm, and a 30 s
 clusterless recording took 3.2 s at 2 cm. On the M1 Max, 30 s at 2 cm took
-15.7–16.6 s for either family, 0.52–0.55 s per recording second; an hour at
+15.7–16.4 s for either family, 0.52–0.55 s per recording second; an hour at
 that rate is about half an hour, a projection rather than a measured run.
 
 **Outputs.** Prefer `output_mode="compact"` (state probabilities) unless you
@@ -109,16 +116,17 @@ Measured with 60 s sessions and 3 EM iterations:
 
 Only one session length was measured per grid, so how fast memory grows is an
 estimate: the smoother holds at least three of these arrays, so each extra
-minute adds at least 6 GB at 2 cm and 1.6 GB at 4 cm. A 24 GB card fits 60 s
-at 2 cm but probably not much more. For longer sessions, estimate parameters on
+minute adds at least 6 GB at 2 cm and 1.6 GB at 4 cm. A 24 GB card should fit
+60 s at 2 cm (15.5 GB on the A100) but probably not much more. For longer sessions, estimate parameters on
 a segment that fits, or on a coarser grid, and check the peak with
 `XLA_PYTHON_CLIENT_MEM_FRACTION` first. Host RAM also grows, because the
 posteriors are copied to the host.
 
 Every EM call refits the environment and computes graph distances between all
 bins, which takes about 10 s at 4 cm and 170 s at 2 cm on the M1 Max. At 1 cm
-the dense transition matrix alone is 17.6 GB, so EM doesn't fit on a 24 GB
-card, and the graph distances would take roughly 50 minutes (extrapolated).
+the dense transition matrix alone is 17.6 GB, and each (time bins × state bins)
+array adds 8 GB per minute, so EM doesn't fit on a 24 GB card; the graph
+distances would also take roughly 50 minutes (extrapolated).
 
 ## Precision
 
@@ -132,4 +140,4 @@ slower than float32.
 - Decoding and scaling: [performance_validation.md](performance_validation.md)
   and `docs/performance_artifacts/` (the `bottlenecks/` and `scaling/` records,
   including `scaling/cpu-chunk-size-runs.json` for CPU chunk sizes).
-- EM, memory caps and graph-distance timing: `docs/performance_artifacts/em/`.
+- EM, allocator pools and graph-distance timing: `docs/performance_artifacts/em/`.

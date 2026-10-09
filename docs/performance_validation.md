@@ -45,7 +45,8 @@ component reductions are unchanged. Exact replay hashes remain required; no
 implicit full-session likelihood cache was added. On an A100 (JAX 0.9.0), the
 scan takes 0.3-3.2 ms per reduction from 16 to 200,000 spikes. The serial loop
 it replaces takes 0.5-0.8 ms at 16 spikes, 18-31 ms at 2,000 and 1.5-1.6 s
-at 200,000; the scan is similar at 16 spikes and 30-2,000x faster from 2,000.
+at 200,000; the scan is similar at 16 spikes and, comparing medians within the
+5a4047d8 run, 17-2,500x faster from 2,000.
 From 2,000 spikes the scan is within about 2x of the nondeterministic scatter
 (up to about 6x slower on sub-millisecond 16-spike calls); the scatter fails to
 launch at 16,930 columns with sorted ids. An xprof trace of three calls at
@@ -54,7 +55,7 @@ scan and 6 for the scatter. A 20,000-encoding-spike clusterless diffusion
 likelihood chunk drops from 0.37 s to 0.06 s. Each new scan shape costs about
 0.8 s to compile on the A100, so concrete off-CPU calls pad spike counts to
 powers of two: 64 different spike counts create 7 executables (10.8 s) instead
-of 64. `benchmarks/check_likelihood_determinism.py` gives one
+of 57 (47.4 s). `benchmarks/check_likelihood_determinism.py` gives one
 SHA per case over 50 evaluations for four clusterless algorithms, default and
 collision-heavy, with x64 off and on; the affected likelihood and checkpoint
 modules pass on the A100 with x64 (444 tests). See the
@@ -429,8 +430,8 @@ These changes address them, measured on the same workloads (30 s, 2 cm,
   A100 forward step from 215 to 55 µs and a backward step from 311 to 78 µs
   (`benchmarks/benchmark_checkpoint_scan_steps.py`). The summation order changes:
   state probabilities moved by at most 5.4e-7 on the A100 with autotuning
-  disabled and 7.3e-6 on CPU, with the same most likely state at every bin and
-  rows still summing to 1 within 4.8e-7. Operator products and filter/smoother
+  disabled and 7.3e-6 on CPU, with the same most likely state at every bin.
+  Operator products and filter/smoother
   outputs still match the dense reference within the existing tolerances.
 - **Chunk size.** The default now targets 256 MiB of float32 likelihoods per
   chunk (at least 256 rows). For this grid the A100 device peak rose from
@@ -523,8 +524,8 @@ For a 120 s recording with 128 spread electrodes, the previous code had not
 finished its first prediction after 3,000 s; the compiled version took 152 s,
 114 s of it compiling 43 variants of each kernel. Coarser encoding padding
 compiles less but computes more: two sizes per octave gave 73 s of compilation
-and 6.6 s warm, powers of two 52 s and 7.4 s, against 114 s and 5.6 s at four
-per octave. State probabilities moved by at most 3.0e-6 on CPU, with the same
+and 6.6 s warm, powers of two 52 s and 7.3 s, against 114 s and 5.6 s at four
+per octave (compilation on the 120 s recording, warm times on 30 s runs). State probabilities moved by at most 3.0e-6 on CPU, with the same
 most likely state at every bin, and error against a float64 computation was
 unchanged.
 
@@ -538,7 +539,7 @@ in batches of 16 (d36234c8) bounds the local KDE kernel's graph. On the A100
 | 256 units, rates spread 8× | 86.7 to 40.9 s | 3.14 to 3.27 s |
 | 1,024 units | 220 to 22 s | 4.29 to 4.41 s |
 | 1,024 units, rates spread 8× | 281 to 43 s | 4.24 to 4.26 s |
-| CPU, 64 / 256 spread units | 19.4 to 17.3 s / 31.5 to 18.3 s | +0.8% / +0.6% |
+| CPU, 64 / 256 spread units | 19.4 to 17.3 s / 31.5 to 18.3 s | +0.7% / +0.5% |
 
 For a 120 s recording with 1,024 spread units, compilation fell from 254 to 34 s
 and the first prediction from 296 to 58 s. Without batching, compilation was
@@ -601,8 +602,9 @@ default autotuning, separate runs of the new GMM code differed by up to
 6.3e-4, more than old versus new (4.8e-5), with the same most likely state at
 every bin. Log-space KDE old versus new differed by 4.5e-5, with the most
 likely state changed in 1 of 15,000 bins; the previous code alone differed by
-the same amounts with autotuning on versus off. Against an eager per-spike
-reference, float32 likelihoods agree to 2.7e-7 (GMM) and 3.7e-7 (log-space
+the same amounts with autotuning on versus off. Against eager per-electrode
+references (per-spike scoring for GMM, the blocked building blocks for
+log-space KDE), float32 likelihoods agree to 2.7e-7 (GMM) and 3.7e-7 (log-space
 KDE) relative, and float64 to 4.4e-16 and 6.3e-16, on JAX 0.9.0 and 0.11.2.
 The GMM `bin_tile_size` path and the log-space KDE streaming and
 encoding-tiled paths are unchanged.
