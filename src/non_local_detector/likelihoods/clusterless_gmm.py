@@ -23,8 +23,12 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
+    _pad_rows,
+    _padded_spike_count,
     _SpikeTimeOrder,
     decode_bin_centers,
+    deterministic_row_add,
+    deterministic_row_sum,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
@@ -32,6 +36,7 @@ from non_local_detector.likelihoods.common import (
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
+    spike_row_ids,
     sum_spikes_into_rows,
     validate_population_lengths,
     validate_spike_feature_pair,
@@ -41,6 +46,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _effective_sample_count,
+    _estimate_log_prob_resp,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -120,8 +126,184 @@ def _accumulate_log_likelihood_block(
     density before subtracting the other would round the rate term away.
     """
     log_contribution = log_rate + (joint_logp - log_occupancy)
-    return log_likelihood.at[segment_ids[:, None], bin_ids[None, :]].add(
-        log_contribution
+    if not bin_ids.shape[0]:
+        return log_likelihood
+    # Callers provide contiguous, unique spatial tile columns. Keep the initial
+    # ground-process term and add the deterministically reduced contributions
+    # without a full-row temporary or concurrent floating-point scatters.
+    return deterministic_row_add(
+        log_likelihood, log_contribution, segment_ids, bin_ids[0]
+    )
+
+
+# Local spike terms are padded like one non-local block of this size.
+_LOCAL_SPIKE_BLOCK = 1000
+
+
+def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jnp.ndarray, ...]:
+    """Fitted means, Cholesky precisions and weights, for compiled scoring."""
+    gmm._check_fitted()
+    return gmm.means_, gmm.precisions_chol_, gmm.weights_
+
+
+def _gmm_score(
+    points: jnp.ndarray, parameters: tuple[jnp.ndarray, ...], covariance_type: str
+) -> jnp.ndarray:
+    """Traceable ``GaussianMixtureModel.score_samples`` on fitted parameters."""
+    means, precisions_chol, weights = parameters
+    return _estimate_log_prob_resp(
+        points, means, precisions_chol, covariance_type, weights
+    )[0]
+
+
+@partial(
+    jax.jit,
+    static_argnames=("covariance_type", "block_size", "indices_are_sorted"),
+    donate_argnums=0,
+)
+def _add_electrode_gmm_intensities(
+    log_likelihood: jnp.ndarray,
+    features: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    bin_centers: jnp.ndarray,
+    parameters: tuple[jnp.ndarray, ...],
+    log_rate: jnp.ndarray,
+    log_occupancy: jnp.ndarray,
+    *,
+    covariance_type: str,
+    block_size: int,
+    indices_are_sorted: bool,
+) -> jnp.ndarray:
+    """Add one electrode's non-local log intensities to their rows.
+
+    Parameters
+    ----------
+    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+        Running sum over electrodes; donated.
+    features : jnp.ndarray, shape (n_padded_spikes, n_features)
+        A multiple of ``block_size`` rows; padding rows are zero.
+    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+        Local rows; padding uses ``n_rows``, which the row sum drops.
+    bin_centers : jnp.ndarray, shape (n_bins, n_position_dims)
+    parameters : tuple of jnp.ndarray
+        The joint GMM's fitted means, Cholesky precisions and weights.
+    log_rate : jnp.ndarray, scalar
+    log_occupancy : jnp.ndarray, shape (n_bins,)
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    """
+    n_bins = bin_centers.shape[0]
+    tiled_bins = jnp.tile(bin_centers, (block_size, 1))
+
+    def add_block(number, log_likelihood):
+        first = number * block_size
+        block = jax.lax.dynamic_slice_in_dim(features, first, block_size)
+        rows = jax.lax.dynamic_slice_in_dim(row_ids, first, block_size)
+        points = jnp.concatenate(
+            [tiled_bins, jnp.repeat(block, n_bins, axis=0)], axis=1
+        )
+        log_density = _gmm_score(points, parameters, covariance_type).reshape(
+            block_size, n_bins
+        )
+        # Density difference first (see _accumulate_log_likelihood_block).
+        return deterministic_row_add(
+            log_likelihood,
+            log_rate + (log_density - log_occupancy),
+            rows,
+            indices_are_sorted=indices_are_sorted,
+        )
+
+    return jax.lax.fori_loop(
+        0, features.shape[0] // block_size, add_block, log_likelihood
+    )
+
+
+@partial(
+    jax.jit,
+    static_argnames=("joint_type", "occupancy_type", "indices_are_sorted"),
+    donate_argnums=0,
+)
+def _add_electrode_gmm_spike_terms(
+    log_likelihood: jnp.ndarray,
+    spike_positions: jnp.ndarray,
+    features: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    joint: tuple[jnp.ndarray, ...],
+    occupancy: tuple[jnp.ndarray, ...],
+    mean_rate: jnp.ndarray,
+    *,
+    joint_type: str,
+    occupancy_type: str,
+    indices_are_sorted: bool,
+) -> jnp.ndarray:
+    """Add one electrode's local spike terms to their rows.
+
+    Parameters
+    ----------
+    log_likelihood : jnp.ndarray, shape (n_rows,)
+        Running sum over electrodes; donated.
+    spike_positions : jnp.ndarray, shape (n_padded_spikes, n_position_dims)
+        Position at each decoding spike; padding rows are zero.
+    features : jnp.ndarray, shape (n_padded_spikes, n_features)
+    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+        Local rows; padding uses ``n_rows``, which the row sum drops.
+    joint, occupancy : tuple of jnp.ndarray
+        Fitted means, Cholesky precisions and weights of each GMM.
+    mean_rate : jnp.ndarray, scalar
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_rows,)
+    """
+    joint_logp = _gmm_score(
+        jnp.concatenate([spike_positions, features], axis=1), joint, joint_type
+    )
+    occupancy_logp = _gmm_score(spike_positions, occupancy, occupancy_type)
+    # Density difference first (see _accumulate_log_likelihood_block).
+    terms = safe_log(mean_rate, eps=RATE_EPS_HZ) + (joint_logp - occupancy_logp)
+    return log_likelihood + deterministic_row_sum(
+        terms,
+        row_ids,
+        log_likelihood.shape[0],
+        indices_are_sorted=indices_are_sorted,
+    )
+
+
+@partial(jax.jit, static_argnames=("gpi_type",), donate_argnums=0)
+def _add_gmm_expected_counts(
+    expected_counts: jnp.ndarray,
+    gpi: tuple[jnp.ndarray, ...],
+    positions: jnp.ndarray,
+    log_occupancy: jnp.ndarray,
+    mean_rate: jnp.ndarray,
+    *,
+    gpi_type: str,
+) -> jnp.ndarray:
+    """Add one electrode's expected count rate at the animal's position.
+
+    Electrodes with and without spikes in a chunk use this same compiled
+    function, so their expected counts round identically.
+
+    Parameters
+    ----------
+    expected_counts : jnp.ndarray, shape (n_rows,)
+        Running sum over electrodes; donated.
+    gpi : tuple of jnp.ndarray
+        Fitted means, Cholesky precisions and weights of the electrode's GPI GMM.
+    positions : jnp.ndarray, shape (n_rows, n_position_dims)
+        Animal position at each row.
+    log_occupancy : jnp.ndarray, shape (n_rows,)
+        Log occupancy density at ``positions``.
+    mean_rate : jnp.ndarray, scalar
+
+    Returns
+    -------
+    expected_counts : jnp.ndarray, shape (n_rows,)
+    """
+    return expected_counts + _ground_process_intensity(
+        mean_rate, _gmm_score(positions, gpi, gpi_type), log_occupancy
     )
 
 
@@ -733,7 +915,6 @@ def predict_clusterless_gmm_log_likelihood(
 
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = interior_place_bin_centers.shape[0]
-    all_bin_ids = jnp.arange(n_bins)
 
     # Start with the expected-counts (ground process) term, broadcast over time
     # log_likelihood = (
@@ -777,78 +958,71 @@ def predict_clusterless_gmm_log_likelihood(
             log_likelihood = log_likelihood + LOG_RATE_EPS_HZ * spikes_per_bin[:, None]
             continue
 
+        log_mean_rate = safe_log(mean_rate, eps=RATE_EPS_HZ)
+        n_spikes = selection.bin_ind.shape[0]
+        if n_spikes == 0:
+            continue
+
+        if bin_tile_size is None or bin_tile_size >= n_bins:
+            # Spikes padded to a few counts (padding rows are dropped from the
+            # row sums) let electrodes and chunks share one compiled kernel.
+            # Each spike is scored at every bin, so pad finely.
+            n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
+            log_likelihood = _add_electrode_gmm_intensities(
+                log_likelihood,
+                jnp.asarray(
+                    _pad_rows(select_spike_rows(elect_feats, selection), n_padded)
+                ),
+                jnp.asarray(spike_row_ids(selection, n_padded)),
+                interior_place_bin_centers,
+                _gmm_parameters(joint_gmm),
+                log_mean_rate,
+                log_occupancy,
+                covariance_type=joint_gmm.covariance_type,
+                block_size=min(spike_block_size, n_padded),
+                indices_are_sorted=selection.indices_are_sorted,
+            )
+            continue
+
+        # Bin tiling: accumulate per spike block and position tile directly.
+        # Memory: O(spike_block_size × tile_size), with no full block×bins array.
         # Select FIRST, then convert: converting the whole array would
         # device-copy every decoding spike in the recording on every chunk call.
         elect_feats = jnp.asarray(select_spike_rows(elect_feats, selection))
-
-        # Process spikes in blocks to reduce peak memory
-        # Memory: O(spike_block_size × n_bins) instead of O(n_spikes × n_bins)
-        n_spikes = elect_feats.shape[0]
-
-        # Precompute log(mean_rate) outside loop
-        log_mean_rate = safe_log(mean_rate, eps=RATE_EPS_HZ)
-
-        # Process spikes in blocks
         for spike_start in range(0, n_spikes, spike_block_size):
             spike_end = min(spike_start + spike_block_size, n_spikes)
             block_feats = elect_feats[spike_start:spike_end]
             block_seg_ids = selection.bin_ind[spike_start:spike_end]
             block_size = block_feats.shape[0]
+            for bin_start in range(0, n_bins, bin_tile_size):
+                bin_end = min(bin_start + bin_tile_size, n_bins)
+                n_tile = bin_end - bin_start
 
-            if bin_tile_size is None or bin_tile_size >= n_bins:
-                # No bin tiling: process all bins at once (default)
-                tiled_bins = jnp.tile(interior_place_bin_centers, (block_size, 1))
-                repeated_feats = jnp.repeat(block_feats, n_bins, axis=0)
-                eval_points = jnp.concatenate([tiled_bins, repeated_feats], axis=1)
-
-                # GMM evaluation (not JIT-able)
-                joint_logp_block = _gmm_logp(joint_gmm, eval_points).reshape(
-                    block_size, n_bins
+                # Build eval points for this tile
+                tiled_bins_tile = jnp.tile(
+                    interior_place_bin_centers[bin_start:bin_end], (block_size, 1)
+                )
+                repeated_feats_tile = jnp.repeat(block_feats, n_tile, axis=0)
+                eval_points_tile = jnp.concatenate(
+                    [tiled_bins_tile, repeated_feats_tile], axis=1
                 )
 
-                # Scatter only the block's observed time rows. A segment_sum with
-                # num_segments=n_time would allocate an output-sized temporary for
-                # every block, which is prohibitive for hour-long recordings.
+                # GMM evaluation, dispatched per tile
+                joint_logp_tile = _gmm_logp(joint_gmm, eval_points_tile).reshape(
+                    block_size, n_tile
+                )
+
+                # Scatter this block directly into the tile columns. The
+                # working arrays remain O(block_size × tile_size); the only
+                # recording-length array is the returned likelihood itself.
                 log_likelihood = _accumulate_log_likelihood_block(
                     log_likelihood,
-                    joint_logp_block,
+                    joint_logp_tile,
                     block_seg_ids,
-                    all_bin_ids,
+                    jnp.arange(bin_start, bin_end),
                     log_mean_rate,
-                    log_occupancy,
+                    log_occupancy[bin_start:bin_end],
                 )
-            else:
-                # Bin tiling: accumulate per-tile directly (no full block×bins array)
-                # Memory: O(block_size × tile_size) instead of O(block_size × n_bins)
-                for bin_start in range(0, n_bins, bin_tile_size):
-                    bin_end = min(bin_start + bin_tile_size, n_bins)
-                    n_tile = bin_end - bin_start
-
-                    # Build eval points for this tile
-                    tiled_bins_tile = jnp.tile(
-                        interior_place_bin_centers[bin_start:bin_end], (block_size, 1)
-                    )
-                    repeated_feats_tile = jnp.repeat(block_feats, n_tile, axis=0)
-                    eval_points_tile = jnp.concatenate(
-                        [tiled_bins_tile, repeated_feats_tile], axis=1
-                    )
-
-                    # GMM evaluation (not JIT-able)
-                    joint_logp_tile = _gmm_logp(joint_gmm, eval_points_tile).reshape(
-                        block_size, n_tile
-                    )
-
-                    # Scatter this block directly into the tile columns. The
-                    # working arrays remain O(block_size × tile_size); the only
-                    # recording-length array is the returned likelihood itself.
-                    log_likelihood = _accumulate_log_likelihood_block(
-                        log_likelihood,
-                        joint_logp_tile,
-                        block_seg_ids,
-                        jnp.arange(bin_start, bin_end),
-                        log_mean_rate,
-                        log_occupancy[bin_start:bin_end],
-                    )
 
     return (
         log_likelihood
@@ -979,37 +1153,39 @@ def compute_local_log_likelihood(
                 log_likelihood = log_likelihood + LOG_RATE_EPS_HZ * spikes_per_bin
             continue
 
-        # Select FIRST, then convert (see the non-local branch).
-        elect_times = select_spike_rows(elect_times, selection)
-        elect_feats = jnp.asarray(select_spike_rows(elect_feats, selection))
-
-        # Spike contributions at their true positions
-        if elect_times.shape[0] > 0:
-            pos_at_spike_time = get_position_at_time(
-                position_time, position, elect_times, environment
-            )  # (n_spikes, pos_dims)
-            eval_points = jnp.concatenate(
-                [pos_at_spike_time, elect_feats], axis=1
-            )  # (n_spikes, P+M)
-            joint_logp = _gmm_logp(joint_gmm, eval_points)  # (n_spikes,)
-            # log term: log(mean_rate) + log p(pos_t, mark_t) - log occupancy(pos_t)
-            log_occ_at_spike_pos = _gmm_logp(
-                occupancy_model, pos_at_spike_time
-            )  # (n_spikes,)
-            # Density difference first (see _accumulate_log_likelihood_block).
-            terms = safe_log(mean_rate, eps=RATE_EPS_HZ) + (
-                joint_logp - log_occ_at_spike_pos
-            )  # (n_spikes,)
-
-            log_likelihood = (
-                log_likelihood + sum_spikes_into_rows(terms[:, None], selection).ravel()
+        n_spikes = selection.bin_ind.shape[0]
+        if n_spikes:
+            # Spikes padded to a few counts (padding rows are dropped from the
+            # row sums) let electrodes and chunks share one compiled kernel.
+            n_padded = _padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
+            spike_positions = get_position_at_time(
+                position_time,
+                position,
+                select_spike_rows(elect_times, selection),
+                environment,
             )
-
-        # Expected counts term at the animal's position, in log space:
-        # mean_rate * (gpi / occupancy) evaluated at interpolated positions.
-        summed_expected_counts = summed_expected_counts + _ground_process_intensity(
-            mean_rate, _gmm_logp(gpi_gmm, interp_pos), log_occ_at_pos
-        )  # (n_time,)
+            log_likelihood = _add_electrode_gmm_spike_terms(
+                log_likelihood,
+                jnp.asarray(_pad_rows(spike_positions, n_padded), dtype=working_dtype),
+                jnp.asarray(
+                    _pad_rows(select_spike_rows(elect_feats, selection), n_padded)
+                ),
+                jnp.asarray(spike_row_ids(selection, n_padded)),
+                _gmm_parameters(joint_gmm),
+                _gmm_parameters(occupancy_model),
+                mean_rate,
+                joint_type=joint_gmm.covariance_type,
+                occupancy_type=occupancy_model.covariance_type,
+                indices_are_sorted=selection.indices_are_sorted,
+            )
+        summed_expected_counts = _add_gmm_expected_counts(
+            summed_expected_counts,
+            _gmm_parameters(gpi_gmm),
+            interp_pos,
+            log_occ_at_pos,
+            mean_rate,
+            gpi_type=gpi_gmm.covariance_type,
+        )
 
     # Subtract the summed ground-process intensity once, floored at EPS to
     # mirror fit_clusterless_gmm_encoding_model's summed_ground_process_intensity

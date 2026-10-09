@@ -1,0 +1,295 @@
+{
+  "metadata": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "cpu_count": 18,
+    "total_host_bytes": 68719476736,
+    "jax": "0.9.0",
+    "devices": [
+      "TFRT_CPU_0"
+    ],
+    "x64_enabled": true,
+    "seed": 7301,
+    "repetitions": 5,
+    "rss_sampling_seconds": 0.002,
+    "baseline_revision": "fe1b2e9767552507b2953bcbdf654a62f3c14b6c",
+    "baseline_source_hashes": {
+      "common.py": "bd48d32d9fafaabf956a0ae50618a51d6e52725877d4a2de8d0dc65bf8805556",
+      "sorted_spikes_kde.py": "87b355914a305cf5952bc8e3267b10ef68aac9b45fab31bd3d1325dba5537d3a",
+      "clusterless_kde.py": "094aeaab2e4e1e8e2fbd7cf274015ac1c47524fac54b0287e908e4ff8801430c",
+      "sorted_spikes_glm.py": "5738925d833c6524b22e885ad6972fe6f57a60238c6ba55180a9a932e6001e9a"
+    },
+    "source_hashes": {
+      "common.py": "05dae215da499de9f92ee219d802bb9ce56a01ccd1656b6bb01a26cf3ec4c0ab",
+      "sorted_spikes_kde.py": "9158f93b75101921cf2cf32927abbbfe54288acc5c8fa492fe204aba4d9859f7",
+      "sorted_spikes_glm.py": "57baaf112ec2f7cea52079fd1f7c658882dc11cbc18878cc0c2d112026dc892f",
+      "clusterless_kde.py": "e3cb631327ada1bba765cb2615ae639d7e751e2d30d98cfb3034d543a82a3b3a"
+    },
+    "benchmark_source_hash": "fa2307f4f39c1f7e4ec99b30f5b5bb9573bcb6df08d44dd1cd6c45a9251247e7",
+    "input_artifact_hash": "4179789181755dc44179f4d11b65d8b03fa55b8b0977c9c61630f1de5cc7e01f",
+    "dimensions": {
+      "sorted_rows": 513,
+      "neurons": 96,
+      "spatial_bins": 257,
+      "kde_eval": 201,
+      "kde_samples": [
+        61,
+        63,
+        65,
+        127,
+        129,
+        131
+      ],
+      "encoding_marks": 1025,
+      "decoding_marks": 513,
+      "marked_spatial_bins": 1024,
+      "mark_features": 4,
+      "block_size": 64
+    }
+  },
+  "sorted_kde": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.4657360001001507,
+      "cold_initial_rss_bytes": 360267776,
+      "cold_peak_rss_bytes": 451248128,
+      "warm_seconds": [
+        0.07830729219131172,
+        0.05518904118798673,
+        0.10085954191163182,
+        0.0733564579859376,
+        0.0847157088574022
+      ],
+      "warm_median_seconds": 0.07830729219131172,
+      "warm_min_seconds": 0.05518904118798673,
+      "warm_max_seconds": 0.10085954191163182,
+      "warm_peak_rss_bytes": 474284032,
+      "output_dtype": "float64",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.22789395786821842,
+      "cold_initial_rss_bytes": 438190080,
+      "cold_peak_rss_bytes": 446840832,
+      "warm_seconds": [
+        0.005388541845604777,
+        0.004255041014403105,
+        0.0043065419886261225,
+        0.004865041933953762,
+        0.004762999946251512
+      ],
+      "warm_median_seconds": 0.004762999946251512,
+      "warm_min_seconds": 0.004255041014403105,
+      "warm_max_seconds": 0.005388541845604777,
+      "warm_peak_rss_bytes": 474284032,
+      "output_dtype": "float64",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 5.684341886080802e-14,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        14.532185967004025,
+        12.97027243713387,
+        23.42007628812372,
+        15.078278662712712,
+        17.786208232917073
+      ]
+    }
+  },
+  "sorted_glm": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.49607620807364583,
+      "cold_initial_rss_bytes": 469843968,
+      "cold_peak_rss_bytes": 478380032,
+      "warm_seconds": [
+        0.060354957822710276,
+        0.06255404208786786,
+        0.06357037485577166,
+        0.06392691703513265,
+        0.06276029208675027
+      ],
+      "warm_median_seconds": 0.06276029208675027,
+      "warm_min_seconds": 0.060354957822710276,
+      "warm_max_seconds": 0.06392691703513265,
+      "warm_peak_rss_bytes": 481312768,
+      "output_dtype": "float64",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.2942717499099672,
+      "cold_initial_rss_bytes": 474710016,
+      "cold_peak_rss_bytes": 477446144,
+      "warm_seconds": [
+        0.004893457982689142,
+        0.00467558391392231,
+        0.004860749933868647,
+        0.004920250037685037,
+        0.005672709085047245
+      ],
+      "warm_median_seconds": 0.004893457982689142,
+      "warm_min_seconds": 0.00467558391392231,
+      "warm_max_seconds": 0.005672709085047245,
+      "warm_peak_rss_bytes": 481312768,
+      "output_dtype": "float64",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 5.684341886080802e-14,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        12.33380526331666,
+        13.378872722528419,
+        13.078305965264153,
+        12.992615526752799,
+        11.063548499636761
+      ]
+    }
+  },
+  "kde_shapes": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.5262009580619633,
+      "cold_initial_rss_bytes": 476626944,
+      "cold_peak_rss_bytes": 480428032,
+      "warm_seconds": [
+        0.0009891251102089882,
+        0.0009112500119954348,
+        0.0008820001967251301,
+        0.0006474580150097609,
+        0.0006467499770224094
+      ],
+      "warm_median_seconds": 0.0008820001967251301,
+      "warm_min_seconds": 0.0006467499770224094,
+      "warm_max_seconds": 0.0009891251102089882,
+      "warm_peak_rss_bytes": 487669760,
+      "output_dtype": "float64",
+      "output_shape": [
+        1206
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.5318704168312252,
+      "cold_initial_rss_bytes": 477904896,
+      "cold_peak_rss_bytes": 480428032,
+      "warm_seconds": [
+        0.0008190830703824759,
+        0.0006750000175088644,
+        0.0007773328106850386,
+        0.0008626249618828297,
+        0.0008376671466976404
+      ],
+      "warm_median_seconds": 0.0008190830703824759,
+      "warm_min_seconds": 0.0006750000175088644,
+      "warm_max_seconds": 0.0008626249618828297,
+      "warm_peak_rss_bytes": 487669760,
+      "output_dtype": "float64",
+      "output_shape": [
+        1206
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.2076004815324899,
+        1.349999982753286,
+        1.134649386467878,
+        0.7505672147448302,
+        0.7720846873034364
+      ]
+    }
+  },
+  "clusterless_blocks": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.899396917084232,
+      "cold_initial_rss_bytes": 482787328,
+      "cold_peak_rss_bytes": 522272768,
+      "warm_seconds": [
+        0.01302795810624957,
+        0.013279958162456751,
+        0.012171749956905842,
+        0.012455417076125741,
+        0.01252550003118813
+      ],
+      "warm_median_seconds": 0.01252550003118813,
+      "warm_min_seconds": 0.012171749956905842,
+      "warm_max_seconds": 0.013279958162456751,
+      "warm_peak_rss_bytes": 540082176,
+      "output_dtype": "float64",
+      "output_shape": [
+        513,
+        1024
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.09254445787519217,
+      "cold_initial_rss_bytes": 520208384,
+      "cold_peak_rss_bytes": 530612224,
+      "warm_seconds": [
+        0.008375082863494754,
+        0.008122459053993225,
+        0.0087739999871701,
+        0.008473875001072884,
+        0.008224792080000043
+      ],
+      "warm_median_seconds": 0.008375082863494754,
+      "warm_min_seconds": 0.008122459053993225,
+      "warm_max_seconds": 0.0087739999871701,
+      "warm_peak_rss_bytes": 540082176,
+      "output_dtype": "float64",
+      "output_shape": [
+        513,
+        1024
+      ],
+      "max_abs_difference": 3.552713678800501e-15,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.555561696354759,
+        1.6349676956423629,
+        1.3872521056193465,
+        1.469860845781741,
+        1.5228956439696486
+      ]
+    }
+  }
+}

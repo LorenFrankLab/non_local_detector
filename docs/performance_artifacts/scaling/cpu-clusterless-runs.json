@@ -1,0 +1,138 @@
+{
+ "cljit-cl-base": {
+  "family": "clusterless",
+  "mode": "compact",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "arena_cm": 180.0,
+  "bin_size_cm": 2.0,
+  "population": 8,
+  "spike_rate_hz": 20.0,
+  "rate_spread": 0.0,
+  "encoding_duration_s": 10.0,
+  "chunk_rows": null,
+  "checkpoint_chunk_size": 3963,
+  "backend": "cpu",
+  "device": "TFRT_CPU_0",
+  "jax": "0.9.0",
+  "x64": false,
+  "host": "Erics-MacBook-Pro-10.local",
+  "status": "ok",
+  "fit_seconds": 0.9265897919540294,
+  "state_bins": 16930,
+  "compile_and_first_predict_seconds": 19.406015416956507,
+  "warm_predict_seconds": [
+   16.36116241698619,
+   15.787780624988955
+  ],
+  "seconds_per_recording_second": 0.5358157173662524,
+  "output_variables": [
+   "acausal_state_probabilities"
+  ],
+  "output_bytes": 240000,
+  "peak_host_rss_bytes": 3286007808,
+  "peak_device_bytes": null
+ },
+ "cljit-cl-spread3": {
+  "family": "clusterless",
+  "mode": "compact",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "arena_cm": 180.0,
+  "bin_size_cm": 2.0,
+  "population": 8,
+  "spike_rate_hz": 20.0,
+  "rate_spread": 3.0,
+  "encoding_duration_s": 10.0,
+  "chunk_rows": null,
+  "checkpoint_chunk_size": 3963,
+  "backend": "cpu",
+  "device": "TFRT_CPU_0",
+  "jax": "0.9.0",
+  "x64": false,
+  "host": "Erics-MacBook-Pro-10.local",
+  "status": "ok",
+  "fit_seconds": 1.2329660409595817,
+  "state_bins": 16930,
+  "compile_and_first_predict_seconds": 19.865835167001933,
+  "warm_predict_seconds": [
+   16.37335362500744,
+   16.398223124968354
+  ],
+  "seconds_per_recording_second": 0.5461929458329299,
+  "output_variables": [
+   "acausal_state_probabilities"
+  ],
+  "output_bytes": 240000,
+  "peak_host_rss_bytes": 3532029952,
+  "peak_device_bytes": null
+ },
+ "headnow-cl-base": {
+  "family": "clusterless",
+  "mode": "compact",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "arena_cm": 180.0,
+  "bin_size_cm": 2.0,
+  "population": 8,
+  "spike_rate_hz": 20.0,
+  "rate_spread": 0.0,
+  "encoding_duration_s": 10.0,
+  "chunk_rows": null,
+  "checkpoint_chunk_size": 3963,
+  "backend": "cpu",
+  "device": "TFRT_CPU_0",
+  "jax": "0.9.0",
+  "x64": false,
+  "host": "Erics-MacBook-Pro-10.local",
+  "status": "ok",
+  "fit_seconds": 0.8468756660004146,
+  "state_bins": 16930,
+  "compile_and_first_predict_seconds": 29.727106916019693,
+  "warm_predict_seconds": [
+   17.007644542027265,
+   16.95821079099551
+  ],
+  "seconds_per_recording_second": 0.5660975888837129,
+  "output_variables": [
+   "acausal_state_probabilities"
+  ],
+  "output_bytes": 240000,
+  "peak_host_rss_bytes": 4839325696,
+  "peak_device_bytes": null
+ },
+ "headnow-cl-spread3": {
+  "family": "clusterless",
+  "mode": "compact",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "arena_cm": 180.0,
+  "bin_size_cm": 2.0,
+  "population": 8,
+  "spike_rate_hz": 20.0,
+  "rate_spread": 3.0,
+  "encoding_duration_s": 10.0,
+  "chunk_rows": null,
+  "checkpoint_chunk_size": 3963,
+  "backend": "cpu",
+  "device": "TFRT_CPU_0",
+  "jax": "0.9.0",
+  "x64": false,
+  "host": "Erics-MacBook-Pro-10.local",
+  "status": "ok",
+  "fit_seconds": 1.16621145803947,
+  "state_bins": 16930,
+  "compile_and_first_predict_seconds": 34.94651174999308,
+  "warm_predict_seconds": [
+   16.919286541000474,
+   17.14247920800699
+  ],
+  "seconds_per_recording_second": 0.567696095816791,
+  "output_variables": [
+   "acausal_state_probabilities"
+  ],
+  "output_bytes": 240000,
+  "peak_host_rss_bytes": 5062279168,
+  "peak_device_bytes": null
+ }
+}

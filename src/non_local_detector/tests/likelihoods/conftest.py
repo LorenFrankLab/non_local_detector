@@ -7,6 +7,10 @@ Import the helpers explicitly, as the root ``conftest`` is imported elsewhere:
 
 from collections.abc import Callable, Iterator
 
+import jax
+import pytest
+
+import non_local_detector.likelihoods.common as common
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -39,6 +43,23 @@ ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 # moves a log likelihood by O(1) and is caught either way.
 EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
 FLOAT32_ROUNDING: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
+
+
+@pytest.fixture(params=["sequential", "segmented_scan"])
+def reduction_path(request, monkeypatch):
+    """Run on CPU's sequential scatter and on the off-CPU segmented scan."""
+    if request.param == "segmented_scan":
+        monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
+        jax.clear_caches()
+        yield request.param
+        jax.clear_caches()
+    else:
+        yield request.param
+
+
+def tolerance(x64: bool) -> dict[str, float]:
+    """Float64 references at 1e-10; float32 at the rounding bound above."""
+    return {"rtol": 1e-10, "atol": 1e-10} if x64 else FLOAT32_ROUNDING
 
 
 def parity_kwargs(algorithm: str, *, is_local: bool = False) -> dict[str, float]:

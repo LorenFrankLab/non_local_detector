@@ -1,0 +1,25 @@
+{
+ "backend": "gpu",
+ "device": "cuda:0",
+ "device_kind": "NVIDIA A100 80GB PCIe",
+ "jax": "0.9.0",
+ "x64": false,
+ "rows": 256,
+ "repeats": 5,
+ "common_sha256": "89053141f5b7811012016a4410ebe472f19c1a053a9af5c2597e6e33d162355b",
+ "measurement": "compile+first separately; steady-state min/median/max of synchronized warmed calls; XLA temp bytes from memory_analysis",
+ "records": [],
+ "recompilation": {
+  "bucketed_row_sum": {
+   "spike_counts": 64,
+   "seconds": 10.805983667261899,
+   "new_scan_executables": 7,
+   "backend": "gpu"
+  },
+  "segmented_scan": {
+   "spike_counts": 64,
+   "seconds": 47.40709851589054,
+   "new_executables": 57
+  }
+ }
+}

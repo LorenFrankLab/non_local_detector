@@ -21,7 +21,7 @@ from patsy import build_design_matrices
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    EPS,
+    RATE_EPS_HZ,
     get_spikecount_per_time_bin,
     resolve_row_slice,
 )
@@ -91,7 +91,7 @@ def assert_zero_rate_sentinel(algorithm: str, encoding_model: dict) -> None:
     """
     if algorithm == "sorted_spikes_glm":
         # The GLM encoding dict carries no mean_rates; a silent neuron's fitted
-        # rate map sits at the EPS floor (~1e-15) across every bin instead.
+        # rate map sits at the physical rate floor (5e-13 Hz) across every bin.
         assert float(np.max(np.asarray(encoding_model["place_fields"])[1])) < 1e-12
         return
 
@@ -213,7 +213,9 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
         dtype=working_dtype,
     )
     coefficients = np.asarray(model["coefficients"], dtype=np.float64)
-    rates = np.maximum(np.exp(design.astype(np.float64) @ coefficients.T), EPS)
+    # Fitted coefficients can round the silent unit's exponent just below the
+    # physical rate floor. Match the model's Hz floor before applying duration.
+    rates = np.maximum(np.exp(design.astype(np.float64) @ coefficients.T), RATE_EPS_HZ)
 
     # Derive full-timeline counts independently of the selection/count helpers.
     n_bins = len(time) - 1

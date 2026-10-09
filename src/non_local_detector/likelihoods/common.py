@@ -1,5 +1,6 @@
 from collections.abc import Sequence, Sized
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TypeVar
 
 import jax
@@ -7,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
 from jax.nn import logsumexp
+from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
@@ -337,6 +339,251 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
+@jax.jit
+def _poisson_nonlocal_log_likelihood(
+    counts: jnp.ndarray,
+    rates: jnp.ndarray,
+    durations: jnp.ndarray,
+    summed_rates: jnp.ndarray,
+) -> jnp.ndarray:
+    """Batched Poisson emissions with fixed arithmetic across row partitions.
+
+    A fixed 64-row matrix kernel uses the same rate-duration products as the
+    per-neuron reference. Highest dot precision excludes a TF32 approximation.
+    Exact zeros, non-finite products and nonuniform durations retain xlogy.
+    Padding is internal and never contributes an observation or returned row.
+    """
+    n_rows, n_neurons = counts.shape
+    n_bins = rates.shape[1]
+    accumulator_dtype = jnp.result_type(rates, durations, jnp.zeros(()))
+    if not n_rows or not n_neurons or not n_bins:
+        return (
+            jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
+            - durations[:, None] * summed_rates
+        )
+    block_rows = 64
+    n_full, remainder = divmod(n_rows, block_rows)
+    padded_rows = n_rows + (-n_rows) % block_rows
+    padded_counts = jnp.pad(counts, ((0, padded_rows - n_rows), (0, 0)))
+    padded_durations = jnp.pad(durations, (0, padded_rows - n_rows), mode="edge")
+
+    def emit_block(block_counts, block_durations):
+        smallest = jnp.min(rates) * jnp.min(block_durations)
+        largest = jnp.max(rates) * jnp.max(block_durations)
+        matrix_is_safe = (
+            jnp.all(jnp.isfinite(rates))
+            & jnp.all(jnp.isfinite(block_durations))
+            & jnp.all(block_durations == block_durations[0])
+            & (block_durations[0] > 0)
+            & (smallest > 0)
+            & jnp.isfinite(largest)
+            & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+        )
+
+        def matrix_accumulation(_):
+            dtype = jnp.result_type(rates, block_durations)
+            block_counts_float = block_counts.astype(dtype)
+            # Values use the block's common duration. The zero-valued term
+            # (exactly 0 for these finite durations) restores each row's own
+            # duration derivative, which the shared duration would collapse.
+            log_durations = jnp.log(block_durations.astype(dtype))
+            duration_tangent = (
+                block_counts_float.sum(axis=1, keepdims=True)
+                * (log_durations - jax.lax.stop_gradient(log_durations))[:, None]
+            )
+            return (
+                jnp.matmul(
+                    block_counts_float,
+                    jnp.log(
+                        rates.astype(dtype) * jax.lax.stop_gradient(block_durations[0])
+                    ),
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                + duration_tangent
+            ).astype(accumulator_dtype)
+
+        def xlogy_accumulation(_):
+            def add_neuron(likelihood, neuron):
+                neuron_counts, neuron_rates = neuron
+                product = jax.lax.optimization_barrier(
+                    neuron_rates[None, :] * block_durations[:, None]
+                )
+                # Floating counts give integer inputs a zero tangent instead of
+                # float0, so rate and duration derivatives pass through.
+                contribution = jax.lax.optimization_barrier(
+                    jax.scipy.special.xlogy(
+                        neuron_counts.astype(jnp.result_type(neuron_counts, product))[
+                            :, None
+                        ],
+                        product,
+                    )
+                )
+                return jax.lax.optimization_barrier(likelihood + contribution), None
+
+            likelihood, _ = jax.lax.scan(
+                add_neuron,
+                jnp.zeros((block_rows, n_bins), dtype=accumulator_dtype),
+                (block_counts.T, rates),
+            )
+            return likelihood
+
+        return jax.lax.cond(
+            matrix_is_safe, matrix_accumulation, xlogy_accumulation, None
+        )
+
+    likelihood = jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
+    if n_full:
+
+        def update_block(number, result):
+            first = number * block_rows
+            block_counts = jax.lax.dynamic_slice(
+                padded_counts, (first, 0), (block_rows, n_neurons)
+            )
+            block_durations = jax.lax.dynamic_slice(
+                padded_durations, (first,), (block_rows,)
+            )
+            return jax.lax.dynamic_update_slice(
+                result, emit_block(block_counts, block_durations), (first, 0)
+            )
+
+        likelihood = jax.lax.fori_loop(0, n_full, update_block, likelihood)
+    if remainder:
+        first = n_full * block_rows
+        tail = emit_block(padded_counts[first:], padded_durations[first:])[:remainder]
+        likelihood = likelihood.at[first:].set(tail)
+    return likelihood - durations[:, None] * summed_rates
+
+
+# Host bytes for one block of int64 spike counts, so full-grid requests never
+# build a rows-by-population count matrix. Block rows are a multiple of the
+# non-local emission's fixed 64-row kernel, so blocked and unblocked requests
+# are bitwise identical.
+COUNT_BLOCK_BYTES = 32 * 1024**2
+
+
+def _count_block_rows(n_neurons: int) -> int:
+    """Rows per spike-count block within ``COUNT_BLOCK_BYTES``, a multiple of 64."""
+    return max(64, COUNT_BLOCK_BYTES // (8 * max(n_neurons, 1)) // 64 * 64)
+
+
+def _concatenate_row_blocks(
+    row_start: int,
+    row_stop: int,
+    n_neurons: int,
+    evaluate,
+    desc: str,
+    disable_progress_bar: bool,
+) -> jnp.ndarray:
+    """Concatenate ``evaluate(start, stop)`` over spike-count row blocks.
+
+    Parameters
+    ----------
+    row_start, row_stop : int
+        Global rows to evaluate.
+    n_neurons : int
+        Population size, which sets the block rows.
+    evaluate : callable
+        ``evaluate(start, stop)`` returns the result for global rows
+        ``[start, stop)``, rows on the first axis.
+    desc : str
+    disable_progress_bar : bool
+
+    Returns
+    -------
+    result : jnp.ndarray, shape (row_stop - row_start, ...)
+        One-dimensional zeros when no rows are requested.
+    """
+    block_rows = _count_block_rows(n_neurons)
+    blocks = [
+        evaluate(start, min(start + block_rows, row_stop))
+        for start in tqdm(
+            range(row_start, row_stop, block_rows),
+            unit="block",
+            desc=desc,
+            disable=disable_progress_bar,
+        )
+    ]
+    if not blocks:
+        return jnp.zeros((0,))
+    return blocks[0] if len(blocks) == 1 else jnp.concatenate(blocks)
+
+
+def _blocked_nonlocal_poisson_log_likelihood(
+    spike_times: list[np.ndarray],
+    time_edges: np.ndarray,
+    row_start: int,
+    row_stop: int,
+    rates: jnp.ndarray,
+    durations: jnp.ndarray,
+    summed_rates: jnp.ndarray,
+    *,
+    disable_progress_bar: bool = True,
+    _spike_time_order: "_SpikeTimeOrder | None" = None,
+) -> jnp.ndarray:
+    """Non-local Poisson emission computed over bounded host count blocks.
+
+    Parameters
+    ----------
+    spike_times : list of np.ndarray
+        One spike-time array per neuron.
+    time_edges : np.ndarray, shape (n_time_bins + 1,)
+        The complete decode grid.
+    row_start, row_stop : int
+        Global rows to evaluate.
+    rates : jnp.ndarray, shape (n_neurons, n_bins)
+        Interior place fields in Hz.
+    durations : jnp.ndarray, shape (row_stop - row_start,)
+        Bin durations in seconds for the requested rows.
+    summed_rates : jnp.ndarray, shape (n_bins,)
+        Population rate summed over neurons.
+    disable_progress_bar : bool
+    _spike_time_order : _SpikeTimeOrder, optional
+        Shared per-prediction spike ordering cache.
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (row_stop - row_start, n_bins)
+
+    Notes
+    -----
+    Host counts are bounded by ``COUNT_BLOCK_BYTES``. Concatenating
+    the block outputs briefly holds about twice the returned array. The
+    progress bar advances per block rather than per neuron.
+    """
+    if _spike_time_order is None:
+        # Verify each neuron's spike ordering once, not once per block.
+        _spike_time_order = _SpikeTimeOrder()
+    if row_start == row_stop:
+        return _poisson_nonlocal_log_likelihood(
+            jnp.zeros((0, len(spike_times))), rates, durations, summed_rates
+        )
+
+    def evaluate(start, stop):
+        counts = _spike_counts_matrix(
+            spike_times,
+            time_edges,
+            "Non-Local Likelihood",
+            True,
+            slice(start, stop),
+            _spike_time_order=_spike_time_order,
+        )
+        return _poisson_nonlocal_log_likelihood(
+            jnp.asarray(counts),
+            rates,
+            durations[start - row_start : stop - row_start],
+            summed_rates,
+        )
+
+    return _concatenate_row_blocks(
+        row_start,
+        row_stop,
+        len(spike_times),
+        evaluate,
+        "Non-Local Likelihood",
+        disable_progress_bar,
+    )
+
+
 def get_position_at_time(
     time: np.ndarray | jnp.ndarray,
     position: jnp.ndarray,
@@ -419,7 +666,7 @@ def _spikes_are_ascending(spike_times: np.ndarray) -> bool:
 
 
 class _SpikeTimeOrder:
-    """Host spike times and verified ordering, scoped to one prediction.
+    """Host spike times, verified ordering and other preparation for one prediction.
 
     Each original input is converted and checked on first use, then reused by
     every observation state and chunk. Strong references prevent identity reuse.
@@ -430,6 +677,18 @@ class _SpikeTimeOrder:
 
     def __init__(self) -> None:
         self._entries: dict[int, tuple[object, np.ndarray, bool]] = {}
+        self._prepared: dict[tuple, tuple[tuple, object]] = {}
+
+    def memo(self, name: str, sources: tuple, build):
+        """Return ``build()``, computed once per ``name`` and ``sources`` identities.
+
+        ``sources`` are kept alive so their ids cannot be reused during the
+        prediction.
+        """
+        key = (name, *map(id, sources))
+        if key not in self._prepared:
+            self._prepared[key] = (sources, build())
+        return self._prepared[key][1]
 
     def get(self, spike_times) -> tuple[np.ndarray, bool]:
         """Return the original input's host values and established ordering."""
@@ -558,6 +817,192 @@ def select_spikes_in_rows(
     )
 
 
+def _segmented_add(left, right):
+    """Associative segmented sum: a segment start in ``right`` resets the total."""
+    left_start, left_value = left
+    right_start, right_value = right
+    keep = right_start.reshape(
+        right_start.shape + (1,) * (right_value.ndim - right_start.ndim)
+    )
+    return left_start | right_start, jnp.where(
+        keep, right_value, left_value + right_value
+    )
+
+
+@partial(jax.jit, static_argnames=("num_segments", "indices_are_sorted"))
+def deterministic_segment_sum(
+    values: jnp.ndarray,
+    segment_ids: jnp.ndarray,
+    num_segments: int,
+    indices_are_sorted: bool = False,
+) -> jnp.ndarray:
+    """Sum rows into segments with a fixed reduction tree and no scatters.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n, ...)
+    segment_ids : jnp.ndarray, shape (n,), integer
+        Ids outside ``[0, num_segments)`` are dropped. With x64 disabled,
+        64-bit ids wrap to 32 bits first; normalize them on the host (see
+        ``spike_row_ids``).
+    num_segments : int
+        Must be below 2**31.
+    indices_are_sorted : bool
+        True only when ``segment_ids`` is verified nondecreasing.
+
+    Returns
+    -------
+    sums : jnp.ndarray, shape (num_segments, ...)
+        Repeated evaluation of the same shapes is bitwise identical on every
+        backend; a different ``n`` changes the tree and can change rounding.
+
+    Notes
+    -----
+    Unlike a scatter, the scan keeps ``O(n)`` temporaries: about 1.5x the
+    size of ``values`` for sorted ids and 2.5x unsorted on XLA:CPU, and about
+    0.05-0.4x on an A100.
+    """
+    n = values.shape[0]
+    shape = (num_segments, *values.shape[1:])
+    if n == 0 or num_segments == 0:
+        return jnp.zeros(shape, values.dtype)
+    # A canonical signed index dtype keeps -1 representable for unsigned and
+    # narrow ids; values that wrap negative are invalid and dropped. Clipping
+    # keeps sorted ids sorted: low invalid ids first, high ones last.
+    index_dtype = jax.dtypes.canonicalize_dtype(jnp.int64)
+    ids = jnp.clip(jnp.asarray(segment_ids).astype(index_dtype), -1, num_segments)
+    if not indices_are_sorted:
+        order = jnp.argsort(ids, stable=True)
+        ids, values = ids[order], values[order]
+    starts = jnp.concatenate([jnp.ones(1, bool), ids[1:] != ids[:-1]])
+    _, prefix = jax.lax.associative_scan(_segmented_add, (starts, values))
+    # Each segment's total is its last prefix element: gather, never scatter.
+    segments = jnp.arange(num_segments, dtype=ids.dtype)
+    last = jnp.clip(jnp.searchsorted(ids, segments, side="right") - 1, 0, n - 1)
+    present = (ids[last] == segments).reshape(
+        (num_segments,) + (1,) * (values.ndim - 1)
+    )
+    return jnp.where(present, prefix[last], jnp.zeros((), values.dtype))
+
+
+def _reduces_sequentially(values) -> bool:
+    """Whether ``values`` live on CPU, where XLA scatter adds updates in order.
+
+    Traced values carry no device, so the default backend decides; a CPU
+    default with work explicitly placed on an accelerator would therefore use
+    the scatter. The package never places work that way.
+    """
+    if isinstance(values, jax.core.Tracer):
+        return jax.default_backend() == "cpu"
+    return all(device.platform == "cpu" for device in values.devices())
+
+
+def _bucketed_size(n: int) -> int:
+    """Next power of two, so varying spike counts share few executables."""
+    return 1 << max(n - 1, 0).bit_length()
+
+
+def deterministic_row_sum(
+    values: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    n_rows: int,
+    *,
+    indices_are_sorted: bool = False,
+) -> jnp.ndarray:
+    """Deterministic row sums: sequential scatter on CPU, segmented scan elsewhere.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n, ...)
+    row_ids : array-like, shape (n,), integer
+        Ids outside ``[0, n_rows)`` are dropped. With x64 disabled, 64-bit
+        ids wrap to 32 bits first; normalize them on the host (see
+        ``spike_row_ids``).
+    n_rows : int
+    indices_are_sorted : bool
+        True only when ``row_ids`` is verified nondecreasing.
+
+    Returns
+    -------
+    sums : jnp.ndarray, shape (n_rows, ...)
+
+    Notes
+    -----
+    XLA:CPU scatter applies updates sequentially, so it is deterministic and
+    fastest there. Other backends avoid floating-point scatter atomics, which
+    change results between otherwise identical evaluations. Concrete
+    off-CPU calls pad the spike axis to a power of two with dropped ids, so
+    chunks with varying spike counts reuse a bounded set of executables.
+    """
+    if not isinstance(values, jax.core.Tracer):
+        values = jnp.asarray(values)
+    if values.ndim == 0 or values.shape[0] != np.shape(row_ids)[0]:
+        raise ValueError("values must contain one row per row id")
+    if _reduces_sequentially(values):
+        return jax.ops.segment_sum(
+            values,
+            row_ids,
+            num_segments=n_rows,
+            indices_are_sorted=indices_are_sorted,
+        )
+    # Widen before padding so the n_rows sentinel cannot wrap in narrow dtypes.
+    row_ids = jnp.asarray(row_ids).astype(jax.dtypes.canonicalize_dtype(jnp.int64))
+    if not isinstance(values, jax.core.Tracer):
+        padding = _bucketed_size(values.shape[0]) - values.shape[0]
+        if padding:
+            # Trailing n_rows ids are dropped and keep sorted ids sorted.
+            values = jnp.concatenate(
+                [values, jnp.zeros((padding, *values.shape[1:]), values.dtype)]
+            )
+            row_ids = jnp.concatenate(
+                [row_ids, jnp.full(padding, n_rows, dtype=row_ids.dtype)]
+            )
+    return deterministic_segment_sum(values, row_ids, n_rows, indices_are_sorted)
+
+
+def deterministic_row_add(
+    output: jnp.ndarray,
+    values: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    column_start=0,
+    *,
+    indices_are_sorted: bool = False,
+) -> jnp.ndarray:
+    """Add per-spike column-tile vectors into ``output[:, column_start:...]``.
+
+    Parameters
+    ----------
+    output : jnp.ndarray, shape (n_rows, n_columns)
+    values : jnp.ndarray, shape (n, tile_columns)
+    row_ids : array-like, shape (n,), integer
+    column_start : int or scalar array
+        First output column of the tile.
+    indices_are_sorted : bool
+
+    Returns
+    -------
+    output : jnp.ndarray, shape (n_rows, n_columns)
+        The tile holds ``initial + sum(contributions)``. Each call builds an
+        ``(n_rows, tile_columns)`` row-sum temporary. Off CPU the reduction
+        also keeps segmented-scan temporaries (see ``deterministic_segment_sum``;
+        about 0.05-0.4x of ``values`` measured on an A100). As with
+        ``dynamic_slice``, a tile that
+        would run past the last column is shifted left, so callers must pass
+        tiles that fit.
+    """
+    values = jnp.asarray(values).astype(output.dtype)
+    if output.shape[0] == 0 or values.shape[0] == 0 or values.size == 0:
+        return output
+    tile = deterministic_row_sum(
+        values, row_ids, output.shape[0], indices_are_sorted=indices_are_sorted
+    )
+    # dynamic_slice needs one index dtype; x64 makes a literal 0 int64.
+    column_start = jnp.asarray(column_start)
+    start = (jnp.zeros((), column_start.dtype), column_start)
+    current = jax.lax.dynamic_slice(output, start, tile.shape)
+    return jax.lax.dynamic_update_slice(output, current + tile, start)
+
+
 def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.ndarray:
     """Sum one value per selected spike into the local row that owns it.
 
@@ -573,13 +1018,64 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
     -------
     row_sums : jnp.ndarray, shape (selection.n_rows, ...)
         Rows owning no selected spike sum to zero.
+
+    Notes
+    -----
+    Uses ``deterministic_row_sum``: CPU keeps the sequential segment reduction
+    and its verified ordering hint; other backends use a segmented scan with a
+    fixed reduction tree, so repeated evaluations are bitwise identical.
+    Invalid row indices are dropped.
     """
-    return jax.ops.segment_sum(
+    values = jnp.asarray(values)
+    if values.dtype == jnp.bool_:
+        raise TypeError(
+            "Spike row sums require numeric values; Boolean sums are unsupported"
+        )
+    indices = np.asarray(selection.bin_ind)
+    if indices.ndim != 1 or indices.dtype.kind not in "iu":
+        raise ValueError("Spike row indices must be a one-dimensional integer array")
+    if values.ndim == 0 or values.shape[0] != len(indices):
+        raise ValueError("Values must contain one entry per selected spike")
+    return deterministic_row_sum(
         values,
-        selection.bin_ind,
+        spike_row_ids(selection),
+        selection.n_rows,
         indices_are_sorted=selection.indices_are_sorted,
-        num_segments=selection.n_rows,
     )
+
+
+def _normalized_row_ids(
+    indices: np.ndarray, n_rows: int, n_padded: int | None = None
+) -> np.ndarray:
+    """Host row ids for ``deterministic_row_sum``, optionally padded.
+
+    Parameters
+    ----------
+    indices : array-like, shape (n_selected,), integer
+    n_rows : int
+    n_padded : int, optional
+        Length to pad to. Padded entries use the dropped id ``n_rows``, which
+        keeps sorted ids sorted.
+
+    Returns
+    -------
+    row_ids : np.ndarray of intp, shape (n_padded or n_selected,)
+        Negative ids become -1 and ids at or above ``n_rows`` become ``n_rows``
+        before JAX dtype canonicalization, so a huge unsigned or out-of-range
+        index cannot truncate into a valid row.
+    """
+    indices = np.asarray(indices)
+    n_ids = len(indices) if n_padded is None else n_padded
+    safe_indices = np.full(n_ids, n_rows, dtype=np.intp)
+    valid = (indices >= 0) & (indices < n_rows)
+    safe_indices[: len(indices)][indices < 0] = -1
+    safe_indices[: len(indices)][valid] = indices[valid]
+    return safe_indices
+
+
+def spike_row_ids(selection: SpikeSelection, n_padded: int | None = None) -> np.ndarray:
+    """``_normalized_row_ids`` for a selection's spikes and row count."""
+    return _normalized_row_ids(selection.bin_ind, selection.n_rows, n_padded)
 
 
 @jax.jit
@@ -602,7 +1098,16 @@ def log_gaussian_pdf(
     -------
     log_pdf : jnp.ndarray, shape (n_samples,)
     """
-    return -0.5 * ((x - mean) / sigma) ** 2 - jnp.log(sigma * jnp.sqrt(2.0 * jnp.pi))
+    # For singleton-shaped tiles XLA:CPU can rewrite division by a broadcast
+    # scalar into multiplication by a rounded reciprocal, so tiled and untiled
+    # KDEs disagree by about 2e-6 relative in Gaussian tails. Materializing the
+    # divisor (only a vector here) keeps true division. Preserve true-division
+    # promotion and the original normalization formula.
+    divisor = sigma
+    if x.size == 1 or mean.size == 1:
+        shape = jnp.broadcast_shapes(x.shape, mean.shape, jnp.shape(sigma))
+        divisor = jax.lax.optimization_barrier(jnp.broadcast_to(sigma, shape))
+    return -0.5 * ((x - mean) / divisor) ** 2 - jnp.log(sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
 @jax.jit
@@ -744,6 +1249,162 @@ def block_kde(
         for start in range(0, n_eval_points, block_size)
     ]
     return jnp.concatenate(blocks)
+
+
+def _quarter_octave(n: int) -> int:
+    """Smallest of four sizes per octave that is at least ``n`` (``n >= 1``)."""
+    step = 1 << max((n - 1).bit_length() - 3, 0)
+    return -(-n // step) * step
+
+
+def _padded_sample_count(n_samples: int) -> int:
+    """Encoding samples per electrode: four sizes per octave, at most 25% padding."""
+    return 16 if n_samples <= 16 else _quarter_octave(n_samples)
+
+
+def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
+    """Decoding spikes per electrode kernel call, from a few sizes.
+
+    Up to one block: powers of two (at least 16), or with ``fine`` four sizes
+    per octave (at most 25% padding) for kernels whose per-spike cost is
+    high. Above one block: whole blocks, their count padded to four sizes
+    per octave, so a large request grows by at most a quarter plus one
+    block. Chunks with varying spike counts then reuse few compiled kernels.
+
+    Parameters
+    ----------
+    n_spikes : int
+    block_size : int
+    fine : bool, optional
+
+    Returns
+    -------
+    n_padded : int
+    """
+    if n_spikes <= block_size:
+        size = (
+            _padded_sample_count(n_spikes)
+            if fine
+            else 1 << max(n_spikes - 1, 15).bit_length()
+        )
+        return min(block_size, size)
+    return block_size * _quarter_octave(-(-n_spikes // block_size))
+
+
+def _pad_rows(array, n_rows: int) -> np.ndarray:
+    """Zero rows appended on the host to reach ``n_rows``."""
+    array = np.asarray(array)
+    padding = np.zeros((n_rows - array.shape[0], *array.shape[1:]), array.dtype)
+    return np.concatenate([array, padding])
+
+
+def _padded_samples(
+    spike_time_order: "_SpikeTimeOrder",
+    samples: np.ndarray | jnp.ndarray,
+    weights: np.ndarray | jnp.ndarray | None,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Device KDE samples and weights padded with zero-weight rows, once per prediction.
+
+    Zero-weight samples add nothing to weighted kernel sums, so electrodes with
+    nearby encoding sizes share compiled kernels.
+
+    Parameters
+    ----------
+    spike_time_order : _SpikeTimeOrder
+        The prediction's preparation cache; results are reused per source arrays.
+    samples : array, shape (n_samples, n_dims)
+    weights : array, shape (n_samples,), or None
+        None means uniform weights.
+
+    Returns
+    -------
+    samples, weights : jnp.ndarray, shape (n_padded, n_dims) and (n_padded,)
+    """
+
+    def build():
+        n_samples = _padded_sample_count(np.shape(samples)[0])
+        sample_weights = (
+            np.ones(np.shape(samples)[0]) if weights is None else np.asarray(weights)
+        )
+        return (
+            jnp.asarray(_pad_rows(samples, n_samples)),
+            jnp.asarray(_pad_rows(sample_weights, n_samples)),
+        )
+
+    return spike_time_order.memo("padded_samples", (samples, weights), build)
+
+
+# Up to this many evaluation blocks are traced individually: faster on CPU
+# than a loop, and the compiled graph stays small.
+_UNROLLED_KDE_BLOCKS = 8
+
+
+def _traced_blocks(blocked, kernel, points, samples, std, block_size, weights):
+    """Blocked KDE inside a trace, with a bounded graph for any row count.
+
+    Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced as ``blocked`` does. More
+    blocks run ``kernel`` in a loop over the same block size, with a
+    zero-padded final block evaluated and trimmed.
+    """
+    n_points = points.shape[0]
+    n_blocks = -(-n_points // block_size)
+    if n_blocks <= _UNROLLED_KDE_BLOCKS:
+        return blocked(points, samples, std, block_size, weights)
+    padded = jnp.pad(points, ((0, n_blocks * block_size - n_points), (0, 0)))
+    values = jax.lax.map(
+        lambda block: kernel(block, samples, std, weights),
+        padded.reshape(n_blocks, block_size, points.shape[1]),
+    )
+    return values.reshape(-1)[:n_points]
+
+
+def _traced_block_kde(points, samples, std, block_size, weights):
+    """``block_kde`` inside a trace, with a bounded graph for any row count.
+
+    Each point's density depends only on that point, so the unrolled and
+    looped forms compute the same values; compiled forms can round
+    differently (XLA may multiply by a hoisted reciprocal of the bandwidth
+    instead of dividing).
+
+    Parameters
+    ----------
+    points : jnp.ndarray, shape (n_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_dims,)
+    block_size : int
+    weights : jnp.ndarray, shape (n_samples,)
+
+    Returns
+    -------
+    density : jnp.ndarray, shape (n_points,)
+    """
+    return _traced_blocks(block_kde, kde, points, samples, std, block_size, weights)
+
+
+def _traced_block_log_kde(
+    points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+    block_size: int,
+    weights: jnp.ndarray,
+) -> jnp.ndarray:
+    """``block_log_kde`` inside a trace, blocked like :func:`_traced_block_kde`.
+
+    Parameters
+    ----------
+    points : jnp.ndarray, shape (n_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_dims,)
+    block_size : int
+    weights : jnp.ndarray, shape (n_samples,)
+
+    Returns
+    -------
+    log_density : jnp.ndarray, shape (n_points,)
+    """
+    return _traced_blocks(
+        block_log_kde, log_kde, points, samples, std, block_size, weights
+    )
 
 
 @jax.jit
@@ -1047,6 +1708,38 @@ def get_spikecount_per_time_bin(
         _spike_time_order=_spike_time_order,
     )
     return np.bincount(selection.bin_ind, minlength=selection.n_rows)
+
+
+def _spike_counts_matrix(
+    spike_times: list[np.ndarray],
+    time_edges: np.ndarray,
+    desc: str,
+    disable_progress_bar: bool,
+    row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
+) -> np.ndarray:
+    """Stack per-neuron spike counts into a ``(n_rows, n_neurons)`` matrix.
+
+    ``get_spikecount_per_time_bin`` bins spikes against the full ``time_edges`` and
+    selects those owned by ``row_slice`` internally, so no explicit pre-masking
+    is needed here. ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
+    """
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    counts = [
+        get_spikecount_per_time_bin(
+            neuron_spike_times,
+            time_edges=time_edges,
+            row_slice=row_slice,
+            _spike_time_order=_spike_time_order,
+        )
+        for neuron_spike_times in tqdm(
+            spike_times, unit="cell", desc=desc, disable=disable_progress_bar
+        )
+    ]
+    if not counts:  # zero neurons
+        return np.zeros((row_stop - row_start, 0))
+    return np.stack(counts, axis=1)
 
 
 def decode_bin_centers(

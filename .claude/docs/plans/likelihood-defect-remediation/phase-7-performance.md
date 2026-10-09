@@ -1,14 +1,19 @@
 # Phase 7 — Measured performance at production scale
 
-> **EXPANDED SCOPE — NEEDS PROTOTYPING.** The production workload and memory
-> arithmetic are established in [overview.md](overview.md#representative-workload).
-> Checkpointed smoothing, output interfaces, and structured transitions below are
-> requirements and design candidates, not a validated implementation. The earlier
-> unexecuted code snippets are removed. Phase 0/1 completion criteria are unchanged.
+> **COMPLETE FOR THE RECORDED CONFIGURATIONS (2026-10-06).** Work is on
+> `feat/phase7-performance`, based on merged Phase 6 at `fe1b2e9`. Checkpointed
+> compact/incremental outputs, exact structured transitions and measured
+> likelihood improvements are implemented. The requirements below remain the
+> acceptance checklist. Eight full-hour CPU/A100 checks pass at both grid sizes;
+> long-encoding fit/short-prediction workspace checks also pass separately.
+> The final suite passes 3,137 tests with 26 skips; reference data and existing
+> tolerances are unchanged. See [the public API guide](../../../../docs/performance_prediction.md)
+> and [qualification record](../../../../docs/performance_validation.md) for
+> populations, encoding duration, hardware, timing, memory and untested cases.
 
 ## Scope, order, and dependencies
 
-> Re-verified against `main` at `ee2cc21` (2026-09-22): none of 7a–7c is
+> Historical verification against `main` at `ee2cc21` (2026-09-22): none of 7a–7c was
 > implemented; workload arithmetic is exact; line references are to that
 > revision. The "former ~108×" timing and the overview's exploratory
 > 10,000-bin comparison have no recorded artifact.
@@ -31,6 +36,28 @@ not delay the outstanding likelihood fixes or introduce competing C1/C3 policies
 Use the release groups in [PLAN.md](PLAN.md#execution-order-and-baselines):
 6a/6c together, then atomic 6b/6d. Applicable Phase 8 correctness fixes can ship
 before Phase 7 and must be included in the baseline for affected configurations.
+
+The implementation baseline is now `fe1b2e9` (Phase 6 merged). Its numerical
+suite passed 2,655 tests with six skips; the archived checkout omitted the
+build-generated version file, and its one version-import failure passed after
+restoring that build artifact. Reference data and tolerances remain unchanged.
+
+Qualification exposed two precision exceptions to literal baseline arithmetic.
+The user approved stable checkpointed evidence accumulation on 2026-10-06:
+1.8M float32 increments of -0.02 yielded -35,355.44921875 in both the original
+core and checkpointed reference mode, versus -35,999.999195337296 for the actual
+input values summed in float64. Stable checkpointed totals match that oracle;
+posterior calculations are unchanged. Explicit reference mode remains available
+for arithmetic controls, and the dense driver retains its prior total sum.
+
+CUDA also exposed default TF32 quantization in state aggregation and likelihood
+contractions. State aggregation changed a posterior value of 0.9900000095 to
+0.990234375; checkpointed marginals matched the float64 posterior-sum oracle.
+Highest multiplication precision now applies at the affected production
+contractions. The original 64 shuffled/ragged CUDA cases had 14 default-policy
+failures; the corrected production functions pass all 64 without an ambient
+precision override or tolerance changes. These are reporting/kernel accuracy
+corrections, not statistical-model substitutions.
 
 Implement and review these as independently measurable changes:
 
@@ -177,6 +204,17 @@ An optional all-checkpoints-in-RAM strategy must be budgeted and identified as
 having duration-dependent memory. Account separately for recording inputs,
 compact outputs, and index metadata.
 
+The replay/cache candidate was measured separately on CPU and A100 using
+`T=1,024`, `N=256`, checkpoint lengths 64/256 and five interleaved pairs.
+Both paths produce bitwise-identical state probabilities and stable evidence;
+the disk prototype retains one likelihood chunk at a time. The
+[measurement record](../../../../docs/performance_validation.md#measured-choices)
+and [reproduction script](../../../../scripts/benchmark_phase7a_replay_cache.py)
+report runtime, process/device peaks and checkpoint/cache bytes. Reads use
+just-written files and the callback is cheap and analytic; this experiment
+does not qualify neural-backend disk caching or cold-disk performance.
+Production prediction retains deterministic likelihood replay.
+
 Illustration for `N = 64,802`, `T = 1,800,000`, float32, and `L = 2,000`:
 
 | Component | Calculated size |
@@ -297,6 +335,14 @@ allocation/transition costs are understood. A backend allocation that prevents
 the production run is a prerequisite, not an optional late speed improvement.
 
 ### 1. Matrix accumulation for sorted-spike likelihoods
+
+CI follow-up: the matrix path's CI difference from the per-neuron float32
+reference was the reference's rounding, not matrix error; the matrix
+accumulation is retained, and the test checks the matrix emission and the
+resulting posteriors against a float64 oracle, with the per-neuron reference's
+distance as the bound (see the
+[CI correction record](../../../../docs/performance_validation.md#ci-runtime-corrections-after-s6)).
+Earlier hour-scale matrix measurements retain their original source hashes.
 
 Prototype shared per-chunk spike-count construction and matrix accumulation in
 `sorted_spikes_kde` and `sorted_spikes_glm`, using the diffusion implementation as

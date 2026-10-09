@@ -1,0 +1,21 @@
+# A100 80GB PCIe (zephyr GPU 7), JAX/jaxlib 0.9.0 + CUDA 12 plugin, Python 3.12.
+# e2e: clusterless detector compute_log_likelihood, 20000 encoding spikes,
+#      2000 rows, 400 decoding spikes, median of 3 warmed calls;
+#      before = 5bf46a29 (serial loop), after = 5a4047d8 (segmented scan).
+# determinism: benchmarks/check_likelihood_determinism.py, 50 repetitions.
+# tests: affected likelihood/checkpoint modules with JAX_ENABLE_X64=1.
+== xprof
+  xplane.pb: /tmp/nld-review-fixes/xprof/serial_loop_20000x500/plugins/profile/2026_10_07_11_54_51/zephyr.cin.ucsf.edu.xplane.pb
+  xplane.pb: /tmp/nld-review-fixes/xprof/segmented_scan_20000x500/plugins/profile/2026_10_07_11_54_56/zephyr.cin.ucsf.edu.xplane.pb
+  xplane.pb: /tmp/nld-review-fixes/xprof/segment_sum_20000x500/plugins/profile/2026_10_07_11_54_56/zephyr.cin.ucsf.edu.xplane.pb
+== e2e
+[before] clusterless_diffusion: 20000 encoding spikes, 2000 rows x 1460 state bins: median 0.37 s
+[before] clusterless_gmm: 20000 encoding spikes, 2000 rows x 1460 state bins: median 0.06 s
+[after] clusterless_diffusion: 20000 encoding spikes, 2000 rows x 1460 state bins: median 0.06 s
+[after] clusterless_gmm: 20000 encoding spikes, 2000 rows x 1460 state bins: median 0.05 s
+== determinism
+x64=0 exit=0 all bitwise identical: True; wrote /tmp/nld-review-fixes/gpu_determinism_x64_0.json
+x64=1 exit=0 all bitwise identical: True; wrote /tmp/nld-review-fixes/gpu_determinism_x64_1.json
+== tests (x64)
+================= 444 passed, 15 warnings in 523.89s (0:08:43) =================
+DONE

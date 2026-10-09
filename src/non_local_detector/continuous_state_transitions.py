@@ -9,6 +9,7 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError
+from non_local_detector.graph_distances import LazyGraphDistances
 
 
 def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
@@ -228,11 +229,12 @@ class RandomWalk:
                 self.environment, self.movement_mean, self.movement_var
             )
         else:
-            if (
-                isinstance(self.environment.distance_between_nodes_, np.ndarray)
-                and self.environment.distance_between_nodes_ is not None
-            ):
-                distance_data = self.environment.distance_between_nodes_
+            distance_data = self.environment.distance_between_nodes_
+            if isinstance(distance_data, LazyGraphDistances):
+                # Deferred graph distances are densified within their own byte
+                # budget; falling back to Euclidean would change the model.
+                distance_data = distance_data.to_dense()
+            if isinstance(distance_data, np.ndarray):
                 transition_matrix = (
                     multivariate_normal(mean=self.movement_mean, cov=self.movement_var)
                     .pdf(distance_data.flat)
@@ -246,7 +248,7 @@ class RandomWalk:
 
             if self.direction is not None:
                 if self.environment.track_graphDD is None or not isinstance(
-                    self.environment.distance_between_nodes_, np.ndarray
+                    distance_data, np.ndarray
                 ):
                     raise ConfigurationError(
                         (
@@ -280,8 +282,8 @@ class RandomWalk:
                     np.argmax(list(centrality.values()))
                 ]
                 transition_matrix *= direction_func(
-                    self.environment.distance_between_nodes_[:, [center_node_id]],
-                    self.environment.distance_between_nodes_[[center_node_id]],
+                    distance_data[:, [center_node_id]],
+                    distance_data[[center_node_id]],
                 )
 
         return transition_matrix

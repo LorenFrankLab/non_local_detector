@@ -1,6 +1,6 @@
 """Compare compiled HMM kernels with a Git baseline and an optional saved core.
 
-Run from the repository with ``uv run python scripts/benchmark_hmm_conditioning.py``.
+Run from the repository with ``uv run python benchmarks/benchmark_hmm_conditioning.py``.
 Use ``--baseline-core /path/to/core_before.py`` to compare uncommitted revisions.
 Timings use precomputed likelihoods and exclude compilation and host diagnostics.
 """

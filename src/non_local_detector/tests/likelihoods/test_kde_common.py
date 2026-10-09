@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -12,11 +13,75 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     get_spikecount_per_time_bin,
     kde,
+    log_gaussian_pdf,
     log_kde,
     safe_divide,
     safe_log,
     validate_population_lengths,
 )
+from non_local_detector.tests.conftest import precision_mode
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sigma_kind", ["float32", "float64", "weak"])
+def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
+    with precision_mode(True):
+        x = jnp.array([0.4, 1.3, 2.2], dtype=jnp.float64)
+        mean = jnp.float64(0.1)
+        sigma = (
+            0.7
+            if sigma_kind == "weak"
+            else jnp.asarray(
+                0.7, dtype=jnp.float32 if sigma_kind == "float32" else jnp.float64
+            )
+        )
+        reference = -0.5 * ((x - mean) / sigma) ** 2 - jnp.log(
+            sigma * jnp.sqrt(2.0 * jnp.pi)
+        )
+        actual = log_gaussian_pdf(x, mean, sigma)
+        assert actual.dtype == reference.dtype == jnp.float64
+        np.testing.assert_allclose(actual, reference, rtol=1e-14, atol=1e-14)
+
+
+@pytest.mark.unit
+def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
+    with precision_mode(False):
+        sigma = np.float32(1e38)
+        x = np.asarray([0, 1e38, 2e38], dtype=np.float32)
+        reference = -0.5 * (x.astype(np.float64) / float(sigma)) ** 2 - np.log(
+            float(sigma) * np.sqrt(2 * np.pi)
+        )
+        np.testing.assert_allclose(
+            log_gaussian_pdf(jnp.asarray(x), jnp.float32(0), jnp.float32(sigma)),
+            reference,
+            rtol=1e-6,
+            atol=1e-5,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("x64", [False, True])
+def test_integer_gaussian_and_kde_inputs_use_floating_arithmetic(x64):
+    with precision_mode(x64):
+        points = jnp.array([0, 1, 2])
+        mean, sigma = jnp.array(0), jnp.array(1)
+        expected = -0.5 * ((points - mean) / sigma) ** 2 - jnp.log(
+            sigma * jnp.sqrt(2.0 * jnp.pi)
+        )
+        actual = log_gaussian_pdf(points, mean, sigma)
+        assert actual.dtype == expected.dtype
+        np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_array_equal(
+            kde(points[:, None], points[:, None], jnp.array([1]), jnp.ones(3)),
+            kde(
+                points[:, None].astype(actual.dtype),
+                points[:, None].astype(actual.dtype),
+                # Preserve the original bandwidth's normalization arithmetic;
+                # only the coordinate true-division promotion is under test.
+                jnp.array([1]),
+                jnp.ones(3),
+            ),
+        )
 
 
 def rng(seed=0):
@@ -427,3 +492,39 @@ def test_drop_zero_weight_samples_preserves_density_and_shrinks_model():
     # No positive weight: inputs are returned as-is (zero-exposure behavior).
     zeros = np.zeros(500)
     assert drop_zero_weight_samples(samples, zeros)[0] is samples
+
+
+def _barrier_operand_sizes(jaxpr):
+    sizes = []
+    for equation in jaxpr.eqns:
+        if equation.primitive.name == "optimization_barrier":
+            sizes += [int(np.prod(var.aval.shape)) for var in equation.invars]
+        for value in equation.params.values():
+            for item in value if isinstance(value, (tuple, list)) else (value,):
+                inner = getattr(item, "jaxpr", item)
+                if hasattr(inner, "eqns"):
+                    sizes += _barrier_operand_sizes(inner)
+    return sizes
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("x64", [False, True])
+def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
+    from non_local_detector.likelihoods.common import _log_kernel_matrix
+
+    with precision_mode(x64):
+        n_eval, n_samples = 64, 2000
+        eval_points = jnp.ones((n_eval, 2), jnp.float32)
+        std = jnp.ones(2, jnp.float32)
+        tiled = jax.make_jaxpr(_log_kernel_matrix)(
+            eval_points, jnp.ones((n_samples, 2), jnp.float32), std
+        )
+        assert all(
+            size <= max(n_eval, n_samples)
+            for size in _barrier_operand_sizes(tiled.jaxpr)
+        )
+        # A singleton sample tail keeps its divisor guard.
+        singleton = jax.make_jaxpr(_log_kernel_matrix)(
+            eval_points, jnp.ones((1, 2), jnp.float32), std
+        )
+        assert _barrier_operand_sizes(singleton.jaxpr)

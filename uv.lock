@@ -1971,6 +1971,7 @@ dev = [
     { name = "ipython", version = "9.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "mypy" },
     { name = "pre-commit" },
+    { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -1981,6 +1982,7 @@ gpu = [
 ]
 test = [
     { name = "hypothesis" },
+    { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
@@ -1998,7 +2000,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'" },
     { name = "hypothesis", marker = "extra == 'test'" },
     { name = "ipython", marker = "extra == 'dev'" },
-    { name = "jax", specifier = ">=0.4.27" },
+    { name = "jax", specifier = ">=0.6.2" },
     { name = "jax", extras = ["cuda"], marker = "extra == 'gpu'" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mypy", marker = "extra == 'dev'" },
@@ -2007,6 +2009,8 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "patsy", specifier = ">=0.5" },
     { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "psutil", marker = "extra == 'dev'" },
+    { name = "psutil", marker = "extra == 'test'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
@@ -2018,7 +2022,7 @@ requires-dist = [
     { name = "sortingview", marker = "extra == 'viz'" },
     { name = "tqdm", specifier = ">=4.60" },
     { name = "track-linearization" },
-    { name = "xarray", specifier = ">=2023.1" },
+    { name = "xarray", specifier = ">=2023.8" },
 ]
 provides-extras = ["dev", "gpu", "test", "viz"]
 

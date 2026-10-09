@@ -1,0 +1,257 @@
+{
+  "date": "2026-10-09",
+  "source_commit_before_fixes": "98c9566ef2a1d314ad66f068d7659db9f59e15e0",
+  "scope": "Float64 HMM inference with fixed fitted parameters and likelihood values computed with JAX x64 disabled. Fitted host parameters can already be float64. This is not an end-to-end float64 fitting/likelihood reference.",
+  "commands": [
+    "JAX_ENABLE_X64=0 PYTHONPATH=src uv run python benchmarks/compare_prediction_modes.py --family FAMILY --mode compact --duration 30 --bin-size 2 --checkpoint-chunk-size 256 --repeat 0 --require-backend cpu --output OUTPUT",
+    "JAX_ENABLE_X64=1 PYTHONPATH=src uv run python benchmarks/compare_prediction_modes.py --family FAMILY --mode reference64 --duration 30 --bin-size 2 --checkpoint-chunk-size 256 --repeat 0 --require-backend cpu --output OUTPUT"
+  ],
+  "execution": "Python3.13.13, JAX0.9.0 on development Mac CPU. Paired runs used the same actual input, runtime-source and benchmark-script hashes. Compile/first-call timings include concurrent CPU activity and are not performance qualification.",
+  "historical_correction": "The old x64-enabled compact run was float32 HMM inference and output, not a float64 oracle. Its 5% CPU/1.8% A100 interpretation and no-added-error conclusion are withdrawn. Historical raw records are preserved.",
+  "limits": "Only the 30-second seeded workloads and CPU are qualified here. No new A100, full-hour, main-versus-branch, or end-to-end precision claim.",
+  "runs": [
+    {
+      "family": "sorted",
+      "compact_report": {
+        "family": "sorted",
+        "mode": "compact",
+        "duration_s": 30.0,
+        "rows": 15000,
+        "arena_cm": 180.0,
+        "bin_size_cm": 2.0,
+        "population": 64,
+        "spike_rate_hz": 5.0,
+        "rate_spread": 0.0,
+        "algorithm": null,
+        "encoding_duration_s": 10.0,
+        "input_sha256": "4eb630f76ced302a4f5a5d583e6d8e5f684649474c2bde7c729c2e4706f4cd16",
+        "fit_x64": false,
+        "chunk_rows": null,
+        "checkpoint_chunk_size": 256,
+        "backend": "cpu",
+        "device": "TFRT_CPU_0",
+        "jax": "0.9.0",
+        "package_source_sha256": "fa799563defa7fdaa522e3805354e949877cb515f173f1a8d4d685ee80cd14ea",
+        "script_sha256": "3de0dcee15e9648848324c638a3c94c374a57b67fcacc3d0372bd50ebd982b6b",
+        "x64": false,
+        "xla_flags": "",
+        "device_kind": "cpu",
+        "package_path": "/private/tmp/nld-phase7-performance/src/non_local_detector",
+        "host": "Erics-MacBook-Pro.local",
+        "status": "ok",
+        "fit_seconds": 0.756407167064026,
+        "state_bins": 16930,
+        "compile_and_first_predict_seconds": 10.300158750033006,
+        "warm_predict_seconds": [],
+        "seconds_per_recording_second": null,
+        "output_variables": [
+          "acausal_state_probabilities"
+        ],
+        "output_dtypes": {
+          "acausal_state_probabilities": "float32"
+        },
+        "reference_scope": null,
+        "output_bytes": 240000,
+        "peak_host_rss_bytes": 745275392,
+        "peak_device_bytes": null
+      },
+      "reference_report": {
+        "family": "sorted",
+        "mode": "reference64",
+        "duration_s": 30.0,
+        "rows": 15000,
+        "arena_cm": 180.0,
+        "bin_size_cm": 2.0,
+        "population": 64,
+        "spike_rate_hz": 5.0,
+        "rate_spread": 0.0,
+        "algorithm": null,
+        "encoding_duration_s": 10.0,
+        "input_sha256": "4eb630f76ced302a4f5a5d583e6d8e5f684649474c2bde7c729c2e4706f4cd16",
+        "fit_x64": false,
+        "chunk_rows": null,
+        "checkpoint_chunk_size": 256,
+        "backend": "cpu",
+        "device": "TFRT_CPU_0",
+        "jax": "0.9.0",
+        "package_source_sha256": "fa799563defa7fdaa522e3805354e949877cb515f173f1a8d4d685ee80cd14ea",
+        "script_sha256": "3de0dcee15e9648848324c638a3c94c374a57b67fcacc3d0372bd50ebd982b6b",
+        "x64": true,
+        "xla_flags": "",
+        "device_kind": "cpu",
+        "package_path": "/private/tmp/nld-phase7-performance/src/non_local_detector",
+        "host": "Erics-MacBook-Pro.local",
+        "status": "ok",
+        "fit_seconds": 0.7090831671375781,
+        "state_bins": 16930,
+        "likelihood_compute_dtypes": [
+          "float32"
+        ],
+        "likelihood_inference_dtypes": [
+          "float64"
+        ],
+        "transition_inference_dtypes": [
+          "float64"
+        ],
+        "compile_and_first_predict_seconds": 15.772393624996766,
+        "warm_predict_seconds": [],
+        "seconds_per_recording_second": null,
+        "output_variables": [
+          "acausal_state_probabilities"
+        ],
+        "output_dtypes": {
+          "acausal_state_probabilities": "float64"
+        },
+        "reference_scope": "float64 HMM inference; fixed fit with JAX x64 disabled, float32 likelihood values",
+        "output_bytes": 480000,
+        "peak_host_rss_bytes": 889618432,
+        "peak_device_bytes": null
+      },
+      "compact_output_sha256": "dc4f2847f514047c2c6774ff0e2bf642d496a760feb540840224b5b546e440fd",
+      "reference_output_sha256": "66401202f50b984748fdce4d485d9414fdf4e8cb988d06f79641b16c3c79690c",
+      "max_absolute_difference": 7.137988892236269e-06,
+      "mean_absolute_difference": 6.493155548634318e-07,
+      "rows_with_absolute_difference_over_1e-2": 0,
+      "compact_max_row_sum_error": 4.759058356285095e-07,
+      "reference_max_row_sum_error": 7.771561172376096e-16,
+      "all_finite_and_nonnegative": true
+    },
+    {
+      "family": "clusterless",
+      "compact_report": {
+        "family": "clusterless",
+        "mode": "compact",
+        "duration_s": 30.0,
+        "rows": 15000,
+        "arena_cm": 180.0,
+        "bin_size_cm": 2.0,
+        "population": 8,
+        "spike_rate_hz": 20.0,
+        "rate_spread": 0.0,
+        "algorithm": null,
+        "encoding_duration_s": 10.0,
+        "input_sha256": "680b59bf46908d86cb5d4d995bf87000debed66158faadb7cf80a0e0deae65a2",
+        "fit_x64": false,
+        "chunk_rows": null,
+        "checkpoint_chunk_size": 256,
+        "backend": "cpu",
+        "device": "TFRT_CPU_0",
+        "jax": "0.9.0",
+        "package_source_sha256": "fa799563defa7fdaa522e3805354e949877cb515f173f1a8d4d685ee80cd14ea",
+        "script_sha256": "3de0dcee15e9648848324c638a3c94c374a57b67fcacc3d0372bd50ebd982b6b",
+        "x64": false,
+        "xla_flags": "",
+        "device_kind": "cpu",
+        "package_path": "/private/tmp/nld-phase7-performance/src/non_local_detector",
+        "host": "Erics-MacBook-Pro.local",
+        "status": "ok",
+        "fit_seconds": 0.7113992921076715,
+        "state_bins": 16930,
+        "compile_and_first_predict_seconds": 11.43913820805028,
+        "warm_predict_seconds": [],
+        "seconds_per_recording_second": null,
+        "output_variables": [
+          "acausal_state_probabilities"
+        ],
+        "output_dtypes": {
+          "acausal_state_probabilities": "float32"
+        },
+        "reference_scope": null,
+        "output_bytes": 240000,
+        "peak_host_rss_bytes": 755679232,
+        "peak_device_bytes": null
+      },
+      "reference_report": {
+        "family": "clusterless",
+        "mode": "reference64",
+        "duration_s": 30.0,
+        "rows": 15000,
+        "arena_cm": 180.0,
+        "bin_size_cm": 2.0,
+        "population": 8,
+        "spike_rate_hz": 20.0,
+        "rate_spread": 0.0,
+        "algorithm": null,
+        "encoding_duration_s": 10.0,
+        "input_sha256": "680b59bf46908d86cb5d4d995bf87000debed66158faadb7cf80a0e0deae65a2",
+        "fit_x64": false,
+        "chunk_rows": null,
+        "checkpoint_chunk_size": 256,
+        "backend": "cpu",
+        "device": "TFRT_CPU_0",
+        "jax": "0.9.0",
+        "package_source_sha256": "fa799563defa7fdaa522e3805354e949877cb515f173f1a8d4d685ee80cd14ea",
+        "script_sha256": "3de0dcee15e9648848324c638a3c94c374a57b67fcacc3d0372bd50ebd982b6b",
+        "x64": true,
+        "xla_flags": "",
+        "device_kind": "cpu",
+        "package_path": "/private/tmp/nld-phase7-performance/src/non_local_detector",
+        "host": "Erics-MacBook-Pro.local",
+        "status": "ok",
+        "fit_seconds": 0.6631219999399036,
+        "state_bins": 16930,
+        "likelihood_compute_dtypes": [
+          "float32"
+        ],
+        "likelihood_inference_dtypes": [
+          "float64"
+        ],
+        "transition_inference_dtypes": [
+          "float64"
+        ],
+        "compile_and_first_predict_seconds": 16.258627124829218,
+        "warm_predict_seconds": [],
+        "seconds_per_recording_second": null,
+        "output_variables": [
+          "acausal_state_probabilities"
+        ],
+        "output_dtypes": {
+          "acausal_state_probabilities": "float64"
+        },
+        "reference_scope": "float64 HMM inference; fixed fit with JAX x64 disabled, float32 likelihood values",
+        "output_bytes": 480000,
+        "peak_host_rss_bytes": 851329024,
+        "peak_device_bytes": null
+      },
+      "compact_output_sha256": "530804247454b17c36aadbe4bc08b3788a9bba1560b1d14da1bb799fed7dede9",
+      "reference_output_sha256": "c03bd5ee6668dcaa515fb5b8ed5e5da8a2271cee1ed4f68c22ad18a5ac50f572",
+      "max_absolute_difference": 5.671337607759952e-06,
+      "mean_absolute_difference": 5.119433189638687e-07,
+      "rows_with_absolute_difference_over_1e-2": 0,
+      "compact_max_row_sum_error": 4.917383193969727e-07,
+      "reference_max_row_sum_error": 8.881784197001252e-16,
+      "all_finite_and_nonnegative": true
+    }
+  ],
+  "validation": {
+    "full_suite": {
+      "python": "3.13.13",
+      "jax": "0.9.0",
+      "passed": 3410,
+      "skipped": 7,
+      "seconds": 929.54,
+      "log_sha256": "3c20b0bcf295dfa196448e605bc54e97ee41556ac63a14be5e889074d57979e5"
+    },
+    "minimum_stack_controls": {
+      "python": "3.11.15",
+      "jax": "0.6.2",
+      "numpy": "1.26.4",
+      "scipy": "1.12.0",
+      "xarray": "2023.8.0",
+      "passed": 482,
+      "seconds": 79.15,
+      "final_precision_tests_rerun": 5
+    },
+    "minimum_jax_ci": {
+      "python": "3.10",
+      "jax": "0.6.2",
+      "passed": 483,
+      "seconds": 199.6,
+      "head": "ff6905160c87d94a212d21bb29f7d69035c1a8eb",
+      "job": "https://github.com/LorenFrankLab/non_local_detector/actions/runs/37961563671/job/113925408248"
+    },
+    "review": "Independent code review approved; five precision tests passed independently; first/middle/final chunks of both real 30-second workloads have bit-identical float32 likelihoods when prepared with x64 enabled versus disabled.",
+    "quality": "Ruff lint and formatting passed on all source files and modified benchmark; uv lock --check --offline passed.",
+    "goldens_tolerances_convergence": "Unchanged."
+  }
+}

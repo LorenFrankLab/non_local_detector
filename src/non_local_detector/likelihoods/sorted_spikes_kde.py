@@ -47,6 +47,7 @@ It utilizes JAX and SciPy for efficient computation and interpolation.
 """
 
 import warnings
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -61,11 +62,17 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     KDEModel,
+    _blocked_nonlocal_poisson_log_likelihood,
+    _concatenate_row_blocks,
+    _pad_rows,
+    _padded_sample_count,
+    _spike_counts_matrix,
     _SpikeTimeOrder,
+    _traced_block_kde,
+    as_std_array,
     decode_bin_centers,
     drop_zero_weight_samples,
     get_position_at_time,
-    get_spikecount_per_time_bin,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
@@ -76,6 +83,136 @@ from non_local_detector.time_edges import (
     _resolve_time_grid,
     requires_time_edges,
 )
+
+
+def _kde_leaf_groups(models, n_dims):
+    """Stack fitted KDE leaves into groups with equal padded sample counts.
+
+    Samples are padded with zero-weight rows to ``_padded_sample_count`` sizes,
+    so the compiled kernel grows with the number of groups, not neurons.
+
+    Parameters
+    ----------
+    models : sequence of KDEModel
+        Fitted marginal models, one per neuron.
+    n_dims : int
+        Position dimensions.
+
+    Returns
+    -------
+    groups : tuple
+        Per group: samples ``(n_group, n_padded, n_dims)``, weights
+        ``(n_group, n_padded)``, standard deviations ``(n_group, n_dims)`` and
+        neuron indices ``(n_group,)``.
+    block_sizes : tuple of int or None
+        Each group's evaluation block size; None evaluates all rows at once.
+    order : jnp.ndarray, shape (n_neurons,)
+        Position of each neuron among the concatenated group outputs.
+    """
+    keys = [
+        (_padded_sample_count(model.samples_.shape[0]), model.block_size)
+        for model in models
+    ]
+    groups, block_sizes, members = [], [], []
+    for key in dict.fromkeys(keys):
+        neurons = [index for index, value in enumerate(keys) if value == key]
+        n_padded = key[0]
+        groups.append(
+            (
+                jnp.asarray(
+                    np.stack([_pad_rows(models[i].samples_, n_padded) for i in neurons])
+                ),
+                jnp.asarray(
+                    np.stack([_pad_rows(models[i].weights_, n_padded) for i in neurons])
+                ),
+                jnp.stack([as_std_array(models[i].std, n_dims) for i in neurons]),
+                jnp.asarray(neurons),
+            )
+        )
+        block_sizes.append(key[1])
+        members.extend(neurons)
+    order = np.empty(len(models), dtype=int)
+    order[members] = np.arange(len(members))
+    return tuple(groups), tuple(block_sizes), jnp.asarray(order)
+
+
+@partial(jax.jit, static_argnames=("block_sizes",))
+def _local_kde_log_likelihood(
+    points, occupancy, counts, mean_rates, durations, groups, order, *, block_sizes
+):
+    """Evaluate fitted KDE leaves and Poisson rows in one compiled call.
+
+    Parameters
+    ----------
+    points : jnp.ndarray, shape (n_rows, n_dims) or (n_rows,)
+    occupancy, durations : jnp.ndarray, shape (n_rows,)
+    counts : jnp.ndarray, shape (n_rows, n_neurons)
+    mean_rates : jnp.ndarray, shape (n_neurons,)
+    groups, order, block_sizes
+        From ``_kde_leaf_groups``.
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_rows,)
+        Neuron terms are added in the original neuron order.
+    """
+    if points.ndim == 1:
+        points = points[:, None]
+    # No rows: also avoids lax.map batching zero-size arrays, which older JAX
+    # (0.6.x) cannot reshape.
+    if not groups or points.shape[0] == 0:
+        return jnp.zeros((points.shape[0],))
+
+    def group_terms(group, block_size):
+        samples, weights, stds, neurons = group
+
+        def neuron_term(leaf):
+            neuron_samples, neuron_weights, std, mean_rate, count = leaf
+            marginal = jax.lax.optimization_barrier(
+                _traced_block_kde(
+                    points,
+                    neuron_samples,
+                    std,
+                    points.shape[0] if block_size is None else block_size,
+                    neuron_weights,
+                )
+            )
+            marginal = jnp.where(jnp.isnan(marginal), 0.0, marginal)
+            rate = jax.lax.optimization_barrier(
+                mean_rate
+                * jnp.where(
+                    occupancy > 0.0,
+                    marginal / jnp.where(occupancy > 0.0, occupancy, 1.0),
+                    EPS,
+                )
+            )
+            rate = jax.lax.optimization_barrier(
+                jnp.clip(rate, min=RATE_EPS_HZ, max=None)
+            )
+            expected = jax.lax.optimization_barrier(rate * durations)
+            event = jax.lax.optimization_barrier(
+                jax.scipy.special.xlogy(count.astype(expected.dtype), expected)
+            )
+            return jax.lax.optimization_barrier(event - expected)
+
+        return jax.lax.map(
+            neuron_term,
+            (samples, weights, stds, mean_rates[neurons], counts[:, neurons].T),
+            # Batches amortize per-iteration loop overhead on accelerators.
+            batch_size=16,
+        )
+
+    terms = jnp.concatenate(
+        [
+            group_terms(group, block_size)
+            for group, block_size in zip(groups, block_sizes, strict=True)
+        ]
+    )[order]
+
+    def add(total, term):
+        return jax.lax.optimization_barrier(total + term), None
+
+    return jax.lax.scan(add, jnp.zeros((points.shape[0],)), terms)[0]
 
 
 def fit_sorted_spikes_kde_encoding_model(
@@ -364,83 +501,74 @@ def predict_sorted_spikes_kde_log_likelihood(
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
-    n_rows = row_stop - row_start
     row_time = decode_bin_centers(time_edges, row_start, row_stop)
     if is_local:
-        log_likelihood = jnp.zeros((n_rows,))
-
         # Need to interpolate position
         interpolated_position = get_position_at_time(
             position_time, position, row_time, environment
         )
         occupancy = occupancy_model.predict(interpolated_position)
 
-        for neuron_spike_times, neuron_marginal_model, neuron_mean_rate in zip(
-            tqdm(
+        # Fitted KDE models run compiled over spike-count row blocks, so the
+        # host count matrix and compiled graph stay bounded for any request.
+        for model in marginal_models:
+            if not isinstance(model, KDEModel):
+                raise TypeError(
+                    "Local sorted-spikes KDE likelihood needs KDEModel marginal "
+                    f"models from the fitted encoding model, got {type(model).__name__}."
+                )
+            if model.samples_ is None:
+                raise RuntimeError("This KDE instance is not fitted yet.")
+        points = jnp.asarray(interpolated_position)
+        if points.ndim == 1:
+            points = points[:, None]
+        occupancy = jnp.asarray(occupancy)
+        groups, block_sizes, order = _spike_time_order.memo(
+            f"kde_leaf_groups_{points.shape[1]}",
+            tuple(marginal_models),
+            lambda: _kde_leaf_groups(marginal_models, points.shape[1]),
+        )
+
+        def evaluate(start, stop):
+            rows = slice(start - row_start, stop - row_start)
+            counts = _spike_counts_matrix(
                 spike_times,
-                unit="cell",
-                desc="Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            marginal_models,
-            mean_rates,
-            strict=True,
-        ):
-            spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times,
-                time_edges=time_edges,
-                row_slice=row_slice,
+                time_edges,
+                "Local Likelihood",
+                True,
+                slice(start, stop),
                 _spike_time_order=_spike_time_order,
             )
-            marginal_density = neuron_marginal_model.predict(interpolated_position)
-            # A NaN marginal at decode means a NaN interpolated position
-            # (dropped tracking / out-of-bounds) -- an expected decode-time gap,
-            # not a degenerate encoding model (that is surfaced at fit time and,
-            # after input validation, cannot occur here). Zero-fill quietly; a
-            # per-timestep warning would just be noise.
-            marginal_density = jnp.where(
-                jnp.isnan(marginal_density), 0.0, marginal_density
-            )
-            local_rate = neuron_mean_rate * jnp.where(
-                occupancy > 0.0,
-                marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                EPS,
-            )
-            local_rate = jnp.clip(local_rate, min=RATE_EPS_HZ, max=None)
-            local_rate = local_rate * durations
-            log_likelihood += (
-                jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
-                - local_rate
+            return _local_kde_log_likelihood(
+                points[rows],
+                occupancy[rows],
+                jnp.asarray(counts),
+                jnp.asarray(mean_rates),
+                durations[rows],
+                groups,
+                order,
+                block_sizes=block_sizes,
             )
 
-        log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
+        return _concatenate_row_blocks(
+            row_start,
+            row_stop,
+            len(spike_times),
+            evaluate,
+            "Local Likelihood",
+            disable_progress_bar,
+        )[:, None]
     else:
-        n_interior_bins = is_track_interior.sum()
-        log_likelihood = jnp.zeros((n_rows, n_interior_bins))
-        for neuron_spike_times, place_field in zip(
-            tqdm(
-                spike_times,
-                unit="cell",
-                desc="Non-Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            place_fields,
-            strict=True,
-        ):
-            spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times,
-                time_edges=time_edges,
-                row_slice=row_slice,
-                _spike_time_order=_spike_time_order,
-            )
-            log_likelihood += jax.scipy.special.xlogy(
-                np.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field[is_track_interior], axis=0)
-                * durations[:, None],
-            )
-
-        log_likelihood -= (
-            durations[:, None] * no_spike_part_log_likelihood[is_track_interior]
+        log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
+            spike_times,
+            time_edges,
+            row_start,
+            row_stop,
+            jnp.asarray(place_fields)[:, is_track_interior],
+            durations,
+            no_spike_part_log_likelihood[is_track_interior],
+            disable_progress_bar=disable_progress_bar,
+            _spike_time_order=_spike_time_order,
         )
 
     return log_likelihood

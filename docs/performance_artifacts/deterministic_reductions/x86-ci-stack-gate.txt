@@ -1,0 +1,32 @@
+# Gaussian divisor barrier gate on the CI CPU stack.
+# Host: zephyr (Linux x86_64). Environment verified when the run was made:
+# Python 3.13.15, JAX/jaxlib 0.11.2 (CPU), NumPy 2.5.3, SciPy 1.18.1.
+# Modules: test_clusterless_kde_streaming, test_streamed_kde, test_kde_common,
+# test_clusterless_kde, test_clusterless_kde_log_parity (171 tests).
+# Variants (pytest plugins in .claude/docs/plans/phase7-review-fixes/evidence/plugins):
+#   none             = code under test (singleton + mixed-precision barrier)
+#   nobarrier        = pre-barrier log_gaussian_pdf
+#   singletonbarrier = barrier only for singleton tiles (adopted)
+# hlo = optimized-HLO divide shapes at the _log_kernel_matrix call site;
+# "phase 1a CI site" = tests/likelihoods/test_sorted_nonlocal_accumulation.py.
+x64=0 variant=none: ================= 171 passed, 5 warnings in 125.26s (0:02:05) ==================
+x64=0 variant=nobarrier: ============ 1 failed, 170 passed, 5 warnings in 122.90s (0:02:02) =============
+x64=0 variant=singletonbarrier: ================= 171 passed, 5 warnings in 121.34s (0:02:01) ==================
+x64=1 variant=none: ================= 171 passed, 4 warnings in 134.57s (0:02:14) ==================
+x64=1 variant=nobarrier: ============ 1 failed, 170 passed, 4 warnings in 136.00s (0:02:16) =============
+x64=1 variant=singletonbarrier: ================= 171 passed, 4 warnings in 136.07s (0:02:16) ==================
+== hlo x64=0
+x64 False
+  non-singleton     current    divide result shapes: ['f32[2000,64]']
+  non-singleton     no-barrier divide result shapes: ['f32[2000,64]']
+  singleton-sample  current    divide result shapes: ['f32[1,64]']
+  singleton-sample  no-barrier divide result shapes: ['f32[1,64]']
+== hlo x64=1
+x64 True
+  non-singleton     current    divide result shapes: ['f32[2000,64]']
+  non-singleton     no-barrier divide result shapes: ['f32[2000,64]']
+  singleton-sample  current    divide result shapes: ['f32[1,64]']
+  singleton-sample  no-barrier divide result shapes: ['f32[1,64]']
+== phase 1a CI site
+======================= 47 passed, 4 warnings in 31.55s ========================
+DONE

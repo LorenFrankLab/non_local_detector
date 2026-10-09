@@ -1,3 +1,5 @@
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,10 +16,14 @@ from non_local_detector.likelihoods.common import (
     RATE_REFERENCE_SECONDS,
     KDEModel,
     _log_kernel_matrix,
+    _pad_rows,
+    _padded_samples,
+    _padded_spike_count,
     _SpikeTimeOrder,
+    _traced_block_kde,
     as_std_array,
-    block_kde,
     decode_bin_centers,
+    deterministic_row_sum,
     drop_zero_weight_samples,
     get_position_at_time,
     interpolate_weights_at_spike_times,
@@ -26,17 +32,70 @@ from non_local_detector.likelihoods.common import (
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
+    spike_row_ids,
     sum_spikes_into_rows,
     validate_finite,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.streamed_kde import (
+    _sample_tiled_density,
+    _streamed_joint_mark_row_sums,
+)
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
     requires_time_edges,
 )
+
+
+def _validate_workspace_limits(encoding_block_size, position_block_size):
+    limits = []
+    for name, value in (
+        ("encoding_block_size", encoding_block_size),
+        ("position_block_size", position_block_size),
+    ):
+        if value is not None:
+            if (
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                or value < 1
+            ):
+                raise ValidationError(f"{name} must be None or a positive integer")
+            value = int(value)
+        limits.append(value)
+    return tuple(limits)
+
+
+def _tile_size(limit, size):
+    """Keep configured capacity from padding a smaller or empty input."""
+    size = max(1, size)
+    return size if limit is None else min(limit, size)
+
+
+def _predict_kde_density(model, points, encoding_block_size, position_block_size):
+    """Use the original fitted leaves with optional sample/evaluation tiles."""
+    if encoding_block_size is None and position_block_size is None:
+        return model.predict(points)
+    if model.samples_ is None:
+        raise RuntimeError("This KDE instance is not fitted yet.")
+    points = jnp.asarray(points)
+    if points.ndim == 1:
+        points = points[:, None]
+    return _sample_tiled_density(
+        points,
+        model.samples_,
+        as_std_array(model.std, points.shape[1]),
+        model.weights_,
+        sample_tile_size=_tile_size(encoding_block_size, model.samples_.shape[0]),
+        eval_tile_size=_tile_size(
+            position_block_size
+            if position_block_size is not None
+            else model.block_size,
+            points.shape[0],
+        ),
+    )
 
 
 def kde_distance(
@@ -107,8 +166,11 @@ def estimate_log_joint_mark_intensity(
     safe_weight_total = jnp.where(weight_total > 0, weight_total, 1.0)
     marginal_density = jnp.where(
         weight_total > 0,
-        spike_waveform_feature_distance.T
-        @ (encoding_weights[:, None] * position_distance)
+        jnp.matmul(
+            spike_waveform_feature_distance.T,
+            encoding_weights[:, None] * position_distance,
+            precision=jax.lax.Precision.HIGHEST,
+        )
         / safe_weight_total,
         0.0,
     )  # shape (n_decoding_spikes, n_position_bins)
@@ -120,6 +182,55 @@ def estimate_log_joint_mark_intensity(
             0.0,
         )
     )
+
+
+@partial(jax.jit, static_argnames=("block_size",))
+def _blocked_joint_mark_intensity(
+    decoding_features,
+    encoding_features,
+    waveform_stds,
+    occupancy,
+    mean_rate,
+    position_distance,
+    encoding_weights,
+    block_size,
+):
+    """Hoist the weighted kernel and update output inside one compiled loop."""
+    weighted_position = encoding_weights[:, None] * position_distance
+    weight_total = jnp.sum(encoding_weights)
+    safe_weight_total = jnp.where(weight_total > 0, weight_total, 1.0)
+
+    def update_block(number, output):
+        first = number * block_size
+        features = jax.lax.dynamic_slice(
+            decoding_features, (first, 0), (block_size, decoding_features.shape[1])
+        )
+        mark_distance = kde_distance(features, encoding_features, waveform_stds)
+        marginal_density = jnp.where(
+            weight_total > 0,
+            jnp.matmul(
+                mark_distance.T, weighted_position, precision=jax.lax.Precision.HIGHEST
+            )
+            / safe_weight_total,
+            0.0,
+        )
+        intensity = safe_log(
+            mean_rate
+            * jnp.where(
+                occupancy > 0.0,
+                marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
+                0.0,
+            )
+        )
+        return jax.lax.dynamic_update_slice(output, intensity, (first, 0))
+
+    output = jax.lax.fori_loop(
+        0,
+        decoding_features.shape[0] // block_size,
+        update_block,
+        jnp.zeros((decoding_features.shape[0], occupancy.shape[0])),
+    )
+    return jnp.clip(output, min=LOG_EPS, max=None)
 
 
 def block_estimate_log_joint_mark_intensity(
@@ -154,25 +265,197 @@ def block_estimate_log_joint_mark_intensity(
     n_decoding_spikes = decoding_spike_waveform_features.shape[0]
     n_position_bins = occupancy.shape[0]
 
-    log_joint_mark_intensity = jnp.zeros((n_decoding_spikes, n_position_bins))
+    if n_decoding_spikes == 0:
+        return jnp.zeros((0, n_position_bins))
+    # A large encoding block setting must not inflate a sparse decode chunk's
+    # spatial output to that requested capacity. No bucket policy is imposed.
+    block_size = min(block_size, n_decoding_spikes)
+    if encoding_weights is None:
+        encoding_weights = jnp.ones((encoding_spike_waveform_features.shape[0],))
+    # Decoded padding is internal and removed from the public result. Encoding
+    # samples and normalization retain exactly the original caller's support.
+    padding = (-n_decoding_spikes) % block_size
+    features = jnp.pad(decoding_spike_waveform_features, ((0, padding), (0, 0)))
+    return _blocked_joint_mark_intensity(
+        features,
+        encoding_spike_waveform_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        position_distance,
+        encoding_weights,
+        block_size,
+    )[:n_decoding_spikes]
 
-    for start_ind in range(0, n_decoding_spikes, block_size):
-        block_inds = slice(start_ind, start_ind + block_size)
-        log_joint_mark_intensity = jax.lax.dynamic_update_slice(
-            log_joint_mark_intensity,
-            estimate_log_joint_mark_intensity(
-                decoding_spike_waveform_features[block_inds],
-                encoding_spike_waveform_features,
-                waveform_stds,
-                occupancy,
-                mean_rate,
-                position_distance,
-                encoding_weights,
-            ),
-            (start_ind, 0),
+
+@partial(
+    jax.jit, static_argnames=("block_size", "indices_are_sorted"), donate_argnums=0
+)
+def _add_electrode_mark_intensities(
+    total,
+    decoding_features,
+    row_ids,
+    encoding_features,
+    encoding_positions,
+    encoding_weights,
+    waveform_stds,
+    position_std,
+    place_bin_centers,
+    occupancy,
+    mean_rate,
+    *,
+    block_size,
+    indices_are_sorted,
+):
+    """Add one electrode's non-local log marked intensities to their rows.
+
+    Parameters
+    ----------
+    total : jnp.ndarray, shape (n_rows, n_bins)
+        Running sum over electrodes; donated.
+    decoding_features : jnp.ndarray, shape (n_padded_spikes, n_features)
+        A multiple of ``block_size`` rows; padding rows are zero.
+    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+        Local rows; padding uses ``n_rows``, which the row sum drops.
+    encoding_features : jnp.ndarray, shape (n_padded_samples, n_features)
+    encoding_positions : jnp.ndarray, shape (n_padded_samples, n_position_dims)
+    encoding_weights : jnp.ndarray, shape (n_padded_samples,)
+        Zero for padding samples.
+    waveform_stds : jnp.ndarray, shape (n_features,)
+    position_std : jnp.ndarray, shape (n_position_dims,)
+    place_bin_centers : jnp.ndarray, shape (n_bins, n_position_dims)
+    occupancy : jnp.ndarray, shape (n_bins,)
+    mean_rate : float
+        Mean rate times ``RATE_REFERENCE_SECONDS``.
+
+    Returns
+    -------
+    total : jnp.ndarray, shape (n_rows, n_bins)
+    """
+    position_distance = kde_distance(
+        place_bin_centers, encoding_positions, position_std
+    )
+    intensities = _blocked_joint_mark_intensity(
+        decoding_features,
+        encoding_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        position_distance,
+        encoding_weights,
+        block_size,
+    )
+    return total + deterministic_row_sum(
+        intensities, row_ids, total.shape[0], indices_are_sorted=indices_are_sorted
+    )
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "block_size",
+        "occupancy_block_size",
+        "gpi_block_size",
+        "indices_are_sorted",
+    ),
+    donate_argnums=(0, 1),
+)
+def _add_electrode_local_terms(
+    log_likelihood,
+    expected_counts,
+    spike_positions,
+    decoding_features,
+    row_ids,
+    encoding_positions,
+    encoding_features,
+    encoding_weights,
+    position_std,
+    waveform_stds,
+    occupancy_samples,
+    occupancy_weights,
+    occupancy_std,
+    gpi_samples,
+    gpi_weights,
+    gpi_std,
+    positions,
+    occupancy,
+    scaled_rate,
+    mean_rate,
+    *,
+    block_size,
+    occupancy_block_size,
+    gpi_block_size,
+    indices_are_sorted,
+):
+    """Add one electrode's local spike terms and expected count rate.
+
+    Parameters
+    ----------
+    log_likelihood, expected_counts : jnp.ndarray, shape (n_rows,)
+        Running sums over electrodes; donated.
+    spike_positions : jnp.ndarray, shape (n_padded_spikes, n_position_dims)
+        Position at each decoding spike; padding rows are zero.
+    decoding_features : jnp.ndarray, shape (n_padded_spikes, n_features)
+    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+        Local rows; padding uses ``n_rows``, which the row sum drops.
+    encoding_positions, encoding_features, encoding_weights
+        Padded joint KDE samples and weights (zero for padding).
+    position_std, waveform_stds : jnp.ndarray
+    occupancy_samples, occupancy_weights, occupancy_std
+        Fitted occupancy KDE leaves.
+    gpi_samples, gpi_weights, gpi_std
+        This electrode's padded ground-process KDE leaves.
+    positions : jnp.ndarray, shape (n_rows, n_position_dims)
+        Animal position at each row.
+    occupancy : jnp.ndarray, shape (n_rows,)
+        Occupancy density at ``positions``.
+    scaled_rate : float
+        Mean rate times ``RATE_REFERENCE_SECONDS``.
+    mean_rate : float
+        Mean rate in Hz.
+
+    Returns
+    -------
+    log_likelihood, expected_counts : jnp.ndarray, shape (n_rows,)
+    """
+    marginal_density = _traced_block_kde(
+        jnp.concatenate((spike_positions, decoding_features), axis=1),
+        jnp.concatenate((encoding_positions, encoding_features), axis=1),
+        jnp.concatenate((position_std, waveform_stds)),
+        block_size,
+        encoding_weights,
+    )
+    occupancy_at_spikes = _traced_block_kde(
+        spike_positions,
+        occupancy_samples,
+        occupancy_std,
+        occupancy_block_size,
+        occupancy_weights,
+    )
+    spike_terms = safe_log(
+        scaled_rate
+        * jnp.where(
+            occupancy_at_spikes > 0.0,
+            marginal_density
+            / jnp.where(occupancy_at_spikes > 0.0, occupancy_at_spikes, 1.0),
+            0.0,
         )
-
-    return jnp.clip(log_joint_mark_intensity, min=LOG_EPS, max=None)
+    )
+    log_likelihood = log_likelihood + deterministic_row_sum(
+        spike_terms,
+        row_ids,
+        log_likelihood.shape[0],
+        indices_are_sorted=indices_are_sorted,
+    )
+    gpi_density = _traced_block_kde(
+        positions, gpi_samples, gpi_std, gpi_block_size, gpi_weights
+    )
+    expected_counts = expected_counts + mean_rate * jnp.where(
+        occupancy > 0.0,
+        gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
+        0.0,
+    )
+    return log_likelihood, expected_counts
 
 
 def fit_clusterless_kde_encoding_model(
@@ -187,6 +470,8 @@ def fit_clusterless_kde_encoding_model(
     block_size: int = 100,
     disable_progress_bar: bool = False,
     *,
+    encoding_block_size: int | None = None,
+    position_block_size: int | None = None,
     encoding_time_range=None,
     valid_position_intervals=None,
     _encoding_support=None,
@@ -218,6 +503,11 @@ def fit_clusterless_kde_encoding_model(
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    encoding_block_size, position_block_size : int | None, optional
+        Opt-in limits on sample and evaluation kernel tiles. Fitted samples and
+        weights retain their original support. Either positive limit enables
+        tiled evaluation during fit and prediction; both None keep the legacy
+        path. The fitted model carries the selected policy to prediction.
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
@@ -233,6 +523,9 @@ def fit_clusterless_kde_encoding_model(
     -------
     encoding_model : dict
     """
+    encoding_block_size, position_block_size = _validate_workspace_limits(
+        encoding_block_size, position_block_size
+    )
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -291,7 +584,12 @@ def fit_clusterless_kde_encoding_model(
         occupancy_samples, weights=jnp.asarray(occupancy_weights)
     )
 
-    occupancy = occupancy_model.predict(interior_place_bin_centers)
+    occupancy = _predict_kde_density(
+        occupancy_model,
+        interior_place_bin_centers,
+        encoding_block_size,
+        position_block_size,
+    )
     encoding_positions = []
     encoding_weights = []
     mean_rates = []
@@ -345,7 +643,12 @@ def fit_clusterless_kde_encoding_model(
         )
         gpi_models.append(gpi_model)
 
-        gpi_density = gpi_model.predict(interior_place_bin_centers)
+        gpi_density = _predict_kde_density(
+            gpi_model,
+            interior_place_bin_centers,
+            encoding_block_size,
+            position_block_size,
+        )
         summed_ground_process_intensity += mean_rates[-1] * jnp.where(
             occupancy > 0.0,
             gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
@@ -358,7 +661,7 @@ def fit_clusterless_kde_encoding_model(
         summed_ground_process_intensity, min=RATE_EPS_HZ, max=None
     )
 
-    return {
+    encoding_model = {
         "occupancy": occupancy,
         "occupancy_model": occupancy_model,
         "gpi_models": gpi_models,
@@ -375,6 +678,12 @@ def fit_clusterless_kde_encoding_model(
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
+    if encoding_block_size is not None or position_block_size is not None:
+        encoding_model.update(
+            encoding_block_size=encoding_block_size,
+            position_block_size=position_block_size,
+        )
+    return encoding_model
 
 
 @requires_time_edges
@@ -402,6 +711,8 @@ def predict_clusterless_kde_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
+    encoding_block_size: int | None = None,
+    position_block_size: int | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -450,6 +761,10 @@ def predict_clusterless_kde_log_likelihood(
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    encoding_block_size, position_block_size : int | None, optional
+        Optional fitted workspace policy. Encoding and spatial kernels are
+        tiled independently and finished marked intensities accumulate directly
+        into output rows. Both None preserve the legacy prediction path.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges: spikes are binned
@@ -467,6 +782,9 @@ def predict_clusterless_kde_log_likelihood(
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    encoding_block_size, position_block_size = _validate_workspace_limits(
+        encoding_block_size, position_block_size
+    )
     if rate_units != "Hz":
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
@@ -511,6 +829,8 @@ def predict_clusterless_kde_log_likelihood(
             row_slice=row_slice,
             _spike_time_order=_spike_time_order,
             _time_grid=_time_grid,
+            encoding_block_size=encoding_block_size,
+            position_block_size=position_block_size,
         )
     else:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -520,6 +840,8 @@ def predict_clusterless_kde_log_likelihood(
             -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
             * summed_ground_process_intensity
         )
+        place_bin_centers = jnp.asarray(interior_place_bin_centers)
+        position_std_array = jnp.asarray(position_std)
 
         for (
             electrode_encoding_spike_waveform_features,
@@ -552,26 +874,75 @@ def predict_clusterless_kde_log_likelihood(
             electrode_decoding_spike_waveform_features = select_spike_rows(
                 electrode_decoding_spike_waveform_features, selection
             )
-            position_distance = kde_distance(
-                interior_place_bin_centers,
+            if encoding_block_size is not None or position_block_size is not None:
+                # Accumulate completed mark tiles into rows without retaining
+                # an encoding-by-position or all-marks-by-position matrix.
+                n_spikes = electrode_decoding_spike_waveform_features.shape[0]
+                if n_spikes == 0:
+                    continue
+                # Padded spikes (dropped from the row sums) let chunks with
+                # nearby spike counts share one compiled kernel.
+                n_padded = _padded_spike_count(n_spikes, block_size)
+                n_waveform_features = electrode_encoding_spike_waveform_features.shape[
+                    1
+                ]
+                electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
+                log_likelihood += _streamed_joint_mark_row_sums(
+                    _pad_rows(electrode_decoding_spike_waveform_features, n_padded),
+                    electrode_encoding_spike_waveform_features,
+                    electrode_encoding_positions,
+                    interior_place_bin_centers,
+                    electrode_waveform_std,
+                    position_std,
+                    occupancy,
+                    electrode_mean_rate * RATE_REFERENCE_SECONDS,
+                    electrode_encoding_weights,
+                    row_indices=spike_row_ids(selection, n_padded),
+                    n_rows=selection.n_rows,
+                    encoding_tile_size=_tile_size(
+                        encoding_block_size,
+                        electrode_encoding_spike_waveform_features.shape[0],
+                    ),
+                    position_tile_size=_tile_size(
+                        position_block_size, interior_place_bin_centers.shape[0]
+                    ),
+                    decoding_tile_size=_tile_size(block_size, n_padded),
+                )
+                continue
+            n_spikes = electrode_decoding_spike_waveform_features.shape[0]
+            if n_spikes == 0:
+                continue
+            # Padded spikes and zero-weight encoding samples let electrodes and
+            # chunks with nearby sizes share one compiled kernel.
+            n_padded = _padded_spike_count(n_spikes, block_size)
+            padded_features, padded_weights = _padded_samples(
+                _spike_time_order,
+                electrode_encoding_spike_waveform_features,
+                electrode_encoding_weights,
+            )
+            padded_positions, _ = _padded_samples(
+                _spike_time_order,
                 electrode_encoding_positions,
-                std=position_std,
+                electrode_encoding_weights,
             )
             # Expand waveform_std to match this electrode's feature count if scalar
             n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-            electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
-            log_likelihood += sum_spikes_into_rows(
-                block_estimate_log_joint_mark_intensity(
-                    electrode_decoding_spike_waveform_features,
-                    electrode_encoding_spike_waveform_features,
-                    electrode_waveform_std,
-                    occupancy,
-                    electrode_mean_rate * RATE_REFERENCE_SECONDS,
-                    position_distance,
-                    block_size,
-                    encoding_weights=electrode_encoding_weights,
+            log_likelihood = _add_electrode_mark_intensities(
+                log_likelihood,
+                jnp.asarray(
+                    _pad_rows(electrode_decoding_spike_waveform_features, n_padded)
                 ),
-                selection,
+                jnp.asarray(spike_row_ids(selection, n_padded)),
+                padded_features,
+                padded_positions,
+                padded_weights,
+                as_std_array(waveform_std, n_waveform_features),
+                position_std_array,
+                place_bin_centers,
+                occupancy,
+                electrode_mean_rate * RATE_REFERENCE_SECONDS,
+                block_size=min(block_size, n_padded),
+                indices_are_sorted=selection.indices_are_sorted,
             )
 
     return (
@@ -606,6 +977,8 @@ def compute_local_log_likelihood(
     encoding_weights: list[jnp.ndarray] | None = None,
     row_slice: slice | None = None,
     *,
+    encoding_block_size: int | None = None,
+    position_block_size: int | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -645,6 +1018,9 @@ def compute_local_log_likelihood(
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    encoding_block_size, position_block_size : int | None, optional
+        Positive sample/evaluation tile limits for the fitted linear KDE leaves.
+        Both None retain the original local kernels.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` stay the FULL decoding edges (see
@@ -658,6 +1034,9 @@ def compute_local_log_likelihood(
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, 1)
     """
+    encoding_block_size, position_block_size = _validate_workspace_limits(
+        encoding_block_size, position_block_size
+    )
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
@@ -672,12 +1051,23 @@ def compute_local_log_likelihood(
         decode_bin_centers(time_edges, row_start, row_stop),
         environment,
     )
-    occupancy = occupancy_model.predict(interpolated_position)
+    occupancy = _predict_kde_density(
+        occupancy_model,
+        interpolated_position,
+        encoding_block_size,
+        position_block_size,
+    )
 
     if encoding_weights is None:
         encoding_weights = [None] * len(encoding_positions)
     log_likelihood = jnp.zeros((n_rows,))
     summed_expected_counts = jnp.zeros((n_rows,))
+    is_streamed = encoding_block_size is not None or position_block_size is not None
+    if not is_streamed:
+        positions = jnp.asarray(interpolated_position)
+        n_position_dims = positions.shape[1]
+        position_std_array = jnp.asarray(position_std)
+        occupancy_std = as_std_array(occupancy_model.std, n_position_dims)
     for (
         electrode_encoding_spike_waveform_features,
         electrode_encoding_positions,
@@ -721,7 +1111,56 @@ def compute_local_log_likelihood(
         n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
         electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
 
-        marginal_density = block_kde(
+        if not is_streamed:
+            # Padded spikes and zero-weight samples let electrodes and chunks
+            # with nearby sizes share one compiled kernel.
+            n_padded = _padded_spike_count(position_at_spike_time.shape[0], block_size)
+            padded_positions, padded_weights = _padded_samples(
+                _spike_time_order,
+                electrode_encoding_positions,
+                electrode_encoding_weights,
+            )
+            padded_features, _ = _padded_samples(
+                _spike_time_order,
+                electrode_encoding_spike_waveform_features,
+                electrode_encoding_weights,
+            )
+            gpi_samples, gpi_weights = _padded_samples(
+                _spike_time_order,
+                electrode_gpi_model.samples_,
+                electrode_gpi_model.weights_,
+            )
+            log_likelihood, summed_expected_counts = _add_electrode_local_terms(
+                log_likelihood,
+                summed_expected_counts,
+                jnp.asarray(_pad_rows(position_at_spike_time, n_padded)),
+                jnp.asarray(
+                    _pad_rows(electrode_decoding_spike_waveform_features, n_padded)
+                ),
+                jnp.asarray(spike_row_ids(selection, n_padded)),
+                padded_positions,
+                padded_features,
+                padded_weights,
+                position_std_array,
+                electrode_waveform_std,
+                occupancy_model.samples_,
+                occupancy_model.weights_,
+                occupancy_std,
+                gpi_samples,
+                gpi_weights,
+                as_std_array(electrode_gpi_model.std, n_position_dims),
+                positions,
+                occupancy,
+                electrode_mean_rate * RATE_REFERENCE_SECONDS,
+                electrode_mean_rate,
+                block_size=min(block_size, n_padded),
+                occupancy_block_size=occupancy_model.block_size or n_padded,
+                gpi_block_size=electrode_gpi_model.block_size or n_rows,
+                indices_are_sorted=selection.indices_are_sorted,
+            )
+            continue
+
+        marginal_density = _sample_tiled_density(
             eval_points=jnp.concatenate(
                 (
                     position_at_spike_time,
@@ -738,9 +1177,20 @@ def compute_local_log_likelihood(
             ),
             std=jnp.concatenate((position_std, electrode_waveform_std)),
             weights=electrode_encoding_weights,
-            block_size=block_size,
+            sample_tile_size=_tile_size(
+                encoding_block_size, electrode_encoding_positions.shape[0]
+            ),
+            eval_tile_size=_tile_size(
+                position_block_size if position_block_size is not None else block_size,
+                position_at_spike_time.shape[0],
+            ),
         )
-        occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
+        occupancy_at_spike_time = _predict_kde_density(
+            occupancy_model,
+            position_at_spike_time,
+            encoding_block_size,
+            position_block_size,
+        )
 
         log_likelihood += sum_spikes_into_rows(
             safe_log(
@@ -759,7 +1209,12 @@ def compute_local_log_likelihood(
 
         summed_expected_counts += electrode_mean_rate * jnp.where(
             occupancy > 0.0,
-            electrode_gpi_model.predict(interpolated_position)
+            _predict_kde_density(
+                electrode_gpi_model,
+                interpolated_position,
+                encoding_block_size,
+                position_block_size,
+            )
             / jnp.where(occupancy > 0.0, occupancy, 1.0),
             0.0,
         )

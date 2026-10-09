@@ -1,0 +1,48 @@
+# Compiled clusterless GMM and log-space KDE likelihoods against eager per-electrode references
+# (the reference() functions in tests/likelihoods/test_clusterless_gmm_padding.py and
+# test_clusterless_kde_log_padding.py), over their fixtures' row slices, local and non-local.
+# Source: bd6b3e3f plus the padding cap and tests committed with this record. Apple M1 Max CPU.
+
+## GMM, uv.lock (JAX 0.9.0)
+x64=False local=False rows=(0, 2000): max abs 7.63e-06, max rel 1.70e-07, bitwise False
+x64=False local=False rows=(300, 333): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=False local=False rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=False local=True rows=(0, 2000): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=False local=True rows=(300, 333): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=False local=True rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=False rows=(0, 2000): max abs 2.84e-14, max rel 3.58e-16, bitwise False
+x64=True local=False rows=(300, 333): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=False rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=True rows=(0, 2000): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=True rows=(300, 333): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=True rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+## log-space KDE
+jax 0.9.0
+  float32 <=8 marks non-local: max abs 7.63e-06, max rel 1.79e-07
+  float32 <=8 marks local: max abs 3.81e-06, max rel 3.07e-07
+  float32 >8 marks non-local: max abs 7.63e-06, max rel 1.10e-07
+  float32 >8 marks local: max abs 2.24e-08, max rel 3.07e-07
+  float64 <=8 marks non-local: max abs 1.42e-14, max rel 3.23e-16
+  float64 <=8 marks local: max abs 7.11e-15, max rel 5.28e-16
+
+## GMM, --with jax==0.11.2 --with jaxlib==0.11.2 --with numpy==2.5.3 --with scipy==1.18.1
+x64=False local=False rows=(0, 2000): max abs 7.63e-06, max rel 2.71e-07, bitwise False
+x64=False local=False rows=(300, 333): max abs 7.63e-06, max rel 1.88e-07, bitwise False
+x64=False local=False rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=False local=True rows=(0, 2000): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=False local=True rows=(300, 333): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=False local=True rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=False rows=(0, 2000): max abs 1.42e-14, max rel 4.36e-16, bitwise False
+x64=True local=False rows=(300, 333): max abs 7.11e-15, max rel 3.30e-16, bitwise False
+x64=True local=False rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=True rows=(0, 2000): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=True rows=(300, 333): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+x64=True local=True rows=(5, 6): max abs 0.00e+00, max rel 0.00e+00, bitwise True
+## log-space KDE
+jax 0.11.2
+  float32 <=8 marks non-local: max abs 7.63e-06, max rel 1.83e-07
+  float32 <=8 marks local: max abs 3.81e-06, max rel 3.65e-07
+  float32 >8 marks non-local: max abs 7.63e-06, max rel 1.10e-07
+  float32 >8 marks local: max abs 2.98e-08, max rel 3.65e-07
+  float64 <=8 marks non-local: max abs 1.42e-14, max rel 2.13e-16
+  float64 <=8 marks local: max abs 5.55e-17, max rel 6.30e-16

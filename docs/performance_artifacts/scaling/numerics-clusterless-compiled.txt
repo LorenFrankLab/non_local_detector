@@ -1,0 +1,19 @@
+# Compiled, padded clusterless KDE versus the previous per-electrode code (CPU, float32).
+# Likelihoods: 12 s recording, 6 electrodes at 5-40 Hz, 4 cm grid, several row ranges;
+# float64 reference = previous code with JAX_ENABLE_X64=1, comparing elements where the
+# previous float32 value is within 1e-2 of it (excludes shared float32 underflow floors).
+
+all_nonlocal       new-vs-previous max|d| 1.53e-05 max rel 2.17e-07 | vs float64: previous median 1.4e-07 p99 4.9e-05 max 1.0e-02; new median 1.4e-07 p99 4.9e-05 max 1.0e-02
+all_local          new-vs-previous max|d| 7.63e-06 max rel 2.40e-07 | vs float64: previous median 1.2e-07 p99 2.6e-06 max 8.1e-06; new median 1.1e-07 p99 2.6e-06 max 8.1e-06
+chunk_a_nonlocal   new-vs-previous max|d| 7.63e-06 max rel 1.10e-07 | vs float64: previous median 1.3e-07 p99 5.0e-05 max 6.9e-03; new median 1.3e-07 p99 5.0e-05 max 6.9e-03
+chunk_a_local      new-vs-previous max|d| 2.98e-08 max rel 1.39e-07 | vs float64: previous median 4.8e-08 p99 3.2e-06 max 7.3e-06; new median 4.8e-08 p99 3.2e-06 max 7.3e-06
+chunk_b_nonlocal   new-vs-previous max|d| 1.53e-05 max rel 1.47e-07 | vs float64: previous median 1.4e-07 p99 4.9e-05 max 8.2e-03; new median 1.4e-07 p99 4.9e-05 max 8.2e-03
+chunk_b_local      new-vs-previous max|d| 7.63e-06 max rel 1.82e-07 | vs float64: previous median 1.5e-07 p99 2.6e-06 max 8.1e-06; new median 1.5e-07 p99 2.5e-06 max 8.1e-06
+sparse_nonlocal    new-vs-previous max|d| 3.87e-04 max rel 1.56e-05 | vs float64: previous median 1.4e-07 p99 4.9e-05 max 6.9e-03; new median 1.4e-07 p99 4.9e-05 max 6.9e-03
+sparse_local       new-vs-previous max|d| 2.98e-08 max rel 1.39e-07 | vs float64: previous median 6.1e-08 p99 3.5e-06 max 3.9e-06; new median 6.1e-08 p99 3.5e-06 max 3.9e-06
+
+states (12 s, chunk_size=1024): max|d| 1.76e-06, MAP agreement 1.00000
+
+# State probabilities, 30 s compact, 8 electrodes, 2 cm grid, default chunk size (benchmarks/compare_prediction_modes.py).
+base     max|d| 2.38e-06 median row 8.94e-08 p99 6.56e-07 rows>1e-5 0 of 15000 MAP agreement 1.00000 max|row sum - 1| 4.8e-07
+spread3  max|d| 3.04e-06 median row 1.19e-07 p99 8.94e-07 rows>1e-5 0 of 15000 MAP agreement 1.00000 max|row sum - 1| 4.8e-07

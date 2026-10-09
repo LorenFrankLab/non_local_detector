@@ -1,0 +1,37 @@
+{
+  "jax_enable_x64": true,
+  "gpu_uuid": "GPU-5a9bd343-46b0-185e-ef70-41f06e187fb0",
+  "cases": [
+    {
+      "dtype": "float32",
+      "events": 128,
+      "forward_exact": true,
+      "gradient_exact": true,
+      "jvp_exact": true,
+      "invalid_nan_dropped": true
+    },
+    {
+      "dtype": "float64",
+      "events": 128,
+      "forward_exact": true,
+      "gradient_exact": true,
+      "jvp_exact": true,
+      "invalid_nan_dropped": true
+    }
+  ],
+  "component_mass_gradient_dtype": "float64",
+  "component_mass_gradient_exact": true,
+  "source_aggregate": "ca3ec7343f692edb6a59d0bc053b46436a21f404d1be6d622939369b9a39b507",
+  "device_memory_stats": {
+    "num_allocs": 106,
+    "bytes_in_use": 15616,
+    "peak_bytes_in_use": 100681728,
+    "largest_alloc_size": 33554432,
+    "bytes_limit": 6807502040,
+    "bytes_reserved": 0,
+    "peak_bytes_reserved": 0,
+    "largest_free_block_bytes": 0,
+    "pool_bytes": 136314880,
+    "peak_pool_bytes": 136314880
+  }
+}

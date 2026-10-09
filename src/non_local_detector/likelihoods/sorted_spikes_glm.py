@@ -67,19 +67,34 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
+    _blocked_nonlocal_poisson_log_likelihood,
+    _concatenate_row_blocks,
+    _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
     get_position_at_time,
-    get_spikecount_per_time_bin,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
 )
+from non_local_detector.likelihoods.no_spike import _poisson_row_log_likelihood
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
     requires_time_edges,
 )
+
+
+@jax.jit
+def _local_glm_log_likelihood(design, coefficients, counts, durations):
+    if counts.shape[1] == 0:
+        return jnp.zeros((counts.shape[0],))
+    rate = jax.lax.optimization_barrier(
+        jnp.exp(jnp.matmul(design, coefficients.T, precision=jax.lax.Precision.HIGHEST))
+    )
+    rate = jax.lax.optimization_barrier(jnp.clip(rate, min=RATE_EPS_HZ, max=None))
+    expected = jax.lax.optimization_barrier(rate * durations[:, None])
+    return _poisson_row_log_likelihood(counts, expected)
 
 
 def make_spline_design_matrix(
@@ -602,12 +617,9 @@ def predict_sorted_spikes_glm_log_likelihood(
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
-    n_rows = row_stop - row_start
     row_time = decode_bin_centers(time_edges, row_start, row_stop)
 
     if is_local:
-        log_likelihood = jnp.zeros((n_rows,))
-
         # Need to interpolate position
         interpolated_position = get_position_at_time(
             position_time, position, row_time, environment
@@ -615,58 +627,42 @@ def predict_sorted_spikes_glm_log_likelihood(
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, interpolated_position
         )
-        for neuron_spike_times, coef in zip(
-            tqdm(
+        design = jnp.asarray(emission_predict_matrix)
+        coefficients = jnp.asarray(coefficients)
+
+        def evaluate(start, stop):
+            rows = slice(start - row_start, stop - row_start)
+            counts = _spike_counts_matrix(
                 spike_times,
-                unit="cell",
-                desc="Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            coefficients,
-            strict=True,
-        ):
-            spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times,
-                time_edges=time_edges,
-                row_slice=row_slice,
+                time_edges,
+                "Local Likelihood",
+                True,
+                slice(start, stop),
                 _spike_time_order=_spike_time_order,
             )
-            local_rate = jnp.exp(emission_predict_matrix @ coef)
-            local_rate = jnp.clip(local_rate, min=RATE_EPS_HZ, max=None)
-            local_rate = local_rate * durations
-            log_likelihood += (
-                jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
-                - local_rate
+            return _local_glm_log_likelihood(
+                design[rows], coefficients, jnp.asarray(counts), durations[rows]
             )
 
-        log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
+        log_likelihood = _concatenate_row_blocks(
+            row_start,
+            row_stop,
+            len(spike_times),
+            evaluate,
+            "Local Likelihood",
+            disable_progress_bar,
+        )[:, None]
     else:
-        n_interior_bins = is_track_interior.sum()
-        log_likelihood = jnp.zeros((n_rows, n_interior_bins))
-        for neuron_spike_times, place_field in zip(
-            tqdm(
-                spike_times,
-                unit="cell",
-                desc="Non-Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            place_fields,
-            strict=True,
-        ):
-            spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times,
-                time_edges=time_edges,
-                row_slice=row_slice,
-                _spike_time_order=_spike_time_order,
-            )
-            log_likelihood += jax.scipy.special.xlogy(
-                np.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field[is_track_interior], axis=0)
-                * durations[:, None],
-            )
-
-        log_likelihood -= (
-            durations[:, None] * no_spike_part_log_likelihood[is_track_interior]
+        log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
+            spike_times,
+            time_edges,
+            row_start,
+            row_stop,
+            jnp.asarray(place_fields)[:, is_track_interior],
+            durations,
+            no_spike_part_log_likelihood[is_track_interior],
+            disable_progress_bar=disable_progress_bar,
+            _spike_time_order=_spike_time_order,
         )
 
     return log_likelihood

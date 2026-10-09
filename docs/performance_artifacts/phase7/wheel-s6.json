@@ -1,0 +1,47 @@
+{
+  "snapshot": "S6",
+  "wheel_name": "non_local_detector-0.6.10.dev502+gfe1b2e976.d20261006-py3-none-any.whl",
+  "wheel_sha256": "edb3ad48f785cf4fd71c5a4af85c2e7b2fe9aa90e467d3b016f6356ebc8c286d",
+  "runtime_files": 61,
+  "runtime_aggregate_sha256": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+  "all_runtime_bytes_match_frozen_snapshot": true,
+  "installed_smokes": [
+    {
+      "case": "sorted-compact",
+      "encoding_tiles_enabled": false,
+      "rows": 64,
+      "decoded_spikes": [
+        4,
+        4
+      ],
+      "dtypes": {
+        "acausal_state_probabilities": "float32"
+      },
+      "evidence_precision": {
+        "evidence_dtype": "float64",
+        "evidence_accumulation": "stable"
+      },
+      "exit_code": 0,
+      "report_sha256": "91c5b403d082e030c5da4c05013622ec0f263c335422ca318f53f9e6791a8a82"
+    },
+    {
+      "case": "clusterless-spatial",
+      "encoding_tiles_enabled": true,
+      "rows": 64,
+      "decoded_spikes": [
+        4,
+        4
+      ],
+      "dtypes": {
+        "acausal_posterior": "float32",
+        "acausal_state_probabilities": "float32"
+      },
+      "evidence_precision": {
+        "evidence_dtype": "float64",
+        "evidence_accumulation": "stable"
+      },
+      "exit_code": 0,
+      "report_sha256": "b066d2e4fadefa52dad9d0562aff8747966ced273c1a4165286806cb7bd9f195"
+    }
+  ]
+}

@@ -1,0 +1,195 @@
+{
+ "family": "clusterless",
+ "duration_s": 30.0,
+ "rows": 15000,
+ "bin_size_cm": 2.0,
+ "arena_cm": 180.0,
+ "population": 128,
+ "chunk_size": 3963,
+ "backend": "gpu",
+ "device": "cuda:0",
+ "jax": "0.9.0",
+ "uninstrumented_warm_seconds": 22.946397876366973,
+ "instrumented_seconds": 9.965580344200134,
+ "stage_seconds": {
+  "likelihood_local": 3.9277436593547463,
+  "likelihood_no_spike": 0.06544010154902935,
+  "likelihood_nonlocal": 3.1103362888097763,
+  "forward_filter_chunks": 1.6164341978728771,
+  "checkpoint_write": 0.002072742208838463,
+  "checkpoint_read": 0.0008434327319264412,
+  "backward_smoother_chunks": 1.1630140729248524,
+  "other": 0.07969584874808788
+ },
+ "stage_fraction": {
+  "likelihood_local": 0.39413095110317914,
+  "likelihood_no_spike": 0.006566612208100336,
+  "likelihood_nonlocal": 0.31210789350767315,
+  "forward_filter_chunks": 0.1622017124987232,
+  "checkpoint_write": 0.0002079901157030737,
+  "checkpoint_read": 8.463458251252878e-05,
+  "backward_smoother_chunks": 0.11670309532968791,
+  "other": 0.007997110654420648
+ },
+ "stage_calls": {
+  "likelihood_local": 8,
+  "likelihood_no_spike": 8,
+  "likelihood_nonlocal": 8,
+  "forward_filter_chunks": 8,
+  "checkpoint_write": 4,
+  "checkpoint_read": 4,
+  "backward_smoother_chunks": 4
+ },
+ "host_functions_by_own_time": [
+  {
+   "function": "dispatch.py:84(apply_primitive)",
+   "own_seconds": 2.7829416300000003,
+   "cumulative_seconds": 2.8655662530000003,
+   "calls": 34997
+  },
+  {
+   "function": "checkpointed_inference.py:289(checkpointed_forward_backward)",
+   "own_seconds": 1.882875636,
+   "cumulative_seconds": 13.51414347,
+   "calls": 1
+  },
+  {
+   "function": "checkpointed_inference.py:555(forward_increment_sums)",
+   "own_seconds": 0.573848911,
+   "cumulative_seconds": 6.332319379,
+   "calls": 5
+  },
+  {
+   "function": "array_methods.py:604(deferring_binary_op)",
+   "own_seconds": 0.5022507190000001,
+   "cumulative_seconds": 0.9298140130000001,
+   "calls": 14402
+  },
+  {
+   "function": "common.py:892(deterministic_row_sum)",
+   "own_seconds": 0.419716203,
+   "cumulative_seconds": 3.292509567,
+   "calls": 2048
+  },
+  {
+   "function": "lax_numpy.py:2712(where)",
+   "own_seconds": 0.394779729,
+   "cumulative_seconds": 0.44064295600000003,
+   "calls": 5128
+  },
+  {
+   "function": "ufunc_api.py:175(__call__)",
+   "own_seconds": 0.36884066000000004,
+   "cumulative_seconds": 0.412433696,
+   "calls": 7241
+  },
+  {
+   "function": "common.py:1160(block_kde)",
+   "own_seconds": 0.35260167000000003,
+   "cumulative_seconds": 0.5417281620000001,
+   "calls": 3080
+  },
+  {
+   "function": "util.py:297(wrapper)",
+   "own_seconds": 0.34998855500000003,
+   "cumulative_seconds": 0.588436572,
+   "calls": 176079
+  },
+  {
+   "function": "~:0(<built-in method builtins.isinstance>)",
+   "own_seconds": 0.332296553,
+   "cumulative_seconds": 0.336164114,
+   "calls": 1186686
+  },
+  {
+   "function": "time_edges.py:45(wrapped)",
+   "own_seconds": 0.306622063,
+   "cumulative_seconds": 13.530905016,
+   "calls": 8226
+  },
+  {
+   "function": "lax.py:1623(_convert_element_type)",
+   "own_seconds": 0.170662917,
+   "cumulative_seconds": 2.96700685,
+   "calls": 39095
+  },
+  {
+   "function": "clusterless_kde.py:231(block_estimate_log_joint_mark_intensity)",
+   "own_seconds": 0.168279233,
+   "cumulative_seconds": 0.651343933,
+   "calls": 1024
+  },
+  {
+   "function": "common.py:1090(_log_kernel_matrix)",
+   "own_seconds": 0.1588227,
+   "cumulative_seconds": 1.944548659,
+   "calls": 1024
+  },
+  {
+   "function": "dtypes.py:932(dtype)",
+   "own_seconds": 0.15101917,
+   "cumulative_seconds": 0.2792914,
+   "calls": 64975
+  },
+  {
+   "function": "common.py:1598(safe_log)",
+   "own_seconds": 0.145220743,
+   "cumulative_seconds": 0.30915858300000004,
+   "calls": 1024
+  },
+  {
+   "function": "core.py:634(_true_bind)",
+   "own_seconds": 0.109144083,
+   "cumulative_seconds": 3.7024490240000003,
+   "calls": 34997
+  },
+  {
+   "function": "lax_numpy.py:4220(pad)",
+   "own_seconds": 0.10811865300000001,
+   "cumulative_seconds": 0.36248510500000003,
+   "calls": 1024
+  },
+  {
+   "function": "pxla.py:235(batched_device_put)",
+   "own_seconds": 0.105594903,
+   "cumulative_seconds": 0.110683049,
+   "calls": 2144
+  },
+  {
+   "function": "~:0(<jaxlib.utils.safe_map>)",
+   "own_seconds": 0.10338950200000001,
+   "cumulative_seconds": 1.023685948,
+   "calls": 109293
+  },
+  {
+   "function": "array_constructors.py:85(array)",
+   "own_seconds": 0.093756566,
+   "cumulative_seconds": 0.792778973,
+   "calls": 8399
+  },
+  {
+   "function": "core.py:1782(get_aval)",
+   "own_seconds": 0.093248118,
+   "cumulative_seconds": 0.916214662,
+   "calls": 96224
+  },
+  {
+   "function": "clusterless_kde.py:768(compute_local_log_likelihood)",
+   "own_seconds": 0.09286366800000001,
+   "cumulative_seconds": 5.357844895,
+   "calls": 8
+  },
+  {
+   "function": "core.py:1196(process_primitive)",
+   "own_seconds": 0.092156523,
+   "cumulative_seconds": 3.0313477580000003,
+   "calls": 34997
+  },
+  {
+   "function": "dtypes.py:876(is_weakly_typed)",
+   "own_seconds": 0.09027265100000001,
+   "cumulative_seconds": 0.10097227900000001,
+   "calls": 70165
+  }
+ ]
+}

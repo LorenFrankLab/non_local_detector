@@ -35,10 +35,10 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
+    _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
     get_position_at_time,
-    get_spikecount_per_time_bin,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_population_lengths,
@@ -591,38 +591,6 @@ def fit_sorted_spikes_diffusion_encoding_model(
     }
 
 
-def _spike_counts_matrix(
-    spike_times: list[np.ndarray],
-    time_edges: np.ndarray,
-    desc: str,
-    disable_progress_bar: bool,
-    row_slice: slice | None = None,
-    *,
-    _spike_time_order: _SpikeTimeOrder | None = None,
-) -> np.ndarray:
-    """Stack per-neuron spike counts into a ``(n_rows, n_neurons)`` matrix.
-
-    ``get_spikecount_per_time_bin`` bins spikes against the full ``time_edges`` and
-    selects those owned by ``row_slice`` internally, so no explicit pre-masking
-    is needed here. ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
-    """
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    counts = [
-        get_spikecount_per_time_bin(
-            neuron_spike_times,
-            time_edges=time_edges,
-            row_slice=row_slice,
-            _spike_time_order=_spike_time_order,
-        )
-        for neuron_spike_times in tqdm(
-            spike_times, unit="cell", desc=desc, disable=disable_progress_bar
-        )
-    ]
-    if not counts:  # zero neurons
-        return np.zeros((row_stop - row_start, 0))
-    return np.stack(counts, axis=1)
-
-
 @requires_time_edges
 def predict_sorted_spikes_diffusion_log_likelihood(
     position_time: np.ndarray,
@@ -794,7 +762,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         ),
         dtype=log_interior_fields.dtype,
     )
-    log_likelihood = spike_counts @ log_interior_fields
+    log_likelihood = jnp.matmul(
+        spike_counts, log_interior_fields, precision=jax.lax.Precision.HIGHEST
+    )
     log_likelihood += spike_counts.sum(axis=1)[:, None] * jnp.log(durations)[:, None]
     log_likelihood -= (
         durations[:, None] * no_spike_part_log_likelihood[is_track_interior]

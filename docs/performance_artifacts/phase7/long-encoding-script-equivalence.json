@@ -1,0 +1,8 @@
+{
+  "original": "/private/tmp/nld-phase7-long-encoding-numerics/qualifier-original-eec.py",
+  "original_sha256": "eec336a38dbfd79ba0312fdbf2e84aeaee9d43aa34535cad6d2183efb0f06710",
+  "published": "/private/tmp/nld-phase7-performance/scripts/qualify_phase7_long_encoding.py",
+  "published_sha256": "abf6ac2a675c9e29f5dc6107e80e6a6c8d588852a6045dcb3ca1608cf7428666",
+  "ast_equivalent_after_import_order_normalization": true,
+  "changes": "Ruff formatting and import ordering only; same import nodes and all other AST nodes"
+}

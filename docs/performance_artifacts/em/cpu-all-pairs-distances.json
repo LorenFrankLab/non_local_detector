@@ -1,0 +1,24 @@
+{
+ "description": "Wall time of Environment.fit_place_grid on a 180 x 180 cm open field (infer_track_interior=False, 20,000 uniform positions, seed 0) with and without all-pairs graph distances. Dense detector fits (the default, and every estimate_parameters call) request all-pairs distances. One process per grid size, no profiler, nothing else running.",
+ "host": "Erics-MacBook-Pro-10.local",
+ "machine": "Apple M1 Max, 64 GB",
+ "python": "3.13.5",
+ "networkx": "3.6.1",
+ "numpy": "2.4.1",
+ "source_commit": "e9e41cbe",
+ "runs": [
+  {
+   "bin_size_cm": 4.0,
+   "interior_bins": 2209,
+   "without_all_pairs_seconds": 0.1286518750130199,
+   "with_all_pairs_seconds": 9.940320499998052
+  },
+  {
+   "bin_size_cm": 2.0,
+   "interior_bins": 8464,
+   "without_all_pairs_seconds": 0.5682867499999702,
+   "with_all_pairs_seconds": 168.38449733302696,
+   "process_peak_rss_bytes": 943013888
+  }
+ ]
+}

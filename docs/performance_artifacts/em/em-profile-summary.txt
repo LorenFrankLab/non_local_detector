@@ -1,0 +1,18 @@
+# cProfile of two estimate_parameters calls in one process (first + warm), A100 (JAX 0.9.0),
+# clusterless, 60 s session, 4 cm grid (4,420 state bins), 3 EM iterations, run alone on zephyr.
+# base0 = 09d1d67a (start of the bottleneck work); headG = cd106d1e. Cumulative seconds overlap.
+
+== base0: first 95.1 s, warm 77.5 s (profiled)
+       42.6 s cumulative   4418 calls  weighted.py:784(_dijkstra_multisource)
+       26.1 s cumulative      8 calls  core.py:756(chunked_filter_smoother)
+       10.7 s cumulative      8 calls  base.py:281(row_callback)
+        4.5 s cumulative      6 calls  discrete_state_transitions.py:1092(_estimate_discrete_transition)
+        0.3 s cumulative      8 calls  base.py:3890(fit_encoding_model)
+        0.2 s cumulative      8 calls  clusterless_kde.py:286(fit_clusterless_kde_encoding_model)
+== headG: first 98.3 s, warm 81.1 s (profiled)
+       42.8 s cumulative   4418 calls  weighted.py:784(_dijkstra_multisource)
+       24.9 s cumulative      8 calls  core.py:756(chunked_filter_smoother)
+        9.3 s cumulative      8 calls  base.py:281(row_callback)
+        4.5 s cumulative      6 calls  discrete_state_transitions.py:1092(_estimate_discrete_transition)
+        0.8 s cumulative      8 calls  base.py:3893(fit_encoding_model)
+        0.2 s cumulative      8 calls  clusterless_kde.py:491(fit_clusterless_kde_encoding_model)

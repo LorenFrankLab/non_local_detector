@@ -1791,3 +1791,33 @@ def test_benchmark_diffusion_vs_kde_large_grid():
         f"(resolved_rank={enc_diff['resolved_rank']}, n_enc/elec={n_enc}, "
         f"n_dec/elec={n_dec}, n_elec={n_elec})"
     )
+
+
+@pytest.mark.unit
+def test_encoding_spikes_are_bin_sorted_and_legacy_unsorted_models_still_predict(
+    reduction_path,
+):
+    """Fit stores bin-sorted encoding spikes; older unsorted models agree.
+
+    The segmented scan requires the sorted ids that predict re-sorts legacy
+    models into; CPU's sequential scatter does not.
+    """
+    s = _sim(seed=4)
+    encoding = _fit(s)
+    for bins in encoding["encoding_bin_indices"]:
+        assert np.all(np.diff(np.asarray(bins)) >= 0)
+    legacy = dict(encoding)
+    rng = np.random.default_rng(3)
+    orders = [rng.permutation(len(bins)) for bins in encoding["encoding_bin_indices"]]
+    for key in ("encoding_bin_indices", "encoding_marks", "encoding_weights"):
+        legacy[key] = [
+            np.asarray(array)[order]
+            for array, order in zip(encoding[key], orders, strict=True)
+        ]
+    for is_local in (False, True):
+        np.testing.assert_allclose(
+            _predict(s, legacy, is_local=is_local),
+            _predict(s, encoding, is_local=is_local),
+            rtol=1e-5,
+            atol=1e-5,
+        )

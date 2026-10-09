@@ -52,7 +52,6 @@ and one low-rank diffusion. Prob-space throughout, with ``safe_log`` flooring to
 import logging
 import warnings
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
@@ -68,6 +67,7 @@ from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     as_std_array,
     decode_bin_centers,
+    deterministic_row_sum,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
@@ -438,11 +438,16 @@ def fit_clusterless_diffusion_encoding_model(
             environment,
             encoding_support=support,
         )
-        bins = _interior_bin_indices(environment, spike_positions, full_to_local)
+        bins = np.asarray(
+            _interior_bin_indices(environment, spike_positions, full_to_local)
+        )
+        # Store encoding spikes sorted by bin: predict sums them by bin with
+        # indices_are_sorted=True, which requires nondecreasing ids.
+        order = np.argsort(bins, kind="stable")
 
-        encoding_bin_indices.append(np.asarray(bins))
-        encoding_marks.append(jnp.asarray(bounded_features))
-        encoding_weights.append(jnp.asarray(spike_weights))
+        encoding_bin_indices.append(bins[order])
+        encoding_marks.append(jnp.asarray(np.asarray(bounded_features)[order]))
+        encoding_weights.append(jnp.asarray(np.asarray(spike_weights)[order]))
         weight_total.append(w_total)
 
         if w_total == 0:
@@ -490,6 +495,23 @@ def fit_clusterless_diffusion_encoding_model(
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
+
+
+def _bin_sorted_encoding(bins, marks, weights):
+    """Device encoding bins, marks and weights in nondecreasing bin order.
+
+    Predict sums by bin with ``indices_are_sorted=True``. Models fitted before
+    encoding spikes were stored bin-sorted are sorted here (stably).
+    """
+    bins = np.asarray(bins)
+    if np.any(bins[1:] < bins[:-1]):
+        order = np.argsort(bins, kind="stable")
+        bins, marks, weights = (
+            bins[order],
+            np.asarray(marks)[order],
+            np.asarray(weights)[order],
+        )
+    return jnp.asarray(bins), jnp.asarray(marks), jnp.asarray(weights)
 
 
 @requires_time_edges
@@ -696,9 +718,9 @@ def predict_clusterless_diffusion_log_likelihood(
 
             seg = jnp.asarray(selection.bin_ind)
 
-            enc_bins = jnp.asarray(electrode_bins)
-            enc_marks = jnp.asarray(electrode_marks)
-            enc_weights = jnp.asarray(electrode_weights)
+            enc_bins, enc_marks, enc_weights = _bin_sorted_encoding(
+                electrode_bins, electrode_marks, electrode_weights
+            )
             n_enc = enc_marks.shape[0]
             n_features = enc_marks.shape[1]
             electrode_waveform_std = as_std_array(waveform_std, n_features)
@@ -733,10 +755,8 @@ def predict_clusterless_diffusion_log_likelihood(
                     decode_block, enc_marks, electrode_waveform_std
                 )
                 weighted_kernel = enc_weights[:, None] * mark_kernel
-                D = (
-                    jnp.zeros((n_bins, decode_block.shape[0]))
-                    .at[enc_bins]
-                    .add(weighted_kernel)
+                D = deterministic_row_sum(
+                    weighted_kernel, enc_bins, n_bins, indices_are_sorted=True
                 )
                 P = heat_kernel_apply(
                     Lam, Q, position_std, D, labels, n_components=n_components
@@ -749,11 +769,11 @@ def predict_clusterless_diffusion_log_likelihood(
                     electrode_mean_rate * p_e_at_animal / occupancy[spike_bins_block],
                     eps=RATE_EPS_HZ,
                 )  # (n_block,)
-                log_likelihood += jax.ops.segment_sum(
+                log_likelihood += deterministic_row_sum(
                     lc,
                     seg_block,
+                    selection.n_rows,
                     indices_are_sorted=selection.indices_are_sorted,
-                    num_segments=selection.n_rows,
                 )
 
         return (
@@ -830,9 +850,9 @@ def predict_clusterless_diffusion_log_likelihood(
 
         seg = jnp.asarray(selection.bin_ind)
 
-        enc_bins = jnp.asarray(electrode_bins)
-        enc_marks = jnp.asarray(electrode_marks)
-        enc_weights = jnp.asarray(electrode_weights)
+        enc_bins, enc_marks, enc_weights = _bin_sorted_encoding(
+            electrode_bins, electrode_marks, electrode_weights
+        )
         n_enc = enc_marks.shape[0]
         n_features = enc_marks.shape[1]
         electrode_waveform_std = as_std_array(waveform_std, n_features)
@@ -864,10 +884,8 @@ def predict_clusterless_diffusion_log_likelihood(
             mark_kernel = kde_distance(decode_block, enc_marks, electrode_waveform_std)
             # D_e[:, j] = sum_i w_i K(m_j, m_i) onehot(bin(x_i))  -> (n_bins, n_block)
             weighted_kernel = enc_weights[:, None] * mark_kernel
-            D = (
-                jnp.zeros((n_bins, decode_block.shape[0]))
-                .at[enc_bins]
-                .add(weighted_kernel)
+            D = deterministic_row_sum(
+                weighted_kernel, enc_bins, n_bins, indices_are_sorted=True
             )
             P = heat_kernel_apply(
                 Lam, Q, position_std, D, labels, n_components=n_components
@@ -881,11 +899,11 @@ def predict_clusterless_diffusion_log_likelihood(
             log_intensity = safe_log(
                 electrode_mean_rate * p_e / occupancy_col, eps=RATE_EPS_HZ
             )  # (n_bins, n_block)
-            log_likelihood += jax.ops.segment_sum(
+            log_likelihood += deterministic_row_sum(
                 log_intensity.T,
                 seg_block,
+                selection.n_rows,
                 indices_are_sorted=selection.indices_are_sorted,
-                num_segments=selection.n_rows,
             )
 
     return (

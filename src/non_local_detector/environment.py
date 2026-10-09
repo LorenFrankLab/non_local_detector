@@ -64,6 +64,10 @@ from scipy.interpolate import interp1d  # type: ignore[import-untyped]
 from track_linearization import plot_graph_as_1D  # type: ignore[import-untyped]
 
 from non_local_detector.exceptions import ConfigurationError, ValidationError
+from non_local_detector.graph_distances import (
+    DEFAULT_MAX_DENSE_DISTANCE_BYTES,
+    LazyGraphDistances,
+)
 
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:
@@ -224,7 +228,9 @@ class Environment:
     is_track_interior_: np.ndarray | None = None
     is_track_boundary_: np.ndarray | None = None
     track_graphDD: nx.Graph | None = None  # For N-D case
-    distance_between_nodes_: dict[int, dict[int, float]] | np.ndarray | None = None
+    distance_between_nodes_: (
+        dict[int, dict[int, float]] | np.ndarray | LazyGraphDistances | None
+    ) = None
     track_graph_with_bin_centers_edges_: nx.Graph | None = None  # For 1D case
     original_nodes_df_: pd.DataFrame | None = None
     place_bin_edges_nodes_df_: pd.DataFrame | None = None
@@ -461,7 +467,12 @@ class Environment:
                 )
 
     def fit_place_grid(
-        self, position: np.ndarray | None = None, infer_track_interior: bool = True
+        self,
+        position: np.ndarray | None = None,
+        infer_track_interior: bool = True,
+        *,
+        compute_all_pairs_distances: bool = True,
+        max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> "Environment":
         """Fits a discrete grid of the spatial environment.
 
@@ -471,6 +482,14 @@ class Environment:
             Position of the animal.
         infer_track_interior : bool, optional
             Whether to infer the spatial geometry of track from position
+        compute_all_pairs_distances : bool, optional
+            By default True, which builds the all-pairs graph-distance matrix.
+            False keeps an exact sparse query view for Cartesian environments,
+            avoiding quadratic setup. Explicit 1D track graphs keep their
+            distance dictionary either way, without this memory bound.
+        max_dense_distance_bytes : int, optional
+            Byte limit for dense conversions and selections of the deferred
+            Cartesian view, by default 256 MiB.
 
         Returns
         -------
@@ -570,18 +589,22 @@ class Environment:
                 self.is_track_boundary_ = None
 
             self.track_graphDD = make_nD_track_graph_from_environment(self)
-            node_positions = nx.get_node_attributes(self.track_graphDD, "pos")
-            node_positions = np.asarray(list(node_positions.values()))
-            distance = np.full((len(node_positions), len(node_positions)), np.inf)
-            for to_node_id, from_node_id in nx.shortest_path_length(
-                self.track_graphDD,
-                weight="distance",
-            ):
-                distance[to_node_id, list(from_node_id.keys())] = list(
-                    from_node_id.values()
+            if compute_all_pairs_distances:
+                node_positions = nx.get_node_attributes(self.track_graphDD, "pos")
+                node_positions = np.asarray(list(node_positions.values()))
+                distance = np.full((len(node_positions), len(node_positions)), np.inf)
+                for to_node_id, from_node_id in nx.shortest_path_length(
+                    self.track_graphDD,
+                    weight="distance",
+                ):
+                    distance[to_node_id, list(from_node_id.keys())] = list(
+                        from_node_id.values()
+                    )
+                self.distance_between_nodes_ = distance
+            else:
+                self.distance_between_nodes_ = LazyGraphDistances.from_graph(
+                    self.track_graphDD, max_dense_bytes=max_dense_distance_bytes
                 )
-
-            self.distance_between_nodes_ = distance
 
         else:
             # Note: track_graph validation is done in __post_init__
@@ -961,7 +984,11 @@ class Environment:
         -------
         distances : np.ndarray, shape (n_positions, n_interior_bins)
             Distance from each position to each interior bin. Rows for
-            off-track positions are NaN; unreachable bin pairs are inf.
+            off-track positions are NaN; unreachable bin pairs are inf. The
+            array is float64 and caller-owned: deferred graph distances budget
+            only their Dijkstra workspace and row cache, not this output, so
+            whole-recording requests allocate ``8 * n_positions *
+            n_interior_bins`` bytes.
 
         Raises
         ------
@@ -1009,6 +1036,12 @@ class Environment:
                 np.ix_(position_bin_inds, interior_bin_indices)
             ]
 
+        if isinstance(self.distance_between_nodes_, LazyGraphDistances):
+            # N-D deferred distances: exact rows for the visited source bins.
+            position_bin_inds = self.get_bin_ind(np.asarray(positions))
+            return self.distance_between_nodes_.cross_distances(
+                position_bin_inds, interior_bin_indices
+            )
         if self.distance_between_nodes_ is not None and not isinstance(
             self.distance_between_nodes_, dict
         ):

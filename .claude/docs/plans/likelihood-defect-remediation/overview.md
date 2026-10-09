@@ -16,6 +16,9 @@
    contracts.
 5. Take additional kernel and compilation improvements when profiling shows a
    benefit within the same memory budget.
+6. Make EM parameter estimation's cost and limits known on users' hardware
+   (24 GB GPUs, A100s, CPUs), then bound its memory without changing the
+   estimator ([phase 9](phase-9-em-performance.md)).
 
 ## Non-goals
 
@@ -30,9 +33,11 @@
 - Changing spatial/temporal resolution, truncating Gaussian tails, or using
   approximate smoothing to obtain performance parity. These would change the
   scientific model and require separate scope and validation.
-- A bounded-memory redesign of whole-session EM or Viterbi. Phase 7 targets
-  decoding with fitted parameters; its filtering/smoothing results must not be
-  presented as evidence that every inference or fitting API scales similarly.
+- A bounded-memory Viterbi. Phase 7 targets decoding with fitted parameters;
+  its filtering/smoothing results must not be presented as evidence that every
+  inference or fitting API scales similarly. Bounded-memory EM is Phase 9.
+- Approximate EM (subsampled time, truncated transitions, stochastic updates).
+  It would change the estimator and needs its own scientific proposal.
 
 ## Representative workload
 

@@ -1,0 +1,37 @@
+# XLA compilations during a first prediction, A100 (JAX 0.9.0): clusterless compact,
+# 120 s recording, 128 electrodes with per-electrode rates spread 2**3 around 20 Hz
+# (--rate-spread 3), 2 cm grid, default chunk size. head = the code before compiling
+# the per-electrode likelihood (its run hit the 3,000 s timeout without finishing, so
+# its file is empty); cljit = encoding samples padded to four sizes per octave;
+# cljit2 = two per octave; cljit1 = powers of two.
+== compile-head-pop128-spread3-120.txt
+== compile-cljit-pop128-spread3-120.txt
+clusterless population 128: first predict 152.3 s, 163 compilations, 113.6 s compiling
+      52.2 s     43x  jit(_add_electrode_local_terms)
+      48.9 s     43x  jit(_add_electrode_mark_intensities)
+       3.3 s      4x  jit(_forward_chunk)
+       2.6 s      2x  jit(_backward_chunk)
+       1.6 s      2x  jit(_prepare_chunk)
+       1.2 s      4x  jit(scatter)
+       0.6 s      4x  jit(_sum_state_rows)
+       0.6 s      2x  jit(kde)
+== compile-cljit2-pop128-spread3-120.txt
+clusterless population 128: first predict 105.6 s, 129 compilations, 72.8 s compiling
+      31.5 s     26x  jit(_add_electrode_local_terms)
+      29.5 s     26x  jit(_add_electrode_mark_intensities)
+       3.1 s      4x  jit(_forward_chunk)
+       2.3 s      2x  jit(_backward_chunk)
+       1.5 s      2x  jit(_prepare_chunk)
+       1.2 s      4x  jit(scatter)
+       0.6 s      2x  jit(kde)
+       0.6 s      4x  jit(_sum_state_rows)
+== compile-cljit1-pop128-spread3-120.txt
+clusterless population 128: first predict 85.6 s, 109 compilations, 51.6 s compiling
+      19.8 s     16x  jit(_add_electrode_local_terms)
+      19.4 s     16x  jit(_add_electrode_mark_intensities)
+       3.3 s      4x  jit(_forward_chunk)
+       2.6 s      2x  jit(_backward_chunk)
+       1.5 s      2x  jit(_prepare_chunk)
+       1.2 s      4x  jit(scatter)
+       0.7 s      2x  jit(kde)
+       0.6 s      4x  jit(_sum_state_rows)

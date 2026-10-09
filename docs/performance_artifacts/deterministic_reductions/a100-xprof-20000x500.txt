@@ -1,0 +1,32 @@
+# xprof traces, A100 (JAX 0.9.0), 20000 spikes x 500 columns, 3 calls each.
+# Launch totals summed over every kernel row (the tables below show the top
+# rows only): serial loop 180,003 launches (4 distinct kernels); segmented
+# scan 177 launches (31 distinct kernels); scatter 6 launches (2 kernels).
+=== serial_loop 20000x500, 3 calls
+=== Kernels: total 376.7 ms across 4 kernels, TensorCore share 0.0%  ===
+  dur(ms)   calls  tc  kernel                       op                                      
+    136.3   60000      loop_dynamic_update_slice_fu jit(<lambda>)/jit(_serial_row_sum)/while
+    129.9   60000      loop_dynamic_slice_fusion    jit(<lambda>)/jit(_serial_row_sum)/while
+    110.6   60000      loop_add_fusion              jit(<lambda>)/jit(_serial_row_sum)/while
+      0.0       3      loop_broadcast_fusion        jit(<lambda>)/jit(_serial_row_sum)/broad
+
+=== Time by jit(...) module (top 15) ===
+  GPU_0_bfc: peak=0.06 GB / capacity 59.44 GB
+=== segmented_scan 20000x500, 3 calls
+=== Kernels: total 0.5 ms across 31 kernels, TensorCore share 0.0%  ===
+  dur(ms)   calls  tc  kernel                       op                                      
+      0.1      45      loop_select_fusion           jit(<lambda>)/jit(deterministic_segment_
+      0.1       3      loop_select_fusion_2         XlaModule                               
+      0.1      45      loop_add_fusion              jit(<lambda>)/jit(deterministic_segment_
+      0.0       3      loop_select_fusion_1         XlaModule                               
+      0.0       3      loop_add_select_fusion       XlaModule                               
+      0.0       3      loop_select_fusion_5         XlaModule                               
+  GPU_0_bfc: peak=0.07 GB / capacity 59.44 GB
+=== segment_sum 20000x500, 3 calls
+=== Kernels: total 0.2 ms across 2 kernels, TensorCore share 0.0%  ===
+  dur(ms)   calls  tc  kernel                       op                                      
+      0.2       3      input_scatter_fusion         jit(<lambda>)/scatter-add:              
+      0.0       3      loop_broadcast_fusion        jit(<lambda>)/broadcast_in_dim:         
+
+=== Time by jit(...) module (top 15) ===
+  GPU_0_bfc: peak=0.06 GB / capacity 59.44 GB

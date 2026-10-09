@@ -1,0 +1,94 @@
+{
+  "platform": "gpu",
+  "hardware": "Linux-5.15.0-187-generic-x86_64-with-glibc2.35",
+  "devices": [
+    "cuda:0"
+  ],
+  "source_aggregate": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+  "script_sha256": "4e9e837294dcca1c8b934ade271e298692f85c39f4cdf7e7d278baa519967f2f",
+  "input_hashes": {
+    "tracking": "5b62ddcfd808b36894e5e17844ca11b34746fda81e866ecd7cca4806189c709d",
+    "position": "3848036ffa9301e4d66fd53e2f54e415ada6b8aafcc293a7e36055e8386ad47d",
+    "encoding_spikes": "00eb402951fb3f758f79f85917b0a6104ebf1bc22c47c31d1671b017f90beef8",
+    "encoding_marks": "5f815e029e97032f43138087350ddaac57b5c34cbb4cd1fcfafbf7a09e9b5701",
+    "decode_tracking": "750e7d34787bc66487349af687c1aabf7b5a5a352c06d8bb86218c74ba671130",
+    "decode_position": "5b387746aa01657234b5bc59c065d6003e0caf9a2723e85cd767d4adb5ed82e3",
+    "decode_spikes": "68e2578ad371d3e14ce6341c9b5dae790121a038970ea04807fd19068522aa0e",
+    "decode_marks": "588afa38acb1e76845f470ea8469b3ac02582050570fad453505ff3c25724fd0",
+    "time_edges": "e037b01b4d17caa7b014c818f13ae45bcd02358cc9890b38b30f13baaa0b6ac2"
+  },
+  "configuration": {
+    "encoding_duration": 10,
+    "decoding_duration": 0.64,
+    "population": 1,
+    "spike_rate": 20,
+    "marks": 4,
+    "arena": 20,
+    "bin_size": 2,
+    "position_std": 6,
+    "waveform_std": 24,
+    "decoding_block_size": 10000,
+    "encoding_block_size": 64,
+    "position_block_size": 32,
+    "chunk_size": 256,
+    "repeats": 5,
+    "timing_order": "original then tiled, interleaved each repeat; fit and prediction synchronized separately"
+  },
+  "times": {
+    "original": {
+      "fit": [
+        0.0397541169077158,
+        0.046532207168638706,
+        0.03346935845911503,
+        0.042510964907705784,
+        0.04685402102768421
+      ],
+      "predict": [
+        0.2665224839001894,
+        0.2927723117172718,
+        0.25935771223157644,
+        0.29557048715651035,
+        0.2730124918743968
+      ]
+    },
+    "tiled": {
+      "fit": [
+        0.05181481968611479,
+        0.03215781878679991,
+        0.043048578314483166,
+        0.05158295575529337,
+        0.04866313375532627
+      ],
+      "predict": [
+        0.26492370944470167,
+        0.20344178657978773,
+        0.2842116439715028,
+        0.29219120647758245,
+        0.2736540073528886
+      ]
+    }
+  },
+  "medians": {
+    "original": {
+      "fit": 0.042510964907705784,
+      "predict": 0.2730124918743968
+    },
+    "tiled": {
+      "fit": 0.04866313375532627,
+      "predict": 0.2736540073528886
+    }
+  },
+  "max_abs_errors": {
+    "state_probabilities": 2.980232238769531e-07,
+    "log_evidence": 1.8104910850524902e-06,
+    "occupancy": 4.656612873077393e-10,
+    "mean_rates": 0.0
+  },
+  "existing_tolerance": {
+    "rtol": 1e-06,
+    "atol": 1e-05
+  },
+  "jax_enable_x64": false,
+  "global_matmul_precision": "None",
+  "source_stable": true
+}

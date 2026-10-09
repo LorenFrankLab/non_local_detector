@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -46,6 +47,7 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
+from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -61,6 +63,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 from non_local_detector.time_edges import (
     _MAX_RELATIVE_SPACING_TOLERANCE,
     _DecodeTimeGrid,
@@ -69,6 +72,7 @@ from non_local_detector.time_edges import (
     requires_time_edges,
     uniform_time_edges,
 )
+from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 
 try:
     from non_local_detector._version import __version__ as _PACKAGE_VERSION
@@ -153,6 +157,55 @@ class _LikelihoodPositionContext:
             and self.source_time is position_time
             and self.source_position is position
         )
+
+
+def _label_checkpointed_result(dataset, metadata):
+    """Attach native labels and a bounded lazy padded view to a stored result."""
+    from non_local_detector.result_store import pad_state_bins
+
+    dataset.attrs["marginal_log_likelihoods"] = dataset.attrs["marginal_log_likelihood"]
+    if "time_bin_end_inclusive" not in dataset.coords:
+        dataset = dataset.assign_coords(
+            time_bin_end_inclusive=(
+                "time",
+                np.asarray(dataset.source_row)
+                == int(dataset.attrs["recording_rows"]) - 1,
+            )
+        )
+    states = np.asarray(metadata["state_names"])
+    dataset = dataset.assign_coords(
+        states=states,
+        environments=("states", metadata["environment_names"]),
+        encoding_groups=("states", metadata["encoding_groups"]),
+    )
+    if "state_bins" in dataset.dims:
+        interior = np.asarray(metadata["interior_mask"], dtype=bool)
+        variables = {}
+        for name, variable in dataset.data_vars.items():
+            variables[name] = (
+                pad_state_bins(
+                    variable, interior, max_read_bytes=metadata["max_read_bytes"]
+                )
+                if "state_bins" in variable.dims
+                else variable.variable
+            )
+        coordinates = {
+            name: coord
+            for name, coord in dataset.coords.items()
+            if "state_bins" not in coord.dims
+        }
+        positions = np.asarray(metadata["position"])
+        state_ind = np.asarray(metadata["state_ind"], dtype=int)
+        index = pd.MultiIndex.from_arrays(
+            (states[state_ind], *positions.T),
+            names=("state", *metadata["position_names"]),
+        )
+        coordinates.update(xr.Coordinates.from_pandas_multiindex(index, "state_bins"))
+        coordinates["state_ind"] = state_ind
+        dataset = xr.Dataset(variables, coords=coordinates, attrs=dataset.attrs)
+    if len(states) == 1:
+        dataset = dataset.squeeze("states")
+    return dataset
 
 
 def _prepare_likelihood_callback(
@@ -251,6 +304,55 @@ def _prepare_likelihood_callback(
 
     row_slice_aware(chunk_callback)  # marks the function in place
     return chunk_callback
+
+
+def _validate_transition_arguments(
+    transition_representation: str, max_dense_transition_bytes: int
+) -> None:
+    """Reject unsupported transition settings before any fitted state changes."""
+    if not isinstance(transition_representation, str) or (
+        transition_representation not in {"dense", "structured", "auto"}
+    ):
+        raise ValidationError(
+            "transition_representation must be dense, structured, or auto"
+        )
+    if (
+        isinstance(max_dense_transition_bytes, (bool, np.bool_))
+        or not isinstance(max_dense_transition_bytes, (int, np.integer))
+        or max_dense_transition_bytes <= 0
+    ):
+        raise ValidationError("max_dense_transition_bytes must be a positive integer")
+
+
+def _validate_inference_arguments(
+    inference_mode: str,
+    output_mode: str,
+    cache_likelihood: bool,
+    n_chunks: int,
+    chunk_size: int | None,
+    result_path,
+    checkpoint_dir,
+    selected_intervals,
+) -> None:
+    """Reject prediction-mode settings that the chosen inference mode ignores."""
+    if inference_mode not in {"dense", "checkpointed"}:
+        raise ValidationError("inference_mode must be dense or checkpointed")
+    if inference_mode == "checkpointed" and (cache_likelihood or n_chunks != 1):
+        raise ValueError(
+            "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
+        )
+    if output_mode not in {"compact", "spatial"}:
+        raise ValidationError("output_mode must be compact or spatial")
+    if inference_mode == "dense" and (
+        output_mode != "spatial"
+        or chunk_size is not None
+        or result_path is not None
+        or checkpoint_dir is not None
+        or selected_intervals is not None
+    ):
+        raise ValueError(
+            "output selection/storage options require inference_mode='checkpointed'"
+        )
 
 
 def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
@@ -1553,7 +1655,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         return state_names
 
     def initialize_environments(
-        self, position: np.ndarray, environment_labels: np.ndarray | None = None
+        self,
+        position: np.ndarray,
+        environment_labels: np.ndarray | None = None,
+        *,
+        compute_all_pairs_distances: bool = True,
+        max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> None:
         """
         Fits the Environment class on the position data to get information about the spatial environment.
@@ -1564,6 +1671,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Position data
         environment_labels : np.ndarray, optional, shape (n_time,)
             Labels for each time points about which environment it corresponds to, by default None
+        compute_all_pairs_distances : bool, optional
+            By default True, which builds each environment's all-pairs graph
+            distances. False keeps an exact sparse query view for Cartesian
+            environments; see ``Environment.fit_place_grid``.
+        max_dense_distance_bytes : int, optional
+            Byte limit for dense reads of the deferred distance view, by
+            default 256 MiB. Used only when compute_all_pairs_distances=False.
         """
         for environment in self.environments:
             if environment_labels is None:
@@ -1582,8 +1696,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     edge_spacing=environment.edge_spacing,
                 ).linear_position.to_numpy()
 
+            distance_options = (
+                {}
+                if compute_all_pairs_distances
+                else {
+                    "compute_all_pairs_distances": False,
+                    "max_dense_distance_bytes": max_dense_distance_bytes,
+                }
+            )
             environment.fit_place_grid(
-                env_position, infer_track_interior=self.infer_track_interior
+                env_position,
+                infer_track_interior=self.infer_track_interior,
+                **distance_options,
             )
 
     def initialize_state_index(self) -> None:
@@ -1679,6 +1803,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         is_training: np.ndarray | None = None,
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
+        *,
+        transition_representation: str = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> None:
         """
         Constructs the transition matrices for the continuous states.
@@ -1695,17 +1822,57 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             If place fields should correspond to each state, label each time point with the group name, by default None.
         environment_labels : np.ndarray, shape (n_time,), optional
             If there are multiple environments, label each time point with the environment name, by default None.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            By default "dense", which builds the full matrix. "structured"
+            requires exact supported state-block operators; "auto" permits
+            budgeted dense fallback blocks.
+        max_dense_transition_bytes : int, optional
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy view, by default
+            256 MiB. Does not limit "dense".
 
         Attributes
         ----------
-        continuous_state_transitions_ : np.ndarray, shape (n_state_bins, n_state_bins)
+        continuous_state_transitions_ : np.ndarray or LazyDenseTransition, shape (n_state_bins, n_state_bins)
             Probability of transitioning between bins, assuming a transition between the corresponding discrete states occurs.
+            A budgeted lazy view of the operator unless transition_representation="dense".
         continuous_transition_types : ContinuousTransitions
             Stores the continuous transition types used.
         """
         logger.info("Fitting continuous state transition...")
 
         self.continuous_transition_types = continuous_transition_types
+
+        _validate_transition_arguments(
+            transition_representation, max_dense_transition_bytes
+        )
+        self._transition_representation_ = transition_representation
+        self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
+        self.__dict__.pop("_continuous_transition_operator_", None)
+        if transition_representation != "dense":
+            from non_local_detector.transition_operators import (
+                LazyDenseTransition,
+                build_transition_operator,
+            )
+
+            operator = build_transition_operator(
+                self.continuous_transition_types,
+                self.environments,
+                self.bin_sizes_,
+                observation_models=self.observation_models,
+                local_position_std=self.local_position_std,
+                allow_dense_fallback=transition_representation == "auto",
+                max_dense_bytes=int(max_dense_transition_bytes),
+                position=position,
+                is_training=is_training,
+                encoding_group_labels=encoding_group_labels,
+                environment_labels=environment_labels,
+            )
+            self._continuous_transition_operator_ = operator
+            self.continuous_state_transitions_ = LazyDenseTransition(
+                operator, max_bytes=int(max_dense_transition_bytes)
+            )
+            return
 
         n_total_bins = len(self.state_ind_)
         self.continuous_state_transitions_ = np.zeros((n_total_bins, n_total_bins))
@@ -2085,6 +2252,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        *,
+        transition_representation: str = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "_DetectorBase":
         """
         Fit the model to the data.
@@ -2107,6 +2277,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         _DetectorBase
             Fitted model.
         """
+        _validate_transition_arguments(
+            transition_representation, max_dense_transition_bytes
+        )
         # Validate required parameters
         if position is None:
             raise ValidationError(
@@ -2148,7 +2321,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         position = position[:, np.newaxis] if position.ndim == 1 else position
         self._invalidate_stored_log_likelihood()  # stale after a refit
         self.initialize_environments(
-            position=position, environment_labels=environment_labels
+            position=position,
+            environment_labels=environment_labels,
+            compute_all_pairs_distances=transition_representation == "dense",
+            max_dense_distance_bytes=max_dense_transition_bytes,
         )
         self.initialize_state_index()
         self.initialize_initial_conditions()
@@ -2160,6 +2336,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self._transition_time_bin_width_tolerance = 0.0
         self.initialize_continuous_state_transition(
             continuous_transition_types=self.continuous_transition_types,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
             position=position,
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
@@ -2427,6 +2605,228 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             )
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
         return result
+
+    def _predict_checkpointed(
+        self,
+        *,
+        time_edges,
+        log_likelihood_args,
+        is_missing,
+        discrete_transitions,
+        output_mode,
+        chunk_size,
+        result_path,
+        checkpoint_dir,
+        selected_intervals,
+        requested_outputs,
+        return_outputs,
+        max_read_bytes,
+    ) -> xr.Dataset:
+        """Decode with complete conditioning and bounded spatial working memory."""
+        from non_local_detector.checkpointed_inference import (
+            checkpointed_forward_backward,
+            default_chunk_size,
+        )
+
+        if (
+            output_mode == "compact"
+            and isinstance(return_outputs, str)
+            and return_outputs == "predictive"
+        ):
+            # The string "predictive" also names the spatial predictive
+            # posterior, which compact output cannot hold.
+            requested_outputs = requested_outputs - {"predictive_posterior"}
+        if output_mode == "spatial" and result_path is None:
+            raise ValueError("Checkpointed spatial prediction requires result_path")
+        if output_mode == "compact" and requested_outputs & {
+            "log_likelihood",
+            "predictive_posterior",
+        }:
+            raise ValueError(
+                "Spatial outputs (including return_outputs='all') require output_mode='spatial'"
+            )
+        self._validate_time_contract()
+        edges, centers = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
+        interior = self.is_track_interior_state_bins_
+        states = self.state_ind_[interior]
+        if chunk_size is None:
+            chunk_size = default_chunk_size(np.count_nonzero(interior), np.float32)
+        discrete = (
+            self.discrete_state_transitions_
+            if discrete_transitions is None
+            else discrete_transitions
+        )
+        if discrete.ndim == 3 and discrete.shape[0] != len(centers):
+            raise ValidationError(
+                "Predict covariate transitions must have one row per decode bin"
+            )
+        time_grid = _DecodeTimeGrid.from_validated_edges(
+            edges, uniform_width=(float(edges[-1]) - float(edges[0])) / (len(edges) - 1)
+        )
+        prepared = _prepare_likelihood_callback(
+            self.compute_log_likelihood,
+            edges,
+            has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
+            log_likelihood_args=log_likelihood_args,
+            _time_grid=time_grid,
+        )
+
+        def likelihood(full_edges, *, row_slice, is_missing):
+            return prepared(
+                centers,
+                *log_likelihood_args,
+                row_slice=row_slice,
+                is_missing=is_missing,
+            )
+
+        transition_args = {}
+        operator = getattr(self, "_continuous_transition_operator_", None)
+        if operator is not None:
+            operator = operator.restricted(interior)
+            if discrete.ndim == 2:
+                operator = operator.bind_discrete(discrete)
+            else:
+                transition_args["discrete_transition_matrix"] = discrete
+            transition_args["transition_operator"] = operator.fused()
+        else:
+            continuous = self.continuous_state_transitions_[np.ix_(interior, interior)]
+            if discrete.ndim == 2:
+                transition_args["transition_matrix"] = (
+                    continuous * discrete[np.ix_(states, states)]
+                )
+            else:
+                transition_args.update(
+                    continuous_transition_matrix=continuous,
+                    discrete_transition_matrix=discrete,
+                )
+        selected = None
+        if selected_intervals is not None:
+            intervals = np.asarray(selected_intervals, dtype=float)
+            if (
+                intervals.ndim != 2
+                or intervals.shape[1] != 2
+                or not np.isfinite(intervals).all()
+                or np.any(intervals[:, 0] >= intervals[:, 1])
+                or np.any(intervals[1:, 0] < intervals[:-1, 1])
+            ):
+                raise ValidationError(
+                    "selected_intervals must be ordered non-overlapping start/stop pairs"
+                )
+            mask = np.zeros(len(centers), dtype=bool)
+            # The tolerances are under 1% of a bin width, so bins more than one
+            # bin outside an interval can never be selected; apply the rule only
+            # from one bin before each start to one bin after each stop.
+            firsts = np.maximum(np.searchsorted(edges[:-1], intervals[:, 0]) - 1, 0)
+            lasts = np.minimum(
+                np.searchsorted(edges[1:], intervals[:, 1], side="right") + 1,
+                len(centers),
+            )
+            for (start, stop), first, last in zip(
+                intervals, firsts, lasts, strict=True
+            ):
+                lower, upper = edges[first:last], edges[first + 1 : last + 1]
+                width = upper - lower
+                lower_tol = np.minimum(
+                    4 * np.maximum(np.spacing(abs(start)), np.spacing(abs(lower))),
+                    width * 0.01,
+                )
+                upper_tol = np.minimum(
+                    4 * np.maximum(np.spacing(abs(stop)), np.spacing(abs(upper))),
+                    width * 0.01,
+                )
+                mask[first:last] |= (lower >= start - lower_tol) & (
+                    upper <= stop + upper_tol
+                )
+            selected = np.flatnonzero(mask)
+            if selected.size == 0:
+                raise ValidationError(
+                    "selected_intervals select no complete decode bins",
+                    got=f"{len(intervals)} interval(s)",
+                    hint=(
+                        "Intervals are in seconds and select bins whose start and "
+                        f"stop edges both lie inside one; the recording spans "
+                        f"[{edges[0]}, {edges[-1]}] in bins of {edges[1] - edges[0]}."
+                    ),
+                )
+        outputs = {"acausal_state_probabilities"}
+        if output_mode == "spatial":
+            outputs.add("acausal_posterior")
+        if "filter" in requested_outputs:
+            outputs.add("causal_state_probabilities")
+            if output_mode == "spatial":
+                outputs.add("causal_posterior")
+        if "predictive" in requested_outputs:
+            outputs.add("predictive_state_probabilities")
+        if "predictive_posterior" in requested_outputs:
+            outputs.add("predictive_posterior")
+        if "log_likelihood" in requested_outputs:
+            outputs.add("log_likelihood")
+        positions = []
+        n_dimensions = self.environments[0].place_bin_centers_.shape[1]
+        for observation in self.observation_models:
+            if observation.is_no_spike or (
+                observation.is_local and self.local_position_std is None
+            ):
+                positions.append(np.full((1, n_dimensions), np.nan))
+            else:
+                positions.append(
+                    self._get_environment_by_name(
+                        observation.environment_name
+                    ).place_bin_centers_
+                )
+        metadata = {
+            "state_names": list(self.state_names),
+            "environment_names": [
+                obs.environment_name for obs in self.observation_models
+            ],
+            "encoding_groups": [
+                obs.encoding_group.item()
+                if isinstance(obs.encoding_group, np.generic)
+                else obs.encoding_group
+                for obs in self.observation_models
+            ],
+            "position": np.concatenate(positions).tolist(),
+            "position_names": get_position_dim_names(n_dimensions),
+            "state_ind": self.state_ind_.tolist(),
+            "interior_mask": interior.tolist(),
+            "max_read_bytes": int(max_read_bytes),
+        }
+        attrs = {
+            "non_local_detector_version": _PACKAGE_VERSION,
+            "time_units": "seconds",
+            "time_bin_convention": "left_closed_right_open_final_closed",
+            "conditioning": "whole_recording",
+            "_native_metadata": metadata,
+            "recording_rows": len(centers),
+            "transition_representation": getattr(
+                self, "_transition_representation_", "dense"
+            ),
+        }
+        result = checkpointed_forward_backward(
+            edges,
+            self.initial_conditions_[interior],
+            likelihood,
+            state_ind=states,
+            n_states=len(self.state_names),
+            is_missing=is_missing,
+            chunk_size=chunk_size,
+            output_mode=output_mode,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            return_outputs=outputs,
+            selected_rows=selected,
+            dtype=np.float32,
+            max_read_bytes=max_read_bytes,
+            result_attrs=attrs,
+            **transition_args,
+        )
+        dataset = result.dataset
+        self._degenerate_timesteps_ = np.asarray(
+            result.diagnostics.get("degenerate_indices", []), dtype=int
+        )
+        return _label_checkpointed_result(dataset, metadata)
 
     @contextmanager
     def _restore_state_on_error(self) -> Iterator[None]:
@@ -3078,10 +3478,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     @staticmethod
     def save_results(results: xr.Dataset, filename: str = "results.nc") -> None:
         """
-        Save the results to a netcdf file.
+        Save the results to a netCDF file.
 
-        `state_bins`is a multiindex, which is not supported by netcdf so
-        it is converted before saving.
+        ``state_bins`` is a MultiIndex, which netCDF does not support, so it
+        is converted before saving. Boolean attributes are stored as integers
+        and the internal ``_native_metadata`` attribute is dropped.
 
         Parameters
         ----------
@@ -3090,25 +3491,56 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         filename : str, optional
             Name to save, by default "results.nc"
         """
-        results.reset_index("state_bins").to_netcdf(filename)
+        export = (
+            results.reset_index("state_bins")
+            if "state_bins" in results.indexes
+            else results.copy(deep=False)
+        )
+        export.attrs = {
+            name: int(value) if isinstance(value, (bool, np.bool_)) else value
+            for name, value in export.attrs.items()
+            if name != "_native_metadata"
+        }
+        export.to_netcdf(filename)
 
     @staticmethod
-    def load_results(filename: str = "results.nc") -> xr.Dataset:
+    def load_results(
+        filename: str | Path = "results.nc",
+        *,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+    ) -> xr.Dataset:
         """
-        Loads the results from a netcdf file and converts the
-        index back to a multiindex.
+        Load results saved by ``save_results`` or a checkpointed result_path.
+
+        A netCDF file gets its ``state_bins`` MultiIndex back. A directory is
+        opened as a checkpointed result store with lazy arrays.
 
         Parameters
         ----------
-        filename : str, optional
-            File containing results, by default "results.nc"
+        filename : str or Path, optional
+            netCDF file or checkpointed result directory, by default
+            "results.nc"
+        max_read_bytes : int, optional
+            Maximum bytes in one explicit read of a result directory's lazy
+            arrays, by default 512 MiB. Ignored for netCDF files.
 
         Returns
         -------
         xr.Dataset
             Decoding results
         """
+        if Path(filename).is_dir():
+            from non_local_detector.result_store import open_result_store
+
+            results = open_result_store(filename, max_read_bytes=max_read_bytes)
+            metadata = results.attrs.get("_native_metadata")
+            if metadata:
+                metadata = {**metadata, "max_read_bytes": max_read_bytes}
+                return _label_checkpointed_result(results, metadata)
+            return results
         results = xr.open_dataset(filename)
+        if "state_bins" not in results.dims:
+            return results
         # Scalar state/environment coordinates are also attached to this array,
         # but only the original one-dimensional levels form its spatial index.
         coord_names = [
@@ -3298,17 +3730,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             "encoding_groups": ("states", encoding_group_names),
         }
 
-        # Handle MultiIndex: use new API if available (xarray >= 2022.06.0),
-        # otherwise use old direct assignment (for backward compatibility)
-        if hasattr(xr.Coordinates, "from_pandas_multiindex"):
-            # New method (preferred, avoids FutureWarning)
-            mindex_coords = xr.Coordinates.from_pandas_multiindex(
-                state_bins_mindex, "state_bins"
-            )
-        else:
-            # Old method (backward compatible)
-            coords["state_bins"] = state_bins_mindex
-            mindex_coords = None
+        mindex_coords = xr.Coordinates.from_pandas_multiindex(
+            state_bins_mindex, "state_bins"
+        )
 
         attrs = {
             "marginal_log_likelihoods": np.asarray(marginal_log_likelihoods),
@@ -3371,9 +3795,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Create Dataset with MultiIndex coordinates
         results = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
-        # Assign MultiIndex coordinates if using new API
-        if mindex_coords is not None:
-            results = results.assign_coords(mindex_coords)
+        results = results.assign_coords(mindex_coords)
 
         return results.squeeze(
             dim=[
@@ -3713,6 +4135,8 @@ class ClusterlessDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
+        transition_representation: str = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "ClusterlessDetector":
         """
         Fit the detector to the data.
@@ -3746,6 +4170,17 @@ class ClusterlessDetector(_DetectorBase):
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
 
+        transition_representation : {"dense", "structured", "auto"}, optional
+            By default "dense", which builds the full transition matrix.
+            "structured" requires exact supported state-block operators;
+            "auto" permits budgeted dense fallback blocks. Non-dense N-D
+            environments defer all-pairs graph distances.
+        max_dense_transition_bytes : int, optional
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy transition and distance
+            views, by default 256 MiB. Ignored when
+            transition_representation="dense".
+
         Returns
         -------
         ClusterlessDetector
@@ -3759,6 +4194,8 @@ class ClusterlessDetector(_DetectorBase):
                 encoding_group_labels,
                 environment_labels,
                 discrete_transition_covariate_data,
+                transition_representation=transition_representation,
+                max_dense_transition_bytes=max_dense_transition_bytes,
             )
             self.fit_encoding_model(
                 position_time,
@@ -4052,6 +4489,13 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
+        inference_mode: str = "dense",
+        output_mode: str = "spatial",
+        chunk_size: int | None = None,
+        result_path: str | Path | None = None,
+        checkpoint_dir: str | Path | None = None,
+        selected_intervals: np.ndarray | None = None,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -4098,8 +4542,11 @@ class ClusterlessDetector(_DetectorBase):
             - 'all': all outputs above
             - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
 
-            The smoother (acausal_posterior, acausal_state_probabilities) and
-            marginal_log_likelihood are ALWAYS included.
+            acausal_state_probabilities and marginal_log_likelihood are always
+            included; acausal_posterior is included except in checkpointed
+            compact output. Compact output holds state probabilities only, so
+            'log_likelihood' and 'predictive_posterior' (and 'all') require
+            output_mode='spatial'.
 
             When to use each output:
             - 'filter': Online/causal decoding, debugging forward pass
@@ -4109,7 +4556,7 @@ class ClusterlessDetector(_DetectorBase):
 
             Memory warning: 'log_likelihood', 'filter', 'predictive', and
             'predictive_posterior' can be very large (~400 GB for 1M timepoints × 100k
-            spatial bins). Use None for minimal memory (smoother only).
+            spatial bins). Use checkpointed compact mode to bound spatial memory.
         save_log_likelihood_to_results : bool, optional
             DEPRECATED. Use return_outputs='log_likelihood' instead.
             Whether to save the log likelihood to the results, by default None.
@@ -4117,12 +4564,40 @@ class ClusterlessDetector(_DetectorBase):
             DEPRECATED. Use return_outputs='filter' instead.
             Whether to save the causal (filtered) posterior to the results, by default None.
 
+        inference_mode : {"dense", "checkpointed"}, optional
+            By default "dense", the in-memory driver. "checkpointed" stores
+            boundary messages on disk and replays chunks for exact smoothing;
+            it raises ValueError unless n_chunks=1 and cache_likelihood=False.
+        output_mode : {"compact", "spatial"}, optional
+            By default "spatial", the only output dense prediction accepts.
+            Checkpointed "compact" returns state probabilities without
+            full-session spatial arrays; checkpointed "spatial" writes lazy
+            incremental arrays and requires result_path.
+        chunk_size : int, optional
+            Maximum checkpoint/replay rows (checkpointed mode only). By
+            default, enough rows for one chunk of float32 likelihoods to take
+            about 256 MiB, and at least 256. Larger chunks amortize per-chunk
+            overhead; working memory grows with chunk rows, to several times
+            one likelihood chunk. docs/hardware_settings.md lists measured
+            memory and speed.
+        result_path : str or Path, optional
+            New directory for atomic incremental output. Existing destinations
+            are never overwritten. Optional for compact, required for spatial.
+        checkpoint_dir : str or Path, optional
+            Parent directory for temporary boundary files, cleaned after the run.
+        selected_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered non-overlapping start/stop selections. Emit only bins fully
+            inside them while conditioning on the entire supplied recording.
+        max_read_bytes : int, optional
+            Maximum bytes in one explicit spatial read, by default 512 MiB.
+            Select fewer rows/bins before converting a large lazy array.
+
         Returns
         -------
         xr.Dataset
             Dataset containing decoded posterior distributions.
 
-            Always included:
+            Compact mode omits spatial posteriors. Dense/spatial modes include:
             - acausal_posterior : (n_time, n_state_bins)
                 Smoothed posterior over state bins
             - acausal_state_probabilities : (n_time, n_states)
@@ -4228,8 +4703,23 @@ class ClusterlessDetector(_DetectorBase):
         # path accumulates the per-chunk rows instead -- which allocates the
         # same full (n_time, n_state_bins) array, the documented exception to
         # per-chunk allocation.
+        _validate_inference_arguments(
+            inference_mode,
+            output_mode,
+            cache_likelihood,
+            n_chunks,
+            chunk_size,
+            result_path,
+            checkpoint_dir,
+            selected_intervals,
+        )
         return_log_likelihood = "log_likelihood" in requested_outputs
-        if return_log_likelihood and not cache_likelihood and n_chunks == 1:
+        if (
+            inference_mode == "dense"
+            and return_log_likelihood
+            and not cache_likelihood
+            and n_chunks == 1
+        ):
             cache_likelihood = True
 
         predicted_transitions = None
@@ -4244,6 +4734,27 @@ class ClusterlessDetector(_DetectorBase):
                 discrete_transition_covariate_data,
             )
             _validate_covariate_time_length(predicted_transitions, time_centers)
+        if inference_mode == "checkpointed":
+            return self._predict_checkpointed(
+                time_edges=time_edges,
+                log_likelihood_args=(
+                    position_time,
+                    position,
+                    spike_times,
+                    spike_waveform_features,
+                ),
+                is_missing=is_missing,
+                discrete_transitions=predicted_transitions,
+                output_mode=output_mode,
+                chunk_size=chunk_size,
+                result_path=result_path,
+                checkpoint_dir=checkpoint_dir,
+                selected_intervals=selected_intervals,
+                requested_outputs=requested_outputs,
+                return_outputs=return_outputs,
+                max_read_bytes=max_read_bytes,
+            )
+
         (
             acausal_posterior,
             acausal_state_probabilities,
@@ -4808,6 +5319,8 @@ class SortedSpikesDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
+        transition_representation: str = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "SortedSpikesDetector":
         """
         Fit the detector to the data.
@@ -4839,6 +5352,17 @@ class SortedSpikesDetector(_DetectorBase):
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
 
+        transition_representation : {"dense", "structured", "auto"}, optional
+            By default "dense", which builds the full transition matrix.
+            "structured" requires exact supported state-block operators;
+            "auto" permits budgeted dense fallback blocks. Non-dense N-D
+            environments defer all-pairs graph distances.
+        max_dense_transition_bytes : int, optional
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy transition and distance
+            views, by default 256 MiB. Ignored when
+            transition_representation="dense".
+
         Returns
         -------
         SortedSpikesDetector
@@ -4851,6 +5375,8 @@ class SortedSpikesDetector(_DetectorBase):
                 encoding_group_labels,
                 environment_labels,
                 discrete_transition_covariate_data,
+                transition_representation=transition_representation,
+                max_dense_transition_bytes=max_dense_transition_bytes,
             )
             self.fit_encoding_model(
                 position_time,
@@ -5140,6 +5666,13 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
+        inference_mode: str = "dense",
+        output_mode: str = "spatial",
+        chunk_size: int | None = None,
+        result_path: str | Path | None = None,
+        checkpoint_dir: str | Path | None = None,
+        selected_intervals: np.ndarray | None = None,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -5179,6 +5712,34 @@ class SortedSpikesDetector(_DetectorBase):
             DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
         save_causal_posterior_to_results : bool, optional
             DEPRECATED. Use return_outputs='filter' instead. By default None.
+
+        inference_mode : {"dense", "checkpointed"}, optional
+            By default "dense", the in-memory driver. "checkpointed" stores
+            boundary messages on disk and replays chunks for exact smoothing;
+            it raises ValueError unless n_chunks=1 and cache_likelihood=False.
+        output_mode : {"compact", "spatial"}, optional
+            By default "spatial", the only output dense prediction accepts.
+            Checkpointed "compact" returns state probabilities without
+            full-session spatial arrays; checkpointed "spatial" writes lazy
+            incremental arrays and requires result_path.
+        chunk_size : int, optional
+            Maximum checkpoint/replay rows (checkpointed mode only). By
+            default, enough rows for one chunk of float32 likelihoods to take
+            about 256 MiB, and at least 256. Larger chunks amortize per-chunk
+            overhead; working memory grows with chunk rows, to several times
+            one likelihood chunk. docs/hardware_settings.md lists measured
+            memory and speed.
+        result_path : str or Path, optional
+            New directory for atomic incremental output. Existing destinations
+            are never overwritten. Optional for compact, required for spatial.
+        checkpoint_dir : str or Path, optional
+            Parent directory for temporary boundary files, cleaned after the run.
+        selected_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered non-overlapping start/stop selections. Emit only bins fully
+            inside them while conditioning on the entire supplied recording.
+        max_read_bytes : int, optional
+            Maximum bytes in one explicit spatial read, by default 512 MiB.
+            Select fewer rows/bins before converting a large lazy array.
 
         Returns
         -------
@@ -5240,8 +5801,23 @@ class SortedSpikesDetector(_DetectorBase):
         # path accumulates the per-chunk rows instead -- which allocates the
         # same full (n_time, n_state_bins) array, the documented exception to
         # per-chunk allocation.
+        _validate_inference_arguments(
+            inference_mode,
+            output_mode,
+            cache_likelihood,
+            n_chunks,
+            chunk_size,
+            result_path,
+            checkpoint_dir,
+            selected_intervals,
+        )
         return_log_likelihood = "log_likelihood" in requested_outputs
-        if return_log_likelihood and not cache_likelihood and n_chunks == 1:
+        if (
+            inference_mode == "dense"
+            and return_log_likelihood
+            and not cache_likelihood
+            and n_chunks == 1
+        ):
             cache_likelihood = True
 
         predicted_transitions = None
@@ -5256,6 +5832,22 @@ class SortedSpikesDetector(_DetectorBase):
                 discrete_transition_covariate_data,
             )
             _validate_covariate_time_length(predicted_transitions, time_centers)
+
+        if inference_mode == "checkpointed":
+            return self._predict_checkpointed(
+                time_edges=time_edges,
+                log_likelihood_args=(position_time, position, spike_times),
+                is_missing=is_missing,
+                discrete_transitions=predicted_transitions,
+                output_mode=output_mode,
+                chunk_size=chunk_size,
+                result_path=result_path,
+                checkpoint_dir=checkpoint_dir,
+                selected_intervals=selected_intervals,
+                requested_outputs=requested_outputs,
+                return_outputs=return_outputs,
+                max_read_bytes=max_read_bytes,
+            )
 
         (
             acausal_posterior,

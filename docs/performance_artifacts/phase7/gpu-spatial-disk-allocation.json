@@ -1,0 +1,27 @@
+{
+  "measurement": "Spatial stores only; allocated st_blocks*512 and apparent st_size sampled every1s; excludes checkpoints. Peak allocation is a sampled lower bound before cleanup.",
+  "started_unix": 1791322905.128898,
+  "elapsed_seconds": 7111.223922014236,
+  "runs": {
+    "sorted64-S4-2cm-hour-spatial": {
+      "sampled_peak_allocated_bytes": 121925939200,
+      "peak_apparent_bytes": 121983196016,
+      "samples": 6262
+    },
+    "sorted64-S4-1cm-hour-spatial": {
+      "sampled_peak_allocated_bytes": 477102231040,
+      "peak_apparent_bytes": 477104931248,
+      "samples": 6262
+    },
+    "clusterless8-S4-2cm-hour-spatial": {
+      "sampled_peak_allocated_bytes": 121873910784,
+      "peak_apparent_bytes": 121965855344,
+      "samples": 6262
+    },
+    "clusterless8-S4-1cm-hour-spatial": {
+      "sampled_peak_allocated_bytes": 477102231040,
+      "peak_apparent_bytes": 477104931248,
+      "samples": 6262
+    }
+  }
+}

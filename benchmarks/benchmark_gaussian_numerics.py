@@ -1,7 +1,7 @@
 """Measure Gaussian score/EM runtime, compiled buffers, and preservation outputs.
 
 Run against a frozen checkout via PYTHONPATH to compare implementations, e.g.:
-    uv run python scripts/benchmark_gaussian_numerics.py /tmp/gaussian-current
+    uv run python benchmarks/benchmark_gaussian_numerics.py /tmp/gaussian-current
 
 Memory numbers describe XLA's compiled CPU buffers, not accelerator peak RSS.
 Compilation is excluded from the synchronized steady-state timings.
@@ -26,8 +26,8 @@ N_TIMED_RUNS = 15
 
 
 # The same 3-warmup / 15-timed / median harness as
-# ``scripts/benchmark_chunk_likelihood_runtime.py::measure``; consolidate the
-# three copies under ``scripts/`` into a shared module if a fourth appears.
+# ``benchmarks/benchmark_chunk_likelihood_runtime.py::measure``; consolidate the
+# three copies under ``benchmarks/`` into a shared module if a fourth appears.
 def measure(
     executable: jax.stages.Compiled, arguments: tuple[Any, ...]
 ) -> tuple[Any, dict[str, Any]]:

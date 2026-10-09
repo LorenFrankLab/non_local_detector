@@ -1,0 +1,18 @@
+# XLA compilations during two predictions in one process, A100 (JAX 0.9.0),
+# clusterless compact, 2 cm grid (16,930 state bins), 120 s recording,
+# default chunk size (3,963 rows). Counted from jax_log_compiles records
+# ("Finished XLA compilation of ...").
+first predict 137.9 s, 1275 compilations
+     225  jit(concatenate)
+     176  jit(broadcast_in_dim)
+     117  jit(convert_element_type)
+     116  jit(kde)
+     116  jit(_where)
+      64  jit(multiply)
+      58  jit(greater)
+      58  jit(true_divide)
+      58  jit(log)
+      57  jit(less)
+      56  jit(abs)
+      56  jit(_pad)
+second predict 17.1 s, 0 compilations

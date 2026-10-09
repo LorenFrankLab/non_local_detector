@@ -919,7 +919,7 @@ def allocation_data():
         # hand in): on the CPU backend ``jnp.asarray`` of a float32 array is
         # zero-copy, so a full-array conversion of float32 features allocates
         # nothing ``tracemalloc`` can see and would silently disarm this test.
-        # Same reason as scripts/benchmark_chunk_likelihood_memory.py's sweep.
+        # Same reason as benchmarks/benchmark_chunk_likelihood_memory.py's sweep.
         features = (
             rng.standard_normal((spike_times.shape[0], ALLOC_N_FEATURES)) * 5.0 + 20.0
         )

@@ -1,0 +1,338 @@
+{
+ "a100-cmdbuf": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "variant": "restricted",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    0.8815121473744512,
+    0.8811285402625799,
+    0.8811435783281922,
+    0.8812584048137069,
+    0.8813751982524991
+   ],
+   "median_seconds_per_step": 0.0002151509777377214,
+   "fusions": 29,
+   "custom_calls": 0,
+   "while_loops": 0
+  },
+  "backward": {
+   "warm_seconds": [
+    1.2677184361964464,
+    1.2695951601490378,
+    1.2692056586965919,
+    1.2683177180588245,
+    1.2681954391300678
+   ],
+   "median_seconds_per_step": 0.0003096478803854552,
+   "fusions": 39,
+   "custom_calls": 0,
+   "while_loops": 0
+  }
+ },
+ "a100-global_nan": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "variant": "global_nan",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    1.0421470403671265,
+    1.042151052504778,
+    1.0419464940205216,
+    1.0419919732958078,
+    1.041992294602096
+   ],
+   "median_seconds_per_step": 0.00025439265004933986,
+   "fusions": 22,
+   "custom_calls": 0,
+   "while_loops": 0
+  },
+  "backward": {
+   "warm_seconds": [
+    2.594238033518195,
+    2.5956215020269156,
+    2.5964956590905786,
+    2.59719346370548,
+    2.5974501464515924
+   ],
+   "median_seconds_per_step": 0.0006339100730201608,
+   "fusions": 25,
+   "custom_calls": 0,
+   "while_loops": 0
+  }
+ },
+ "a100-lowrank": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "variant": "lowrank",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    0.208166160620749,
+    0.20818475354462862,
+    0.20820511411875486,
+    0.20818813890218735,
+    0.20823263749480247
+   ],
+   "median_seconds_per_step": 5.082718234916683e-05,
+   "fusions": 18,
+   "custom_calls": 0,
+   "while_loops": 0
+  },
+  "backward": {
+   "warm_seconds": [
+    0.2745558535680175,
+    0.27438963018357754,
+    0.27432135958224535,
+    0.2750157192349434,
+    0.27474521566182375
+   ],
+   "median_seconds_per_step": 6.703023768750427e-05,
+   "fusions": 18,
+   "custom_calls": 0,
+   "while_loops": 0
+  }
+ },
+ "a100-nan_barrier-2": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "variant": "nan_barrier",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    1.422908466309309,
+    1.4228718029335141,
+    1.422735239379108,
+    1.4221020555123687,
+    1.421839613467455
+   ],
+   "median_seconds_per_step": 0.00034734747055154003,
+   "fusions": 29,
+   "custom_calls": 0,
+   "while_loops": 0
+  },
+  "backward": {
+   "warm_seconds": [
+    1.6106946133077145,
+    1.610599584877491,
+    1.6112485136836767,
+    1.6098740315064788,
+    1.610754931345582
+   ],
+   "median_seconds_per_step": 0.0003932359895770787,
+   "fusions": 46,
+   "custom_calls": 0,
+   "while_loops": 0
+  }
+ },
+ "a100-restricted-2": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "variant": "restricted",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    0.8829680159687996,
+    0.8825192023068666,
+    0.8821708736941218,
+    0.8828753745183349,
+    0.8823498887941241
+   ],
+   "median_seconds_per_step": 0.00021545878962569986,
+   "fusions": 29,
+   "custom_calls": 0,
+   "while_loops": 0
+  },
+  "backward": {
+   "warm_seconds": [
+    1.2736955294385552,
+    1.272233267314732,
+    1.2729088217020035,
+    1.2726518465206027,
+    1.272930177859962
+   ],
+   "median_seconds_per_step": 0.0003107687552983407,
+   "fusions": 39,
+   "custom_calls": 0,
+   "while_loops": 0
+  }
+ },
+ "a100-restricted": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "variant": "restricted",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    0.8821371775120497,
+    0.8823482720181346,
+    0.8825353905558586,
+    0.8821938261389732,
+    0.8819486973807216
+   ],
+   "median_seconds_per_step": 0.00021537935208471026,
+   "fusions": 29,
+   "custom_calls": 0,
+   "while_loops": 0
+  },
+  "backward": {
+   "warm_seconds": [
+    1.2749910932034254,
+    1.2736889189109206,
+    1.2732834415510297,
+    1.2735887952148914,
+    1.2742733713239431
+   ],
+   "median_seconds_per_step": 0.0003109592087184865,
+   "fusions": 39,
+   "custom_calls": 0,
+   "while_loops": 0
+  }
+ },
+ "a100-unrestricted": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "variant": "unrestricted",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    1.0714303040876985,
+    1.0712726758792996,
+    1.0711721600964665,
+    1.0708252880722284,
+    1.0710195619612932
+   ],
+   "median_seconds_per_step": 0.0002615166406485514,
+   "fusions": 20,
+   "custom_calls": 0,
+   "while_loops": 0
+  },
+  "backward": {
+   "warm_seconds": [
+    3.1955549838021398,
+    3.1980831176042557,
+    3.195095969364047,
+    3.1946812737733126,
+    3.1941515700891614
+   ],
+   "median_seconds_per_step": 0.0007800527268955193,
+   "fusions": 26,
+   "custom_calls": 0,
+   "while_loops": 0
+  }
+ },
+ "notes": {
+  "workload": "benchmark_checkpoint_scan_steps.py (scratch variant harness), sorted non-local detector, 2 cm grid, 16,930 state bins, A100, JAX 0.9.0. Entries ending -2 are repeats.",
+  "restricted": "Current operator: model._continuous_transition_operator_.restricted(interior).bind_discrete(...), as checkpointed prediction uses it.",
+  "unrestricted": "Same operator without RestrictedBlock wrappers (valid here because the interior covers every bin).",
+  "global_nan": "Unrestricted, with per-block NaN checks replaced by one check of the whole input.",
+  "nan_barrier": "Restricted, with jax.lax.optimization_barrier on each block's NaN flag.",
+  "lowrank": "Prototype: uniform and scalar identity blocks folded into two skinny products (16,930 x 15 sources and 15 x 16,930 destinations), Gaussian block unchanged, one NaN check. Agreed with the structured product to 3.6e-12 (forward) and 1.5e-11 (backward) absolute on a random probability vector.",
+  "cmdbuf": "Restricted, XLA_FLAGS='--xla_gpu_enable_command_buffer=FUSION,CUBLAS,CUBLASLT,CUSTOM_CALL,WHILE,CONDITIONAL --xla_gpu_graph_min_graph_size=1'. Without the min-graph-size flag: 215.2/311.0 us per step.",
+  "fusion_counts": "These counts use an older regex that undercounts; benchmark_checkpoint_scan_steps.py now reports scan_body_fusions and scan_body_custom_calls.",
+  "fused": "benchmarks/benchmark_checkpoint_scan_steps.py as committed: the restricted operator after FusedBlockTransition (BlockTransitionOperator.fused), which checkpointed prediction now uses. scan_body_* counts come from its corrected kernel counter."
+ },
+ "a100-fused": {
+  "family": "sorted",
+  "state_bins": 16930,
+  "state_sizes": [
+   1,
+   1,
+   8464,
+   8464
+  ],
+  "chunk_size": 4096,
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "forward": {
+   "warm_seconds": [
+    0.2243604278191924,
+    0.22417891956865788,
+    0.22414254397153854,
+    0.2242999467998743,
+    0.22460089437663555
+   ],
+   "median_seconds_per_step": 5.476072919918806e-05,
+   "scan_body_fusions": 20,
+   "scan_body_custom_calls": 2
+  },
+  "backward": {
+   "warm_seconds": [
+    0.3204692043364048,
+    0.32018051762133837,
+    0.32027672231197357,
+    0.3203082922846079,
+    0.32070183102041483
+   ],
+   "median_seconds_per_step": 7.820026667104685e-05,
+   "scan_body_fusions": 22,
+   "scan_body_custom_calls": 4
+  }
+ }
+}

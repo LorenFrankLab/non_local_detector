@@ -1,0 +1,343 @@
+{
+  "platform": "cpu",
+  "device": "TFRT_CPU_0",
+  "jax": "0.9.0",
+  "source_hashes": {
+    "/private/tmp/nld-phase7-validation/final-source-v5/src/non_local_detector/likelihoods/clusterless_kde.py": "41c3dbb267670334267ab95cd4033576bad5986c7b5a7dcdefd60c1a4d4b29a1",
+    "/private/tmp/nld-phase7-performance/src/non_local_detector/likelihoods/clusterless_kde.py": "0f6db3e4792fe891ebad84f36fc7d1ea83321bb1e1ffe1eb607ec75956e5574d"
+  },
+  "source_unchanged": true,
+  "cases": [
+    {
+      "x64": false,
+      "fitted_fields": {
+        "occupancy": {
+          "shape": [
+            144
+          ],
+          "dtype": "float32",
+          "sha256": "9ac27bdd375e20e3960ee4f5c8b639f9350058464d46de66a73036e1845cf911"
+        },
+        "summed_ground_process_intensity": {
+          "shape": [
+            144
+          ],
+          "dtype": "float32",
+          "sha256": "04e2930c40bc5069f4b1941efaf8cfcd2cadb2c02e848506eee30e2e2ae51074"
+        },
+        "position_std": {
+          "shape": [
+            2
+          ],
+          "dtype": "float32",
+          "sha256": "0e4423227c009fb403bcc0aea19fb73a845516901442cbaeb4fb5c3baed0a429"
+        },
+        "mean_rates": {
+          "shape": [
+            1
+          ],
+          "dtype": "float64",
+          "sha256": "0528f55b943371fbe08e539a9961e5dc75c1631cad7bb8b1737e9848463f51c4"
+        },
+        "encoding_positions": [
+          {
+            "shape": [
+              17,
+              2
+            ],
+            "dtype": "float64",
+            "sha256": "8e7e37d3f4d9a927570aa8925afcbd5161dd22c985d86dd56c9b4510f001505d"
+          }
+        ],
+        "encoding_weights": [
+          {
+            "shape": [
+              17
+            ],
+            "dtype": "float32",
+            "sha256": "91518ffef9e5323fbc46606f610f2d022257e2c167b5b66bc8552af6e71555d4"
+          }
+        ],
+        "encoding_spike_waveform_features": [
+          {
+            "shape": [
+              17,
+              2
+            ],
+            "dtype": "float32",
+            "sha256": "5a95143cfc9089fc2c08b7b4780ea3567fefc086d4a65c7c278e28c91bc23d25"
+          }
+        ]
+      },
+      "raw_likelihoods": [
+        {
+          "is_local": false,
+          "rows": "None",
+          "result": {
+            "shape": [
+              5,
+              144
+            ],
+            "dtype": "float32",
+            "sha256": "bfd63818cee0eaefbe83ee55ae8a14d158b3df7e179318c8f68de61229d594a0"
+          }
+        },
+        {
+          "is_local": false,
+          "rows": "slice(0, 2, None)",
+          "result": {
+            "shape": [
+              2,
+              144
+            ],
+            "dtype": "float32",
+            "sha256": "32cfb62154cf83d8669ca3bb183d57bde353bf8b6ea14972dc3eb86107130bd5"
+          }
+        },
+        {
+          "is_local": false,
+          "rows": "slice(2, 4, None)",
+          "result": {
+            "shape": [
+              2,
+              144
+            ],
+            "dtype": "float32",
+            "sha256": "258d690e527c6bd62e0c8a13eaad2ee3225f379e44cc77a8a7d618b65253a814"
+          }
+        },
+        {
+          "is_local": false,
+          "rows": "slice(4, 5, None)",
+          "result": {
+            "shape": [
+              1,
+              144
+            ],
+            "dtype": "float32",
+            "sha256": "6ad044a1db19a83106a32f5a2e32dc5d61996f7e1c1a46f781b3d82d32838f84"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "None",
+          "result": {
+            "shape": [
+              5,
+              1
+            ],
+            "dtype": "float32",
+            "sha256": "8011c6fa20aa395393a8522e37a1eaa8e46b6f4a2d4f8bf62accc18e14649212"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "slice(0, 2, None)",
+          "result": {
+            "shape": [
+              2,
+              1
+            ],
+            "dtype": "float32",
+            "sha256": "c42719eab7c5ba9f7e4f6fdccdcceabb7358c2a63898c86764a0fc9c8196290f"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "slice(2, 4, None)",
+          "result": {
+            "shape": [
+              2,
+              1
+            ],
+            "dtype": "float32",
+            "sha256": "ffa6ea98d3920d69df718d66ffd2d73ad914573b1eb90038905962bd240f0708"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "slice(4, 5, None)",
+          "result": {
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "float32",
+            "sha256": "7789c6807b735debf196cfce083e8219a063bf6676380b55a7b4eaee42f1b1c3"
+          }
+        }
+      ]
+    },
+    {
+      "x64": true,
+      "fitted_fields": {
+        "occupancy": {
+          "shape": [
+            144
+          ],
+          "dtype": "float64",
+          "sha256": "b8970062e730ae24d4e8a3a9a930cc7599af0bccf1fa9e2dfe6630454180ccff"
+        },
+        "summed_ground_process_intensity": {
+          "shape": [
+            144
+          ],
+          "dtype": "float64",
+          "sha256": "3d5e3065c1cdf2c8a2615487a5d9e13628f0b2e27124e6d35d2cf983b57a1167"
+        },
+        "position_std": {
+          "shape": [
+            2
+          ],
+          "dtype": "float64",
+          "sha256": "155acd297b9c28a0276f1fef47db84ed90e6cb0c425ef05cce2f7e2b42b999ed"
+        },
+        "mean_rates": {
+          "shape": [
+            1
+          ],
+          "dtype": "float64",
+          "sha256": "77e57fbbc477e73f9d2cd0cb6376a31094c6b29135755c3b968741b45836b4be"
+        },
+        "encoding_positions": [
+          {
+            "shape": [
+              17,
+              2
+            ],
+            "dtype": "float64",
+            "sha256": "fe4cd5223d2cd87cc746ebe78c85c5277ee43e02a9fb9a7ba6b385e17580fe31"
+          }
+        ],
+        "encoding_weights": [
+          {
+            "shape": [
+              17
+            ],
+            "dtype": "float64",
+            "sha256": "1c997900a0220f8ee24f9284929da2b71f0fde2416df5e6f4e2c88da6b35dd2c"
+          }
+        ],
+        "encoding_spike_waveform_features": [
+          {
+            "shape": [
+              17,
+              2
+            ],
+            "dtype": "float64",
+            "sha256": "0c3d1d705e552bad36662714827218b7a454290a58a32f241b173eabb5bbecc1"
+          }
+        ]
+      },
+      "raw_likelihoods": [
+        {
+          "is_local": false,
+          "rows": "None",
+          "result": {
+            "shape": [
+              5,
+              144
+            ],
+            "dtype": "float64",
+            "sha256": "8846f179c995d345832791277bbc2e70281383eaade879bac235edf0edd43985"
+          }
+        },
+        {
+          "is_local": false,
+          "rows": "slice(0, 2, None)",
+          "result": {
+            "shape": [
+              2,
+              144
+            ],
+            "dtype": "float64",
+            "sha256": "f3b2a2d90d00fcd1f34699a27ea835c1a440c096df8453076675f482ea48af20"
+          }
+        },
+        {
+          "is_local": false,
+          "rows": "slice(2, 4, None)",
+          "result": {
+            "shape": [
+              2,
+              144
+            ],
+            "dtype": "float64",
+            "sha256": "5387151c8e66eddfa3bcaf055b70fdae548ef3d42259b506c297b57e91d6db85"
+          }
+        },
+        {
+          "is_local": false,
+          "rows": "slice(4, 5, None)",
+          "result": {
+            "shape": [
+              1,
+              144
+            ],
+            "dtype": "float64",
+            "sha256": "c8b497b81420169be25f8e4761e114f36bc2586c5b7151490c856aced1518015"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "None",
+          "result": {
+            "shape": [
+              5,
+              1
+            ],
+            "dtype": "float64",
+            "sha256": "7adf8a78993cfa7b3caf7dffa84a3e5f32132ddfcf09c2c224e5885307ba224e"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "slice(0, 2, None)",
+          "result": {
+            "shape": [
+              2,
+              1
+            ],
+            "dtype": "float64",
+            "sha256": "f41ec7695102f92ffd41d31cfc442ac5d73cb2349e4c0ba0a533c92b3c75e456"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "slice(2, 4, None)",
+          "result": {
+            "shape": [
+              2,
+              1
+            ],
+            "dtype": "float64",
+            "sha256": "969a2d46d8362b868b92d76b0257316685e6dc76525af4d6de4504b57b7b5b5a"
+          }
+        },
+        {
+          "is_local": true,
+          "rows": "slice(4, 5, None)",
+          "result": {
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "float64",
+            "sha256": "0b0ff004146eb36168aa7e4eb84e3252bc30f2df9adb5053aaca8eb701fa8c0b"
+          }
+        }
+      ]
+    }
+  ],
+  "native_compact_result": {
+    "shape": [
+      8,
+      4
+    ],
+    "dtype": "float32",
+    "sha256": "5e2238ebd14464c09db7b36b88cb2d4e8e2a6a2991c8ba95584f31d34989b581"
+  },
+  "native_evidence": -35.34258210659027,
+  "all_default_and_explicit_none_bitwise_equal": true,
+  "scope": "Default linear KDE paths only; new streamed helper is never called."
+}

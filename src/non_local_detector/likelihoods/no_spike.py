@@ -11,14 +11,15 @@ for specified time bins based on the provided spike times and baseline rate.
 It utilizes JAX for efficient computation.
 """
 
+import jax
 import jax.numpy as jnp
 import jax.scipy
 import numpy as np
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.likelihoods.common import (
+    _concatenate_row_blocks,
+    _spike_counts_matrix,
     _SpikeTimeOrder,
-    get_spikecount_per_time_bin,
     resolve_row_slice,
 )
 from non_local_detector.time_edges import (
@@ -31,6 +32,25 @@ from non_local_detector.time_edges import (
 def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
     """Durations in seconds for every bin of the full decode grid."""
     return np.diff(time_edges)
+
+
+@jax.jit
+def _poisson_row_log_likelihood(counts, expected_counts):
+    """Retain neuron addition order inside one compiled row-bounded scan."""
+    expected_counts = jnp.broadcast_to(expected_counts, counts.shape)
+    # xlogy's forward pass already promotes integer counts to this dtype.
+    # Explicit promotion also avoids float0 tangents in its rate derivative.
+    counts = counts.astype(expected_counts.dtype)
+
+    def add_unit(total, inputs):
+        count, expected = inputs
+        event = jax.lax.optimization_barrier(jax.scipy.special.xlogy(count, expected))
+        term = jax.lax.optimization_barrier(event - expected)
+        return total + term, None
+
+    return jax.lax.scan(
+        add_unit, jnp.zeros((counts.shape[0],)), (counts.T, expected_counts.T)
+    )[0]
 
 
 @requires_time_edges
@@ -125,22 +145,21 @@ def predict_no_spike_log_likelihood(
     else:
         durations = _time_bin_sizes[row_start:row_stop]
     no_spike_rates = no_spike_rate * jnp.asarray(durations)
-    no_spike_log_likelihood = jnp.zeros((row_stop - row_start,))
 
-    for neuron_spike_times in tqdm(
-        spike_times, unit="cell", desc="No Spike Likelihood"
-    ):
-        no_spike_log_likelihood += (
-            jax.scipy.special.xlogy(
-                get_spikecount_per_time_bin(
-                    neuron_spike_times,
-                    time_edges=time_edges,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                ),
-                no_spike_rates,
-            )
-            - no_spike_rates
+    def evaluate(start, stop):
+        counts = _spike_counts_matrix(
+            spike_times,
+            time_edges,
+            "No Spike Likelihood",
+            True,
+            slice(start, stop),
+            _spike_time_order=_spike_time_order,
+        )
+        return _poisson_row_log_likelihood(
+            jnp.asarray(counts),
+            no_spike_rates[start - row_start : stop - row_start, None],
         )
 
-    return no_spike_log_likelihood[:, None]
+    return _concatenate_row_blocks(
+        row_start, row_stop, len(spike_times), evaluate, "No Spike Likelihood", False
+    )[:, None]

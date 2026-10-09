@@ -1,0 +1,39 @@
+{
+  "source": "/private/tmp/nld-phase7-validation/primary-frozen/src/non_local_detector/likelihoods/clusterless_kde.py",
+  "source_sha256": "e3cb631327ada1bba765cb2615ae639d7e751e2d30d98cfb3034d543a82a3b3a",
+  "input_sha256": "4efeeae1426776653aa3e768d3e5f27a3ae117b57f8609b8d58705ff52030197",
+  "devices": [
+    "TFRT_CPU_0"
+  ],
+  "dtype": "float32",
+  "preflight_bytes": 1893670688,
+  "peak_process_rss_bytes": 1721974784,
+  "first_seconds": {
+    "2": 0.06523054209537804,
+    "10000": 0.35219425009563565
+  },
+  "warm_seconds": {
+    "2": [
+      0.0006277919746935368,
+      0.00041833403520286083,
+      0.00033654109574854374,
+      0.0003915419802069664,
+      0.00039549986831843853
+    ],
+    "10000": [
+      0.057033499935641885,
+      0.05963583290576935,
+      0.05775304208509624,
+      0.06737112486734986,
+      0.061377041041851044
+    ]
+  },
+  "median_seconds": {
+    "2": 0.00039549986831843853,
+    "10000": 0.05963583290576935
+  },
+  "parity_rtol": 1e-06,
+  "parity_atol": 1e-06,
+  "background_cpu_tests": true,
+  "no_quiescent_throughput_claim": true
+}

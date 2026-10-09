@@ -42,9 +42,9 @@ Measurements
 
 Usage
 -----
-    uv run python scripts/benchmark_chunk_likelihood_memory.py --sweep all
-    uv run python scripts/benchmark_chunk_likelihood_memory.py --quick
-    uv run python scripts/benchmark_chunk_likelihood_memory.py \
+    uv run python benchmarks/benchmark_chunk_likelihood_memory.py --sweep all
+    uv run python benchmarks/benchmark_chunk_likelihood_memory.py --quick
+    uv run python benchmarks/benchmark_chunk_likelihood_memory.py \
         --backends clusterless_kde sorted_spikes_kde --json out.json
 
 Limitations
@@ -70,6 +70,7 @@ import threading
 import time as timer
 import tracemalloc
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 
 def _forced_device_count() -> int:
@@ -110,6 +111,9 @@ from non_local_detector.likelihoods.common import (  # noqa: E402
     resolve_row_slice,
     select_spikes_in_rows,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_prediction_modes import provenance  # noqa: E402
 
 DEFAULT_BACKENDS = [
     "sorted_spikes_kde",
@@ -1012,6 +1016,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.json:
+        results["provenance"] = {
+            "backend": jax.default_backend(),
+            "device": str(jax.devices()[0]),
+            "jax": jax.__version__,
+            **provenance(__file__),
+        }
         with open(args.json, "w") as handle:
             json.dump(results, handle, indent=2)
         print(f"\nRaw results written to {args.json}")
