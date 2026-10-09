@@ -388,9 +388,12 @@ transition product, with the GPU busy about half the time. The
 Agreement and precision: the branch's state probabilities match `main` to
 2e-6 (CPU, dense) and 6e-4 (CPU, compact); on the A100 both versions differ
 by up to about 2e-3, the same size as `main`'s own dense-versus-chunked
-difference there. Against a float64 reference, float32 state probabilities
-in both versions err by up to about 5% on CPU and 1.8% on the A100 for this
-workload; the source of that float32 error has not been isolated.
+difference there. The historical comparison labelled "float64 reference" used
+an x64-enabled native compact run, whose HMM inference and saved posteriors
+were actually float32. Its 5% CPU / 1.8% A100 differences do not establish
+float32 error, and the accompanying no-added-error conclusion is withdrawn.
+The measurements remain in the annotated historical artifact. A corrected
+float64 HMM comparison is recorded under [precision reference validation](#precision-reference-validation).
 
 Records: [A100 runs](performance_artifacts/main_vs_branch/a100-runs.json),
 [CPU runs](performance_artifacts/main_vs_branch/cpu-runs.json),
@@ -614,3 +617,46 @@ Records: [A100 runs and state comparisons](performance_artifacts/compile/a100-gm
 [likelihood agreement](performance_artifacts/compile/numerics-gmm-kde-log.txt),
 measured with `benchmarks/profile_compilations.py` (runs before the final GMM
 runs used an earlier copy that took the benchmark directory as an argument).
+
+## Precision reference validation
+
+The 2026-10-09 correction adds a benchmark-only `reference64` mode to
+`benchmarks/compare_prediction_modes.py`. It fits with JAX x64 disabled, evaluates
+the same float32 likelihood chunks as native compact prediction, and promotes
+the fixed initial distribution, structured transition leaves and likelihood
+values before running the numerical HMM in float64. Actual likelihood-input,
+transition-input and posterior dtypes are checked and reported. Fitting with
+x64 disabled does not imply that all NumPy-host model parameters are float32.
+This comparison measures HMM inference precision for fixed inputs; it does not
+measure the error of float32 fitting or likelihood evaluation.
+
+The paired CPU runs use the same actual input, runtime-source and script hashes:
+30 seconds at 500 Hz, a 180 × 180 cm arena, a 2 cm grid (16,930 hidden bins),
+10 seconds of encoding and 256-row checkpoint chunks. Sorted uses 64 units at
+5 Hz; clusterless uses eight electrodes at 20 Hz. Both run on JAX 0.9.0.
+
+| Family | Maximum absolute state-probability difference, compact float32 vs float64 HMM | Mean absolute difference |
+| --- | ---: | ---: |
+| Sorted | 7.14e-6 | 6.49e-7 |
+| Clusterless | 5.67e-6 | 5.12e-7 |
+
+All outputs are finite and nonnegative. Maximum row-sum errors are below 5e-7
+for float32 and 9e-16 for float64. Separate small-recording tests compare this
+reference with dense float64 filtering/smoothing for both families to the
+existing 1e-10 numerical validation threshold. Tests also reject a downgraded
+float32 reference output and require x64 to be enabled. Native checkpointed
+posterior arithmetic remains float32.
+
+These are CPU precision checks, not fresh A100, hour-scale or main-versus-branch
+qualification. The SSH connection for a new A100 comparison was unavailable.
+The historical 5% CPU / 1.8% A100 interpretation cannot be inferred from these
+results. The raw reports, hashes, commands, invariants and scope are preserved
+in [the corrected precision record](performance_artifacts/phase7/precision-reference-validation.json).
+First-call times include concurrent CPU activity and are not performance claims.
+
+The supported JAX floor is now 0.6.2 in package, lock and conda metadata.
+JAX 0.4.32, 0.4.35 and 0.4.38 lack required optimization-barrier transformation
+rules; having the primitive alone is insufficient. The pinned 0.6.2 stack passed
+482 likelihood, prediction, transition and checkpoint controls, and the final
+five precision-reference tests passed separately after reporting refinements.
+CI gates builds on a focused minimum-JAX job as well as the existing full suites.

@@ -1,6 +1,13 @@
 # Output agreement: acausal state probabilities, max |difference|.
 # Workloads are identical across versions and platforms (seeded simulation;
 # benchmarks/compare_prediction_modes.py). float32 unless stated.
+# Correction (2026-10-09): the x64-enabled compact run below was incorrectly
+# labelled a float64 reference. Native checkpointed inference and saved state
+# probabilities were float32 (15,000 x 4 x 4 = 240,000 output bytes). The actual
+# likelihood dtype was not recorded. These historical numbers are retained,
+# but neither the 5%/1.8% float32-error claim nor the no-added-error conclusion
+# is supported by this comparison. See ../phase7/precision-reference-validation.json
+# for a genuine float64 HMM reference with its fixed float32 input scope explicit.
 
 ## Versus main dense, same platform
 A100, 2 cm grid      main chunked    branch dense    branch chunked  branch compact
@@ -19,7 +26,7 @@ On the A100, main's own chunked mode differs from its dense mode by 5e-4 to
 1e-3 (main uses default TF32 matmul precision there), the same size as the
 branch's differences.
 
-## Versus a float64 reference (CPU, JAX_ENABLE_X64=1, branch compact),
+## Historical comparison against an x64-enabled, float32 compact run,
 ## sorted 30 s, 2 cm grid
                       max       mean      rows with any |diff| > 1e-2
 CPU f32 main dense    4.93e-02  3.75e-03  3776 / 15000
@@ -27,6 +34,5 @@ CPU f32 compact       4.94e-02  3.76e-03  3777 / 15000
 A100 f32 main dense   1.76e-02  1.11e-03   137 / 15000
 A100 f32 branch dense 1.76e-02  1.11e-03   136 / 15000
 A100 f32 compact      1.70e-02  1.07e-03   102 / 15000
-The branch adds no error relative to main on either platform. float32 itself
-carries up to ~5% (CPU) and ~1.8% (A100) state-probability error on this
-workload in both versions; the source has not been isolated.
+# Original interpretation withdrawn: this mixed-precision comparison cannot
+# establish float32 error or absence of additional branch error.
