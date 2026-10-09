@@ -339,6 +339,52 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
+def _block_duration_values(block_durations):
+    """The block's first duration and its first different one (or the first).
+
+    Parameters
+    ----------
+    block_durations : jnp.ndarray, shape (block_rows,)
+
+    Returns
+    -------
+    first, other : jnp.ndarray, shape ()
+    """
+    first = block_durations[0]
+    return first, block_durations[jnp.argmax(block_durations != first)]
+
+
+def _matrix_emission_is_safe(rates, block_durations, accumulator_dtype):
+    """Whether one block's Poisson emission can use the rate-matrix product.
+
+    Parameters
+    ----------
+    rates : jnp.ndarray, shape (n_neurons, n_bins)
+    block_durations : jnp.ndarray, shape (block_rows,)
+    accumulator_dtype : dtype
+        The emission's accumulator dtype.
+
+    Returns
+    -------
+    is_safe : jnp.ndarray, shape ()
+        True when every rate-duration product is positive and finite, the block
+        has at most two distinct durations (a uniform grid whose timestamps
+        round to two values), and the inputs already have the accumulator dtype.
+    """
+    first, other = _block_duration_values(block_durations)
+    smallest = jnp.min(rates) * jnp.min(block_durations)
+    largest = jnp.max(rates) * jnp.max(block_durations)
+    return (
+        jnp.all(jnp.isfinite(rates))
+        & jnp.all(jnp.isfinite(block_durations))
+        & jnp.all((block_durations == first) | (block_durations == other))
+        & (jnp.min(block_durations) > 0)
+        & (smallest > 0)
+        & jnp.isfinite(largest)
+        & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+    )
+
+
 @jax.jit
 def _poisson_nonlocal_log_likelihood(
     counts: jnp.ndarray,
@@ -350,7 +396,8 @@ def _poisson_nonlocal_log_likelihood(
 
     A fixed 64-row matrix kernel uses the same rate-duration products as the
     per-neuron reference. Highest dot precision excludes a TF32 approximation.
-    Exact zeros, non-finite products and nonuniform durations retain xlogy.
+    Exact zeros, non-finite products and blocks with more than two distinct
+    durations retain xlogy.
     Padding is internal and never contributes an observation or returned row.
     """
     n_rows, n_neurons = counts.shape
@@ -368,39 +415,36 @@ def _poisson_nonlocal_log_likelihood(
     padded_durations = jnp.pad(durations, (0, padded_rows - n_rows), mode="edge")
 
     def emit_block(block_counts, block_durations):
-        smallest = jnp.min(rates) * jnp.min(block_durations)
-        largest = jnp.max(rates) * jnp.max(block_durations)
-        matrix_is_safe = (
-            jnp.all(jnp.isfinite(rates))
-            & jnp.all(jnp.isfinite(block_durations))
-            & jnp.all(block_durations == block_durations[0])
-            & (block_durations[0] > 0)
-            & (smallest > 0)
-            & jnp.isfinite(largest)
-            & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+        matrix_is_safe = _matrix_emission_is_safe(
+            rates, block_durations, accumulator_dtype
         )
 
         def matrix_accumulation(_):
             dtype = jnp.result_type(rates, block_durations)
             block_counts_float = block_counts.astype(dtype)
-            # Values use the block's common duration. The zero-valued term
-            # (exactly 0 for these finite durations) restores each row's own
-            # duration derivative, which the shared duration would collapse.
+            # Each row uses the product for its own duration, one of the
+            # block's at most two values, so a row's value does not depend on
+            # where a row partition starts. The zero-valued term (exactly 0 for
+            # these finite durations) restores each row's own duration
+            # derivative, which the stopped gradients would collapse.
             log_durations = jnp.log(block_durations.astype(dtype))
             duration_tangent = (
                 block_counts_float.sum(axis=1, keepdims=True)
                 * (log_durations - jax.lax.stop_gradient(log_durations))[:, None]
             )
-            return (
-                jnp.matmul(
+            first, other = _block_duration_values(block_durations)
+
+            def emission(duration):
+                return jnp.matmul(
                     block_counts_float,
-                    jnp.log(
-                        rates.astype(dtype) * jax.lax.stop_gradient(block_durations[0])
-                    ),
+                    jnp.log(rates.astype(dtype) * jax.lax.stop_gradient(duration)),
                     precision=jax.lax.Precision.HIGHEST,
                 )
-                + duration_tangent
-            ).astype(accumulator_dtype)
+
+            values = jnp.where(
+                (block_durations == first)[:, None], emission(first), emission(other)
+            )
+            return (values + duration_tangent).astype(accumulator_dtype)
 
         def xlogy_accumulation(_):
             def add_neuron(likelihood, neuron):

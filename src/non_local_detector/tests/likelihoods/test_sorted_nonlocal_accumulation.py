@@ -91,6 +91,17 @@ def float64_emission(counts, rates, durations, summed_rates):
     return total - durations[:, None] * np.asarray(summed_rates, np.float64)
 
 
+def unix_epoch_durations(n_rows, dtype):
+    """Durations of a uniform 500 Hz grid that starts at a Unix-epoch time.
+
+    The edges are exact multiples of 2 ms from the start, but float64 cannot
+    represent times near 1.6e9 s to better than about 2.4e-7 s, so the
+    differences take two distinct values, as in real recordings.
+    """
+    edges = 1_625_935_757.7008803 + np.arange(n_rows + 1) * 0.002
+    return np.diff(edges).astype(dtype)
+
+
 def assert_within_ulps(actual, exact, dtype, ulps=16):
     """Each element lies within ``ulps`` units in the last place of ``exact``."""
     actual = np.asarray(actual, np.float64)
@@ -256,7 +267,39 @@ def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
 
 
 @pytest.mark.parametrize("x64", [False, True])
-@pytest.mark.parametrize("kind", ["sparse", "coincident", "zero", "nonfinite"])
+def test_matrix_emission_accepts_rounding_jittered_durations(x64):
+    """Blocks whose durations differ only by timestamp rounding use the matrix.
+
+    Real recordings with Unix-epoch times give two distinct bin durations; the
+    exact per-neuron fallback is about 70x slower on an A100 for 305 units.
+    """
+    from non_local_detector.likelihoods.common import _matrix_emission_is_safe
+
+    with precision_mode(x64):
+        dtype = np.float64 if x64 else np.float32
+        rates = jnp.full((3, 4), 2.0, dtype=dtype)
+        durations = unix_epoch_durations(64, dtype)
+        assert np.unique(durations).size == 2
+
+        assert _matrix_emission_is_safe(rates, jnp.asarray(durations), dtype)
+        # Three distinct durations, zero or non-finite products stay exact.
+        three = durations.copy()
+        three[5] = 0.003
+        for unsafe_rates, unsafe_durations in [
+            (rates, three),
+            (rates, np.where(np.arange(64) == 7, 0.0, durations).astype(dtype)),
+            (rates.at[0, 0].set(0.0), durations),
+            (rates.at[0, 0].set(jnp.inf), durations),
+        ]:
+            assert not _matrix_emission_is_safe(
+                unsafe_rates, jnp.asarray(unsafe_durations), dtype
+            )
+
+
+@pytest.mark.parametrize("x64", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["sparse", "coincident", "jittered", "zero", "nonfinite"]
+)
 def test_host_counts_match_float64_oracle_and_keep_xlogy_fallback(x64, kind):
     """Matrix rows stay near the exact sum; unsafe products keep ordered xlogy."""
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
@@ -278,6 +321,8 @@ def test_host_counts_match_float64_oracle_and_keep_xlogy_fallback(x64, kind):
         elif kind == "nonfinite":
             rates = rates.at[0, 0].set(jnp.nan).at[1, 1].set(jnp.inf)
         durations = jnp.full(len(counts), 2**-9, dtype=dtype)
+        if kind == "jittered":
+            durations = jnp.asarray(unix_epoch_durations(len(counts), dtype))
         summed = jnp.sum(rates, axis=0)
         expected = jnp.zeros((len(counts), rates.shape[1]))
         for neuron in range(len(rates)):
@@ -304,10 +349,10 @@ def test_host_counts_match_float64_oracle_and_keep_xlogy_fallback(x64, kind):
 
 
 @pytest.mark.parametrize("host_counts", [False, True])
-@pytest.mark.parametrize("uniform", [False, True])
+@pytest.mark.parametrize("durations_kind", ["uniform", "two_values", "nonuniform"])
 def test_poisson_accumulation_preserves_rate_and_duration_gradients(
     host_counts,
-    uniform,
+    durations_kind,
 ):
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
@@ -316,13 +361,13 @@ def test_poisson_accumulation_preserves_rate_and_duration_gradients(
         if not host_counts:
             counts = jnp.asarray(counts)
         rates = jnp.array([[1.5, 0.2], [3.0, 2.2], [0.4, 7.0]])
+        # Two distinct values use the matrix product; four use the fallback.
         durations = jnp.array(
-            [
-                0.002,
-                0.002 if uniform else 0.003,
-                0.002 if uniform else 0.004,
-                0.002 if uniform else 0.005,
-            ]
+            {
+                "uniform": [0.002, 0.002, 0.002, 0.002],
+                "two_values": [0.002, 0.003, 0.002, 0.003],
+                "nonuniform": [0.002, 0.003, 0.004, 0.005],
+            }[durations_kind]
         )
 
         def reference(rates, durations):
