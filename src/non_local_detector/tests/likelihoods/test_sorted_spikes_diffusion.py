@@ -20,12 +20,15 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import RATE_EPS_HZ, get_position_at_time
 from non_local_detector.likelihoods.diffusion import (
+    cached_heat_kernel_eigenbasis,
     connected_component_labels,
+    diffuse,
     environment_graph,
     heat_kernel_rank,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     fit_sorted_spikes_diffusion_encoding_model,
+    pixellate_interior_fields,
     predict_sorted_spikes_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
@@ -544,23 +547,30 @@ def make_linear_track_env():
     ).fit_place_grid()
 
 
-def test_linearized_track_graph_fit_and_predict():
-    """Exercise the linearized (track_graph) branch through the likelihood: fields are
-    full-grid, place at the right linear location, and predict runs finite."""
-    env = make_linear_track_env()
-    rng = np.random.default_rng(3)
+def simulate_linear_track_data(place_centers=(2.0, 8.0), seed: int = 3):
+    """Back-and-forth trajectory on ``make_linear_track_env`` with place cells.
+
+    Returns ``(time, position, spike_times)``; x spans [0.2, 10.3] with y = 0.
+    """
+    rng = np.random.default_rng(seed)
     n_time, sampling_frequency = 4000, 100
     time = np.arange(n_time) / sampling_frequency
-    # 1D back-and-forth trajectory along the track (x in [0.2, 10.3], y = 0).
     x = 0.2 + np.abs((np.cumsum(rng.normal(0.0, 0.3, n_time)) % (2 * 10.1)) - 10.1)
     position = np.column_stack([x, np.zeros_like(x)])
-
-    place_centers = [2.0, 8.0]  # place-cell x-locations on the track
     dt = 1.0 / sampling_frequency
     spike_times = [
         time[rng.random(n_time) < 40.0 * np.exp(-((x - c) ** 2) / (2 * 1.0**2)) * dt]
         for c in place_centers
     ]
+    return time, position, spike_times
+
+
+def test_linearized_track_graph_fit_and_predict():
+    """Exercise the linearized (track_graph) branch through the likelihood: fields are
+    full-grid, place at the right linear location, and predict runs finite."""
+    env = make_linear_track_env()
+    place_centers = [2.0, 8.0]  # place-cell x-locations on the track
+    time, position, spike_times = simulate_linear_track_data(place_centers)
 
     encoding = fit_sorted_spikes_diffusion_encoding_model(
         position_time=time,
@@ -602,6 +612,71 @@ def test_linearized_track_graph_fit_and_predict():
     )
     assert local_ll.shape == (100, 1)
     assert np.all(np.isfinite(local_ll))
+
+
+def _fit_linear_track_with_smoothed_fields(position_std: float = 2.0):
+    """Fit on unequal-volume bins and smooth the raw counts/exposure independently.
+
+    Returns ``(encoding, smoothed_exposure, smoothed_counts, node_order)`` with
+    ``smoothed_exposure`` in seconds, shape (n_interior,), and ``smoothed_counts``
+    shape (n_interior, n_neurons), both in ``node_order``.
+    """
+    env = make_linear_track_env()
+    time, position, spike_times = simulate_linear_track_data()
+    graph, node_order, bin_sizes = environment_graph(env)
+    # The 5.5-unit edge holds six 0.917-wide bins next to 1.0-wide bins.
+    assert np.ptp(bin_sizes) > 0.05
+
+    encoding = fit_sorted_spikes_diffusion_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        position_std=position_std,
+    )
+    exposure, spike_counts, _ = pixellate_interior_fields(
+        time, position, spike_times, env, node_order, np.ones_like(time)
+    )
+    eigvals, eigvecs = cached_heat_kernel_eigenbasis(env, position_std)
+    smoothed = diffuse(
+        eigvals,
+        eigvecs,
+        position_std,
+        np.column_stack([exposure, *spike_counts]),
+        component_labels=connected_component_labels(graph),
+    )
+    return encoding, smoothed[:, 0], smoothed[:, 1:], node_order
+
+
+@pytest.mark.unit
+def test_rate_is_smoothed_count_over_smoothed_exposure_on_unequal_bins():
+    """rate_i = smoothed spike count_i / smoothed exposure seconds_i (Hz).
+
+    Bin volumes cancel from a count/time ratio, so unequal track-graph bin widths
+    must not rescale a neuron's fitted rate.
+    """
+    encoding, exposure, counts, node_order = _fit_linear_track_with_smoothed_fields()
+    assert np.all(exposure > 0.0)
+
+    expected = np.clip(counts / exposure[:, np.newaxis], RATE_EPS_HZ, None)
+    fitted = np.asarray(encoding["place_fields"])[:, node_order].T
+
+    np.testing.assert_allclose(fitted, expected, rtol=1e-5)
+
+
+@pytest.mark.unit
+def test_exposure_weighted_mean_rate_equals_mean_rate_on_unequal_bins():
+    """Σ_i exposure_i · rate_i / Σ_i exposure_i equals each neuron's mean rate.
+
+    Units-free check: the fitted field predicts the observed spike total over the
+    encoding exposure, independent of bin volumes.
+    """
+    encoding, exposure, _, node_order = _fit_linear_track_with_smoothed_fields()
+    fitted = np.asarray(encoding["place_fields"], dtype=float)[:, node_order]
+
+    weighted_mean = fitted @ exposure / exposure.sum()
+
+    np.testing.assert_allclose(weighted_mean, encoding["mean_rates"], rtol=1e-5)
 
 
 def test_registered_in_sorted_spikes_algorithms():
