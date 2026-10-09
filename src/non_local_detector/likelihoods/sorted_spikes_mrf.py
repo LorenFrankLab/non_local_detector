@@ -228,13 +228,20 @@ def _validate_mrf_problem(
     return counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
 
 
+# Request full float32 products: CUDA otherwise may use TF32, which moved A100
+# coefficients by up to 2e-3 from a float64 reference. CPU results are unchanged.
+_matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
+
+
 def _penalized_hessian(basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.ndarray):
     """Batched penalized Hessian ``Bᵀ diag(mu_k) B + diag(penalty_diag)`` per neuron.
 
     The 3-operand einsum is compiled by XLA to an efficient batched matmul (unlike
     NumPy's einsum path). Returns shape ``(n_neurons, rank, rank)``.
     """
-    hessian = jnp.einsum("br,bk,bs->krs", basis, mu, basis)
+    hessian = jnp.einsum(
+        "br,bk,bs->krs", basis, mu, basis, precision=jax.lax.Precision.HIGHEST
+    )
     return hessian + jnp.eye(basis.shape[1], dtype=basis.dtype) * (
         penalty_diag + _HESSIAN_JITTER
     )
@@ -288,13 +295,13 @@ def _newton_fit_jax(
 
     def newton_body(state):
         coeffs, iteration, _max_step, _rel = state
-        eta = basis @ coeffs
+        eta = _matmul(basis, coeffs)
         mu = occupancy[:, None] * jnp.exp(
             jnp.clip(
                 eta, -_ETA_CLIP + jnp.log(rate_scale), _ETA_CLIP + jnp.log(rate_scale)
             )
         )
-        grad = basis.T @ (counts - mu) - penalty_diag[:, None] * coeffs
+        grad = _matmul(basis.T, counts - mu) - penalty_diag[:, None] * coeffs
         hessian = _penalized_hessian(basis, mu, penalty_diag)
         step = jnp.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
 
@@ -304,7 +311,7 @@ def _newton_fit_jax(
 
         def is_worse(scale):
             trial = coeffs + scale[None, :] * step.T
-            trial_eta = basis @ trial
+            trial_eta = _matmul(basis, trial)
             trial_mu = occupancy[:, None] * jnp.exp(
                 jnp.clip(
                     trial_eta,
@@ -339,7 +346,7 @@ def _newton_fit_jax(
         # Non-negative up to the step-halving slack; initial=0.0 so an empty neuron axis
         # (n_neurons == 0) reduces to 0 -> converged immediately (keeps REML safe).
         new_coeffs = coeffs + accepted_step
-        new_eta = basis @ new_coeffs
+        new_eta = _matmul(basis, new_coeffs)
         new_mu = occupancy[:, None] * jnp.exp(
             jnp.clip(
                 new_eta,
@@ -366,7 +373,7 @@ def _newton_fit_jax(
     # Clip eta so any rate the caller derives via exp(eta) stays finite even if a
     # low-penalty / near-zero-occupancy fit drove eta large (mirrors mgcv).
     eta = jnp.clip(
-        basis @ coeffs,
+        _matmul(basis, coeffs),
         -_ETA_CLIP + jnp.log(rate_scale),
         _ETA_CLIP + jnp.log(rate_scale),
     )
