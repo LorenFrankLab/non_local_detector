@@ -9,7 +9,7 @@ dependencies:
 - numpy >=1.25
 - scipy >=1.10
 - jaxlib=*=*cuda*
-- jax >=0.4.27
+- jax >=0.6.2
 - pandas >=2.0
 - cuda-nvcc
 - networkx >=3.0

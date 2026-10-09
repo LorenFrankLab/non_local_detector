@@ -66,9 +66,31 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
         continue-on-error: true
 
+  test-minimum-jax:
+    name: Test minimum JAX (0.6.2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install minimum JAX
+        run: pip install -e .[test] "jax==0.6.2" "jaxlib==0.6.2"
+      - name: Run prediction, gradient and numerical compatibility tests
+        run: >-
+          pytest -v
+          src/non_local_detector/tests/likelihoods/test_local_poisson_accumulation.py
+          src/non_local_detector/tests/likelihoods/test_kde_common.py
+          src/non_local_detector/tests/likelihoods/test_deterministic_spike_reduction.py
+          src/non_local_detector/tests/models/test_checkpointed_prediction.py
+          src/non_local_detector/tests/core/test_checkpointed_inference.py
+          src/non_local_detector/tests/transitions/test_transition_operators.py
+          src/non_local_detector/tests/models/test_prediction_precision_benchmark.py
+
   build:
     runs-on: ubuntu-latest
-    needs: [quality, test]
+    needs: [quality, test, test-minimum-jax]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
