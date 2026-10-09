@@ -528,3 +528,65 @@ def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
             eval_points, jnp.ones((1, 2), jnp.float32), std
         )
         assert _barrier_operand_sizes(singleton.jaxpr)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+def test_traced_block_kde_bounds_compiled_workspace(log_space):
+    """Kernel workspace stays bounded when samples grow with the recording.
+
+    A full 23.6 min clusterless recording evaluates the occupancy KDE at about
+    40k decoding spikes against about 700k position samples. Row blocks of
+    10,000 alone left a (rows x samples) workspace of 105.7 GiB.
+    """
+    from non_local_detector.likelihoods import common
+
+    traced = common._traced_block_log_kde if log_space else common._traced_block_kde
+    compiled = (
+        jax.jit(
+            lambda points, samples, weights: traced(
+                points, samples, jnp.ones(1), 10_000, weights
+            )
+        )
+        .lower(
+            jax.ShapeDtypeStruct((40_000, 1), jnp.float32),
+            jax.ShapeDtypeStruct((700_000, 1), jnp.float32),
+            jax.ShapeDtypeStruct((700_000,), jnp.float32),
+        )
+        .compile()
+    )
+    workspace = compiled.memory_analysis().temp_size_in_bytes
+    assert workspace <= 4 * common._KDE_BLOCK_KERNEL_BYTES, (
+        f"{workspace / 2**30:.1f} GiB"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
+    """Eager blocks shrink so one block's kernel matrix fits the byte budget."""
+    from non_local_detector.likelihoods import common
+
+    rng = np.random.default_rng(3)
+    points = jnp.asarray(rng.normal(size=(300, 2)).astype(np.float32))
+    samples = jnp.asarray(rng.normal(size=(5_000, 2)).astype(np.float32))
+    weights = jnp.asarray(rng.uniform(size=5_000).astype(np.float32))
+    std = jnp.array([0.7, 1.3])
+    direct = (log_kde if log_space else kde)(points, samples, std, weights)
+
+    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * 4 * 64)
+    kernel_name = "log_kde" if log_space else "kde"
+    original = getattr(common, kernel_name)
+    rows = []
+
+    def record(eval_points, *args):
+        rows.append(eval_points.shape[0])
+        return original(eval_points, *args)
+
+    monkeypatch.setattr(common, kernel_name, record)
+    blocked = (block_log_kde if log_space else block_kde)(
+        points, samples, std, 10_000, weights
+    )
+
+    assert max(rows) == 64 and sum(rows) == 300
+    np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
