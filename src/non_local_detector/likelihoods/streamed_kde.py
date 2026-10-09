@@ -1,11 +1,14 @@
-"""Opt-in prototypes for the existing linear KDE, with tiled kernel workspace.
+"""Tiled linear KDE kernels behind the clusterless KDE's tile-size options.
 
-No production registry uses these helpers by default. Samples and weights remain
-the original model leaves. Normalization uses the full weight sum; intensity
-floors apply only after all sample contributions have been accumulated. Tile
-sizes bound forward kernel workspace, not resident inputs, returned arrays, or
-JAX reverse-mode storage. Local callers concatenate position and marks before
-calling ``_sample_tiled_density`` so their kernel exponentiation stays combined.
+Default predictions do not use these helpers; ``clusterless_kde`` calls them
+when ``encoding_block_size`` or ``position_block_size`` is set. Samples and
+weights remain the model leaves. Normalization uses the full weight sum;
+intensity floors apply only after all sample contributions have been
+accumulated. Tile sizes bound forward kernel workspace, not resident inputs,
+returned arrays, JAX reverse-mode storage, or the ``(n_rows, tile_columns)``
+temporary that each tile's row accumulation allocates. Local callers
+concatenate position and marks before calling ``_sample_tiled_density`` so
+their kernel exponentiation stays combined.
 """
 
 from functools import partial

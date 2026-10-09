@@ -483,12 +483,13 @@ class Environment:
         infer_track_interior : bool, optional
             Whether to infer the spatial geometry of track from position
         compute_all_pairs_distances : bool, optional
-            Preserve the legacy eager graph-distance matrix by default. False
-            retains an exact sparse query view for Cartesian environments,
-            avoiding quadratic setup. Explicit 1D track graphs retain their
-            legacy dictionary and do not have this bounded-memory guarantee.
+            By default True, which builds the all-pairs graph-distance matrix.
+            False keeps an exact sparse query view for Cartesian environments,
+            avoiding quadratic setup. Explicit 1D track graphs keep their
+            distance dictionary either way, without this memory bound.
         max_dense_distance_bytes : int, optional
-            Dense conversion/selection budget for the deferred Cartesian view.
+            Byte limit for dense conversions and selections of the deferred
+            Cartesian view, by default 256 MiB.
 
         Returns
         -------

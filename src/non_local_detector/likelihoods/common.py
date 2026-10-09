@@ -842,8 +842,9 @@ def deterministic_segment_sum(
     ----------
     values : jnp.ndarray, shape (n, ...)
     segment_ids : jnp.ndarray, shape (n,), integer
-        Ids outside ``[0, num_segments)`` are dropped, including unsigned or
-        64-bit ids too large for the canonical index dtype.
+        Ids outside ``[0, num_segments)`` are dropped. With x64 disabled,
+        64-bit ids wrap to 32 bits first; normalize them on the host (see
+        ``spike_row_ids``).
     num_segments : int
         Must be below 2**31.
     indices_are_sorted : bool
@@ -914,7 +915,9 @@ def deterministic_row_sum(
     ----------
     values : jnp.ndarray, shape (n, ...)
     row_ids : array-like, shape (n,), integer
-        Ids outside ``[0, n_rows)`` are dropped.
+        Ids outside ``[0, n_rows)`` are dropped. With x64 disabled, 64-bit
+        ids wrap to 32 bits first; normalize them on the host (see
+        ``spike_row_ids``).
     n_rows : int
     indices_are_sorted : bool
         True only when ``row_ids`` is verified nondecreasing.
@@ -979,7 +982,8 @@ def deterministic_row_add(
     Returns
     -------
     output : jnp.ndarray, shape (n_rows, n_columns)
-        The tile holds ``initial + sum(contributions)``. Off CPU the reduction
+        The tile holds ``initial + sum(contributions)``. Each call builds an
+        ``(n_rows, tile_columns)`` row-sum temporary. Off CPU the reduction
         also keeps segmented-scan temporaries (see ``deterministic_segment_sum``;
         about 0.05-0.4x of ``values`` measured on an A100). As with
         ``dynamic_slice``, a tile that

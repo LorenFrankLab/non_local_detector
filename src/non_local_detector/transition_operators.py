@@ -933,12 +933,42 @@ def build_transition_operator(
     encoding_group_labels=None,
     environment_labels=None,
 ):
-    """Build exact padded conditional blocks and preflight cumulative fallback.
+    """Build exact padded conditional blocks and preflight dense fallback.
 
-    Scalar/spatial overrides and the multi-bin Local ``Discrete`` upgrade match
-    the existing detector constructor. Only exact Cartesian separable Euclidean
-    Gaussians bypass its dense constructor. Unsupported configurations require
-    ``allow_dense_fallback=True`` and a feasible SUM of retained block bytes.
+    Uniform, Identity, scalar ``Discrete``, scalar-to-spatial and
+    spatial-to-scalar blocks, and Euclidean, nondirectional RandomWalks with
+    a scalar mean and separable covariance on complete Cartesian grids are
+    built without dense matrices.
+    Scalar/spatial blocks and the multi-bin Local ``Discrete`` upgrade match
+    the dense detector constructor. Any other block raises
+    ``UnsupportedTransitionError`` unless ``allow_dense_fallback=True``; the
+    retained dense blocks plus the temporary dense graph distances that
+    manifold RandomWalk fallbacks need must then fit ``max_dense_bytes``.
+
+    Parameters
+    ----------
+    transition_types : sequence of sequence
+        ``(n_states, n_states)`` grid of continuous transition models.
+    environments : list of Environment
+        Fitted environments.
+    state_sizes : sequence of int
+        Padded bins per discrete state.
+    observation_models : sequence of ObservationModel, optional
+        With ``local_position_std``, turns Local ``Discrete`` blocks into
+        Uniform blocks over the Local environment.
+    local_position_std : float, optional
+        Multi-bin Local width; None keeps a single-bin Local state.
+    allow_dense_fallback : bool, optional
+        Build unsupported blocks with their dense constructor.
+    max_dense_bytes : int, optional
+        Dense fallback budget, by default 256 MiB.
+    position, is_training, encoding_group_labels, environment_labels : optional
+        Fit context for ``EmpiricalMovement`` fallback blocks.
+
+    Returns
+    -------
+    operator : BlockTransitionOperator
+        Blocks in source-major order and the padded state sizes.
     """
     sizes = tuple(int(size) for size in state_sizes)
     if not sizes or any(size <= 0 for size in sizes):

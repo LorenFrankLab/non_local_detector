@@ -1671,6 +1671,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Position data
         environment_labels : np.ndarray, optional, shape (n_time,)
             Labels for each time points about which environment it corresponds to, by default None
+        compute_all_pairs_distances : bool, optional
+            By default True, which builds each environment's all-pairs graph
+            distances. False keeps an exact sparse query view for Cartesian
+            environments; see ``Environment.fit_place_grid``.
+        max_dense_distance_bytes : int, optional
+            Byte limit for dense reads of the deferred distance view, by
+            default 256 MiB. Used only when compute_all_pairs_distances=False.
         """
         for environment in self.environments:
             if environment_labels is None:
@@ -1815,11 +1822,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             If place fields should correspond to each state, label each time point with the group name, by default None.
         environment_labels : np.ndarray, shape (n_time,), optional
             If there are multiple environments, label each time point with the environment name, by default None.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            By default "dense", which builds the full matrix. "structured"
+            requires exact supported state-block operators; "auto" permits
+            budgeted dense fallback blocks.
+        max_dense_transition_bytes : int, optional
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy view, by default
+            256 MiB. Does not limit "dense".
 
         Attributes
         ----------
-        continuous_state_transitions_ : np.ndarray, shape (n_state_bins, n_state_bins)
+        continuous_state_transitions_ : np.ndarray or LazyDenseTransition, shape (n_state_bins, n_state_bins)
             Probability of transitioning between bins, assuming a transition between the corresponding discrete states occurs.
+            A budgeted lazy view of the operator unless transition_representation="dense".
         continuous_transition_types : ContinuousTransitions
             Stores the continuous transition types used.
         """
@@ -3462,10 +3478,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     @staticmethod
     def save_results(results: xr.Dataset, filename: str = "results.nc") -> None:
         """
-        Save the results to a netcdf file.
+        Save the results to a netCDF file.
 
-        `state_bins`is a multiindex, which is not supported by netcdf so
-        it is converted before saving.
+        ``state_bins`` is a MultiIndex, which netCDF does not support, so it
+        is converted before saving. Boolean attributes are stored as integers
+        and the internal ``_native_metadata`` attribute is dropped.
 
         Parameters
         ----------
@@ -3493,13 +3510,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
     ) -> xr.Dataset:
         """
-        Loads the results from a netcdf file and converts the
-        index back to a multiindex.
+        Load results saved by ``save_results`` or a checkpointed result_path.
+
+        A netCDF file gets its ``state_bins`` MultiIndex back. A directory is
+        opened as a checkpointed result store with lazy arrays.
 
         Parameters
         ----------
-        filename : str, optional
-            File containing results, by default "results.nc"
+        filename : str or Path, optional
+            netCDF file or checkpointed result directory, by default
+            "results.nc"
+        max_read_bytes : int, optional
+            Maximum bytes in one explicit read of a result directory's lazy
+            arrays, by default 512 MiB. Ignored for netCDF files.
 
         Returns
         -------
@@ -4148,13 +4171,15 @@ class ClusterlessDetector(_DetectorBase):
             Encoding support does not automatically mark decode bins missing.
 
         transition_representation : {"dense", "structured", "auto"}, optional
-            Dense is the existing default. Structured requires exact supported
-            state-block operators; auto permits budgeted dense fallback blocks.
-            Non-dense N-D environments defer all-pairs graph distances.
+            By default "dense", which builds the full transition matrix.
+            "structured" requires exact supported state-block operators;
+            "auto" permits budgeted dense fallback blocks. Non-dense N-D
+            environments defer all-pairs graph distances.
         max_dense_transition_bytes : int, optional
-            Byte limit for retained fallback blocks and explicit reads of the
-            lazy transition view, by default 256 MiB. Does not limit the legacy
-            explicitly dense fit.
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy transition and distance
+            views, by default 256 MiB. Ignored when
+            transition_representation="dense".
 
         Returns
         -------
@@ -4517,8 +4542,11 @@ class ClusterlessDetector(_DetectorBase):
             - 'all': all outputs above
             - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
 
-            The smoother (acausal_posterior, acausal_state_probabilities) and
-            marginal_log_likelihood are ALWAYS included.
+            acausal_state_probabilities and marginal_log_likelihood are always
+            included; acausal_posterior is included except in checkpointed
+            compact output. Compact output holds state probabilities only, so
+            'log_likelihood' and 'predictive_posterior' (and 'all') require
+            output_mode='spatial'.
 
             When to use each output:
             - 'filter': Online/causal decoding, debugging forward pass
@@ -4537,22 +4565,21 @@ class ClusterlessDetector(_DetectorBase):
             Whether to save the causal (filtered) posterior to the results, by default None.
 
         inference_mode : {"dense", "checkpointed"}, optional
-            Dense preserves the existing in-memory driver. Checkpointed stores
-            boundary messages on disk and replays chunks for exact smoothing.
+            By default "dense", the in-memory driver. "checkpointed" stores
+            boundary messages on disk and replays chunks for exact smoothing;
+            it raises ValueError unless n_chunks=1 and cache_likelihood=False.
         output_mode : {"compact", "spatial"}, optional
-            Checkpointed compact returns requested state probabilities without
-            full-session spatial arrays. Spatial writes lazy incremental arrays
-            and requires result_path. Dense prediction uses spatial output.
+            By default "spatial", the only output dense prediction accepts.
+            Checkpointed "compact" returns state probabilities without
+            full-session spatial arrays; checkpointed "spatial" writes lazy
+            incremental arrays and requires result_path.
         chunk_size : int, optional
-            Maximum checkpoint/replay rows. By default, enough rows for one
-            chunk of float32 likelihoods to take about 256 MiB, and at least
-            256 (3,963 rows for 16,930 state bins). Larger chunks amortize
-            per-chunk overhead; working memory grows with chunk rows, to
-            several times one likelihood chunk. At the default for 16,930
-            state bins, a 30 s recording peaked at about 1.5 GB of A100
-            device memory, or 3.3 GB of CPU process memory (about 1 GB with
-            chunk_size=256, at similar CPU speed).
-            In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
+            Maximum checkpoint/replay rows (checkpointed mode only). By
+            default, enough rows for one chunk of float32 likelihoods to take
+            about 256 MiB, and at least 256. Larger chunks amortize per-chunk
+            overhead; working memory grows with chunk rows, to several times
+            one likelihood chunk. docs/hardware_settings.md lists measured
+            memory and speed.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
             are never overwritten. Optional for compact, required for spatial.
@@ -5326,13 +5353,15 @@ class SortedSpikesDetector(_DetectorBase):
             Encoding support does not automatically mark decode bins missing.
 
         transition_representation : {"dense", "structured", "auto"}, optional
-            Dense is the existing default. Structured requires exact supported
-            state-block operators; auto permits budgeted dense fallback blocks.
-            Non-dense N-D environments defer all-pairs graph distances.
+            By default "dense", which builds the full transition matrix.
+            "structured" requires exact supported state-block operators;
+            "auto" permits budgeted dense fallback blocks. Non-dense N-D
+            environments defer all-pairs graph distances.
         max_dense_transition_bytes : int, optional
-            Byte limit for retained fallback blocks and explicit reads of the
-            lazy transition view, by default 256 MiB. Does not limit the legacy
-            explicitly dense fit.
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy transition and distance
+            views, by default 256 MiB. Ignored when
+            transition_representation="dense".
 
         Returns
         -------
@@ -5685,22 +5714,21 @@ class SortedSpikesDetector(_DetectorBase):
             DEPRECATED. Use return_outputs='filter' instead. By default None.
 
         inference_mode : {"dense", "checkpointed"}, optional
-            Dense preserves the existing in-memory driver. Checkpointed stores
-            boundary messages on disk and replays chunks for exact smoothing.
+            By default "dense", the in-memory driver. "checkpointed" stores
+            boundary messages on disk and replays chunks for exact smoothing;
+            it raises ValueError unless n_chunks=1 and cache_likelihood=False.
         output_mode : {"compact", "spatial"}, optional
-            Checkpointed compact returns requested state probabilities without
-            full-session spatial arrays. Spatial writes lazy incremental arrays
-            and requires result_path. Dense prediction uses spatial output.
+            By default "spatial", the only output dense prediction accepts.
+            Checkpointed "compact" returns state probabilities without
+            full-session spatial arrays; checkpointed "spatial" writes lazy
+            incremental arrays and requires result_path.
         chunk_size : int, optional
-            Maximum checkpoint/replay rows. By default, enough rows for one
-            chunk of float32 likelihoods to take about 256 MiB, and at least
-            256 (3,963 rows for 16,930 state bins). Larger chunks amortize
-            per-chunk overhead; working memory grows with chunk rows, to
-            several times one likelihood chunk. At the default for 16,930
-            state bins, a 30 s recording peaked at about 1.5 GB of A100
-            device memory, or 3.3 GB of CPU process memory (about 1 GB with
-            chunk_size=256, at similar CPU speed).
-            In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
+            Maximum checkpoint/replay rows (checkpointed mode only). By
+            default, enough rows for one chunk of float32 likelihoods to take
+            about 256 MiB, and at least 256. Larger chunks amortize per-chunk
+            overhead; working memory grows with chunk rows, to several times
+            one likelihood chunk. docs/hardware_settings.md lists measured
+            memory and speed.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
             are never overwritten. Optional for compact, required for spatial.

@@ -441,8 +441,8 @@ def fit_clusterless_diffusion_encoding_model(
         bins = np.asarray(
             _interior_bin_indices(environment, spike_positions, full_to_local)
         )
-        # Bin-sorted encoding spikes make each prediction block's spatial
-        # reduction a deterministic sorted-segment sum.
+        # Store encoding spikes sorted by bin: predict sums them by bin with
+        # indices_are_sorted=True, which requires nondecreasing ids.
         order = np.argsort(bins, kind="stable")
 
         encoding_bin_indices.append(bins[order])

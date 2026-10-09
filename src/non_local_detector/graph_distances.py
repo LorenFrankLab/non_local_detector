@@ -2,7 +2,8 @@
 
 The sparse graph is retained; each query computes only its distinct source
 rows in bounded batches, and recently used source rows are kept in a bounded
-cache. No all-pairs matrix is created. Unreachable nodes have
+cache. Row queries never build the all-pairs matrix; only an explicit dense
+conversion does, within ``max_dense_bytes``. Unreachable nodes have
 infinite distance, including isolated exterior nodes (whose self-distance is
 zero), exactly as in the legacy NetworkX shortest-path matrix.
 """
@@ -46,10 +47,11 @@ class LazyGraphDistances:
     ``max_workspace_bytes`` bounds each temporary Dijkstra row batch; it must
     accommodate at least one float64 N-element source row.
     ``max_cache_bytes`` bounds a least-recently-used cache of full source rows
-    (0 disables it); indexing and ``cross_distances`` fill it, ``to_dense``
-    does not. ``cross_distances`` returns a caller-owned block that is not
-    limited by ``max_dense_bytes``. Pickling retains only the sparse graph and
-    budgets, never the cache. The cache makes queries stateful: share an
+    (a value below one row, ``8 * N`` bytes, disables it); indexing and
+    ``cross_distances`` fill it, ``to_dense`` does not. ``cross_distances``
+    returns a caller-owned block that is not limited by ``max_dense_bytes``.
+    Pickling retains the sparse graph, ``directed`` and budgets, never the
+    cache. The cache makes queries stateful: share an
     instance across threads only with external locking.
     """
 

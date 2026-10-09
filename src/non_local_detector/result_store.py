@@ -30,8 +30,11 @@ class IncrementalResultWriter:
 
     ``variables`` maps names to ``(dimensions, shape, dtype)``. The leading
     dimension must be time. ``coordinates`` maps names to ``(dimensions, values)``.
-    Call ``complete`` only after every variable row is written. An exception or
-    an uncompleted context removes only the writer's own temporary directory.
+    Call ``complete`` only after every variable row is written. Leaving a
+    ``with`` block without ``complete`` (normally or by exception), or calling
+    ``abort``, removes only this writer's temporary directory; a failing
+    constructor cleans up after itself. Outside a ``with`` block, call
+    ``abort`` after a failed ``write``.
     Existing destinations are refused and never overwritten.
     """
 
