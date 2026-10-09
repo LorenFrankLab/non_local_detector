@@ -256,6 +256,8 @@ def test_fit_contractions_request_highest_precision(stage):
     Without it, CUDA may evaluate float32 products in TF32, which moved A100
     coefficients by up to 2e-3 from the float64 reference. CPU always computes
     full float32, so CPU CI checks the request in the traced program instead.
+    Tracing under the default matmul precision keeps an ambient ``highest``
+    setting from satisfying the check for products that request nothing.
     """
     dtype = jnp.float32
     counts = jnp.ones((20, 3), dtype)
@@ -263,23 +265,24 @@ def test_fit_contractions_request_highest_precision(stage):
     basis = jnp.ones((20, 6), dtype)
     penalty_diag = jnp.ones(6, dtype)
     tol = jnp.asarray(1e-8, dtype)
-    if stage == "newton":
-        traced = jax.make_jaxpr(
-            lambda *args: _newton_fit_jax(*args, max_iter=5, tol=tol)
-        )(counts, occupancy, basis, penalty_diag)
-    else:
-        traced = jax.make_jaxpr(
-            lambda log_penalty: _reml_score_jax(
-                log_penalty,
-                counts,
-                occupancy,
-                basis,
-                penalty_diag,
-                jnp.asarray(5.0, dtype),
-                5,
-                tol,
-            )
-        )(jnp.asarray(0.0, dtype))
+    with jax.default_matmul_precision("default"):
+        if stage == "newton":
+            traced = jax.make_jaxpr(
+                lambda *args: _newton_fit_jax(*args, max_iter=5, tol=tol)
+            )(counts, occupancy, basis, penalty_diag)
+        else:
+            traced = jax.make_jaxpr(
+                lambda log_penalty: _reml_score_jax(
+                    log_penalty,
+                    counts,
+                    occupancy,
+                    basis,
+                    penalty_diag,
+                    jnp.asarray(5.0, dtype),
+                    5,
+                    tol,
+                )
+            )(jnp.asarray(0.0, dtype))
 
     precisions = _dot_general_precisions(traced.jaxpr)
     assert precisions
