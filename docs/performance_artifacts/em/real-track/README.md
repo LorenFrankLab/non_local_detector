@@ -23,6 +23,8 @@ window, package-source hash and device.
 | `0173cb67` | `8b3d936b` plus the KDE byte budget (clusterless baseline only) |
 | `095d5cbb` | `c23aea7`, before the likelihood-defect remediation plan (run via `PYTHONPATH`) |
 | `75660e30` | `cc25c63` plus the row-blocked M-step (`7a2c64b`) |
+| `309b74fc` | `a789beb`: plus the track-graph GLM fix |
+| `6559795f` | `104e024`: plus compiled per-electrode diffusion prediction |
 
 ## Full recording (709,319 rows)
 
@@ -78,6 +80,33 @@ plan's corrections change the fitted values, so these compare cost only.
 The filter/smoother takes 68-70% of the warm time (about 87 s per E-step).
 The 175 GB host peak comes from dense EM keeping full-length posteriors; the
 pre-plan code was not run in 2-D.
+
+### Clusterless diffusion on the 2-D grid
+
+With `n_chunks=8`, `clusterless_diffusion` prediction dispatched its per-block
+operations separately, and the shapes varied with every block, chunk and
+electrode. They overflowed JAX's per-operation cache, so every warm E-step
+recompiled. Compiling each electrode's prediction as one call (`104e024`)
+removes the recompilation:
+
+| Report | Code | Host | First call | Instrumented warm (3 iterations) | Warm likelihood compiles | Device peak | Host peak |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `diffusion-2d-full-chunks8-before` | `75660e30` | breeze | 4043.3 s | 4018.5 s | 29,152 (2387 s) | 56.3 GB | 178.1 GB |
+| `diffusion-2d-full-chunks8` | `6559795f` | zephyr | 907.8 s | **695.0 s** | 0 | 56.3 GB | 174.4 GB |
+
+The likelihood stage went from 3233.9 s to 16.6 s per warm run. The two runs
+used different hosts with the same GPU model: the new run could not fit on
+breeze while other jobs held about 33 GB of each GPU. The like-for-like check
+is a 120 s window on one breeze GPU with `XLA_FLAGS=--xla_gpu_autotune_level=0`
+and 2 iterations:
+
+| Report | Code | First call | Instrumented warm | Host peak |
+| --- | --- | ---: | ---: | ---: |
+| `diffusion-2d-120s-chunks8-autotune0-before` | `309b74fc` | 687.6 s | 69.3 s | 26.2 GB |
+| `diffusion-2d-120s-chunks8-autotune0` | `6559795f` | 319.3 s | 43.8 s | 22.8 GB |
+
+Their state probabilities differ by at most 7.8e-5, with the same most likely
+state in all 59,999 bins.
 
 ## 120 s and 240 s windows
 
