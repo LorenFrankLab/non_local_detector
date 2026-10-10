@@ -755,7 +755,7 @@ def test_singleton_row_requests_tile_the_full_result(
 @pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("prepared", [False, True])
 def test_shuffled_spike_order_row_slice_parity(
-    fitted_backends, edge_case_data, algorithm, is_local, prepared, monkeypatch
+    fitted_backends, edge_case_data, algorithm, is_local, prepared, monkeypatch, request
 ):
     """Item 7 at the backend: unsorted decoding input, features still paired.
 
@@ -770,15 +770,25 @@ def test_shuffled_spike_order_row_slice_parity(
     """
     original_segment_sum = jax.ops.segment_sum
 
+    def assert_sorted(ids):
+        ids = np.asarray(ids)
+        assert np.all(ids[1:] >= ids[:-1]), (
+            "JAX was promised sorted segment IDs for unsorted spikes"
+        )
+
     def checked_segment_sum(values, segment_ids, **kwargs):
         if kwargs.get("indices_are_sorted", False):
-            ids = np.asarray(segment_ids)
-            assert np.all(ids[1:] >= ids[:-1]), (
-                "JAX was promised sorted segment IDs for unsorted spikes"
-            )
+            if isinstance(segment_ids, jax.core.Tracer):
+                # Inside compiled kernels, check the ids when they execute.
+                jax.debug.callback(assert_sorted, segment_ids)
+            else:
+                assert_sorted(segment_ids)
         return original_segment_sum(values, segment_ids, **kwargs)
 
     monkeypatch.setattr(jax.ops, "segment_sum", checked_segment_sum)
+    # Compiled kernels traced before the patch would bypass the check.
+    jax.clear_caches()
+    request.addfinalizer(jax.clear_caches)
     order_cache = _SpikeTimeOrder() if prepared else None
     check_order = common._spikes_are_ascending
     order_checks = []
