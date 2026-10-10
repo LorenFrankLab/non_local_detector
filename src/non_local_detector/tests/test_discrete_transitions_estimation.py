@@ -17,8 +17,9 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteStationaryCustom,
     _estimate_discrete_transition,
+    _pair_sum_block,
     _state_aggregation_matrix,
-    _transition_pair_stats_jax,
+    _stationary_counts_from_pair_sum,
     estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_counts_from_factorized_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
@@ -498,7 +499,7 @@ class TestExpandedDiscreteTransitionCounts:
 
     @pytest.mark.parametrize("is_factorized", [True, False])
     def test_stationary_counts_do_not_loop_over_time(self, is_factorized):
-        """Stationary counts are one contraction over time, not a scan.
+        """Stationary counts are contractions over rows, not a scan per row.
 
         A 709k-row scan spent 11 s per EM iteration on an A100 for 514 state
         bins, bound by per-step loop overhead.
@@ -511,20 +512,19 @@ class TestExpandedDiscreteTransitionCounts:
         transition, operator = (
             (discrete, continuous) if is_factorized else (full, np.empty((0, 0)))
         )
-        traced = jax.make_jaxpr(
-            lambda c, p, a: _transition_pair_stats_jax(
-                c,
-                p,
-                a,
+        block = jax.make_jaxpr(_pair_sum_block)(
+            causal[:-1], predictive[1:], acausal[1:]
+        )
+        counts = jax.make_jaxpr(
+            lambda pair_sum: _stationary_counts_from_pair_sum(
+                pair_sum,
                 jnp.asarray(transition),
                 jnp.asarray(operator),
                 jnp.asarray(state_ind),
                 3,
                 is_factorized=is_factorized,
-                is_stationary=True,
-                return_time_series=False,
             )
-        )(causal, predictive, acausal)
+        )(jnp.zeros((5, 5)))
 
         def primitives(jaxpr):
             for eqn in jaxpr.eqns:
@@ -535,8 +535,51 @@ class TestExpandedDiscreteTransitionCounts:
                         if hasattr(inner, "eqns"):
                             yield from primitives(inner)
 
-        names = set(primitives(traced.jaxpr))
+        names = set(primitives(block.jaxpr)) | set(primitives(counts.jaxpr))
         assert not names & {"scan", "while"}, sorted(names)
+
+    @pytest.mark.parametrize("factorized", [True, False])
+    def test_stationary_counts_stream_bounded_row_blocks(self, factorized, monkeypatch):
+        """Rows reach the device in byte-bounded blocks; counts are unchanged.
+
+        Full posteriors of a 23.6 min recording on a 2-D grid (709k rows x
+        3,298 bins) did not fit on an 80 GB A100 as one contraction.
+        """
+        import non_local_detector.discrete_state_transitions as transitions
+
+        rng = np.random.default_rng(33)
+        n_time, n_bins, n_states = 2_000, 30, 3
+        state_ind = np.repeat(np.arange(n_states), n_bins // n_states)
+        posteriors = [
+            np.asarray(array, np.float32)
+            for array in self._stationary_posteriors(
+                rng, n_time, n_bins, state_ind, n_states
+            )
+        ]
+
+        def counts():
+            if factorized:
+                return estimate_discrete_transition_counts_from_factorized_posteriors(
+                    *posteriors[:3], posteriors[3], posteriors[4], state_ind
+                )
+            return estimate_discrete_transition_counts_from_expanded_posteriors(
+                *posteriors[:3], posteriors[5], state_ind
+            )
+
+        whole = counts()
+        monkeypatch.setattr(transitions, "_PAIR_SUM_BLOCK_BYTES", 300 * n_bins * 4)
+        original = transitions._pair_sum_block
+        block_rows = []
+
+        def record(causal, predictive, acausal):
+            block_rows.append(causal.shape[0])
+            return original(causal, predictive, acausal)
+
+        monkeypatch.setattr(transitions, "_pair_sum_block", record)
+        blocked = counts()
+
+        assert max(block_rows) == 300 and sum(block_rows) == n_time - 1
+        np.testing.assert_allclose(blocked, whole, rtol=1e-6)
 
     @pytest.mark.parametrize("factorized", [True, False])
     def test_stationary_counts_over_many_rows_match_float64(self, factorized):

@@ -264,6 +264,109 @@ def _assert_map_compatible_alpha(alpha: np.ndarray) -> None:
         )
 
 
+# Bytes of each posterior row block copied to the device for stationary
+# transition counts, so device memory does not grow with recording length.
+_PAIR_SUM_BLOCK_BYTES = 256 * 1024**2
+
+
+@jax.jit
+def _pair_sum_block(
+    causal_posterior: jnp.ndarray,
+    predictive_next: jnp.ndarray,
+    acausal_next: jnp.ndarray,
+) -> jnp.ndarray:
+    """Sum over rows of ``causal_t[i] * (acausal_{t+1} / predictive_{t+1})[j]``.
+
+    Parameters
+    ----------
+    causal_posterior : jnp.ndarray, shape (n_rows, n_state_bins)
+        Filtered posterior at times ``t``.
+    predictive_next, acausal_next : jnp.ndarray, shape (n_rows, n_state_bins)
+        Predictive and smoothed posteriors at times ``t + 1``.
+
+    Returns
+    -------
+    pair_sum : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    """
+    ratio = _safe_ratio_jax(acausal_next, predictive_next)
+    return jnp.matmul(causal_posterior.T, ratio, precision=jax.lax.Precision.HIGHEST)
+
+
+def _stationary_pair_sum(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+) -> jnp.ndarray:
+    """``_pair_sum_block`` over all consecutive rows, in byte-bounded row blocks.
+
+    Parameters
+    ----------
+    causal_posterior, predictive_posterior, acausal_posterior : np.ndarray
+        Shape (n_time, n_state_bins), on the host.
+
+    Returns
+    -------
+    pair_sum : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    """
+    n_time, n_state_bins = causal_posterior.shape
+    itemsize = np.result_type(causal_posterior, acausal_posterior).itemsize
+    rows = max(1, _PAIR_SUM_BLOCK_BYTES // (max(n_state_bins, 1) * itemsize))
+    pair_sum = None
+    for start in range(0, n_time - 1, rows):
+        stop = min(start + rows, n_time - 1)
+        block = _pair_sum_block(
+            jnp.asarray(causal_posterior[start:stop]),
+            jnp.asarray(predictive_posterior[start + 1 : stop + 1]),
+            jnp.asarray(acausal_posterior[start + 1 : stop + 1]),
+        )
+        pair_sum = block if pair_sum is None else pair_sum + block
+    if pair_sum is None:
+        dtype = np.result_type(causal_posterior, acausal_posterior)
+        return jnp.zeros((n_state_bins, n_state_bins), dtype=dtype)
+    return pair_sum
+
+
+@partial(jax.jit, static_argnames=("n_states", "is_factorized"))
+def _stationary_counts_from_pair_sum(
+    pair_sum: jnp.ndarray,
+    transition_matrix: jnp.ndarray,
+    continuous_transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+    *,
+    is_factorized: bool,
+) -> jnp.ndarray:
+    """Expected discrete transition counts from a stationary transition.
+
+    A stationary transition factors out of the sum over time:
+    ``sum_t causal_t[i] W[i, j] ratio_{t+1}[j] = W[i, j] * pair_sum[i, j]``,
+    so the counts need one contraction over rows (``pair_sum``) instead of a
+    scan with one step per row.
+
+    Parameters
+    ----------
+    pair_sum : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    transition_matrix : jnp.ndarray
+        Shape (n_states, n_states) when factorized, else the expanded
+        (n_state_bins, n_state_bins) transition.
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+        Used when factorized.
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+    n_states : int
+    is_factorized : bool
+
+    Returns
+    -------
+    counts : jnp.ndarray, shape (n_states, n_states)
+    """
+    if is_factorized:
+        weighted = continuous_transition_matrix * pair_sum
+        return _aggregate_xi_by_state_jax(weighted, state_ind, n_states) * (
+            transition_matrix
+        )
+    return _aggregate_xi_by_state_jax(transition_matrix * pair_sum, state_ind, n_states)
+
+
 @partial(
     jax.jit,
     static_argnames=(
@@ -286,7 +389,15 @@ def _transition_pair_stats_jax(
     is_stationary: bool,
     return_time_series: bool,
 ) -> jnp.ndarray:
-    """JAX scan kernel for exact discrete transition responses or counts."""
+    """JAX scan kernel for per-row responses or non-stationary counts.
+
+    Stationary counts use :func:`_stationary_pair_sum` and
+    :func:`_stationary_counts_from_pair_sum` instead.
+    """
+    if is_stationary and not return_time_series:
+        raise ValueError(
+            "stationary counts use _stationary_counts_from_pair_sum, not this scan"
+        )
     if is_factorized:
         target_masks = jax.nn.one_hot(
             state_ind,
@@ -371,27 +482,6 @@ def _transition_pair_stats_jax(
             continuous_transition_matrix,
         ),
     )
-
-    if is_stationary:
-        # A stationary transition factors out of the sum over time:
-        # sum_t causal_t[i] W[i, j] ratio_{t+1}[j] = W[i, j] * (C^T R)[i, j].
-        # One contraction over rows replaces a scan whose per-step loop
-        # overhead dominates on GPU, and sums in blocks rather than one
-        # running float32 total. It holds one bins x bins matrix, the size of
-        # the dense transition this path already uses.
-        ratio = _safe_ratio_jax(acausal_posterior[1:], predictive_posterior[1:])
-        pair_sum = jnp.matmul(
-            causal_posterior[:-1].T, ratio, precision=jax.lax.Precision.HIGHEST
-        )
-        if is_factorized:
-            weighted = continuous_transition_matrix * pair_sum
-            counts = _aggregate_xi_by_state_jax(weighted, state_ind, n_states)
-            counts = counts * transition_matrix
-        else:
-            counts = _aggregate_xi_by_state_jax(
-                transition_matrix * pair_sum, state_ind, n_states
-            )
-        return counts.astype(initial_counts.dtype)
 
     def step(joint_sum, inputs):
         causal_t, predictive_next, acausal_next, transition_t = inputs
@@ -527,6 +617,18 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
     )
     n_states = _n_states_from_state_ind(state_ind)
     transition_matrix = jnp.asarray(transition_matrix)
+    if is_stationary:
+        joint_sum = _stationary_counts_from_pair_sum(
+            _stationary_pair_sum(
+                causal_posterior, predictive_posterior, acausal_posterior
+            ),
+            transition_matrix,
+            jnp.empty((0, 0), dtype=transition_matrix.dtype),
+            jnp.asarray(state_ind),
+            n_states,
+            is_factorized=False,
+        )
+        return np.asarray(joint_sum)
     joint_sum = _transition_pair_stats_jax(
         jnp.asarray(causal_posterior),
         jnp.asarray(predictive_posterior),
@@ -536,7 +638,7 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
         jnp.asarray(state_ind),
         n_states,
         is_factorized=False,
-        is_stationary=is_stationary,
+        is_stationary=False,
         return_time_series=False,
     )
 
@@ -680,18 +782,13 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
         n_states,
         require_stationary=True,
     )
-    continuous_transition_matrix = jnp.asarray(continuous_transition_matrix)
-    joint_sum = _transition_pair_stats_jax(
-        jnp.asarray(causal_posterior),
-        jnp.asarray(predictive_posterior),
-        jnp.asarray(acausal_posterior),
+    joint_sum = _stationary_counts_from_pair_sum(
+        _stationary_pair_sum(causal_posterior, predictive_posterior, acausal_posterior),
         jnp.asarray(discrete_transition_matrix),
-        continuous_transition_matrix,
+        jnp.asarray(continuous_transition_matrix),
         jnp.asarray(state_ind),
         n_states,
         is_factorized=True,
-        is_stationary=True,
-        return_time_series=False,
     )
     return np.asarray(joint_sum)
 
