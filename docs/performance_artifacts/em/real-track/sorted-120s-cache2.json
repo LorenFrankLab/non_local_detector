@@ -1,0 +1,416 @@
+{
+ "family": "sorted",
+ "recording": "/cumulus/edeno/nld-em-profiling/data/j1620210710_02_r1_sortedHPC.npz",
+ "recording_source": "cache/sessions/j1620210710_02_r1_sortedHPC.pkl",
+ "exporter_sha256": "1106add8afeaf7e6e3874571d49db9ec6c52673c802035397c8b48c37717b2f8",
+ "window_s": [
+  0.0,
+  120.0
+ ],
+ "n_units": 305,
+ "n_spikes": 167479,
+ "mark_dimensions": null,
+ "environment": "track",
+ "rows": 59999,
+ "bin_size_cm": 2.0,
+ "algorithm": null,
+ "detector_kwargs": {},
+ "max_iter": 1,
+ "n_chunks": 1,
+ "backend": "gpu",
+ "device": "cuda:0",
+ "jax": "0.9.0",
+ "package_source_sha256": "8b3d936b086be1253fcb8aa95392eb58c32ff0b27cecca9b31adcb6e48898544",
+ "script_sha256": "069823628fe22a6ca3c5869a542d03588d63a090d2f53385d4706fc44fb4e635",
+ "x64": false,
+ "xla_flags": "",
+ "device_kind": "NVIDIA A100 80GB PCIe",
+ "host": "breeze.cin.ucsf.edu",
+ "cpu_count": 96,
+ "runs": {
+  "first": {
+   "seconds": 30.54573796875775,
+   "stages": {
+    "estimate_parameters": {
+     "calls": 1,
+     "seconds": 30.50925973430276,
+     "exclusive_seconds": 0.6979841347783804,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/discrete_m_step": {
+     "calls": 1,
+     "seconds": 1.1362341325730085,
+     "exclusive_seconds": 1.1362341325730085,
+     "compiles": 1,
+     "compile_seconds": 0.07227087
+    },
+    "estimate_parameters/e_step[*]": {
+     "calls": 2,
+     "seconds": 17.074164024554193,
+     "exclusive_seconds": 0.017602047882974148,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/e_step[*]/filter_smoother": {
+     "calls": 2,
+     "seconds": 17.05656197667122,
+     "exclusive_seconds": 7.781375514343381,
+     "compiles": 23,
+     "compile_seconds": 0.26573801
+    },
+    "estimate_parameters/e_step[*]/filter_smoother/likelihood": {
+     "calls": 2,
+     "seconds": 9.275186462327838,
+     "exclusive_seconds": 9.275186462327838,
+     "compiles": 71,
+     "compile_seconds": 2.2458438849999998
+    },
+    "estimate_parameters/e_step[1]": {
+     "calls": 1,
+     "seconds": 11.260508162900805,
+     "exclusive_seconds": 0.008157012984156609,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/e_step[1]/filter_smoother": {
+     "calls": 1,
+     "seconds": 11.252351149916649,
+     "exclusive_seconds": 4.1218160865828395,
+     "compiles": 23,
+     "compile_seconds": 0.26573801
+    },
+    "estimate_parameters/e_step[1]/filter_smoother/likelihood": {
+     "calls": 1,
+     "seconds": 7.130535063333809,
+     "exclusive_seconds": 7.130535063333809,
+     "compiles": 69,
+     "compile_seconds": 2.0674200039999997
+    },
+    "estimate_parameters/e_step[2]": {
+     "calls": 1,
+     "seconds": 5.8136558616533875,
+     "exclusive_seconds": 0.00944503489881754,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/e_step[2]/filter_smoother": {
+     "calls": 1,
+     "seconds": 5.80421082675457,
+     "exclusive_seconds": 3.6595594277605414,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/e_step[2]/filter_smoother/likelihood": {
+     "calls": 1,
+     "seconds": 2.1446513989940286,
+     "exclusive_seconds": 2.1446513989940286,
+     "compiles": 2,
+     "compile_seconds": 0.178423881
+    },
+    "estimate_parameters/encoding_m_step": {
+     "calls": 1,
+     "seconds": 2.4781592106446624,
+     "exclusive_seconds": 2.4781592106446624,
+     "compiles": 1,
+     "compile_seconds": 0.109867096
+    },
+    "estimate_parameters/fit": {
+     "calls": 1,
+     "seconds": 9.122718231752515,
+     "exclusive_seconds": 0.005976339802145958,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/fit/continuous_transition": {
+     "calls": 1,
+     "seconds": 0.821741153486073,
+     "exclusive_seconds": 0.821741153486073,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/fit/discrete_transition": {
+     "calls": 1,
+     "seconds": 0.0008312948048114777,
+     "exclusive_seconds": 0.0008312948048114777,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/fit/encoding_fit": {
+     "calls": 1,
+     "seconds": 7.860087461769581,
+     "exclusive_seconds": 7.860087461769581,
+     "compiles": 210,
+     "compile_seconds": 2.964933629
+    },
+    "estimate_parameters/fit/environments": {
+     "calls": 1,
+     "seconds": 0.43324333894997835,
+     "exclusive_seconds": 0.13138611428439617,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/fit/environments/fit_place_grid": {
+     "calls": 1,
+     "seconds": 0.3018572246655822,
+     "exclusive_seconds": 0.3018572246655822,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    },
+    "estimate_parameters/fit/state_index": {
+     "calls": 1,
+     "seconds": 0.0008386429399251938,
+     "exclusive_seconds": 0.0008386429399251938,
+     "compiles": 0,
+     "compile_seconds": 0.0
+    }
+   },
+   "records": [
+    {
+     "path": "estimate_parameters/fit/environments/fit_place_grid",
+     "seconds": 0.3018572246655822,
+     "exclusive_seconds": 0.3018572246655822,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 0,
+     "device_peak_raised_bytes": 0,
+     "host_peak_raised_bytes": 8327168
+    },
+    {
+     "path": "estimate_parameters/fit/environments",
+     "seconds": 0.43324333894997835,
+     "exclusive_seconds": 0.13138611428439617,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 0,
+     "device_peak_raised_bytes": 0,
+     "host_peak_raised_bytes": 37335040
+    },
+    {
+     "path": "estimate_parameters/fit/state_index",
+     "seconds": 0.0008386429399251938,
+     "exclusive_seconds": 0.0008386429399251938,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 0,
+     "device_peak_raised_bytes": 0,
+     "host_peak_raised_bytes": 0
+    },
+    {
+     "path": "estimate_parameters/fit/discrete_transition",
+     "seconds": 0.0008312948048114777,
+     "exclusive_seconds": 0.0008312948048114777,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 0,
+     "device_peak_raised_bytes": 0,
+     "host_peak_raised_bytes": 0
+    },
+    {
+     "path": "estimate_parameters/fit/continuous_transition",
+     "seconds": 0.821741153486073,
+     "exclusive_seconds": 0.821741153486073,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 0,
+     "device_peak_raised_bytes": 0,
+     "host_peak_raised_bytes": 258048
+    },
+    {
+     "path": "estimate_parameters/fit/encoding_fit",
+     "seconds": 7.860087461769581,
+     "exclusive_seconds": 7.860087461769581,
+     "compiles": 210,
+     "compile_seconds": 2.964933629,
+     "compiled": {
+      "jit(convert_element_type)": 2,
+      "jit(kde)": 186,
+      "jit(isnan)": 1,
+      "jit(_reduce_sum)": 2,
+      "jit(add)": 2,
+      "jit(_where)": 2,
+      "jit(broadcast_in_dim)": 3,
+      "jit(greater)": 1,
+      "jit(true_divide)": 1,
+      "jit(multiply)": 1,
+      "jit(clip)": 1,
+      "jit(select_n)": 1,
+      "jit(_broadcast_arrays)": 1,
+      "jit(_squeeze)": 1,
+      "jit(scatter)": 1,
+      "jit(concatenate)": 4
+     },
+     "device_bytes_in_use_after": 2247680,
+     "device_peak_raised_bytes": 67590400,
+     "host_peak_raised_bytes": 505221120
+    },
+    {
+     "path": "estimate_parameters/fit",
+     "seconds": 9.122718231752515,
+     "exclusive_seconds": 0.005976339802145958,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 2247680,
+     "device_peak_raised_bytes": 67590400,
+     "host_peak_raised_bytes": 542814208
+    },
+    {
+     "path": "estimate_parameters/e_step[1]/filter_smoother/likelihood",
+     "seconds": 7.130535063333809,
+     "exclusive_seconds": 7.130535063333809,
+     "compiles": 69,
+     "compile_seconds": 2.0674200039999997,
+     "compiled": {
+      "jit(kde)": 2,
+      "jit(concatenate)": 17,
+      "jit(broadcast_in_dim)": 11,
+      "jit(convert_element_type)": 15,
+      "jit(dynamic_slice)": 4,
+      "jit(_local_kde_log_likelihood)": 2,
+      "jit(multiply)": 1,
+      "jit(gather)": 5,
+      "jit(_poisson_row_log_likelihood)": 2,
+      "jit(_poisson_nonlocal_log_likelihood)": 2,
+      "jit(add)": 1,
+      "jit(select_n)": 1,
+      "jit(_broadcast_arrays)": 1,
+      "jit(_squeeze)": 2,
+      "jit(scatter)": 2,
+      "jit(_where)": 1
+     },
+     "device_bytes_in_use_after": 124454144,
+     "device_peak_raised_bytes": 2419280896,
+     "host_peak_raised_bytes": 493879296
+    },
+    {
+     "path": "estimate_parameters/e_step[1]/filter_smoother",
+     "seconds": 11.252351149916649,
+     "exclusive_seconds": 4.1218160865828395,
+     "compiles": 23,
+     "compile_seconds": 0.26573801,
+     "compiled": {
+      "jit(convert_element_type)": 2,
+      "jit(_reduce_max)": 2,
+      "jit(_one_hot)": 1,
+      "jit(less)": 2,
+      "jit(add)": 2,
+      "jit(select_n)": 2,
+      "jit(_broadcast_arrays)": 1,
+      "jit(broadcast_in_dim)": 2,
+      "jit(gather)": 1,
+      "jit(equal)": 1,
+      "jit(isnan)": 1,
+      "jit(_reduce_any)": 1,
+      "jit(_filter_impl)": 1,
+      "jit(matmul)": 1,
+      "jit(dynamic_slice)": 1,
+      "jit(squeeze)": 1,
+      "jit(_smoother_impl)": 1
+     },
+     "device_bytes_in_use_after": 123449600,
+     "device_peak_raised_bytes": 2419280896,
+     "host_peak_raised_bytes": 854396928
+    },
+    {
+     "path": "estimate_parameters/e_step[1]",
+     "seconds": 11.260508162900805,
+     "exclusive_seconds": 0.008157012984156609,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 121765888,
+     "device_peak_raised_bytes": 2419280896,
+     "host_peak_raised_bytes": 873357312
+    },
+    {
+     "path": "estimate_parameters/encoding_m_step",
+     "seconds": 2.4781592106446624,
+     "exclusive_seconds": 2.4781592106446624,
+     "compiles": 1,
+     "compile_seconds": 0.109867096,
+     "compiled": {
+      "jit(kde)": 1
+     },
+     "device_bytes_in_use_after": 121775360,
+     "device_peak_raised_bytes": 0,
+     "host_peak_raised_bytes": 11444224
+    },
+    {
+     "path": "estimate_parameters/discrete_m_step",
+     "seconds": 1.1362341325730085,
+     "exclusive_seconds": 1.1362341325730085,
+     "compiles": 1,
+     "compile_seconds": 0.07227087,
+     "compiled": {
+      "jit(_transition_pair_stats_jax)": 1
+     },
+     "device_bytes_in_use_after": 121775360,
+     "device_peak_raised_bytes": 0,
+     "host_peak_raised_bytes": 537210880
+    },
+    {
+     "path": "estimate_parameters/e_step[2]/filter_smoother/likelihood",
+     "seconds": 2.1446513989940286,
+     "exclusive_seconds": 2.1446513989940286,
+     "compiles": 2,
+     "compile_seconds": 0.178423881,
+     "compiled": {
+      "jit(kde)": 2
+     },
+     "device_bytes_in_use_after": 243899904,
+     "device_peak_raised_bytes": 119175680,
+     "host_peak_raised_bytes": 83234816
+    },
+    {
+     "path": "estimate_parameters/e_step[2]/filter_smoother",
+     "seconds": 5.80421082675457,
+     "exclusive_seconds": 3.6595594277605414,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 242895360,
+     "device_peak_raised_bytes": 119175680,
+     "host_peak_raised_bytes": 360718336
+    },
+    {
+     "path": "estimate_parameters/e_step[2]",
+     "seconds": 5.8136558616533875,
+     "exclusive_seconds": 0.00944503489881754,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 241293568,
+     "device_peak_raised_bytes": 119175680,
+     "host_peak_raised_bytes": 360996864
+    },
+    {
+     "path": "estimate_parameters",
+     "seconds": 30.50925973430276,
+     "exclusive_seconds": 0.6979841347783804,
+     "compiles": 0,
+     "compile_seconds": 0.0,
+     "compiled": {},
+     "device_bytes_in_use_after": 2257152,
+     "device_peak_raised_bytes": 2606047232,
+     "host_peak_raised_bytes": 2333999104
+    }
+   ],
+   "n_iter": 1,
+   "marginal_log_likelihoods": [
+    -667188.6875,
+    -665111.9375
+   ]
+  }
+ },
+ "status": "ok",
+ "peak_host_rss_bytes": 3031646208,
+ "peak_device_bytes": 2606048000,
+ "state_bins": 514,
+ "interior_state_bins": 498
+}

@@ -103,10 +103,45 @@ number of encoding spikes. If they don't fit, set `encoding_block_size` and
 
 `estimate_parameters` always uses the dense filter and smoother. It keeps
 several arrays of size (time bins × state bins) in memory, so its memory grows
-with session length. At 2 cm each such float32 array takes about 2 GB per minute
-of recording; at 4 cm, about 0.53 GB.
+with session length. In a 180 cm open field at 2 cm each such float32 array
+takes about 2 GB per minute of recording; at 4 cm, about 0.53 GB. A linearized
+track has far fewer state bins (514 for the track below), so its arrays are
+about 0.06 GB per minute.
 
-Measured with 60 s sessions and 3 EM iterations:
+### A real recording on a linearized track
+
+A 23.6 min run epoch at 500 Hz (709,319 time bins) on a 10-node track at 2 cm
+(514 state bins), 3 EM iterations, one A100:
+
+| Data | First call | Each later call | Device memory | Host RAM |
+| --- | ---: | ---: | ---: | ---: |
+| 305 sorted units | 404 s | 168 s | 22.5 GB | 15.8 GB |
+| 22 tetrodes (clusterless) | 328 s | 131 s | 10.0 GB | 14.0 GB |
+
+About 85% of each later call is E-steps: the filter and smoother take about
+20 s and the likelihood 10–13 s per E-step at this length. One iteration takes
+about 40 s (sorted) or 31 s (clusterless), so 20 iterations take about 13 or 10
+minutes after the first call.
+
+The first call compiles kernels for the session's sizes. Two settings reduce
+that cost, both set before starting Python:
+
+- `JAX_COMPILATION_CACHE_DIR=<directory>` keeps compiled kernels between
+  processes. Measured on 120 s of the same recording, a second process's first
+  EM call took 30.5 s instead of 150 s. Kernels are reused only for the same
+  array sizes, so this helps most when fitting the same session repeatedly,
+  for example in a parameter sweep.
+- `XLA_FLAGS=--xla_gpu_autotune_level=0` skips timing candidate GPU kernels:
+  the first call took 59 s instead of 149 s and its device peak was 2.6 GB
+  instead of 5.0 GB, with the same time per later call on this workload. It
+  also makes repeated GPU runs bitwise reproducible (see GPU setup).
+
+Source: [real-track EM records](performance_artifacts/em/real-track/README.md).
+
+### Simulated open field (before the EM speedups)
+
+Measured with simulated 60 s sessions and 3 EM iterations, before the changes
+recorded above:
 
 | Machine | Grid | Run time after compilation | Device memory | Host RAM |
 | --- | --- | ---: | ---: | ---: |
