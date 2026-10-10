@@ -45,6 +45,7 @@ Example::
 
 import argparse
 import cProfile
+import inspect
 import io
 import json
 import logging
@@ -75,11 +76,22 @@ from compare_prediction_modes import (  # noqa: E402
 COMPILE_MESSAGE = re.compile(r"Finished XLA compilation of (\S+) in ([0-9.e-]+) sec")
 
 
+def uniform_edges(start, stop, sampling_frequency):
+    """Edges of whole bins at ``1 / sampling_frequency`` from ``start``.
+
+    Matches ``calculate_time_edges(..., trim=True)``, which older checkouts lack.
+    """
+    try:
+        from non_local_detector import calculate_time_edges
+    except ImportError:
+        n_bins = int(np.floor((stop - start) * sampling_frequency + 1e-9))
+        return start + np.arange(n_bins + 1) / sampling_frequency
+    return calculate_time_edges((start, stop), sampling_frequency, trim=True)
+
+
 def load_recording(path, start, duration, sampling_frequency):
     """EM inputs and environment arguments for a window of a recording."""
     import networkx as nx
-
-    from non_local_detector import calculate_time_edges
 
     data = np.load(path)
     position_time = data["position_time"]
@@ -111,10 +123,8 @@ def load_recording(path, start, duration, sampling_frequency):
         "position_time": position_time[keep],
         "position": data["position"][keep],
         "spike_times": spike_times,
-        "time_edges": calculate_time_edges(
-            (position_time[keep][0], position_time[keep][-1]),
-            sampling_frequency,
-            trim=True,
+        "time_edges": uniform_edges(
+            position_time[keep][0], position_time[keep][-1], sampling_frequency
         ),
     }
     if features:
@@ -195,6 +205,7 @@ class StageProfiler(logging.Handler):
         self.host_peak = host_peak
         self.device = DevicePeak(jax)
         self.records = []
+        self.missing_stages = []
         self.stack = []
         self.e_steps = 0
 
@@ -292,7 +303,9 @@ def instrumented(profiler, detector_class):
     import non_local_detector.models.base as base
 
     def defining_class(cls, attribute):
-        return next(owner for owner in cls.__mro__ if attribute in owner.__dict__)
+        return next(
+            (owner for owner in cls.__mro__ if attribute in owner.__dict__), None
+        )
 
     targets = [
         (detector_class, "estimate_parameters", "estimate_parameters"),
@@ -327,6 +340,9 @@ def instrumented(profiler, detector_class):
                 if isinstance(source, type)
                 else source
             )
+            if owner is None or attribute not in owner.__dict__:
+                profiler.missing_stages.append(attribute)  # older checkouts
+                continue
             original = owner.__dict__[attribute]
             saved.append((owner, attribute, original))
             setattr(owner, attribute, profiler.wrap(name, original))
@@ -467,8 +483,13 @@ def main():
         model = detector_class(
             environments=Environment(**environment_kwargs), **detector_kwargs
         )
+        kwargs = dict(em_kwargs)
+        if "time_edges" not in inspect.signature(model.estimate_parameters).parameters:
+            # Checkouts before the time-edge contract decode at bin centers.
+            edges = kwargs.pop("time_edges")
+            kwargs["time"] = (edges[:-1] + edges[1:]) / 2
         results = model.estimate_parameters(
-            **em_kwargs, max_iter=max_iter, n_chunks=args.n_chunks
+            **kwargs, max_iter=max_iter, n_chunks=args.n_chunks
         )
         states = np.asarray(results["acausal_state_probabilities"])
         sync()
@@ -524,6 +545,7 @@ def main():
                 "seconds": seconds,
                 "stages": profiler.summary(),
                 "records": records,
+                "missing_stages": profiler.missing_stages,
             },
         )
 
