@@ -630,3 +630,39 @@ def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
         expected.shape[0],
         0,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+def test_block_kde_runs_many_blocks_in_one_compiled_loop(log_space, monkeypatch):
+    """More blocks than the unroll limit are one dispatch, not a Python loop.
+
+    A 709k-sample occupancy KDE needs blocks of about 94 rows, so a full
+    recording would otherwise dispatch thousands of small kernels per call.
+    """
+    from non_local_detector.likelihoods import common
+
+    rng = np.random.default_rng(4)
+    points = jnp.asarray(rng.normal(size=(1_000, 1)).astype(np.float32))
+    samples = jnp.asarray(rng.normal(size=(2_000, 1)).astype(np.float32))
+    weights = jnp.asarray(rng.uniform(size=2_000).astype(np.float32))
+    std = jnp.array([0.5])
+    direct = (log_kde if log_space else kde)(points, samples, std, weights)
+
+    # Blocks of 32 rows: 32 blocks, beyond the unrolled limit.
+    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 2_000 * 4 * 32)
+    kernel_name = "log_kde" if log_space else "kde"
+    original = getattr(common, kernel_name)
+    calls = []
+
+    def record(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(common, kernel_name, record)
+    blocked = (block_log_kde if log_space else block_kde)(
+        points, samples, std, 10_000, weights
+    )
+
+    assert len(calls) <= 1  # traced once inside the compiled loop
+    np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)

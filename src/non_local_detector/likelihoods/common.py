@@ -1286,6 +1286,10 @@ def block_kde(
     # array but avoids the O(n_eval * n_blocks) copies of a per-block
     # dynamic_update_slice.
     block_size = _kde_block_rows(block_size, eval_points, samples)
+    if block_size > 0 and -(-n_eval_points // block_size) > _UNROLLED_KDE_BLOCKS:
+        # Many small blocks (large sample sets) run as one compiled loop
+        # instead of one dispatch per block.
+        return _compiled_block_kde(eval_points, samples, std, block_size, weights)
     blocks = [
         kde(eval_points[start : start + block_size], samples, std, weights)
         for start in range(0, n_eval_points, block_size)
@@ -1477,6 +1481,14 @@ def _traced_block_log_kde(
     )
 
 
+# Eager block_kde/block_log_kde with more blocks than _UNROLLED_KDE_BLOCKS run
+# these: one compiled loop over the blocks instead of one dispatch per block.
+_compiled_block_kde = jax.jit(_traced_block_kde, static_argnames=("block_size",))
+_compiled_block_log_kde = jax.jit(
+    _traced_block_log_kde, static_argnames=("block_size",)
+)
+
+
 @jax.jit
 def log_kde(
     eval_points: jnp.ndarray,
@@ -1550,6 +1562,8 @@ def block_log_kde(
 
     # Collect per-block log-densities and concatenate once (see block_kde).
     block_size = _kde_block_rows(block_size, eval_points, samples)
+    if block_size > 0 and -(-n_eval // block_size) > _UNROLLED_KDE_BLOCKS:
+        return _compiled_block_log_kde(eval_points, samples, std, block_size, weights)
     blocks = [
         log_kde(eval_points[start : start + block_size], samples, std, weights)
         for start in range(0, n_eval, block_size)
