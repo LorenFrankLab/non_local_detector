@@ -9,7 +9,6 @@ import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
 from jax.nn import logsumexp
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -658,12 +657,9 @@ def get_position_at_time(
         position_at_spike_times = encoding_support.interpolate(position, spike_times)
     if env is not None and env.track_graph is not None:
         if position_at_spike_times.shape[0] > 0:
-            position_at_spike_times = get_linearized_position(
-                position_at_spike_times,
-                env.track_graph,
-                edge_order=env.edge_order,
-                edge_spacing=env.edge_spacing,
-            ).linear_position.to_numpy()[:, None]
+            position_at_spike_times = env._linear_position(position_at_spike_times)[
+                :, None
+            ]
         else:
             position_at_spike_times = np.array([])[:, None]
 
