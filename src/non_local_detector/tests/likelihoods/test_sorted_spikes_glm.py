@@ -891,3 +891,102 @@ def test_weighted_spike_counts_match_per_spike_reference(n_samples, seed):
         rtol=1e-12,
         atol=1e-15,
     )
+
+
+def _corner_track_data(environment_name="corner", seed=0):
+    """An L-shaped track (both coordinates vary) and two place cells along it."""
+    import networkx as nx
+
+    graph = nx.Graph()
+    graph.add_node(0, pos=(0.0, 0.0))
+    graph.add_node(1, pos=(10.0, 0.0))
+    graph.add_node(2, pos=(10.0, 8.0))
+    graph.add_edge(0, 1, distance=10.0, edge_id=0)
+    graph.add_edge(1, 2, distance=8.0, edge_id=1)
+    env = Environment(
+        environment_name=environment_name,
+        place_bin_size=1.0,
+        track_graph=graph,
+        edge_order=[(0, 1), (1, 2)],
+        edge_spacing=0.0,
+    ).fit_place_grid()
+
+    rng = np.random.default_rng(seed)
+    n_time, sampling_frequency = 6000, 100
+    time = np.arange(n_time) / sampling_frequency
+    along = 0.2 + np.abs((np.cumsum(rng.normal(0, 0.3, n_time)) % 35.2) - 17.6)
+    position = np.where(
+        along[:, None] < 10.0,
+        np.column_stack([along, np.zeros(n_time)]),
+        np.column_stack([np.full(n_time, 10.0), along - 10.0]),
+    )
+    place_centers = (3.0, 14.0)
+    spike_times = [
+        time[
+            rng.random(n_time)
+            < 40.0 * np.exp(-((along - c) ** 2) / 2.0) / sampling_frequency
+        ]
+        for c in place_centers
+    ]
+    return env, time, position, spike_times, place_centers
+
+
+@pytest.mark.unit
+def test_track_graph_fit_linearizes_two_dimensional_position():
+    """On a track graph, 2-D positions are linearized before the spline basis.
+
+    The environment's bin edges are 1-D along the track. The fit built the
+    spline from raw (x, y) and indexed a second column of the 1-D edges, so EM
+    with the GLM could not run on a real linearized track.
+    """
+    env, time, position, spike_times, _ = _corner_track_data()
+    linear = env._linear_position(position)[:, None]
+
+    def fit(positions):
+        return fit_sorted_spikes_glm_encoding_model(
+            position_time=time,
+            position=positions,
+            spike_times=spike_times,
+            environment=env,
+            place_bin_edges=env.place_bin_edges_,
+            edges=env.edges_,
+            is_track_interior=env.is_track_interior_,
+            is_track_boundary=env.is_track_boundary_,
+            emission_knot_spacing=2.0,
+            disable_progress_bar=True,
+        )
+
+    from_xy = fit(position)
+    from_linear = fit(linear)
+
+    np.testing.assert_allclose(
+        from_xy["place_fields"], from_linear["place_fields"], rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        from_xy["coefficients"], from_linear["coefficients"], rtol=1e-6, atol=1e-8
+    )
+
+
+@pytest.mark.unit
+def test_detector_fits_glm_on_a_track_graph():
+    """The detector's GLM fit runs with a track graph and 2-D positions."""
+    from non_local_detector import NonLocalSortedSpikesDetector
+
+    env, time, position, spike_times, place_centers = _corner_track_data(
+        environment_name=""
+    )
+    detector = NonLocalSortedSpikesDetector(
+        environments=env,
+        sorted_spikes_algorithm="sorted_spikes_glm",
+        sorted_spikes_algorithm_params={
+            "emission_knot_spacing": 2.0,
+            "disable_progress_bar": True,
+        },
+    ).fit(position_time=time, position=position, spike_times=spike_times)
+
+    encoding = next(iter(detector.encoding_model_.values()))
+    place_fields = np.asarray(encoding["place_fields"])
+    linear_centers = detector.environments[0].place_bin_centers_.ravel()
+    assert np.all(np.isfinite(place_fields))
+    for center, field in zip(place_centers, place_fields, strict=True):
+        assert abs(linear_centers[np.argmax(field)] - center) < 2.0

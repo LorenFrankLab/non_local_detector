@@ -441,6 +441,16 @@ def fit_sorted_spikes_glm_encoding_model(
     )
 
     encoding_positions = position[support.indices]
+    if (
+        environment.track_graph is not None
+        and encoding_positions.shape[1] > 1
+        and len(encoding_positions)
+    ):
+        # The spline is defined on the track's 1-D bin edges, as the KDE fits
+        # and the prediction path use linear position.
+        encoding_positions = environment._linear_position(
+            np.asarray(encoding_positions)
+        )[:, None]
     # A known recording duration can expose a stationary/singleton sample.
     # Define its spline on the environment, then retain only actual encoding
     # rows for the event and exposure terms. A one-center grid uses an intercept.
