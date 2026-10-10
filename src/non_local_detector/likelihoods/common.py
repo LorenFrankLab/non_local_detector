@@ -1791,27 +1791,37 @@ def _spike_counts_matrix(
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> np.ndarray:
-    """Stack per-neuron spike counts into a ``(n_rows, n_neurons)`` matrix.
+    """Per-neuron spike counts as a ``(n_rows, n_neurons)`` matrix.
 
-    ``get_spikecount_per_time_bin`` bins spikes against the full ``time_edges`` and
-    selects those owned by ``row_slice`` internally, so no explicit pre-masking
-    is needed here. ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
+    Spikes are binned against the full ``time_edges`` and selected by
+    ``row_slice`` as in ``get_spikecount_per_time_bin``, so the values equal its
+    per-neuron counts. One ``bincount`` over ``row * n_neurons + neuron`` fills
+    the row-major matrix in a single pass instead of stacking columns. ``n_rows``
+    is ``n_bins`` unless ``row_slice`` is given.
     """
+    if _spike_time_order is None:
+        time_edges = validate_time_edges(time_edges)
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    counts = [
-        get_spikecount_per_time_bin(
+    n_rows, n_neurons = row_stop - row_start, len(spike_times)
+    if not n_neurons:
+        return np.zeros((n_rows, 0))
+    flat_index = [
+        select_spikes_in_rows(
             neuron_spike_times,
+            row_start,
+            row_stop,
             time_edges=time_edges,
-            row_slice=row_slice,
             _spike_time_order=_spike_time_order,
-        )
-        for neuron_spike_times in tqdm(
-            spike_times, unit="cell", desc=desc, disable=disable_progress_bar
+        ).bin_ind.astype(np.int64)
+        * n_neurons
+        + neuron
+        for neuron, neuron_spike_times in enumerate(
+            tqdm(spike_times, unit="cell", desc=desc, disable=disable_progress_bar)
         )
     ]
-    if not counts:  # zero neurons
-        return np.zeros((row_stop - row_start, 0))
-    return np.stack(counts, axis=1)
+    return np.bincount(
+        np.concatenate(flat_index), minlength=n_rows * n_neurons
+    ).reshape(n_rows, n_neurons)
 
 
 def decode_bin_centers(

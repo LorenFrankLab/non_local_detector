@@ -590,3 +590,43 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
 
     assert max(rows) == 64 and sum(rows) == 300
     np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rows", [None, slice(0, 1), slice(3, 17), slice(20, 20)])
+@pytest.mark.parametrize("prepared", [False, True])
+def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
+    """The population count matrix equals stacked per-neuron counts exactly."""
+    from non_local_detector.likelihoods.common import (
+        _spike_counts_matrix,
+        _SpikeTimeOrder,
+    )
+
+    rng = np.random.default_rng(12)
+    edges = np.arange(41) * 0.25
+    spike_times = [
+        np.sort(rng.uniform(-0.3, 10.3, 60)),
+        rng.uniform(0.0, 10.0, 25),  # unsorted
+        np.array([0.25, 0.25, 0.5, 10.0, 10.0]),  # duplicates, closed final edge
+        np.array([]),
+    ]
+    order = _SpikeTimeOrder() if prepared else None
+    expected = np.stack(
+        [
+            get_spikecount_per_time_bin(
+                times, row_slice=rows, time_edges=edges, _spike_time_order=order
+            )
+            for times in spike_times
+        ],
+        axis=1,
+    )
+    actual = _spike_counts_matrix(
+        spike_times, edges, "counts", True, rows, _spike_time_order=order
+    )
+
+    assert actual.dtype == expected.dtype
+    np.testing.assert_array_equal(actual, expected)
+    assert _spike_counts_matrix([], edges, "counts", True, rows).shape == (
+        expected.shape[0],
+        0,
+    )
