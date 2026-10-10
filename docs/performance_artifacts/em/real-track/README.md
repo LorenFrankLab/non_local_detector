@@ -21,6 +21,8 @@ window, package-source hash and device.
 | `63157abd` | Plus KDE byte-budgeted blocks, scan unroll and the contraction M-step (`927f1c8`, `21563df`, `925b6ac`) |
 | `54a54858` | `cc25c63`: plus the linearization cache, single-bincount counts and compiled many-block KDEs |
 | `0173cb67` | `8b3d936b` plus the KDE byte budget (clusterless baseline only) |
+| `095d5cbb` | `c23aea7`, before the likelihood-defect remediation plan (run via `PYTHONPATH`) |
+| `75660e30` | `cc25c63` plus the row-blocked M-step (`7a2c64b`) |
 
 ## Full recording (709,319 rows)
 
@@ -50,6 +52,32 @@ synchronizes at stage boundaries):
 
 The final runs' `.cprofile.txt` files list the host functions with the most own
 time in an uninstrumented warm run.
+
+### Against the code before the remediation plan
+
+| Report | First call | Warm (3 iterations) | Device peak | Host peak |
+| --- | ---: | ---: | ---: | ---: |
+| `preplan-sorted-track-full` | 824.1 s | 247.9 s | 53.0 GB | 16.4 GB |
+| `preplan-clusterless-track-full` | 491.9 s | 209.8 s | 53.0 GB | 17.1 GB |
+
+The final code is 32% (sorted) and 37% (clusterless) faster warm, 51% and
+33% faster on the first call, and uses 2.4x and 5x less device memory. The
+plan's corrections change the fitted values, so these compare cost only.
+
+## 2-D grid of the same recording
+
+`--environment 2d` at 2 cm: 20,178 grid bins, 3,298 interior state bins.
+
+| Report | Outcome |
+| --- | --- |
+| `*-2d-full-dense-oom` | Default dense EM runs out of device memory in the first E-step (`cc25c63`) |
+| `*-2d-full-chunks8-mstep-oom` | With `n_chunks=8` the E-step fits; the full-length M-step contraction of `925b6ac` did not |
+| `sorted-2d-full-chunks8` | Row-blocked M-step: first call 870.1 s, warm 503.4 s; device 56.4 GB, host 175.2 GB |
+| `clusterless-2d-full-chunks8` | First call 898.5 s, warm 499.9 s; device 56.3 GB, host 174.7 GB |
+
+The filter/smoother takes 68-70% of the warm time (about 87 s per E-step).
+The 175 GB host peak comes from dense EM keeping full-length posteriors; the
+pre-plan code was not run in 2-D.
 
 ## 120 s and 240 s windows
 
