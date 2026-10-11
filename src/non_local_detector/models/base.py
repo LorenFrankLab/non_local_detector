@@ -392,6 +392,23 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
         )
 
 
+# EM with transition_representation="auto" runs dense EM up to this many bytes
+# of float32 interior transition. A dense step reads the whole matrix, so its
+# cost grows with this size; a structured step costs about the same at any
+# size. On an A100, dense EM was 1.4-1.6x faster on a 514-bin track (1 MB) and
+# 1.2-1.4x slower on a 2 cm 2-D grid (about 6,600 interior bins, 174 MB).
+_AUTO_DENSE_TRANSITION_BYTES = 64 * 2**20
+# Dense EM holds about this many float32 (time bins x state bins) arrays on the
+# device (10 GB for 709k x 514 on the clusterless track recording).
+_DENSE_EM_WORKING_ARRAYS = 8
+
+
+def _device_memory_limit() -> int | None:
+    """Bytes JAX may allocate on the default device, or None if unknown (CPU)."""
+    stats = jax.local_devices()[0].memory_stats()
+    return None if not stats else stats.get("bytes_limit")
+
+
 def _validate_em_options(
     structured: bool,
     n_chunks: int,
@@ -3013,6 +3030,41 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def fit_encoding_model(self):
         """Fit the encoding model. To be implemented by inheriting class."""
 
+    def _choose_em_representation(self, n_time: int) -> None:
+        """Run EM dense when it is faster and fits; otherwise keep the operator.
+
+        Called after an ``"auto"`` fit. Dense EM is chosen when the float32
+        interior transition is at most ``_AUTO_DENSE_TRANSITION_BYTES`` and
+        about ``_DENSE_EM_WORKING_ARRAYS`` (time bins x state bins) float32
+        arrays fit in half the device memory (unchecked when it is unknown).
+        The dense matrix comes from the fitted operator, which matches the
+        dense constructor.
+
+        Parameters
+        ----------
+        n_time : int
+            Decode bins.
+        """
+        n_bins = int(np.count_nonzero(self.is_track_interior_state_bins_))
+        limit = _device_memory_limit()
+        working = _DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+        use_dense = n_bins * n_bins * 4 <= _AUTO_DENSE_TRANSITION_BYTES and (
+            limit is None or working <= limit // 2
+        )
+        logger.info(
+            "EM with transition_representation='auto': %s (%d interior state "
+            "bins, %d time bins)",
+            "dense" if use_dense else "structured",
+            n_bins,
+            n_time,
+        )
+        if use_dense:
+            self.continuous_state_transitions_ = np.asarray(
+                self.continuous_state_transitions_
+            )
+            self.__dict__.pop("_continuous_transition_operator_", None)
+            self._transition_representation_ = "dense"
+
     def estimate_parameters(
         self,
         time_edges: np.ndarray,
@@ -5210,10 +5262,14 @@ class ClusterlessDetector(_DetectorBase):
             Encoding support does not automatically mark decode bins missing.
         transition_representation : {"dense", "structured", "auto"}, optional
             Continuous-transition representation for the internal fit, by
-            default "dense". "structured" and "auto" run EM on the
-            checkpointed driver (see ``chunk_size``), whose working memory
-            does not grow with the recording length; "auto" falls back to
-            dense blocks for transitions without a structured form, within
+            default "dense". "structured" runs EM on the checkpointed driver
+            (see ``chunk_size``), whose working memory does not grow with the
+            recording length. "auto" runs dense EM when the interior
+            transition is small (at most 64 MiB in float32, where dense EM is
+            faster) and dense EM's arrays fit in half the device memory, and
+            checkpointed EM otherwise or when ``chunk_size``, ``result_path``
+            or ``replay_cache_bytes`` is given; its checkpointed EM uses dense
+            blocks for transitions without a structured form, within
             ``max_dense_transition_bytes``.
         max_dense_transition_bytes : int, optional
             Byte budget for dense transition blocks or views of a structured
@@ -5285,6 +5341,10 @@ class ClusterlessDetector(_DetectorBase):
             transition_representation=transition_representation,
             max_dense_transition_bytes=max_dense_transition_bytes,
         )
+        if transition_representation == "auto" and (
+            chunk_size is None and result_path is None and replay_cache_bytes is None
+        ):
+            self._choose_em_representation(len(time_edges) - 1)
         self._encoding_model_data = {
             "position_time": position_time,
             "position": position,
@@ -6365,10 +6425,14 @@ class SortedSpikesDetector(_DetectorBase):
             Encoding support does not automatically mark decode bins missing.
         transition_representation : {"dense", "structured", "auto"}, optional
             Continuous-transition representation for the internal fit, by
-            default "dense". "structured" and "auto" run EM on the
-            checkpointed driver (see ``chunk_size``), whose working memory
-            does not grow with the recording length; "auto" falls back to
-            dense blocks for transitions without a structured form, within
+            default "dense". "structured" runs EM on the checkpointed driver
+            (see ``chunk_size``), whose working memory does not grow with the
+            recording length. "auto" runs dense EM when the interior
+            transition is small (at most 64 MiB in float32, where dense EM is
+            faster) and dense EM's arrays fit in half the device memory, and
+            checkpointed EM otherwise or when ``chunk_size``, ``result_path``
+            or ``replay_cache_bytes`` is given; its checkpointed EM uses dense
+            blocks for transitions without a structured form, within
             ``max_dense_transition_bytes``.
         max_dense_transition_bytes : int, optional
             Byte budget for dense transition blocks or views of a structured
@@ -6433,6 +6497,10 @@ class SortedSpikesDetector(_DetectorBase):
             transition_representation=transition_representation,
             max_dense_transition_bytes=max_dense_transition_bytes,
         )
+        if transition_representation == "auto" and (
+            chunk_size is None and result_path is None and replay_cache_bytes is None
+        ):
+            self._choose_em_representation(len(time_edges) - 1)
         self._encoding_model_data = {
             "position_time": position_time,
             "position": position,

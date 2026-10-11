@@ -51,10 +51,12 @@ def _recording(family):
 
 def _fit(model, data, **kwargs):
     results = model.estimate_parameters(**data, max_iter=3, tolerance=1e-12, **kwargs)
-    # A structured or auto fit must have run on its transition operator.
-    assert (getattr(model, "_continuous_transition_operator_", None) is not None) == (
-        "transition_representation" in kwargs
-    )
+    # Structured EM, or auto with a checkpoint option, runs on the operator.
+    checkpoint_options = {"chunk_size", "result_path", "replay_cache_bytes"}
+    if kwargs.get("transition_representation") == "structured" or (
+        "transition_representation" in kwargs and checkpoint_options & set(kwargs)
+    ):
+        assert getattr(model, "_continuous_transition_operator_", None) is not None
     return results, {
         "discrete_state_transitions_": np.array(model.discrete_state_transitions_),
         "initial_conditions_": np.array(model.initial_conditions_),
@@ -387,3 +389,43 @@ def test_dense_em_rejects_a_replay_cache():
     model, data = _recording("sorted")
     with pytest.raises(ValueError, match="replay_cache_bytes"):
         model.estimate_parameters(**data, max_iter=1, replay_cache_bytes=2**20)
+
+
+def _uses_operator(model):
+    return getattr(model, "_continuous_transition_operator_", None) is not None
+
+
+def test_auto_em_uses_dense_em_for_a_small_state_space():
+    """Dense EM is faster where its transition matrix is small."""
+    model, data = _recording("sorted")
+    dense = _fit(model, data)
+    model, data = _recording("sorted")
+    auto = _fit(model, data, transition_representation="auto")
+    assert not _uses_operator(model)
+    assert model._transition_representation_ == "dense"
+    for name in dense[0].data_vars:
+        np.testing.assert_array_equal(auto[0][name].values, dense[0][name].values)
+    np.testing.assert_array_equal(
+        auto[1]["discrete_state_transitions_"], dense[1]["discrete_state_transitions_"]
+    )
+
+
+@pytest.mark.parametrize(
+    "reason", ["large_transition", "dense_does_not_fit", "checkpoint_option"]
+)
+def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path):
+    from non_local_detector.models import base
+
+    kwargs = {}
+    if reason == "large_transition":
+        monkeypatch.setattr(base, "_AUTO_DENSE_TRANSITION_BYTES", 1)
+    elif reason == "dense_does_not_fit":
+        monkeypatch.setattr(base, "_device_memory_limit", lambda: 1)
+    else:
+        kwargs["result_path"] = tmp_path / "store"
+    model, data = _recording("sorted")
+    dense = _fit(model, data)
+    model, data = _recording("sorted")
+    auto = _fit(model, data, transition_representation="auto", **kwargs)
+    assert _uses_operator(model)
+    _assert_same_fit(auto, dense)
