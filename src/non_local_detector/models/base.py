@@ -3106,7 +3106,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             E-step's forward-pass rows (filtered rows, or likelihoods when the
             final outputs need them), so the backward replay does not filter
             and evaluate them again. Chunks beyond the budget are recomputed.
-            By default 4 GiB.
+            By default 16 GiB.
 
         Returns
         -------
@@ -5205,7 +5205,7 @@ class ClusterlessDetector(_DetectorBase):
         replay_cache_bytes : int, optional
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. By default 4 GiB.
+            filtering and evaluating them again. By default 16 GiB.
 
         Returns
         -------
@@ -6345,7 +6345,7 @@ class SortedSpikesDetector(_DetectorBase):
         replay_cache_bytes : int, optional
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. By default 4 GiB.
+            filtering and evaluating them again. By default 16 GiB.
 
         Returns
         -------

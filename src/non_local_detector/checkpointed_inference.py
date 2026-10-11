@@ -59,8 +59,9 @@ MIN_DEFAULT_CHUNK_SIZE = 256
 
 
 # Host memory structured EM may use to keep forward-pass rows for the replay:
-# a 23.6 min recording on a 514-bin track needs 1.5 GB.
-DEFAULT_REPLAY_CACHE_BYTES = 4 * 2**30
+# enough for a 23.6 min recording on a 2 cm 2-D grid (about 14 GB of host
+# memory in all) or about 4.5 hours on a 514-bin track at 500 Hz.
+DEFAULT_REPLAY_CACHE_BYTES = 16 * 2**30
 
 
 def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
