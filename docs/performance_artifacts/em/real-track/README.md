@@ -196,6 +196,7 @@ the same model and likelihoods with per-row increments summed in float64
 gives -1,031,835.82 for the dense matrix in float64, -1,031,837.72 in float32,
 and the same values for the structured operator; checkpointed EM sums its
 increments that way.
+Dense EM sums them that way too since `a5c7ef1`.
 
 ## 120 s and 240 s windows
 
