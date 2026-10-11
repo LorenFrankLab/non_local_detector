@@ -45,6 +45,7 @@ Example::
 
 import argparse
 import cProfile
+import gc
 import inspect
 import io
 import json
@@ -189,6 +190,10 @@ class HostPeak:
     def _sample(self):
         while not self._stop.wait(0.02):
             self.peak = max(self.peak, self.process.memory_info().rss)
+
+    def reset(self):
+        """Start a new peak from the current resident set size."""
+        self.peak = self.process.memory_info().rss
 
     def stop(self):
         self._stop.set()
@@ -598,7 +603,14 @@ def main():
     try:
         runs = [run.strip() for run in args.runs.split(",") if run.strip()]
         model = results = states = None
+        overall_host_peak = host_peak.peak
         for run in runs:
+            # Release the previous run's model and outputs (a full posterior
+            # can be tens of GB) so each run's peaks are its own.
+            model = results = None
+            gc.collect()
+            overall_host_peak = max(overall_host_peak, host_peak.peak)
+            host_peak.reset()
             if run == "warm":
                 start = time.perf_counter()
                 model, results, states = run_em()
@@ -607,6 +619,7 @@ def main():
                 model, results, states, report["runs"][run] = profiled_run(run, True)
             else:
                 parser.error(f"unknown run {run!r}")
+            report["runs"][run]["peak_host_rss_bytes"] = host_peak.peak
             report["runs"][run]["n_iter"] = int(model.n_iter_)
             report["runs"][run]["marginal_log_likelihoods"] = [
                 float(value)
@@ -622,6 +635,9 @@ def main():
                 model.is_track_interior_state_bins_.sum()
             )
             np.save(args.output / "acausal_state_probabilities.npy", states)
+        model = results = None
+        gc.collect()
+        host_peak.peak = max(overall_host_peak, host_peak.peak)
         if args.xprof_dir is not None:
             report["xprof"] = "started"
             write_report()
