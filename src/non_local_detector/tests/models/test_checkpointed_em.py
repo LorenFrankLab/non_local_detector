@@ -253,3 +253,24 @@ def test_checkpointed_em_other_models(case):
     dense = _fit(*build())
     structured = _fit(*build(), transition_representation=representation, chunk_size=45)
     _assert_same_fit(structured, dense)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"chunk_size": 50},
+        {"n_chunks": 4, "transition_representation": "structured"},
+    ],
+)
+def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
+    """Invalid chunking is rejected before the internal fit replaces state."""
+    model, data = _recording("sorted")
+    model.estimate_parameters(**data, max_iter=1, store_log_likelihood=True)
+    transitions = np.array(model.discrete_state_transitions_)
+    encoding = model.encoding_model_
+    log_likelihood = model.log_likelihood_
+    with pytest.raises(ValueError, match="chunk_size"):
+        model.estimate_parameters(**data, max_iter=1, **options)
+    np.testing.assert_array_equal(model.discrete_state_transitions_, transitions)
+    assert model.encoding_model_ is encoding
+    assert model.log_likelihood_ is log_likelihood

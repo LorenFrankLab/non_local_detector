@@ -389,6 +389,31 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
         )
 
 
+def _validate_em_chunking(structured: bool, n_chunks: int, chunk_size) -> None:
+    """Reject chunk options that do not apply to the EM path.
+
+    Parameters
+    ----------
+    structured : bool
+        Whether EM runs on a structured transition operator.
+    n_chunks : int
+        Dense-EM row chunks.
+    chunk_size : int or None
+        Checkpoint chunk rows for structured EM.
+    """
+    if structured and n_chunks != 1:
+        raise ValueError(
+            "Structured-transition EM runs on checkpoint chunks; set "
+            "chunk_size instead of n_chunks."
+        )
+    if chunk_size is not None and not structured:
+        raise ValueError(
+            "chunk_size applies only to structured-transition EM; fit with "
+            'transition_representation="structured" or "auto", or use '
+            "n_chunks for dense EM."
+        )
+
+
 def _validate_estimation_arguments(
     time_edges: np.ndarray,
     n_chunks: int,
@@ -3061,17 +3086,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         checkpointed = (
             getattr(self, "_continuous_transition_operator_", None) is not None
         )
-        if checkpointed and n_chunks != 1:
-            raise ValueError(
-                "Structured-transition EM runs on checkpoint chunks; set "
-                "chunk_size instead of n_chunks."
-            )
-        if chunk_size is not None and not checkpointed:
-            raise ValueError(
-                "chunk_size applies only to structured-transition EM; fit with "
-                'transition_representation="structured" or "auto", or use '
-                "n_chunks for dense EM."
-            )
+        _validate_em_chunking(checkpointed, n_chunks, chunk_size)
         # Subclasses have already combined ``is_missing`` with the bins
         # affected by NaN positions via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
@@ -5118,6 +5133,10 @@ class ClusterlessDetector(_DetectorBase):
             Results of the decoding.
         """
         _validate_encoding_update_damping(encoding_update_damping)
+        # Before the internal fit, which replaces the fitted state.
+        _validate_em_chunking(
+            transition_representation != "dense", n_chunks, chunk_size
+        )
         time_edges, _ = _validate_estimation_arguments(
             time_edges,
             n_chunks,
@@ -6237,6 +6256,10 @@ class SortedSpikesDetector(_DetectorBase):
             Results of the decoding
         """
         _validate_encoding_update_damping(encoding_update_damping)
+        # Before the internal fit, which replaces the fitted state.
+        _validate_em_chunking(
+            transition_representation != "dense", n_chunks, chunk_size
+        )
         time_edges, _ = _validate_estimation_arguments(
             time_edges,
             n_chunks,
