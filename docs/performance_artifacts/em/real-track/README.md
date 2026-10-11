@@ -95,7 +95,15 @@ removes the recompilation:
 | `diffusion-2d-full-chunks8-before` | `75660e30` | breeze | 4043.3 s | 4018.5 s | 29,152 (2387 s) | 56.3 GB | 178.1 GB |
 | `diffusion-2d-full-chunks8` | `6559795f` | zephyr | 907.8 s | **695.0 s** | 0 | 56.3 GB | 174.4 GB |
 
-The likelihood stage went from 3233.9 s to 16.6 s per warm run. The two runs
+The likelihood stage went from 3233.9 s to 16.6 s per warm run. The track
+with `n_chunks=8` showed the same recompilation (unchunked, it never
+recompiled):
+
+| Report | Code | Host | First call | Instrumented warm | Warm likelihood (compiles) | Device peak | Host peak |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `diffusion-track-full-chunks8-before` | `309b74fc` | breeze | 3590.5 s | 3063.0 s | 2911.7 s (26,965) | 8.8 GB | 20.1 GB |
+| `diffusion-track-full-chunks8` | `6559795f` | zephyr | 510.4 s | **113.4 s** | 16.3 s (0) | 8.7 GB | 16.4 GB |
+ The two runs
 used different hosts with the same GPU model: the new run could not fit on
 breeze while other jobs held about 33 GB of each GPU. The like-for-like check
 is a 120 s window on one breeze GPU with `XLA_FLAGS=--xla_gpu_autotune_level=0`
