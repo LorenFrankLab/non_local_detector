@@ -118,6 +118,7 @@ def fit_both_models(
     kde_position_std=2.0,
     kde_waveform_std=1.5,
     gmm_components=GMM_COMPONENTS,
+    gmm_reg_covar=1.0,
 ):
     """Fit both KDE and GMM models on the same data.
 
@@ -129,6 +130,10 @@ def fit_both_models(
         Bandwidth for KDE position kernel
     kde_waveform_std : float
         Bandwidth for KDE waveform kernel
+    gmm_components : tuple of int
+        Occupancy, GPI and joint GMM component counts
+    gmm_reg_covar : float
+        GMM covariance regularization
 
     Returns
     -------
@@ -169,6 +174,7 @@ def fit_both_models(
         gmm_components_gpi=gmm_components[1],
         gmm_components_joint=gmm_components[2],
         gmm_random_state=42,
+        gmm_reg_covar=gmm_reg_covar,
         disable_progress_bar=True,
     )
 
@@ -529,7 +535,11 @@ def test_overparameterized_gmm_overflow_locations(comparison_data):
     maximum, finite and equal to the reference elsewhere, and never NaN or
     ``+inf``. At least one candidate per time bin must stay finite.
     """
-    _, gmm_enc = fit_both_models(comparison_data, gmm_components=GMM_COMPONENTS_STRESS)
+    # Nearly unregularized, so the over-fitted components are sharp enough
+    # to overflow.
+    _, gmm_enc = fit_both_models(
+        comparison_data, gmm_components=GMM_COMPONENTS_STRESS, gmm_reg_covar=1e-6
+    )
     bins = gmm_enc["interior_place_bin_centers"]
     log_occ = np.asarray(gmm_enc["log_occupancy"], dtype=np.float64)
     log_terms = np.stack(

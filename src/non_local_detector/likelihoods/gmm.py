@@ -1263,8 +1263,10 @@ class GaussianMixtureModel:
                 raise RuntimeError(
                     "GMM fitting failed: a component's covariance became "
                     "singular, giving a non-finite log-likelihood. Increase "
-                    "reg_covar (e.g. to 1e-4), reduce n_components, or remove "
-                    "duplicate/degenerate samples, then refit."
+                    "reg_covar above the float32 rounding of the covariances "
+                    "(about feature_magnitude**2 * 1e-7, in squared feature "
+                    "units), reduce n_components, or remove duplicate/degenerate "
+                    "samples, then refit."
                 )
             raise RuntimeError(
                 "GMM fitting failed: no restart produced a finite lower bound. "
