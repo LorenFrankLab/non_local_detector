@@ -3034,7 +3034,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """Run EM dense when it is faster and fits; otherwise keep the operator.
 
         Called after an ``"auto"`` fit. Dense EM is chosen when the float32
-        interior transition is at most ``_AUTO_DENSE_TRANSITION_BYTES`` and
+        interior transition is at most ``_AUTO_DENSE_TRANSITION_BYTES``, the
+        full dense transition it stores (every state bin, float64, as the
+        dense constructor builds it) fits ``max_dense_transition_bytes``, and
         about ``_DENSE_EM_WORKING_ARRAYS`` (time bins x state bins) float32
         arrays fit in half the device memory (unchecked when it is unknown).
         The dense matrix comes from the fitted operator, which matches the
@@ -3048,8 +3050,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         n_bins = int(np.count_nonzero(self.is_track_interior_state_bins_))
         limit = _device_memory_limit()
         working = _DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
-        use_dense = n_bins * n_bins * 4 <= _AUTO_DENSE_TRANSITION_BYTES and (
-            limit is None or working <= limit // 2
+        n_total = int(self.state_ind_.shape[0])
+        use_dense = (
+            n_bins * n_bins * 4 <= _AUTO_DENSE_TRANSITION_BYTES
+            and n_total * n_total * 8 <= self._max_dense_transition_bytes_
+            and (limit is None or working <= limit // 2)
         )
         logger.info(
             "EM with transition_representation='auto': %s (%d interior state "
@@ -5266,8 +5271,9 @@ class ClusterlessDetector(_DetectorBase):
             (see ``chunk_size``), whose working memory does not grow with the
             recording length. "auto" runs dense EM when the interior
             transition is small (at most 64 MiB in float32, where dense EM is
-            faster) and dense EM's arrays fit in half the device memory, and
-            checkpointed EM otherwise or when ``chunk_size``, ``result_path``
+            faster), the full dense transition fits
+            ``max_dense_transition_bytes`` and dense EM's arrays fit in half
+            the device memory, and checkpointed EM otherwise or when ``chunk_size``, ``result_path``
             or ``replay_cache_bytes`` is given; its checkpointed EM uses dense
             blocks for transitions without a structured form, within
             ``max_dense_transition_bytes``.
@@ -6429,8 +6435,9 @@ class SortedSpikesDetector(_DetectorBase):
             (see ``chunk_size``), whose working memory does not grow with the
             recording length. "auto" runs dense EM when the interior
             transition is small (at most 64 MiB in float32, where dense EM is
-            faster) and dense EM's arrays fit in half the device memory, and
-            checkpointed EM otherwise or when ``chunk_size``, ``result_path``
+            faster), the full dense transition fits
+            ``max_dense_transition_bytes`` and dense EM's arrays fit in half
+            the device memory, and checkpointed EM otherwise or when ``chunk_size``, ``result_path``
             or ``replay_cache_bytes`` is given; its checkpointed EM uses dense
             blocks for transitions without a structured form, within
             ``max_dense_transition_bytes``.

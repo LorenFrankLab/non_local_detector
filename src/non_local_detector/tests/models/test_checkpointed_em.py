@@ -429,3 +429,34 @@ def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path):
     auto = _fit(model, data, transition_representation="auto", **kwargs)
     assert _uses_operator(model)
     _assert_same_fit(auto, dense)
+
+
+def test_auto_em_keeps_structured_em_when_the_full_dense_matrix_is_over_budget():
+    """Few interior bins on a large grid: the full dense transition is too big.
+
+    Dense EM stores the transition over every state bin, so a small interior
+    does not make it affordable; auto must keep the operator instead of
+    exceeding max_dense_transition_bytes.
+    """
+    rng = np.random.default_rng(2)
+    position_time = np.linspace(0, 6, 301)
+    position = np.column_stack(
+        (100 + 5 * np.sin(position_time), 100 + 5 * np.cos(position_time))
+    )
+    spike_times = [np.sort(position_time[rng.uniform(size=301) < 0.2])]
+    model = NonLocalSortedSpikesDetector(
+        environments=Environment(place_bin_size=2, position_range=((0, 200), (0, 200)))
+    )
+    results = model.estimate_parameters(
+        position_time=position_time,
+        position=position,
+        spike_times=spike_times,
+        time_edges=np.linspace(0, 6, N_BINS + 1),
+        max_iter=1,
+        transition_representation="auto",
+    )
+    n_bins = model.state_ind_.shape[0]
+    assert n_bins**2 * 8 > model._max_dense_transition_bytes_
+    assert model.is_track_interior_state_bins_.sum() ** 2 * 4 < 2**20
+    assert _uses_operator(model)
+    assert np.all(np.isfinite(results["acausal_state_probabilities"].values))
