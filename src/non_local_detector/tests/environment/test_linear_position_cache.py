@@ -104,3 +104,14 @@ def test_cache_evicts_oldest_entries_beyond_its_byte_budget(
     track_environment._linear_position(shifted[2])  # newest: cached
     track_environment._linear_position(shifted[0])  # oldest: evicted
     assert count_linearizations == [500, 500, 500, 500]
+
+
+def test_cache_entries_own_their_memory(track_environment, points):
+    """Eviction counts each entry's own bytes, so entries must not be views.
+
+    A view of the linearization's DataFrame keeps all its columns alive,
+    several times the bytes the cache counts.
+    """
+    track_environment._linear_position(points)
+    (entry,) = track_environment._linear_position_cache_.values()
+    assert entry.base is None

@@ -347,12 +347,14 @@ class Environment:
         if key in cache:
             cache.move_to_end(key)
             return cache[key].copy()
+        # A copy: a view would keep the linearization's other columns alive,
+        # outside the bytes counted below.
         result = get_linearized_position(
             points,
             self.track_graph,
             edge_order=self.edge_order,
             edge_spacing=self.edge_spacing,
-        ).linear_position.to_numpy()
+        ).linear_position.to_numpy(copy=True)
         cache[key] = result
         while (
             sum(value.nbytes for value in cache.values()) > _LINEAR_POSITION_CACHE_BYTES
