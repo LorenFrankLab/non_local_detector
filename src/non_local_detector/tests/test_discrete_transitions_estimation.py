@@ -17,9 +17,8 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteStationaryCustom,
     _estimate_discrete_transition,
-    _pair_sum_block,
     _state_aggregation_matrix,
-    _stationary_counts_from_pair_sum,
+    _stationary_counts_block,
     estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_counts_from_factorized_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
@@ -509,22 +508,16 @@ class TestExpandedDiscreteTransitionCounts:
         causal, predictive, acausal, continuous, discrete, full = (
             self._stationary_posteriors(rng, 9, 5, state_ind, 3)
         )
-        transition, operator = (
-            (discrete, continuous) if is_factorized else (full, np.empty((0, 0)))
+        transition = (
+            continuous * discrete[np.ix_(state_ind, state_ind)]
+            if is_factorized
+            else full
         )
-        block = jax.make_jaxpr(_pair_sum_block)(
-            causal[:-1], predictive[1:], acausal[1:]
-        )
-        counts = jax.make_jaxpr(
-            lambda pair_sum: _stationary_counts_from_pair_sum(
-                pair_sum,
-                jnp.asarray(transition),
-                jnp.asarray(operator),
-                jnp.asarray(state_ind),
-                3,
-                is_factorized=is_factorized,
+        block = jax.make_jaxpr(
+            lambda *posteriors: _stationary_counts_block(
+                *posteriors, jnp.asarray(transition), jnp.asarray(state_ind), 3
             )
-        )(jnp.zeros((5, 5)))
+        )(causal[:-1], predictive[1:], acausal[1:])
 
         def primitives(jaxpr):
             for eqn in jaxpr.eqns:
@@ -535,7 +528,7 @@ class TestExpandedDiscreteTransitionCounts:
                         if hasattr(inner, "eqns"):
                             yield from primitives(inner)
 
-        names = set(primitives(block.jaxpr)) | set(primitives(counts.jaxpr))
+        names = set(primitives(block.jaxpr))
         assert not names & {"scan", "while"}, sorted(names)
 
     @pytest.mark.parametrize("factorized", [True, False])
@@ -568,14 +561,14 @@ class TestExpandedDiscreteTransitionCounts:
 
         whole = counts()
         monkeypatch.setattr(transitions, "_PAIR_SUM_BLOCK_BYTES", 300 * n_bins * 4)
-        original = transitions._pair_sum_block
+        original = transitions._stationary_counts_block
         block_rows = []
 
-        def record(causal, predictive, acausal):
+        def record(causal, *args):
             block_rows.append(causal.shape[0])
-            return original(causal, predictive, acausal)
+            return original(causal, *args)
 
-        monkeypatch.setattr(transitions, "_pair_sum_block", record)
+        monkeypatch.setattr(transitions, "_stationary_counts_block", record)
         blocked = counts()
 
         assert max(block_rows) == 300 and sum(block_rows) == n_time - 1
@@ -606,6 +599,43 @@ class TestExpandedDiscreteTransitionCounts:
             )
 
         np.testing.assert_allclose(counts, expected, rtol=1e-5)
+
+    @pytest.mark.parametrize("factorized", [True, False])
+    def test_stationary_counts_do_not_overflow_with_rare_transitions(self, factorized):
+        """Ratios near 1 / P(transition) must be weighted before they are summed.
+
+        A 1e-34 transition taken at every other row of 100,001 gives smoother
+        ratios near 1e34; their float32 sum over rows overflows although the
+        weighted count is 50,000.
+        """
+        from non_local_detector.core import filter, smoother
+
+        n_time = 100_001
+        transition = np.array([[1 - 1e-34, 1e-34], [1.0, 0.0]], dtype=np.float32)
+        log_likelihoods = np.zeros((n_time, 2), np.float32)
+        log_likelihoods[0::2, 1] = -1e4
+        log_likelihoods[1::2, 0] = -1e4
+        (_, _), (causal, predictive) = filter(
+            np.array([1.0, 0.0], np.float32), transition, log_likelihoods
+        )
+        acausal = smoother(transition, causal)
+        state_ind = np.array([0, 1])
+        if factorized:
+            counts = estimate_discrete_transition_counts_from_factorized_posteriors(
+                causal,
+                predictive,
+                acausal,
+                np.ones((2, 2), dtype=np.float32),
+                transition,
+                state_ind,
+            )
+        else:
+            counts = estimate_discrete_transition_counts_from_expanded_posteriors(
+                causal, predictive, acausal, transition, state_ind
+            )
+        np.testing.assert_allclose(
+            counts, [[0.0, 50_000.0], [50_000.0, 0.0]], rtol=1e-5, atol=1e-3
+        )
 
     def test_factorized_counts_match_numpy_reference(self):
         """The stationary factorized JAX count helper should preserve answers."""
