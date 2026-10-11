@@ -1285,7 +1285,7 @@ def block_kde(
     # [0, n_eval_points) exactly, so this is identical to filling a preallocated
     # array but avoids the O(n_eval * n_blocks) copies of a per-block
     # dynamic_update_slice.
-    block_size = _kde_block_rows(block_size, eval_points, samples)
+    block_size = _kde_block_rows(block_size, eval_points, samples, std, weights)
     if block_size > 0 and -(-n_eval_points // block_size) > _UNROLLED_KDE_BLOCKS:
         # Many small blocks (large sample sets) run as one compiled loop
         # instead of one dispatch per block.
@@ -1390,7 +1390,7 @@ _UNROLLED_KDE_BLOCKS = 8
 _KDE_BLOCK_KERNEL_BYTES = 256 * 1024**2
 
 
-def _kde_block_rows(block_size: int, eval_points, samples) -> int:
+def _kde_block_rows(block_size: int, eval_points, samples, std, weights) -> int:
     """Evaluation rows per block: ``block_size``, reduced to the kernel budget.
 
     Parameters
@@ -1399,6 +1399,10 @@ def _kde_block_rows(block_size: int, eval_points, samples) -> int:
         Requested rows per block.
     eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
     samples : jnp.ndarray, shape (n_samples, n_dims)
+    std, weights : array-like
+        The other kernel operands: they set the kernel's dtype with the
+        points and samples (float32 points become a float64 kernel with a
+        float64 ``std`` or ``weights`` under x64).
 
     Returns
     -------
@@ -1406,7 +1410,7 @@ def _kde_block_rows(block_size: int, eval_points, samples) -> int:
         ``min(block_size, rows whose kernel matrix fits _KDE_BLOCK_KERNEL_BYTES)``,
         at least one row when ``block_size`` is positive.
     """
-    itemsize = jnp.result_type(eval_points, samples, float).itemsize
+    itemsize = jnp.result_type(eval_points, samples, std, weights, float).itemsize
     budget_rows = _KDE_BLOCK_KERNEL_BYTES // (max(samples.shape[0], 1) * itemsize)
     return min(block_size, max(1, budget_rows))
 
@@ -1420,7 +1424,7 @@ def _traced_blocks(blocked, kernel, points, samples, std, block_size, weights):
     size, with a zero-padded final block evaluated and trimmed.
     """
     n_points = points.shape[0]
-    block_size = _kde_block_rows(block_size, points, samples)
+    block_size = _kde_block_rows(block_size, points, samples, std, weights)
     n_blocks = -(-n_points // block_size)
     if n_blocks <= _UNROLLED_KDE_BLOCKS:
         return blocked(points, samples, std, block_size, weights)
@@ -1561,7 +1565,7 @@ def block_log_kde(
         weights = jnp.ones((samples.shape[0],))
 
     # Collect per-block log-densities and concatenate once (see block_kde).
-    block_size = _kde_block_rows(block_size, eval_points, samples)
+    block_size = _kde_block_rows(block_size, eval_points, samples, std, weights)
     if block_size > 0 and -(-n_eval // block_size) > _UNROLLED_KDE_BLOCKS:
         return _compiled_block_log_kde(eval_points, samples, std, block_size, weights)
     blocks = [

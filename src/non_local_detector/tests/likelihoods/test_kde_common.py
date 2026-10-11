@@ -593,6 +593,38 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+def test_block_rows_use_the_kernel_dtype(log_space, monkeypatch):
+    """Under x64, float32 points with default weights compute a float64 kernel.
+
+    Sizing blocks by the points and samples alone assumed 4-byte elements and
+    let the 8-byte kernel use twice the budget.
+    """
+    from non_local_detector.likelihoods import common
+
+    with precision_mode(True):
+        rng = np.random.default_rng(3)
+        points = jnp.asarray(rng.normal(size=(300, 2)).astype(np.float32))
+        samples = jnp.asarray(rng.normal(size=(5_000, 2)).astype(np.float32))
+        std = jnp.array([0.7, 1.3])  # float64 under x64
+        monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * 8 * 64)
+        kernel_name = "log_kde" if log_space else "kde"
+        original = getattr(common, kernel_name)
+        blocks = []
+
+        def record(eval_points, *args):
+            result = original(eval_points, *args)
+            blocks.append((eval_points.shape[0], result.dtype.itemsize))
+            return result
+
+        monkeypatch.setattr(common, kernel_name, record)
+        (block_log_kde if log_space else block_kde)(points, samples, std, 10_000)
+
+    assert {itemsize for _, itemsize in blocks} == {8}
+    assert max(rows for rows, _ in blocks) * 5_000 * 8 <= 5_000 * 8 * 64
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("rows", [None, slice(0, 1), slice(3, 17), slice(20, 20)])
 @pytest.mark.parametrize("prepared", [False, True])
 def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
