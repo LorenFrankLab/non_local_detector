@@ -413,6 +413,18 @@ def main():
         "--chunk-size", type=int, default=None, help="checkpointed EM chunk rows"
     )
     parser.add_argument(
+        "--replay-cache-bytes",
+        type=int,
+        default=None,
+        help="checkpointed EM host replay cache",
+    )
+    parser.add_argument(
+        "--result-path",
+        type=Path,
+        default=None,
+        help="checkpointed EM: store final outputs here (one directory per run)",
+    )
+    parser.add_argument(
         "--runs",
         default="first,warm,instrumented",
         help="comma-separated subset of first, warm, instrumented",
@@ -505,6 +517,11 @@ def main():
             kwargs["transition_representation"] = args.transition_representation
         if args.chunk_size is not None:
             kwargs["chunk_size"] = args.chunk_size
+        if args.replay_cache_bytes is not None:
+            kwargs["replay_cache_bytes"] = args.replay_cache_bytes
+        if args.result_path is not None:
+            run_em.count += 1
+            kwargs["result_path"] = args.result_path / f"run{run_em.count}"
         results = model.estimate_parameters(
             **kwargs, max_iter=max_iter, n_chunks=args.n_chunks
         )
@@ -512,6 +529,7 @@ def main():
         sync()
         return model, results, states
 
+    run_em.count = 0
     host_peak = HostPeak()
     compile_loggers = [
         logging.getLogger(name)
@@ -533,6 +551,8 @@ def main():
         "n_chunks": args.n_chunks,
         "transition_representation": args.transition_representation,
         "chunk_size": args.chunk_size,
+        "replay_cache_bytes": args.replay_cache_bytes,
+        "result_path": None if args.result_path is None else str(args.result_path),
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
