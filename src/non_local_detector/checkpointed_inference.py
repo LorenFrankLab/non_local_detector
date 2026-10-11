@@ -58,6 +58,11 @@ DEFAULT_CHUNK_BYTES = 256 * 1024**2
 MIN_DEFAULT_CHUNK_SIZE = 256
 
 
+# Host memory structured EM may use to keep forward-pass rows for the replay:
+# a 23.6 min recording on a 514-bin track needs 1.5 GB.
+DEFAULT_REPLAY_CACHE_BYTES = 4 * 2**30
+
+
 def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
     """Rows per checkpoint chunk so one likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
 
@@ -137,13 +142,14 @@ def _forward_chunk(
         total, predicted = carry
         ll, weight = args
         filtered, increment = _condition_on(predicted, ll)
-        out = (
-            (filtered, predicted if keep_predictive else None)
-            if keep_rows
-            else increment
-            if keep_increments
-            else None
-        )
+        if keep_rows:
+            out = (
+                filtered,
+                predicted if keep_predictive else None,
+                increment if keep_increments else None,
+            )
+        else:
+            out = increment if keep_increments else None
         return (total + increment, operator.forward(filtered, weight)), out
 
     return jax.lax.scan(
@@ -337,6 +343,7 @@ def checkpointed_forward_backward(
     result_attrs=None,
     evidence_accumulation="stable",
     transition_statistics=None,
+    replay_cache_bytes=0,
 ):
     """Filter once, replay each chunk in reverse, and emit exact requested rows.
 
@@ -370,6 +377,14 @@ def checkpointed_forward_backward(
     are summed per chunk on the device and across chunks in host float64;
     responses cost ``n_time * n_states**2`` values.
 
+    ``replay_cache_bytes`` keeps forward-pass chunks in host memory, in order,
+    until the next chunk would exceed it, and the replay uses them instead of
+    recomputing. When the outputs need only filtered rows (no likelihood or
+    predictive output), the filtered rows are kept, so a cached chunk skips both
+    its second likelihood evaluation and its replayed forward pass; otherwise
+    the prepared likelihood is kept. Either costs ``n_bins`` values per row. By
+    default (0) every chunk is filtered and evaluated twice.
+
     Global diagnostic masks
     cost two bytes per recording row while computing; exact NumPy index arrays
     cost up to two intp entries per row. Persisted masks use packed bits, avoiding
@@ -385,6 +400,12 @@ def checkpointed_forward_backward(
         raise ValueError("evidence_accumulation must be reference or stable")
     if transition_statistics not in (None, "counts", "responses"):
         raise ValueError("transition_statistics must be None, counts or responses")
+    if (
+        isinstance(replay_cache_bytes, bool)
+        or not isinstance(replay_cache_bytes, (int, np.integer))
+        or replay_cache_bytes < 0
+    ):
+        raise ValueError("replay_cache_bytes must be a nonnegative integer")
     max_read_bytes = _validate_read_budget(max_read_bytes)
     edges, _ = uniform_time_edges(time_edges)
     n_time, dtype = len(edges) - 1, np.dtype(dtype)
@@ -531,6 +552,7 @@ def checkpointed_forward_backward(
         "likelihood_evaluations": 0,
         "checkpoint_bytes": 0,
         "checkpoint_cache_entries": 1,
+        "replay_cache_bytes": 0,
         "global_gradients_supported": False,
     }
 
@@ -589,10 +611,32 @@ def checkpointed_forward_backward(
             folder = Path(folder)
             predicted, evidence = jnp.asarray(initial), jnp.asarray(0, dtype=dtype)
 
+            # Filtered rows suffice unless an output needs the likelihood or the
+            # predictive rows, which only a replayed forward pass gives.
+            cache_rows = not outputs & {
+                "log_likelihood",
+                "predictive_posterior",
+                "predictive_state_probabilities",
+            }
+            cached_rows, cached_likelihoods = {}, {}
+
             def finish_forward_chunk(
-                start, stop, predicted, evidence, degenerate, nan, checksum, increments
+                start,
+                stop,
+                predicted,
+                evidence,
+                degenerate,
+                nan,
+                checksum,
+                cached,
+                increments,
             ):
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
+                if cached is not None:
+                    (cached_rows if cache_rows else cached_likelihoods)[start] = (
+                        np.asarray(cached)
+                    )
+                    diagnostics["replay_cache_bytes"] += cached.nbytes
                 checkpoint = folder / f"{start}.npz"
                 np.savez(
                     checkpoint,
@@ -617,8 +661,12 @@ def checkpointed_forward_backward(
                 # Each chunk's host work runs after the next chunk is dispatched,
                 # so device computation overlaps host transfers and disk writes.
                 pending = None
+                planned = 0
                 for start in boundaries:
                     stop = min(start + chunk_size, n_time)
+                    nbytes = (stop - start) * n_bins * dtype.itemsize
+                    cache = planned + nbytes <= replay_cache_bytes
+                    planned += nbytes if cache else 0
                     values, degenerate, nan, checksum = likelihood(start, stop)
                     chunk = (
                         start,
@@ -629,20 +677,25 @@ def checkpointed_forward_backward(
                         nan,
                         checksum,
                     )
-                    (evidence, predicted), increments = _forward_chunk(
+                    (evidence, predicted), out = _forward_chunk(
                         predicted,
                         evidence,
                         values,
                         None if weights is None else jnp.asarray(weights[start:stop]),
                         transition_operator,
-                        keep_rows=False,
+                        keep_rows=cache and cache_rows,
                         keep_predictive=False,
                         keep_increments=evidence_accumulation == "stable",
                     )
-                    del values
+                    if cache and cache_rows:
+                        cached, _, increments = out
+                    else:
+                        cached, increments = (values if cache else None), out
                     if pending is not None:
                         yield finish_forward_chunk(*pending)
-                    pending = (*chunk, increments)
+                    # Kept until the chunk finishes and is copied to the host.
+                    pending = (*chunk, cached, increments)
+                    del values, cached
                 if pending is not None:
                     yield finish_forward_chunk(*pending)
 
@@ -658,7 +711,6 @@ def checkpointed_forward_backward(
             pending = None
             for start in reversed(boundaries):
                 stop = min(start + chunk_size, n_time)
-                values, _, _, checksum = likelihood(start, stop)
                 with np.load(folder / f"{start}.npz", allow_pickle=False) as checkpoint:
                     expected_checksum = checkpoint["checksum"]
                     prior, start_evidence = (
@@ -668,18 +720,29 @@ def checkpointed_forward_backward(
                 chunk_weights = (
                     None if weights is None else jnp.asarray(weights[start:stop])
                 )
-                _, (filtered, predictive) = _forward_chunk(
-                    prior,
-                    start_evidence,
-                    values,
-                    chunk_weights,
-                    transition_operator,
-                    keep_rows=True,
-                    keep_predictive=bool(
-                        outputs
-                        & {"predictive_posterior", "predictive_state_probabilities"}
-                    ),
-                )
+                if start in cached_rows:
+                    # No output needs the likelihood or predictive rows here.
+                    filtered = jnp.asarray(cached_rows.pop(start))
+                    values = predictive = None
+                    checksum = expected_checksum
+                else:
+                    if start in cached_likelihoods:
+                        values = jnp.asarray(cached_likelihoods.pop(start))
+                        checksum = expected_checksum
+                    else:
+                        values, _, _, checksum = likelihood(start, stop)
+                    _, (filtered, predictive, _) = _forward_chunk(
+                        prior,
+                        start_evidence,
+                        values,
+                        chunk_weights,
+                        transition_operator,
+                        keep_rows=True,
+                        keep_predictive=bool(
+                            outputs
+                            & {"predictive_posterior", "predictive_state_probabilities"}
+                        ),
+                    )
                 if stop == n_time:
                     next_smoothed = filtered[-1]
                 next_smoothed, smoothed = _backward_chunk(

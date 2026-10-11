@@ -285,3 +285,99 @@ def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
     np.testing.assert_array_equal(model.discrete_state_transitions_, transitions)
     assert model.encoding_model_ is encoding
     assert model.log_likelihood_ is log_likelihood
+
+
+def test_checkpointed_em_writes_the_final_posterior_to_disk(tmp_path):
+    """With result_path the final E-step streams its outputs to a store."""
+    model, data = _recording("sorted")
+    in_memory = _fit(
+        model,
+        data,
+        return_outputs="filter",
+        transition_representation="structured",
+        chunk_size=64,
+    )[0]
+    model, data = _recording("sorted")
+    stored = _fit(
+        model,
+        data,
+        return_outputs="filter",
+        transition_representation="structured",
+        chunk_size=64,
+        result_path=tmp_path / "em",
+    )[0]
+    assert (tmp_path / "em" / "manifest.json").exists()
+    # Lazily backed by the store, not held in memory.
+    assert stored["acausal_posterior"].variable._in_memory is False
+    for name in in_memory.data_vars:
+        np.testing.assert_allclose(
+            stored[name].values, in_memory[name].values, rtol=1e-6, atol=1e-7
+        )
+    np.testing.assert_array_equal(
+        stored.attrs["marginal_log_likelihoods"],
+        in_memory.attrs["marginal_log_likelihoods"],
+    )
+    loaded = model.load_results(tmp_path / "em")
+    np.testing.assert_allclose(
+        loaded["acausal_posterior"].values,
+        in_memory["acausal_posterior"].values,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+
+def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
+    model, data = _recording("sorted")
+    with pytest.raises(ValueError, match="structured"):
+        model.estimate_parameters(**data, max_iter=1, result_path=tmp_path / "a")
+    with pytest.raises(ValueError, match="store_log_likelihood"):
+        model.estimate_parameters(
+            **data,
+            max_iter=1,
+            transition_representation="structured",
+            result_path=tmp_path / "b",
+            store_log_likelihood=True,
+        )
+    assert not (tmp_path / "a").exists() and not (tmp_path / "b").exists()
+
+
+def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch):
+    """The replay reuses forward-pass rows; results are bitwise equal."""
+    from non_local_detector import checkpointed_inference
+
+    driver = checkpointed_inference.checkpointed_forward_backward
+
+    def run(**kwargs):
+        calls = []
+
+        def counting_driver(time_edges, initial, likelihood, **driver_kwargs):
+            def counted(*args, **kw):
+                calls.append(kw["row_slice"].start)
+                return likelihood(*args, **kw)
+
+            return driver(time_edges, initial, counted, **driver_kwargs)
+
+        monkeypatch.setattr(
+            checkpointed_inference, "checkpointed_forward_backward", counting_driver
+        )
+        model, data = _recording("sorted")
+        results = _fit(
+            model,
+            data,
+            transition_representation="structured",
+            chunk_size=50,
+            **kwargs,
+        )
+        return results, len(calls)
+
+    (uncached, _), uncached_calls = run(replay_cache_bytes=0)
+    (cached, _), cached_calls = run()
+    # Six chunks per pass: three in-loop E-steps and the final one.
+    assert uncached_calls == 4 * 12
+    assert cached_calls == 4 * 6
+    for name in cached.data_vars:
+        np.testing.assert_array_equal(cached[name].values, uncached[name].values)
+    np.testing.assert_array_equal(
+        cached.attrs["marginal_log_likelihoods"],
+        uncached.attrs["marginal_log_likelihoods"],
+    )

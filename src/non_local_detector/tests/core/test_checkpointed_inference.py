@@ -157,6 +157,60 @@ def test_transition_statistics_match_dense_posterior_estimates(covariate, chunk_
     )
 
 
+@pytest.mark.parametrize("budget_chunks", [0, 2, 4])
+@pytest.mark.parametrize("keep_likelihood", [False, True])
+def test_replay_cache_skips_recomputation(
+    tmp_path, monkeypatch, budget_chunks, keep_likelihood
+):
+    """Forward-pass rows cached in host RAM are not computed again in the replay.
+
+    Outputs that need only filtered rows cache those, so a cached chunk skips
+    both its likelihood and its replayed forward pass; outputs that include the
+    likelihood cache the likelihood instead.
+    """
+    import non_local_detector.checkpointed_inference as checkpointed
+
+    edges, initial, ll, state_ind, kwargs, reference = problem(n_time=13)
+    chunk_size = 4  # four chunks: rows 0-3, 4-7, 8-11, 12
+    calls, replays = [], []
+
+    def likelihood(time_edges, *, row_slice, is_missing):
+        calls.append(row_slice.start)
+        return ll[row_slice]
+
+    original = checkpointed._forward_chunk
+
+    def forward(*args, keep_rows, **kw):
+        # Replayed forward passes keep their rows and do not need increments.
+        if keep_rows and not kw.get("keep_increments", False):
+            replays.append(1)
+        return original(*args, keep_rows=keep_rows, **kw)
+
+    monkeypatch.setattr(checkpointed, "_forward_chunk", forward)
+    outputs = ("acausal_posterior",) + (("log_likelihood",) if keep_likelihood else ())
+    result = checkpointed_forward_backward(
+        edges,
+        initial,
+        likelihood,
+        state_ind=state_ind,
+        chunk_size=chunk_size,
+        output_mode="spatial",
+        result_path=tmp_path / "result",
+        return_outputs=outputs,
+        replay_cache_bytes=budget_chunks * chunk_size * ll.shape[1] * 4,
+        **kwargs,
+    )
+    # The first budget_chunks chunks are cached; the rest are replayed.
+    assert len(calls) == 4 + 4 - budget_chunks
+    assert result.diagnostics["likelihood_evaluations"] == len(calls)
+    assert len(replays) == (4 if keep_likelihood else 4 - budget_chunks)
+    np.testing.assert_allclose(
+        result.dataset.acausal_posterior, reference[3], rtol=1e-5, atol=1e-6
+    )
+    if keep_likelihood:
+        np.testing.assert_array_equal(result.dataset.log_likelihood, ll)
+
+
 @pytest.mark.parametrize("covariate", [False, True])
 def test_compact_selected_rows_keep_whole_recording_context(tmp_path, covariate):
     edges, initial, ll, state_ind, kwargs, reference = problem(covariate)
