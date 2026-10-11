@@ -269,6 +269,45 @@ def _assert_map_compatible_alpha(alpha: np.ndarray) -> None:
 _PAIR_SUM_BLOCK_BYTES = 256 * 1024**2
 
 
+# Rows summed per partial product of the count contraction. A single product
+# over many similar terms accumulates float32 rounding in proportion to the
+# rows (5.7e-4 relative over 50,000 rows); short partial sums added together
+# keep it near the single-sum bound for this many rows.
+_CONTRACTION_SUB_ROWS = 256
+
+
+def _blocked_contraction(left: jnp.ndarray, right: jnp.ndarray) -> jnp.ndarray:
+    """``left.T @ right`` summed over the rows in short partial products.
+
+    Parameters
+    ----------
+    left, right : jnp.ndarray, shape (n_rows, n_bins)
+
+    Returns
+    -------
+    product : jnp.ndarray, shape (n_bins, n_bins)
+    """
+    n_rows, n_bins = left.shape
+    padding = -n_rows % _CONTRACTION_SUB_ROWS
+    left = jnp.pad(left, ((0, padding), (0, 0)))
+    right = jnp.pad(right, ((0, padding), (0, 0)))
+
+    def add(block, total):
+        start = block * _CONTRACTION_SUB_ROWS
+        return total + jnp.matmul(
+            jax.lax.dynamic_slice_in_dim(left, start, _CONTRACTION_SUB_ROWS).T,
+            jax.lax.dynamic_slice_in_dim(right, start, _CONTRACTION_SUB_ROWS),
+            precision=jax.lax.Precision.HIGHEST,
+        )
+
+    return jax.lax.fori_loop(
+        0,
+        (n_rows + padding) // _CONTRACTION_SUB_ROWS,
+        add,
+        jnp.zeros((n_bins, n_bins), jnp.result_type(left, right)),
+    )
+
+
 @partial(jax.jit, static_argnames=("n_states",))
 def _stationary_counts_block(
     causal_posterior: jnp.ndarray,
@@ -284,10 +323,12 @@ def _stationary_counts_block(
     ``sum_t causal_t[i] T[i, j] ratio_{t+1}[j] = T[i, j] * pair_sum[i, j]``,
     so the block needs one contraction over rows instead of a scan with one
     step per row. The ratios ``acausal / predictive`` can approach
-    ``1 / T[i, j]``, so their sum over rows can overflow float32 although each
-    weighted term is at most one. Each ratio column is divided by its block
-    maximum before the contraction (keeping it at most the row count) and
-    multiplied back only after the transition weights it.
+    ``1 / T[i, j]``, so their sum over rows can overflow although each weighted
+    term is at most one. A ratio column whose sum could exceed the dtype's range
+    is divided by the smallest power of two that keeps it within range, and
+    multiplied back only after the transition weights it. Powers of two divide
+    exactly, and ordinary columns are not scaled, so a rare transition does
+    not push the column's ordinary ratios into underflow.
 
     Parameters
     ----------
@@ -306,10 +347,16 @@ def _stationary_counts_block(
     """
     ratio = _safe_ratio_jax(acausal_next, predictive_next)
     maximum = jnp.max(ratio, axis=0, initial=0.0)
-    scale = jnp.where(maximum > 0, maximum, 1.0)
-    contraction = jnp.matmul(
-        causal_posterior.T, ratio / scale, precision=jax.lax.Precision.HIGHEST
+    # The column sum is at most n_rows * maximum; keep it 256x below the
+    # largest finite value.
+    headroom = jnp.finfo(ratio.dtype).max / 256
+    exponent = jnp.ceil(
+        jnp.log2(jnp.maximum(maximum / headroom * causal_posterior.shape[0], 1.0))
     )
+    # Non-finite ratios propagate unscaled, as in an unscaled sum.
+    exponent = jnp.where(jnp.isfinite(exponent), exponent, 0.0)
+    scale = jnp.ldexp(jnp.ones((), ratio.dtype), exponent.astype(jnp.int32))
+    contraction = _blocked_contraction(causal_posterior, ratio / scale)
     # Weight first: the weighted terms are bounded, the unweighted sums are not.
     weighted = jax.lax.optimization_barrier(transition_matrix * contraction)
     return _aggregate_xi_by_state_jax(weighted * scale, state_ind, n_states)

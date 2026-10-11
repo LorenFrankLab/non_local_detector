@@ -501,12 +501,16 @@ class TestExpandedDiscreteTransitionCounts:
         """Stationary counts are contractions over rows, not a scan per row.
 
         A 709k-row scan spent 11 s per EM iteration on an A100 for 514 state
-        bins, bound by per-step loop overhead.
+        bins, bound by per-step loop overhead. The contraction may loop over
+        partial products of many rows each.
         """
+        import non_local_detector.discrete_state_transitions as transitions
+
         rng = np.random.default_rng(31)
+        n_time = 601
         state_ind = np.array([0, 0, 1, 2, 2])
         causal, predictive, acausal, continuous, discrete, full = (
-            self._stationary_posteriors(rng, 9, 5, state_ind, 3)
+            self._stationary_posteriors(rng, n_time, 5, state_ind, 3)
         )
         transition = (
             continuous * discrete[np.ix_(state_ind, state_ind)]
@@ -519,17 +523,20 @@ class TestExpandedDiscreteTransitionCounts:
             )
         )(causal[:-1], predictive[1:], acausal[1:])
 
-        def primitives(jaxpr):
+        def loops(jaxpr):
             for eqn in jaxpr.eqns:
-                yield eqn.primitive.name
+                if eqn.primitive.name in ("scan", "while"):
+                    yield eqn
                 for value in eqn.params.values():
                     for sub in value if isinstance(value, (tuple, list)) else (value,):
                         inner = getattr(sub, "jaxpr", sub)
                         if hasattr(inner, "eqns"):
-                            yield from primitives(inner)
+                            yield from loops(inner)
 
-        names = set(primitives(block.jaxpr))
-        assert not names & {"scan", "while"}, sorted(names)
+        found = list(loops(block.jaxpr))
+        assert all(eqn.primitive.name == "scan" for eqn in found), found
+        n_partial = -(-(n_time - 1) // transitions._CONTRACTION_SUB_ROWS)
+        assert all(eqn.params["length"] <= n_partial for eqn in found)
 
     @pytest.mark.parametrize("factorized", [True, False])
     def test_stationary_counts_stream_bounded_row_blocks(self, factorized, monkeypatch):
@@ -636,6 +643,34 @@ class TestExpandedDiscreteTransitionCounts:
         np.testing.assert_allclose(
             counts, [[0.0, 50_000.0], [50_000.0, 0.0]], rtol=1e-5, atol=1e-3
         )
+
+    def test_rare_transition_does_not_erase_ordinary_counts(self):
+        """One extreme ratio in a column must not scale its other ratios away.
+
+        A 2e-38 transition gives a ratio near 2.5e37 in column 1. Dividing that
+        column by its maximum put an ordinary ratio of 1 near 4e-38, and its
+        0.01 expected count underflowed float32, turning a 0.01 transition
+        into a deterministic one.
+        """
+        transition = np.array([[1 - 2e-38, 2e-38], [0.99, 0.01]], np.float32)
+        causal = np.array([[1.0, 0.0], [0.0, 1.0], [0.99, 0.01]], np.float32)
+        predictive = np.vstack(
+            [[0.5, 0.5], causal[0] @ transition, causal[1] @ transition]
+        ).astype(np.float32)
+        acausal = np.array([[1.0, 0.0], [0.0, 1.0], [0.99, 0.01]], np.float32)
+        state_ind = np.array([0, 1])
+        expected = _expanded_responses_numpy_reference(
+            causal.astype(float),
+            predictive.astype(float),
+            acausal.astype(float),
+            transition.astype(float),
+            state_ind,
+        ).sum(axis=0)
+        counts = estimate_discrete_transition_counts_from_expanded_posteriors(
+            causal, predictive, acausal, transition, state_ind
+        )
+        assert expected[1, 1] == pytest.approx(0.01, rel=1e-5)
+        np.testing.assert_allclose(counts, expected, rtol=1e-5, atol=1e-7)
 
     def test_factorized_counts_match_numpy_reference(self):
         """The stationary factorized JAX count helper should preserve answers."""
