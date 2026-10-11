@@ -810,7 +810,7 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
             jnp.asarray(discrete),
         )
         if covariate:
-            expected_final, (filtered, predicted) = _filter_covariate_dependent_impl(
+            expected_final, (filtered, predicted, _) = _filter_covariate_dependent_impl(
                 initial, discrete, dense, state_ind, likelihood
             )
             smoothed = _smoother_covariate_dependent_impl(
@@ -822,7 +822,7 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
                 dense
                 * discrete[0][np.ix_(np.asarray(state_ind), np.asarray(state_ind))]
             )
-            expected_final, (filtered, predicted) = _filter_impl(
+            expected_final, (filtered, predicted, _) = _filter_impl(
                 initial, joint, likelihood
             )
             smoothed = _smoother_impl(joint, filtered)

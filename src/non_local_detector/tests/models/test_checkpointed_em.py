@@ -74,10 +74,16 @@ def _assert_same_fit(structured, dense, rtol=1e-5, atol=1e-6):
         np.testing.assert_allclose(
             fitted[name], reference_fitted[name], rtol=rtol, atol=atol
         )
+    # Marginal log likelihoods are checked separately: at magnitudes of 1e3 to
+    # 1e6, rtol=1e-5 would allow 0.01 to 10 units and hide evidence that drifts
+    # with recording length. Each row's float32 increment is accurate to about
+    # 1e-7 of its size, so the bound grows with the rows (8x the measured 4e-5
+    # here; a float32 running total drifted by 3.4e-4 on these fits).
     np.testing.assert_allclose(
         results.attrs["marginal_log_likelihoods"],
         reference.attrs["marginal_log_likelihoods"],
-        rtol=rtol,
+        rtol=0,
+        atol=1e-6 * N_BINS,
     )
     assert set(results.data_vars) == set(reference.data_vars)
     for name in reference.data_vars:
