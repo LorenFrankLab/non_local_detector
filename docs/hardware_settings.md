@@ -101,12 +101,25 @@ number of encoding spikes. If they don't fit, set `encoding_block_size` and
 
 ## Parameter estimation (EM)
 
-`estimate_parameters` always uses the dense filter and smoother. It keeps
+By default `estimate_parameters` uses the dense filter and smoother. It keeps
 several arrays of size (time bins × state bins) in memory, so its memory grows
 with session length. In a 180 cm open field at 2 cm each such float32 array
 takes about 2 GB per minute of recording; at 4 cm, about 0.53 GB. A linearized
 track has far fewer state bins (514 for the track below), so its arrays are
 about 0.06 GB per minute.
+
+### Bounded-memory EM
+
+`estimate_parameters(..., transition_representation="structured")` (or
+`"auto"`, which allows dense blocks for transitions without a structured form,
+such as random walks on a track graph) runs every E-step on the checkpointed
+driver. Device working memory then scales with `chunk_size` times the state
+bins instead of the recording length: on the 23.6 min recording below, on a
+2 cm 2-D grid, 2.5 GB instead of 56.3 GB. It costs time where dense EM fits:
+each E-step evaluates the likelihood twice, and on that grid 3 iterations took
+706 s after compilation instead of 501 s (on the track, 361 s instead of 168
+s). Host memory still holds the returned full posterior. Use it when dense EM
+does not fit on the card; `chunk_size` sets the rows per checkpoint chunk.
 
 ### A real recording on a linearized track
 

@@ -26,6 +26,10 @@ window, package-source hash and device.
 | `309b74fc` | `a789beb`: plus the track-graph GLM fix |
 | `6559795f` | `104e024`: plus compiled per-electrode diffusion prediction |
 | `273a29a3` | `6559795f` plus padded weighted GMM refits |
+| `309b74fc` (GLM) | `a789beb`, per-cell BFGS GLM fits |
+| `2ba28161` | `ddeaa01`: batched Newton GLM fits |
+| `27957feb` | `3925f84` before its review fixes (validation and docs only): structured-transition EM |
+| `1edc8ee5` | `27957feb` plus unrolled checkpointed scans (`1ad6a90`) |
 
 ## Full recording (709,319 rows)
 
@@ -134,6 +138,64 @@ to 1e6 between refits, and `gmm-regcovar1-track-full-breeze-a789beb` (the
 previous GMM code on breeze) differs from the zephyr run of the same code in
 the most likely state at 156,736 of 709,319 bins, about as much as the
 previous and new code differ on zephyr (143,210).
+
+### Sorted-spike GLM
+
+`--algorithm sorted_spikes_glm`, track, 3 iterations. Each EM iteration refits
+all 305 cells' GLMs.
+
+| Report | Code | Host | First call | Instrumented warm |
+| --- | --- | --- | ---: | ---: |
+| `glm-track-full-before` | `309b74fc` | breeze | 12,791.5 s | stopped |
+| `glm-track-full` | `2ba28161` | zephyr | 240.8 s | **217.0 s** |
+
+The previous code fitted each cell with SciPy BFGS (about 10 s per cell, 55
+minutes per refit); its instrumented run was not completed.
+
+## Structured-transition (checkpointed) EM
+
+`--transition-representation structured` (2-D) or `auto` (track graph, which
+needs a dense fallback block), clusterless 2-D and sorted track, 3 iterations,
+default chunk size. All on zephyr; the dense comparisons ran there too.
+
+| Report | Code | First call | Instrumented warm | Device peak | Host peak |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `dense-2d-full-chunks8-zephyr` | `27957feb` | 863.1 s | 500.6 s | 56.3 GB | 184.1 GB |
+| `structured-2d-full` | `27957feb` | 1,117.8 s | 705.9 s | **2.5 GB** | 128.4 GB |
+| `auto-track-sorted-full` | `27957feb` | 697.7 s | 423.4 s | 24.8 GB | 11.1 GB |
+| `auto-track-sorted-full-unrolled` | `1edc8ee5` | 662.4 s | 361.0 s | 24.8 GB | 11.1 GB |
+| `structured-2d-120s-mem` | `27957feb` | 266.6 s (1 iteration) | — | 2.02 GB | 8.6 GB |
+| `structured-2d-240s-mem` | `27957feb` | 398.3 s (1 iteration) | — | 2.16 GB | 14.7 GB |
+
+Device memory stays flat as the window doubles; host memory still grows
+because the final E-step returns the full posterior, as dense EM does. The
+track's device peak comes from the sorted-spike likelihood, not the
+transitions. Structured EM is slower where dense EM fits: each E-step
+evaluates the likelihood twice (the forward pass and the replay), and the
+filter and smoother steps of the structured operator took 510 s per warm run
+on the 2-D grid against 351 s for dense matrix products, which the A100 reads
+at its memory bandwidth (about 82 s per pass for 6,600 interior bins). On the
+track (dense compare: `sorted-track-full-cc25c63`, 168 s warm on breeze) the
+dense path is faster still.
+
+### Accuracy against float64
+
+`accuracy-{dense64,dense32,structured32}-2d-120s`: 120 s of the 2-D grid, 2
+iterations, with `JAX_ENABLE_X64=1` for the dense float64 reference.
+
+| Run | State probabilities vs float64 (max / mean) | Most likely state changes | First-iteration evidence |
+| --- | --- | ---: | ---: |
+| dense float64 | — | — | -1,031,847.06 |
+| dense float32 | 1.73e-3 / 1.67e-5 | 2 | -1,031,847.12 |
+| structured float32 | 1.70e-3 / 1.67e-5 | 2 | -1,031,837.61 |
+
+The posteriors are equally accurate. The evidence differs because of how the
+dense filter accumulates it: its float64 run reports the same total as its
+float32 run, so its running total is not computed in float64 there. Filtering
+the same model and likelihoods with per-row increments summed in float64
+gives -1,031,835.82 for the dense matrix in float64, -1,031,837.72 in float32,
+and the same values for the structured operator; checkpointed EM sums its
+increments that way.
 
 ## 120 s and 240 s windows
 
