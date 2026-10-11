@@ -13,6 +13,10 @@ from non_local_detector.core import (
     smoother,
     smoother_covariate_dependent,
 )
+from non_local_detector.discrete_state_transitions import (
+    estimate_discrete_transition_counts_from_expanded_posteriors,
+    estimate_discrete_transition_responses_from_factorized_posteriors,
+)
 from non_local_detector.result_store import open_result_store
 from non_local_detector.tests.conftest import precision_mode
 
@@ -110,6 +114,47 @@ def test_dense_reference_and_global_callbacks(tmp_path, covariate, chunk_size):
     loaded = open_result_store(tmp_path / "result")
     xr.testing.assert_equal(loaded, dataset)
     assert len(calls) == result.diagnostics["likelihood_evaluations"]
+
+
+@pytest.mark.parametrize("covariate", [False, True])
+@pytest.mark.parametrize("chunk_size", [1, 4, 13, 20])
+def test_transition_statistics_match_dense_posterior_estimates(covariate, chunk_size):
+    """Counts (stationary) or per-row responses (covariate) from the replay."""
+    edges, initial, ll, state_ind, kwargs, reference = problem(covariate)
+    _, causal, predictive, acausal = reference
+    if covariate:
+        expected = estimate_discrete_transition_responses_from_factorized_posteriors(
+            causal,
+            predictive,
+            acausal,
+            kwargs["continuous_transition_matrix"],
+            kwargs["discrete_transition_matrix"],
+            state_ind,
+        )
+    else:
+        expected = estimate_discrete_transition_counts_from_expanded_posteriors(
+            causal, predictive, acausal, kwargs["transition_matrix"], state_ind
+        )
+
+    result = checkpointed_forward_backward(
+        edges,
+        initial,
+        lambda edges, **kw: ll[kw["row_slice"]],
+        state_ind=state_ind,
+        chunk_size=chunk_size,
+        transition_statistics="responses" if covariate else "counts",
+        **kwargs,
+    )
+    np.testing.assert_allclose(
+        result.transition_statistics, expected, rtol=1e-5, atol=1e-6
+    )
+    np.testing.assert_allclose(result.first_smoothed, acausal[0], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(
+        result.dataset.acausal_state_probabilities[:, 0],
+        acausal[:, state_ind == 0].sum(1),
+        rtol=1e-5,
+        atol=1e-6,
+    )
 
 
 @pytest.mark.parametrize("covariate", [False, True])

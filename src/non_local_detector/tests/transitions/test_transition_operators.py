@@ -446,6 +446,74 @@ def test_default_four_state_and_multibin_local_match_original_masks_and_rectangu
         )
 
 
+def pair_reference(continuous, state_ind, weights, filtered, ratio):
+    """``w[i, j] * sum over x in i, y in j of filtered[x] C[x, y] ratio[y]``."""
+    n_states = weights.shape[0]
+    xi = filtered[:, None] * continuous * ratio[None, :]
+    onehot = np.eye(n_states)[state_ind]
+    return weights * (onehot.T @ xi @ onehot)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("local_std", [None, 2.0])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("fused", [False, True])
+def test_pair_products_aggregate_each_state_pair(local_std, dtype, fused):
+    """Per-step discrete transition statistics from the structured blocks."""
+    with enable_x64(dtype == np.float64):
+        env, observations, transitions, sizes, mask = default_layout(local_std)
+        dense, state_ind = dense_reference(
+            transitions, [env], sizes, observations, local_std
+        )
+        operator = build_transition_operator(
+            transitions, [env], sizes, observations, local_std
+        )
+        weights = np.array(
+            [
+                [0.6, 0, 0.1, 0.3],
+                [0.1, 0.7, 0.1, 0.1],
+                [0.2, 0.1, 0.65, 0.05],
+                [0, 0.1, 0.3, 0.6],
+            ]
+        )
+        rng = np.random.default_rng(7)
+        tolerance = (
+            {"rtol": 1e-5, "atol": 1e-7}
+            if dtype == np.float32
+            else {"rtol": 1e-12, "atol": 1e-14}
+        )
+        for restriction in (None, mask):
+            selected = (
+                np.arange(len(state_ind))
+                if restriction is None
+                else np.flatnonzero(restriction)
+            )
+            base = operator if restriction is None else operator.restricted(mask)
+            filtered = rng.uniform(0.0, 1.0, len(selected))
+            ratio = rng.uniform(0.0, 2.0, len(selected))
+            expected = pair_reference(
+                dense[np.ix_(selected, selected)],
+                state_ind[selected],
+                weights,
+                filtered,
+                ratio,
+            )
+            args = (
+                jnp.asarray(filtered, dtype=dtype),
+                jnp.asarray(ratio, dtype=dtype),
+            )
+            bound = product_operator(base.bind_discrete(weights), fused)
+            np.testing.assert_allclose(
+                jax.jit(bound.pair_products)(*args), expected, **tolerance
+            )
+            per_step = product_operator(base, fused)
+            actual = jax.jit(per_step.pair_products)(
+                *args, jnp.asarray(weights, dtype=dtype)
+            )
+            assert actual.dtype == dtype
+            np.testing.assert_allclose(actual, expected, **tolerance)
+
+
 @pytest.mark.unit
 def test_rectangular_multienvironment_uniform_blocks():
     env1, env2 = environment((4, 3), "one"), environment((3, 5), "two")

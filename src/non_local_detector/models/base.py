@@ -40,7 +40,9 @@ from non_local_detector.core import (
     row_slice_aware,
 )
 from non_local_detector.discrete_state_transitions import (
+    _discrete_transition_from_statistics,
     _estimate_discrete_transition,
+    _is_nonstationary,
     centered_softmax_forward,
     predict_discrete_state_transitions,
 )
@@ -2606,6 +2608,123 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
         return result
 
+    def _checkpointed_likelihood(self, edges, centers, log_likelihood_args):
+        """Row-slice likelihood callback for the checkpointed driver."""
+        time_grid = _DecodeTimeGrid.from_validated_edges(
+            edges, uniform_width=(float(edges[-1]) - float(edges[0])) / (len(edges) - 1)
+        )
+        prepared = _prepare_likelihood_callback(
+            self.compute_log_likelihood,
+            edges,
+            has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
+            log_likelihood_args=log_likelihood_args,
+            _time_grid=time_grid,
+        )
+
+        def likelihood(full_edges, *, row_slice, is_missing):
+            return prepared(
+                centers,
+                *log_likelihood_args,
+                row_slice=row_slice,
+                is_missing=is_missing,
+            )
+
+        return likelihood
+
+    def _checkpointed_transition_args(self, discrete, n_rows):
+        """Checkpointed-driver transition arguments over the interior state bins.
+
+        Structured fits pass the fused operator; dense fits pass the dense
+        interior matrices. Covariate transitions pass their per-row discrete
+        matrices separately and must have one row per decode bin.
+        """
+        if discrete.ndim == 3 and discrete.shape[0] != n_rows:
+            raise ValidationError(
+                "Predict covariate transitions must have one row per decode bin"
+            )
+        interior = self.is_track_interior_state_bins_
+        states = self.state_ind_[interior]
+        transition_args = {}
+        operator = getattr(self, "_continuous_transition_operator_", None)
+        if operator is not None:
+            operator = operator.restricted(interior)
+            if discrete.ndim == 2:
+                operator = operator.bind_discrete(discrete)
+            else:
+                transition_args["discrete_transition_matrix"] = discrete
+            transition_args["transition_operator"] = operator.fused()
+        else:
+            continuous = self.continuous_state_transitions_[np.ix_(interior, interior)]
+            if discrete.ndim == 2:
+                transition_args["transition_matrix"] = (
+                    continuous * discrete[np.ix_(states, states)]
+                )
+            else:
+                transition_args.update(
+                    continuous_transition_matrix=continuous,
+                    discrete_transition_matrix=discrete,
+                )
+        return transition_args
+
+    def _checkpointed_e_step(
+        self,
+        time_edges,
+        log_likelihood_args,
+        is_missing,
+        chunk_size,
+        *,
+        outputs=("acausal_state_probabilities",),
+        transition_statistics=None,
+    ):
+        """One whole-recording E-step on the checkpointed driver.
+
+        Parameters
+        ----------
+        time_edges : np.ndarray, shape (n_time + 1,)
+        log_likelihood_args : tuple
+        is_missing : np.ndarray, shape (n_time,), or None
+        chunk_size : int or None
+            Rows per checkpoint chunk; None sizes chunks by the likelihood
+            byte budget.
+        outputs : iterable of str
+            Driver outputs. Spatial outputs are held in memory.
+        transition_statistics : {None, "counts", "responses"}
+
+        Returns
+        -------
+        result : CheckpointedResult
+        """
+        from non_local_detector.checkpointed_inference import (
+            _SPATIAL,
+            checkpointed_forward_backward,
+            default_chunk_size,
+        )
+
+        self._validate_time_contract()
+        edges, centers = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
+        interior = self.is_track_interior_state_bins_
+        if chunk_size is None:
+            chunk_size = default_chunk_size(np.count_nonzero(interior), np.float32)
+        outputs = set(outputs)
+        return checkpointed_forward_backward(
+            edges,
+            self.initial_conditions_[interior],
+            self._checkpointed_likelihood(edges, centers, log_likelihood_args),
+            state_ind=self.state_ind_[interior],
+            n_states=len(self.state_names),
+            is_missing=is_missing,
+            chunk_size=chunk_size,
+            output_mode="spatial" if outputs & _SPATIAL else "compact",
+            return_outputs=outputs,
+            dtype=np.float32,
+            transition_statistics=transition_statistics,
+            **self._checkpointed_transition_args(
+                self.discrete_state_transitions_, len(centers)
+            ),
+        )
+
     def _predict_checkpointed(
         self,
         *,
@@ -2658,49 +2777,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             if discrete_transitions is None
             else discrete_transitions
         )
-        if discrete.ndim == 3 and discrete.shape[0] != len(centers):
-            raise ValidationError(
-                "Predict covariate transitions must have one row per decode bin"
-            )
-        time_grid = _DecodeTimeGrid.from_validated_edges(
-            edges, uniform_width=(float(edges[-1]) - float(edges[0])) / (len(edges) - 1)
-        )
-        prepared = _prepare_likelihood_callback(
-            self.compute_log_likelihood,
-            edges,
-            has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
-            log_likelihood_args=log_likelihood_args,
-            _time_grid=time_grid,
-        )
-
-        def likelihood(full_edges, *, row_slice, is_missing):
-            return prepared(
-                centers,
-                *log_likelihood_args,
-                row_slice=row_slice,
-                is_missing=is_missing,
-            )
-
-        transition_args = {}
-        operator = getattr(self, "_continuous_transition_operator_", None)
-        if operator is not None:
-            operator = operator.restricted(interior)
-            if discrete.ndim == 2:
-                operator = operator.bind_discrete(discrete)
-            else:
-                transition_args["discrete_transition_matrix"] = discrete
-            transition_args["transition_operator"] = operator.fused()
-        else:
-            continuous = self.continuous_state_transitions_[np.ix_(interior, interior)]
-            if discrete.ndim == 2:
-                transition_args["transition_matrix"] = (
-                    continuous * discrete[np.ix_(states, states)]
-                )
-            else:
-                transition_args.update(
-                    continuous_transition_matrix=continuous,
-                    discrete_transition_matrix=discrete,
-                )
+        transition_args = self._checkpointed_transition_args(discrete, len(centers))
+        likelihood = self._checkpointed_likelihood(edges, centers, log_likelihood_args)
         selected = None
         if selected_intervals is not None:
             intervals = np.asarray(selected_intervals, dtype=float)
@@ -2890,6 +2968,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
+        chunk_size: int | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -2947,6 +3026,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Minimum effective sample size (ESS) of local state weights required
             to update the encoding model. ESS = sum(w)^2 / sum(w^2). If ESS
             is below this threshold, the encoding M-step is skipped. By default 1.0.
+        chunk_size : int, optional
+            Rows per checkpoint chunk when the model was fit with structured
+            transitions (``transition_representation="structured"`` or
+            ``"auto"``). Such models run every E-step on the checkpointed
+            driver: one forward pass that keeps a checkpoint per chunk and a
+            backward replay, so working memory scales with ``chunk_size``
+            times the state bins instead of the recording length, and the
+            M-steps use the expected transition statistics accumulated in
+            the replay. The final E-step returns the same outputs as dense
+            EM, held in memory. ``n_chunks`` must then be 1 and
+            ``cache_likelihood`` has no effect: each E-step evaluates the
+            likelihood twice. By default None, which sizes chunks so one
+            chunk of float32 likelihoods takes about 256 MiB.
 
         Returns
         -------
@@ -2966,6 +3058,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             min_encoding_local_mass,
             min_encoding_local_ess,
         )
+        checkpointed = (
+            getattr(self, "_continuous_transition_operator_", None) is not None
+        )
+        if checkpointed and n_chunks != 1:
+            raise ValueError(
+                "Structured-transition EM runs on checkpoint chunks; set "
+                "chunk_size instead of n_chunks."
+            )
+        if chunk_size is not None and not checkpointed:
+            raise ValueError(
+                "chunk_size applies only to structured-transition EM; fit with "
+                'transition_representation="structured" or "auto", or use '
+                "n_chunks for dense EM."
+            )
         # Subclasses have already combined ``is_missing`` with the bins
         # affected by NaN positions via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
@@ -2998,7 +3104,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ):
             cache_likelihood = True
 
-        if estimate_discrete_transition:
+        is_nonstationary = _is_nonstationary(
+            self.discrete_transition_coefficients_,
+            self.discrete_transition_design_matrix_,
+        )
+        if estimate_discrete_transition and not checkpointed:
             interior_state_bins = self.is_track_interior_state_bins_
             interior_state_ind = self.state_ind_[interior_state_bins]
             interior_continuous_transition = self.continuous_state_transitions_[
@@ -3026,23 +3136,45 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         while not converged and (n_iter < max_iter):
             # Expectation step
             logger.info("Expectation step...")
-            (
-                acausal_posterior,
-                acausal_state_probabilities,
-                marginal_log_likelihood,
-                causal_state_probabilities,
-                predictive_state_probabilities,
-                log_likelihood,
-                causal_posterior,
-                predictive_posterior,
-            ) = self._predict(
-                time_edges=time_edges,
-                log_likelihood_args=log_likelihood_args,
-                is_missing=is_missing,
-                cache_likelihood=cache_likelihood,
-                log_likelihoods=run_log_likelihoods,
-                n_chunks=n_chunks,
-            )
+            if checkpointed:
+                e_step = self._checkpointed_e_step(
+                    time_edges,
+                    log_likelihood_args,
+                    is_missing,
+                    chunk_size,
+                    transition_statistics=(
+                        None
+                        if not estimate_discrete_transition
+                        else "responses"
+                        if is_nonstationary
+                        else "counts"
+                    ),
+                )
+                acausal_state_probabilities = e_step.dataset[
+                    "acausal_state_probabilities"
+                ].values
+                marginal_log_likelihood = e_step.marginal_log_likelihood
+                first_smoothed = e_step.first_smoothed
+                log_likelihood = None
+            else:
+                (
+                    acausal_posterior,
+                    acausal_state_probabilities,
+                    marginal_log_likelihood,
+                    causal_state_probabilities,
+                    predictive_state_probabilities,
+                    log_likelihood,
+                    causal_posterior,
+                    predictive_posterior,
+                ) = self._predict(
+                    time_edges=time_edges,
+                    log_likelihood_args=log_likelihood_args,
+                    is_missing=is_missing,
+                    cache_likelihood=cache_likelihood,
+                    log_likelihoods=run_log_likelihoods,
+                    n_chunks=n_chunks,
+                )
+                first_smoothed = acausal_posterior[0]
             # Reusable by the next iteration: the likelihood depends only on the
             # data and the encoding model, and the M-step below clears this when
             # it updates the encoding model. ``None`` when the likelihood was not
@@ -3115,22 +3247,31 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         run_log_likelihoods = None
 
             if estimate_discrete_transition:
-                (
-                    self.discrete_state_transitions_,
-                    self.discrete_transition_coefficients_,
-                ) = _estimate_discrete_transition(
-                    causal_posterior,
-                    predictive_posterior,
-                    acausal_posterior,
-                    interior_continuous_transition,
-                    interior_state_ind,
-                    self.discrete_state_transitions_,
+                prior = (
                     self.discrete_transition_coefficients_,
                     self.discrete_transition_design_matrix_,
                     self.discrete_transition_concentration,
                     self.discrete_transition_stickiness,
                     self.discrete_transition_regularization,
                     self.discrete_transition_prior_weight,
+                )
+                (
+                    self.discrete_state_transitions_,
+                    self.discrete_transition_coefficients_,
+                ) = (
+                    _discrete_transition_from_statistics(
+                        e_step.transition_statistics, *prior
+                    )
+                    if checkpointed
+                    else _estimate_discrete_transition(
+                        causal_posterior,
+                        predictive_posterior,
+                        acausal_posterior,
+                        interior_continuous_transition,
+                        interior_state_ind,
+                        self.discrete_state_transitions_,
+                        *prior,
+                    )
                 )
                 # The learned transitions are per bin at this width.
                 self.transition_time_bin_width_ = time_bin_width
@@ -3152,7 +3293,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
             if estimate_initial_conditions:
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
-                    acausal_posterior[0]
+                    first_smoothed
                 )
                 self.discrete_initial_conditions_ = np.asarray(
                     acausal_state_probabilities[0]
@@ -3227,31 +3368,71 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # the E-step computed *before* the last M-step and disagree with
         # predict() on the same data.
         logger.info("Final E-step after EM...")
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            log_likelihood,
-            causal_posterior,
-            predictive_posterior,
-        ) = self._predict(
-            time_edges=time_edges,
-            log_likelihood_args=log_likelihood_args,
-            is_missing=is_missing,
-            cache_likelihood=cache_likelihood,
-            log_likelihoods=run_log_likelihoods,
-            n_chunks=n_chunks,
-            # Final E-step only: this is the likelihood the caller can ask to
-            # keep. With n_chunks > 1 caching is unavailable, so the chunked
-            # path accumulates the per-chunk rows (the documented T x N
-            # exception) instead of returning None. The in-loop E-steps never
-            # need the array, so they keep the per-chunk allocation.
-            accumulate_log_likelihoods=(
-                store_log_likelihood or "log_likelihood" in requested_outputs
-            ),
-        )
+        if checkpointed:
+            outputs = {"acausal_posterior", "acausal_state_probabilities"}
+            if "filter" in requested_outputs:
+                outputs |= {"causal_posterior", "causal_state_probabilities"}
+            if "predictive" in requested_outputs:
+                outputs.add("predictive_state_probabilities")
+            if "predictive_posterior" in requested_outputs:
+                outputs.add("predictive_posterior")
+            if store_log_likelihood or "log_likelihood" in requested_outputs:
+                outputs.add("log_likelihood")
+            final = self._checkpointed_e_step(
+                time_edges,
+                log_likelihood_args,
+                is_missing,
+                chunk_size,
+                outputs=outputs,
+            )
+            (
+                acausal_posterior,
+                acausal_state_probabilities,
+                causal_state_probabilities,
+                predictive_state_probabilities,
+                log_likelihood,
+                causal_posterior,
+                predictive_posterior,
+            ) = (
+                final.dataset[name].values if name in final.dataset else None
+                for name in (
+                    "acausal_posterior",
+                    "acausal_state_probabilities",
+                    "causal_state_probabilities",
+                    "predictive_state_probabilities",
+                    "log_likelihood",
+                    "causal_posterior",
+                    "predictive_posterior",
+                )
+            )
+            marginal_log_likelihood = final.marginal_log_likelihood
+            self._degenerate_timesteps_ = final.diagnostics["degenerate_indices"]
+        else:
+            (
+                acausal_posterior,
+                acausal_state_probabilities,
+                marginal_log_likelihood,
+                causal_state_probabilities,
+                predictive_state_probabilities,
+                log_likelihood,
+                causal_posterior,
+                predictive_posterior,
+            ) = self._predict(
+                time_edges=time_edges,
+                log_likelihood_args=log_likelihood_args,
+                is_missing=is_missing,
+                cache_likelihood=cache_likelihood,
+                log_likelihoods=run_log_likelihoods,
+                n_chunks=n_chunks,
+                # Final E-step only: this is the likelihood the caller can ask to
+                # keep. With n_chunks > 1 caching is unavailable, so the chunked
+                # path accumulates the per-chunk rows (the documented T x N
+                # exception) instead of returning None. The in-loop E-steps never
+                # need the array, so they keep the per-chunk allocation.
+                accumulate_log_likelihoods=(
+                    store_log_likelihood or "log_likelihood" in requested_outputs
+                ),
+            )
         marginal_log_likelihoods.append(marginal_log_likelihood)
 
         # The preceding final E-step's _predict recorded the degenerate
@@ -4836,6 +5017,9 @@ class ClusterlessDetector(_DetectorBase):
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
+        transition_representation: str = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
+        chunk_size: int | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -4908,6 +5092,25 @@ class ClusterlessDetector(_DetectorBase):
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            Continuous-transition representation for the internal fit, by
+            default "dense". "structured" and "auto" run EM on the
+            checkpointed driver (see ``chunk_size``), whose working memory
+            does not grow with the recording length; "auto" falls back to
+            dense blocks for transitions without a structured form, within
+            ``max_dense_transition_bytes``.
+        max_dense_transition_bytes : int, optional
+            Byte budget for dense transition blocks or views of a structured
+            fit, by default ``DEFAULT_MAX_DENSE_BYTES``.
+        chunk_size : int, optional
+            Rows per checkpoint chunk for structured-transition EM. Working
+            memory scales with ``chunk_size`` times the state bins instead of
+            the recording length, and each E-step evaluates the likelihood
+            twice (``cache_likelihood`` has no effect). The final E-step
+            returns the same outputs as dense EM, held in memory. Only valid
+            with a structured or auto ``transition_representation``, and then
+            ``n_chunks`` must be 1. By default None, which sizes chunks so one
+            chunk of float32 likelihoods takes about 256 MiB.
 
         Returns
         -------
@@ -4944,6 +5147,8 @@ class ClusterlessDetector(_DetectorBase):
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             encoding_time_range=encoding_time_range,
             valid_position_intervals=valid_position_intervals,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
         )
         self._encoding_model_data = {
             "position_time": position_time,
@@ -4978,6 +5183,7 @@ class ClusterlessDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
+            chunk_size=chunk_size,
         )
 
     @requires_time_edges
@@ -5928,6 +6134,9 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
+        transition_representation: str = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
+        chunk_size: int | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities
@@ -6002,6 +6211,25 @@ class SortedSpikesDetector(_DetectorBase):
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            Continuous-transition representation for the internal fit, by
+            default "dense". "structured" and "auto" run EM on the
+            checkpointed driver (see ``chunk_size``), whose working memory
+            does not grow with the recording length; "auto" falls back to
+            dense blocks for transitions without a structured form, within
+            ``max_dense_transition_bytes``.
+        max_dense_transition_bytes : int, optional
+            Byte budget for dense transition blocks or views of a structured
+            fit, by default ``DEFAULT_MAX_DENSE_BYTES``.
+        chunk_size : int, optional
+            Rows per checkpoint chunk for structured-transition EM. Working
+            memory scales with ``chunk_size`` times the state bins instead of
+            the recording length, and each E-step evaluates the likelihood
+            twice (``cache_likelihood`` has no effect). The final E-step
+            returns the same outputs as dense EM, held in memory. Only valid
+            with a structured or auto ``transition_representation``, and then
+            ``n_chunks`` must be 1. By default None, which sizes chunks so one
+            chunk of float32 likelihoods takes about 256 MiB.
 
         Returns
         -------
@@ -6031,6 +6259,8 @@ class SortedSpikesDetector(_DetectorBase):
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             encoding_time_range=encoding_time_range,
             valid_position_intervals=valid_position_intervals,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
         )
         self._encoding_model_data = {
             "position_time": position_time,
@@ -6063,6 +6293,7 @@ class SortedSpikesDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
+            chunk_size=chunk_size,
         )
 
     @requires_time_edges

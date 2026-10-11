@@ -1239,27 +1239,79 @@ def _estimate_discrete_transition(
     estimated_discrete_transition_coefficients : np.ndarray | None
         Updated coefficients (if non-stationary).
     """
-    is_nonstationary = (
+    statistics = (
+        estimate_discrete_transition_responses_from_factorized_posteriors
+        if _is_nonstationary(
+            discrete_transition_coefficients, discrete_transition_design_matrix
+        )
+        else estimate_discrete_transition_counts_from_factorized_posteriors
+    )(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        continuous_transition,
+        discrete_transition,
+        state_ind,
+    )
+    return _discrete_transition_from_statistics(
+        statistics,
+        discrete_transition_coefficients,
+        discrete_transition_design_matrix,
+        transition_concentration,
+        transition_stickiness,
+        transition_regularization,
+        transition_prior_weight,
+    )
+
+
+def _is_nonstationary(
+    discrete_transition_coefficients: np.ndarray | None,
+    discrete_transition_design_matrix: DesignMatrix | None,
+) -> bool:
+    """Whether the discrete transition depends on covariates."""
+    return (
         discrete_transition_coefficients is not None
         and discrete_transition_design_matrix is not None
     )
 
-    if is_nonstationary:
-        response = estimate_discrete_transition_responses_from_factorized_posteriors(
-            causal_posterior,
-            predictive_posterior,
-            acausal_posterior,
-            continuous_transition,
-            discrete_transition,
-            state_ind,
-        )
+
+def _discrete_transition_from_statistics(
+    statistics: np.ndarray,
+    discrete_transition_coefficients: np.ndarray | None,
+    discrete_transition_design_matrix: DesignMatrix | None,
+    transition_concentration: float,
+    transition_stickiness: float | np.ndarray,
+    transition_regularization: float,
+    transition_prior_weight: float | np.ndarray = 0.0,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Discrete transition M-step from expected transition statistics.
+
+    Parameters
+    ----------
+    statistics : np.ndarray
+        Expected transition counts, shape (n_states, n_states), for a
+        stationary transition; per-row responses, shape
+        (n_time - 1, n_states, n_states), for a covariate transition.
+    discrete_transition_coefficients, discrete_transition_design_matrix,
+    transition_concentration, transition_stickiness, transition_regularization,
+    transition_prior_weight
+        As in :func:`_estimate_discrete_transition`.
+
+    Returns
+    -------
+    estimated_discrete_transition : np.ndarray
+    estimated_discrete_transition_coefficients : np.ndarray | None
+    """
+    if _is_nonstationary(
+        discrete_transition_coefficients, discrete_transition_design_matrix
+    ):
         (
             discrete_transition_coefficients,
             discrete_transition,
         ) = estimate_non_stationary_state_transition_from_responses(
             discrete_transition_coefficients,
             discrete_transition_design_matrix,
-            response,
+            statistics,
             concentration=transition_concentration,
             stickiness=transition_stickiness,
             transition_regularization=transition_regularization,
@@ -1272,17 +1324,8 @@ def _estimate_discrete_transition(
             stickiness_value = float(transition_stickiness.item())
         else:
             stickiness_value = transition_stickiness
-
-        joint_sum = estimate_discrete_transition_counts_from_factorized_posteriors(
-            causal_posterior,
-            predictive_posterior,
-            acausal_posterior,
-            continuous_transition,
-            discrete_transition,
-            state_ind,
-        )
         discrete_transition = estimate_stationary_state_transition_from_counts(
-            joint_sum,
+            statistics,
             concentration=transition_concentration,
             stickiness=stickiness_value,
             prior_weight=transition_prior_weight,

@@ -299,6 +299,7 @@ class StageProfiler(logging.Handler):
 @contextmanager
 def instrumented(profiler, detector_class):
     """Patch the EM stages of ``detector_class`` and ``models.base`` in place."""
+    import non_local_detector.checkpointed_inference as checkpointed
     import non_local_detector.environment as environment_module
     import non_local_detector.models.base as base
 
@@ -325,10 +326,13 @@ def instrumented(profiler, detector_class):
         ),
         (detector_class, "fit_encoding_model", "encoding_fit"),
         (detector_class, "_predict", "e_step"),
+        (detector_class, "_checkpointed_e_step", "e_step"),
         (detector_class, "compute_log_likelihood", "likelihood"),
         (base, "chunked_filter_smoother", "filter_smoother"),
         (base, "chunked_filter_smoother_covariate_dependent", "filter_smoother"),
         (base, "_estimate_discrete_transition", "discrete_m_step"),
+        (base, "_discrete_transition_from_statistics", "discrete_m_step"),
+        (checkpointed, "checkpointed_forward_backward", "filter_smoother"),
     ]
     saved = []
     try:
@@ -399,6 +403,15 @@ def main():
     )
     parser.add_argument("--max-iter", type=int, default=3)
     parser.add_argument("--n-chunks", type=int, default=1)
+    parser.add_argument(
+        "--transition-representation",
+        choices=["dense", "structured", "auto"],
+        default=None,
+        help="EM transition representation (structured runs checkpointed EM)",
+    )
+    parser.add_argument(
+        "--chunk-size", type=int, default=None, help="checkpointed EM chunk rows"
+    )
     parser.add_argument(
         "--runs",
         default="first,warm,instrumented",
@@ -488,6 +501,10 @@ def main():
             # Checkouts before the time-edge contract decode at bin centers.
             edges = kwargs.pop("time_edges")
             kwargs["time"] = (edges[:-1] + edges[1:]) / 2
+        if args.transition_representation is not None:
+            kwargs["transition_representation"] = args.transition_representation
+        if args.chunk_size is not None:
+            kwargs["chunk_size"] = args.chunk_size
         results = model.estimate_parameters(
             **kwargs, max_iter=max_iter, n_chunks=args.n_chunks
         )
@@ -514,6 +531,8 @@ def main():
         "detector_kwargs": args.detector_kwargs,
         "max_iter": args.max_iter,
         "n_chunks": args.n_chunks,
+        "transition_representation": args.transition_representation,
+        "chunk_size": args.chunk_size,
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,

@@ -399,6 +399,47 @@ class BlockTransitionOperator:
             output.append(result)
         return jnp.concatenate(output)
 
+    def pair_products(self, filtered, ratio, discrete_weights=None):
+        """Per-state-pair terms of ``filtered @ T * ratio``, before summing pairs.
+
+        ``result[i, j] = w[i, j] * filtered[bins of i] . (C_ij @ ratio[bins of
+        j])``. With a filtered row and the smoother ratio
+        ``smoothed_{t+1} / predicted_{t+1}`` these are one step's expected
+        discrete transition counts.
+
+        Parameters
+        ----------
+        filtered : jax.Array, shape (n_bins,)
+        ratio : jax.Array, shape (n_bins,)
+        discrete_weights : jax.Array, shape (n_states, n_states), optional
+            Overrides the bound stationary weights.
+
+        Returns
+        -------
+        pairs : jax.Array, shape (n_states, n_states)
+        """
+        filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
+        weights = self._weights(filtered, discrete_weights)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        pairs = jnp.stack(
+            [
+                jnp.stack(
+                    [
+                        jnp.dot(
+                            filtered[boundaries[source] : boundaries[source + 1]],
+                            block.backward(
+                                ratio[boundaries[target] : boundaries[target + 1]]
+                            ),
+                            precision=jax.lax.Precision.HIGHEST,
+                        )
+                        for target, block in enumerate(row)
+                    ]
+                )
+                for source, row in enumerate(self.blocks)
+            ]
+        )
+        return weights * pairs
+
     def fused(self):
         """Return a product-only operator with rank-one blocks folded together.
 
@@ -593,6 +634,43 @@ class FusedBlockTransition:
                 weights[source * len(self.state_sizes) + target] * block.backward(part)
             )
         return _nan_result(result, values)
+
+    def pair_products(self, filtered, ratio, discrete_weights=None):
+        """Per-state-pair terms; see ``BlockTransitionOperator.pair_products``.
+
+        A rank-one block contributes ``(filtered . source) * (destination .
+        ratio)``, so all of them cost one product with each factor matrix.
+        """
+        filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
+        weights = self._flat_weights(filtered, discrete_weights)
+        n_states = len(self.state_sizes)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        precision = jax.lax.Precision.HIGHEST
+        rank_one = jnp.matmul(
+            filtered,
+            jnp.asarray(self.sources, dtype=filtered.dtype),
+            precision=precision,
+        ) * jnp.matmul(
+            jnp.asarray(self.destinations, dtype=filtered.dtype),
+            ratio,
+            precision=precision,
+        )
+        pairs = (
+            jnp.zeros(n_states * n_states, dtype=filtered.dtype)
+            .at[jnp.asarray(self.weight_index)]
+            .add(rank_one)
+        )
+        for (source, target), block in zip(
+            self.block_positions, self.blocks, strict=True
+        ):
+            pairs = pairs.at[source * n_states + target].add(
+                jnp.dot(
+                    filtered[boundaries[source] : boundaries[source + 1]],
+                    block.backward(ratio[boundaries[target] : boundaries[target + 1]]),
+                    precision=precision,
+                )
+            )
+        return (weights * pairs).reshape(n_states, n_states)
 
 
 class LazyDenseTransition:
