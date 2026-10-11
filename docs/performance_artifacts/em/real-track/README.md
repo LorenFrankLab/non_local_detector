@@ -25,6 +25,7 @@ window, package-source hash and device.
 | `75660e30` | `cc25c63` plus the row-blocked M-step (`7a2c64b`) |
 | `309b74fc` | `a789beb`: plus the track-graph GLM fix |
 | `6559795f` | `104e024`: plus compiled per-electrode diffusion prediction |
+| `273a29a3` | `6559795f` plus padded weighted GMM refits |
 
 ## Full recording (709,319 rows)
 
@@ -107,6 +108,24 @@ and 2 iterations:
 
 Their state probabilities differ by at most 7.8e-5, with the same most likely
 state in all 59,999 bins.
+
+### Clusterless GMM refits
+
+`clusterless_gmm` with `clusterless_algorithm_params={"gmm_reg_covar": 1.0}`
+(the default `1e-6` stops with a singular covariance on this recording),
+track, 3 iterations, both runs on zephyr:
+
+| Report | Code | First call | Instrumented warm | Encoding M-step (compiles) | Host peak |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `gmm-regcovar1-track-full-before` | `6559795f` | 619.7 s | 439.5 s | 303.5 s (1,494) | 19.4 GB |
+| `gmm-regcovar1-track-full` | `273a29a3` | 285.5 s | **159.1 s** | 43.0 s (216) | 16.2 GB |
+
+Device peak was 10.0 GB in both. The fitted posteriors are not comparable
+run to run: from the second iteration the marginal log likelihood moves by up
+to 1e6 between refits, and `gmm-regcovar1-track-full-breeze-a789beb` (the
+previous GMM code on breeze) differs from the zephyr run of the same code in
+the most likely state at 156,736 of 709,319 bins, about as much as the
+previous and new code differ on zephyr (143,210).
 
 ## 120 s and 240 s windows
 
