@@ -13,9 +13,11 @@ import pytest
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_poisson_regression,
+    fit_poisson_regressions,
     fit_sorted_spikes_glm_encoding_model,
     make_spline_design_matrix,
     make_spline_predict_matrix,
@@ -298,51 +300,37 @@ class TestPoissonRegression:
         # Assert - coefficients should differ
         assert not jnp.allclose(coef_uniform, coef_skewed, rtol=0.1)
 
-    def test_glm_large_gradient_warned(self, monkeypatch):
-        """A fit that leaves a large final gradient emits a ``UserWarning``.
-
-        Convergence is judged by the actual gradient norm rather than SciPy's
-        ``success`` flag, because BFGS frequently reports ``success=False``
-        ("precision loss") even at a perfectly good minimum. Here we force a
-        result whose gradient is far from zero, which is genuine
-        non-convergence and must warn.
-        """
-        # Arrange - a small, well-conditioned regression input.
+    def test_glm_unconverged_fit_warned(self, monkeypatch):
+        """A fit stopped with a large gradient emits a ``UserWarning``."""
         rng = np.random.default_rng(0)
-        n_time = 50
-        n_basis = 5
+        n_time, n_basis = 50, 5
         design_matrix = rng.standard_normal((n_time, n_basis))
         design_matrix[:, 0] = 1.0
         spikes = rng.poisson(3, size=n_time)
         weights = np.ones(n_time)
+        monkeypatch.setattr(sorted_spikes_glm, "GLM_MAX_NEWTON_STEPS", 0)
 
-        from scipy.optimize import OptimizeResult  # type: ignore[import-untyped]
-
-        import non_local_detector.likelihoods.sorted_spikes_glm as glm_module
-
-        def fake_minimize(fun, x0, **kwargs):
-            return OptimizeResult(
-                x=np.asarray(x0),
-                jac=np.full(n_basis, 0.5),  # large gradient -> not converged
-                success=False,
-                message="forced non-convergence for test",
-                nit=7,
-                fun=1.234567,
-            )
-
-        monkeypatch.setattr(glm_module, "minimize", fake_minimize)
-
-        # Act / Assert
         with pytest.warns(UserWarning, match="may not have converged"):
             fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
 
-    def test_glm_diverged_nonfinite_warned(self, monkeypatch):
-        """A fit that diverges to a non-finite loss/gradient must warn.
+    def test_glm_nonfinite_fit_warned(self):
+        """A non-finite loss or gradient must warn, not pass silently.
 
-        Regression: ``grad_norm = max(|jac|)`` is ``NaN`` for a diverged fit and
-        ``NaN > tol`` is ``False``, so the gradient-only check silently passed a
-        broken fit. The check now also fires on a non-finite loss/gradient.
+        ``max(|gradient|)`` is ``NaN`` for such a fit and ``NaN > tol`` is
+        ``False``, so a gradient-only check would accept it.
         """
+        rng = np.random.default_rng(0)
+        n_time, n_basis = 50, 5
+        design_matrix = rng.standard_normal((n_time, n_basis))
+        design_matrix[:, 0] = 1.0
+        design_matrix[3, 2] = np.nan
+        spikes = rng.poisson(3, size=n_time)
+        weights = np.ones(n_time)
+
+        with pytest.warns(UserWarning, match="may not have converged"):
+            fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
+
+    def test_glm_converged_fit_does_not_warn(self):
         rng = np.random.default_rng(0)
         n_time, n_basis = 50, 5
         design_matrix = rng.standard_normal((n_time, n_basis))
@@ -350,66 +338,119 @@ class TestPoissonRegression:
         spikes = rng.poisson(3, size=n_time)
         weights = np.ones(n_time)
 
-        from scipy.optimize import OptimizeResult  # type: ignore[import-untyped]
-
-        import non_local_detector.likelihoods.sorted_spikes_glm as glm_module
-
-        def fake_minimize(fun, x0, **kwargs):
-            return OptimizeResult(
-                x=np.asarray(x0),
-                jac=np.full(n_basis, np.nan),  # diverged -> non-finite gradient
-                success=False,
-                message="forced divergence for test",
-                nit=7,
-                fun=np.nan,
-            )
-
-        monkeypatch.setattr(glm_module, "minimize", fake_minimize)
-
-        with pytest.warns(UserWarning, match="may not have converged"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
 
-    def test_glm_benign_precision_loss_does_not_warn(self, monkeypatch):
-        """``success=False`` with a near-zero gradient is benign precision loss
-        and must NOT warn (this is the dominant noise source in practice)."""
-        rng = np.random.default_rng(0)
-        n_time = 50
-        n_basis = 5
-        design_matrix = rng.standard_normal((n_time, n_basis))
-        design_matrix[:, 0] = 1.0
-        spikes = rng.poisson(3, size=n_time)
-        weights = np.ones(n_time)
 
-        from scipy.optimize import OptimizeResult  # type: ignore[import-untyped]
+def _poisson_objective64(design_matrix, spikes, weights, coefficients, l2_penalty):
+    """The fitted objective in float64, per cell."""
+    rate = np.maximum(np.exp(coefficients @ design_matrix.T), EPS)
+    data = np.where(spikes > 0, spikes * np.log(rate), 0.0) - weights * rate
+    penalty = l2_penalty * np.sum(coefficients[:, 1:] ** 2, axis=1)
+    return -data.sum(axis=1) / weights.sum() + penalty
 
-        import non_local_detector.likelihoods.sorted_spikes_glm as glm_module
 
-        def fake_minimize(fun, x0, **kwargs):
-            return OptimizeResult(
-                x=np.asarray(x0),
-                jac=np.full(n_basis, 1e-8),  # effectively zero gradient
-                success=False,
-                message="Desired error not necessarily achieved due to precision loss.",
-                nit=42,
-                fun=1.234567,
-            )
+@pytest.mark.unit
+class TestBatchedPoissonRegression:
+    """All cells share the design matrix and exposure; one solve fits them all."""
 
-        monkeypatch.setattr(glm_module, "minimize", fake_minimize)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
-
-        convergence_warnings = [
-            w
-            for w in caught
-            if issubclass(w.category, UserWarning)
-            and "converge" in str(w.message).lower()
-        ]
-        assert convergence_warnings == [], (
-            "Benign precision-loss exit with a near-zero gradient should not "
-            f"warn; got: {[str(w.message) for w in convergence_warnings]}"
+    @pytest.fixture
+    def problem(self):
+        rng = np.random.default_rng(3)
+        n_time, n_basis = 400, 8
+        position = np.linspace(-1.0, 1.0, n_time)
+        design_matrix = np.column_stack(
+            [np.ones(n_time)]
+            + [
+                np.exp(-0.5 * ((position - c) / 0.2) ** 2)
+                for c in np.linspace(-1, 1, 7)
+            ]
         )
+        weights = rng.uniform(0.2, 1.0, n_time)
+        weights[rng.uniform(size=n_time) < 0.2] = 0.0
+        true = rng.normal(0.0, 1.0, (6, n_basis))
+        true[:, 0] = np.log(rng.uniform(0.5, 5.0, 6))
+        spikes = rng.poisson(weights * np.exp(true @ design_matrix.T)).astype(float)
+        spikes[0] = 0.0  # a silent cell
+        return design_matrix, spikes, weights
+
+    def test_batched_fit_reaches_the_float64_optimum(self, problem):
+        from scipy.optimize import minimize
+
+        design_matrix, spikes, weights = problem
+        l2_penalty = 1e-3
+        actual = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
+        )
+        assert actual.shape == (spikes.shape[0], design_matrix.shape[1])
+
+        def objective(beta, y):
+            return _poisson_objective64(
+                design_matrix, y[None], weights, beta[None], l2_penalty
+            )[0]
+
+        for cell, y in enumerate(spikes[1:], start=1):
+            x0 = np.zeros(design_matrix.shape[1])
+            x0[0] = np.log(y.sum() / weights.sum())
+            reference = minimize(
+                objective, x0, args=(y,), method="BFGS", options={"gtol": 1e-10}
+            ).x
+            np.testing.assert_allclose(actual[cell], reference, rtol=1e-3, atol=1e-3)
+            assert objective(actual[cell], y) <= objective(reference, y) + 1e-6
+
+    def test_batched_rows_match_single_cell_fits(self, problem):
+        design_matrix, spikes, weights = problem
+        batched = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+        )
+        for cell, y in enumerate(spikes):
+            np.testing.assert_allclose(
+                batched[cell],
+                fit_poisson_regression(design_matrix, y, weights, 1e-3),
+                rtol=1e-5,
+                atol=1e-6,
+            )
+
+    def test_unsupported_basis_function_stays_at_zero(self, problem):
+        """A basis function with no weighted support is set only by the penalty."""
+        design_matrix, spikes, weights = problem
+        design_matrix = np.column_stack(
+            [design_matrix, np.where(weights == 0.0, 1.0, 0.0)]
+        )
+        coefficients = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+        )
+        np.testing.assert_allclose(coefficients[:, -1], 0.0, atol=1e-6)
+
+
+def test_encoding_fit_solves_all_cells_in_one_call(
+    monkeypatch, simple_1d_environment, simple_spike_data
+):
+    calls = []
+
+    def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
+        calls.append(np.shape(spikes))
+        return fit_poisson_regressions(
+            design_matrix, spikes, weights, l2_penalty, **kwargs
+        )
+
+    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
+    env, data = simple_1d_environment, simple_spike_data
+    encoding = fit_sorted_spikes_glm_encoding_model(
+        position_time=jnp.asarray(data["position_time"]),
+        position=jnp.asarray(data["position"]),
+        spike_times=data["spike_times"],
+        environment=env,
+        place_bin_edges=env.place_bin_edges_,
+        edges=env.edges_,
+        is_track_interior=env.is_track_interior_,
+        is_track_boundary=env.is_track_boundary_,
+        disable_progress_bar=True,
+    )
+    n_cells = len(data["spike_times"])
+    assert len(calls) == 1 and calls[0][0] == n_cells
+    assert encoding["coefficients"].shape[0] == n_cells
 
 
 @pytest.mark.unit
@@ -694,17 +735,15 @@ def _fit_glm(
 
 def _spy_event_counts(monkeypatch):
     """Record the (event counts, exposure) pairs the GLM hands the optimizer."""
-    from non_local_detector.likelihoods import sorted_spikes_glm
-
     captured = []
 
     def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
-        captured.append((np.asarray(spikes), np.asarray(weights)))
-        return fit_poisson_regression(
+        captured.extend((np.asarray(row), np.asarray(weights)) for row in spikes)
+        return fit_poisson_regressions(
             design_matrix, spikes, weights, l2_penalty, **kwargs
         )
 
-    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regression", spy)
+    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
     return captured
 
 

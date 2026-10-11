@@ -24,15 +24,14 @@ Key functionalities include:
       consistent basis functions for prediction.
 
 2.  **Model Fitting:**
-    - `fit_poisson_regression`: Fits the Poisson GLM coefficients for a *single*
-      neuron using its weighted spike counts, per-sample exposure weights, and
-      the design matrix. It employs L2
-      regularization and optimizes the Poisson log-likelihood using SciPy's
-      BFGS optimizer, leveraging JAX for automatic differentiation.
+    - `fit_poisson_regressions`: Fits the L2-regularized Poisson GLM
+      coefficients of many neurons that share one design matrix and exposure,
+      from their weighted spike counts, with damped Newton steps taken
+      together (`fit_poisson_regression` fits a single neuron the same way).
     - `fit_sorted_spikes_glm_encoding_model`: Orchestrates the fitting process
-      for *all neurons*. It iterates through each neuron's spike train, calls
-      `fit_poisson_regression`, computes the resulting place field (expected
-      firing rate across space), and aggregates the results.
+      for *all neurons*: it builds every neuron's weighted spike counts, calls
+      `fit_poisson_regressions` once, and computes the resulting place fields
+      (expected firing rate across space).
 
 3.  **Likelihood Prediction:**
     - `predict_sorted_spikes_glm_log_likelihood`: Calculates the log-likelihood
@@ -51,6 +50,7 @@ interpolation.
 """
 
 import warnings
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -58,8 +58,6 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
 from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
-from scipy.optimize import minimize  # type: ignore[import-untyped]
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment, get_n_bins
@@ -169,11 +167,246 @@ def make_spline_predict_matrix(
     return jnp.asarray(design_matrix)
 
 
-# Gradient inf-norm above which a BFGS fit is treated as genuinely
-# non-converged. Set well above the optimizer's own gtol (1e-5) so that the
-# common benign "precision loss" exit (success=False with a near-zero
-# gradient) does not warn.
+# Gradient inf-norm above which a fit is treated as genuinely non-converged.
+# Set well above GLM_GRADIENT_TOL, which float32 sums over long recordings
+# cannot always reach, so stopping at the precision limit does not warn.
 GLM_CONVERGENCE_GRAD_TOL = 1e-3
+# A fit stops once its gradient inf-norm is below this, or once no step
+# lowers its objective.
+GLM_GRADIENT_TOL = 1e-5
+GLM_MAX_NEWTON_STEPS = 50
+_GLM_MAX_STEP_HALVINGS = 30
+# Bounds the per-block (n_cells, block_rows, n_coefficients) Hessian product.
+_GLM_BLOCK_BYTES = 256 * 2**20
+
+
+@partial(jax.jit, static_argnames=("block_rows", "derivatives"))
+def _poisson_regression_sums(
+    design_matrix,
+    spikes,
+    weights,
+    coefficients,
+    rate_floor,
+    *,
+    block_rows,
+    derivatives,
+):
+    """Per-cell sums over rows of the Poisson data term and its derivatives.
+
+    Parameters
+    ----------
+    design_matrix : jnp.ndarray, shape (n_rows, n_coefficients)
+        ``n_rows`` is a multiple of ``block_rows``; padding rows have zero
+        weight and spikes.
+    spikes : jnp.ndarray, shape (n_cells, n_rows)
+    weights : jnp.ndarray, shape (n_rows,)
+    coefficients : jnp.ndarray, shape (n_cells, n_coefficients)
+    rate_floor : float
+    block_rows : int
+    derivatives : bool
+        Also return the gradient and Hessian of the data term.
+
+    Returns
+    -------
+    data : jnp.ndarray, shape (n_cells,)
+        ``sum_i [spikes_i * log(rate_i) - weights_i * rate_i]`` with
+        ``rate = max(exp(design_matrix @ coefficients), rate_floor)``.
+    gradient : jnp.ndarray, shape (n_cells, n_coefficients)
+        Only if ``derivatives``.
+    hessian : jnp.ndarray, shape (n_cells, n_coefficients, n_coefficients)
+        Only if ``derivatives``: ``sum_i weights_i * rate_i * x_i x_i^T`` over
+        unfloored rows, the negated Hessian of the data term.
+    """
+    highest = jax.lax.Precision.HIGHEST
+    n_cells, n_coefficients = coefficients.shape
+
+    def add_block(block, sums):
+        start = block * block_rows
+        X = jax.lax.dynamic_slice_in_dim(design_matrix, start, block_rows)
+        y = jax.lax.dynamic_slice_in_dim(spikes, start, block_rows, axis=1)
+        w = jax.lax.dynamic_slice_in_dim(weights, start, block_rows)
+        unfloored = jnp.exp(jnp.matmul(coefficients, X.T, precision=highest))
+        above_floor = unfloored > rate_floor
+        rate = jnp.where(above_floor, unfloored, rate_floor)
+        data = jnp.sum(jax.scipy.special.xlogy(y, rate) - w * rate, axis=1)
+        if not derivatives:
+            return (sums[0] + data,)
+        residual = jnp.where(above_floor, y - w * rate, 0.0)
+        curvature = jnp.where(above_floor, w * rate, 0.0)
+        return (
+            sums[0] + data,
+            sums[1] + jnp.matmul(residual, X, precision=highest),
+            sums[2] + jnp.einsum("cb,bp,bq->cpq", curvature, X, X, precision=highest),
+        )
+
+    dtype = design_matrix.dtype
+    sums = (jnp.zeros(n_cells, dtype),)
+    if derivatives:
+        sums += (
+            jnp.zeros((n_cells, n_coefficients), dtype),
+            jnp.zeros((n_cells, n_coefficients, n_coefficients), dtype),
+        )
+    return jax.lax.fori_loop(0, design_matrix.shape[0] // block_rows, add_block, sums)
+
+
+def fit_poisson_regressions(
+    design_matrix: np.ndarray,
+    spikes: np.ndarray,
+    weights: np.ndarray,
+    l2_penalty: float = 1e-7,
+    *,
+    rate_floor: float = EPS,
+) -> jnp.ndarray:
+    """Fit weighted Poisson regressions for many cells sharing one design.
+
+    Each cell maximizes ``sum_i [spikes_i * log(lambda_i) - weights_i *
+    lambda_i]`` (normalized by ``sum(weights)``) minus ``l2_penalty`` times the
+    squared non-intercept coefficients, with ``lambda = max(exp(design_matrix
+    @ coefficients), rate_floor)``. The event and exposure terms are weighted
+    separately: ``spikes`` already carries each event's weight, so it is not
+    multiplied by ``weights`` again.
+
+    All cells take damped Newton steps together. The sums over rows run
+    compiled on the device in row blocks; each cell's small Newton system is
+    solved in float64 on the host, so basis functions with almost no weighted
+    support are not moved by float32 rounding. A cell stops once its gradient
+    inf-norm is below ``GLM_GRADIENT_TOL`` or no step halving lowers its
+    objective.
+
+    Parameters
+    ----------
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    spikes : np.ndarray, shape (n_cells, n_time)
+        Event mass per row and cell: the weighted spike counts from
+        ``weighted_spike_counts``, not multiplied by ``weights`` again.
+    weights : np.ndarray, shape (n_time,)
+        Per-row exposure weight.
+    l2_penalty : float, optional
+        L2 regression penalty, by default 1e-7
+    rate_floor : float, optional
+        Lower bound on the fitted rate, by default ``EPS``.
+
+    Returns
+    -------
+    coefficients : jnp.ndarray, shape (n_cells, n_coefficients)
+    """
+    design_matrix = np.asarray(design_matrix, dtype=np.float32)
+    spikes = np.asarray(spikes, dtype=np.float32)
+    weights = np.asarray(weights, dtype=np.float32)
+    n_cells = spikes.shape[0]
+    n_time, n_coefficients = design_matrix.shape
+
+    # Zero total exposure means no training coverage at all, so the rate is
+    # unidentified and ``sum(spikes) / sum(weights)`` is 0/0. Return an
+    # intercept-only model at the rate floor, which is exactly what a unit
+    # with real exposure but no spikes gets from the initial condition below.
+    # A small-but-positive exposure (a low-mass EM update) still fits normally.
+    total_exposure = float(np.sum(weights, dtype=np.float64))
+    coefficients = np.zeros((n_cells, n_coefficients))
+    if total_exposure <= 0.0:
+        coefficients[:, 0] = np.log(rate_floor)
+        return jnp.asarray(coefficients)
+    weight_sum = max(total_exposure, EPS)
+    average_rate = np.sum(spikes, axis=1, dtype=np.float64) / total_exposure
+    coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor))
+
+    block_rows = int(
+        np.clip(_GLM_BLOCK_BYTES // (4 * max(n_cells, 1) * n_coefficients), 1, n_time)
+    )
+    n_padded = -(-n_time // block_rows) * block_rows
+    padding = n_padded - n_time
+    design = jnp.asarray(np.pad(design_matrix, ((0, padding), (0, 0))))
+    counts = jnp.asarray(np.pad(spikes, ((0, 0), (0, padding))))
+    exposure = jnp.asarray(np.pad(weights, (0, padding)))
+    penalized = np.ones(n_coefficients)
+    penalized[0] = 0.0
+
+    def evaluate(coefficients, derivatives):
+        sums = _poisson_regression_sums(
+            design,
+            counts,
+            exposure,
+            jnp.asarray(coefficients, dtype=jnp.float32),
+            rate_floor,
+            block_rows=block_rows,
+            derivatives=derivatives,
+        )
+        sums = [np.asarray(value, dtype=np.float64) for value in sums]
+        sums[0] = -sums[0] / weight_sum + l2_penalty * np.sum(
+            penalized * coefficients**2, axis=1
+        )
+        if derivatives:
+            sums[1] = -sums[1] / weight_sum + 2 * l2_penalty * penalized * coefficients
+            sums[2] = sums[2] / weight_sum + 2 * l2_penalty * np.diag(penalized)
+        return sums
+
+    loss, gradient, hessian = evaluate(coefficients, derivatives=True)
+    active = np.ones(n_cells, dtype=bool)
+    for _ in range(GLM_MAX_NEWTON_STEPS):
+        gradient_norm = np.max(np.abs(gradient), axis=1)
+        active &= np.isfinite(loss) & (gradient_norm > GLM_GRADIENT_TOL)
+        if not active.any():
+            break
+        try:
+            direction = -np.linalg.solve(hessian[active], gradient[active][..., None])[
+                ..., 0
+            ]
+        except np.linalg.LinAlgError:
+            direction = -np.stack(
+                [
+                    np.linalg.lstsq(h, g, rcond=None)[0]
+                    for h, g in zip(hessian[active], gradient[active], strict=True)
+                ]
+            )
+        slope = np.sum(gradient[active] * direction, axis=1)
+        step = np.ones(direction.shape[0])
+        accepted = np.zeros(direction.shape[0], dtype=bool)
+        for _ in range(_GLM_MAX_STEP_HALVINGS):
+            candidate = coefficients.copy()
+            pending = ~accepted
+            rows = np.flatnonzero(active)[pending]
+            candidate[rows] += step[pending, None] * direction[pending]
+            (candidate_loss,) = evaluate(candidate, derivatives=False)
+            # Armijo sufficient decrease, per cell.
+            decreased = np.isfinite(candidate_loss[rows]) & (
+                candidate_loss[rows]
+                <= loss[rows] + 1e-4 * step[pending] * slope[pending]
+            )
+            coefficients[rows[decreased]] = candidate[rows[decreased]]
+            accepted[np.flatnonzero(pending)[decreased]] = True
+            if accepted.all():
+                break
+            step[~accepted] *= 0.5
+        # A cell no step can improve has reached the precision limit.
+        active[np.flatnonzero(active)[~accepted]] = False
+        loss, gradient, hessian = evaluate(coefficients, derivatives=True)
+
+    # Judge convergence by the gradient inf-norm, and also warn when a fit
+    # diverged to a non-finite loss or gradient: ``NaN > tol`` is ``False``,
+    # so a gradient-only check would silently pass a broken fit.
+    gradient_norm = np.max(np.abs(gradient), axis=1)
+    unconverged = (
+        ~np.isfinite(gradient_norm)
+        | ~np.isfinite(loss)
+        | (gradient_norm > GLM_CONVERGENCE_GRAD_TOL)
+    )
+    if unconverged.any():
+        worst = float(
+            np.max(
+                np.where(np.isfinite(gradient_norm), gradient_norm, np.inf)[unconverged]
+            )
+        )
+        warnings.warn(
+            f"GLM Poisson regression may not have converged for "
+            f"{int(unconverged.sum())} of {n_cells} cells: largest final "
+            f"gradient inf-norm {worst:.3e} vs tolerance "
+            f"{GLM_CONVERGENCE_GRAD_TOL:.1e} (a non-finite gradient or loss means "
+            f"the fit diverged). Place-field coefficients may be unreliable.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return jnp.asarray(coefficients)
 
 
 def fit_poisson_regression(
@@ -184,12 +417,9 @@ def fit_poisson_regression(
     *,
     rate_floor: float = EPS,
 ) -> jnp.ndarray:
-    """Fit a weighted Poisson regression model.
+    """Fit a weighted Poisson regression model for one cell.
 
-    Maximizes ``sum_i [spikes_i * log(lambda_i) - weights_i * lambda_i]``
-    (normalized by ``sum(weights)``) minus the L2 penalty. The event and
-    exposure terms are weighted separately: ``spikes`` already carries each
-    event's weight, so it is not multiplied by ``weights`` again.
+    See :func:`fit_poisson_regressions`, which this calls with one cell.
 
     Parameters
     ----------
@@ -201,94 +431,20 @@ def fit_poisson_regression(
         Per-row exposure weight.
     l2_penalty : float, optional
         L2 regression penalty, by default 1e-7
+    rate_floor : float, optional
+        Lower bound on the fitted rate, by default ``EPS``.
 
     Returns
     -------
     coefficients : jnp.ndarray, shape (n_coefficients,)
     """
-
-    spikes = jnp.asarray(spikes, dtype=jnp.float32)
-    design_matrix = jnp.asarray(design_matrix, dtype=jnp.float32)
-    weights = jnp.asarray(weights, dtype=jnp.float32)
-
-    @jax.jit
-    def neglogp(
-        coefficients, spikes=spikes, design_matrix=design_matrix, weights=weights
-    ):
-        conditional_intensity = jnp.exp(design_matrix @ coefficients)
-        conditional_intensity = jnp.clip(
-            conditional_intensity, min=rate_floor, max=None
-        )
-        log_likelihood_term = (
-            jax.scipy.special.xlogy(spikes, conditional_intensity)
-            - weights * conditional_intensity
-        )
-        # Normalize by sum of weights (not n_time) so the data term
-        # scales correctly when local state mass is small, keeping
-        # the regularizer balanced relative to the effective data.
-        weight_sum = jnp.maximum(jnp.sum(weights), EPS)
-        mean_neg_log_likelihood = -jnp.sum(log_likelihood_term) / weight_sum
-        l2_penalty_term = l2_penalty * jnp.sum(coefficients[1:] ** 2)
-        return mean_neg_log_likelihood + l2_penalty_term
-
-    dlike = jax.grad(neglogp)
-
-    # Zero total exposure means this group has no training coverage at all, so
-    # the rate is unidentified and ``sum(spikes) / sum(weights)`` is 0/0 = NaN. Return
-    # an intercept-only model at the EPS floor, which is exactly what a unit with
-    # real exposure but no spikes already gets from the ``maximum(avg_rate, EPS)``
-    # guard below -- the two zero-rate cases agree. A group with small-but-
-    # positive exposure (a low-mass EM update) is a different case and still
-    # fits normally.
-    if float(jnp.sum(weights)) <= 0.0:
-        return jnp.concatenate(
-            [
-                jnp.asarray([jnp.log(rate_floor)]),
-                jnp.zeros(design_matrix.shape[1] - 1),
-            ]
-        )
-
-    avg_rate = jnp.sum(spikes) / jnp.sum(weights)
-    # Guard against zero spikes: use EPS to avoid log(0) = -inf
-    initial_condition = jnp.asarray([jnp.log(jnp.maximum(avg_rate, rate_floor))])
-    initial_condition = jnp.concatenate(
-        [initial_condition, jnp.zeros(design_matrix.shape[1] - 1)]
-    )
-
-    res = minimize(
-        neglogp,
-        x0=initial_condition,
-        method="BFGS",
-        jac=dlike,
-        tol=1e-5,  # Added tolerance for potentially better convergence
-    )
-
-    # Judge convergence by the actual gradient inf-norm rather than SciPy's
-    # boolean ``success`` flag: BFGS frequently reports ``success=False``
-    # ("Desired error not necessarily achieved due to precision loss") even at
-    # a good minimum, so warning on ``not res.success`` is routinely spurious.
-    # Warn when the gradient is meaningfully far from zero, OR when the fit
-    # diverged to a non-finite loss/gradient: for a diverged fit ``grad_norm``
-    # is ``NaN`` and ``NaN > tol`` is ``False``, so a gradient-only check would
-    # silently pass a broken fit.
-    grad_norm = float(np.max(np.abs(res.jac))) if res.jac is not None else float("inf")
-    final_loss = float(res.fun)
-    if (
-        not np.isfinite(grad_norm)
-        or not np.isfinite(final_loss)
-        or grad_norm > GLM_CONVERGENCE_GRAD_TOL
-    ):
-        warnings.warn(
-            f"GLM Poisson regression may not have converged: final gradient "
-            f"inf-norm {grad_norm:.3e} vs tolerance {GLM_CONVERGENCE_GRAD_TOL:.1e}, "
-            f"final loss {final_loss:.6f} (a non-finite gradient or loss means the "
-            f"fit diverged). Place-field coefficients may be unreliable. "
-            f"(scipy message: {res.message}, n_iter={res.nit})",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    return jnp.asarray(res.x)
+    return fit_poisson_regressions(
+        design_matrix,
+        np.asarray(spikes)[None],
+        weights,
+        l2_penalty,
+        rate_floor=rate_floor,
+    )[0]
 
 
 def weighted_spike_counts(
@@ -487,44 +643,39 @@ def fit_sorted_spikes_glm_encoding_model(
     # Ensure weights is not None for type checking
     assert weights is not None
 
-    coefficients = []
-    place_fields = []
-
-    for neuron_spike_times in tqdm(
-        spike_times,
-        unit="cell",
-        desc="Encoding models",
-        disable=disable_progress_bar,
-    ):
-        coef = fit_poisson_regression(
-            emission_design_matrix,
-            support.event_counts(neuron_spike_times, weights)[support.indices]
-            if len(support.indices)
-            else np.zeros(len(emission_design_matrix)),
-            exposure_weights[support.indices]
-            if len(support.indices)
-            else np.zeros(len(emission_design_matrix)),
-            l2_penalty=l2_penalty,
-            rate_floor=RATE_EPS_HZ,
-        )
-        coefficients.append(coef)
-        place_field = jnp.zeros((is_track_interior.shape[0],))
-        place_fields.append(
-            place_field.at[is_track_interior].set(
-                jnp.clip(
-                    jnp.exp(emission_predict_matrix @ coef),
-                    min=RATE_EPS_HZ,
-                    max=None,
-                )
-            )
-        )
-
-    place_fields = jnp.stack(place_fields, axis=0)
+    if len(support.indices):
+        event_counts = np.stack(
+            [
+                np.asarray(support.event_counts(neuron_spike_times, weights))[
+                    support.indices
+                ]
+                for neuron_spike_times in spike_times
+            ]
+        ).reshape(len(spike_times), -1)
+        exposure = exposure_weights[support.indices]
+    else:
+        event_counts = np.zeros((len(spike_times), len(emission_design_matrix)))
+        exposure = np.zeros(len(emission_design_matrix))
+    coefficients = fit_poisson_regressions(
+        emission_design_matrix,
+        event_counts,
+        exposure,
+        l2_penalty=l2_penalty,
+        rate_floor=RATE_EPS_HZ,
+    )
+    interior_rates = jnp.clip(
+        jnp.exp(emission_predict_matrix @ coefficients.T), min=RATE_EPS_HZ, max=None
+    )  # (n_interior_bins, n_cells)
+    place_fields = (
+        jnp.zeros((len(spike_times), is_track_interior.shape[0]))
+        .at[:, is_track_interior]
+        .set(interior_rates.T)
+    )
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
 
     return {
         "environment": environment,
-        "coefficients": jnp.stack(coefficients, axis=0),
+        "coefficients": coefficients,
         "emission_design_info": emission_design_info,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
