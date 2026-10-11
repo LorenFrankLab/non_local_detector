@@ -381,3 +381,9 @@ def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch):
         cached.attrs["marginal_log_likelihoods"],
         uncached.attrs["marginal_log_likelihoods"],
     )
+
+
+def test_dense_em_rejects_a_replay_cache():
+    model, data = _recording("sorted")
+    with pytest.raises(ValueError, match="replay_cache_bytes"):
+        model.estimate_parameters(**data, max_iter=1, replay_cache_bytes=2**20)

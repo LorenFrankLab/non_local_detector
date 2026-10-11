@@ -336,6 +336,7 @@ def _validate_inference_arguments(
     result_path,
     checkpoint_dir,
     selected_intervals,
+    replay_cache_bytes=None,
 ) -> None:
     """Reject prediction-mode settings that the chosen inference mode ignores."""
     if inference_mode not in {"dense", "checkpointed"}:
@@ -352,6 +353,7 @@ def _validate_inference_arguments(
         or result_path is not None
         or checkpoint_dir is not None
         or selected_intervals is not None
+        or replay_cache_bytes is not None
     ):
         raise ValueError(
             "output selection/storage options require inference_mode='checkpointed'"
@@ -396,6 +398,7 @@ def _validate_em_options(
     chunk_size,
     result_path=None,
     store_log_likelihood: bool = False,
+    replay_cache_bytes=None,
 ) -> None:
     """Reject options that do not apply to the EM path.
 
@@ -410,6 +413,8 @@ def _validate_em_options(
     result_path : path-like or None
         Store for structured EM's final outputs.
     store_log_likelihood : bool
+    replay_cache_bytes : int or None
+        Structured EM's replay cache budget.
     """
     if structured and n_chunks != 1:
         raise ValueError(
@@ -426,6 +431,11 @@ def _validate_em_options(
         raise ValueError(
             "result_path applies only to structured-transition EM; fit with "
             'transition_representation="structured" or "auto".'
+        )
+    if replay_cache_bytes is not None and not structured:
+        raise ValueError(
+            "replay_cache_bytes applies only to structured-transition EM; fit "
+            'with transition_representation="structured" or "auto".'
         )
     if result_path is not None and store_log_likelihood:
         raise ValueError(
@@ -3022,7 +3032,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         min_encoding_local_ess: float = 1.0,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
-        replay_cache_bytes: int = DEFAULT_REPLAY_CACHE_BYTES,
+        replay_cache_bytes: int | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -3106,7 +3116,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             E-step's forward-pass rows (filtered rows, or likelihoods when the
             final outputs need them), so the backward replay does not filter
             and evaluate them again. Chunks beyond the budget are recomputed.
-            By default 16 GiB.
+            By default None, which uses 16 GiB; only valid for structured EM.
 
         Returns
         -------
@@ -3130,8 +3140,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             getattr(self, "_continuous_transition_operator_", None) is not None
         )
         _validate_em_options(
-            checkpointed, n_chunks, chunk_size, result_path, store_log_likelihood
+            checkpointed,
+            n_chunks,
+            chunk_size,
+            result_path,
+            store_log_likelihood,
+            replay_cache_bytes,
         )
+        if replay_cache_bytes is None:
+            replay_cache_bytes = DEFAULT_REPLAY_CACHE_BYTES
         # Subclasses have already combined ``is_missing`` with the bins
         # affected by NaN positions via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
@@ -4761,6 +4778,7 @@ class ClusterlessDetector(_DetectorBase):
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+        replay_cache_bytes: int | None = None,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -4856,6 +4874,12 @@ class ClusterlessDetector(_DetectorBase):
         max_read_bytes : int, optional
             Maximum bytes in one explicit spatial read, by default 512 MiB.
             Select fewer rows/bins before converting a large lazy array.
+        replay_cache_bytes : int, optional
+            Checkpointed mode only: host memory for keeping forward-pass rows
+            (filtered rows, or likelihoods when the likelihood or predictive
+            outputs are requested) so the backward replay does not recompute
+            them. Chunks beyond the budget are recomputed. By default None,
+            which uses 16 GiB.
 
         Returns
         -------
@@ -4977,6 +5001,7 @@ class ClusterlessDetector(_DetectorBase):
             result_path,
             checkpoint_dir,
             selected_intervals,
+            replay_cache_bytes,
         )
         return_log_likelihood = "log_likelihood" in requested_outputs
         if (
@@ -5018,6 +5043,11 @@ class ClusterlessDetector(_DetectorBase):
                 requested_outputs=requested_outputs,
                 return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
+                replay_cache_bytes=(
+                    DEFAULT_REPLAY_CACHE_BYTES
+                    if replay_cache_bytes is None
+                    else replay_cache_bytes
+                ),
             )
 
         (
@@ -5105,7 +5135,7 @@ class ClusterlessDetector(_DetectorBase):
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
-        replay_cache_bytes: int = DEFAULT_REPLAY_CACHE_BYTES,
+        replay_cache_bytes: int | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -5205,7 +5235,8 @@ class ClusterlessDetector(_DetectorBase):
         replay_cache_bytes : int, optional
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. By default 16 GiB.
+            filtering and evaluating them again. By default None, which uses
+            16 GiB; only valid for structured EM.
 
         Returns
         -------
@@ -5220,6 +5251,7 @@ class ClusterlessDetector(_DetectorBase):
             chunk_size,
             result_path,
             store_log_likelihood,
+            replay_cache_bytes,
         )
         time_edges, _ = _validate_estimation_arguments(
             time_edges,
@@ -5984,6 +6016,7 @@ class SortedSpikesDetector(_DetectorBase):
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+        replay_cache_bytes: int | None = None,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -6051,6 +6084,12 @@ class SortedSpikesDetector(_DetectorBase):
         max_read_bytes : int, optional
             Maximum bytes in one explicit spatial read, by default 512 MiB.
             Select fewer rows/bins before converting a large lazy array.
+        replay_cache_bytes : int, optional
+            Checkpointed mode only: host memory for keeping forward-pass rows
+            (filtered rows, or likelihoods when the likelihood or predictive
+            outputs are requested) so the backward replay does not recompute
+            them. Chunks beyond the budget are recomputed. By default None,
+            which uses 16 GiB.
 
         Returns
         -------
@@ -6121,6 +6160,7 @@ class SortedSpikesDetector(_DetectorBase):
             result_path,
             checkpoint_dir,
             selected_intervals,
+            replay_cache_bytes,
         )
         return_log_likelihood = "log_likelihood" in requested_outputs
         if (
@@ -6158,6 +6198,11 @@ class SortedSpikesDetector(_DetectorBase):
                 requested_outputs=requested_outputs,
                 return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
+                replay_cache_bytes=(
+                    DEFAULT_REPLAY_CACHE_BYTES
+                    if replay_cache_bytes is None
+                    else replay_cache_bytes
+                ),
             )
 
         (
@@ -6243,7 +6288,7 @@ class SortedSpikesDetector(_DetectorBase):
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
-        replay_cache_bytes: int = DEFAULT_REPLAY_CACHE_BYTES,
+        replay_cache_bytes: int | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities
@@ -6345,7 +6390,8 @@ class SortedSpikesDetector(_DetectorBase):
         replay_cache_bytes : int, optional
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. By default 16 GiB.
+            filtering and evaluating them again. By default None, which uses
+            16 GiB; only valid for structured EM.
 
         Returns
         -------
@@ -6360,6 +6406,7 @@ class SortedSpikesDetector(_DetectorBase):
             chunk_size,
             result_path,
             store_log_likelihood,
+            replay_cache_bytes,
         )
         time_edges, _ = _validate_estimation_arguments(
             time_edges,
