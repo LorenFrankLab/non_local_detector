@@ -30,6 +30,8 @@ window, package-source hash and device.
 | `2ba28161` | `ddeaa01`: batched Newton GLM fits |
 | `27957feb` | `3925f84` before its review fixes (validation and docs only): structured-transition EM |
 | `1edc8ee5` | `27957feb` plus unrolled checkpointed scans (`1ad6a90`) |
+| `9680b2d4` | `a69d107`: plus structured-EM result stores and the replay cache |
+| `f21609be` | `d7d68fb` (dense EM, used for the KDE scaling sweep) |
 
 ## Full recording (709,319 rows)
 
@@ -177,6 +179,47 @@ on the 2-D grid against 351 s for dense matrix products, which the A100 reads
 at its memory bandwidth (about 82 s per pass for 6,600 interior bins). On the
 track (dense compare: `sorted-track-full-cc25c63`, 168 s warm on breeze) the
 dense path is faster still.
+
+### Result stores and the replay cache
+
+`structured-2d-full-rowcache-{4g,24g}`: the same 2-D run with
+`--result-path` on the host's local disk, with the default 4 GiB replay cache
+and with 24 GiB, enough for every chunk.
+
+| Report | Instrumented warm | Device peak | Host peak |
+| --- | ---: | ---: | ---: |
+| `dense-2d-full-chunks8-zephyr` (dense EM) | 500.6 s | 56.3 GB | 184.1 GB |
+| `structured-2d-full` (before) | 705.9 s | 2.5 GB | 128.4 GB |
+| `structured-2d-full-rowcache-4g` | 454.0 s | 2.5 GB | 9.6 GB |
+| `structured-2d-full-rowcache-24g` | **356.4 s** | 2.5 GB | 14.3 GB |
+
+Writing the final posterior to a store (8.8 GB per run on disk) removes it
+from host memory. Caching each E-step's filtered rows lets the replay skip
+both the second likelihood evaluation and the replayed forward pass for the
+cached chunks; with every chunk cached, structured EM is 29% faster than dense
+EM on this grid. These runs also include the unrolled scans (`1ad6a90`).
+
+### Clusterless KDE likelihood against recording length
+
+`kde-scale-track-{180,360,720,1500}s`: dense EM, track, clusterless KDE, one
+iteration (two E-steps), windows from the start of the recording.
+
+| Window | Spikes | Likelihood | Filter/smoother | Device peak | Host peak |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 3 min | 69,274 | 1.00 s | 5.12 s | 1.5 GB | 5.7 GB |
+| 6 min | 123,071 | 1.86 s | 10.04 s | 2.5 GB | 7.2 GB |
+| 12 min | 227,470 | 5.90 s | 19.79 s | 5.1 GB | 10.9 GB |
+| 23.6 min | 417,799 | 20.61 s | 39.17 s | 10.0 GB | 16.0 GB |
+
+The filter and smoother grow linearly. The KDE likelihood grows about 3.5x
+per doubling at these lengths: during EM both the encoding and the decoding
+spikes grow with the recording, and each decoding spike is compared with
+every encoding spike. A simulated sweep on the M1 Max CPU
+(`kde-scale-simulated-cpu-{60..960}s`, 8 cm bins) shows the same: 7.64, 29.29
+and 102.29 s at 240, 480 and 960 s, against 35.8, 79.9 and 157.8 s for the
+filter and smoother. Extrapolated, not measured: a 2-hour session would spend
+about 25 times as long in the likelihood as this 23.6 min one, which would
+then take longer than the filter and smoother.
 
 ### Accuracy against float64
 

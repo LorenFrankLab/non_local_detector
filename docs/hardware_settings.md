@@ -115,11 +115,15 @@ about 0.06 GB per minute.
 such as random walks on a track graph) runs every E-step on the checkpointed
 driver. Device working memory then scales with `chunk_size` times the state
 bins instead of the recording length: on the 23.6 min recording below, on a
-2 cm 2-D grid, 2.5 GB instead of 56.3 GB. It costs time where dense EM fits:
-each E-step evaluates the likelihood twice, and on that grid 3 iterations took
-706 s after compilation instead of 501 s (on the track, 361 s instead of 168
-s). Host memory still holds the returned full posterior. Use it when dense EM
-does not fit on the card; `chunk_size` sets the rows per checkpoint chunk.
+2 cm 2-D grid, 2.5 GB instead of 56.3 GB. Pass `result_path` to write the
+final posterior to a store on disk instead of holding it in host memory (host
+peak 9.6 GB instead of 184 GB for dense EM on that grid). `replay_cache_bytes`
+(default 4 GiB) keeps forward-pass rows in host memory so the backward replay
+does not recompute them; with enough for the whole recording (about 14 GB of
+host memory there), 3 iterations took 356 s after compilation against 501 s
+for dense EM, and 454 s with the default. On the track, where dense EM fits
+easily, dense EM is faster (168 s against 361 s before the replay cache).
+`chunk_size` sets the rows per checkpoint chunk.
 
 ### A real recording on a linearized track
 
