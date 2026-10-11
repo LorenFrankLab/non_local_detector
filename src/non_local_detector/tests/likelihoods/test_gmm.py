@@ -15,10 +15,13 @@ import pytest
 from scipy.special import logsumexp
 
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods.common import _padded_sample_count
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
+    _em_fit_while_loop,
     _estimate_gaussian_covariances_tied,
+    _estimate_gaussian_parameters,
 )
 
 
@@ -387,3 +390,68 @@ def test_gmm_diag_variance_floor_warns(key):
     X = jnp.array([[0.0], [1e-7], [2e-7], [10.0], [10.0 + 1e-7], [10.0 + 2e-7]])
     with pytest.warns(UserWarning, match="variance hit the 1e-10 floor"):
         model.fit(X, key)
+
+
+# ---------------------------------------------------------------------
+# Weighted refits share compiled kernels
+
+
+def test_weighted_refits_with_nearby_kept_counts_share_compiled_kernels(key):
+    """EM weights change which rows a weighted fit keeps. Refits whose kept
+    counts pad to the same size reuse the compiled estimate and EM loop."""
+    X = _three_clusters(n=100)
+    first = np.ones(X.shape[0])
+    first[:30] = 0.0
+    second = np.ones(X.shape[0])
+    second[:10] = 0.0
+    assert _padded_sample_count(270) == _padded_sample_count(290)
+    kernels = (_estimate_gaussian_parameters, _em_fit_while_loop)
+    for kernel in kernels:
+        kernel.clear_cache()
+    for weights in (first, second):
+        GaussianMixtureModel(n_components=3, random_state=0).fit(
+            X, key, sample_weight=weights
+        )
+    assert [kernel._cache_size() for kernel in kernels] == [1, 1]
+
+
+@pytest.mark.parametrize("init_params", ["kmeans", "random"])
+def test_padded_weighted_fit_matches_em_on_the_kept_rows(key, init_params):
+    """Padding the kept rows with zero-weight copies leaves the fit unchanged."""
+    X = np.asarray(_three_clusters(n=100), np.float32)
+    weights = np.random.default_rng(5).uniform(0.2, 1.0, X.shape[0])
+    weights[::7] = 0.0
+    model = GaussianMixtureModel(
+        n_components=3, random_state=0, init_params=init_params
+    ).fit(jnp.asarray(X), key, sample_weight=weights)
+
+    kept = weights > 0
+    rescaled = weights[kept] / weights[kept].max()
+    rescaled *= kept.sum() / rescaled.sum()
+    sample_weight = jnp.asarray(rescaled, jnp.float32)
+    X_kept = jnp.asarray(X[kept])
+    init_key = jax.random.split(key, 1)[0]
+    resp = (
+        model._initialize_kmeans_resp(X_kept, init_key, 0, sample_weight=sample_weight)
+        if init_params == "kmeans"
+        else model._initialize_random(X_kept, init_key)
+    )
+    nk, means, covariances = _estimate_gaussian_parameters(
+        X_kept, resp, model.reg_covar, "full", sample_weight
+    )
+    (weights_, means_, covariances_), lower_bound, _, _ = _em_fit_while_loop(
+        X_kept,
+        (nk / nk.sum(), means, covariances),
+        model.tol,
+        model.max_iter,
+        model.reg_covar,
+        "full",
+        sample_weight,
+    )
+    for actual, expected in (
+        (model.weights_, weights_),
+        (model.means_, means_),
+        (model.covariances_, covariances_),
+        (model.lower_bound_, lower_bound),
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)

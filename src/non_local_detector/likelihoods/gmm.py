@@ -21,6 +21,8 @@ import jax.numpy as jnp
 import numpy as np
 from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 
+from non_local_detector.likelihoods.common import _padded_sample_count
+
 # ---------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------
@@ -338,6 +340,7 @@ def _compute_log_det_cholesky(
     return n_features * jnp.log(matrix_chol)
 
 
+@partial(jax.jit, static_argnames=("covariance_type",))
 def _estimate_gaussian_parameters(
     X: Array,
     resp_unweighted: Array,
@@ -695,6 +698,39 @@ def _em_fit_while_loop(
     # mislabeled that boundary case as non-converged.
     converged = final_delta <= tol
     return final_params, final_lb, final_i, converged
+
+
+def _zero_weight_padded(
+    sample_weight: Array | np.ndarray, *arrays: Array | np.ndarray
+) -> tuple[Array, ...]:
+    """Rows padded to a few sizes with zero-weight copies of the first row.
+
+    The rows a weighted fit keeps change with its weights, so refits during EM
+    would otherwise compile for every new count. Zero-weight rows add nothing
+    to any weighted sum, and copying a kept row keeps their log likelihoods
+    finite. Padding is done on the host so new counts do not compile either.
+
+    Parameters
+    ----------
+    sample_weight : Array | np.ndarray, shape (n_samples,)
+    *arrays : Array | np.ndarray, shape (n_samples, ...)
+
+    Returns
+    -------
+    sample_weight : Array, shape (n_padded,)
+        Zero for padding rows.
+    *arrays : Array, shape (n_padded, ...)
+    """
+    sample_weight = np.asarray(sample_weight)
+    n_samples = sample_weight.shape[0]
+    padding = _padded_sample_count(n_samples) - n_samples
+    rows = np.concatenate([np.arange(n_samples), np.zeros(padding, dtype=int)])
+    return (
+        jnp.asarray(
+            np.concatenate([sample_weight, np.zeros(padding, sample_weight.dtype)])
+        ),
+        *(jnp.asarray(np.asarray(array)[rows]) for array in arrays),
+    )
 
 
 def _effective_weight_mask(
@@ -1159,10 +1195,12 @@ class GaussianMixtureModel:
         init_keys = jax.random.split(key, self.n_init)
 
         sw = None
+        X_em, sw_em = X, None
         if keep is not None:  # sample_weight was given
             weights = np.asarray(host_weights, dtype=np.float64)
             if not keep.all():
-                X, weights = X[keep], weights[keep]
+                # Select on the host: a device gather compiles for every count.
+                X, weights = np.asarray(X)[keep], weights[keep]
             # Divide by the maximum first, in float64: the rescaled sum is then
             # bounded by the number of samples, so even huge float64 weights
             # cannot overflow the sum used for the mean-one rescale. The
@@ -1171,7 +1209,9 @@ class GaussianMixtureModel:
             # bounded below. A new array, so the caller's weights are untouched.
             weights = weights / np.max(weights)
             weights *= X.shape[0] / np.sum(weights)
-            sw = jnp.asarray(weights, dtype=X.dtype)
+            # Cast on the host: a device cast compiles for every count.
+            sw = jnp.asarray(weights.astype(X.dtype))
+            sw_em, X_em = _zero_weight_padded(sw, X)
 
         # Reset all fitted attributes so a refit cannot silently retain the
         # previous fit's parameters. If every init returns final_lb == -inf/NaN,
@@ -1199,7 +1239,7 @@ class GaussianMixtureModel:
                 final_lb,
                 n_iter,
                 final_converged,
-            ) = self._fit_single(X, params, sample_weight=sw)
+            ) = self._fit_single(X_em, params, sample_weight=sw_em)
 
             # A singular covariance makes the Cholesky (and hence the lower
             # bound) NaN; NaN never beats best_lower_bound, so such a restart is
@@ -1458,6 +1498,10 @@ class GaussianMixtureModel:
         else:
             raise ValueError(f"Unknown init_params: {self.init_params}")
 
+        if sample_weight is not None:
+            # Responsibilities come from the kept rows; padding them only shares
+            # the compiled estimate between refits (see _zero_weight_padded).
+            sample_weight, X, resp = _zero_weight_padded(sample_weight, X, resp)
         nk, means_est, cov_est = _estimate_gaussian_parameters(
             X, resp, self.reg_covar, self.covariance_type, sample_weight
         )
