@@ -24,6 +24,7 @@ import numpy as np
 import xarray as xr
 
 from non_local_detector.core import (
+    _HMM_SCAN_UNROLL,
     _condition_on,
     _divide_safe,
     _normalize,
@@ -145,7 +146,9 @@ def _forward_chunk(
         )
         return (total + increment, operator.forward(filtered, weight)), out
 
-    return jax.lax.scan(step, (evidence, initial), (likelihoods, weights))
+    return jax.lax.scan(
+        step, (evidence, initial), (likelihoods, weights), unroll=_HMM_SCAN_UNROLL
+    )
 
 
 @partial(jax.jit, static_argnames=("pair_statistics",))
@@ -176,7 +179,13 @@ def _backward_chunk(
         )
         return smoothed, (smoothed, pairs)
 
-    return jax.lax.scan(step, next_smoothed, (filtered, weights, rows), reverse=True)
+    return jax.lax.scan(
+        step,
+        next_smoothed,
+        (filtered, weights, rows),
+        reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
+    )
 
 
 @jax.jit
