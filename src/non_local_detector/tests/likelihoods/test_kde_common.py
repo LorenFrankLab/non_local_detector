@@ -594,11 +594,13 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("log_space", [False, True])
-def test_block_rows_use_the_kernel_dtype(log_space, monkeypatch):
-    """Under x64, float32 points with default weights compute a float64 kernel.
+@pytest.mark.parametrize("all_float32", [False, True])
+def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
+    """Under x64 the kernel is float64 even when every operand is float32.
 
-    Sizing blocks by the points and samples alone assumed 4-byte elements and
-    let the 8-byte kernel use twice the budget.
+    Its accumulator starts as the default float, so sizing blocks by the
+    operands alone assumed 4-byte elements and let the 8-byte kernel use twice
+    the budget.
     """
     from non_local_detector.likelihoods import common
 
@@ -606,7 +608,8 @@ def test_block_rows_use_the_kernel_dtype(log_space, monkeypatch):
         rng = np.random.default_rng(3)
         points = jnp.asarray(rng.normal(size=(300, 2)).astype(np.float32))
         samples = jnp.asarray(rng.normal(size=(5_000, 2)).astype(np.float32))
-        std = jnp.array([0.7, 1.3])  # float64 under x64
+        std = jnp.array([0.7, 1.3], dtype=jnp.float32 if all_float32 else None)
+        weights = jnp.ones(5_000, dtype=jnp.float32) if all_float32 else None
         monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * 8 * 64)
         kernel_name = "log_kde" if log_space else "kde"
         original = getattr(common, kernel_name)
@@ -618,7 +621,9 @@ def test_block_rows_use_the_kernel_dtype(log_space, monkeypatch):
             return result
 
         monkeypatch.setattr(common, kernel_name, record)
-        (block_log_kde if log_space else block_kde)(points, samples, std, 10_000)
+        (block_log_kde if log_space else block_kde)(
+            points, samples, std, 10_000, weights
+        )
 
     assert {itemsize for _, itemsize in blocks} == {8}
     assert max(rows for rows, _ in blocks) * 5_000 * 8 <= 5_000 * 8 * 64

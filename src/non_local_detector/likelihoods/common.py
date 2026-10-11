@@ -1400,9 +1400,9 @@ def _kde_block_rows(block_size: int, eval_points, samples, std, weights) -> int:
     eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
     samples : jnp.ndarray, shape (n_samples, n_dims)
     std, weights : array-like
-        The other kernel operands: they set the kernel's dtype with the
-        points and samples (float32 points become a float64 kernel with a
-        float64 ``std`` or ``weights`` under x64).
+        The other kernel operands. With the points, samples and the kernel's
+        accumulator (the default float, float64 under x64) they set the
+        kernel's dtype.
 
     Returns
     -------
@@ -1410,7 +1410,9 @@ def _kde_block_rows(block_size: int, eval_points, samples, std, weights) -> int:
         ``min(block_size, rows whose kernel matrix fits _KDE_BLOCK_KERNEL_BYTES)``,
         at least one row when ``block_size`` is positive.
     """
-    itemsize = jnp.result_type(eval_points, samples, std, weights, float).itemsize
+    # _log_kernel_matrix accumulates into the default float type.
+    accumulator = jax.dtypes.canonicalize_dtype(jnp.float64)
+    itemsize = jnp.result_type(eval_points, samples, std, weights, accumulator).itemsize
     budget_rows = _KDE_BLOCK_KERNEL_BYTES // (max(samples.shape[0], 1) * itemsize)
     return min(block_size, max(1, budget_rows))
 
