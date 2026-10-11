@@ -32,6 +32,8 @@ window, package-source hash and device.
 | `1edc8ee5` | `27957feb` plus unrolled checkpointed scans (`1ad6a90`) |
 | `9680b2d4` | `a69d107`: plus structured-EM result stores and the replay cache |
 | `f21609be` | `d7d68fb` (dense EM, used for the KDE scaling sweep) |
+| `52068f24` | `f4dd609`: rebased, with the count-scaling and KDE-dtype fixes and per-run memory release in the profiler |
+| `ac120b53` | `52068f24` plus the prediction replay cache (`005fc10`) |
 
 ## Full recording (709,319 rows)
 
@@ -198,6 +200,27 @@ from host memory. Caching each E-step's filtered rows lets the replay skip
 both the second likelihood evaluation and the replayed forward pass for the
 cached chunks; with every chunk cached, structured EM is 29% faster than dense
 EM on this grid. These runs also include the unrolled scans (`1ad6a90`).
+
+### Host memory per run
+
+Reports before `f4dd609` measured each run while the previous run's model and
+results were still alive, so their host peaks include an extra posterior (up
+to 57 GB on the 2-D grid). `profile_em.py` now releases them and records each
+run's own peak. Remeasured on zephyr, 2-D grid, 3 iterations, 16 GiB replay
+cache:
+
+| Report | Instrumented warm | Device peak | Host peak (per run) |
+| --- | ---: | ---: | ---: |
+| `mem-dense-2d-full-chunks8` | 501.0 s | 56.3 GB | 109.5 GB |
+| `mem-structured-2d-full-inmemory` | 406.8 s | 2.4 GB | 71.4 GB |
+| `mem-structured-2d-full-store` | **356.7 s** | 2.4 GB | **14.2 GB** |
+
+On the track (`rowcache-auto-track-{sorted,clusterless}-full`, `auto`
+transitions, 16 GiB replay cache), structured EM took 229.6 s (sorted) and
+208.1 s (clusterless) warm, with host peaks of 9.6 and 8.3 GB and device peaks
+of 24.8 GB (the sorted likelihood) and 4.0 GB. Dense EM is faster there (168.4
+and 131.4 s on breeze, `54a54858`), which is why `estimate_parameters(
+transition_representation="auto")` keeps dense EM for small state spaces.
 
 ### Clusterless KDE likelihood against recording length
 
