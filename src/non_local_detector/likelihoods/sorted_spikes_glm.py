@@ -87,6 +87,27 @@ logger = logging.getLogger(__name__)
 
 
 @jax.jit
+def _glm_rates(design, coefficients):
+    """Floored rates at each design row, as the local likelihood computes them.
+
+    Parameters
+    ----------
+    design : jax.Array, shape (n_rows, n_basis)
+    coefficients : jax.Array, shape (n_cells, n_basis)
+
+    Returns
+    -------
+    rates : jax.Array, shape (n_rows, n_cells)
+        Hz. The product requests HIGHEST precision, so CUDA does not use TF32
+        and non-local place fields agree with the local rates.
+    """
+    rate = jnp.exp(
+        jnp.matmul(design, coefficients.T, precision=jax.lax.Precision.HIGHEST)
+    )
+    return jnp.clip(rate, min=RATE_EPS_HZ, max=None)
+
+
+@jax.jit
 def _local_glm_log_likelihood(design, coefficients, counts, durations):
     if counts.shape[1] == 0:
         return jnp.zeros((counts.shape[0],))
@@ -673,8 +694,8 @@ def fit_sorted_spikes_glm_encoding_model(
         l2_penalty=l2_penalty,
         rate_floor=RATE_EPS_HZ,
     )
-    interior_rates = jnp.clip(
-        jnp.exp(emission_predict_matrix @ coefficients.T), min=RATE_EPS_HZ, max=None
+    interior_rates = _glm_rates(
+        jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
     )  # (n_interior_bins, n_cells)
     place_fields = (
         jnp.zeros((len(spike_times), is_track_interior.shape[0]))
