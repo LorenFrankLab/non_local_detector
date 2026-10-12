@@ -395,9 +395,11 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
 # EM with transition_representation="auto" runs dense EM up to this many bytes
 # of float32 interior transition. A dense step reads the whole matrix, so its
 # cost grows with this size; a structured step costs about the same at any
-# size. On an A100, dense EM was 1.4-1.6x faster on a 514-bin track (1 MB) and
-# 1.2-1.4x slower on a 2 cm 2-D grid (about 6,600 interior bins, 174 MB).
-_AUTO_DENSE_TRANSITION_BYTES = 64 * 2**20
+# size. Three warm EM iterations on a 23.6 min clusterless 2-D recording (A100)
+# took 180/299 s dense/structured at 5.7 MB (1,190 interior state bins),
+# 224/343 s at 13.5 MB, 285/352 s at 21.9 MB and 501/407 s at 43.5 MB (3,298
+# bins); interpolating puts the crossover near 31 MB.
+_AUTO_DENSE_TRANSITION_BYTES = 32 * 2**20
 # Dense EM holds about this many float32 (time bins x state bins) arrays on the
 # device (measured device peak 10.0 GB, about seven 709k x 498 arrays, on the
 # clusterless track recording).
@@ -5288,13 +5290,13 @@ class ClusterlessDetector(_DetectorBase):
             default "dense". "structured" runs EM on the checkpointed driver
             (see ``chunk_size``), whose working memory does not grow with the
             recording length. "auto" runs dense EM when the interior
-            transition is small (at most 64 MiB in float32, where dense EM is
+            transition is small (at most 32 MiB in float32, where dense EM is
             faster), the full dense transition fits
             ``max_dense_transition_bytes`` and dense EM's arrays fit in half
-            the device memory, and checkpointed EM otherwise or when ``chunk_size``, ``result_path``
-            or ``replay_cache_bytes`` is given; its checkpointed EM uses dense
-            blocks for transitions without a structured form, within
-            ``max_dense_transition_bytes``.
+            the device memory, and checkpointed EM otherwise or when
+            ``chunk_size``, ``result_path`` or ``replay_cache_bytes`` is given;
+            its checkpointed EM uses dense blocks for transitions without a
+            structured form, within ``max_dense_transition_bytes``.
         max_dense_transition_bytes : int, optional
             Byte budget for dense transition blocks or views of a structured
             fit, by default ``DEFAULT_MAX_DENSE_BYTES``.
@@ -6455,13 +6457,13 @@ class SortedSpikesDetector(_DetectorBase):
             default "dense". "structured" runs EM on the checkpointed driver
             (see ``chunk_size``), whose working memory does not grow with the
             recording length. "auto" runs dense EM when the interior
-            transition is small (at most 64 MiB in float32, where dense EM is
+            transition is small (at most 32 MiB in float32, where dense EM is
             faster), the full dense transition fits
             ``max_dense_transition_bytes`` and dense EM's arrays fit in half
-            the device memory, and checkpointed EM otherwise or when ``chunk_size``, ``result_path``
-            or ``replay_cache_bytes`` is given; its checkpointed EM uses dense
-            blocks for transitions without a structured form, within
-            ``max_dense_transition_bytes``.
+            the device memory, and checkpointed EM otherwise or when
+            ``chunk_size``, ``result_path`` or ``replay_cache_bytes`` is given;
+            its checkpointed EM uses dense blocks for transitions without a
+            structured form, within ``max_dense_transition_bytes``.
         max_dense_transition_bytes : int, optional
             Byte budget for dense transition blocks or views of a structured
             fit, by default ``DEFAULT_MAX_DENSE_BYTES``.

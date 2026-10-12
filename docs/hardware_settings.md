@@ -125,9 +125,14 @@ memory there), 3 iterations took 356 s after compilation against 501 s for
 dense EM, and 454 s with a 4 GiB cache. Chunks beyond the budget are
 recomputed, so a smaller budget costs time, not correctness. On the track, where dense EM fits
 easily, dense EM is faster (168 s against 230 s with the replay cache).
-`transition_representation="auto"` picks dense EM for small state spaces
-(interior transition at most 64 MiB in float32) that fit the device, and
-structured EM otherwise. `chunk_size` sets the rows per checkpoint chunk.
+`transition_representation="auto"` picks dense EM when three conditions hold:
+the interior transition is at most 32 MiB in float32, the full transition
+(every state bin, float64) fits `max_dense_transition_bytes`, and dense EM's
+arrays fit in half the device memory. It picks structured EM otherwise, or when
+`chunk_size`, `result_path` or `replay_cache_bytes` is given. On a 2-D grid of
+the recording below, dense EM was faster up to 21.9 MB of interior transition
+(2.5 cm, 285 s against 352 s) and slower at 43.5 MB (2 cm, 501 s against
+407 s). `chunk_size` sets the rows per checkpoint chunk.
 
 ### A real recording on a linearized track
 

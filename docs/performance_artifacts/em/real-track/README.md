@@ -34,6 +34,7 @@ window, package-source hash and device.
 | `f21609be` | `b4e5672` (dense EM, used for the KDE scaling sweep) |
 | `52068f24` | `f4dd609`: rebased, with the count-scaling and KDE-dtype fixes and per-run memory release in the profiler |
 | `ac120b53` | `52068f24` plus the prediction replay cache (`005fc10`) |
+| `33f55750` | `58f961b`: plus `auto` EM selection and its full-transition budget check |
 
 ## Full recording (709,319 rows)
 
@@ -183,7 +184,8 @@ transitions. Structured EM is slower where dense EM fits: each E-step
 evaluates the likelihood twice (the forward pass and the replay), and the
 filter and smoother steps of the structured operator took 510 s per warm run
 on the 2-D grid against 351 s for dense matrix products, which the A100 reads
-at its memory bandwidth (about 82 s per pass for 6,600 interior bins). On the
+at its memory bandwidth (43.5 MB per time bin for the 3,298 interior state
+bins, about 20 s per pass at 1.5 TB/s). On the
 track (dense compare: `sorted-track-full-cc25c63`, 168 s warm on breeze) the
 dense path is faster still.
 
@@ -228,6 +230,37 @@ checkpoint option keeps structured EM; 16 GiB replay cache), structured EM took 
 of 24.8 GB (the sorted likelihood) and 4.0 GB. Dense EM is faster there (168.4
 and 131.4 s on breeze, `54a54858`), which is why `estimate_parameters(
 transition_representation="auto")` keeps dense EM for small state spaces.
+
+### Dense against structured EM by grid size
+
+`crossover-{dense,structured}-2d-{4cm,3cm,2p5cm}` (`33f55750`, zephyr): the
+clusterless 2-D run at coarser bins, 3 iterations, the 16 GiB default replay
+cache and no result store, to place `auto`'s interior-transition threshold.
+Dense EM ran in one chunk except at 2.5 cm, where one chunk ran out of memory
+(`crossover-dense-2d-2p5cm`, 12.4 GiB requested at a 33.4 GB device peak);
+the 2 cm row is `mem-{dense,structured}-2d-full-*` above.
+
+| Bin size | Interior state bins | Interior transition (float32) | Dense warm | Structured warm | Dense device peak | Structured device peak |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 cm | 1,190 | 5.7 MB | **180.2 s** | 298.6 s | 23.7 GB | 3.5 GB |
+| 3 cm | 1,840 | 13.5 MB | **223.8 s** | 342.6 s | 36.6 GB | 3.5 GB |
+| 2.5 cm | 2,340 | 21.9 MB | **284.6 s** (4 chunks) | 351.8 s | 40.0 GB | 3.3 GB |
+| 2 cm | 3,298 | 43.5 MB | 501.0 s (8 chunks) | **406.8 s** | 56.3 GB | 2.4 GB |
+
+Structured EM's warm time grows slowly with the grid (299 to 407 s); dense
+EM's grows with the transition it reads every step (180 to 501 s). Interpolating between 2.5 and 2 cm puts the
+crossover near 31 MB, so `auto` runs dense EM up to 32 MiB of interior
+transition. Its other conditions bind first on this grid, whose full state
+space (5,302 to 20,178 bins with the exterior) exceeds the 256 MiB float64
+`max_dense_transition_bytes` from 3 cm down, and whose dense arrays exceed half
+of JAX's 63.8 GB device limit from 3 cm down at this length.
+
+First calls, which include compilation, took 354.1, 399.6, 640.7 and 892.5 s
+dense against 728.0, 775.8, 822.4 and 891.6 s structured (4, 3, 2.5, 2 cm).
+Most of the difference is likelihood compilation, which warm runs do not
+repeat: at 4 cm the chunked structured likelihood compiled 202 times (346 s,
+51 of them in the second E-step) against 88 times (130 s) for dense in one
+chunk.
 
 ### Clusterless KDE likelihood against recording length
 
