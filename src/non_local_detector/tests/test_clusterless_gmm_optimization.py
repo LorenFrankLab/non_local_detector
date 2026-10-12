@@ -668,6 +668,40 @@ def test_gmm_solver_controls_reach_all_density_models(gmm_simulation_data):
         assert 1 <= model.n_iter_ <= 7
 
 
+def test_default_regularization_fits_pauses_far_from_the_origin():
+    """Long pauses at wells far from the origin repeat one position many times.
+
+    In float32 a covariance of positions near ``x`` carries rounding error of
+    about ``x**2 * eps`` (0.015 cm^2 at 500 cm), so a component fitted to a
+    pause needs regularization above that to stay positive definite.
+    """
+    rng = np.random.default_rng(0)
+    position_time = np.arange(0, 60.0, 1 / 250)
+    phase = (position_time % 20) / 20
+    position = np.select(
+        [phase < 0.25, phase < 0.5, phase < 0.75],
+        [300.0, 300 + 800 * (phase - 0.25), 500.0],
+        500 - 800 * (phase - 0.75),
+    )[:, None]
+    environment = Environment(
+        place_bin_size=2.0, position_range=((290.0, 510.0),)
+    ).fit_place_grid(position, infer_track_interior=False)
+    spike_times = [np.sort(rng.uniform(0, 60, 600))]
+    spike_features = [rng.normal(100, 30, (600, 4)).astype(np.float32)]
+
+    encoding = fit_clusterless_gmm_encoding_model(
+        position_time,
+        position,
+        spike_times,
+        spike_features,
+        environment,
+        disable_progress_bar=True,
+    )
+
+    assert encoding["occupancy_model"].reg_covar == pytest.approx(1.0)
+    assert np.all(np.isfinite(np.asarray(encoding["summed_ground_process_intensity"])))
+
+
 def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
     """Fit and predict fail before silently dropping an electrode or mark column."""
     data = gmm_simulation_data

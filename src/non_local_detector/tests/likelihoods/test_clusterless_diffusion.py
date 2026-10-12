@@ -24,33 +24,30 @@ import time
 import warnings
 
 import jax
+import jax.numpy as jnp
+import networkx as nx
+import numpy as np
+import pytest
+from scipy import stats
+from scipy.spatial import cKDTree
 
-jax.config.update("jax_platform_name", "cpu")
-
-import jax.numpy as jnp  # noqa: E402
-import networkx as nx  # noqa: E402
-import numpy as np  # noqa: E402
-import pytest  # noqa: E402
-from scipy import stats  # noqa: E402
-from scipy.spatial import cKDTree  # noqa: E402
-
-from non_local_detector import time_edges_from_centers  # noqa: E402
-from non_local_detector.environment import Environment  # noqa: E402
-from non_local_detector.exceptions import DataError, ValidationError  # noqa: E402
-from non_local_detector.likelihoods import clusterless_kde  # noqa: E402
-from non_local_detector.likelihoods.clusterless_diffusion import (  # noqa: E402
+from non_local_detector import time_edges_from_centers
+from non_local_detector.environment import Environment
+from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.likelihoods import clusterless_kde
+from non_local_detector.likelihoods.clusterless_diffusion import (
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
-from non_local_detector.likelihoods.clusterless_kde import kde_distance  # noqa: E402
-from non_local_detector.likelihoods.common import (  # noqa: E402
+from non_local_detector.likelihoods.clusterless_kde import kde_distance
+from non_local_detector.likelihoods.common import (
     EPS,
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
     get_position_at_time,
     interpolate_weights_at_spike_times,
 )
-from non_local_detector.likelihoods.diffusion import (  # noqa: E402
+from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     connected_component_labels,
     diffuse,
@@ -59,13 +56,24 @@ from non_local_detector.likelihoods.diffusion import (  # noqa: E402
     heat_kernel_apply,
     n_connected_components,
 )
-from non_local_detector.likelihoods.sorted_spikes_diffusion import (  # noqa: E402
+from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
 )
 
 WAVEFORM_STD = 6.0
 POSITION_STD = 1.5
+
+
+@pytest.fixture(autouse=True)
+def _cpu_device():
+    """Run this module's float64-referenced checks on the CPU, as written.
+
+    Scoped to the module's tests, so other tests (and GPU validation runs)
+    keep their backend.
+    """
+    with jax.default_device(jax.devices("cpu")[0]):
+        yield
 
 
 def _decode_bin(spike_times, time_edges):

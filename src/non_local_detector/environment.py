@@ -49,8 +49,10 @@ and visualization (`plot_grid`). The class also supports saving and loading
 environment definitions using `pickle`.
 """
 
+import hashlib
 import pickle
 import warnings
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -61,7 +63,10 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from scipy import ndimage  # type: ignore[import-untyped]
 from scipy.interpolate import interp1d  # type: ignore[import-untyped]
-from track_linearization import plot_graph_as_1D  # type: ignore[import-untyped]
+from track_linearization import (  # type: ignore[import-untyped]
+    get_linearized_position,
+    plot_graph_as_1D,
+)
 
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import (
@@ -114,6 +119,12 @@ def find_environment_by_name(
         f"length {len(environments)}; available names: "
         f"{[e.environment_name for e in environments]}"
     )
+
+
+# Bytes of cached track linearizations kept per environment. EM linearizes the
+# same position samples and spike positions in every E-step and encoding
+# M-step; a 23.6 min recording needs about 30 MB.
+_LINEAR_POSITION_CACHE_BYTES = 256 * 1024**2
 
 
 @dataclass(eq=False)
@@ -309,7 +320,48 @@ class Environment:
         """
         state = self.__dict__.copy()
         state.pop("_diffusion_device_basis_", None)  # transient JAX device cache
+        state.pop("_linear_position_cache_", None)  # rebuilt on demand
         return state
+
+    def _linear_position(self, points: np.ndarray) -> np.ndarray:
+        """Linear position of points on the track graph, cached by value.
+
+        Equal point values give the stored result without projecting them onto
+        the graph again. Results are copied, so callers own them. The cache is
+        bounded by ``_LINEAR_POSITION_CACHE_BYTES`` (the latest result is always
+        kept), cleared by ``fit_place_grid`` and not pickled.
+
+        Parameters
+        ----------
+        points : np.ndarray, shape (n_points, n_position_dims)
+
+        Returns
+        -------
+        linear_position : np.ndarray, shape (n_points,)
+        """
+        points = np.ascontiguousarray(points, dtype=float)
+        key = hashlib.blake2b(
+            np.asarray(points.shape).tobytes() + points.tobytes(), digest_size=16
+        ).digest()
+        cache = self.__dict__.setdefault("_linear_position_cache_", OrderedDict())
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key].copy()
+        # A copy: a view would keep the linearization's other columns alive,
+        # outside the bytes counted below.
+        result = get_linearized_position(
+            points,
+            self.track_graph,
+            edge_order=self.edge_order,
+            edge_spacing=self.edge_spacing,
+        ).linear_position.to_numpy(copy=True)
+        cache[key] = result
+        while (
+            sum(value.nbytes for value in cache.values()) > _LINEAR_POSITION_CACHE_BYTES
+            and len(cache) > 1
+        ):
+            cache.popitem(last=False)
+        return result.copy()
 
     def _validate_track_graph(self) -> None:
         """Validate track_graph and its required parameters.
@@ -549,6 +601,8 @@ class Environment:
             del self._diffusion_heat_kernel_rank_
         if hasattr(self, "_diffusion_device_basis_"):
             del self._diffusion_device_basis_
+        if hasattr(self, "_linear_position_cache_"):
+            del self._linear_position_cache_
 
         if self.track_graph is None:
             (

@@ -15,7 +15,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
@@ -437,7 +436,7 @@ def fit_clusterless_gmm_encoding_model(
     gmm_covariance_type_gpi: str = "full",
     gmm_covariance_type_joint: str = "full",
     gmm_random_state: int | None = 0,
-    gmm_reg_covar: float = 1e-06,
+    gmm_reg_covar: float = 1.0,
     gmm_max_iter: int = 200,
     gmm_tol: float = 0.001,
     disable_progress_bar: bool = False,
@@ -477,9 +476,14 @@ def fit_clusterless_gmm_encoding_model(
         Note: "diag" may offer speedups but currently has JIT compatibility issues.
     gmm_random_state : int | None, default=0
         Random state for reproducibility.
-    gmm_reg_covar : float, default=1e-6
+    gmm_reg_covar : float, default=1.0
         Nonnegative covariance regularization used by every occupancy, GPI, and
-        joint GMM.
+        joint GMM, added to each covariance diagonal in squared feature units
+        (cm^2 for positions, squared mark units for waveform features). It must
+        exceed the float32 rounding of the covariances, about
+        ``feature_magnitude**2 * 1e-7``: positions repeated during a pause 500 cm
+        from the origin need more than about 0.02 cm^2. Scale it with the
+        features if they are not in cm and microvolts.
     gmm_max_iter : int, default=200
         Maximum EM iterations for every fitted GMM.
     gmm_tol : float, default=1e-3
@@ -560,12 +564,7 @@ def fit_clusterless_gmm_encoding_model(
 
     # If environment has a graph and positions are 2D+, linearize to 1D for occupancy/GPI
     if environment.track_graph is not None and position.shape[1] > 1:
-        position1D = get_linearized_position(
-            np.asarray(position),
-            environment.track_graph,
-            edge_order=environment.edge_order,
-            edge_spacing=environment.edge_spacing,
-        ).linear_position.to_numpy()[:, None]
+        position1D = environment._linear_position(np.asarray(position))[:, None]
         pos_for_occ = _as_jnp(position1D)
     else:
         pos_for_occ = position

@@ -269,7 +269,11 @@ def test_requested_likelihood_retains_one_host_array(driver, monkeypatch):
         return device_values[row_slice]
 
     def filter_stub(initial_distribution, log_likelihoods, **kwargs):
-        return (0.0, initial_distribution), (log_likelihoods, log_likelihoods)
+        return (0.0, initial_distribution), (
+            log_likelihoods,
+            log_likelihoods,
+            log_likelihoods[:, 0],
+        )
 
     def smoother_stub(filtered_probs, **kwargs):
         if tracemalloc.is_tracing():

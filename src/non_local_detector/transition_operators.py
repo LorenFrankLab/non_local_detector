@@ -399,22 +399,71 @@ class BlockTransitionOperator:
             output.append(result)
         return jnp.concatenate(output)
 
-    def fused(self):
+    def pair_products(self, filtered, ratio, discrete_weights=None):
+        """Per-state-pair terms of ``filtered @ T * ratio``, before summing pairs.
+
+        ``result[i, j] = w[i, j] * filtered[bins of i] . (C_ij @ ratio[bins of
+        j])``. With a filtered row and the smoother ratio
+        ``smoothed_{t+1} / predicted_{t+1}`` these are one step's expected
+        discrete transition counts.
+
+        Parameters
+        ----------
+        filtered : jax.Array, shape (n_bins,)
+        ratio : jax.Array, shape (n_bins,)
+        discrete_weights : jax.Array, shape (n_states, n_states), optional
+            Overrides the bound stationary weights.
+
+        Returns
+        -------
+        pairs : jax.Array, shape (n_states, n_states)
+        """
+        filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
+        weights = self._weights(filtered, discrete_weights)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        pairs = jnp.stack(
+            [
+                jnp.stack(
+                    [
+                        jnp.dot(
+                            filtered[boundaries[source] : boundaries[source + 1]],
+                            block.backward(
+                                ratio[boundaries[target] : boundaries[target + 1]]
+                            ),
+                            precision=jax.lax.Precision.HIGHEST,
+                        )
+                        for target, block in enumerate(row)
+                    ]
+                )
+                for source, row in enumerate(self.blocks)
+            ]
+        )
+        return weights * pairs
+
+    def fused(self, max_dense_bytes=DEFAULT_MAX_DENSE_BYTES):
         """Return a product-only operator with rank-one blocks folded together.
 
-        See ``FusedBlockTransition``. Products agree with this operator to
-        rounding; ``entries`` and dense views stay on this operator.
+        See ``FusedBlockTransition``. Gaussian blocks whose float32 dense form
+        fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` are stored dense while all retained
+        dense matrices (as ``dense_fallback_nbytes`` counts them, float64 on the
+        host) fit ``max_dense_bytes``; the rest keep separable products.
+        Products agree with this operator to rounding; ``entries`` and dense
+        views stay on this operator.
         """
         boundaries = np.cumsum((0, *self.state_sizes))
         n_states = len(self.state_sizes)
         sources, destinations, weight_index = [], [], []
         blocks, positions = [], []
+        dense_budget = int(max_dense_bytes) - self.dense_fallback_nbytes
         for source, row in enumerate(self.blocks):
             for target, block in enumerate(row):
                 factors = _rank_one_factors(block)
                 if factors is _EMPTY_BLOCK:
                     continue
                 if factors is None:
+                    block = _small_gaussian_as_dense(block, dense_budget)
+                    if isinstance(block, DenseBlock):
+                        dense_budget -= np.asarray(block.matrix).nbytes
                     blocks.append(block)
                     positions.append((source, target))
                     continue
@@ -474,6 +523,32 @@ class BlockTransitionOperator:
 
 _EMPTY_BLOCK = object()
 
+# Gaussian blocks up to this many bytes of float32 dense matrix are stored
+# dense in the fused operator. A separable product costs several small
+# kernels per step (scatter to the grid, scaling, per-axis products, gather);
+# a dense block costs one matrix-vector product. On an A100, a filter step
+# plus a smoothing step with transition statistics took 52 against 82 us for
+# a 594-bin block (1.4 MB), 65 against 101 us at 1,648 bins (10.9 MB) and
+# 122 against 105 us at 2,616 bins (27.4 MB).
+_DENSE_GAUSSIAN_BLOCK_BYTES = 16 * 2**20
+
+
+def _small_gaussian_as_dense(block, dense_budget):
+    """A Gaussian (or restricted Gaussian) block as a ``DenseBlock`` when its
+    float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host
+    matrix fits ``dense_budget`` bytes; any other block as is."""
+    original = block.original if isinstance(block, RestrictedBlock) else block
+    n_rows, n_columns = block.shape
+    if (
+        not isinstance(original, GaussianGridBlock)
+        or n_rows * n_columns * 4 > _DENSE_GAUSSIAN_BLOCK_BYTES
+        or n_rows * n_columns * 8 > dense_budget
+    ):
+        return block
+    return DenseBlock(
+        block.entries(np.arange(n_rows)[:, None], np.arange(n_columns)[None, :])
+    )
+
 
 def _rank_one_factors(block):
     """Host ``(source, destination)`` vectors of a rank-one block, else None.
@@ -514,9 +589,12 @@ class FusedBlockTransition:
     destination masks the rows of ``destinations``, so all of them cost one
     product with each matrix per call instead of a reduction, scatter and
     gather per block. Gaussian, dense and spatial identity blocks keep their
-    own products. Any NaN in the input makes the whole output NaN, as in
-    ``BlockTransitionOperator``. Products agree with that operator to rounding,
-    not bitwise, because the rank-one sums are taken in a different order.
+    own products, except small Gaussian blocks, which are stored dense (see
+    ``_DENSE_GAUSSIAN_BLOCK_BYTES``). Any NaN in the input makes the whole
+    output NaN, as in ``BlockTransitionOperator``. Products agree with that
+    operator to rounding, not bitwise, because the rank-one sums are taken in
+    a different order and small Gaussian blocks are products with a dense
+    matrix.
 
     Built by ``BlockTransitionOperator.fused``. Forward products are ``p @ T``
     and backward products ``T @ v``.
@@ -593,6 +671,101 @@ class FusedBlockTransition:
                 weights[source * len(self.state_sizes) + target] * block.backward(part)
             )
         return _nan_result(result, values)
+
+    def pair_products(self, filtered, ratio, discrete_weights=None):
+        """Per-state-pair terms; see ``BlockTransitionOperator.pair_products``.
+
+        A rank-one block contributes ``(filtered . source) * (destination .
+        ratio)``, so all of them cost one product with each factor matrix.
+        """
+        filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
+        weights = self._flat_weights(filtered, discrete_weights)
+        n_states = len(self.state_sizes)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        precision = jax.lax.Precision.HIGHEST
+        rank_one = jnp.matmul(
+            filtered,
+            jnp.asarray(self.sources, dtype=filtered.dtype),
+            precision=precision,
+        ) * jnp.matmul(
+            jnp.asarray(self.destinations, dtype=filtered.dtype),
+            ratio,
+            precision=precision,
+        )
+        pairs = (
+            jnp.zeros(n_states * n_states, dtype=filtered.dtype)
+            .at[jnp.asarray(self.weight_index)]
+            .add(rank_one)
+        )
+        for (source, target), block in zip(
+            self.block_positions, self.blocks, strict=True
+        ):
+            pairs = pairs.at[source * n_states + target].add(
+                jnp.dot(
+                    filtered[boundaries[source] : boundaries[source + 1]],
+                    block.backward(ratio[boundaries[target] : boundaries[target + 1]]),
+                    precision=precision,
+                )
+            )
+        return (weights * pairs).reshape(n_states, n_states)
+
+    def backward_and_pairs(self, values, filtered, discrete_weights=None):
+        """``backward(values)`` and ``pair_products(filtered, values)`` together.
+
+        Each block's backward product, and the rank-one destination sums, are
+        computed once and serve both, so the smoother's transition statistics
+        do not repeat the separable Gaussian products.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+        filtered : jax.Array, shape (n_bins,)
+        discrete_weights : jax.Array, shape (n_states, n_states), optional
+
+        Returns
+        -------
+        backward : jax.Array, shape (n_bins,)
+        pairs : jax.Array, shape (n_states, n_states)
+        """
+        values, filtered = jnp.asarray(values), jnp.asarray(filtered)
+        weights = self._flat_weights(values, discrete_weights)
+        n_states = len(self.state_sizes)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        precision = jax.lax.Precision.HIGHEST
+        sources = jnp.asarray(self.sources, dtype=values.dtype)
+        destination_sums = jnp.matmul(
+            jnp.asarray(self.destinations, dtype=values.dtype),
+            values,
+            precision=precision,
+        )
+        result = jnp.matmul(
+            sources, destination_sums * weights[self.weight_index], precision=precision
+        )
+        pairs = (
+            jnp.zeros(n_states * n_states, dtype=values.dtype)
+            .at[jnp.asarray(self.weight_index)]
+            .add(jnp.matmul(filtered, sources, precision=precision) * destination_sums)
+        )
+        for (source, target), block in zip(
+            self.block_positions, self.blocks, strict=True
+        ):
+            product = block.backward(
+                values[boundaries[target] : boundaries[target + 1]]
+            )
+            flat = source * n_states + target
+            result = result.at[boundaries[source] : boundaries[source + 1]].add(
+                weights[flat] * product
+            )
+            pairs = pairs.at[flat].add(
+                jnp.dot(
+                    filtered[boundaries[source] : boundaries[source + 1]],
+                    product,
+                    precision=precision,
+                )
+            )
+        return _nan_result(result, values), (weights * pairs).reshape(
+            n_states, n_states
+        )
 
 
 class LazyDenseTransition:

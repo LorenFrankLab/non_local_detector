@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
@@ -16,6 +15,7 @@ from non_local_detector.likelihoods.common import (
     RATE_REFERENCE_SECONDS,
     KDEModel,
     _pad_rows,
+    _padded_occupancy_count,
     _padded_samples,
     _padded_spike_count,
     _SpikeTimeOrder,
@@ -1690,12 +1690,7 @@ def fit_clusterless_kde_encoding_model(
     )
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
-        occupancy_samples = get_linearized_position(
-            occupancy_samples,
-            environment.track_graph,
-            edge_order=environment.edge_order,
-            edge_spacing=environment.edge_spacing,
-        ).linear_position.to_numpy()[:, None]
+        occupancy_samples = environment._linear_position(occupancy_samples)[:, None]
     occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
         occupancy_samples, weights=jnp.asarray(occupancy_weights)
     )
@@ -2239,6 +2234,12 @@ def compute_local_log_likelihood(
             electrode_gpi_model.samples_,
             electrode_gpi_model.weights_,
         )
+        occupancy_samples, occupancy_weights = _padded_samples(
+            _spike_time_order,
+            occupancy_model.samples_,
+            occupancy_model.weights_,
+            count=_padded_occupancy_count,
+        )
         log_likelihood, summed_expected_counts = _add_electrode_local_terms(
             log_likelihood,
             summed_expected_counts,
@@ -2252,8 +2253,8 @@ def compute_local_log_likelihood(
             padded_weights,
             position_std_array,
             as_std_array(waveform_std, n_waveform_features),
-            occupancy_model.samples_,
-            occupancy_model.weights_,
+            occupancy_samples,
+            occupancy_weights,
             occupancy_std,
             gpi_samples,
             gpi_weights,

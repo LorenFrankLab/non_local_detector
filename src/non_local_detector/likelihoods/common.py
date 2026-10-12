@@ -1,4 +1,4 @@
-from collections.abc import Sequence, Sized
+from collections.abc import Callable, Sequence, Sized
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TypeVar
@@ -9,7 +9,6 @@ import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
 from jax.nn import logsumexp
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -339,6 +338,52 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
+def _block_duration_values(block_durations):
+    """The block's first duration and its first different one (or the first).
+
+    Parameters
+    ----------
+    block_durations : jnp.ndarray, shape (block_rows,)
+
+    Returns
+    -------
+    first, other : jnp.ndarray, shape ()
+    """
+    first = block_durations[0]
+    return first, block_durations[jnp.argmax(block_durations != first)]
+
+
+def _matrix_emission_is_safe(rates, block_durations, accumulator_dtype):
+    """Whether one block's Poisson emission can use the rate-matrix product.
+
+    Parameters
+    ----------
+    rates : jnp.ndarray, shape (n_neurons, n_bins)
+    block_durations : jnp.ndarray, shape (block_rows,)
+    accumulator_dtype : dtype
+        The emission's accumulator dtype.
+
+    Returns
+    -------
+    is_safe : jnp.ndarray, shape ()
+        True when every rate-duration product is positive and finite, the block
+        has at most two distinct durations (a uniform grid whose timestamps
+        round to two values), and the inputs already have the accumulator dtype.
+    """
+    first, other = _block_duration_values(block_durations)
+    smallest = jnp.min(rates) * jnp.min(block_durations)
+    largest = jnp.max(rates) * jnp.max(block_durations)
+    return (
+        jnp.all(jnp.isfinite(rates))
+        & jnp.all(jnp.isfinite(block_durations))
+        & jnp.all((block_durations == first) | (block_durations == other))
+        & (jnp.min(block_durations) > 0)
+        & (smallest > 0)
+        & jnp.isfinite(largest)
+        & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+    )
+
+
 @jax.jit
 def _poisson_nonlocal_log_likelihood(
     counts: jnp.ndarray,
@@ -350,7 +395,8 @@ def _poisson_nonlocal_log_likelihood(
 
     A fixed 64-row matrix kernel uses the same rate-duration products as the
     per-neuron reference. Highest dot precision excludes a TF32 approximation.
-    Exact zeros, non-finite products and nonuniform durations retain xlogy.
+    Exact zeros, non-finite products and blocks with more than two distinct
+    durations retain xlogy.
     Padding is internal and never contributes an observation or returned row.
     """
     n_rows, n_neurons = counts.shape
@@ -368,39 +414,44 @@ def _poisson_nonlocal_log_likelihood(
     padded_durations = jnp.pad(durations, (0, padded_rows - n_rows), mode="edge")
 
     def emit_block(block_counts, block_durations):
-        smallest = jnp.min(rates) * jnp.min(block_durations)
-        largest = jnp.max(rates) * jnp.max(block_durations)
-        matrix_is_safe = (
-            jnp.all(jnp.isfinite(rates))
-            & jnp.all(jnp.isfinite(block_durations))
-            & jnp.all(block_durations == block_durations[0])
-            & (block_durations[0] > 0)
-            & (smallest > 0)
-            & jnp.isfinite(largest)
-            & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+        matrix_is_safe = _matrix_emission_is_safe(
+            rates, block_durations, accumulator_dtype
         )
 
         def matrix_accumulation(_):
             dtype = jnp.result_type(rates, block_durations)
             block_counts_float = block_counts.astype(dtype)
-            # Values use the block's common duration. The zero-valued term
-            # (exactly 0 for these finite durations) restores each row's own
-            # duration derivative, which the shared duration would collapse.
+            # Each row uses the product for its own duration, one of the
+            # block's at most two values, so a row's value does not depend on
+            # where a row partition starts. The zero-valued term (exactly 0 for
+            # these finite durations) restores each row's own duration
+            # derivative, which the stopped gradients would collapse.
             log_durations = jnp.log(block_durations.astype(dtype))
             duration_tangent = (
                 block_counts_float.sum(axis=1, keepdims=True)
                 * (log_durations - jax.lax.stop_gradient(log_durations))[:, None]
             )
-            return (
-                jnp.matmul(
+            first, other = _block_duration_values(block_durations)
+
+            def emission(duration):
+                return jnp.matmul(
                     block_counts_float,
-                    jnp.log(
-                        rates.astype(dtype) * jax.lax.stop_gradient(block_durations[0])
-                    ),
+                    jnp.log(rates.astype(dtype) * jax.lax.stop_gradient(duration)),
                     precision=jax.lax.Precision.HIGHEST,
                 )
-                + duration_tangent
-            ).astype(accumulator_dtype)
+
+            # A block of equal durations (the usual uniform grid) needs one
+            # product; ``where`` alone would compute both.
+            values = jax.lax.cond(
+                first == other,
+                lambda: emission(first),
+                lambda: jnp.where(
+                    (block_durations == first)[:, None],
+                    emission(first),
+                    emission(other),
+                ),
+            )
+            return (values + duration_tangent).astype(accumulator_dtype)
 
         def xlogy_accumulation(_):
             def add_neuron(likelihood, neuron):
@@ -614,12 +665,9 @@ def get_position_at_time(
         position_at_spike_times = encoding_support.interpolate(position, spike_times)
     if env is not None and env.track_graph is not None:
         if position_at_spike_times.shape[0] > 0:
-            position_at_spike_times = get_linearized_position(
-                position_at_spike_times,
-                env.track_graph,
-                edge_order=env.edge_order,
-                edge_spacing=env.edge_spacing,
-            ).linear_position.to_numpy()[:, None]
+            position_at_spike_times = env._linear_position(position_at_spike_times)[
+                :, None
+            ]
         else:
             position_at_spike_times = np.array([])[:, None]
 
@@ -1219,7 +1267,8 @@ def block_kde(
     std : jnp.ndarray, shape (n_dims,)
         Standard deviation of the Gaussian kernel.
     block_size : int, optional
-        Size of blocks to do computation over, by default 100
+        Evaluation rows per block, by default 100. Reduced when needed so one
+        block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
     weights : jnp.ndarray, shape (n_samples,), optional
         Weights for each sample, by default None (uniform weights).
 
@@ -1244,6 +1293,11 @@ def block_kde(
     # [0, n_eval_points) exactly, so this is identical to filling a preallocated
     # array but avoids the O(n_eval * n_blocks) copies of a per-block
     # dynamic_update_slice.
+    block_size = _kde_block_rows(block_size, eval_points, samples, std, weights)
+    if block_size > 0 and -(-n_eval_points // block_size) > _UNROLLED_KDE_BLOCKS:
+        # Many small blocks (large sample sets) run as one compiled loop
+        # instead of one dispatch per block.
+        return _compiled_block_kde(eval_points, samples, std, block_size, weights)
     blocks = [
         kde(eval_points[start : start + block_size], samples, std, weights)
         for start in range(0, n_eval_points, block_size)
@@ -1251,15 +1305,32 @@ def block_kde(
     return jnp.concatenate(blocks)
 
 
+def _octave_size(n: int, log2_sizes: int) -> int:
+    """Smallest of ``2**log2_sizes`` sizes per octave at least ``n`` (``n >= 1``)."""
+    step = 1 << max((n - 1).bit_length() - 1 - log2_sizes, 0)
+    return -(-n // step) * step
+
+
 def _quarter_octave(n: int) -> int:
     """Smallest of four sizes per octave that is at least ``n`` (``n >= 1``)."""
-    step = 1 << max((n - 1).bit_length() - 3, 0)
-    return -(-n // step) * step
+    return _octave_size(n, 2)
 
 
 def _padded_sample_count(n_samples: int) -> int:
     """Encoding samples per electrode: four sizes per octave, at most 25% padding."""
     return 16 if n_samples <= 16 else _quarter_octave(n_samples)
+
+
+def _padded_occupancy_count(n_samples: int) -> int:
+    """Occupancy KDE samples: 64 sizes per octave, at most 1/64 padding.
+
+    Occupancy samples grow with the recording and each one is evaluated at
+    every spike, so they are padded more finely than encoding samples. EM
+    refits them from decode bins, one fewer than the position samples of the
+    first fit; both counts then usually share a size, so the local kernels
+    do not recompile.
+    """
+    return _octave_size(n_samples, 6)
 
 
 def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
@@ -1302,6 +1373,7 @@ def _padded_samples(
     spike_time_order: "_SpikeTimeOrder",
     samples: np.ndarray | jnp.ndarray,
     weights: np.ndarray | jnp.ndarray | None,
+    count: Callable[[int], int] = _padded_sample_count,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Device KDE samples and weights padded with zero-weight rows, once per prediction.
 
@@ -1315,6 +1387,8 @@ def _padded_samples(
     samples : array, shape (n_samples, n_dims)
     weights : array, shape (n_samples,), or None
         None means uniform weights.
+    count : callable, optional
+        Padded size for a sample count, by default ``_padded_sample_count``.
 
     Returns
     -------
@@ -1322,7 +1396,7 @@ def _padded_samples(
     """
 
     def build():
-        n_samples = _padded_sample_count(np.shape(samples)[0])
+        n_samples = count(np.shape(samples)[0])
         sample_weights = (
             np.ones(np.shape(samples)[0]) if weights is None else np.asarray(weights)
         )
@@ -1331,22 +1405,58 @@ def _padded_samples(
             jnp.asarray(_pad_rows(sample_weights, n_samples)),
         )
 
-    return spike_time_order.memo("padded_samples", (samples, weights), build)
+    return spike_time_order.memo(
+        f"padded_samples:{count.__name__}", (samples, weights), build
+    )
 
 
 # Up to this many evaluation blocks are traced individually: faster on CPU
 # than a loop, and the compiled graph stays small.
 _UNROLLED_KDE_BLOCKS = 8
 
+# Bytes for one evaluation block's (samples x rows) kernel matrix. Samples such
+# as an occupancy model's position samples grow with the recording, so a fixed
+# row count alone does not bound the workspace.
+_KDE_BLOCK_KERNEL_BYTES = 256 * 1024**2
+
+
+def _kde_block_rows(block_size: int, eval_points, samples, std, weights) -> int:
+    """Evaluation rows per block: ``block_size``, reduced to the kernel budget.
+
+    Parameters
+    ----------
+    block_size : int
+        Requested rows per block.
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std, weights : array-like
+        The other kernel operands. With the points, samples and the kernel's
+        accumulator (the default float, float64 under x64) they set the
+        kernel's dtype.
+
+    Returns
+    -------
+    rows : int
+        ``min(block_size, rows whose kernel matrix fits _KDE_BLOCK_KERNEL_BYTES)``,
+        at least one row when ``block_size`` is positive.
+    """
+    # _log_kernel_matrix accumulates into the default float type.
+    accumulator = jax.dtypes.canonicalize_dtype(jnp.float64)
+    itemsize = jnp.result_type(eval_points, samples, std, weights, accumulator).itemsize
+    budget_rows = _KDE_BLOCK_KERNEL_BYTES // (max(samples.shape[0], 1) * itemsize)
+    return min(block_size, max(1, budget_rows))
+
 
 def _traced_blocks(blocked, kernel, points, samples, std, block_size, weights):
     """Blocked KDE inside a trace, with a bounded graph for any row count.
 
-    Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced as ``blocked`` does. More
-    blocks run ``kernel`` in a loop over the same block size, with a
-    zero-padded final block evaluated and trimmed.
+    Rows per block are reduced so one block's kernel matrix fits
+    ``_KDE_BLOCK_KERNEL_BYTES``. Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced
+    as ``blocked`` does. More blocks run ``kernel`` in a loop over the same block
+    size, with a zero-padded final block evaluated and trimmed.
     """
     n_points = points.shape[0]
+    block_size = _kde_block_rows(block_size, points, samples, std, weights)
     n_blocks = -(-n_points // block_size)
     if n_blocks <= _UNROLLED_KDE_BLOCKS:
         return blocked(points, samples, std, block_size, weights)
@@ -1407,6 +1517,14 @@ def _traced_block_log_kde(
     )
 
 
+# Eager block_kde/block_log_kde with more blocks than _UNROLLED_KDE_BLOCKS run
+# these: one compiled loop over the blocks instead of one dispatch per block.
+_compiled_block_kde = jax.jit(_traced_block_kde, static_argnames=("block_size",))
+_compiled_block_log_kde = jax.jit(
+    _traced_block_log_kde, static_argnames=("block_size",)
+)
+
+
 @jax.jit
 def log_kde(
     eval_points: jnp.ndarray,
@@ -1461,7 +1579,8 @@ def block_log_kde(
     std : jnp.ndarray, shape (n_dims,)
         Standard deviation of the Gaussian kernel.
     block_size : int, optional
-        Size of blocks to do computation over, by default 100
+        Evaluation rows per block, by default 100. Reduced when needed so one
+        block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
     weights : jnp.ndarray, shape (n_samples,), optional
         Weights for each sample, by default None (uniform weights).
 
@@ -1478,6 +1597,9 @@ def block_log_kde(
         weights = jnp.ones((samples.shape[0],))
 
     # Collect per-block log-densities and concatenate once (see block_kde).
+    block_size = _kde_block_rows(block_size, eval_points, samples, std, weights)
+    if block_size > 0 and -(-n_eval // block_size) > _UNROLLED_KDE_BLOCKS:
+        return _compiled_block_log_kde(eval_points, samples, std, block_size, weights)
     blocks = [
         log_kde(eval_points[start : start + block_size], samples, std, weights)
         for start in range(0, n_eval, block_size)
@@ -1719,27 +1841,37 @@ def _spike_counts_matrix(
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> np.ndarray:
-    """Stack per-neuron spike counts into a ``(n_rows, n_neurons)`` matrix.
+    """Per-neuron spike counts as a ``(n_rows, n_neurons)`` matrix.
 
-    ``get_spikecount_per_time_bin`` bins spikes against the full ``time_edges`` and
-    selects those owned by ``row_slice`` internally, so no explicit pre-masking
-    is needed here. ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
+    Spikes are binned against the full ``time_edges`` and selected by
+    ``row_slice`` as in ``get_spikecount_per_time_bin``, so the values equal its
+    per-neuron counts. One ``bincount`` over ``row * n_neurons + neuron`` fills
+    the row-major matrix in a single pass instead of stacking columns. ``n_rows``
+    is ``n_bins`` unless ``row_slice`` is given.
     """
+    if _spike_time_order is None:
+        time_edges = validate_time_edges(time_edges)
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    counts = [
-        get_spikecount_per_time_bin(
+    n_rows, n_neurons = row_stop - row_start, len(spike_times)
+    if not n_neurons:
+        return np.zeros((n_rows, 0))
+    flat_index = [
+        select_spikes_in_rows(
             neuron_spike_times,
+            row_start,
+            row_stop,
             time_edges=time_edges,
-            row_slice=row_slice,
             _spike_time_order=_spike_time_order,
-        )
-        for neuron_spike_times in tqdm(
-            spike_times, unit="cell", desc=desc, disable=disable_progress_bar
+        ).bin_ind.astype(np.int64)
+        * n_neurons
+        + neuron
+        for neuron, neuron_spike_times in enumerate(
+            tqdm(spike_times, unit="cell", desc=desc, disable=disable_progress_bar)
         )
     ]
-    if not counts:  # zero neurons
-        return np.zeros((row_stop - row_start, 0))
-    return np.stack(counts, axis=1)
+    return np.bincount(
+        np.concatenate(flat_index), minlength=n_rows * n_neurons
+    ).reshape(n_rows, n_neurons)
 
 
 def decode_bin_centers(

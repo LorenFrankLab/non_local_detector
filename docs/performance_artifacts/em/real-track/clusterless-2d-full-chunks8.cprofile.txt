@@ -1,0 +1,48 @@
+         53563137 function calls (53533574 primitive calls) in 564.667 seconds
+
+   Ordered by: internal time
+   List reduced from 1268 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      223  374.347    1.679  468.764    2.102 {method 'acquire' of '_thread.lock' objects}
+      459   42.305    0.092   42.310    0.092 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/jax/_src/array.py:631(_value)
+     4944   19.189    0.004   19.215    0.004 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/jax/_src/interpreters/pxla.py:235(batched_device_put)
+       32   18.736    0.586   46.786    1.462 /tmp/nld-phase8-gpu/src/non_local_detector/likelihoods/clusterless_kde.py:955(compute_local_log_likelihood)
+     4177   15.947    0.004   15.982    0.004 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/jax/_src/dispatch.py:84(apply_primitive)
+        4   15.394    3.849   69.739   17.435 /tmp/nld-phase8-gpu/src/non_local_detector/core.py:784(chunked_filter_smoother)
+    10088   12.210    0.001   21.360    0.002 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/networkx/algorithms/shortest_paths/weighted.py:784(_dijkstra_multisource)
+      124    9.336    0.075    9.350    0.075 /tmp/nld-phase8-gpu/src/non_local_detector/likelihoods/common.py:1244(block_kde)
+        1    6.579    6.579    6.579    6.579 /tmp/nld-phase8-gpu/src/non_local_detector/models/base.py:3596(_create_masked_posterior)
+     1684    6.106    0.004    6.123    0.004 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/numpy/_core/numeric.py:323(full)
+ 17353440    4.050    0.000    6.567    0.000 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/networkx/algorithms/shortest_paths/weighted.py:78(<lambda>)
+      603    3.365    0.006    3.374    0.006 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/jax/_src/numpy/ufunc_api.py:175(__call__)
+        3    3.244    1.081    4.226    1.409 /tmp/nld-phase8-gpu/src/non_local_detector/discrete_state_transitions.py:295(_stationary_pair_sum)
+ 17447216    2.566    0.000    2.567    0.000 {method 'get' of 'dict' objects}
+    66233    2.503    0.000    2.503    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+        4    2.171    0.543    2.409    0.602 /tmp/nld-phase8-gpu/src/non_local_detector/continuous_state_transitions.py:15(_normalize_row_probability)
+        1    1.889    1.889   13.209   13.209 /tmp/nld-phase8-gpu/src/non_local_detector/models/base.py:1799(initialize_continuous_state_transition)
+    10564    1.299    0.000    1.299    0.000 {method 'searchsorted' of 'numpy.ndarray' objects}
+  3012459    1.177    0.000    1.177    0.000 {built-in method _heapq.heappop}
+    10088    1.073    0.000    3.235    0.000 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/scipy/stats/_multivariate.py:567(_logpdf)
+       64    1.067    0.017   71.552    1.118 /tmp/nld-phase8-gpu/src/non_local_detector/likelihoods/clusterless_kde.py:683(predict_clusterless_kde_log_likelihood)
+        3    1.036    0.345    3.500    1.167 /tmp/nld-phase8-gpu/src/non_local_detector/continuous_state_transitions.py:341(make_state_transition)
+       55    0.969    0.018  477.670    8.685 /home/edeno/.local/share/uv/python/cpython-3.13.7-linux-x86_64-gnu/lib/python3.13/threading.py:327(wait)
+    10088    0.935    0.000    4.326    0.000 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/scipy/stats/_multivariate.py:1026(pdf)
+      264    0.868    0.003    1.258    0.005 /tmp/nld-phase8-gpu/src/non_local_detector/encoding_time.py:174(interpolate)
+     1472    0.748    0.001    0.858    0.001 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/scipy/interpolate/_rgi.py:20(_check_points)
+136232/135784    0.638    0.000   57.024    0.000 {built-in method numpy.asarray}
+     1673    0.606    0.000    0.607    0.000 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/numpy/_core/numeric.py:170(ones)
+       64    0.554    0.009    2.545    0.040 /tmp/nld-phase8-gpu/src/non_local_detector/likelihoods/common.py:40(log_bin_duration_evidence)
+  3012459    0.548    0.000    0.548    0.000 {built-in method _heapq.heappush}
+     3520    0.503    0.000    0.503    0.000 {built-in method numpy._core._multiarray_umath._monotonicity}
+    10088    0.498    0.000    0.838    0.000 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/scipy/_lib/doccer.py:225(indentcount_lines)
+  2790766    0.467    0.000    0.467    0.000 {method 'items' of 'dict' objects}
+    10088    0.463    0.000    0.463    0.000 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/scipy/stats/_covariance.py:645(_whiten)
+  3022517    0.427    0.000    0.455    0.000 {built-in method builtins.next}
+      355    0.426    0.001    0.426    0.001 {built-in method numpy._core._multiarray_umath.interp}
+      736    0.424    0.001    0.431    0.001 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/scipy/interpolate/_rgi.py:520(_evaluate_linear)
+      736    0.390    0.001    0.408    0.001 /tmp/nld-phase8-gpu/.venv/lib/python3.13/site-packages/scipy/interpolate/_rgi.py:632(_find_indices)
+       55    0.381    0.007  587.459   10.681 /home/edeno/.local/share/uv/python/cpython-3.13.7-linux-x86_64-gnu/lib/python3.13/threading.py:641(wait)
+        1    0.301    0.301    7.819    7.819 /tmp/nld-phase8-gpu/src/non_local_detector/continuous_state_transitions.py:163(make_state_transition)
+
+

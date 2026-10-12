@@ -53,7 +53,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
@@ -312,12 +311,7 @@ def fit_sorted_spikes_kde_encoding_model(
     )
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
-        occupancy_samples = get_linearized_position(
-            occupancy_samples,
-            environment.track_graph,
-            edge_order=environment.edge_order,
-            edge_spacing=environment.edge_spacing,
-        ).linear_position.to_numpy()[:, None]
+        occupancy_samples = environment._linear_position(occupancy_samples)[:, None]
     occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
         occupancy_samples, weights=occupancy_weights
     )

@@ -406,3 +406,52 @@ def test_default_chunk_size_uses_the_likelihood_byte_budget(
     )
     assert passed == [expected]
     assert np.isfinite(result["acausal_state_probabilities"]).all()
+
+
+@pytest.mark.parametrize("output_mode", ["compact", "spatial"])
+def test_checkpointed_prediction_replay_cache(
+    checkpoint_recording, tmp_path, monkeypatch, output_mode
+):
+    """The replay reuses forward-pass rows: identical results, fewer evaluations."""
+    from non_local_detector import checkpointed_inference
+
+    driver = checkpointed_inference.checkpointed_forward_backward
+
+    def run(name, **kwargs):
+        calls = []
+
+        def counting_driver(time_edges, initial, likelihood, **driver_kwargs):
+            def counted(*args, **kw):
+                calls.append(kw["row_slice"].start)
+                return likelihood(*args, **kw)
+
+            return driver(time_edges, initial, counted, **driver_kwargs)
+
+        monkeypatch.setattr(
+            checkpointed_inference, "checkpointed_forward_backward", counting_driver
+        )
+        model, fit, predict = checkpoint_recording("sorted")
+        model.fit(**fit, transition_representation="structured")
+        result = model.predict(
+            **predict,
+            inference_mode="checkpointed",
+            output_mode=output_mode,
+            chunk_size=13,
+            result_path=tmp_path / name if output_mode == "spatial" else None,
+            **kwargs,
+        )
+        return result, len(calls)
+
+    uncached, uncached_calls = run("uncached", replay_cache_bytes=0)
+    cached, cached_calls = run("cached")
+    n_chunks = -(-100 // 13)
+    assert uncached_calls == 2 * n_chunks and cached_calls == n_chunks
+    for name in uncached.data_vars:
+        np.testing.assert_array_equal(cached[name].values, uncached[name].values)
+
+
+def test_dense_prediction_rejects_a_replay_cache(checkpoint_recording):
+    model, fit, predict = checkpoint_recording("sorted")
+    model.fit(**fit)
+    with pytest.raises(ValueError, match="checkpointed"):
+        model.predict(**predict, replay_cache_bytes=2**20)

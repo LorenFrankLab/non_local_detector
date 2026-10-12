@@ -443,6 +443,14 @@ def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
     return jnp.where(denominator != 0.0, numerator / safe_denominator, 0.0)
 
 
+# Time steps per scan iteration in the dense filter and smoother. On GPU each
+# step is a few small kernels, so the per-iteration loop overhead dominates
+# small state spaces: unrolling 8 steps made 514-bin scans 1.7x faster on an
+# A100 (21.7 -> 12.6 us per filter step) with no change on CPU. Larger unrolls
+# compile more slowly without further gain.
+_HMM_SCAN_UNROLL = 8
+
+
 def _filter_impl(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
@@ -454,6 +462,11 @@ def _filter_impl(
     diagnostics. This raw implementation runs ``jax.lax.scan`` and is wrapped
     by both the non-donating ``_filter_jit`` (used by the public ``filter``)
     and the donating ``_filter_internal`` (used by the chunked drivers).
+
+    The outputs are the filtered and predicted rows and each row's log
+    normalizer (evidence increment). The carried total is a running sum in
+    the working dtype, which the jit-composable :func:`filter` returns; the
+    chunked drivers report :func:`_float64_evidence` of the increments.
     """
 
     def _step(carry, ll):
@@ -463,9 +476,34 @@ def _filter_impl(
         log_normalizer += log_norm
         predicted_probs_next = filtered_probs @ transition_matrix
 
-        return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
+        return (log_normalizer, predicted_probs_next), (
+            filtered_probs,
+            predicted_probs,
+            log_norm,
+        )
 
-    return jax.lax.scan(_step, (0.0, initial_distribution), log_likelihoods)
+    return jax.lax.scan(
+        _step, (0.0, initial_distribution), log_likelihoods, unroll=_HMM_SCAN_UNROLL
+    )
+
+
+def _float64_evidence(increments: ArrayLike) -> float:
+    """Sum per-row evidence increments in float64.
+
+    A float32 running total over a long recording drifts by many units (713
+    over a million rows of about -17), enough to mislead EM's convergence and
+    monotonicity checks; the increments themselves are float32-accurate.
+    Infinities and NaNs propagate as in sequential addition.
+
+    Parameters
+    ----------
+    increments : array-like, shape (n_time,)
+
+    Returns
+    -------
+    evidence : float
+    """
+    return float(np.sum(np.asarray(increments), dtype=np.float64))
 
 
 # JIT-compiled non-donating implementation (safe to reuse inputs across calls)
@@ -536,12 +574,14 @@ def filter(
     log-likelihood is ``-inf`` but no step was all-``-inf``, an additional
     ``logger.warning`` is emitted.
     """
-    result = _filter_jit(initial_distribution, transition_matrix, log_likelihoods)
-    # result[0][0] is the marginal log-likelihood; forwarding it surfaces
-    # support-mismatch / underflow steps (a -inf marginal with no all-(-inf)
-    # step) that the per-step degeneracy check alone cannot see.
-    _warn_if_degenerate_timesteps(log_likelihoods, marginal_log_likelihood=result[0][0])
-    return result
+    (marginal, predicted_probs_next), (filtered, predicted, _) = _filter_jit(
+        initial_distribution, transition_matrix, log_likelihoods
+    )
+    # Forwarding the marginal surfaces support-mismatch / underflow steps (a
+    # -inf marginal with no all-(-inf) step) that the per-step degeneracy
+    # check alone cannot see.
+    _warn_if_degenerate_timesteps(log_likelihoods, marginal_log_likelihood=marginal)
+    return (marginal, predicted_probs_next), (filtered, predicted)
 
 
 def _smoother_impl(
@@ -598,6 +638,7 @@ def _smoother_impl(
         initial,
         (filtered_probs, ind),
         reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
     )[1]
 
 
@@ -863,7 +904,9 @@ def chunked_filter_smoother(
     causal_state_probabilities = []
     acausal_posterior = []
     acausal_state_probabilities = []
-    marginal_likelihood = 0.0
+    # Device increments, summed in float64 after the loop so the host does not
+    # wait for each chunk's filter.
+    chunk_increments = []
     n_degenerate_total = 0
     n_nan_total = 0
 
@@ -952,8 +995,8 @@ def chunked_filter_smoother(
         # arrays where the overhead exceeds the benefit. The optimization works correctly
         # for large production workloads.
         (
-            (marginal_likelihood_chunk, predicted_probs_next),
-            (causal_posterior_chunk, predicted_probs_chunk),
+            (_, predicted_probs_next),
+            (causal_posterior_chunk, predicted_probs_chunk, increments),
         ) = _filter_internal(
             initial_distribution=(
                 initial_distribution_jax if chunk_id == 0 else predicted_probs_next
@@ -973,8 +1016,12 @@ def chunked_filter_smoother(
             _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
 
-        marginal_likelihood += marginal_likelihood_chunk
+        chunk_increments.append(increments)
 
+    marginal_likelihood = 0.0
+    for increments in chunk_increments:
+        marginal_likelihood += _float64_evidence(increments)
+    del chunk_increments
     _warn_degenerate_and_nan_timesteps(
         n_degenerate_total,
         n_nan_total,
@@ -1222,7 +1269,7 @@ def _filter_covariate_dependent_impl(
     """JIT-compiled covariate-dependent forward pass.
 
     See :func:`filter_covariate_dependent` for the user-facing wrapper that
-    adds host-side diagnostics.
+    adds host-side diagnostics. Outputs as in :func:`_filter_impl`.
     """
 
     def _step(
@@ -1237,12 +1284,17 @@ def _filter_covariate_dependent_impl(
             discrete_transition_matrix_t, continuous_transition_matrix, state_ind
         )
 
-        return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
+        return (log_normalizer, predicted_probs_next), (
+            filtered_probs,
+            predicted_probs,
+            log_norm,
+        )
 
     return jax.lax.scan(
         _step,
         (0.0, initial_distribution),
         (log_likelihoods, discrete_transition_matrix),
+        unroll=_HMM_SCAN_UNROLL,
     )
 
 
@@ -1308,17 +1360,19 @@ def filter_covariate_dependent(
     log-likelihood is ``-inf`` but no step was all-``-inf``, an additional
     ``logger.warning`` is emitted.
     """
-    result = _filter_covariate_dependent_jit(
-        initial_distribution,
-        discrete_transition_matrix,
-        continuous_transition_matrix,
-        state_ind,
-        log_likelihoods,
+    (marginal, predicted_probs_next), (filtered, predicted, _) = (
+        _filter_covariate_dependent_jit(
+            initial_distribution,
+            discrete_transition_matrix,
+            continuous_transition_matrix,
+            state_ind,
+            log_likelihoods,
+        )
     )
-    # result[0][0] is the marginal log-likelihood (see Returns); forwarding it
-    # surfaces support-mismatch / underflow steps that are not all-(-inf).
-    _warn_if_degenerate_timesteps(log_likelihoods, marginal_log_likelihood=result[0][0])
-    return result
+    # Forwarding the marginal surfaces support-mismatch / underflow steps that
+    # are not all-(-inf).
+    _warn_if_degenerate_timesteps(log_likelihoods, marginal_log_likelihood=marginal)
+    return (marginal, predicted_probs_next), (filtered, predicted)
 
 
 def _smoother_covariate_dependent_impl(
@@ -1378,6 +1432,7 @@ def _smoother_covariate_dependent_impl(
         initial,
         (filtered_probs, discrete_transition_matrix, ind),
         reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
     )[1]
 
 
@@ -1493,7 +1548,9 @@ def chunked_filter_smoother_covariate_dependent(
     causal_state_probabilities = []
     acausal_posterior = []
     acausal_state_probabilities = []
-    marginal_likelihood = 0.0
+    # Device increments, summed in float64 after the loop so the host does not
+    # wait for each chunk's filter.
+    chunk_increments = []
     n_degenerate_total = 0
     n_nan_total = 0
 
@@ -1590,8 +1647,8 @@ def chunked_filter_smoother_covariate_dependent(
         # All are single-use per iteration - safe to donate
         # Note: Small arrays may trigger benign donation warnings in tests
         (
-            (marginal_likelihood_chunk, predicted_probs_next),
-            (causal_posterior_chunk, predicted_probs_chunk),
+            (_, predicted_probs_next),
+            (causal_posterior_chunk, predicted_probs_chunk, increments),
         ) = _filter_covariate_dependent_internal(
             initial_distribution=(
                 initial_distribution_jax if chunk_id == 0 else predicted_probs_next
@@ -1613,8 +1670,12 @@ def chunked_filter_smoother_covariate_dependent(
             _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
 
-        marginal_likelihood += marginal_likelihood_chunk
+        chunk_increments.append(increments)
 
+    marginal_likelihood = 0.0
+    for increments in chunk_increments:
+        marginal_likelihood += _float64_evidence(increments)
+    del chunk_increments
     _warn_degenerate_and_nan_timesteps(
         n_degenerate_total,
         n_nan_total,

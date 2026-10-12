@@ -414,20 +414,30 @@ def test_empty_eval_points_block_kde_zero_block_size():
 
 
 def test_dtype_parity_float32_float64():
+    """The float32 KDE agrees with a float64 evaluation of the same inputs."""
     r = rng(13)
     samples64 = r.normal(size=(120, 2)).astype(np.float64)
     eval64 = r.normal(size=(15, 2)).astype(np.float64)
-    std64 = jnp.array([0.9, 1.1], dtype=jnp.float64)
-    w64 = jnp.ones((samples64.shape[0],), dtype=jnp.float64)
-    out64 = kde(jnp.asarray(eval64), jnp.asarray(samples64), std64, w64)
-
-    samples32 = samples64.astype(np.float32)
-    eval32 = eval64.astype(np.float32)
-    std32 = jnp.array([0.9, 1.1], dtype=jnp.float32)
-    w32 = jnp.ones((samples32.shape[0],), dtype=jnp.float32)
-    out32 = kde(jnp.asarray(eval32), jnp.asarray(samples32), std32, w32)
-
-    assert jnp.allclose(out32.astype(jnp.float64), out64, rtol=1e-5, atol=1e-6)
+    with precision_mode(True):
+        out64 = kde(
+            jnp.asarray(eval64),
+            jnp.asarray(samples64),
+            jnp.array([0.9, 1.1], dtype=jnp.float64),
+            jnp.ones((samples64.shape[0],), dtype=jnp.float64),
+        )
+        assert out64.dtype == jnp.float64
+        out64 = np.asarray(out64)
+    with precision_mode(False):
+        out32 = kde(
+            jnp.asarray(eval64.astype(np.float32)),
+            jnp.asarray(samples64.astype(np.float32)),
+            jnp.array([0.9, 1.1], dtype=jnp.float32),
+            jnp.ones((samples64.shape[0],), dtype=jnp.float32),
+        )
+        assert out32.dtype == jnp.float32
+    np.testing.assert_allclose(
+        np.asarray(out32, np.float64), out64, rtol=1e-5, atol=1e-6
+    )
 
 
 def test_get_position_at_time_linear_interpolation():
@@ -528,3 +538,180 @@ def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
             eval_points, jnp.ones((1, 2), jnp.float32), std
         )
         assert _barrier_operand_sizes(singleton.jaxpr)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+def test_traced_block_kde_bounds_compiled_workspace(log_space):
+    """Kernel workspace stays bounded when samples grow with the recording.
+
+    A full 23.6 min clusterless recording evaluates the occupancy KDE at about
+    40k decoding spikes against about 700k position samples. Row blocks of
+    10,000 alone left a (rows x samples) workspace of 105.7 GiB.
+    """
+    from non_local_detector.likelihoods import common
+
+    traced = common._traced_block_log_kde if log_space else common._traced_block_kde
+    compiled = (
+        jax.jit(
+            lambda points, samples, weights: traced(
+                points, samples, jnp.ones(1), 10_000, weights
+            )
+        )
+        .lower(
+            jax.ShapeDtypeStruct((40_000, 1), jnp.float32),
+            jax.ShapeDtypeStruct((700_000, 1), jnp.float32),
+            jax.ShapeDtypeStruct((700_000,), jnp.float32),
+        )
+        .compile()
+    )
+    workspace = compiled.memory_analysis().temp_size_in_bytes
+    assert workspace <= 4 * common._KDE_BLOCK_KERNEL_BYTES, (
+        f"{workspace / 2**30:.1f} GiB"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
+    """Eager blocks shrink so one block's kernel matrix fits the byte budget."""
+    from non_local_detector.likelihoods import common
+
+    rng = np.random.default_rng(3)
+    points = jnp.asarray(rng.normal(size=(300, 2)).astype(np.float32))
+    samples = jnp.asarray(rng.normal(size=(5_000, 2)).astype(np.float32))
+    weights = jnp.asarray(rng.uniform(size=5_000).astype(np.float32))
+    std = jnp.array([0.7, 1.3])
+    direct = (log_kde if log_space else kde)(points, samples, std, weights)
+
+    # 64 rows of the kernel's dtype: float64 under x64 (8 bytes), else float32.
+    itemsize = np.dtype(jax.dtypes.canonicalize_dtype(jnp.float64)).itemsize
+    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * itemsize * 64)
+    kernel_name = "log_kde" if log_space else "kde"
+    original = getattr(common, kernel_name)
+    rows = []
+
+    def record(eval_points, *args):
+        rows.append(eval_points.shape[0])
+        return original(eval_points, *args)
+
+    monkeypatch.setattr(common, kernel_name, record)
+    blocked = (block_log_kde if log_space else block_kde)(
+        points, samples, std, 10_000, weights
+    )
+
+    assert max(rows) == 64 and sum(rows) == 300
+    np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+@pytest.mark.parametrize("all_float32", [False, True])
+def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
+    """Under x64 the kernel is float64 even when every operand is float32.
+
+    Its accumulator starts as the default float, so sizing blocks by the
+    operands alone assumed 4-byte elements and let the 8-byte kernel use twice
+    the budget.
+    """
+    from non_local_detector.likelihoods import common
+
+    with precision_mode(True):
+        rng = np.random.default_rng(3)
+        points = jnp.asarray(rng.normal(size=(300, 2)).astype(np.float32))
+        samples = jnp.asarray(rng.normal(size=(5_000, 2)).astype(np.float32))
+        std = jnp.array([0.7, 1.3], dtype=jnp.float32 if all_float32 else None)
+        weights = jnp.ones(5_000, dtype=jnp.float32) if all_float32 else None
+        monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * 8 * 64)
+        kernel_name = "log_kde" if log_space else "kde"
+        original = getattr(common, kernel_name)
+        blocks = []
+
+        def record(eval_points, *args):
+            result = original(eval_points, *args)
+            blocks.append((eval_points.shape[0], result.dtype.itemsize))
+            return result
+
+        monkeypatch.setattr(common, kernel_name, record)
+        (block_log_kde if log_space else block_kde)(
+            points, samples, std, 10_000, weights
+        )
+
+    assert {itemsize for _, itemsize in blocks} == {8}
+    assert max(rows for rows, _ in blocks) * 5_000 * 8 <= 5_000 * 8 * 64
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rows", [None, slice(0, 1), slice(3, 17), slice(20, 20)])
+@pytest.mark.parametrize("prepared", [False, True])
+def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
+    """The population count matrix equals stacked per-neuron counts exactly."""
+    from non_local_detector.likelihoods.common import (
+        _spike_counts_matrix,
+        _SpikeTimeOrder,
+    )
+
+    rng = np.random.default_rng(12)
+    edges = np.arange(41) * 0.25
+    spike_times = [
+        np.sort(rng.uniform(-0.3, 10.3, 60)),
+        rng.uniform(0.0, 10.0, 25),  # unsorted
+        np.array([0.25, 0.25, 0.5, 10.0, 10.0]),  # duplicates, closed final edge
+        np.array([]),
+    ]
+    order = _SpikeTimeOrder() if prepared else None
+    expected = np.stack(
+        [
+            get_spikecount_per_time_bin(
+                times, row_slice=rows, time_edges=edges, _spike_time_order=order
+            )
+            for times in spike_times
+        ],
+        axis=1,
+    )
+    actual = _spike_counts_matrix(
+        spike_times, edges, "counts", True, rows, _spike_time_order=order
+    )
+
+    assert actual.dtype == expected.dtype
+    np.testing.assert_array_equal(actual, expected)
+    assert _spike_counts_matrix([], edges, "counts", True, rows).shape == (
+        expected.shape[0],
+        0,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("log_space", [False, True])
+def test_block_kde_runs_many_blocks_in_one_compiled_loop(log_space, monkeypatch):
+    """More blocks than the unroll limit are one dispatch, not a Python loop.
+
+    A 709k-sample occupancy KDE needs blocks of about 94 rows, so a full
+    recording would otherwise dispatch thousands of small kernels per call.
+    """
+    from non_local_detector.likelihoods import common
+
+    rng = np.random.default_rng(4)
+    points = jnp.asarray(rng.normal(size=(1_000, 1)).astype(np.float32))
+    samples = jnp.asarray(rng.normal(size=(2_000, 1)).astype(np.float32))
+    weights = jnp.asarray(rng.uniform(size=2_000).astype(np.float32))
+    std = jnp.array([0.5])
+    direct = (log_kde if log_space else kde)(points, samples, std, weights)
+
+    # Blocks of 32 rows: 32 blocks, beyond the unrolled limit.
+    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 2_000 * 4 * 32)
+    kernel_name = "log_kde" if log_space else "kde"
+    original = getattr(common, kernel_name)
+    calls = []
+
+    def record(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(common, kernel_name, record)
+    blocked = (block_log_kde if log_space else block_kde)(
+        points, samples, std, 10_000, weights
+    )
+
+    assert len(calls) <= 1  # traced once inside the compiled loop
+    np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)

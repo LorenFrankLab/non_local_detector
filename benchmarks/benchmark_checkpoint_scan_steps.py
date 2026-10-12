@@ -57,6 +57,11 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=4096)
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--require-backend", choices=["cpu", "gpu"], default=None)
+    parser.add_argument(
+        "--pair-statistics",
+        action="store_true",
+        help="time the backward kernel with EM's transition statistics",
+    )
     parser.add_argument("--xprof-dir", type=Path, default=None)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -131,13 +136,22 @@ def main():
     row_ids = jnp.arange(rows)
 
     def backward():
-        return _backward_chunk(filtered, None, operator, filtered[-1], row_ids, rows)
+        return _backward_chunk(
+            filtered,
+            None,
+            operator,
+            filtered[-1],
+            row_ids,
+            rows,
+            pair_statistics=args.pair_statistics,
+        )
 
     report = {
         "family": args.family,
         "state_bins": int(n_bins),
         "state_sizes": [int(size) for size in operator.state_sizes],
         "chunk_size": rows,
+        "pair_statistics": args.pair_statistics,
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
@@ -161,7 +175,13 @@ def main():
             "backward",
             backward,
             _backward_chunk.lower(
-                filtered, None, operator, filtered[-1], row_ids, rows
+                filtered,
+                None,
+                operator,
+                filtered[-1],
+                row_ids,
+                rows,
+                pair_statistics=args.pair_statistics,
             ),
         ),
     ):

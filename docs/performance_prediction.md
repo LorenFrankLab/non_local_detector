@@ -2,7 +2,9 @@
 
 These opt-in APIs build on the 0.7 time/Hz contracts. Existing `fit()` and
 `predict()` calls keep their dense behavior. The modes apply to prediction with
-fitted parameters; EM and Viterbi retain their existing algorithms. For
+fitted parameters. Viterbi keeps its dense algorithm; EM runs on the same
+checkpointed driver when its default `"auto"` (or `"structured"`) chooses it (see
+[hardware_settings.md](hardware_settings.md#bounded-memory-em)). For
 suggested settings on 24 GB GPUs, A100s and CPUs, see
 [hardware_settings.md](hardware_settings.md).
 
@@ -97,7 +99,9 @@ probabilities and `["predictive_posterior"]` requests the spatial posterior.
 Checkpointed totals sum per-bin log-evidence increments in float64 on the host;
 posterior calculations keep their original precision. This avoids the existing
 hour-scale drift from repeatedly adding increments to a float32 total. The dense
-driver retains its previous total accumulation.
+chunked drivers (dense `predict` and EM) also sum per-row increments in float64;
+only the jit-composable `filter` and `filter_covariate_dependent` functions return
+a float32 running total.
 
 Checkpointed prediction uses `chunk_size`. Leave the older `n_chunks=1` and
 `cache_likelihood=False` controls at their defaults. By default each chunk holds
@@ -108,7 +112,17 @@ grid and a 30 s recording, the A100 device peak was 0.15 GB at 256 rows and
 1.48 GB at the default. On CPU, where chunks live in host memory, peak RSS was
 1.1 GB (sorted) and 1.0 GB (clusterless) at 256 rows against 3.3 GB for both at
 the default, at about the same speed. Pass a smaller `chunk_size` to fit a
-smaller budget. `checkpoint_dir` chooses
+smaller budget.
+
+The replay evaluates each chunk's likelihood again unless the forward pass kept
+it: `replay_cache_bytes` keeps forward-pass rows in host memory, `n_bins` float32
+values per row, by default up to 16 GiB or half the available host memory,
+whichever is smaller. When no likelihood or predictive output is requested the
+filtered rows are kept, so a cached chunk is also not filtered again; otherwise
+the likelihood is kept. Chunks beyond the budget are recomputed, so a smaller
+budget costs time, not correctness. The peak memory figures above were measured
+without the cache; with it, host memory grows by up to the budget. Pass
+`replay_cache_bytes=0` to keep the previous host footprint. `checkpoint_dir` chooses
 where temporary boundary files are written; files are removed after success or
 failure. Supplying `result_path` also persists compact outputs when desired.
 
@@ -180,11 +194,15 @@ prediction, but does not avoid dense setup or bound arbitrary custom workspace.
 For structured models, `continuous_state_transitions_` is a read-only lazy dense
 view. Feasible selections and explicit conversion are budgeted; oversized dense
 access from plotting, dense prediction or Viterbi fails before allocation.
-Pickling retains the compact operator. EM refits its model using the existing
-dense path; checkpointed prediction does not make EM or Viterbi suitable for
-full-hour spatial workloads. Use a separate feasible configuration to estimate
-parameters; [hardware_settings.md](hardware_settings.md#parameter-estimation-em)
-lists measured EM memory and run time.
+Pickling retains the compact operator. `estimate_parameters` chooses dense or
+structured EM by default (`transition_representation="auto"`); structured EM
+runs every E-step on the checkpointed driver, so its device memory does not
+grow with recording length (2.4 GB for 23.6 min on a 2 cm 2-D grid). Its host memory still holds the returned posterior unless `result_path`
+is given, and the clusterless KDE likelihood's cost grows faster than the
+recording during EM. Viterbi stays dense and is not suitable for full-hour
+spatial workloads.
+[hardware_settings.md](hardware_settings.md#parameter-estimation-em) lists
+measured EM memory and run time.
 
 ## Missing data and sequences
 
@@ -230,7 +248,6 @@ precision, process peaks and disk usage. `--platform gpu` fails if CUDA is
 unavailable. Shortened recordings and synthetic populations establish only the
 configurations recorded in their reports; CPU measurements do not qualify CUDA
 or smaller GPU hardware. Full-hour production claims require measured runs at
-1 cm and 2 cm and declared host/device/disk budgets. A known correctness issue
-remains in unoccupied MRF components. See the
+1 cm and 2 cm and declared host/device/disk budgets. See the
 [validation record](performance_validation.md) for measured configurations,
 source provenance and limits.

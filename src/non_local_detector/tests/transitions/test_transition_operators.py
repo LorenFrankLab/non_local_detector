@@ -27,6 +27,7 @@ from non_local_detector.models._defaults import _ModelDefaults
 from non_local_detector.models.base import _DetectorBase
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.transition_operators import (
+    DEFAULT_MAX_DENSE_BYTES,
     DenseTransitionBudgetError,
     LazyDenseTransition,
     UnsupportedTransitionError,
@@ -446,6 +447,74 @@ def test_default_four_state_and_multibin_local_match_original_masks_and_rectangu
         )
 
 
+def pair_reference(continuous, state_ind, weights, filtered, ratio):
+    """``w[i, j] * sum over x in i, y in j of filtered[x] C[x, y] ratio[y]``."""
+    n_states = weights.shape[0]
+    xi = filtered[:, None] * continuous * ratio[None, :]
+    onehot = np.eye(n_states)[state_ind]
+    return weights * (onehot.T @ xi @ onehot)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("local_std", [None, 2.0])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("fused", [False, True])
+def test_pair_products_aggregate_each_state_pair(local_std, dtype, fused):
+    """Per-step discrete transition statistics from the structured blocks."""
+    with enable_x64(dtype == np.float64):
+        env, observations, transitions, sizes, mask = default_layout(local_std)
+        dense, state_ind = dense_reference(
+            transitions, [env], sizes, observations, local_std
+        )
+        operator = build_transition_operator(
+            transitions, [env], sizes, observations, local_std
+        )
+        weights = np.array(
+            [
+                [0.6, 0, 0.1, 0.3],
+                [0.1, 0.7, 0.1, 0.1],
+                [0.2, 0.1, 0.65, 0.05],
+                [0, 0.1, 0.3, 0.6],
+            ]
+        )
+        rng = np.random.default_rng(7)
+        tolerance = (
+            {"rtol": 1e-5, "atol": 1e-7}
+            if dtype == np.float32
+            else {"rtol": 1e-12, "atol": 1e-14}
+        )
+        for restriction in (None, mask):
+            selected = (
+                np.arange(len(state_ind))
+                if restriction is None
+                else np.flatnonzero(restriction)
+            )
+            base = operator if restriction is None else operator.restricted(mask)
+            filtered = rng.uniform(0.0, 1.0, len(selected))
+            ratio = rng.uniform(0.0, 2.0, len(selected))
+            expected = pair_reference(
+                dense[np.ix_(selected, selected)],
+                state_ind[selected],
+                weights,
+                filtered,
+                ratio,
+            )
+            args = (
+                jnp.asarray(filtered, dtype=dtype),
+                jnp.asarray(ratio, dtype=dtype),
+            )
+            bound = product_operator(base.bind_discrete(weights), fused)
+            np.testing.assert_allclose(
+                jax.jit(bound.pair_products)(*args), expected, **tolerance
+            )
+            per_step = product_operator(base, fused)
+            actual = jax.jit(per_step.pair_products)(
+                *args, jnp.asarray(weights, dtype=dtype)
+            )
+            assert actual.dtype == dtype
+            np.testing.assert_allclose(actual, expected, **tolerance)
+
+
 @pytest.mark.unit
 def test_rectangular_multienvironment_uniform_blocks():
     env1, env2 = environment((4, 3), "one"), environment((3, 5), "two")
@@ -742,7 +811,7 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
             jnp.asarray(discrete),
         )
         if covariate:
-            expected_final, (filtered, predicted) = _filter_covariate_dependent_impl(
+            expected_final, (filtered, predicted, _) = _filter_covariate_dependent_impl(
                 initial, discrete, dense, state_ind, likelihood
             )
             smoothed = _smoother_covariate_dependent_impl(
@@ -754,7 +823,7 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
                 dense
                 * discrete[0][np.ix_(np.asarray(state_ind), np.asarray(state_ind))]
             )
-            expected_final, (filtered, predicted) = _filter_impl(
+            expected_final, (filtered, predicted, _) = _filter_impl(
                 initial, joint, likelihood
             )
             smoothed = _smoother_impl(joint, filtered)
@@ -855,3 +924,97 @@ def test_hmm_boundary_gradients_match_dense_reference(all_impossible, fused):
         for left, right in zip(actual, expected, strict=True):
             assert np.all(np.isfinite(left))
             np.testing.assert_allclose(left, right, rtol=1e-12, atol=1e-13)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dense_gaussian_bytes", [None, 0])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_fused_gaussian_blocks_within_budget_are_dense(
+    dense_gaussian_bytes, dtype, monkeypatch
+):
+    """A small restricted Gaussian block is stored dense (one matrix-vector
+    product per step instead of several small kernels); above the budget it
+    keeps its separable product. Both match the dense reference."""
+    from non_local_detector import transition_operators
+
+    if dense_gaussian_bytes is not None:
+        monkeypatch.setattr(
+            transition_operators, "_DENSE_GAUSSIAN_BLOCK_BYTES", dense_gaussian_bytes
+        )
+    with enable_x64(dtype == np.float64):
+        env = environment((6, 7))
+        transitions = [[RandomWalk(movement_var=np.diag([0.9, 1.7]))]]
+        sizes = (len(env.place_bin_centers_),)
+        dense, _ = dense_reference(transitions, [env], sizes)
+        mask = env.is_track_interior_.ravel()
+        operator = build_transition_operator(transitions, [env], sizes).restricted(mask)
+        fused = operator.fused()
+        expected = (
+            transition_operators.DenseBlock
+            if dense_gaussian_bytes is None
+            else transition_operators.RestrictedBlock
+        )
+        assert [type(block) for block in fused.blocks] == [expected]
+        assert_products(fused, dense[np.ix_(mask, mask)], dtype)
+        rng = np.random.default_rng(7)
+        filtered = jnp.asarray(rng.uniform(0.01, 1, mask.sum()), dtype=dtype)
+        ratio = jnp.asarray(rng.uniform(0.5, 2, mask.sum()), dtype=dtype)
+        np.testing.assert_allclose(
+            fused.pair_products(filtered, ratio),
+            operator.pair_products(filtered, ratio),
+            rtol=1e-6 if dtype == np.float32 else 1e-12,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n_dense", [0, 2, 4])
+def test_dense_gaussian_blocks_count_against_the_dense_budget(n_dense):
+    """Gaussian blocks stored dense are retained dense matrices, so together
+    they stay within ``max_dense_bytes``; the rest keep separable products."""
+    from non_local_detector import transition_operators
+
+    env = environment((6, 7))
+    n = len(env.place_bin_centers_)
+    walk = RandomWalk(movement_var=np.diag([0.9, 1.7]))
+    transitions = [[walk, walk], [walk, walk]]
+    dense, _ = dense_reference(transitions, [env], (n, n))
+    mask = np.tile(env.is_track_interior_.ravel(), 2)
+    operator = build_transition_operator(transitions, [env], (n, n)).restricted(mask)
+    block_bytes = int(mask[:n].sum()) ** 2 * 8
+    fused = operator.fused(max_dense_bytes=n_dense * block_bytes)
+    kinds = [type(block) for block in fused.blocks]
+    assert kinds.count(transition_operators.DenseBlock) == n_dense
+    assert kinds.count(transition_operators.RestrictedBlock) == 4 - n_dense
+    assert_products(fused, dense[np.ix_(mask, mask)], np.float32)
+    rng = np.random.default_rng(8)
+    filtered = jnp.asarray(rng.uniform(0.01, 1, mask.sum()), dtype=np.float32)
+    ratio = jnp.asarray(rng.uniform(0.5, 2, mask.sum()), dtype=np.float32)
+    np.testing.assert_allclose(
+        fused.pair_products(filtered, ratio),
+        operator.pair_products(filtered, ratio),
+        rtol=1e-6,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("max_dense_bytes", [0, DEFAULT_MAX_DENSE_BYTES])
+def test_backward_and_pairs_matches_separate_products(max_dense_bytes):
+    """The smoother's combined product reuses each block's backward product
+    for the transition statistics, with separable or dense Gaussian blocks."""
+    env = environment((6, 7))
+    n = len(env.place_bin_centers_)
+    walk = RandomWalk(movement_var=np.diag([0.9, 1.7]))
+    transitions = [[walk, Uniform()], [Uniform(), walk]]
+    mask = np.tile(env.is_track_interior_.ravel(), 2)
+    fused = (
+        build_transition_operator(transitions, [env], (n, n))
+        .restricted(mask)
+        .bind_discrete(np.array([[0.9, 0.1], [0.2, 0.8]]))
+        .fused(max_dense_bytes)
+    )
+    rng = np.random.default_rng(9)
+    filtered = jnp.asarray(rng.uniform(0.01, 1, mask.sum()), dtype=np.float32)
+    ratio = jnp.asarray(rng.uniform(0.5, 2, mask.sum()), dtype=np.float32)
+    backward, pairs = jax.jit(fused.backward_and_pairs)(ratio, filtered)
+    np.testing.assert_allclose(backward, fused.backward(ratio), rtol=1e-6)
+    np.testing.assert_allclose(pairs, fused.pair_products(filtered, ratio), rtol=1e-6)

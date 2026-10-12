@@ -1,0 +1,48 @@
+         53989299 function calls (53956849 primitive calls) in 488.754 seconds
+
+   Ordered by: internal time
+   List reduced from 1476 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      195  343.021    1.759  401.738    2.060 {method 'acquire' of '_thread.lock' objects}
+     3187   51.468    0.016   51.498    0.016 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/jax/_src/array.py:631(_value)
+        4   21.986    5.497   59.642   14.911 /tmp/nld-diffusion-fix/src/non_local_detector/core.py:784(chunked_filter_smoother)
+    10088   12.861    0.001   22.192    0.002 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/networkx/algorithms/shortest_paths/weighted.py:784(_dijkstra_multisource)
+     1808    9.134    0.005    9.148    0.005 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/numpy/_core/numeric.py:323(full)
+       64    4.202    0.066   25.996    0.406 /tmp/nld-diffusion-fix/src/non_local_detector/likelihoods/clusterless_diffusion.py:749(predict_clusterless_diffusion_log_likelihood)
+ 17353440    4.031    0.000    6.793    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/networkx/algorithms/shortest_paths/weighted.py:78(<lambda>)
+       48    3.996    0.083  515.105   10.731 /home/edeno/miniconda3/lib/python3.13/threading.py:641(wait)
+ 17453688    2.814    0.000    2.814    0.000 {method 'get' of 'dict' objects}
+        3    2.770    0.923    4.243    1.414 /tmp/nld-diffusion-fix/src/non_local_detector/discrete_state_transitions.py:295(_stationary_pair_sum)
+    67482    2.637    0.000    2.637    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+        4    2.024    0.506    2.246    0.562 /tmp/nld-diffusion-fix/src/non_local_detector/continuous_state_transitions.py:15(_normalize_row_probability)
+      427    1.315    0.003    1.322    0.003 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/jax/_src/numpy/ufunc_api.py:175(__call__)
+        1    1.252    1.252    1.252    1.252 /tmp/nld-diffusion-fix/src/non_local_detector/models/base.py:3596(_create_masked_posterior)
+    10088    1.171    0.000    3.517    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/stats/_multivariate.py:567(_logpdf)
+  3012459    1.158    0.000    1.158    0.000 {built-in method _heapq.heappop}
+    12220    1.147    0.000    1.147    0.000 {method 'searchsorted' of 'numpy.ndarray' objects}
+    10088    1.076    0.000    4.772    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/stats/_multivariate.py:1026(pdf)
+     4269    0.966    0.000    0.991    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/jax/_src/dispatch.py:84(apply_primitive)
+        3    0.902    0.301    3.078    1.026 /tmp/nld-diffusion-fix/src/non_local_detector/continuous_state_transitions.py:341(make_state_transition)
+        1    0.872    0.872    2.935    2.935 /tmp/nld-diffusion-fix/src/non_local_detector/models/base.py:1799(initialize_continuous_state_transition)
+      264    0.866    0.003    1.252    0.005 /tmp/nld-diffusion-fix/src/non_local_detector/encoding_time.py:174(interpolate)
+    10089    0.740    0.000    1.039    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/linalg/_decomp.py:284(eigh)
+150109/148341    0.643    0.000   40.687    0.000 {built-in method numpy.asarray}
+     1480    0.616    0.000    0.708    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/interpolate/_rgi.py:20(_check_points)
+      740    0.565    0.001    0.571    0.001 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/interpolate/_rgi.py:520(_evaluate_linear)
+       48    0.536    0.011  412.272    8.589 /home/edeno/miniconda3/lib/python3.13/threading.py:327(wait)
+  3012459    0.527    0.000    0.527    0.000 {built-in method _heapq.heappush}
+     6211    0.516    0.000    0.543    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/jax/_src/interpreters/pxla.py:235(batched_device_put)
+    10088    0.513    0.000    0.888    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/_lib/doccer.py:225(indentcount_lines)
+    10088    0.496    0.000    0.496    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/stats/_covariance.py:645(_whiten)
+     1675    0.493    0.000    0.495    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/numpy/_core/numeric.py:170(ones)
+  2799211    0.476    0.000    0.476    0.000 {method 'items' of 'dict' objects}
+      740    0.453    0.001    0.473    0.001 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/scipy/interpolate/_rgi.py:632(_find_indices)
+      355    0.430    0.001    0.430    0.001 {built-in method numpy._core._multiarray_umath.interp}
+  3025179    0.417    0.000    0.444    0.000 {built-in method builtins.next}
+     3520    0.330    0.000    0.330    0.000 {built-in method numpy._core._multiarray_umath._monotonicity}
+        1    0.295    0.295    8.547    8.547 /tmp/nld-diffusion-fix/src/non_local_detector/continuous_state_transitions.py:163(make_state_transition)
+     1532    0.290    0.000   14.856    0.010 /tmp/nld-diffusion-fix/src/non_local_detector/likelihoods/common.py:135(validate_finite)
+     6275    0.247    0.000    2.582    0.000 /cumulus/edeno/non_local_detector/.venv/lib/python3.13/site-packages/jax/_src/api.py:2641(device_put)
+
+

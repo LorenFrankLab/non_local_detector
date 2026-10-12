@@ -13,6 +13,10 @@ from non_local_detector.core import (
     smoother,
     smoother_covariate_dependent,
 )
+from non_local_detector.discrete_state_transitions import (
+    estimate_discrete_transition_counts_from_expanded_posteriors,
+    estimate_discrete_transition_responses_from_factorized_posteriors,
+)
 from non_local_detector.result_store import open_result_store
 from non_local_detector.tests.conftest import precision_mode
 
@@ -70,7 +74,9 @@ def test_dense_reference_and_global_callbacks(tmp_path, covariate, chunk_size):
     def likelihood(time_edges, *, row_slice, is_missing):
         assert time_edges is edges
         calls.append((row_slice.start, row_slice.stop))
-        assert row_slice.stop - row_slice.start <= chunk_size
+        # Every call has one shape, so compiled likelihoods are reused: a
+        # short last chunk is evaluated over the final chunk_size rows.
+        assert row_slice.stop - row_slice.start == min(chunk_size, len(ll))
         return ll[row_slice]
 
     result = checkpointed_forward_backward(
@@ -110,6 +116,101 @@ def test_dense_reference_and_global_callbacks(tmp_path, covariate, chunk_size):
     loaded = open_result_store(tmp_path / "result")
     xr.testing.assert_equal(loaded, dataset)
     assert len(calls) == result.diagnostics["likelihood_evaluations"]
+
+
+@pytest.mark.parametrize("covariate", [False, True])
+@pytest.mark.parametrize("chunk_size", [1, 4, 13, 20])
+def test_transition_statistics_match_dense_posterior_estimates(covariate, chunk_size):
+    """Counts (stationary) or per-row responses (covariate) from the replay."""
+    edges, initial, ll, state_ind, kwargs, reference = problem(covariate)
+    _, causal, predictive, acausal = reference
+    if covariate:
+        expected = estimate_discrete_transition_responses_from_factorized_posteriors(
+            causal,
+            predictive,
+            acausal,
+            kwargs["continuous_transition_matrix"],
+            kwargs["discrete_transition_matrix"],
+            state_ind,
+        )
+    else:
+        expected = estimate_discrete_transition_counts_from_expanded_posteriors(
+            causal, predictive, acausal, kwargs["transition_matrix"], state_ind
+        )
+
+    result = checkpointed_forward_backward(
+        edges,
+        initial,
+        lambda edges, **kw: ll[kw["row_slice"]],
+        state_ind=state_ind,
+        chunk_size=chunk_size,
+        transition_statistics="responses" if covariate else "counts",
+        **kwargs,
+    )
+    np.testing.assert_allclose(
+        result.transition_statistics, expected, rtol=1e-5, atol=1e-6
+    )
+    np.testing.assert_allclose(result.first_smoothed, acausal[0], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(
+        result.dataset.acausal_state_probabilities[:, 0],
+        acausal[:, state_ind == 0].sum(1),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+@pytest.mark.parametrize("budget_chunks", [0, 2, 4])
+@pytest.mark.parametrize("keep_likelihood", [False, True])
+def test_replay_cache_skips_recomputation(
+    tmp_path, monkeypatch, budget_chunks, keep_likelihood
+):
+    """Forward-pass rows cached in host RAM are not computed again in the replay.
+
+    Outputs that need only filtered rows cache those, so a cached chunk skips
+    both its likelihood and its replayed forward pass; outputs that include the
+    likelihood cache the likelihood instead.
+    """
+    import non_local_detector.checkpointed_inference as checkpointed
+
+    edges, initial, ll, state_ind, kwargs, reference = problem(n_time=13)
+    chunk_size = 4  # four chunks: rows 0-3, 4-7, 8-11, 12
+    calls, replays = [], []
+
+    def likelihood(time_edges, *, row_slice, is_missing):
+        calls.append(row_slice.start)
+        return ll[row_slice]
+
+    original = checkpointed._forward_chunk
+
+    def forward(*args, keep_rows, **kw):
+        # Replayed forward passes keep their rows and do not need increments.
+        if keep_rows and not kw.get("keep_increments", False):
+            replays.append(1)
+        return original(*args, keep_rows=keep_rows, **kw)
+
+    monkeypatch.setattr(checkpointed, "_forward_chunk", forward)
+    outputs = ("acausal_posterior",) + (("log_likelihood",) if keep_likelihood else ())
+    result = checkpointed_forward_backward(
+        edges,
+        initial,
+        likelihood,
+        state_ind=state_ind,
+        chunk_size=chunk_size,
+        output_mode="spatial",
+        result_path=tmp_path / "result",
+        return_outputs=outputs,
+        replay_cache_bytes=budget_chunks * chunk_size * ll.shape[1] * 4,
+        **kwargs,
+    )
+    # The first budget_chunks chunks are cached; the rest are replayed.
+    assert len(calls) == 4 + 4 - budget_chunks
+    assert result.diagnostics["likelihood_evaluations"] == len(calls)
+    assert len(replays) == (4 if keep_likelihood else 4 - budget_chunks)
+    np.testing.assert_allclose(
+        result.dataset.acausal_posterior, reference[3], rtol=1e-5, atol=1e-6
+    )
+    if keep_likelihood:
+        np.testing.assert_array_equal(result.dataset.log_likelihood, ll)
 
 
 @pytest.mark.parametrize("covariate", [False, True])
@@ -187,6 +288,55 @@ def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
         assert result.diagnostics["n_nan"] == 1
 
 
+@pytest.mark.parametrize(
+    "kind", ["missing", "impossible", "nan", "support_mismatch", "zero_transition"]
+)
+def test_transition_statistics_follow_degenerate_row_semantics(kind):
+    """Counts from the replay match the dense estimate on unusual rows.
+
+    Covers impossible and NaN rows, missing rows, and predicted probabilities
+    of exactly zero (the ratio's zero-denominator rule).
+    """
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    missing = np.zeros(len(ll), bool)
+    if kind == "missing":
+        missing[3:5] = True
+    elif kind == "impossible":
+        ll[4] = -np.inf
+    elif kind == "nan":
+        ll[4, 1] = np.nan
+    elif kind == "support_mismatch":
+        kwargs["transition_matrix"] = np.eye(4, dtype=np.float32)
+        initial = np.array([1, 0, 0, 0], dtype=np.float32)
+        ll[4] = [-np.inf, 0, 0, 0]
+    else:
+        transition = kwargs["transition_matrix"].copy()
+        transition[:, 3] = 0.0
+        transition /= transition.sum(1, keepdims=True)
+        kwargs["transition_matrix"] = transition
+    effective = np.where(missing[:, None], 0, ll)
+    (_, _), (causal, predictive) = filter(
+        initial, kwargs["transition_matrix"], effective
+    )
+    acausal = smoother(kwargs["transition_matrix"], causal)
+    expected = estimate_discrete_transition_counts_from_expanded_posteriors(
+        causal, predictive, acausal, kwargs["transition_matrix"], state_ind
+    )
+    result = checkpointed_forward_backward(
+        edges,
+        initial,
+        lambda edges, **kw: ll[kw["row_slice"]],
+        state_ind=state_ind,
+        chunk_size=3,
+        is_missing=missing,
+        transition_statistics="counts",
+        **kwargs,
+    )
+    np.testing.assert_allclose(
+        result.transition_statistics, expected, rtol=1e-5, atol=1e-6, equal_nan=True
+    )
+
+
 def test_failure_leaves_no_completed_output_or_checkpoints(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     calls = 0
@@ -253,6 +403,25 @@ def test_operator_forward_backward_protocol(tmp_path):
     np.testing.assert_allclose(
         result.dataset.acausal_posterior, reference[3], rtol=1e-5, atol=1e-6
     )
+
+
+def test_transition_statistics_need_pair_products():
+    """An operator without pair_products fails before any likelihood call."""
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    calls = []
+
+    with pytest.raises(TypeError, match="pair_products"):
+        checkpointed_forward_backward(
+            edges,
+            initial,
+            lambda edges, **kw: calls.append(1) or ll[kw["row_slice"]],
+            transition_operator=MatrixProductOperator(
+                jnp.asarray(kwargs["transition_matrix"])
+            ),
+            state_ind=state_ind,
+            transition_statistics="counts",
+        )
+    assert calls == []
 
 
 @pytest.mark.parametrize("bad", [0, -1, 1.5, True])
@@ -437,7 +606,8 @@ def test_replay_change_in_an_earlier_chunk_fails_atomically(tmp_path):
             chunk_size=4,
             **kwargs,
         )
-    assert calls == {0: 2, 4: 2, 8: 2, 12: 2}
+    # The short last chunk (row 12) is evaluated over the final four rows.
+    assert calls == {0: 2, 4: 2, 8: 2, 9: 2}
     assert not (tmp_path / "result").exists()
     assert not list(tmp_path.glob(".result-*"))
 
@@ -1010,3 +1180,85 @@ def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail,
     np.testing.assert_array_equal(result.dataset.acausal_state_probabilities, expected)
     assert len(calls) == 2 * len(ll)
     assert not list(tmp_path.glob("checkpoints-*"))
+
+
+_GiB = 2**30
+
+
+@pytest.mark.parametrize(
+    "membership, files, expected",
+    [
+        # cgroup v2: the process's own cgroup.
+        (
+            "0::/\n",
+            {"memory.max": f"{8 * _GiB}", "memory.current": f"{_GiB}"},
+            7 * _GiB,
+        ),
+        ("0::/\n", {"memory.max": "max", "memory.current": f"{_GiB}"}, None),
+        # cgroup v2: an inherited 8 GiB parent limit under an unlimited leaf.
+        (
+            "0::/a/b\n",
+            {
+                "a/memory.max": f"{8 * _GiB}",
+                "a/memory.current": f"{_GiB}",
+                "a/b/memory.max": "max",
+                "a/b/memory.current": f"{_GiB}",
+            },
+            7 * _GiB,
+        ),
+        # cgroup v2: the smallest remaining allowance among the ancestors.
+        (
+            "0::/a/b\n",
+            {
+                "a/memory.max": f"{8 * _GiB}",
+                "a/memory.current": f"{_GiB}",
+                "a/b/memory.max": f"{4 * _GiB}",
+                "a/b/memory.current": f"{2 * _GiB}",
+            },
+            2 * _GiB,
+        ),
+        # cgroup v1: the memory controller's own path, nested under a limit.
+        (
+            "5:cpuacct,memory:/a/b\n4:cpu:/\n0::/\n",
+            {
+                "memory/a/memory.limit_in_bytes": f"{4 * _GiB}",
+                "memory/a/memory.usage_in_bytes": f"{_GiB}",
+                "memory/a/b/memory.limit_in_bytes": "9223372036854771712",
+                "memory/a/b/memory.usage_in_bytes": f"{_GiB}",
+            },
+            3 * _GiB,
+        ),
+        # cgroup v1 in a container: the host-side path is not mounted, so the
+        # container's limit is at the mount root.
+        (
+            "4:memory:/docker/abc\n",
+            {
+                "memory/memory.limit_in_bytes": f"{4 * _GiB}",
+                "memory/memory.usage_in_bytes": f"{_GiB}",
+            },
+            3 * _GiB,
+        ),
+        ("4:memory:/\n", {"memory/memory.limit_in_bytes": "9223372036854771712"}, None),
+        ("", {}, None),
+    ],
+)
+def test_cgroup_memory_allowance(tmp_path, membership, files, expected):
+    """A container's memory limit, on its own cgroup or an ancestor, caps the
+    default replay cache."""
+    from non_local_detector.checkpointed_inference import _cgroup_remaining_bytes
+
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n")
+    assert _cgroup_remaining_bytes(tmp_path, membership=membership) == expected
+
+
+def test_available_host_memory_respects_the_container(monkeypatch):
+    from non_local_detector import checkpointed_inference
+
+    monkeypatch.setattr(
+        checkpointed_inference, "_cgroup_remaining_bytes", lambda: 2**30
+    )
+    assert checkpointed_inference._available_host_bytes() <= 2**30
+    assert checkpointed_inference.default_replay_cache_bytes() <= 2**29

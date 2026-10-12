@@ -27,7 +27,7 @@ segment of your own data before a long run.
 | `chunk_size` | Default | Default | Default; `256` cuts RAM about 3× at similar speed |
 | Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB pool | 3.3–3.5 GB of RAM at 2 cm (4.0 GB with 256 units; about 1 GB with `chunk_size=256`) |
 | Decoding one hour at 2 cm | 6 min (sorted), 11 min (clusterless), including compilation | Not measured | About 30 min (projected from 30 s runs) |
-| EM | 60 s at 2 cm used 15.5 GB of device memory | 60 s at 2 cm should fit (15.5 GB on the A100); longer sessions need a coarser grid or a shorter segment | 60 s at 4 cm took 8–9 min and 10 GB of RAM |
+| EM | Structured EM: 23.6 min at 2 cm in 2.4 GB of device memory, 272 s for 3 iterations after compilation; dense EM needed `n_chunks=8` and 56 GB there | Structured EM should fit (2.4–3.6 GB device peaks on the A100, 2–4 cm); dense EM: 60 s at 2 cm (15.5 GB on the A100) | Dense EM: 60 s at 4 cm took 8–9 min and 10 GB of RAM; structured EM on CPU not measured |
 | Precision | float32 (default) | float32; float64 is slow on most 24 GB cards | float32 |
 
 ## GPU setup
@@ -101,12 +101,85 @@ number of encoding spikes. If they don't fit, set `encoding_block_size` and
 
 ## Parameter estimation (EM)
 
-`estimate_parameters` always uses the dense filter and smoother. It keeps
-several arrays of size (time bins × state bins) in memory, so its memory grows
-with session length. At 2 cm each such float32 array takes about 2 GB per minute
-of recording; at 4 cm, about 0.53 GB.
+`estimate_parameters` runs one of two EM algorithms, and by default
+(`transition_representation="auto"`) chooses between them:
 
-Measured with 60 s sessions and 3 EM iterations:
+| Your data | What runs by default | What to pass |
+| --- | --- | --- |
+| Linearized track, or a coarse 2-D grid (4 cm in a 180 cm arena) | Dense EM (faster there) | Nothing |
+| Finer 2-D grids, or sessions whose dense arrays would not fit | Structured EM (bounded device memory) | `result_path=...` to keep host memory bounded too |
+| Reproducing older results exactly | — | `transition_representation="dense"` |
+
+`results.attrs["em_transition_representation"]` records which ran, with the
+chunking it used.
+
+**Dense EM** keeps several arrays of size (time bins × state bins) in memory,
+so its memory grows with the session. In a 180 cm open field at 2 cm each
+float32 array takes about 2 GB per minute of recording; at 4 cm, about 0.5 GB.
+A linearized track has far fewer state bins (514 for the track below), about
+0.06 GB per minute. When its arrays are unlikely to fit, it warns before it
+starts. `n_chunks` splits its filter and smoother into row chunks.
+
+**Structured EM** runs every E-step on the checkpointed driver: the recording
+is filtered in chunks of `chunk_size` time bins, the boundary between chunks
+is saved, and each chunk is replayed backward for smoothing. Device memory
+depends on `chunk_size` and the grid, not on the recording length. On the
+23.6 min recording below, on a 2 cm 2-D grid:
+
+| | Dense EM (`n_chunks=8`) | Structured EM | Structured EM with `result_path` |
+| --- | ---: | ---: | ---: |
+| Device memory | 56 GB | 2.4 GB | 2.4 GB |
+| Host memory | 110 GB | 71 GB (the posterior, held in memory) | 14 GB |
+| 3 iterations, after compilation | 501 s | 272 s | |
+
+`replay_cache_bytes` keeps forward-pass rows in host memory so the backward
+replay does not recompute them; by default up to 16 GiB, or half the available
+host memory if smaller (counting a container's memory limit). Chunks beyond
+the budget are recomputed, so a smaller budget costs time, not correctness.
+
+"auto" runs dense EM when the float32 interior transition is at most 16 MiB,
+the full transition (every state bin, float64) fits
+`max_dense_transition_bytes`, and dense EM's arrays fit in half the device
+memory; also when `n_chunks` is given, or when a transition has no bounded
+structured form. It runs structured EM otherwise, or when `chunk_size`,
+`result_path` or `replay_cache_bytes` is given. On a 2-D grid of the recording
+below, dense EM was faster up to 13.5 MB of interior transition (3 cm, 250 s
+against 276 s) and slower at 21.9 MB (2.5 cm, 348 s against 255 s).
+
+### A real recording on a linearized track
+
+A 23.6 min run epoch at 500 Hz (709,319 time bins) on a 10-node track at 2 cm
+(514 state bins), 3 EM iterations, one A100:
+
+| Data | First call | Each later call | Device memory | Host RAM |
+| --- | ---: | ---: | ---: | ---: |
+| 305 sorted units | 404 s | 168 s | 22.5 GB | 15.8 GB |
+| 22 tetrodes (clusterless) | 328 s | 131 s | 10.0 GB | 14.0 GB |
+
+About 85% of each later call is E-steps: the filter and smoother take about
+20 s and the likelihood 10–13 s per E-step at this length. One iteration takes
+about 40 s (sorted) or 31 s (clusterless), so 20 iterations take about 13 or 10
+minutes after the first call.
+
+The first call compiles kernels for the session's sizes. Two settings reduce
+that cost, both set before starting Python:
+
+- `JAX_COMPILATION_CACHE_DIR=<directory>` keeps compiled kernels between
+  processes. Measured on 120 s of the same recording, a second process's first
+  EM call took 30.5 s instead of 150 s. Kernels are reused only for the same
+  array sizes, so this helps most when fitting the same session repeatedly,
+  for example in a parameter sweep.
+- `XLA_FLAGS=--xla_gpu_autotune_level=0` skips timing candidate GPU kernels:
+  the first call took 59 s instead of 149 s and its device peak was 2.6 GB
+  instead of 5.0 GB, with the same time per later call on this workload. It
+  also makes repeated GPU runs bitwise reproducible (see GPU setup).
+
+Source: [real-track EM records](performance_artifacts/em/real-track/README.md).
+
+### Simulated open field (before the EM speedups)
+
+Measured with simulated 60 s sessions and 3 EM iterations, before the changes
+recorded above:
 
 | Machine | Grid | Run time after compilation | Device memory | Host RAM |
 | --- | --- | ---: | ---: | ---: |

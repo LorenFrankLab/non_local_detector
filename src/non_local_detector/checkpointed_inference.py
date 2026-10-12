@@ -13,6 +13,7 @@ Likelihood callbacks must be deterministic and honor global ``row_slice``.
 from __future__ import annotations
 
 import math
+import os
 import tempfile
 from dataclasses import dataclass
 from functools import partial
@@ -24,8 +25,10 @@ import numpy as np
 import xarray as xr
 
 from non_local_detector.core import (
+    _HMM_SCAN_UNROLL,
     _condition_on,
     _divide_safe,
+    _float64_evidence,
     _normalize,
     _warn_degenerate_and_nan_timesteps,
 )
@@ -57,6 +60,137 @@ DEFAULT_CHUNK_BYTES = 256 * 1024**2
 MIN_DEFAULT_CHUNK_SIZE = 256
 
 
+# Largest default host memory for keeping forward-pass rows for the replay:
+# enough for a 23.6 min recording on a 2 cm 2-D grid (about 14 GB of host
+# memory in all) or about 4.5 hours on a 514-bin track at 500 Hz.
+DEFAULT_REPLAY_CACHE_BYTES = 16 * 2**30
+
+
+# cgroup v1 reports an unlimited memory limit as a value near 2**63.
+_CGROUP_UNLIMITED = 2**60
+
+
+def _read_cgroup_value(path: Path) -> int | None:
+    """An integer cgroup memory file, or None if absent, unlimited or unreadable."""
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    if not text or text == "max":
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    return None if value >= _CGROUP_UNLIMITED else value
+
+
+def _cgroup_remaining_bytes(
+    root: Path = Path("/sys/fs/cgroup"), membership: str | None = None
+) -> int | None:
+    """Memory left under this process's cgroup limits, or None if unlimited.
+
+    A limit on any ancestor cgroup also binds the process, so this walks the
+    memory controller's path from the process's cgroup up to the mount root
+    and returns the smallest remaining allowance (limit minus that cgroup's
+    usage). It reads cgroup v2 (``memory.max`` and ``memory.current``) and v1
+    (``memory.limit_in_bytes`` and ``memory.usage_in_bytes`` under
+    ``memory/``); path components not mounted, as in a container that sees its
+    own cgroup at the root, are skipped. Linux host memory figures ignore a
+    container's limit, so this caps them.
+
+    Parameters
+    ----------
+    root : Path, optional
+        Mount point of the cgroup file system.
+    membership : str, optional
+        Contents of ``/proc/self/cgroup``; read from there when None.
+
+    Returns
+    -------
+    remaining : int or None
+    """
+    if membership is None:
+        try:
+            membership = Path("/proc/self/cgroup").read_text()
+        except OSError:
+            membership = ""
+    hierarchies = []
+    for line in membership.splitlines():
+        hierarchy_id, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        if hierarchy_id == "0" and not controllers:
+            hierarchies.append((root, path, "memory.max", "memory.current"))
+        elif "memory" in controllers.split(","):
+            hierarchies.append(
+                (
+                    root / "memory",
+                    path,
+                    "memory.limit_in_bytes",
+                    "memory.usage_in_bytes",
+                )
+            )
+    remaining = None
+    for mount, path, limit_name, usage_name in hierarchies:
+        directory = mount / path.strip("/")
+        while True:
+            limit = _read_cgroup_value(directory / limit_name)
+            if limit is not None:
+                usage = _read_cgroup_value(directory / usage_name) or 0
+                allowance = max(limit - usage, 0)
+                remaining = (
+                    allowance if remaining is None else min(remaining, allowance)
+                )
+            if directory == mount:
+                break
+            directory = directory.parent
+    return remaining
+
+
+def _available_host_bytes() -> int | None:
+    """Host memory available to this process, or None if it cannot be found.
+
+    Uses psutil when installed, then ``MemAvailable`` from ``/proc/meminfo``
+    (Linux), then half the physical memory, capped by the remaining memory
+    allowance of a limited cgroup (a container).
+    """
+    host = None
+    try:
+        import psutil
+
+        host = int(psutil.virtual_memory().available)
+    except ImportError:
+        try:
+            with open("/proc/meminfo") as meminfo:
+                for line in meminfo:
+                    if line.startswith("MemAvailable:"):
+                        host = int(line.split()[1]) * 1024
+        except OSError:
+            pass
+        if host is None:
+            try:
+                host = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2
+            except (ValueError, OSError, AttributeError):
+                host = None
+    container = _cgroup_remaining_bytes()
+    known = [value for value in (host, container) if value is not None]
+    return min(known) if known else None
+
+
+def default_replay_cache_bytes() -> int:
+    """Default replay cache: ``DEFAULT_REPLAY_CACHE_BYTES``, capped at half the
+    available host memory, so the cache cannot exhaust a smaller machine.
+
+    Returns
+    -------
+    replay_cache_bytes : int
+    """
+    available = _available_host_bytes()
+    if available is None:
+        return DEFAULT_REPLAY_CACHE_BYTES
+    return int(min(DEFAULT_REPLAY_CACHE_BYTES, available // 2))
+
+
 def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
     """Rows per checkpoint chunk so one likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
 
@@ -79,8 +213,8 @@ def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
 
 @jax.tree_util.register_pytree_node_class
 class _DenseTransition:
-    def __init__(self, matrix, state_ind=None):
-        self.matrix, self.state_ind = matrix, state_ind
+    def __init__(self, matrix, state_ind, n_states):
+        self.matrix, self.state_ind, self.n_states = matrix, state_ind, n_states
 
     def _matrix(self, discrete_weights):
         if discrete_weights is None:
@@ -101,12 +235,23 @@ class _DenseTransition:
             precision=jax.lax.Precision.HIGHEST,
         )
 
+    def pair_products(self, filtered, ratio, discrete_weights=None):
+        """Per-state-pair terms of ``filtered @ T * ratio``; see the block operator."""
+        states = jax.nn.one_hot(self.state_ind, self.n_states, dtype=filtered.dtype)
+        precision = jax.lax.Precision.HIGHEST
+        source_rows = jnp.matmul(
+            (states * filtered[:, None]).T,
+            self._matrix(discrete_weights),
+            precision=precision,
+        )
+        return jnp.matmul(source_rows, states * ratio[:, None], precision=precision)
+
     def tree_flatten(self):
-        return (self.matrix, self.state_ind), None
+        return (self.matrix, self.state_ind), self.n_states
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        return cls(*children)
+        return cls(*children, aux)
 
 
 @partial(jax.jit, static_argnames=("keep_rows", "keep_predictive", "keep_increments"))
@@ -125,31 +270,60 @@ def _forward_chunk(
         total, predicted = carry
         ll, weight = args
         filtered, increment = _condition_on(predicted, ll)
-        out = (
-            (filtered, predicted if keep_predictive else None)
-            if keep_rows
-            else increment
-            if keep_increments
-            else None
-        )
+        if keep_rows:
+            out = (
+                filtered,
+                predicted if keep_predictive else None,
+                increment if keep_increments else None,
+            )
+        else:
+            out = increment if keep_increments else None
         return (total + increment, operator.forward(filtered, weight)), out
 
-    return jax.lax.scan(step, (evidence, initial), (likelihoods, weights))
+    return jax.lax.scan(
+        step, (evidence, initial), (likelihoods, weights), unroll=_HMM_SCAN_UNROLL
+    )
 
 
-@jax.jit
-def _backward_chunk(filtered, weights, operator, next_smoothed, rows, n_time):
+@partial(jax.jit, static_argnames=("pair_statistics",))
+def _backward_chunk(
+    filtered, weights, operator, next_smoothed, rows, n_time, *, pair_statistics=False
+):
+    """Smooth one chunk in reverse.
+
+    With ``pair_statistics``, also return each row's expected discrete
+    transition counts to the next row, ``operator.pair_products`` of the
+    filtered row and ``smoothed_{t+1} / predicted_{t+1}`` (zero on the last
+    recording row, which has no successor).
+    """
+
     def step(following, args):
         current, weight, row = args
         predicted = operator.forward(current, weight)
+        ratio = _divide_safe(following, predicted)
+        if pair_statistics and hasattr(operator, "backward_and_pairs"):
+            backward, pairs = operator.backward_and_pairs(ratio, current, weight)
+        else:
+            backward = operator.backward(ratio, weight)
+            if pair_statistics:
+                pairs = operator.pair_products(current, ratio, weight)
         # Keep the core's arithmetic, including terminal and NaN semantics.
-        smoothed = current * operator.backward(
-            _divide_safe(following, predicted), weight
-        ) * (row < n_time - 1) + current * (row == n_time - 1)
+        smoothed = current * backward * (row < n_time - 1) + current * (
+            row == n_time - 1
+        )
         smoothed, _ = _normalize(smoothed, axis=-1)
-        return smoothed, smoothed
+        if not pair_statistics:
+            return smoothed, smoothed
+        pairs = jnp.where(row < n_time - 1, pairs, 0)
+        return smoothed, (smoothed, pairs)
 
-    return jax.lax.scan(step, next_smoothed, (filtered, weights, rows), reverse=True)
+    return jax.lax.scan(
+        step,
+        next_smoothed,
+        (filtered, weights, rows),
+        reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
+    )
 
 
 @jax.jit
@@ -165,12 +339,20 @@ def _sum_state_rows(values, columns):
 
 @dataclass
 class CheckpointedResult:
-    """A compact in-memory or lazy disk result plus whole-recording diagnostics."""
+    """A compact in-memory or lazy disk result plus whole-recording diagnostics.
+
+    ``first_smoothed`` is the smoothed posterior of the first recording row,
+    shape (n_bins,). ``transition_statistics`` holds the requested expected
+    discrete transition counts, shape (n_states, n_states), or per-row
+    responses, shape (n_time - 1, n_states, n_states).
+    """
 
     dataset: xr.Dataset
     marginal_log_likelihood: float
     diagnostics: dict
     result_path: Path | None = None
+    first_smoothed: np.ndarray | None = None
+    transition_statistics: np.ndarray | None = None
 
 
 def _selected_rows(selected, n_time):
@@ -292,11 +474,16 @@ def checkpointed_forward_backward(
     max_read_bytes=DEFAULT_MAX_READ_BYTES,
     result_attrs=None,
     evidence_accumulation="stable",
+    transition_statistics=None,
+    replay_cache_bytes=0,
 ):
     """Filter once, replay each chunk in reverse, and emit exact requested rows.
 
     The likelihood callback receives ``(full_edges, row_slice=global_slice,
     is_missing=chunk_mask)``. Counts must retain global edge/final-edge ownership.
+    Every request spans ``min(chunk_size, n_time)`` rows: a short last chunk is
+    requested over the final ``chunk_size`` rows and its earlier rows are
+    discarded, so compiled likelihood kernels see one row count.
     This driver applies neutral likelihoods to missing rows and checks replay
     determinism. ``transition_operator`` is a registered JAX pytree with pure-JAX
     ``forward(p, weight)`` and ``backward(v, weight)``; ``weight`` is None or the
@@ -304,8 +491,9 @@ def checkpointed_forward_backward(
     Alternatively supply a dense stationary matrix, or continuous/discrete
     factors and ``state_ind`` for the reference covariate path.
 
-    Compact outputs are discrete-state marginals. Spatial outputs require a disk
-    ``result_path`` and remain lazy, without full-session spatial allocations.
+    Compact outputs are discrete-state marginals. Spatial outputs with a disk
+    ``result_path`` remain lazy, without full-session spatial allocations;
+    without one they are held in memory, ``n_time * n_bins`` values each.
     All inference runs over all recording rows regardless of ``selected_rows``.
     Initial/final conditions, impossible observations, NaNs, transition indices,
     filtering arithmetic and per-bin evidence increments follow the original
@@ -314,7 +502,25 @@ def checkpointed_forward_backward(
     success/failure. Memory scales with chunk rows and hidden bins, excluding
     resident inputs/model, recording-sized metadata/marginals, compiler allocator
     reservations, and filesystem page cache. EM/Viterbi and global gradients are
-    outside this API; it is not resumable after a crash. Global diagnostic masks
+    outside this API; it is not resumable after a crash.
+
+    ``transition_statistics="counts"`` also accumulates the expected discrete
+    transition counts between consecutive rows, as the stationary EM M-step
+    uses them; ``"responses"`` keeps them per row, as the covariate M-step
+    does. They are computed in the replay from the operator's per-block
+    products (``pair_products``), so no spatial posterior is retained. Counts
+    are summed per chunk on the device and across chunks in host float64;
+    responses cost ``n_time * n_states**2`` values.
+
+    ``replay_cache_bytes`` keeps each forward-pass chunk that still fits in the
+    remaining budget in host memory, and the replay uses those instead of
+    recomputing. When the outputs need only filtered rows (no likelihood or
+    predictive output), the filtered rows are kept, so a cached chunk skips both
+    its second likelihood evaluation and its replayed forward pass; otherwise
+    the prepared likelihood is kept. Either costs ``n_bins`` values per row. By
+    default (0) every chunk is filtered and evaluated twice.
+
+    Global diagnostic masks
     cost two bytes per recording row while computing; exact NumPy index arrays
     cost up to two intp entries per row. Persisted masks use packed bits, avoiding
     per-row Python objects or large JSON index lists.
@@ -327,6 +533,14 @@ def checkpointed_forward_backward(
         raise ValueError("chunk_size must be a positive integer")
     if evidence_accumulation not in ("reference", "stable"):
         raise ValueError("evidence_accumulation must be reference or stable")
+    if transition_statistics not in (None, "counts", "responses"):
+        raise ValueError("transition_statistics must be None, counts or responses")
+    if (
+        isinstance(replay_cache_bytes, bool)
+        or not isinstance(replay_cache_bytes, (int, np.integer))
+        or replay_cache_bytes < 0
+    ):
+        raise ValueError("replay_cache_bytes must be a nonnegative integer")
     max_read_bytes = _validate_read_budget(max_read_bytes)
     edges, _ = uniform_time_edges(time_edges)
     n_time, dtype = len(edges) - 1, np.dtype(dtype)
@@ -371,8 +585,6 @@ def checkpointed_forward_backward(
         raise ValueError("is_missing must contain one value per decode bin")
     if output_mode not in ("compact", "spatial"):
         raise ValueError("output_mode must be compact or spatial")
-    if output_mode == "spatial" and result_path is None:
-        raise ValueError("Spatial output requires result_path")
     outputs = (
         (
             ("acausal_state_probabilities",)
@@ -410,7 +622,7 @@ def checkpointed_forward_backward(
                 "A matching dense matrix or transition_operator is required"
             )
         transition_operator = _DenseTransition(
-            jnp.asarray(matrix, dtype=dtype), jnp.asarray(state_ind)
+            jnp.asarray(matrix, dtype=dtype), jnp.asarray(state_ind), n_states
         )
     else:
         leaves, _ = jax.tree_util.tree_flatten(transition_operator)
@@ -421,6 +633,13 @@ def checkpointed_forward_backward(
                 "transition_operator must be a registered JAX pytree (for "
                 "example via jax.tree_util.register_pytree_node_class), got "
                 f"{type(transition_operator).__name__}."
+            )
+        if transition_statistics is not None and not hasattr(
+            transition_operator, "pair_products"
+        ):
+            raise TypeError(
+                "transition_statistics needs a transition_operator with "
+                f"pair_products; {type(transition_operator).__name__} has none."
             )
         # Transfer array leaves once; each jitted chunk call would otherwise
         # convert host leaves again.
@@ -475,27 +694,39 @@ def checkpointed_forward_backward(
         "likelihood_evaluations": 0,
         "checkpoint_bytes": 0,
         "checkpoint_cache_entries": 1,
+        "replay_cache_bytes": 0,
         "global_gradients_supported": False,
     }
 
     degenerate_rows = np.zeros(n_time, dtype=bool)
     nan_rows = np.zeros(n_time, dtype=bool)
+    pair_statistics = transition_statistics is not None
+    statistics = (
+        np.zeros((n_states, n_states))
+        if transition_statistics == "counts"
+        else np.empty((max(n_time - 1, 0), n_states, n_states), dtype=dtype)
+        if transition_statistics == "responses"
+        else None
+    )
 
     def likelihood(start, stop):
         """Return device ``(values, degenerate, nan, checksum)`` for one chunk."""
+        # A short last chunk is evaluated over the final chunk_size rows and
+        # trimmed, so every callback has one shape and reuses compiled kernels.
+        first = max(min(start, n_time - int(chunk_size)), 0)
         values = jnp.asarray(
             log_likelihood_func(
-                time_edges, row_slice=slice(start, stop), is_missing=missing[start:stop]
+                time_edges, row_slice=slice(first, stop), is_missing=missing[first:stop]
             ),
             dtype=dtype,
         )
-        if values.shape != (stop - start, n_bins):
+        if values.shape != (stop - first, n_bins):
             raise ValueError(
                 "Likelihood callback must return exactly the requested global rows and hidden bins"
             )
         diagnostics["likelihood_evaluations"] += 1
-        diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - start)
-        return _prepare_chunk(values, jnp.asarray(missing[start:stop]))
+        diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - first)
+        return _prepare_chunk(values[start - first :], jnp.asarray(missing[start:stop]))
 
     def emit(name, start, stop, values):
         first, last = np.searchsorted(selected, [start, stop])
@@ -514,9 +745,15 @@ def checkpointed_forward_backward(
         else:
             writer.write(name, int(first), values)
 
-    def emit_chunk(start, stop, chunk_outputs):
+    def emit_chunk(start, stop, chunk_outputs, chunk_statistics=None):
         for name, value in chunk_outputs.items():
             emit(name, start, stop, value)
+        if chunk_statistics is None:
+            return
+        if transition_statistics == "counts":
+            statistics[...] += np.asarray(chunk_statistics, np.float64)
+        else:
+            statistics[start : min(stop, n_time - 1)] = np.asarray(chunk_statistics)
 
     try:
         with tempfile.TemporaryDirectory(
@@ -525,10 +762,32 @@ def checkpointed_forward_backward(
             folder = Path(folder)
             predicted, evidence = jnp.asarray(initial), jnp.asarray(0, dtype=dtype)
 
+            # Filtered rows suffice unless an output needs the likelihood or the
+            # predictive rows, which only a replayed forward pass gives.
+            cache_rows = not outputs & {
+                "log_likelihood",
+                "predictive_posterior",
+                "predictive_state_probabilities",
+            }
+            cached_rows, cached_likelihoods = {}, {}
+
             def finish_forward_chunk(
-                start, stop, predicted, evidence, degenerate, nan, checksum, increments
+                start,
+                stop,
+                predicted,
+                evidence,
+                degenerate,
+                nan,
+                checksum,
+                cached,
+                increments,
             ):
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
+                if cached is not None:
+                    (cached_rows if cache_rows else cached_likelihoods)[start] = (
+                        np.asarray(cached)
+                    )
+                    diagnostics["replay_cache_bytes"] += cached.nbytes
                 checkpoint = folder / f"{start}.npz"
                 np.savez(
                     checkpoint,
@@ -543,7 +802,7 @@ def checkpointed_forward_backward(
                 diagnostics["n_degenerate"] += int(degenerate.sum())
                 diagnostics["n_nan"] += int(nan.sum())
                 return (
-                    float(np.sum(np.asarray(increments), dtype=np.float64))
+                    _float64_evidence(increments)
                     if evidence_accumulation == "stable"
                     else 0.0
                 )
@@ -553,8 +812,12 @@ def checkpointed_forward_backward(
                 # Each chunk's host work runs after the next chunk is dispatched,
                 # so device computation overlaps host transfers and disk writes.
                 pending = None
+                planned = 0
                 for start in boundaries:
                     stop = min(start + chunk_size, n_time)
+                    nbytes = (stop - start) * n_bins * dtype.itemsize
+                    cache = planned + nbytes <= replay_cache_bytes
+                    planned += nbytes if cache else 0
                     values, degenerate, nan, checksum = likelihood(start, stop)
                     chunk = (
                         start,
@@ -565,20 +828,25 @@ def checkpointed_forward_backward(
                         nan,
                         checksum,
                     )
-                    (evidence, predicted), increments = _forward_chunk(
+                    (evidence, predicted), out = _forward_chunk(
                         predicted,
                         evidence,
                         values,
                         None if weights is None else jnp.asarray(weights[start:stop]),
                         transition_operator,
-                        keep_rows=False,
+                        keep_rows=cache and cache_rows,
                         keep_predictive=False,
                         keep_increments=evidence_accumulation == "stable",
                     )
-                    del values
+                    if cache and cache_rows:
+                        cached, _, increments = out
+                    else:
+                        cached, increments = (values if cache else None), out
                     if pending is not None:
                         yield finish_forward_chunk(*pending)
-                    pending = (*chunk, increments)
+                    # Kept until the chunk finishes and is copied to the host.
+                    pending = (*chunk, cached, increments)
+                    del values, cached
                 if pending is not None:
                     yield finish_forward_chunk(*pending)
 
@@ -594,7 +862,6 @@ def checkpointed_forward_backward(
             pending = None
             for start in reversed(boundaries):
                 stop = min(start + chunk_size, n_time)
-                values, _, _, checksum = likelihood(start, stop)
                 with np.load(folder / f"{start}.npz", allow_pickle=False) as checkpoint:
                     expected_checksum = checkpoint["checksum"]
                     prior, start_evidence = (
@@ -604,18 +871,29 @@ def checkpointed_forward_backward(
                 chunk_weights = (
                     None if weights is None else jnp.asarray(weights[start:stop])
                 )
-                _, (filtered, predictive) = _forward_chunk(
-                    prior,
-                    start_evidence,
-                    values,
-                    chunk_weights,
-                    transition_operator,
-                    keep_rows=True,
-                    keep_predictive=bool(
-                        outputs
-                        & {"predictive_posterior", "predictive_state_probabilities"}
-                    ),
-                )
+                if start in cached_rows:
+                    # No output needs the likelihood or predictive rows here.
+                    filtered = jnp.asarray(cached_rows.pop(start))
+                    values = predictive = None
+                    checksum = expected_checksum
+                else:
+                    if start in cached_likelihoods:
+                        values = jnp.asarray(cached_likelihoods.pop(start))
+                        checksum = expected_checksum
+                    else:
+                        values, _, _, checksum = likelihood(start, stop)
+                    _, (filtered, predictive, _) = _forward_chunk(
+                        prior,
+                        start_evidence,
+                        values,
+                        chunk_weights,
+                        transition_operator,
+                        keep_rows=True,
+                        keep_predictive=bool(
+                            outputs
+                            & {"predictive_posterior", "predictive_state_probabilities"}
+                        ),
+                    )
                 if stop == n_time:
                     next_smoothed = filtered[-1]
                 next_smoothed, smoothed = _backward_chunk(
@@ -625,7 +903,20 @@ def checkpointed_forward_backward(
                     next_smoothed,
                     jnp.arange(start, stop),
                     n_time,
+                    pair_statistics=pair_statistics,
                 )
+                chunk_statistics = None
+                if pair_statistics:
+                    smoothed, pairs = smoothed
+                    # Kept on the device and copied with the chunk's outputs,
+                    # after the next chunk is dispatched. The last recording
+                    # row has no successor.
+                    chunk_statistics = (
+                        jnp.sum(pairs, axis=0)
+                        if transition_statistics == "counts"
+                        else pairs[: min(stop, n_time - 1) - start]
+                    )
+                    del pairs
                 chunk_outputs = {}
                 for name in outputs:
                     value = (
@@ -655,7 +946,7 @@ def checkpointed_forward_backward(
                     raise ValueError(
                         "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
                     )
-                pending = (start, stop, chunk_outputs)
+                pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)
         _warn_degenerate_and_nan_timesteps(
@@ -710,6 +1001,8 @@ def checkpointed_forward_backward(
             marginal,
             diagnostics,
             None if result_path is None else Path(result_path),
+            first_smoothed=np.asarray(next_smoothed),
+            transition_statistics=statistics,
         )
     finally:
         if writer is not None:
