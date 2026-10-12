@@ -1275,10 +1275,13 @@ def _direct_transition_mle(log_likelihoods: np.ndarray) -> tuple[np.ndarray, flo
     def to_transition(logits):
         return softmax(np.column_stack((logits.reshape(3, 2), np.zeros(3))), axis=1)
 
-    result = minimize(
-        lambda logits: -_expanded_hmm_marginal_log_likelihood(
+    def negative_log_likelihood(logits):
+        return -_expanded_hmm_marginal_log_likelihood(
             to_transition(logits), log_likelihoods
-        ),
+        )
+
+    result = minimize(
+        negative_log_likelihood,
         np.zeros(6),
         method="BFGS",
         options={"gtol": 1e-7},
