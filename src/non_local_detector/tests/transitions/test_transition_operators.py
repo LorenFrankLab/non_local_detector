@@ -27,6 +27,7 @@ from non_local_detector.models._defaults import _ModelDefaults
 from non_local_detector.models.base import _DetectorBase
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.transition_operators import (
+    DEFAULT_MAX_DENSE_BYTES,
     DenseTransitionBudgetError,
     LazyDenseTransition,
     UnsupportedTransitionError,
@@ -993,3 +994,27 @@ def test_dense_gaussian_blocks_count_against_the_dense_budget(n_dense):
         operator.pair_products(filtered, ratio),
         rtol=1e-6,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("max_dense_bytes", [0, DEFAULT_MAX_DENSE_BYTES])
+def test_backward_and_pairs_matches_separate_products(max_dense_bytes):
+    """The smoother's combined product reuses each block's backward product
+    for the transition statistics, with separable or dense Gaussian blocks."""
+    env = environment((6, 7))
+    n = len(env.place_bin_centers_)
+    walk = RandomWalk(movement_var=np.diag([0.9, 1.7]))
+    transitions = [[walk, Uniform()], [Uniform(), walk]]
+    mask = np.tile(env.is_track_interior_.ravel(), 2)
+    fused = (
+        build_transition_operator(transitions, [env], (n, n))
+        .restricted(mask)
+        .bind_discrete(np.array([[0.9, 0.1], [0.2, 0.8]]))
+        .fused(max_dense_bytes)
+    )
+    rng = np.random.default_rng(9)
+    filtered = jnp.asarray(rng.uniform(0.01, 1, mask.sum()), dtype=np.float32)
+    ratio = jnp.asarray(rng.uniform(0.5, 2, mask.sum()), dtype=np.float32)
+    backward, pairs = jax.jit(fused.backward_and_pairs)(ratio, filtered)
+    np.testing.assert_allclose(backward, fused.backward(ratio), rtol=1e-6)
+    np.testing.assert_allclose(pairs, fused.pair_products(filtered, ratio), rtol=1e-6)

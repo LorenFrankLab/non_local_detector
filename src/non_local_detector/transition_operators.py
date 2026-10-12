@@ -709,6 +709,64 @@ class FusedBlockTransition:
             )
         return (weights * pairs).reshape(n_states, n_states)
 
+    def backward_and_pairs(self, values, filtered, discrete_weights=None):
+        """``backward(values)`` and ``pair_products(filtered, values)`` together.
+
+        Each block's backward product, and the rank-one destination sums, are
+        computed once and serve both, so the smoother's transition statistics
+        do not repeat the separable Gaussian products.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+        filtered : jax.Array, shape (n_bins,)
+        discrete_weights : jax.Array, shape (n_states, n_states), optional
+
+        Returns
+        -------
+        backward : jax.Array, shape (n_bins,)
+        pairs : jax.Array, shape (n_states, n_states)
+        """
+        values, filtered = jnp.asarray(values), jnp.asarray(filtered)
+        weights = self._flat_weights(values, discrete_weights)
+        n_states = len(self.state_sizes)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        precision = jax.lax.Precision.HIGHEST
+        sources = jnp.asarray(self.sources, dtype=values.dtype)
+        destination_sums = jnp.matmul(
+            jnp.asarray(self.destinations, dtype=values.dtype),
+            values,
+            precision=precision,
+        )
+        result = jnp.matmul(
+            sources, destination_sums * weights[self.weight_index], precision=precision
+        )
+        pairs = (
+            jnp.zeros(n_states * n_states, dtype=values.dtype)
+            .at[jnp.asarray(self.weight_index)]
+            .add(jnp.matmul(filtered, sources, precision=precision) * destination_sums)
+        )
+        for (source, target), block in zip(
+            self.block_positions, self.blocks, strict=True
+        ):
+            product = block.backward(
+                values[boundaries[target] : boundaries[target + 1]]
+            )
+            flat = source * n_states + target
+            result = result.at[boundaries[source] : boundaries[source + 1]].add(
+                weights[flat] * product
+            )
+            pairs = pairs.at[flat].add(
+                jnp.dot(
+                    filtered[boundaries[source] : boundaries[source + 1]],
+                    product,
+                    precision=precision,
+                )
+            )
+        return _nan_result(result, values), (weights * pairs).reshape(
+            n_states, n_states
+        )
+
 
 class LazyDenseTransition:
     """Read-only budgeted NumPy-compatible view; pickling stores only the operator.

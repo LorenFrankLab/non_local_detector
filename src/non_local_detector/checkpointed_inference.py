@@ -301,16 +301,20 @@ def _backward_chunk(
         current, weight, row = args
         predicted = operator.forward(current, weight)
         ratio = _divide_safe(following, predicted)
+        if pair_statistics and hasattr(operator, "backward_and_pairs"):
+            backward, pairs = operator.backward_and_pairs(ratio, current, weight)
+        else:
+            backward = operator.backward(ratio, weight)
+            if pair_statistics:
+                pairs = operator.pair_products(current, ratio, weight)
         # Keep the core's arithmetic, including terminal and NaN semantics.
-        smoothed = current * operator.backward(ratio, weight) * (
-            row < n_time - 1
-        ) + current * (row == n_time - 1)
+        smoothed = current * backward * (row < n_time - 1) + current * (
+            row == n_time - 1
+        )
         smoothed, _ = _normalize(smoothed, axis=-1)
         if not pair_statistics:
             return smoothed, smoothed
-        pairs = jnp.where(
-            row < n_time - 1, operator.pair_products(current, ratio, weight), 0
-        )
+        pairs = jnp.where(row < n_time - 1, pairs, 0)
         return smoothed, (smoothed, pairs)
 
     return jax.lax.scan(
