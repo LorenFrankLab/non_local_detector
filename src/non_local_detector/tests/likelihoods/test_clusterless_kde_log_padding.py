@@ -14,11 +14,11 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
-    KDEModel,
-    _padded_occupancy_count,
     LOG_EPS,
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
+    KDEModel,
+    _padded_occupancy_count,
     _padded_sample_count,
     _padded_spike_count,
     as_std_array,
