@@ -65,29 +65,96 @@ MIN_DEFAULT_CHUNK_SIZE = 256
 DEFAULT_REPLAY_CACHE_BYTES = 16 * 2**30
 
 
+# cgroup v1 reports an unlimited memory limit as a value near 2**63.
+_CGROUP_UNLIMITED = 2**60
+
+
+def _read_cgroup_value(path: Path) -> int | None:
+    """An integer cgroup memory file, or None if absent, unlimited or unreadable."""
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    if not text or text == "max":
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    return None if value >= _CGROUP_UNLIMITED else value
+
+
+def _cgroup_remaining_bytes(
+    root: Path = Path("/sys/fs/cgroup"), relative: str | None = None
+) -> int | None:
+    """Memory left under this process's cgroup limit, or None if unlimited.
+
+    Reads cgroup v2 (``memory.max`` and ``memory.current``) or v1
+    (``memory/memory.limit_in_bytes`` and ``memory/memory.usage_in_bytes``),
+    first in the process's own cgroup and then at the root. Linux host memory
+    figures ignore a container's limit, so this caps them.
+
+    Parameters
+    ----------
+    root : Path, optional
+        Mount point of the cgroup file system.
+    relative : str, optional
+        The process's cgroup path; read from ``/proc/self/cgroup`` when None.
+
+    Returns
+    -------
+    remaining : int or None
+    """
+    if relative is None:
+        relative = "/"
+        try:
+            with open("/proc/self/cgroup") as cgroups:
+                for line in cgroups:
+                    if line.startswith("0::"):
+                        relative = line[3:].strip() or "/"
+        except OSError:
+            pass
+    directories = [root / relative.lstrip("/"), root]
+    for directory in directories:
+        for limit_name, usage_name in (
+            ("memory.max", "memory.current"),
+            ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes"),
+        ):
+            limit = _read_cgroup_value(directory / limit_name)
+            if limit is not None:
+                usage = _read_cgroup_value(directory / usage_name) or 0
+                return max(limit - usage, 0)
+    return None
+
+
 def _available_host_bytes() -> int | None:
     """Host memory available to this process, or None if it cannot be found.
 
     Uses psutil when installed, then ``MemAvailable`` from ``/proc/meminfo``
-    (Linux), then half the physical memory.
+    (Linux), then half the physical memory, capped by the remaining memory
+    allowance of a limited cgroup (a container).
     """
+    host = None
     try:
         import psutil
 
-        return int(psutil.virtual_memory().available)
+        host = int(psutil.virtual_memory().available)
     except ImportError:
-        pass
-    try:
-        with open("/proc/meminfo") as meminfo:
-            for line in meminfo:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-    except OSError:
-        pass
-    try:
-        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2
-    except (ValueError, OSError, AttributeError):
-        return None
+        try:
+            with open("/proc/meminfo") as meminfo:
+                for line in meminfo:
+                    if line.startswith("MemAvailable:"):
+                        host = int(line.split()[1]) * 1024
+        except OSError:
+            pass
+        if host is None:
+            try:
+                host = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2
+            except (ValueError, OSError, AttributeError):
+                host = None
+    container = _cgroup_remaining_bytes()
+    known = [value for value in (host, container) if value is not None]
+    return min(known) if known else None
 
 
 def default_replay_cache_bytes() -> int:

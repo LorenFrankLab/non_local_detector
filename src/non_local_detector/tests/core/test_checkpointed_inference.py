@@ -1177,3 +1177,40 @@ def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail,
     np.testing.assert_array_equal(result.dataset.acausal_state_probabilities, expected)
     assert len(calls) == 2 * len(ll)
     assert not list(tmp_path.glob("checkpoints-*"))
+
+
+@pytest.mark.parametrize(
+    "files, expected",
+    [
+        ({"memory.max": "8589934592\n", "memory.current": "1073741824\n"}, 7 * 2**30),
+        ({"memory.max": "max\n", "memory.current": "1073741824\n"}, None),
+        (
+            {
+                "memory/memory.limit_in_bytes": "4294967296\n",
+                "memory/memory.usage_in_bytes": "1073741824\n",
+            },
+            3 * 2**30,
+        ),
+        ({"memory/memory.limit_in_bytes": "9223372036854771712\n"}, None),
+        ({}, None),
+    ],
+)
+def test_cgroup_memory_allowance(tmp_path, files, expected):
+    """A container's memory limit caps the default replay cache."""
+    from non_local_detector.checkpointed_inference import _cgroup_remaining_bytes
+
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    assert _cgroup_remaining_bytes(tmp_path, relative="/") == expected
+
+
+def test_available_host_memory_respects_the_container(monkeypatch):
+    from non_local_detector import checkpointed_inference
+
+    monkeypatch.setattr(
+        checkpointed_inference, "_cgroup_remaining_bytes", lambda: 2**30
+    )
+    assert checkpointed_inference._available_host_bytes() <= 2**30
+    assert checkpointed_inference.default_replay_cache_bytes() <= 2**29
