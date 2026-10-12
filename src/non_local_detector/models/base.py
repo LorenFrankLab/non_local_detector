@@ -3283,7 +3283,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihood_, by default False.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+            Dense EM only: the number of row chunks the filter and smoother
+            process, by default 1. Structured EM uses ``chunk_size`` (rows per
+            chunk) instead.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned.
 
@@ -5384,7 +5386,7 @@ class ClusterlessDetector(_DetectorBase):
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "dense",
+        transition_representation: str = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
@@ -5436,7 +5438,9 @@ class ClusterlessDetector(_DetectorBase):
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihood_, by default False.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+            Dense EM only: the number of row chunks the filter and smoother
+            process, by default 1. Structured EM uses ``chunk_size`` (rows per
+            chunk) instead.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
@@ -5461,18 +5465,24 @@ class ClusterlessDetector(_DetectorBase):
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
-        transition_representation : {"dense", "structured", "auto"}, optional
-            Continuous-transition representation for the internal fit, by
-            default "dense". "structured" runs EM on the checkpointed driver
-            (see ``chunk_size``), whose working memory does not grow with the
-            recording length. "auto" runs dense EM when the interior
-            transition is small (at most 16 MiB in float32, where dense EM is
-            faster), the full dense transition fits
-            ``max_dense_transition_bytes`` and dense EM's arrays fit in half
-            the device memory, and checkpointed EM otherwise or when
-            ``chunk_size``, ``result_path`` or ``replay_cache_bytes`` is given;
-            its checkpointed EM uses dense blocks for transitions without a
-            structured form, within ``max_dense_transition_bytes``.
+        transition_representation : {"auto", "dense", "structured"}, optional
+            Which EM to run, by default "auto"; keep the default unless you
+            need one path. "dense" EM holds several (time bins x state bins)
+            arrays, so its memory grows with the recording. "structured" EM
+            runs on the checkpointed driver (see ``chunk_size``), whose device
+            memory does not grow with the recording. "auto" chooses:
+
+            - dense EM when it is faster and fits: the float32 interior
+              transition is at most 16 MiB, the full dense transition fits
+              ``max_dense_transition_bytes`` and dense EM's arrays fit in half
+              the device memory; also when ``n_chunks`` is given, or when a
+              transition has no bounded structured form;
+            - structured EM otherwise, or when ``chunk_size``, ``result_path``
+              or ``replay_cache_bytes`` is given.
+
+            The results' ``em_transition_representation`` attribute records
+            which ran. This is separate from ``fit``'s "auto", which only
+            permits dense fallback blocks inside a structured fit.
         max_dense_transition_bytes : int, optional
             Byte budget for dense transition blocks or views of a structured
             fit, by default ``DEFAULT_MAX_DENSE_BYTES``.
@@ -5482,10 +5492,10 @@ class ClusterlessDetector(_DetectorBase):
             the recording length, and each uncached chunk evaluates the
             likelihood twice (see ``replay_cache_bytes``; ``cache_likelihood``
             has no effect). The final E-step returns the same outputs as dense
-            EM, held in memory unless ``result_path`` is given. Only valid
-            with a structured or auto ``transition_representation``, and then
-            ``n_chunks`` must be 1. By default None, which sizes chunks so one
-            chunk of float32 likelihoods takes about 256 MiB.
+            EM, held in memory unless ``result_path`` is given. Selects
+            structured EM under "auto" and cannot be combined with
+            ``n_chunks``. By default None, which sizes chunks so one chunk of
+            float32 likelihoods takes about 256 MiB.
         result_path : str or Path, optional
             Structured-transition EM only: write the final outputs to an
             atomic directory store here and return them lazily, so host memory
@@ -6563,7 +6573,7 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "dense",
+        transition_representation: str = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
@@ -6617,7 +6627,9 @@ class SortedSpikesDetector(_DetectorBase):
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihood_, by default False.
         n_chunks : int, optional
-            Number of chunks for processing, by default 1
+            Dense EM only: the number of row chunks the filter and smoother
+            process, by default 1. Structured EM uses ``chunk_size`` (rows per
+            chunk) instead.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
@@ -6642,18 +6654,24 @@ class SortedSpikesDetector(_DetectorBase):
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
-        transition_representation : {"dense", "structured", "auto"}, optional
-            Continuous-transition representation for the internal fit, by
-            default "dense". "structured" runs EM on the checkpointed driver
-            (see ``chunk_size``), whose working memory does not grow with the
-            recording length. "auto" runs dense EM when the interior
-            transition is small (at most 16 MiB in float32, where dense EM is
-            faster), the full dense transition fits
-            ``max_dense_transition_bytes`` and dense EM's arrays fit in half
-            the device memory, and checkpointed EM otherwise or when
-            ``chunk_size``, ``result_path`` or ``replay_cache_bytes`` is given;
-            its checkpointed EM uses dense blocks for transitions without a
-            structured form, within ``max_dense_transition_bytes``.
+        transition_representation : {"auto", "dense", "structured"}, optional
+            Which EM to run, by default "auto"; keep the default unless you
+            need one path. "dense" EM holds several (time bins x state bins)
+            arrays, so its memory grows with the recording. "structured" EM
+            runs on the checkpointed driver (see ``chunk_size``), whose device
+            memory does not grow with the recording. "auto" chooses:
+
+            - dense EM when it is faster and fits: the float32 interior
+              transition is at most 16 MiB, the full dense transition fits
+              ``max_dense_transition_bytes`` and dense EM's arrays fit in half
+              the device memory; also when ``n_chunks`` is given, or when a
+              transition has no bounded structured form;
+            - structured EM otherwise, or when ``chunk_size``, ``result_path``
+              or ``replay_cache_bytes`` is given.
+
+            The results' ``em_transition_representation`` attribute records
+            which ran. This is separate from ``fit``'s "auto", which only
+            permits dense fallback blocks inside a structured fit.
         max_dense_transition_bytes : int, optional
             Byte budget for dense transition blocks or views of a structured
             fit, by default ``DEFAULT_MAX_DENSE_BYTES``.
@@ -6663,10 +6681,10 @@ class SortedSpikesDetector(_DetectorBase):
             the recording length, and each uncached chunk evaluates the
             likelihood twice (see ``replay_cache_bytes``; ``cache_likelihood``
             has no effect). The final E-step returns the same outputs as dense
-            EM, held in memory unless ``result_path`` is given. Only valid
-            with a structured or auto ``transition_representation``, and then
-            ``n_chunks`` must be 1. By default None, which sizes chunks so one
-            chunk of float32 likelihoods takes about 256 MiB.
+            EM, held in memory unless ``result_path`` is given. Selects
+            structured EM under "auto" and cannot be combined with
+            ``n_chunks``. By default None, which sizes chunks so one chunk of
+            float32 likelihoods takes about 256 MiB.
         result_path : str or Path, optional
             Structured-transition EM only: write the final outputs to an
             atomic directory store here and return them lazily, so host memory

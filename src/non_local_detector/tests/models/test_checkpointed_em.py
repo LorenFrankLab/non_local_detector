@@ -238,7 +238,9 @@ def test_dense_em_rejects_checkpoint_chunks():
     """chunk_size must not silently run unbounded dense EM."""
     model, data = _recording("sorted")
     with pytest.raises(ValidationError, match="structured"):
-        model.estimate_parameters(**data, max_iter=1, chunk_size=50)
+        model.estimate_parameters(
+            **data, max_iter=1, chunk_size=50, transition_representation="dense"
+        )
 
 
 def _track_recording():
@@ -305,7 +307,7 @@ def test_checkpointed_em_other_models(case):
 @pytest.mark.parametrize(
     "options",
     [
-        {"chunk_size": 50},
+        {"chunk_size": 50, "transition_representation": "dense"},
         {"n_chunks": 4, "transition_representation": "structured"},
         {"chunk_size": 0, "transition_representation": "structured"},
         {"replay_cache_bytes": -1, "transition_representation": "structured"},
@@ -318,7 +320,7 @@ def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
     transitions = np.array(model.discrete_state_transitions_)
     encoding = model.encoding_model_
     log_likelihood = model.log_likelihood_
-    with pytest.raises(ValidationError, match="chunk_size|replay_cache_bytes"):
+    with pytest.raises(ValidationError, match="chunk_size|replay_cache_bytes|n_chunks"):
         model.estimate_parameters(**data, max_iter=1, **options)
     np.testing.assert_array_equal(model.discrete_state_transitions_, transitions)
     assert model.encoding_model_ is encoding
@@ -367,7 +369,12 @@ def test_checkpointed_em_writes_the_final_posterior_to_disk(tmp_path):
 def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
     model, data = _recording("sorted")
     with pytest.raises(ValidationError, match="structured"):
-        model.estimate_parameters(**data, max_iter=1, result_path=tmp_path / "a")
+        model.estimate_parameters(
+            **data,
+            max_iter=1,
+            result_path=tmp_path / "a",
+            transition_representation="dense",
+        )
     with pytest.raises(ValidationError, match="store_log_likelihood"):
         model.estimate_parameters(
             **data,
@@ -425,7 +432,12 @@ def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch, famil
 def test_dense_em_rejects_a_replay_cache():
     model, data = _recording("sorted")
     with pytest.raises(ValidationError, match="replay_cache_bytes"):
-        model.estimate_parameters(**data, max_iter=1, replay_cache_bytes=2**20)
+        model.estimate_parameters(
+            **data,
+            max_iter=1,
+            replay_cache_bytes=2**20,
+            transition_representation="dense",
+        )
 
 
 def _uses_operator(model):
