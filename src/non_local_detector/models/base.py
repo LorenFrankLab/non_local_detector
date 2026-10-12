@@ -396,10 +396,10 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
 # of float32 interior transition. A dense step reads the whole matrix, so its
 # cost grows with this size; a structured step costs about the same at any
 # size. Three warm EM iterations on a 23.6 min clusterless 2-D recording (A100)
-# took 180/299 s dense/structured at 5.7 MB (1,190 interior state bins),
-# 224/343 s at 13.5 MB, 285/352 s at 21.9 MB and 501/407 s at 43.5 MB (3,298
-# bins); interpolating puts the crossover near 31 MB.
-_AUTO_DENSE_TRANSITION_BYTES = 32 * 2**20
+# took 181/216 s dense/structured at 5.7 MB (1,190 interior state bins),
+# 250/276 s at 13.5 MB, 348/255 s at 21.9 MB and 501/362 s at 43.5 MB (3,298
+# bins); interpolating puts the crossover near 15 MB.
+_AUTO_DENSE_TRANSITION_BYTES = 16 * 2**20
 # Dense EM holds about this many float32 (time bins x state bins) arrays on the
 # device (measured device peak 10.0 GB, about seven 709k x 498 arrays, on the
 # clusterless track recording).
@@ -5290,7 +5290,7 @@ class ClusterlessDetector(_DetectorBase):
             default "dense". "structured" runs EM on the checkpointed driver
             (see ``chunk_size``), whose working memory does not grow with the
             recording length. "auto" runs dense EM when the interior
-            transition is small (at most 32 MiB in float32, where dense EM is
+            transition is small (at most 16 MiB in float32, where dense EM is
             faster), the full dense transition fits
             ``max_dense_transition_bytes`` and dense EM's arrays fit in half
             the device memory, and checkpointed EM otherwise or when
@@ -6457,7 +6457,7 @@ class SortedSpikesDetector(_DetectorBase):
             default "dense". "structured" runs EM on the checkpointed driver
             (see ``chunk_size``), whose working memory does not grow with the
             recording length. "auto" runs dense EM when the interior
-            transition is small (at most 32 MiB in float32, where dense EM is
+            transition is small (at most 16 MiB in float32, where dense EM is
             faster), the full dense transition fits
             ``max_dense_transition_bytes`` and dense EM's arrays fit in half
             the device memory, and checkpointed EM otherwise or when
