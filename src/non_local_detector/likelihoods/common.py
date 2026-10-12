@@ -440,8 +440,16 @@ def _poisson_nonlocal_log_likelihood(
                     precision=jax.lax.Precision.HIGHEST,
                 )
 
-            values = jnp.where(
-                (block_durations == first)[:, None], emission(first), emission(other)
+            # A block of equal durations (the usual uniform grid) needs one
+            # product; ``where`` alone would compute both.
+            values = jax.lax.cond(
+                first == other,
+                lambda: emission(first),
+                lambda: jnp.where(
+                    (block_durations == first)[:, None],
+                    emission(first),
+                    emission(other),
+                ),
             )
             return (values + duration_tangent).astype(accumulator_dtype)
 

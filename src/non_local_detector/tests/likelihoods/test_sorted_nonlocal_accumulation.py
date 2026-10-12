@@ -547,3 +547,45 @@ def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkey
         2 * np.max(np.abs(evidence[0] - evidence[1])) + floor
     )
     np.testing.assert_array_equal(actual.is_missing, missing)
+
+
+def test_uniform_duration_blocks_compute_one_emission_product():
+    """A block of equal durations needs one matrix product, not both.
+
+    Selecting between the two durations' products with ``where`` computed both
+    for every block, making uniform-width emissions about 1.8x slower.
+    """
+    from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
+
+    counts = jnp.zeros((128, 5), dtype=jnp.int32)
+    rates = jnp.ones((5, 7))
+    jaxpr = jax.make_jaxpr(_poisson_nonlocal_log_likelihood)(
+        counts, rates, jnp.full(128, 0.002), rates.sum(0)
+    )
+
+    def count(jaxpr, name):
+        total = 0
+        for eqn in jaxpr.eqns:
+            total += eqn.primitive.name == name
+            for value in eqn.params.values():
+                for sub in value if isinstance(value, (tuple, list)) else (value,):
+                    inner = getattr(sub, "jaxpr", sub)
+                    if hasattr(inner, "eqns"):
+                        total += count(inner, name)
+        return total
+
+    def conds(jaxpr):
+        for eqn in jaxpr.eqns:
+            if eqn.primitive.name == "cond":
+                yield eqn
+            for value in eqn.params.values():
+                for sub in value if isinstance(value, (tuple, list)) else (value,):
+                    inner = getattr(sub, "jaxpr", sub)
+                    if hasattr(inner, "eqns"):
+                        yield from conds(inner)
+
+    branch_products = [
+        sorted(count(branch.jaxpr, "dot_general") for branch in eqn.params["branches"])
+        for eqn in conds(jaxpr.jaxpr)
+    ]
+    assert [1, 2] in branch_products, branch_products
