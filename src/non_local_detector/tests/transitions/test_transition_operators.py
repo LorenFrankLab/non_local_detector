@@ -923,3 +923,43 @@ def test_hmm_boundary_gradients_match_dense_reference(all_impossible, fused):
         for left, right in zip(actual, expected, strict=True):
             assert np.all(np.isfinite(left))
             np.testing.assert_allclose(left, right, rtol=1e-12, atol=1e-13)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dense_gaussian_bytes", [None, 0])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_fused_gaussian_blocks_within_budget_are_dense(
+    dense_gaussian_bytes, dtype, monkeypatch
+):
+    """A small restricted Gaussian block is stored dense (one matrix-vector
+    product per step instead of several small kernels); above the budget it
+    keeps its separable product. Both match the dense reference."""
+    from non_local_detector import transition_operators
+
+    if dense_gaussian_bytes is not None:
+        monkeypatch.setattr(
+            transition_operators, "_DENSE_GAUSSIAN_BLOCK_BYTES", dense_gaussian_bytes
+        )
+    with enable_x64(dtype == np.float64):
+        env = environment((6, 7))
+        transitions = [[RandomWalk(movement_var=np.diag([0.9, 1.7]))]]
+        sizes = (len(env.place_bin_centers_),)
+        dense, _ = dense_reference(transitions, [env], sizes)
+        mask = env.is_track_interior_.ravel()
+        operator = build_transition_operator(transitions, [env], sizes).restricted(mask)
+        fused = operator.fused()
+        expected = (
+            transition_operators.DenseBlock
+            if dense_gaussian_bytes is None
+            else transition_operators.RestrictedBlock
+        )
+        assert [type(block) for block in fused.blocks] == [expected]
+        assert_products(fused, dense[np.ix_(mask, mask)], dtype)
+        rng = np.random.default_rng(7)
+        filtered = jnp.asarray(rng.uniform(0.01, 1, mask.sum()), dtype=dtype)
+        ratio = jnp.asarray(rng.uniform(0.5, 2, mask.sum()), dtype=dtype)
+        np.testing.assert_allclose(
+            fused.pair_products(filtered, ratio),
+            operator.pair_products(filtered, ratio),
+            rtol=1e-6 if dtype == np.float32 else 1e-12,
+        )

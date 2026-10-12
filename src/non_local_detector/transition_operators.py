@@ -443,8 +443,10 @@ class BlockTransitionOperator:
     def fused(self):
         """Return a product-only operator with rank-one blocks folded together.
 
-        See ``FusedBlockTransition``. Products agree with this operator to
-        rounding; ``entries`` and dense views stay on this operator.
+        See ``FusedBlockTransition``. Gaussian blocks whose float32 dense form
+        fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` are stored dense. Products agree
+        with this operator to rounding; ``entries`` and dense views stay on
+        this operator.
         """
         boundaries = np.cumsum((0, *self.state_sizes))
         n_states = len(self.state_sizes)
@@ -456,7 +458,7 @@ class BlockTransitionOperator:
                 if factors is _EMPTY_BLOCK:
                     continue
                 if factors is None:
-                    blocks.append(block)
+                    blocks.append(_small_gaussian_as_dense(block))
                     positions.append((source, target))
                     continue
                 column = np.zeros(boundaries[-1])
@@ -515,6 +517,30 @@ class BlockTransitionOperator:
 
 _EMPTY_BLOCK = object()
 
+# Gaussian blocks up to this many bytes of float32 dense matrix are stored
+# dense in the fused operator. A separable product costs several small
+# kernels per step (scatter to the grid, scaling, per-axis products, gather);
+# a dense block costs one matrix-vector product. On an A100, a filter step
+# plus a smoothing step with transition statistics took 52 against 82 us for
+# a 594-bin block (1.4 MB), 65 against 101 us at 1,648 bins (10.9 MB) and
+# 122 against 105 us at 2,616 bins (27.4 MB).
+_DENSE_GAUSSIAN_BLOCK_BYTES = 16 * 2**20
+
+
+def _small_gaussian_as_dense(block):
+    """A Gaussian (or restricted Gaussian) block as a ``DenseBlock`` when its
+    float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES``; any other block as is."""
+    original = block.original if isinstance(block, RestrictedBlock) else block
+    n_rows, n_columns = block.shape
+    if (
+        not isinstance(original, GaussianGridBlock)
+        or n_rows * n_columns * 4 > _DENSE_GAUSSIAN_BLOCK_BYTES
+    ):
+        return block
+    return DenseBlock(
+        block.entries(np.arange(n_rows)[:, None], np.arange(n_columns)[None, :])
+    )
+
 
 def _rank_one_factors(block):
     """Host ``(source, destination)`` vectors of a rank-one block, else None.
@@ -555,9 +581,12 @@ class FusedBlockTransition:
     destination masks the rows of ``destinations``, so all of them cost one
     product with each matrix per call instead of a reduction, scatter and
     gather per block. Gaussian, dense and spatial identity blocks keep their
-    own products. Any NaN in the input makes the whole output NaN, as in
-    ``BlockTransitionOperator``. Products agree with that operator to rounding,
-    not bitwise, because the rank-one sums are taken in a different order.
+    own products, except small Gaussian blocks, which are stored dense (see
+    ``_DENSE_GAUSSIAN_BLOCK_BYTES``). Any NaN in the input makes the whole
+    output NaN, as in ``BlockTransitionOperator``. Products agree with that
+    operator to rounding, not bitwise, because the rank-one sums are taken in
+    a different order and small Gaussian blocks are products with a dense
+    matrix.
 
     Built by ``BlockTransitionOperator.fused``. Forward products are ``p @ T``
     and backward products ``T @ v``.
