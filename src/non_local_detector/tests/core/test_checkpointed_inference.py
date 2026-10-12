@@ -1179,31 +1179,76 @@ def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail,
     assert not list(tmp_path.glob("checkpoints-*"))
 
 
+_GiB = 2**30
+
+
 @pytest.mark.parametrize(
-    "files, expected",
+    "membership, files, expected",
     [
-        ({"memory.max": "8589934592\n", "memory.current": "1073741824\n"}, 7 * 2**30),
-        ({"memory.max": "max\n", "memory.current": "1073741824\n"}, None),
+        # cgroup v2: the process's own cgroup.
         (
-            {
-                "memory/memory.limit_in_bytes": "4294967296\n",
-                "memory/memory.usage_in_bytes": "1073741824\n",
-            },
-            3 * 2**30,
+            "0::/\n",
+            {"memory.max": f"{8 * _GiB}", "memory.current": f"{_GiB}"},
+            7 * _GiB,
         ),
-        ({"memory/memory.limit_in_bytes": "9223372036854771712\n"}, None),
-        ({}, None),
+        ("0::/\n", {"memory.max": "max", "memory.current": f"{_GiB}"}, None),
+        # cgroup v2: an inherited 8 GiB parent limit under an unlimited leaf.
+        (
+            "0::/a/b\n",
+            {
+                "a/memory.max": f"{8 * _GiB}",
+                "a/memory.current": f"{_GiB}",
+                "a/b/memory.max": "max",
+                "a/b/memory.current": f"{_GiB}",
+            },
+            7 * _GiB,
+        ),
+        # cgroup v2: the smallest remaining allowance among the ancestors.
+        (
+            "0::/a/b\n",
+            {
+                "a/memory.max": f"{8 * _GiB}",
+                "a/memory.current": f"{_GiB}",
+                "a/b/memory.max": f"{4 * _GiB}",
+                "a/b/memory.current": f"{2 * _GiB}",
+            },
+            2 * _GiB,
+        ),
+        # cgroup v1: the memory controller's own path, nested under a limit.
+        (
+            "5:cpuacct,memory:/a/b\n4:cpu:/\n0::/\n",
+            {
+                "memory/a/memory.limit_in_bytes": f"{4 * _GiB}",
+                "memory/a/memory.usage_in_bytes": f"{_GiB}",
+                "memory/a/b/memory.limit_in_bytes": "9223372036854771712",
+                "memory/a/b/memory.usage_in_bytes": f"{_GiB}",
+            },
+            3 * _GiB,
+        ),
+        # cgroup v1 in a container: the host-side path is not mounted, so the
+        # container's limit is at the mount root.
+        (
+            "4:memory:/docker/abc\n",
+            {
+                "memory/memory.limit_in_bytes": f"{4 * _GiB}",
+                "memory/memory.usage_in_bytes": f"{_GiB}",
+            },
+            3 * _GiB,
+        ),
+        ("4:memory:/\n", {"memory/memory.limit_in_bytes": "9223372036854771712"}, None),
+        ("", {}, None),
     ],
 )
-def test_cgroup_memory_allowance(tmp_path, files, expected):
-    """A container's memory limit caps the default replay cache."""
+def test_cgroup_memory_allowance(tmp_path, membership, files, expected):
+    """A container's memory limit, on its own cgroup or an ancestor, caps the
+    default replay cache."""
     from non_local_detector.checkpointed_inference import _cgroup_remaining_bytes
 
     for name, text in files.items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    assert _cgroup_remaining_bytes(tmp_path, relative="/") == expected
+        path.write_text(text + "\n")
+    assert _cgroup_remaining_bytes(tmp_path, membership=membership) == expected
 
 
 def test_available_host_memory_respects_the_container(monkeypatch):

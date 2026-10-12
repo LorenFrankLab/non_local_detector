@@ -85,46 +85,65 @@ def _read_cgroup_value(path: Path) -> int | None:
 
 
 def _cgroup_remaining_bytes(
-    root: Path = Path("/sys/fs/cgroup"), relative: str | None = None
+    root: Path = Path("/sys/fs/cgroup"), membership: str | None = None
 ) -> int | None:
-    """Memory left under this process's cgroup limit, or None if unlimited.
+    """Memory left under this process's cgroup limits, or None if unlimited.
 
-    Reads cgroup v2 (``memory.max`` and ``memory.current``) or v1
-    (``memory/memory.limit_in_bytes`` and ``memory/memory.usage_in_bytes``),
-    first in the process's own cgroup and then at the root. Linux host memory
-    figures ignore a container's limit, so this caps them.
+    A limit on any ancestor cgroup also binds the process, so this walks the
+    memory controller's path from the process's cgroup up to the mount root
+    and returns the smallest remaining allowance (limit minus that cgroup's
+    usage). It reads cgroup v2 (``memory.max`` and ``memory.current``) and v1
+    (``memory.limit_in_bytes`` and ``memory.usage_in_bytes`` under
+    ``memory/``); path components not mounted, as in a container that sees its
+    own cgroup at the root, are skipped. Linux host memory figures ignore a
+    container's limit, so this caps them.
 
     Parameters
     ----------
     root : Path, optional
         Mount point of the cgroup file system.
-    relative : str, optional
-        The process's cgroup path; read from ``/proc/self/cgroup`` when None.
+    membership : str, optional
+        Contents of ``/proc/self/cgroup``; read from there when None.
 
     Returns
     -------
     remaining : int or None
     """
-    if relative is None:
-        relative = "/"
+    if membership is None:
         try:
-            with open("/proc/self/cgroup") as cgroups:
-                for line in cgroups:
-                    if line.startswith("0::"):
-                        relative = line[3:].strip() or "/"
+            membership = Path("/proc/self/cgroup").read_text()
         except OSError:
-            pass
-    directories = [root / relative.lstrip("/"), root]
-    for directory in directories:
-        for limit_name, usage_name in (
-            ("memory.max", "memory.current"),
-            ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes"),
-        ):
+            membership = ""
+    hierarchies = []
+    for line in membership.splitlines():
+        hierarchy_id, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        if hierarchy_id == "0" and not controllers:
+            hierarchies.append((root, path, "memory.max", "memory.current"))
+        elif "memory" in controllers.split(","):
+            hierarchies.append(
+                (
+                    root / "memory",
+                    path,
+                    "memory.limit_in_bytes",
+                    "memory.usage_in_bytes",
+                )
+            )
+    remaining = None
+    for mount, path, limit_name, usage_name in hierarchies:
+        directory = mount / path.strip("/")
+        while True:
             limit = _read_cgroup_value(directory / limit_name)
             if limit is not None:
                 usage = _read_cgroup_value(directory / usage_name) or 0
-                return max(limit - usage, 0)
-    return None
+                allowance = max(limit - usage, 0)
+                remaining = (
+                    allowance if remaining is None else min(remaining, allowance)
+                )
+            if directory == mount:
+                break
+            directory = directory.parent
+    return remaining
 
 
 def _available_host_bytes() -> int | None:
