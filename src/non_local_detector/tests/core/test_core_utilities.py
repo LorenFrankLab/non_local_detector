@@ -9,6 +9,7 @@ Testing philosophy: Each function should be tested for:
 """
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from non_local_detector.core import (
@@ -594,13 +595,39 @@ class TestCheckConverged:
         )
         assert is_increasing
 
-    def test_slack_scales_with_tolerance(self):
-        """The monotonicity slack tracks ``tolerance`` (relative), so the same
-        decrease can be a violation at a tight tolerance and noise at a loose
-        one."""
+    def test_slack_does_not_scale_with_tolerance(self):
+        """The monotonicity slack is a fixed float-noise allowance, so a loose
+        convergence tolerance does not hide a real decrease."""
         # Relative change = -0.02 / ~100 = -2e-4.
         curr, prev = jnp.asarray(-100.02), jnp.asarray(-100.0)
         _, tight = check_converged(curr, prev, tolerance=1e-5)
         _, loose = check_converged(curr, prev, tolerance=1e-3)
-        assert not tight, "Expected a violation at the tight tolerance"
-        assert loose, "Expected no violation at the loose tolerance"
+        assert not tight
+        assert not loose
+
+    def test_decrease_beyond_float_noise_is_not_convergence(self):
+        """A decrease smaller than ``tolerance`` but larger than float noise is
+        a monotonicity violation and must not end EM as converged."""
+        # Relative change -1e-5: inside tolerance=1e-4, far beyond float32 noise.
+        is_converged, is_increasing = check_converged(
+            -1_000_010.0, -1_000_000.0, tolerance=1e-4
+        )
+        assert not is_increasing
+        assert not is_converged
+
+    def test_float_noise_decrease_counts_as_converged(self):
+        """A decrease at float32 rounding level is noise, not a violation."""
+        # Relative change -5e-7, below the ~1.2e-6 float-noise allowance.
+        is_converged, is_increasing = check_converged(
+            -1_000_000.5, -1_000_000.0, tolerance=1e-4
+        )
+        assert is_increasing
+        assert is_converged
+
+    def test_leaving_negative_infinity_is_an_increase(self):
+        """A finite objective after a ``-inf`` one (e.g. an initial transition
+        matrix with a zero entry the prior penalizes) is an increase, not a
+        NaN comparison."""
+        is_converged, is_increasing = check_converged(-50.0, -np.inf, tolerance=1e-4)
+        assert is_increasing
+        assert not is_converged

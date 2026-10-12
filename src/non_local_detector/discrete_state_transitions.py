@@ -13,6 +13,9 @@ from patsy import (  # type: ignore[import-untyped]
     dmatrix,
 )
 from scipy.optimize import minimize  # type: ignore[import-untyped]
+from scipy.special import (
+    log_softmax as numpy_log_softmax,  # type: ignore[import-untyped]
+)
 from scipy.special import softmax  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
@@ -1019,6 +1022,67 @@ def estimate_non_stationary_state_transition_from_responses(
     return estimated_transition_coefficients, estimated_transition_matrix
 
 
+def _row_prior_weights(prior_weight: float | np.ndarray, n_states: int) -> np.ndarray:
+    """Validate ``prior_weight`` and broadcast it to one weight per row.
+
+    Parameters
+    ----------
+    prior_weight : float or np.ndarray, shape (n_states,)
+    n_states : int
+
+    Returns
+    -------
+    prior_weight : np.ndarray, shape (n_states,)
+    """
+    prior_weight_arr = np.atleast_1d(np.asarray(prior_weight, dtype=float))
+    if prior_weight_arr.size == 1:
+        prior_weight_arr = np.full(n_states, prior_weight_arr.item())
+    if prior_weight_arr.shape != (n_states,):
+        raise ValueError(
+            f"prior_weight must be a scalar or array of shape ({n_states},), "
+            f"got shape {prior_weight_arr.shape}"
+        )
+    if np.any(prior_weight_arr < 0):
+        raise ValueError(f"prior_weight must be non-negative, got {prior_weight_arr}")
+    return prior_weight_arr
+
+
+def _stationary_pseudo_counts(
+    joint_sum: np.ndarray, alpha: np.ndarray, prior_weight: np.ndarray
+) -> np.ndarray:
+    """Dirichlet pseudo-counts the stationary M-step adds to the expected counts.
+
+    Rows with ``prior_weight[i] == 0`` use the fixed ``alpha - 1``. Rows with
+    ``prior_weight[i] > 0`` keep the direction of ``alpha - 1`` but scale its
+    total to ``prior_weight[i]`` times the expected transitions out of state
+    ``i``, so these pseudo-counts change with the E-step.
+
+    Parameters
+    ----------
+    joint_sum : np.ndarray, shape (n_states, n_states)
+        Expected transition counts.
+    alpha : np.ndarray, shape (n_states, n_states)
+        Dirichlet parameters from :func:`get_transition_prior`.
+    prior_weight : np.ndarray, shape (n_states,)
+        Validated per-row weights from :func:`_row_prior_weights`.
+
+    Returns
+    -------
+    pseudo_counts : np.ndarray, shape (n_states, n_states)
+    """
+    legacy_prior = alpha - 1.0
+    if not np.any(prior_weight > 0):
+        return legacy_prior
+    # Normalize to get prior direction per row
+    row_sums = legacy_prior.sum(axis=-1, keepdims=True)
+    safe_row_sums = np.where(row_sums == 0, 1.0, row_sums)
+    tilde_alpha = np.where(row_sums == 0, 0.0, legacy_prior / safe_row_sums)
+    # N_i = expected transitions from state i
+    n_i = joint_sum.sum(axis=-1, keepdims=True)
+    adaptive_prior = prior_weight[:, np.newaxis] * n_i * tilde_alpha
+    return np.where((prior_weight > 0)[:, np.newaxis], adaptive_prior, legacy_prior)
+
+
 def estimate_stationary_state_transition_from_counts(
     joint_sum: np.ndarray,
     stickiness: float | np.ndarray = 0.0,
@@ -1054,65 +1118,23 @@ def estimate_stationary_state_transition_from_counts(
     new_transition_matrix : np.ndarray, shape (n_states, n_states)
     """
     n_states = joint_sum.shape[0]
-
-    # Normalize prior_weight to shape (n_states,)
-    prior_weight_arr = np.atleast_1d(np.asarray(prior_weight, dtype=float))
-    if prior_weight_arr.size == 1:
-        prior_weight_arr = np.full(n_states, prior_weight_arr.item())
-    if prior_weight_arr.shape != (n_states,):
-        raise ValueError(
-            f"prior_weight must be a scalar or array of shape ({n_states},), "
-            f"got shape {prior_weight_arr.shape}"
-        )
-    if np.any(prior_weight_arr < 0):
-        raise ValueError(f"prior_weight must be non-negative, got {prior_weight_arr}")
-
     alpha = get_transition_prior(concentration, stickiness, n_states)
     _assert_map_compatible_alpha(alpha)
+    prior_weight_arr = _row_prior_weights(prior_weight, n_states)
 
-    # Legacy prior for rows with prior_weight[i] == 0
-    legacy_prior = alpha - 1.0  # (n_states, n_states)
-
-    if np.any(prior_weight_arr > 0):
-        # Data-adaptive prior: scale pseudo-counts by expected transitions
-        # so regularization strength is invariant to temporal resolution.
-        alpha_shape = alpha - 1.0  # (n_states, n_states)
-
-        # Normalize to get prior direction per row
-        row_sums = alpha_shape.sum(axis=-1, keepdims=True)
-        safe_row_sums = np.where(row_sums == 0, 1.0, row_sums)
-        tilde_alpha = np.where(row_sums == 0, 0.0, alpha_shape / safe_row_sums)
-
-        # N_i = expected transitions from state i
-        N_i = joint_sum.sum(axis=-1, keepdims=True)  # (n_states, 1)
-
-        # Per-row adaptive prior: prior_weight[i] * N_i * tilde_alpha[i]
-        adaptive_prior = prior_weight_arr[:, np.newaxis] * N_i * tilde_alpha
-
-        # Use adaptive prior for rows where prior_weight > 0, legacy otherwise
-        use_adaptive = prior_weight_arr > 0  # (n_states,)
-
-        # Warn when an adaptive row has a uniform prior direction (alpha - 1 == 0,
-        # e.g. concentration=1.0 and stickiness=0.0): prior_weight then has no
-        # effect because there is nothing to scale.
-        no_op_rows = use_adaptive & (row_sums[:, 0] == 0)
-        if np.any(no_op_rows):
-            logger.warning(
-                "prior_weight > 0 has no effect for states %s because the prior "
-                "direction is uniform (alpha - 1 == 0). Increase concentration or "
-                "stickiness to regularize these rows.",
-                np.flatnonzero(no_op_rows).tolist(),
-            )
-
-        effective_prior = np.where(
-            use_adaptive[:, np.newaxis],
-            adaptive_prior,
-            legacy_prior,
+    # Warn when an adaptive row has a uniform prior direction (alpha - 1 == 0,
+    # e.g. concentration=1.0 and stickiness=0.0): prior_weight then has no
+    # effect because there is nothing to scale.
+    no_op_rows = (prior_weight_arr > 0) & ((alpha - 1.0).sum(axis=-1) == 0)
+    if np.any(no_op_rows):
+        logger.warning(
+            "prior_weight > 0 has no effect for states %s because the prior "
+            "direction is uniform (alpha - 1 == 0). Increase concentration or "
+            "stickiness to regularize these rows.",
+            np.flatnonzero(no_op_rows).tolist(),
         )
-    else:
-        # All rows use legacy fixed-count prior
-        effective_prior = legacy_prior
 
+    effective_prior = _stationary_pseudo_counts(joint_sum, alpha, prior_weight_arr)
     new_transition_matrix = joint_sum + effective_prior
 
     # Normalize rows to get transition probabilities.
@@ -1275,7 +1297,54 @@ def _estimate_discrete_transition(
     estimated_discrete_transition_coefficients : np.ndarray | None
         Updated coefficients (if non-stationary).
     """
-    statistics = (
+    statistics = _discrete_transition_statistics(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        continuous_transition,
+        state_ind,
+        discrete_transition,
+        discrete_transition_coefficients,
+        discrete_transition_design_matrix,
+    )
+    return _discrete_transition_from_statistics(
+        statistics,
+        discrete_transition_coefficients,
+        discrete_transition_design_matrix,
+        transition_concentration,
+        transition_stickiness,
+        transition_regularization,
+        transition_prior_weight,
+    )
+
+
+def _discrete_transition_statistics(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    continuous_transition: np.ndarray,
+    state_ind: np.ndarray,
+    discrete_transition: np.ndarray,
+    discrete_transition_coefficients: np.ndarray | None,
+    discrete_transition_design_matrix: DesignMatrix | None,
+) -> np.ndarray:
+    """Expected discrete transition statistics from the expanded posteriors.
+
+    Parameters
+    ----------
+    causal_posterior, predictive_posterior, acausal_posterior,
+    continuous_transition, state_ind, discrete_transition,
+    discrete_transition_coefficients, discrete_transition_design_matrix
+        As in :func:`_estimate_discrete_transition`.
+
+    Returns
+    -------
+    statistics : np.ndarray
+        Expected transition counts, shape (n_states, n_states), for a
+        stationary transition; per-row responses, shape
+        (n_time - 1, n_states, n_states), for a covariate transition.
+    """
+    return (
         estimate_discrete_transition_responses_from_factorized_posteriors
         if _is_nonstationary(
             discrete_transition_coefficients, discrete_transition_design_matrix
@@ -1289,15 +1358,94 @@ def _estimate_discrete_transition(
         discrete_transition,
         state_ind,
     )
-    return _discrete_transition_from_statistics(
-        statistics,
-        discrete_transition_coefficients,
-        discrete_transition_design_matrix,
-        transition_concentration,
-        transition_stickiness,
-        transition_regularization,
-        transition_prior_weight,
+
+
+def _transition_log_prior(
+    statistics: np.ndarray,
+    discrete_transition: np.ndarray | None,
+    discrete_transition_coefficients: np.ndarray | None,
+    discrete_transition_design_matrix: DesignMatrix | np.ndarray | None,
+    transition_concentration: float,
+    transition_stickiness: float | np.ndarray,
+    transition_regularization: float,
+    transition_prior_weight: float | np.ndarray = 0.0,
+    free_rows: np.ndarray | None = None,
+) -> float:
+    """Log prior of discrete transition parameters, as the M-step weighs it.
+
+    The discrete M-step maximizes the expected complete-data log-likelihood
+    plus this term, so EM never decreases the marginal log-likelihood plus
+    this term. Both are evaluated with the prior of one M-step (the
+    data-adaptive ``prior_weight`` pseudo-counts depend on ``statistics``).
+
+    Stationary: ``sum_ij c_ij log A_ij`` with the pseudo-counts ``c`` the
+    stationary M-step adds once per row. Covariate-dependent:
+    ``sum_t sum_ij (alpha_ij - 1) log A_t,ij - n * lambda * |beta_i[1:]|^2``
+    over the ``n = n_time - 1`` transitions, the per-row loss of
+    :func:`dirichlet_neg_log_likelihood` times ``-n`` minus its data term.
+
+    Parameters
+    ----------
+    statistics : np.ndarray
+        Expected transition counts, shape (n_states, n_states), or per-row
+        responses, shape (n_time - 1, n_states, n_states), as passed to
+        :func:`_discrete_transition_from_statistics`.
+    discrete_transition : np.ndarray, shape (n_states, n_states), or None
+        Stationary transition matrix to evaluate. Ignored for a
+        covariate-dependent transition, which is evaluated from its
+        coefficients.
+    discrete_transition_coefficients : np.ndarray or None
+        Shape (n_coefficients, n_states, n_states - 1) for a
+        covariate-dependent transition.
+    discrete_transition_design_matrix : DesignMatrix, np.ndarray or None
+        Shape (n_time, n_coefficients) for a covariate-dependent transition.
+    transition_concentration, transition_stickiness, transition_regularization,
+    transition_prior_weight
+        As in :func:`_estimate_discrete_transition`.
+    free_rows : np.ndarray of bool, shape (n_states,), optional
+        Rows the M-step estimates. Frozen rows are constant and left out.
+        All rows by default.
+
+    Returns
+    -------
+    log_prior : float
+        ``-inf`` if the prior puts pseudo-counts on a zero-probability entry.
+    """
+    statistics = np.asarray(statistics)
+    n_states = statistics.shape[-1]
+    alpha = get_transition_prior(
+        transition_concentration, transition_stickiness, n_states
     )
+    rows = np.ones(n_states, dtype=bool) if free_rows is None else free_rows
+    if _is_nonstationary(
+        discrete_transition_coefficients, discrete_transition_design_matrix
+    ):
+        coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)
+        design_matrix = np.asarray(discrete_transition_design_matrix, dtype=np.float64)
+        linear_predictor = np.einsum("tc,csk->tsk", design_matrix[:-1], coefficients)
+        # Last target state is the reference category (zero linear predictor),
+        # as in jax_centered_log_softmax_forward.
+        linear_predictor = np.concatenate(
+            (linear_predictor, np.zeros(linear_predictor.shape[:-1] + (1,))), axis=-1
+        )
+        summed_log_probs = numpy_log_softmax(linear_predictor, axis=-1).sum(axis=0)
+        row_log_prior = np.sum((alpha - 1.0) * summed_log_probs, axis=-1)
+        n_samples = statistics.shape[0]
+        row_log_prior -= (
+            n_samples
+            * transition_regularization
+            * np.sum(coefficients[1:] ** 2, axis=(0, 2))
+        )
+        return float(np.sum(row_log_prior[rows]))
+
+    pseudo_counts = _stationary_pseudo_counts(
+        statistics, alpha, _row_prior_weights(transition_prior_weight, n_states)
+    )
+    with np.errstate(divide="ignore"):
+        log_transition = np.log(np.asarray(discrete_transition, dtype=np.float64))
+    # 0 * log(0) = 0: an impossible transition costs nothing without pseudo-counts.
+    terms = np.where(pseudo_counts == 0, 0.0, pseudo_counts * log_transition)
+    return float(np.sum(terms[rows]))
 
 
 def _is_nonstationary(

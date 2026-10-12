@@ -19,6 +19,8 @@ from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
     _state_aggregation_matrix,
     _stationary_counts_block,
+    _transition_log_prior,
+    dirichlet_neg_log_likelihood,
     estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_counts_from_factorized_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
@@ -1964,3 +1966,127 @@ class TestEstimateDiscreteTransition:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _random_stochastic(rng: np.random.Generator, n_states: int) -> np.ndarray:
+    matrix = rng.uniform(0.05, 1.0, (n_states, n_states))
+    return matrix / matrix.sum(axis=1, keepdims=True)
+
+
+@pytest.mark.unit
+class TestTransitionLogPrior:
+    """``_transition_log_prior`` is the penalty the discrete M-step maximizes.
+
+    EM with a MAP M-step never decreases marginal log-likelihood + this
+    penalty, which is what the EM convergence check monitors.
+    """
+
+    def test_stationary_matches_dirichlet_formula_over_free_rows(self):
+        rng = np.random.default_rng(0)
+        transition = _random_stochastic(rng, 3)
+        counts = rng.uniform(0, 50, (3, 3))
+        stickiness = np.array([5.0, 0.0, 2.0])
+        free_rows = np.array([True, False, True])
+
+        log_prior = _transition_log_prior(
+            counts, transition, None, None, 1.5, stickiness, 0.0, 0.0, free_rows
+        )
+
+        pseudo_counts = 0.5 + np.diag(stickiness)
+        expected = np.sum((pseudo_counts * np.log(transition))[free_rows])
+        np.testing.assert_allclose(log_prior, expected, rtol=1e-12)
+
+    @pytest.mark.parametrize("prior_weight", [0.0, 0.5])
+    def test_stationary_m_step_maximizes_counts_plus_log_prior(self, prior_weight):
+        """The M-step's matrix beats every other stochastic matrix on
+        expected complete-data log-likelihood + log prior."""
+        rng = np.random.default_rng(1)
+        counts = rng.uniform(0, 50, (4, 4))
+        stickiness = np.array([200.0, 0.0, 30.0, 0.0])
+        prior = (None, None, 2.0, stickiness, 0.0, prior_weight)
+
+        def objective(transition):
+            return np.sum(counts * np.log(transition)) + _transition_log_prior(
+                counts, transition, *prior
+            )
+
+        m_step = estimate_stationary_state_transition_from_counts(
+            counts, stickiness=stickiness, concentration=2.0, prior_weight=prior_weight
+        )
+        best = objective(m_step)
+        for _ in range(50):
+            assert objective(_random_stochastic(rng, 4)) < best
+            nearby = m_step * np.exp(rng.normal(0, 1e-3, m_step.shape))
+            assert objective(nearby / nearby.sum(axis=1, keepdims=True)) <= best
+
+    def test_non_stationary_matches_m_step_loss(self):
+        """Expected log-likelihood + log prior equals -n times the summed
+        per-row loss that the non-stationary M-step minimizes."""
+        rng = np.random.default_rng(2)
+        n_time, n_coefficients, n_states = 40, 3, 3
+        design_matrix = np.column_stack(
+            (np.ones(n_time), rng.normal(size=(n_time, n_coefficients - 1)))
+        )
+        coefficients = rng.normal(0, 0.5, (n_coefficients, n_states, n_states - 1))
+        response = rng.uniform(0, 1, (n_time - 1, n_states, n_states))
+        stickiness = np.array([20.0, 0.0, 5.0])
+        concentration, regularization = 1.5, 0.3
+        alpha = concentration + np.diag(stickiness)
+
+        log_prior = _transition_log_prior(
+            response,
+            None,
+            coefficients,
+            design_matrix,
+            concentration,
+            stickiness,
+            regularization,
+            0.0,
+        )
+
+        log_probs = np.stack(
+            [
+                np.asarray(
+                    jax_centered_log_softmax_forward(
+                        design_matrix[:-1] @ coefficients[:, row]
+                    )
+                )
+                for row in range(n_states)
+            ],
+            axis=1,
+        )
+        expected_log_likelihood = np.sum(response * log_probs)
+        summed_loss = sum(
+            float(
+                dirichlet_neg_log_likelihood(
+                    coefficients[:, row].ravel(),
+                    design_matrix[:-1],
+                    response[:, row],
+                    alpha[row],
+                    regularization,
+                )
+            )
+            for row in range(n_states)
+        )
+        np.testing.assert_allclose(
+            expected_log_likelihood + log_prior,
+            -(n_time - 1) * summed_loss,
+            rtol=1e-5,
+        )
+
+    def test_zero_probability_entries(self):
+        """A zero entry with no pseudo-count contributes nothing; a zero entry
+        the prior puts mass on makes the log prior ``-inf``."""
+        transition = np.array([[1.0, 0.0], [0.5, 0.5]])
+        counts = np.ones((2, 2))
+
+        no_prior = _transition_log_prior(counts, transition, None, None, 1.0, 0.0, 0.0)
+        assert no_prior == 0.0
+        sticky_second = _transition_log_prior(
+            counts, transition, None, None, 1.0, np.array([0.0, 3.0]), 0.0
+        )
+        np.testing.assert_allclose(sticky_second, 3.0 * np.log(0.5))
+        uniform_prior = _transition_log_prior(
+            counts, transition, None, None, 2.0, 0.0, 0.0
+        )
+        assert uniform_prior == -np.inf

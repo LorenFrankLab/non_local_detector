@@ -317,3 +317,45 @@ class TestEMConvergenceSurfacing:
 
         assert decoder.converged_ is False
         assert decoder.n_iter_ == 1
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+class TestEMMonitorsMapObjective:
+    """With a Dirichlet transition prior the M-step is a MAP update, so EM is
+    guaranteed to increase marginal log-likelihood + log prior, not the
+    marginal log-likelihood alone."""
+
+    @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
+    def test_prior_driven_likelihood_decrease_is_not_a_violation(
+        self, transition_representation
+    ):
+        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
+            make_simulated_data(seed=42, n_neurons=5)
+        )
+        # Default stickiness puts 1e5 pseudo-counts on two diagonals.
+        detector = NonLocalSortedSpikesDetector()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            results = detector.estimate_parameters(
+                position_time=time,
+                position=position,
+                spike_times=spike_times,
+                time_edges=time_edges_from_centers(time),
+                is_training=~is_event,
+                max_iter=10,
+                tolerance=1e-14,
+                estimate_encoding_model=False,
+                transition_representation=transition_representation,
+            )
+
+        log_likelihoods = np.asarray(results.attrs["marginal_log_likelihoods"])
+        objectives = np.asarray(results.attrs["em_objectives"])
+        assert objectives.shape == log_likelihoods.shape
+        # The scenario under test: the prior pulls the likelihood down.
+        assert np.any(np.diff(log_likelihoods) < 0)
+        assert np.all(np.diff(objectives) >= -1e-6 * np.abs(objectives[1:]))
+        assert detector.em_monotonicity_violations_ == []
+        assert not [w for w in caught if "decreased" in str(w.message)], [
+            str(w.message) for w in caught
+        ]
