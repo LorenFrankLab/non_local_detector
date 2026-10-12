@@ -509,6 +509,44 @@ def _validate_em_options(
         )
 
 
+def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
+    """Warn before one-chunk dense EM that ``"auto"`` would not run dense.
+
+    Uses the same rule as ``"auto"``: ``_DENSE_EM_WORKING_ARRAYS`` float32
+    time-by-state-bin arrays against half the device limit, or half the
+    available host memory on CPU. On the 23.6 min 2-D recording (A100) the
+    estimate was 27.0 and 41.8 GB at 4 and 3 cm (measured peaks 23.7 and
+    36.6 GB) and 53.1 GB at 2.5 cm, which ran out of a 63.8 GB limit, so the
+    full limit is not a safe line. The estimate is approximate, so this warns
+    rather than raising.
+
+    Parameters
+    ----------
+    n_time : int
+        Decode bins.
+    n_bins : int
+        Interior state bins.
+    """
+    from non_local_detector.checkpointed_inference import _available_host_bytes
+
+    needed = _DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+    limit = _device_memory_limit()
+    where = "device"
+    if limit is None:
+        limit, where = _available_host_bytes(), "host"
+    if limit is None or needed <= limit // 2:
+        return
+    warnings.warn(
+        f"Dense EM needs about {needed / 1e9:.1f} GB of {where} memory for "
+        f"{n_time} time bins x {n_bins} state bins, more than half of the "
+        f"{limit / 1e9:.1f} GB available, and may run out of memory. "
+        'Pass transition_representation="auto" (or "structured") to '
+        "estimate_parameters to bound EM's memory, or n_chunks > 1 for dense EM.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 def _em_representation(
     transition_representation: str,
     n_chunks: int,
@@ -3311,6 +3349,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "em_transition_representation": "dense",
                 "em_n_chunks": n_chunks,
             }
+            if n_chunks == 1:
+                _warn_if_dense_em_exceeds_memory(
+                    len(time_edges) - 1,
+                    int(np.count_nonzero(self.is_track_interior_state_bins_)),
+                )
         # Subclasses have already combined ``is_missing`` with the bins
         # affected by NaN positions via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)

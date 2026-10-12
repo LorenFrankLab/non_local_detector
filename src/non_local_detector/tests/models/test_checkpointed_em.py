@@ -611,3 +611,38 @@ def test_results_record_the_em_path(kwargs, expected, tmp_path):
                 assert stored.attrs[name] > 0
             else:
                 assert stored.attrs[name] == value
+
+
+@pytest.mark.parametrize("n_chunks", [1, 3])
+def test_dense_em_warns_before_exceeding_device_memory(n_chunks, monkeypatch):
+    """A dense EM that cannot fit says so before it runs, and names the fix."""
+    import warnings
+
+    from non_local_detector.models import base
+
+    monkeypatch.setattr(base, "_device_memory_limit", lambda: 1)
+    model, data = _recording("sorted")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model.estimate_parameters(
+            **data, max_iter=1, n_chunks=n_chunks, transition_representation="dense"
+        )
+    messages = [str(w.message) for w in caught if "Dense EM needs" in str(w.message)]
+    if n_chunks == 1:
+        assert len(messages) == 1
+        assert 'transition_representation="auto"' in messages[0]
+    else:
+        assert not messages
+
+
+def test_dense_em_within_memory_does_not_warn(monkeypatch):
+    import warnings
+
+    from non_local_detector.models import base
+
+    monkeypatch.setattr(base, "_device_memory_limit", lambda: 2**50)
+    model, data = _recording("sorted")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model.estimate_parameters(**data, max_iter=1, transition_representation="dense")
+    assert not [w for w in caught if "Dense EM needs" in str(w.message)]
