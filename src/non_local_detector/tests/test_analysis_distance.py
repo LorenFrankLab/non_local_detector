@@ -432,6 +432,32 @@ class TestAheadBehindDistance2DTrackGraph:
         env.fit_place_grid(rng.random((1500, 2)) * 100.0)
         return env
 
+    @pytest.mark.parametrize("precomputed_distance", [True, False])
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda head, direction, map_pos, **kw: get_2D_distance(head, map_pos, **kw),
+            lambda head, direction, map_pos, **kw: head_direction_simliarity(
+                head, direction, map_pos, **kw
+            ),
+            get_ahead_behind_distance2D,
+        ],
+        ids=["get_2D_distance", "head_direction_simliarity", "ahead_behind"],
+    )
+    def test_track_graph_without_edges_raises(self, env_2d, call, precomputed_distance):
+        """The track graph's nodes are indexed by the environment's bin grid,
+        so a track graph without ``edges`` is rejected with a message naming
+        the missing argument (issue #5), not an IndexError or TypeError."""
+        with pytest.raises(ValueError, match="edges"):
+            call(
+                np.array([[10.0, 10.0]]),
+                np.array([0.0]),
+                np.array([[50.0, 50.0]]),
+                track_graph=env_2d.track_graphDD,
+                edges=None,
+                precomputed_distance=precomputed_distance,
+            )
+
     def test_precomputed_distance_does_not_crash_and_matches_per_point(self, env_2d):
         """``precomputed_distance=True`` crashed under networkx>=3 because the
         all-pairs ``nx.shortest_path`` result is a generator, not a dict
