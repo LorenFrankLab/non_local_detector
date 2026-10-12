@@ -406,6 +406,13 @@ _AUTO_DENSE_TRANSITION_BYTES = 16 * 2**20
 _DENSE_EM_WORKING_ARRAYS = 8
 
 
+# Rows of the full posterior are filled and scattered in blocks of about this
+# many bytes. On a 2 cm 2-D grid (20,178 state bins, 3,298 interior; 177,330
+# rows, 14.3 GB) filling with NaN and then scattering the whole array took
+# 8.9 s; 1 MiB blocks took 3.8 s, 4-16 MiB 4.4 s and 64 MiB 5.7 s.
+_MASKED_POSTERIOR_BLOCK_BYTES = 2**20
+
+
 def _device_memory_limit() -> int | None:
     """Bytes JAX may allocate on the default device, or None if unknown (CPU)."""
     stats = jax.local_devices()[0].memory_stats()
@@ -3973,8 +3980,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Full array with NaN for non-interior bins.
         """
         n_time = data.shape[0]
-        full_array = np.full((n_time, n_total_bins), np.nan, dtype=np.float32)
-        full_array[:, is_track_interior] = data
+        columns = np.flatnonzero(is_track_interior)
+        rows = max(1, _MASKED_POSTERIOR_BLOCK_BYTES // max(4 * n_total_bins, 1))
+        full_array = np.empty((n_time, n_total_bins), dtype=np.float32)
+        # Fill and scatter one cache-sized block at a time, so each output
+        # byte is written to memory once instead of twice.
+        for start in range(0, n_time, rows):
+            block = full_array[start : start + rows]
+            block.fill(np.nan)
+            block[:, columns] = data[start : start + rows]
         return full_array
 
     def _convert_results_to_xarray(
