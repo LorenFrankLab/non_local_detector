@@ -476,6 +476,9 @@ def checkpointed_forward_backward(
 
     The likelihood callback receives ``(full_edges, row_slice=global_slice,
     is_missing=chunk_mask)``. Counts must retain global edge/final-edge ownership.
+    Every request spans ``min(chunk_size, n_time)`` rows: a short last chunk is
+    requested over the final ``chunk_size`` rows and its earlier rows are
+    discarded, so compiled likelihood kernels see one row count.
     This driver applies neutral likelihoods to missing rows and checks replay
     determinism. ``transition_operator`` is a registered JAX pytree with pure-JAX
     ``forward(p, weight)`` and ``backward(v, weight)``; ``weight`` is None or the
@@ -703,19 +706,22 @@ def checkpointed_forward_backward(
 
     def likelihood(start, stop):
         """Return device ``(values, degenerate, nan, checksum)`` for one chunk."""
+        # A short last chunk is evaluated over the final chunk_size rows and
+        # trimmed, so every callback has one shape and reuses compiled kernels.
+        first = max(min(start, n_time - int(chunk_size)), 0)
         values = jnp.asarray(
             log_likelihood_func(
-                time_edges, row_slice=slice(start, stop), is_missing=missing[start:stop]
+                time_edges, row_slice=slice(first, stop), is_missing=missing[first:stop]
             ),
             dtype=dtype,
         )
-        if values.shape != (stop - start, n_bins):
+        if values.shape != (stop - first, n_bins):
             raise ValueError(
                 "Likelihood callback must return exactly the requested global rows and hidden bins"
             )
         diagnostics["likelihood_evaluations"] += 1
-        diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - start)
-        return _prepare_chunk(values, jnp.asarray(missing[start:stop]))
+        diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - first)
+        return _prepare_chunk(values[start - first :], jnp.asarray(missing[start:stop]))
 
     def emit(name, start, stop, values):
         first, last = np.searchsorted(selected, [start, stop])

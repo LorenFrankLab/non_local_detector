@@ -74,7 +74,9 @@ def test_dense_reference_and_global_callbacks(tmp_path, covariate, chunk_size):
     def likelihood(time_edges, *, row_slice, is_missing):
         assert time_edges is edges
         calls.append((row_slice.start, row_slice.stop))
-        assert row_slice.stop - row_slice.start <= chunk_size
+        # Every call has one shape, so compiled likelihoods are reused: a
+        # short last chunk is evaluated over the final chunk_size rows.
+        assert row_slice.stop - row_slice.start == min(chunk_size, len(ll))
         return ll[row_slice]
 
     result = checkpointed_forward_backward(
@@ -604,7 +606,8 @@ def test_replay_change_in_an_earlier_chunk_fails_atomically(tmp_path):
             chunk_size=4,
             **kwargs,
         )
-    assert calls == {0: 2, 4: 2, 8: 2, 12: 2}
+    # The short last chunk (row 12) is evaluated over the final four rows.
+    assert calls == {0: 2, 4: 2, 8: 2, 9: 2}
     assert not (tmp_path / "result").exists()
     assert not list(tmp_path.glob(".result-*"))
 
