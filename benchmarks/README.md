@@ -75,6 +75,8 @@ names.
 | `benchmark_gaussian_numerics.py` | Gaussian score/EM runtime, compiled buffers and preserved outputs. | `OUTPUT_DIR --samples --components` |
 | `benchmark_hmm_conditioning.py` | Compiled HMM kernels compared with a Git baseline or a saved core. | `--baseline-ref` |
 | `benchmark_sorted_spikes_diffusion.py` | Sorted-spikes diffusion eigendecomposition, diffusion and fit cost across grid sizes. | `[--neurons N] [--bin-sizes ...]` |
+| `benchmark_kde_distance.py` | First-call and warm linear/log KDE kernel runtime, checked against NumPy Gaussian values. | `[--eval-points N --samples N --dimensions N]` |
+| `benchmark_clusterless_diffusion.py` | First-call and warm clusterless diffusion/KDE prediction time on a large 2D grid. | `[--grid-side N --encoding-spikes N --decoding-spikes N]` |
 | `qualify_long_encoding.py` | Long-encoding linear KDE compared with independent float64 references. | `--output-dir --platform` |
 
 Measured results backing documented claims live in
