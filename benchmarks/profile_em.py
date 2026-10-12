@@ -17,9 +17,10 @@ glue between them):
 - ``fit``: the internal refit, split into environment setup (grid and
   all-pairs graph distances), state index, discrete and continuous
   transitions, and the encoding fit;
-- ``e_step``: likelihood (``compute_log_likelihood``) and the dense
-  filter/smoother, whose exclusive time includes the host copies of its
-  posteriors;
+- ``e_step``: likelihood (``compute_log_likelihood``) and the
+  filter/smoother (dense, or the checkpointed driver with
+  ``--transition-representation``), whose exclusive time includes the host
+  copies of its posteriors;
 - ``encoding_m_step`` and ``discrete_m_step``.
 
 Each stage records inclusive and exclusive seconds, compile count and
@@ -573,6 +574,8 @@ def main():
         with ExitStack() as stack:
             for logger in compile_loggers:
                 logger.addHandler(profiler)
+                stack.callback(setattr, logger, "propagate", logger.propagate)
+                stack.callback(logger.setLevel, logger.level)
                 logger.setLevel(logging.DEBUG)
                 logger.propagate = False
                 stack.callback(logger.removeHandler, profiler)
@@ -668,7 +671,8 @@ def main():
         report["status"] = "ok"
     except Exception as error:  # record the failure mode (e.g. out of memory)
         report["status"] = "failed"
-        report["error"] = f"{type(error).__name__}: {str(error).splitlines()[0][:400]}"
+        message = (str(error).splitlines() or [""])[0][:400]
+        report["error"] = f"{type(error).__name__}: {message}"
         raise
     finally:
         host_peak.stop()

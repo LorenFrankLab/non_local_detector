@@ -16,22 +16,22 @@ window, package-source hash and device.
 
 | `package_source_sha256` prefix | Code |
 | --- | --- |
-| `b0ac0a76` | Before this work (`ddcbe6e`) |
-| `8b3d936b` | Plus the jittered-duration matrix emission (`2ad9c07`) |
-| `63157abd` | Plus KDE byte-budgeted blocks, scan unroll and the contraction M-step (`927f1c8`, `21563df`, `925b6ac`) |
-| `54a54858` | `cc25c63`: plus the linearization cache, single-bincount counts and compiled many-block KDEs |
+| `b0ac0a76` | Before this work (`fc3e520`) |
+| `8b3d936b` | Plus the jittered-duration matrix emission (`fd490c0`) |
+| `63157abd` | Plus KDE byte-budgeted blocks, scan unroll and the contraction M-step (`847fdb9`, `d233bc3`, `c766288`) |
+| `54a54858` | `c09707d`: plus the linearization cache, single-bincount counts and compiled many-block KDEs |
 | `0173cb67` | `8b3d936b` plus the KDE byte budget (clusterless baseline only) |
-| `095d5cbb` | `c23aea7`, before the likelihood-defect remediation plan (run via `PYTHONPATH`) |
-| `75660e30` | `cc25c63` plus the row-blocked M-step (`7a2c64b`) |
-| `309b74fc` | `a789beb`: plus the track-graph GLM fix |
-| `6559795f` | `104e024`: plus compiled per-electrode diffusion prediction |
+| `095d5cbb` | `c23aea7`, before the likelihood corrections (run via `PYTHONPATH`) |
+| `75660e30` | `c09707d` plus the row-blocked M-step (`25585ae`) |
+| `309b74fc` | `0953708`: plus the track-graph GLM fix |
+| `6559795f` | `90aa662`: plus compiled per-electrode diffusion prediction |
 | `273a29a3` | `6559795f` plus padded weighted GMM refits |
-| `309b74fc` (GLM) | `a789beb`, per-cell BFGS GLM fits |
-| `2ba28161` | `ddeaa01`: batched Newton GLM fits |
-| `27957feb` | `3925f84` before its review fixes (validation and docs only): structured-transition EM |
-| `1edc8ee5` | `27957feb` plus unrolled checkpointed scans (`1ad6a90`) |
-| `9680b2d4` | `a69d107`: plus structured-EM result stores and the replay cache |
-| `f21609be` | `d7d68fb` (dense EM, used for the KDE scaling sweep) |
+| `309b74fc` (GLM) | `0953708`, per-cell BFGS GLM fits |
+| `2ba28161` | `3f5e165`: batched Newton GLM fits |
+| `27957feb` | `04361ae` before its review fixes (validation and docs only): structured-transition EM |
+| `1edc8ee5` | `27957feb` plus unrolled checkpointed scans (`e59f963`) |
+| `9680b2d4` | `e535d74`: plus structured-EM result stores and the replay cache |
+| `f21609be` | `b4e5672` (dense EM, used for the KDE scaling sweep) |
 | `52068f24` | `f4dd609`: rebased, with the count-scaling and KDE-dtype fixes and per-run memory release in the profiler |
 | `ac120b53` | `52068f24` plus the prediction replay cache (`005fc10`) |
 
@@ -64,38 +64,39 @@ synchronizes at stage boundaries):
 The final runs' `.cprofile.txt` files list the host functions with the most own
 time in an uninstrumented warm run.
 
-### Against the code before the remediation plan
+### Against the code before the likelihood corrections (`c23aea7`)
 
 | Report | First call | Warm (3 iterations) | Device peak | Host peak |
 | --- | ---: | ---: | ---: | ---: |
-| `preplan-sorted-track-full` | 824.1 s | 247.9 s | 53.0 GB | 16.4 GB |
-| `preplan-clusterless-track-full` | 491.9 s | 209.8 s | 53.0 GB | 17.1 GB |
+| `before-corrections-sorted-track-full` | 824.1 s | 247.9 s | 53.0 GB | 16.4 GB |
+| `before-corrections-clusterless-track-full` | 491.9 s | 209.8 s | 53.0 GB | 17.1 GB |
 
 The final code is 32% (sorted) and 37% (clusterless) faster warm, 51% and
 33% faster on the first call, and uses 2.4x and 5x less device memory. The
-plan's corrections change the fitted values, so these compare cost only.
+likelihood corrections change the fitted values, so these compare cost only.
 
 ## 2-D grid of the same recording
 
-`--environment 2d` at 2 cm: 20,178 grid bins, 3,298 interior state bins.
+`--environment 2d` at 2 cm: 20,178 state bins, 3,298 of them interior.
 
 | Report | Outcome |
 | --- | --- |
-| `*-2d-full-dense-oom` | Default dense EM runs out of device memory in the first E-step (`cc25c63`) |
-| `*-2d-full-chunks8-mstep-oom` | With `n_chunks=8` the E-step fits; the full-length M-step contraction of `925b6ac` did not |
+| `*-2d-full-dense-oom` | Default dense EM runs out of device memory in the first E-step (`c09707d`) |
+| `*-2d-full-chunks8-mstep-oom` | With `n_chunks=8` the E-step fits; the full-length M-step contraction of `c766288` did not |
 | `sorted-2d-full-chunks8` | Row-blocked M-step: first call 870.1 s, warm 503.4 s; device 56.4 GB, host 175.2 GB |
 | `clusterless-2d-full-chunks8` | First call 898.5 s, warm 499.9 s; device 56.3 GB, host 174.7 GB |
 
 The filter/smoother takes 68-70% of the warm time (about 87 s per E-step).
-The 175 GB host peak comes from dense EM keeping full-length posteriors; the
-pre-plan code was not run in 2-D.
+These host peaks include the previous run's retained outputs; a single
+dense run peaks at 109.5 GB (see Host memory per run). The code before the
+likelihood corrections was not run in 2-D.
 
 ### Clusterless diffusion on the 2-D grid
 
 With `n_chunks=8`, `clusterless_diffusion` prediction dispatched its per-block
 operations separately, and the shapes varied with every block, chunk and
 electrode. They overflowed JAX's per-operation cache, so every warm E-step
-recompiled. Compiling each electrode's prediction as one call (`104e024`)
+recompiled. Compiling each electrode's prediction as one call (`90aa662`)
 removes the recompilation:
 
 | Report | Code | Host | First call | Instrumented warm (3 iterations) | Warm likelihood compiles | Device peak | Host peak |
@@ -111,7 +112,8 @@ recompiled):
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `diffusion-track-full-chunks8-before` | `309b74fc` | breeze | 3590.5 s | 3063.0 s | 2911.7 s (26,965) | 8.8 GB | 20.1 GB |
 | `diffusion-track-full-chunks8` | `6559795f` | zephyr | 510.4 s | **113.4 s** | 16.3 s (0) | 8.7 GB | 16.4 GB |
- The two runs
+
+The two runs
 used different hosts with the same GPU model: the new run could not fit on
 breeze while other jobs held about 33 GB of each GPU. The like-for-like check
 is a 120 s window on one breeze GPU with `XLA_FLAGS=--xla_gpu_autotune_level=0`
@@ -164,12 +166,15 @@ default chunk size. All on zephyr; the dense comparisons ran there too.
 
 | Report | Code | First call | Instrumented warm | Device peak | Host peak |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `dense-2d-full-chunks8-zephyr` | `27957feb` | 863.1 s | 500.6 s | 56.3 GB | 184.1 GB |
+| `dense-2d-full-chunks8-zephyr` | `27957feb` | 863.1 s | 500.6 s | 56.3 GB | 184.1 GB\* |
 | `structured-2d-full` | `27957feb` | 1,117.8 s | 705.9 s | **2.5 GB** | 128.4 GB |
 | `auto-track-sorted-full` | `27957feb` | 697.7 s | 423.4 s | 24.8 GB | 11.1 GB |
 | `auto-track-sorted-full-unrolled` | `1edc8ee5` | 662.4 s | 361.0 s | 24.8 GB | 11.1 GB |
 | `structured-2d-120s-mem` | `27957feb` | 266.6 s (1 iteration) | — | 2.02 GB | 8.6 GB |
 | `structured-2d-240s-mem` | `27957feb` | 398.3 s (1 iteration) | — | 2.16 GB | 14.7 GB |
+
+\* Includes the previous run's retained posterior; a single dense run peaks
+at 109.5 GB (see Host memory per run).
 
 Device memory stays flat as the window doubles; host memory still grows
 because the final E-step returns the full posterior, as dense EM does. The
@@ -185,12 +190,12 @@ dense path is faster still.
 ### Result stores and the replay cache
 
 `structured-2d-full-rowcache-{4g,24g}`: the same 2-D run with
-`--result-path` on the host's local disk, with the default 4 GiB replay cache
-and with 24 GiB, enough for every chunk.
+`--result-path` on the host's local disk, with a 4 GiB replay cache (the default at
+`9680b2d4`) and with 24 GiB, enough for every chunk.
 
 | Report | Instrumented warm | Device peak | Host peak |
 | --- | ---: | ---: | ---: |
-| `dense-2d-full-chunks8-zephyr` (dense EM) | 500.6 s | 56.3 GB | 184.1 GB |
+| `dense-2d-full-chunks8-zephyr` (dense EM) | 500.6 s | 56.3 GB | 184.1 GB\* |
 | `structured-2d-full` (before) | 705.9 s | 2.5 GB | 128.4 GB |
 | `structured-2d-full-rowcache-4g` | 454.0 s | 2.5 GB | 9.6 GB |
 | `structured-2d-full-rowcache-24g` | **356.4 s** | 2.5 GB | 14.3 GB |
@@ -199,7 +204,7 @@ Writing the final posterior to a store (8.8 GB per run on disk) removes it
 from host memory. Caching each E-step's filtered rows lets the replay skip
 both the second likelihood evaluation and the replayed forward pass for the
 cached chunks; with every chunk cached, structured EM is 29% faster than dense
-EM on this grid. These runs also include the unrolled scans (`1ad6a90`).
+EM on this grid. These runs also include the unrolled scans (`e59f963`).
 
 ### Host memory per run
 
@@ -215,8 +220,10 @@ cache:
 | `mem-structured-2d-full-inmemory` | 406.8 s | 2.4 GB | 71.4 GB |
 | `mem-structured-2d-full-store` | **356.7 s** | 2.4 GB | **14.2 GB** |
 
-On the track (`rowcache-auto-track-{sorted,clusterless}-full`, `auto`
-transitions, 16 GiB replay cache), structured EM took 229.6 s (sorted) and
+On the track (`rowcache-auto-track-{sorted,clusterless}-full`, run with
+`auto` transitions before `auto` chose dense EM for small state spaces;
+reproduce with `--transition-representation auto --chunk-size 20000`, since a
+checkpoint option keeps structured EM; 16 GiB replay cache), structured EM took 229.6 s (sorted) and
 208.1 s (clusterless) warm, with host peaks of 9.6 and 8.3 GB and device peaks
 of 24.8 GB (the sorted likelihood) and 4.0 GB. Dense EM is faster there (168.4
 and 131.4 s on breeze, `54a54858`), which is why `estimate_parameters(
@@ -262,7 +269,7 @@ the same model and likelihoods with per-row increments summed in float64
 gives -1,031,835.82 for the dense matrix in float64, -1,031,837.72 in float32,
 and the same values for the structured operator; checkpointed EM sums its
 increments that way.
-Dense EM sums them that way too since `a5c7ef1`.
+Dense EM sums them that way too since `02502ee`.
 
 ## 120 s and 240 s windows
 
