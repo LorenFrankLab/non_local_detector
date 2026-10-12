@@ -904,7 +904,9 @@ def chunked_filter_smoother(
     causal_state_probabilities = []
     acausal_posterior = []
     acausal_state_probabilities = []
-    marginal_likelihood = 0.0
+    # Device increments, summed in float64 after the loop so the host does not
+    # wait for each chunk's filter.
+    chunk_increments = []
     n_degenerate_total = 0
     n_nan_total = 0
 
@@ -1014,8 +1016,12 @@ def chunked_filter_smoother(
             _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
 
-        marginal_likelihood += _float64_evidence(increments)
+        chunk_increments.append(increments)
 
+    marginal_likelihood = 0.0
+    for increments in chunk_increments:
+        marginal_likelihood += _float64_evidence(increments)
+    del chunk_increments
     _warn_degenerate_and_nan_timesteps(
         n_degenerate_total,
         n_nan_total,
@@ -1542,7 +1548,9 @@ def chunked_filter_smoother_covariate_dependent(
     causal_state_probabilities = []
     acausal_posterior = []
     acausal_state_probabilities = []
-    marginal_likelihood = 0.0
+    # Device increments, summed in float64 after the loop so the host does not
+    # wait for each chunk's filter.
+    chunk_increments = []
     n_degenerate_total = 0
     n_nan_total = 0
 
@@ -1662,8 +1670,12 @@ def chunked_filter_smoother_covariate_dependent(
             _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
 
-        marginal_likelihood += _float64_evidence(increments)
+        chunk_increments.append(increments)
 
+    marginal_likelihood = 0.0
+    for increments in chunk_increments:
+        marginal_likelihood += _float64_evidence(increments)
+    del chunk_increments
     _warn_degenerate_and_nan_timesteps(
         n_degenerate_total,
         n_nan_total,

@@ -28,6 +28,7 @@ from non_local_detector.core import (
     _HMM_SCAN_UNROLL,
     _condition_on,
     _divide_safe,
+    _float64_evidence,
     _normalize,
     _warn_degenerate_and_nan_timesteps,
 )
@@ -740,9 +741,15 @@ def checkpointed_forward_backward(
         else:
             writer.write(name, int(first), values)
 
-    def emit_chunk(start, stop, chunk_outputs):
+    def emit_chunk(start, stop, chunk_outputs, chunk_statistics=None):
         for name, value in chunk_outputs.items():
             emit(name, start, stop, value)
+        if chunk_statistics is None:
+            return
+        if transition_statistics == "counts":
+            statistics[...] += np.asarray(chunk_statistics, np.float64)
+        else:
+            statistics[start : min(stop, n_time - 1)] = np.asarray(chunk_statistics)
 
     try:
         with tempfile.TemporaryDirectory(
@@ -791,7 +798,7 @@ def checkpointed_forward_backward(
                 diagnostics["n_degenerate"] += int(degenerate.sum())
                 diagnostics["n_nan"] += int(nan.sum())
                 return (
-                    float(np.sum(np.asarray(increments), dtype=np.float64))
+                    _float64_evidence(increments)
                     if evidence_accumulation == "stable"
                     else 0.0
                 )
@@ -894,15 +901,17 @@ def checkpointed_forward_backward(
                     n_time,
                     pair_statistics=pair_statistics,
                 )
+                chunk_statistics = None
                 if pair_statistics:
                     smoothed, pairs = smoothed
-                    if transition_statistics == "counts":
-                        statistics += np.asarray(jnp.sum(pairs, axis=0), np.float64)
-                    else:
-                        # The last recording row has no successor.
-                        statistics[start : min(stop, n_time - 1)] = np.asarray(
-                            pairs[: min(stop, n_time - 1) - start]
-                        )
+                    # Kept on the device and copied with the chunk's outputs,
+                    # after the next chunk is dispatched. The last recording
+                    # row has no successor.
+                    chunk_statistics = (
+                        jnp.sum(pairs, axis=0)
+                        if transition_statistics == "counts"
+                        else pairs[: min(stop, n_time - 1) - start]
+                    )
                     del pairs
                 chunk_outputs = {}
                 for name in outputs:
@@ -933,7 +942,7 @@ def checkpointed_forward_backward(
                     raise ValueError(
                         "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
                     )
-                pending = (start, stop, chunk_outputs)
+                pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)
         _warn_degenerate_and_nan_timesteps(
