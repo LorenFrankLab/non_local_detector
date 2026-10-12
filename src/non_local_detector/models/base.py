@@ -25,7 +25,10 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 
 from non_local_detector import _validation as val
 from non_local_detector._position_dims import get_position_dim_names
-from non_local_detector.checkpointed_inference import default_replay_cache_bytes
+from non_local_detector.checkpointed_inference import (
+    default_chunk_size,
+    default_replay_cache_bytes,
+)
 from non_local_detector.continuous_state_transitions import (
     Discrete,
     EmpiricalMovement,
@@ -3289,6 +3292,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         if replay_cache_bytes is None:
             replay_cache_bytes = default_replay_cache_bytes()
+        # Recorded on the results, so users can tell which EM path ran.
+        if checkpointed:
+            em_attrs = {
+                "em_transition_representation": "structured",
+                "em_chunk_size": int(
+                    default_chunk_size(
+                        np.count_nonzero(self.is_track_interior_state_bins_),
+                        np.float32,
+                    )
+                    if chunk_size is None
+                    else chunk_size
+                ),
+                "em_replay_cache_bytes": int(replay_cache_bytes),
+            }
+        else:
+            em_attrs = {
+                "em_transition_representation": "dense",
+                "em_n_chunks": n_chunks,
+            }
         # Subclasses have already combined ``is_missing`` with the bins
         # affected by NaN positions via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
@@ -3709,8 +3731,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             stored.attrs["marginal_log_likelihoods"] = np.asarray(
                 marginal_log_likelihoods
             )
+            stored.attrs.update(em_attrs)
             return stored
-        return self._convert_results_to_xarray(
+        results = self._convert_results_to_xarray(
             time_centers,
             acausal_posterior,
             acausal_state_probabilities,
@@ -3737,6 +3760,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 else None
             ),
         )
+        results.attrs.update(em_attrs)
+        return results
 
     def most_likely_sequence(
         self,

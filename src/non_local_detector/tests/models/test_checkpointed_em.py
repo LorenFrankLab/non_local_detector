@@ -549,3 +549,65 @@ def test_auto_em_device_memory_boundary(monkeypatch):
         monkeypatch.setattr(base, "_device_memory_limit", lambda limit=limit: limit)
         model._choose_em_representation(n_time)
         assert _uses_operator(model) is not dense
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        (
+            {"transition_representation": "dense"},
+            {"em_transition_representation": "dense", "em_n_chunks": 1},
+        ),
+        (
+            {"transition_representation": "dense", "n_chunks": 3},
+            {"em_transition_representation": "dense", "em_n_chunks": 3},
+        ),
+        (
+            {"transition_representation": "auto"},
+            {"em_transition_representation": "dense", "em_n_chunks": 1},
+        ),
+        (
+            {"transition_representation": "structured"},
+            {
+                "em_transition_representation": "structured",
+                "em_chunk_size": None,
+                "em_replay_cache_bytes": None,
+            },
+        ),
+        (
+            {
+                "transition_representation": "structured",
+                "chunk_size": 40,
+                "replay_cache_bytes": 0,
+            },
+            {
+                "em_transition_representation": "structured",
+                "em_chunk_size": 40,
+                "em_replay_cache_bytes": 0,
+            },
+        ),
+    ],
+)
+def test_results_record_the_em_path(kwargs, expected, tmp_path):
+    """Users can tell from the results which EM path ran and with what chunks."""
+    model, data = _recording("sorted")
+    results = model.estimate_parameters(**data, max_iter=1, **kwargs)
+    for name, value in expected.items():
+        # None: a resolved default, recorded as a positive integer.
+        if value is None:
+            assert results.attrs[name] > 0
+        else:
+            assert results.attrs[name] == value
+    other = {"em_n_chunks", "em_chunk_size", "em_replay_cache_bytes"} - set(expected)
+    assert not other & set(results.attrs)
+    if kwargs["transition_representation"] == "structured":
+        model, data = _recording("sorted")
+        stored = model.estimate_parameters(
+            **data, max_iter=1, result_path=tmp_path / "store", **kwargs
+        )
+        # A default replay cache depends on the memory available at the call.
+        for name, value in expected.items():
+            if value is None:
+                assert stored.attrs[name] > 0
+            else:
+                assert stored.attrs[name] == value
