@@ -39,6 +39,8 @@ window, package-source hash and device.
 | `f3a286c1` | `b5c9ec7d` plus padded occupancy samples and a full-row last chunk (`df79fe4`, `d2b767c`, before a type annotation) |
 | `b1bafeb0` | `f6e18eb`: `f3a286c1` with the type annotation and the measurement record |
 | `d2d8b2f9` | `b1bafeb0` plus dense Gaussian blocks in the fused operator (`c2650b9`) |
+| `555707e5` | `84397bb`: `d2d8b2f9` plus the 16 MiB `auto` threshold |
+| `42488b9c` | `e3a2a5e`: plus blocked expansion of result posteriors |
 
 ## Full recording (709,319 rows)
 
@@ -321,6 +323,29 @@ largest the dense matrix-vector product (7.1 µs, at the A100's memory
 bandwidth for 10.9 MB); a minimal forward step with the same products but
 without the conditioning safeguards (zero-normalizer, subnormal-prior and NaN
 handling) took 13.3 against 27.7 µs.
+
+### Building the returned posterior
+
+EM returns the posterior over every state bin, with NaN outside the track:
+on the 2 cm grid a 9.4 GB interior posterior becomes a 57.2 GB array.
+`profile_em.py` now times this (`results`, and `masked_posterior` inside it);
+before, it was part of `estimate_parameters`' exclusive time.
+`mp-{base,new}-structured-2d-2cm`: breeze, GPU 1, structured EM, 3
+iterations, posterior in memory, run one after the other on a quiet host
+(load about 1):
+
+| Report | Code | First call | Instrumented warm | `masked_posterior` | Filter/smoother (exclusive) | Host peak |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `mp-base-structured-2d-2cm` | `555707e5` | 579.7 s | 306.2 s | 51.5 s | 181.1 s | 71.1 GB |
+| `mp-new-structured-2d-2cm` | `42488b9c` | 546.6 s | **271.7 s** | 15.2 s | 182.8 s | 71.0 GB |
+
+`e3a2a5e` fills and scatters 1 MiB row blocks instead of filling the whole
+array with NaN and then scattering into it. Untimed host work left in
+`estimate_parameters` is 0.1 s. The two runs' state probabilities differ by
+at most 1.0e-4 with the same most likely state everywhere, GPU run-to-run
+variation with default autotuning; the expansion itself is unchanged. The
+structured 2 cm run in the previous section (361.5 s) shared the host with
+five other runs; alone, the same code took 306.2 s.
 
 ### Clusterless KDE likelihood against recording length
 
