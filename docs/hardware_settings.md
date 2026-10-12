@@ -27,7 +27,7 @@ segment of your own data before a long run.
 | `chunk_size` | Default | Default | Default; `256` cuts RAM about 3× at similar speed |
 | Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB pool | 3.3–3.5 GB of RAM at 2 cm (4.0 GB with 256 units; about 1 GB with `chunk_size=256`) |
 | Decoding one hour at 2 cm | 6 min (sorted), 11 min (clusterless), including compilation | Not measured | About 30 min (projected from 30 s runs) |
-| EM | 60 s at 2 cm used 15.5 GB of device memory | 60 s at 2 cm should fit (15.5 GB on the A100); longer sessions need a coarser grid or a shorter segment | 60 s at 4 cm took 8–9 min and 10 GB of RAM |
+| EM | Structured EM: 23.6 min at 2 cm in 2.4 GB of device memory, 272 s for 3 iterations after compilation; dense EM needed `n_chunks=8` and 56 GB there | Structured EM should fit (2.4–3.6 GB device peaks on the A100, 2–4 cm); dense EM: 60 s at 2 cm (15.5 GB on the A100) | Dense EM: 60 s at 4 cm took 8–9 min and 10 GB of RAM; structured EM on CPU not measured |
 | Precision | float32 (default) | float32; float64 is slow on most 24 GB cards | float32 |
 
 ## GPU setup
@@ -118,13 +118,16 @@ bins instead of the recording length: on the 23.6 min recording below, on a
 2 cm 2-D grid, 2.4 GB instead of 56.3 GB. Pass `result_path` to write the
 final posterior to a store on disk instead of holding it in host memory (host
 peak 14.2 GB, against 71.4 GB holding it and 109.5 GB for dense EM on that
-grid). `replay_cache_bytes`
-(default 16 GiB) keeps forward-pass rows in host memory so the backward replay
-does not recompute them; with the whole recording cached (about 14 GB of host
-memory there), 3 iterations took 356 s after compilation against 501 s for
-dense EM, and 454 s with a 4 GiB cache. Chunks beyond the budget are
-recomputed, so a smaller budget costs time, not correctness. On the track, where dense EM fits
-easily, dense EM is faster (168 s against 230 s with the replay cache).
+grid). `replay_cache_bytes` (default 16 GiB, or half the available host
+memory if smaller, counting a container's memory limit) keeps forward-pass rows
+in host memory so the backward replay does not recompute them. With the whole
+recording cached (about 14 GB of host memory there), 3 iterations took 272 s
+after compilation, holding the posterior in memory, against 501 s for dense EM.
+An earlier version took about 100 s longer with a 4 GiB cache than with the
+whole recording cached. Chunks beyond the budget are recomputed, so a smaller
+budget costs time, not correctness. On the track, where dense EM fits easily,
+dense EM is faster (168 s against 230 s with the replay cache, before the
+structured speedups).
 `transition_representation="auto"` picks dense EM when three conditions hold:
 the interior transition is at most 16 MiB in float32, the full transition
 (every state bin, float64) fits `max_dense_transition_bytes`, and dense EM's
