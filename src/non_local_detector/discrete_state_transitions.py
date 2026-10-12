@@ -11,7 +11,9 @@ from patsy import (  # type: ignore[import-untyped]
     DesignMatrix,
     build_design_matrices,
     dmatrix,
+    stateful_transform,
 )
+from patsy.splines import BS  # type: ignore[import-untyped]
 from scipy.optimize import minimize  # type: ignore[import-untyped]
 from scipy.special import (
     log_softmax as numpy_log_softmax,  # type: ignore[import-untyped]
@@ -1665,6 +1667,52 @@ def _discrete_transition_from_statistics(
     return discrete_transition, discrete_transition_coefficients
 
 
+class _QuantileBSpline:
+    """Patsy stateful transform: a B-spline with knots at data quantiles.
+
+    Interior knots sit at quantiles of the distinct fitted values, so ties
+    (e.g. many zero speeds at rest) do not stack knots and every basis
+    column has data. New values are clipped to the fitted range, so a
+    covariate beyond it takes the boundary's value instead of raising.
+    """
+
+    def __init__(self) -> None:
+        self._chunks: list[np.ndarray] = []
+
+    def memorize_chunk(self, x, n_knots: int = 5, degree: int = 3) -> None:
+        self._n_knots, self._degree = n_knots, degree
+        self._chunks.append(np.ravel(np.asarray(x, dtype=float)))
+
+    def memorize_finish(self) -> None:
+        distinct = np.unique(np.concatenate(self._chunks))
+        del self._chunks
+        if distinct.size < 2:
+            raise ValueError("quantile_bs needs at least two distinct values.")
+        self._lower, self._upper = distinct[0], distinct[-1]
+        knots = np.unique(
+            np.quantile(distinct, np.linspace(0, 1, self._n_knots + 2)[1:-1])
+        )
+        knots = knots[(knots > self._lower) & (knots < self._upper)]
+        self._spline = BS()
+        self._spline.memorize_chunk(
+            distinct,
+            knots=knots,
+            degree=self._degree,
+            lower_bound=self._lower,
+            upper_bound=self._upper,
+        )
+        self._spline.memorize_finish()
+
+    def transform(self, x, n_knots: int = 5, degree: int = 3) -> np.ndarray:
+        return self._spline.transform(
+            np.clip(np.asarray(x, dtype=float), self._lower, self._upper)
+        )
+
+
+# Usable in transition formulas, e.g. "1 + quantile_bs(speed, n_knots=5)".
+quantile_bs = stateful_transform(_QuantileBSpline)
+
+
 @dataclass
 class DiscreteStationaryDiagonal:
     """Diagonal values are placed on the diagonal.
@@ -1743,12 +1791,16 @@ class DiscreteNonStationaryDiagonal:
     diagonal_values : np.ndarray, shape (n_states,)
         Initial diagonal probabilities used to set intercept coefficients.
     formula : str, optional
-        Patsy formula defining the relationship between covariates and transitions.
-        Defaults to a spline based on 'speed'.
+        Patsy formula defining the relationship between covariates and
+        transitions. Defaults to a cubic B-spline of ``speed`` with five
+        interior knots at quantiles of the fitted speeds
+        (``quantile_bs``); speeds beyond the fitted range take the
+        boundary's value. Pass explicit knots with e.g.
+        ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``.
     """
 
     diagonal_values: np.ndarray
-    formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
+    formula: str = "1 + quantile_bs(speed)"
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict
@@ -1815,12 +1867,16 @@ class DiscreteNonStationaryCustom:
         Initial stationary transition matrix used to set intercept coefficients.
         Rows must sum to 1.
     formula : str, optional
-        Patsy formula defining the relationship between covariates and transitions.
-        Defaults to a spline based on 'speed'.
+        Patsy formula defining the relationship between covariates and
+        transitions. Defaults to a cubic B-spline of ``speed`` with five
+        interior knots at quantiles of the fitted speeds
+        (``quantile_bs``); speeds beyond the fitted range take the
+        boundary's value. Pass explicit knots with e.g.
+        ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``.
     """
 
     values: np.ndarray
-    formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
+    formula: str = "1 + quantile_bs(speed)"
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict | None
