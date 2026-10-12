@@ -2216,6 +2216,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             transition.make_state_transition(self.environments)
                         )
 
+    def __getstate__(self) -> dict:
+        """Pickle without the patsy design matrix, which cannot be pickled.
+
+        ``__setstate__`` rebuilds it from the fitted covariates.
+        """
+        state = super().__getstate__()
+        if state.get("discrete_transition_design_matrix_") is not None:
+            state = dict(state)
+            state["discrete_transition_design_matrix_"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        super().__setstate__(state)
+        covariate_data = state.get("_discrete_transition_covariate_data_")
+        if covariate_data is not None and (
+            self.discrete_transition_design_matrix_ is None
+        ):
+            self.discrete_transition_design_matrix_ = (
+                self.discrete_transition_type.make_state_transition(covariate_data)[2]
+            )
+
     def initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict | None = None
     ) -> None:
@@ -2242,6 +2263,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_transition_coefficients_,
             self.discrete_transition_design_matrix_,
         ) = self.discrete_transition_type.make_state_transition(covariate_data)
+        # patsy design matrices cannot be pickled or deep-copied; keep the
+        # covariates so ``__setstate__`` can rebuild the design matrix.
+        self._discrete_transition_covariate_data_ = (
+            None if self.discrete_transition_design_matrix_ is None else covariate_data
+        )
 
         # Snapshot frozen rows of a stationary matrix so the EM M-step can
         # restore them after every update. Covariate-dependent frozen rows
