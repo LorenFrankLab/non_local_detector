@@ -37,6 +37,8 @@ window, package-source hash and device.
 | `33f55750` | `58f961b`: plus `auto` EM selection and its full-transition budget check |
 | `b5c9ec7d` | `db9a79f`: plus the cgroup-aware replay cache and the measured `auto` threshold |
 | `f3a286c1` | `b5c9ec7d` plus padded occupancy samples and a full-row last chunk (`df79fe4`, `d2b767c`, before a type annotation) |
+| `b1bafeb0` | `f6e18eb`: `f3a286c1` with the type annotation and the measurement record |
+| `d2d8b2f9` | `b1bafeb0` plus dense Gaussian blocks in the fused operator (`c2650b9`) |
 
 ## Full recording (709,319 rows)
 
@@ -251,8 +253,8 @@ the 2 cm row is `mem-{dense,structured}-2d-full-*` above.
 
 Structured EM's warm time grows slowly with the grid (299 to 407 s); dense
 EM's grows with the transition it reads every step (180 to 501 s). Interpolating between 2.5 and 2 cm puts the
-crossover near 31 MB, so `auto` runs dense EM up to 32 MiB of interior
-transition. Its other conditions bind first on this grid, whose full state
+crossover near 31 MB, so `auto` ran dense EM up to 32 MiB of interior
+transition until dense Gaussian blocks moved the crossover (see below). Its other conditions bind first on this grid, whose full state
 space (5,302 to 20,178 bins with the exterior) exceeds the 256 MiB float64
 `max_dense_transition_bytes` from 3 cm down, and whose dense arrays exceed half
 of JAX's 63.8 GB device limit from 3 cm down at this length.
@@ -284,6 +286,41 @@ The remaining first-E-step compiles are per-electrode shapes, and chunks
 whose spike counts reach a padded size not seen before (1 to 6 more per
 chunk). Padding the occupancy samples (709,321 to 712,704) moved the local
 log likelihood by at most 7.7e-7 relative.
+
+### Dense Gaussian blocks in the structured operator
+
+A separable Gaussian block costs several small kernels per step (scatter to
+the grid, scaling, per-axis products, NaN check, gather). On this grid's
+interior a dense block is small: 594 bins per state at 4 cm (1.4 MB), 1,648
+at 2 cm (10.9 MB). `c2650b9` stores Gaussian blocks of at most 16 MiB dense.
+Per step (`benchmarks/benchmark_checkpoint_scan_steps.py`-style timing on the
+fitted operator, A100), a filter step plus a smoothing step with transition
+statistics took 82 → 52 µs at 4 cm, 101 → 65 µs at 2 cm and 105 → 122 µs at
+1.5 cm (2,616 bins, 27.4 MB), which sets the 16 MiB budget.
+
+`db-{base,dense}-{structured,dense}-2d-*`: breeze, 3 iterations, six runs at
+a time on separate GPUs (host load about 10), each before/after pair run
+side by side. Host-side work shared the machine, so single numbers carry
+about ±10-20%; the pairs compare.
+
+| Grid | Interior transition | Dense EM | Structured `b1bafeb0` | Structured `d2d8b2f9` | First call, structured |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 4 cm | 5.7 MB | **181.2 s** | 307.9 s | 216.4 s | 546.3 → 439.3 s |
+| 3 cm | 13.5 MB | **250.2 s** | 430.8 s | 275.6 s | 686.1 → 589.2 s |
+| 2.5 cm | 21.9 MB | 347.6 s (4 chunks) | 352.3 s | **254.5 s** | 637.3 → 520.4 s |
+| 2 cm | 43.5 MB | 501.0 s (8 chunks, `mem-dense-2d-full-chunks8`) | 430.1 s | **361.5 s** | 742.1 → 631.5 s |
+
+Device and host peaks did not change (2.5-3.6 GB device). State
+probabilities moved by at most 2e-4 (most likely state unchanged except one
+bin at 3 cm), below the 5e-4 to 8e-4 difference between dense and structured
+EM. The crossover is now near 15 MB, so `auto` runs dense EM up to 16 MiB
+(`589c54a`).
+
+What remains per step at 2 cm: about 9 kernels in the forward step, the
+largest the dense matrix-vector product (7.1 µs, at the A100's memory
+bandwidth for 10.9 MB); a minimal forward step with the same products but
+without the conditioning safeguards (zero-normalizer, subnormal-prior and NaN
+handling) took 13.3 against 27.7 µs.
 
 ### Clusterless KDE likelihood against recording length
 
