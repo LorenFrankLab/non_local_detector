@@ -1305,10 +1305,15 @@ def block_kde(
     return jnp.concatenate(blocks)
 
 
+def _octave_size(n: int, log2_sizes: int) -> int:
+    """Smallest of ``2**log2_sizes`` sizes per octave at least ``n`` (``n >= 1``)."""
+    step = 1 << max((n - 1).bit_length() - 1 - log2_sizes, 0)
+    return -(-n // step) * step
+
+
 def _quarter_octave(n: int) -> int:
     """Smallest of four sizes per octave that is at least ``n`` (``n >= 1``)."""
-    step = 1 << max((n - 1).bit_length() - 3, 0)
-    return -(-n // step) * step
+    return _octave_size(n, 2)
 
 
 def _padded_sample_count(n_samples: int) -> int:
@@ -1325,8 +1330,7 @@ def _padded_occupancy_count(n_samples: int) -> int:
     first fit; both counts then usually share a size, so the local kernels
     do not recompile.
     """
-    step = 1 << max((n_samples - 1).bit_length() - 7, 0)
-    return -(-n_samples // step) * step
+    return _octave_size(n_samples, 6)
 
 
 def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:

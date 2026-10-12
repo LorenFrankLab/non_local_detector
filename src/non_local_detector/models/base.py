@@ -3371,7 +3371,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             final outputs need them), so the backward replay does not filter
             and evaluate them again. Chunks beyond the budget are recomputed.
             By default None, which uses 16 GiB or half the available host
-            memory, whichever is smaller; only valid for structured EM.
+            memory (counting a container's limit), whichever is smaller.
 
         Returns
         -------
@@ -5525,9 +5525,9 @@ class ClusterlessDetector(_DetectorBase):
         replay_cache_bytes : int, optional
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. By default None, which uses
-            16 GiB or half the available host memory, whichever is smaller;
-            only valid for structured EM.
+            filtering and evaluating them again. Selects structured EM under
+            "auto". By default None, which uses 16 GiB or half the available
+            host memory (counting a container's limit), whichever is smaller.
 
         Returns
         -------
@@ -6699,9 +6699,9 @@ class SortedSpikesDetector(_DetectorBase):
         replay_cache_bytes : int, optional
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. By default None, which uses
-            16 GiB or half the available host memory, whichever is smaller;
-            only valid for structured EM.
+            filtering and evaluating them again. Selects structured EM under
+            "auto". By default None, which uses 16 GiB or half the available
+            host memory (counting a container's limit), whichever is smaller.
 
         Returns
         -------

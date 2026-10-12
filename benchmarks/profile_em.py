@@ -577,8 +577,8 @@ def main():
         "status": "started",
     }
 
-    def profiled_run(label, synchronize, max_iter=args.max_iter):
-        profiler = StageProfiler(jax, synchronize, host_peak)
+    def profiled_run(max_iter=args.max_iter):
+        profiler = StageProfiler(jax, True, host_peak)
         with ExitStack() as stack:
             for logger in compile_loggers:
                 logger.addHandler(profiler)
@@ -627,7 +627,7 @@ def main():
                 model, results, states = run_em()
                 report["runs"]["warm"] = {"seconds": time.perf_counter() - start}
             elif run in ("first", "instrumented"):
-                model, results, states, report["runs"][run] = profiled_run(run, True)
+                model, results, states, report["runs"][run] = profiled_run()
             else:
                 parser.error(f"unknown run {run!r}")
             report["runs"][run]["peak_host_rss_bytes"] = host_peak.peak
