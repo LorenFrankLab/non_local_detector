@@ -327,8 +327,9 @@ def _stationary_counts_block(
     term is at most one. A ratio column whose sum could exceed the dtype's range
     is divided by the smallest power of two that keeps it within range, and
     multiplied back only after the transition weights it. Powers of two divide
-    exactly, and ordinary columns are not scaled, so a rare transition does
-    not push the column's ordinary ratios into underflow.
+    exactly, and only columns near overflow are scaled, so a rare transition
+    into one bin does not scale, or underflow, the ratios of other bins, as a
+    single global scale would.
 
     Parameters
     ----------
@@ -1336,7 +1337,24 @@ def _discrete_transition_from_statistics(
     -------
     estimated_discrete_transition : np.ndarray
     estimated_discrete_transition_coefficients : np.ndarray | None
+
+    Raises
+    ------
+    ValueError
+        If any statistic is NaN or infinite, which would otherwise give NaN
+        transitions without an error.
     """
+    statistics = np.asarray(statistics)
+    bad = ~np.isfinite(statistics)
+    if bad.any():
+        pairs = sorted(
+            {tuple(int(i) for i in index[-2:]) for index in np.argwhere(bad)}
+        )
+        raise ValueError(
+            "Expected discrete transition statistics are not finite for state "
+            f"pairs {pairs}. This usually follows NaN or impossible likelihood "
+            "rows; see the degenerate/NaN timestep warnings."
+        )
     if _is_nonstationary(
         discrete_transition_coefficients, discrete_transition_design_matrix
     ):

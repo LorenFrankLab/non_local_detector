@@ -13,6 +13,7 @@ Likelihood callbacks must be deterministic and honor global ``row_slice``.
 from __future__ import annotations
 
 import math
+import os
 import tempfile
 from dataclasses import dataclass
 from functools import partial
@@ -58,10 +59,49 @@ DEFAULT_CHUNK_BYTES = 256 * 1024**2
 MIN_DEFAULT_CHUNK_SIZE = 256
 
 
-# Host memory structured EM may use to keep forward-pass rows for the replay:
+# Largest default host memory for keeping forward-pass rows for the replay:
 # enough for a 23.6 min recording on a 2 cm 2-D grid (about 14 GB of host
 # memory in all) or about 4.5 hours on a 514-bin track at 500 Hz.
 DEFAULT_REPLAY_CACHE_BYTES = 16 * 2**30
+
+
+def _available_host_bytes() -> int | None:
+    """Host memory available to this process, or None if it cannot be found.
+
+    Uses psutil when installed, then ``MemAvailable`` from ``/proc/meminfo``
+    (Linux), then half the physical memory.
+    """
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available)
+    except ImportError:
+        pass
+    try:
+        with open("/proc/meminfo") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def default_replay_cache_bytes() -> int:
+    """Default replay cache: ``DEFAULT_REPLAY_CACHE_BYTES``, capped at half the
+    available host memory, so the cache cannot exhaust a smaller machine.
+
+    Returns
+    -------
+    replay_cache_bytes : int
+    """
+    available = _available_host_bytes()
+    if available is None:
+        return DEFAULT_REPLAY_CACHE_BYTES
+    return int(min(DEFAULT_REPLAY_CACHE_BYTES, available // 2))
 
 
 def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
@@ -378,8 +418,8 @@ def checkpointed_forward_backward(
     are summed per chunk on the device and across chunks in host float64;
     responses cost ``n_time * n_states**2`` values.
 
-    ``replay_cache_bytes`` keeps forward-pass chunks in host memory, in order,
-    until the next chunk would exceed it, and the replay uses them instead of
+    ``replay_cache_bytes`` keeps each forward-pass chunk that still fits in the
+    remaining budget in host memory, and the replay uses those instead of
     recomputing. When the outputs need only filtered rows (no likelihood or
     predictive output), the filtered rows are kept, so a cached chunk skips both
     its second likelihood evaluation and its replayed forward pass; otherwise
@@ -499,6 +539,13 @@ def checkpointed_forward_backward(
                 "transition_operator must be a registered JAX pytree (for "
                 "example via jax.tree_util.register_pytree_node_class), got "
                 f"{type(transition_operator).__name__}."
+            )
+        if transition_statistics is not None and not hasattr(
+            transition_operator, "pair_products"
+        ):
+            raise TypeError(
+                "transition_statistics needs a transition_operator with "
+                f"pair_products; {type(transition_operator).__name__} has none."
             )
         # Transfer array leaves once; each jitted chunk call would otherwise
         # convert host leaves again.

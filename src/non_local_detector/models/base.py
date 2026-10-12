@@ -25,7 +25,7 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 
 from non_local_detector import _validation as val
 from non_local_detector._position_dims import get_position_dim_names
-from non_local_detector.checkpointed_inference import DEFAULT_REPLAY_CACHE_BYTES
+from non_local_detector.checkpointed_inference import default_replay_cache_bytes
 from non_local_detector.continuous_state_transitions import (
     Discrete,
     EmpiricalMovement,
@@ -399,7 +399,8 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
 # 1.2-1.4x slower on a 2 cm 2-D grid (about 6,600 interior bins, 174 MB).
 _AUTO_DENSE_TRANSITION_BYTES = 64 * 2**20
 # Dense EM holds about this many float32 (time bins x state bins) arrays on the
-# device (10 GB for 709k x 514 on the clusterless track recording).
+# device (measured device peak 10.0 GB, about seven 709k x 498 arrays, on the
+# clusterless track recording).
 _DENSE_EM_WORKING_ARRAYS = 8
 
 
@@ -430,14 +431,28 @@ def _validate_em_options(
     result_path : path-like or None
         Store for structured EM's final outputs.
     store_log_likelihood : bool
+        Whether EM keeps the full likelihood in memory.
     replay_cache_bytes : int or None
         Structured EM's replay cache budget.
     """
     if structured and n_chunks != 1:
         raise ValueError(
-            "Structured-transition EM runs on checkpoint chunks; set "
-            "chunk_size instead of n_chunks."
+            "Structured or auto transition EM runs on checkpoint chunks; set "
+            "chunk_size instead of n_chunks, or use "
+            'transition_representation="dense" with n_chunks.'
         )
+    if chunk_size is not None and (
+        isinstance(chunk_size, (bool, np.bool_))
+        or not isinstance(chunk_size, (int, np.integer))
+        or chunk_size <= 0
+    ):
+        raise ValueError("chunk_size must be a positive integer")
+    if replay_cache_bytes is not None and (
+        isinstance(replay_cache_bytes, (bool, np.bool_))
+        or not isinstance(replay_cache_bytes, (int, np.integer))
+        or replay_cache_bytes < 0
+    ):
+        raise ValueError("replay_cache_bytes must be a nonnegative integer")
     if chunk_size is not None and not structured:
         raise ValueError(
             "chunk_size applies only to structured-transition EM; fit with "
@@ -3156,9 +3171,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             times the state bins instead of the recording length, and the
             M-steps use the expected transition statistics accumulated in
             the replay. The final E-step returns the same outputs as dense
-            EM, held in memory. ``n_chunks`` must then be 1 and
-            ``cache_likelihood`` has no effect: each E-step evaluates the
-            likelihood twice. By default None, which sizes chunks so one
+            EM, held in memory unless ``result_path`` is given. ``n_chunks``
+            must then be 1 and ``cache_likelihood`` has no effect: each
+            uncached chunk evaluates the likelihood twice (see
+            ``replay_cache_bytes``). By default None, which sizes chunks so one
             chunk of float32 likelihoods takes about 256 MiB.
         result_path : str or Path, optional
             Structured-transition EM only: write the final E-step's outputs
@@ -3173,7 +3189,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             E-step's forward-pass rows (filtered rows, or likelihoods when the
             final outputs need them), so the backward replay does not filter
             and evaluate them again. Chunks beyond the budget are recomputed.
-            By default None, which uses 16 GiB; only valid for structured EM.
+            By default None, which uses 16 GiB or half the available host
+            memory, whichever is smaller; only valid for structured EM.
 
         Returns
         -------
@@ -3205,7 +3222,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             replay_cache_bytes,
         )
         if replay_cache_bytes is None:
-            replay_cache_bytes = DEFAULT_REPLAY_CACHE_BYTES
+            replay_cache_bytes = default_replay_cache_bytes()
         # Subclasses have already combined ``is_missing`` with the bins
         # affected by NaN positions via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
@@ -4936,7 +4953,8 @@ class ClusterlessDetector(_DetectorBase):
             (filtered rows, or likelihoods when the likelihood or predictive
             outputs are requested) so the backward replay does not recompute
             them. Chunks beyond the budget are recomputed. By default None,
-            which uses 16 GiB.
+            which uses 16 GiB or half the available host memory, whichever is
+            smaller.
 
         Returns
         -------
@@ -5101,7 +5119,7 @@ class ClusterlessDetector(_DetectorBase):
                 return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
                 replay_cache_bytes=(
-                    DEFAULT_REPLAY_CACHE_BYTES
+                    default_replay_cache_bytes()
                     if replay_cache_bytes is None
                     else replay_cache_bytes
                 ),
@@ -5283,9 +5301,10 @@ class ClusterlessDetector(_DetectorBase):
         chunk_size : int, optional
             Rows per checkpoint chunk for structured-transition EM. Working
             memory scales with ``chunk_size`` times the state bins instead of
-            the recording length, and each E-step evaluates the likelihood
-            twice (``cache_likelihood`` has no effect). The final E-step
-            returns the same outputs as dense EM, held in memory. Only valid
+            the recording length, and each uncached chunk evaluates the
+            likelihood twice (see ``replay_cache_bytes``; ``cache_likelihood``
+            has no effect). The final E-step returns the same outputs as dense
+            EM, held in memory unless ``result_path`` is given. Only valid
             with a structured or auto ``transition_representation``, and then
             ``n_chunks`` must be 1. By default None, which sizes chunks so one
             chunk of float32 likelihoods takes about 256 MiB.
@@ -5298,7 +5317,8 @@ class ClusterlessDetector(_DetectorBase):
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
             filtering and evaluating them again. By default None, which uses
-            16 GiB; only valid for structured EM.
+            16 GiB or half the available host memory, whichever is smaller;
+            only valid for structured EM.
 
         Returns
         -------
@@ -6155,7 +6175,8 @@ class SortedSpikesDetector(_DetectorBase):
             (filtered rows, or likelihoods when the likelihood or predictive
             outputs are requested) so the backward replay does not recompute
             them. Chunks beyond the budget are recomputed. By default None,
-            which uses 16 GiB.
+            which uses 16 GiB or half the available host memory, whichever is
+            smaller.
 
         Returns
         -------
@@ -6265,7 +6286,7 @@ class SortedSpikesDetector(_DetectorBase):
                 return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
                 replay_cache_bytes=(
-                    DEFAULT_REPLAY_CACHE_BYTES
+                    default_replay_cache_bytes()
                     if replay_cache_bytes is None
                     else replay_cache_bytes
                 ),
@@ -6447,9 +6468,10 @@ class SortedSpikesDetector(_DetectorBase):
         chunk_size : int, optional
             Rows per checkpoint chunk for structured-transition EM. Working
             memory scales with ``chunk_size`` times the state bins instead of
-            the recording length, and each E-step evaluates the likelihood
-            twice (``cache_likelihood`` has no effect). The final E-step
-            returns the same outputs as dense EM, held in memory. Only valid
+            the recording length, and each uncached chunk evaluates the
+            likelihood twice (see ``replay_cache_bytes``; ``cache_likelihood``
+            has no effect). The final E-step returns the same outputs as dense
+            EM, held in memory unless ``result_path`` is given. Only valid
             with a structured or auto ``transition_representation``, and then
             ``n_chunks`` must be 1. By default None, which sizes chunks so one
             chunk of float32 likelihoods takes about 256 MiB.
@@ -6462,7 +6484,8 @@ class SortedSpikesDetector(_DetectorBase):
             Structured-transition EM only: host memory for reusing each
             E-step's forward-pass rows in its backward replay instead of
             filtering and evaluating them again. By default None, which uses
-            16 GiB; only valid for structured EM.
+            16 GiB or half the available host memory, whichever is smaller;
+            only valid for structured EM.
 
         Returns
         -------

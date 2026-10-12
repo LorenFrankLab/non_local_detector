@@ -75,16 +75,23 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
     for kernel in kernels:
         kernel.clear_cache()
     for is_local in (False, True):
-        for budget in (encoding["memory_budget"], memory_budget):
-            predict_clusterless_diffusion_log_likelihood(
-                position_time,
-                position,
-                decode_times,
-                decode_features,
-                time_edges=time_edges,
-                is_local=is_local,
-                **{**encoding, "memory_budget": budget},
+        default, small = (
+            np.asarray(
+                predict_clusterless_diffusion_log_likelihood(
+                    position_time,
+                    position,
+                    decode_times,
+                    decode_features,
+                    time_edges=time_edges,
+                    is_local=is_local,
+                    **{**encoding, "memory_budget": budget},
+                )
             )
+            for budget in (encoding["memory_budget"], memory_budget)
+        )
+        # The same 16-spike blocks, so the same arithmetic.
+        np.testing.assert_array_equal(small, default)
+        assert np.all(np.isfinite(default))
     # One executable per kernel: the default budget's 16-spike blocks (the
     # model's block_size) and the small budget's rounded blocks coincide.
     assert [kernel._cache_size() for kernel in kernels] == [1, 1]

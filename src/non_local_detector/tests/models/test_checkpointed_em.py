@@ -65,9 +65,9 @@ def _fit(model, data, **kwargs):
 
 
 # float32 EM parity for posteriors and fitted parameters. Measured differences
-# after three iterations were at most 1.2e-7 for posteriors and 5e-10 for
-# transitions, so this leaves about a 25x margin for other devices, reduction
-# orders and JAX versions. The operator and driver tests check the per-step
+# after three iterations were at most 1.2e-7 for posteriors (about 8x below
+# atol) and 5e-10 for transitions (2,000x below it), leaving margin for other
+# devices, reduction orders and JAX versions. The operator and driver tests check the per-step
 # products and statistics more tightly.
 def _assert_same_fit(structured, dense, rtol=1e-5, atol=1e-6):
     (results, fitted), (reference, reference_fitted) = structured, dense
@@ -142,8 +142,16 @@ def test_checkpointed_em_returns_the_requested_outputs():
     )
 
 
-def test_checkpointed_em_with_covariate_transitions():
+@pytest.mark.parametrize("variant", ["plain", "missing_and_store"])
+def test_checkpointed_em_with_covariate_transitions(variant, tmp_path):
     covariates = {"speed": np.sin(np.arange(N_BINS) / 7)}
+    extra = {}
+    structured_extra = {}
+    if variant == "missing_and_store":
+        is_missing = np.zeros(N_BINS, dtype=bool)
+        is_missing[40:70] = True
+        extra["is_missing"] = is_missing
+        structured_extra["result_path"] = tmp_path / "covariate"
 
     def run(**kwargs):
         model, data = _recording("sorted")
@@ -151,10 +159,17 @@ def test_checkpointed_em_with_covariate_transitions():
             np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
         )
         return _fit(
-            model, data, discrete_transition_covariate_data=covariates, **kwargs
+            model,
+            data,
+            discrete_transition_covariate_data=covariates,
+            **extra,
+            **kwargs,
         )
 
-    _assert_same_fit(run(transition_representation="structured", chunk_size=50), run())
+    _assert_same_fit(
+        run(transition_representation="structured", chunk_size=50, **structured_extra),
+        run(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -273,6 +288,8 @@ def test_checkpointed_em_other_models(case):
     [
         {"chunk_size": 50},
         {"n_chunks": 4, "transition_representation": "structured"},
+        {"chunk_size": 0, "transition_representation": "structured"},
+        {"replay_cache_bytes": -1, "transition_representation": "structured"},
     ],
 )
 def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
@@ -282,7 +299,7 @@ def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
     transitions = np.array(model.discrete_state_transitions_)
     encoding = model.encoding_model_
     log_likelihood = model.log_likelihood_
-    with pytest.raises(ValueError, match="chunk_size"):
+    with pytest.raises(ValueError, match="chunk_size|replay_cache_bytes"):
         model.estimate_parameters(**data, max_iter=1, **options)
     np.testing.assert_array_equal(model.discrete_state_transitions_, transitions)
     assert model.encoding_model_ is encoding
@@ -343,7 +360,8 @@ def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
     assert not (tmp_path / "a").exists() and not (tmp_path / "b").exists()
 
 
-def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch):
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch, family):
     """The replay reuses forward-pass rows; results are bitwise equal."""
     from non_local_detector import checkpointed_inference
 
@@ -362,7 +380,7 @@ def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch):
         monkeypatch.setattr(
             checkpointed_inference, "checkpointed_forward_backward", counting_driver
         )
-        model, data = _recording("sorted")
+        model, data = _recording(family)
         results = _fit(
             model,
             data,
@@ -460,3 +478,55 @@ def test_auto_em_keeps_structured_em_when_the_full_dense_matrix_is_over_budget()
     assert model.is_track_interior_state_bins_.sum() ** 2 * 4 < 2**20
     assert _uses_operator(model)
     assert np.all(np.isfinite(results["acausal_state_probabilities"].values))
+
+
+@pytest.mark.parametrize("available", [8 * 2**30, 64 * 2**30, None])
+def test_default_replay_cache_is_capped_by_available_memory(available, monkeypatch):
+    """The default budget is min(16 GiB, half the available host memory)."""
+    from non_local_detector import checkpointed_inference
+
+    monkeypatch.setattr(
+        checkpointed_inference, "_available_host_bytes", lambda: available
+    )
+    budgets = []
+    driver = checkpointed_inference.checkpointed_forward_backward
+
+    def recording_driver(*args, **kwargs):
+        budgets.append(kwargs["replay_cache_bytes"])
+        return driver(*args, **kwargs)
+
+    monkeypatch.setattr(
+        checkpointed_inference, "checkpointed_forward_backward", recording_driver
+    )
+    model, data = _recording("sorted")
+    model.estimate_parameters(
+        **data, max_iter=1, transition_representation="structured"
+    )
+    expected = 4 * 2**30 if available == 8 * 2**30 else 16 * 2**30
+    assert budgets and set(budgets) == {expected}
+
+
+def test_auto_em_device_memory_boundary(monkeypatch):
+    """Dense EM needs its arrays to fit in half the device memory."""
+    from non_local_detector.models import base
+
+    model, data = _recording("sorted")
+    n_time = N_BINS
+    model.fit(
+        data["position_time"],
+        data["position"],
+        data["spike_times"],
+        transition_representation="auto",
+    )
+    n_bins = int(model.is_track_interior_state_bins_.sum())
+    working = base._DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+    for limit, dense in ((2 * working, True), (2 * working - 2, False)):
+        model.fit(
+            data["position_time"],
+            data["position"],
+            data["spike_times"],
+            transition_representation="auto",
+        )
+        monkeypatch.setattr(base, "_device_memory_limit", lambda limit=limit: limit)
+        model._choose_em_representation(n_time)
+        assert _uses_operator(model) is not dense

@@ -328,8 +328,8 @@ class Environment:
 
         Equal point values give the stored result without projecting them onto
         the graph again. Results are copied, so callers own them. The cache is
-        bounded by ``_LINEAR_POSITION_CACHE_BYTES``, cleared by
-        ``fit_place_grid`` and not pickled.
+        bounded by ``_LINEAR_POSITION_CACHE_BYTES`` (the latest result is always
+        kept), cleared by ``fit_place_grid`` and not pickled.
 
         Parameters
         ----------

@@ -412,6 +412,34 @@ class TestBatchedPoissonRegression:
                 atol=1e-6,
             )
 
+    def test_row_blocks_and_padding_do_not_change_the_fit(self, problem, monkeypatch):
+        """Long recordings sum over many row blocks, the last one padded.
+
+        Blocks change the float32 summation order, so the Newton steps stop at
+        slightly different points of a flat optimum (coefficients agree to
+        about 1e-3); the float64 objective is what must agree.
+        """
+        design_matrix, spikes, weights = problem
+        whole = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+        )
+        n_cells, n_basis = spikes.shape[0], design_matrix.shape[1]
+        # 37 rows per block: 400 rows need 11 blocks and 7 padding rows.
+        monkeypatch.setattr(
+            sorted_spikes_glm, "_GLM_BLOCK_BYTES", 37 * 4 * n_cells * n_basis
+        )
+        sorted_spikes_glm._poisson_regression_sums.clear_cache()
+        blocked = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+        )
+        assert np.all(np.isfinite(blocked))
+        np.testing.assert_allclose(
+            _poisson_objective64(design_matrix, spikes, weights, blocked, 1e-3),
+            _poisson_objective64(design_matrix, spikes, weights, whole, 1e-3),
+            rtol=0,
+            atol=1e-8,
+        )
+
     def test_unsupported_basis_function_stays_at_zero(self, problem):
         """A basis function with no weighted support is set only by the penalty."""
         design_matrix, spikes, weights = problem

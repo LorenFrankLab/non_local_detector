@@ -672,6 +672,17 @@ class TestExpandedDiscreteTransitionCounts:
         assert expected[1, 1] == pytest.approx(0.01, rel=1e-5)
         np.testing.assert_allclose(counts, expected, rtol=1e-5, atol=1e-7)
 
+    @pytest.mark.parametrize("bad", [np.nan, np.inf])
+    def test_non_finite_statistics_are_rejected(self, bad):
+        """A NaN or infinite count would silently give NaN transitions."""
+        from non_local_detector.discrete_state_transitions import (
+            _discrete_transition_from_statistics,
+        )
+
+        counts = np.array([[5.0, 1.0], [2.0, bad]])
+        with pytest.raises(ValueError, match=r"\(1, 1\)"):
+            _discrete_transition_from_statistics(counts, None, None, 1.0, 0.0, 0.0)
+
     def test_factorized_counts_match_numpy_reference(self):
         """The stationary factorized JAX count helper should preserve answers."""
         rng = np.random.default_rng(6)

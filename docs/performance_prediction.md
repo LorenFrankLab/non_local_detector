@@ -97,7 +97,9 @@ probabilities and `["predictive_posterior"]` requests the spatial posterior.
 Checkpointed totals sum per-bin log-evidence increments in float64 on the host;
 posterior calculations keep their original precision. This avoids the existing
 hour-scale drift from repeatedly adding increments to a float32 total. The dense
-driver retains its previous total accumulation.
+chunked drivers (dense `predict` and EM) also sum per-row increments in float64;
+only the jit-composable `filter` and `filter_covariate_dependent` functions return
+a float32 running total.
 
 Checkpointed prediction uses `chunk_size`. Leave the older `n_chunks=1` and
 `cache_likelihood=False` controls at their defaults. By default each chunk holds
@@ -108,7 +110,17 @@ grid and a 30 s recording, the A100 device peak was 0.15 GB at 256 rows and
 1.48 GB at the default. On CPU, where chunks live in host memory, peak RSS was
 1.1 GB (sorted) and 1.0 GB (clusterless) at 256 rows against 3.3 GB for both at
 the default, at about the same speed. Pass a smaller `chunk_size` to fit a
-smaller budget. `checkpoint_dir` chooses
+smaller budget.
+
+The replay evaluates each chunk's likelihood again unless the forward pass kept
+it: `replay_cache_bytes` keeps forward-pass rows in host memory, `n_bins` float32
+values per row, by default up to 16 GiB or half the available host memory,
+whichever is smaller. When no likelihood or predictive output is requested the
+filtered rows are kept, so a cached chunk is also not filtered again; otherwise
+the likelihood is kept. Chunks beyond the budget are recomputed, so a smaller
+budget costs time, not correctness. The peak memory figures above were measured
+without the cache; with it, host memory grows by up to the budget. Pass
+`replay_cache_bytes=0` to keep the previous host footprint. `checkpoint_dir` chooses
 where temporary boundary files are written; files are removed after success or
 failure. Supplying `result_path` also persists compact outputs when desired.
 

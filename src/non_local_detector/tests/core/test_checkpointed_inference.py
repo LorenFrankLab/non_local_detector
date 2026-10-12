@@ -286,6 +286,55 @@ def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
         assert result.diagnostics["n_nan"] == 1
 
 
+@pytest.mark.parametrize(
+    "kind", ["missing", "impossible", "nan", "support_mismatch", "zero_transition"]
+)
+def test_transition_statistics_follow_degenerate_row_semantics(kind):
+    """Counts from the replay match the dense estimate on unusual rows.
+
+    Covers impossible and NaN rows, missing rows, and predicted probabilities
+    of exactly zero (the ratio's zero-denominator rule).
+    """
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    missing = np.zeros(len(ll), bool)
+    if kind == "missing":
+        missing[3:5] = True
+    elif kind == "impossible":
+        ll[4] = -np.inf
+    elif kind == "nan":
+        ll[4, 1] = np.nan
+    elif kind == "support_mismatch":
+        kwargs["transition_matrix"] = np.eye(4, dtype=np.float32)
+        initial = np.array([1, 0, 0, 0], dtype=np.float32)
+        ll[4] = [-np.inf, 0, 0, 0]
+    else:
+        transition = kwargs["transition_matrix"].copy()
+        transition[:, 3] = 0.0
+        transition /= transition.sum(1, keepdims=True)
+        kwargs["transition_matrix"] = transition
+    effective = np.where(missing[:, None], 0, ll)
+    (_, _), (causal, predictive) = filter(
+        initial, kwargs["transition_matrix"], effective
+    )
+    acausal = smoother(kwargs["transition_matrix"], causal)
+    expected = estimate_discrete_transition_counts_from_expanded_posteriors(
+        causal, predictive, acausal, kwargs["transition_matrix"], state_ind
+    )
+    result = checkpointed_forward_backward(
+        edges,
+        initial,
+        lambda edges, **kw: ll[kw["row_slice"]],
+        state_ind=state_ind,
+        chunk_size=3,
+        is_missing=missing,
+        transition_statistics="counts",
+        **kwargs,
+    )
+    np.testing.assert_allclose(
+        result.transition_statistics, expected, rtol=1e-5, atol=1e-6, equal_nan=True
+    )
+
+
 def test_failure_leaves_no_completed_output_or_checkpoints(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     calls = 0
@@ -352,6 +401,25 @@ def test_operator_forward_backward_protocol(tmp_path):
     np.testing.assert_allclose(
         result.dataset.acausal_posterior, reference[3], rtol=1e-5, atol=1e-6
     )
+
+
+def test_transition_statistics_need_pair_products():
+    """An operator without pair_products fails before any likelihood call."""
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    calls = []
+
+    with pytest.raises(TypeError, match="pair_products"):
+        checkpointed_forward_backward(
+            edges,
+            initial,
+            lambda edges, **kw: calls.append(1) or ll[kw["row_slice"]],
+            transition_operator=MatrixProductOperator(
+                jnp.asarray(kwargs["transition_matrix"])
+            ),
+            state_ind=state_ind,
+            transition_statistics="counts",
+        )
+    assert calls == []
 
 
 @pytest.mark.parametrize("bad", [0, -1, 1.5, True])

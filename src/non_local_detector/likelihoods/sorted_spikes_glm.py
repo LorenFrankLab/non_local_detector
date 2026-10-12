@@ -49,6 +49,7 @@ context and uses common helper functions for spike counting and position
 interpolation.
 """
 
+import logging
 import warnings
 from functools import partial
 
@@ -81,6 +82,8 @@ from non_local_detector.time_edges import (
     _resolve_time_grid,
     requires_time_edges,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @jax.jit
@@ -352,6 +355,11 @@ def fit_poisson_regressions(
                 ..., 0
             ]
         except np.linalg.LinAlgError:
+            logger.debug(
+                "GLM Newton system singular for a cell; using least squares for "
+                "cells %s",
+                np.flatnonzero(active).tolist(),
+            )
             direction = -np.stack(
                 [
                     np.linalg.lstsq(h, g, rcond=None)[0]
@@ -398,7 +406,8 @@ def fit_poisson_regressions(
         )
         warnings.warn(
             f"GLM Poisson regression may not have converged for "
-            f"{int(unconverged.sum())} of {n_cells} cells: largest final "
+            f"{int(unconverged.sum())} of {n_cells} cells (indices "
+            f"{np.flatnonzero(unconverged)[:20].tolist()}): largest final "
             f"gradient inf-norm {worst:.3e} vs tolerance "
             f"{GLM_CONVERGENCE_GRAD_TOL:.1e} (a non-finite gradient or loss means "
             f"the fit diverged). Place-field coefficients may be unreliable.",
@@ -543,7 +552,8 @@ def fit_sorted_spikes_glm_encoding_model(
     l2_penalty : float, optional
         L2 penalty per second, by default 0.5 (0.001 at the 500 Hz reference)
     disable_progress_bar : bool, optional
-        Turn off the progress bars, by default False
+        Stored in the encoding model for prediction's progress bars; the fit
+        has none. By default False.
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
