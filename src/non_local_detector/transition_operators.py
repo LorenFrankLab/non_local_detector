@@ -440,25 +440,31 @@ class BlockTransitionOperator:
         )
         return weights * pairs
 
-    def fused(self):
+    def fused(self, max_dense_bytes=DEFAULT_MAX_DENSE_BYTES):
         """Return a product-only operator with rank-one blocks folded together.
 
         See ``FusedBlockTransition``. Gaussian blocks whose float32 dense form
-        fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` are stored dense. Products agree
-        with this operator to rounding; ``entries`` and dense views stay on
-        this operator.
+        fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` are stored dense while all retained
+        dense matrices (as ``dense_fallback_nbytes`` counts them, float64 on the
+        host) fit ``max_dense_bytes``; the rest keep separable products.
+        Products agree with this operator to rounding; ``entries`` and dense
+        views stay on this operator.
         """
         boundaries = np.cumsum((0, *self.state_sizes))
         n_states = len(self.state_sizes)
         sources, destinations, weight_index = [], [], []
         blocks, positions = [], []
+        dense_budget = int(max_dense_bytes) - self.dense_fallback_nbytes
         for source, row in enumerate(self.blocks):
             for target, block in enumerate(row):
                 factors = _rank_one_factors(block)
                 if factors is _EMPTY_BLOCK:
                     continue
                 if factors is None:
-                    blocks.append(_small_gaussian_as_dense(block))
+                    block = _small_gaussian_as_dense(block, dense_budget)
+                    if isinstance(block, DenseBlock):
+                        dense_budget -= np.asarray(block.matrix).nbytes
+                    blocks.append(block)
                     positions.append((source, target))
                     continue
                 column = np.zeros(boundaries[-1])
@@ -527,14 +533,16 @@ _EMPTY_BLOCK = object()
 _DENSE_GAUSSIAN_BLOCK_BYTES = 16 * 2**20
 
 
-def _small_gaussian_as_dense(block):
+def _small_gaussian_as_dense(block, dense_budget):
     """A Gaussian (or restricted Gaussian) block as a ``DenseBlock`` when its
-    float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES``; any other block as is."""
+    float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host
+    matrix fits ``dense_budget`` bytes; any other block as is."""
     original = block.original if isinstance(block, RestrictedBlock) else block
     n_rows, n_columns = block.shape
     if (
         not isinstance(original, GaussianGridBlock)
         or n_rows * n_columns * 4 > _DENSE_GAUSSIAN_BLOCK_BYTES
+        or n_rows * n_columns * 8 > dense_budget
     ):
         return block
     return DenseBlock(

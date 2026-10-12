@@ -963,3 +963,33 @@ def test_fused_gaussian_blocks_within_budget_are_dense(
             operator.pair_products(filtered, ratio),
             rtol=1e-6 if dtype == np.float32 else 1e-12,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n_dense", [0, 2, 4])
+def test_dense_gaussian_blocks_count_against_the_dense_budget(n_dense):
+    """Gaussian blocks stored dense are retained dense matrices, so together
+    they stay within ``max_dense_bytes``; the rest keep separable products."""
+    from non_local_detector import transition_operators
+
+    env = environment((6, 7))
+    n = len(env.place_bin_centers_)
+    walk = RandomWalk(movement_var=np.diag([0.9, 1.7]))
+    transitions = [[walk, walk], [walk, walk]]
+    dense, _ = dense_reference(transitions, [env], (n, n))
+    mask = np.tile(env.is_track_interior_.ravel(), 2)
+    operator = build_transition_operator(transitions, [env], (n, n)).restricted(mask)
+    block_bytes = int(mask[:n].sum()) ** 2 * 8
+    fused = operator.fused(max_dense_bytes=n_dense * block_bytes)
+    kinds = [type(block) for block in fused.blocks]
+    assert kinds.count(transition_operators.DenseBlock) == n_dense
+    assert kinds.count(transition_operators.RestrictedBlock) == 4 - n_dense
+    assert_products(fused, dense[np.ix_(mask, mask)], np.float32)
+    rng = np.random.default_rng(8)
+    filtered = jnp.asarray(rng.uniform(0.01, 1, mask.sum()), dtype=np.float32)
+    ratio = jnp.asarray(rng.uniform(0.5, 2, mask.sum()), dtype=np.float32)
+    np.testing.assert_allclose(
+        fused.pair_products(filtered, ratio),
+        operator.pair_products(filtered, ratio),
+        rtol=1e-6,
+    )

@@ -2880,7 +2880,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 operator = operator.bind_discrete(discrete)
             else:
                 transition_args["discrete_transition_matrix"] = discrete
-            transition_args["transition_operator"] = operator.fused()
+            transition_args["transition_operator"] = operator.fused(
+                self._max_dense_transition_bytes_
+            )
         else:
             continuous = self.continuous_state_transitions_[np.ix_(interior, interior)]
             if discrete.ndim == 2:
