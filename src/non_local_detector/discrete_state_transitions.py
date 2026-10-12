@@ -907,7 +907,7 @@ def estimate_non_stationary_state_transition_from_responses(
     concentration: float = 1.0,
     stickiness: float | np.ndarray = 0.0,
     transition_regularization: float = 1e-5,
-    optimization_method: str = "L-BFGS-B",
+    optimization_method: str = "trust-exact",
     maxiter: int | None = 100,
     disp: bool = False,
     frozen_rows: np.ndarray | None = None,
@@ -934,7 +934,10 @@ def estimate_non_stationary_state_transition_from_responses(
     transition_regularization : float, optional
         L2 penalty on coefficients (excluding intercept), by default 1e-5.
     optimization_method : str, optional
-        Optimization method for `scipy.optimize.minimize`, by default "L-BFGS-B".
+        Optimization method for `scipy.optimize.minimize`, by default
+        "trust-exact": Newton steps with the exact float64 Hessian, which
+        converge in a few iterations on spline designs whose Hessians have
+        condition numbers of 1e5 to 1e7, where "L-BFGS-B" stops short.
     maxiter : int, optional
         Maximum iterations for optimizer, by default 100.
     disp : bool, optional
@@ -988,14 +991,8 @@ def estimate_non_stationary_state_transition_from_responses(
         if optimization_method != "L-BFGS-B":
             options["disp"] = disp
         else:
-            # Stop on the projected gradient, not on the relative change of
-            # the objective: summed over a long recording the objective is
-            # large, so the default relative tolerance stops steps that still
-            # gain about 1e-3 nats. A gradient of 1e-7 (default 1e-5) keeps
-            # rows the data barely determine reproducible across EM paths
-            # whose expected counts differ at float32 rounding; it costs at
-            # most a few iterations, after which the float64 objective stops
-            # changing.
+            # If L-BFGS-B is requested, stop on the projected gradient, not on
+            # the relative change of the summed (large) objective.
             options["ftol"] = 0.0
             options["gtol"] = 1e-7
         minimize_kwargs = {
@@ -1321,25 +1318,29 @@ def dirichlet_hessian(
         coefficients, design_matrix, response, alpha
     )
     n_coefficients, n_free = coefficients.shape
+    n_parameters = n_coefficients * n_free
     probabilities = np.exp(log_probabilities[:, :-1])
     total = weights.sum(axis=1)
-    # sum_t W_t x_tc x_td (p_tk [k == l] - p_tk p_tl)
-    weighted_design = design_matrix * total[:, np.newaxis]
-    hessian = -np.einsum(
-        "tc,tk,td,tl->ckdl",
-        weighted_design,
-        probabilities,
-        design_matrix,
-        probabilities,
-        optimize=True,
+    # H[(c, k), (d, l)] = sum_t W_t x_tc x_td (p_tk [k == l] - p_tk p_tl),
+    # as two matrix products over time; column (c, k) is c * n_free + k,
+    # the order of the flattened coefficients.
+    weighted_terms = (
+        (design_matrix * total[:, np.newaxis])[:, :, np.newaxis]
+        * probabilities[:, np.newaxis, :]
+    ).reshape(-1, n_parameters)
+    design_terms = (
+        design_matrix[:, :, np.newaxis] * probabilities[:, np.newaxis, :]
+    ).reshape(-1, n_parameters)
+    hessian = -(weighted_terms.T @ design_terms).reshape(
+        n_coefficients, n_free, n_coefficients, n_free
     )
-    diagonal = np.einsum(
-        "tc,tk,td->ckd", weighted_design, probabilities, design_matrix, optimize=True
+    diagonal = (weighted_terms.T @ design_matrix).reshape(
+        n_coefficients, n_free, n_coefficients
     )
     for k in range(n_free):
         hessian[:, k, :, k] += diagonal[:, k, :]
-    hessian = hessian.reshape(n_coefficients * n_free, n_coefficients * n_free)
-    penalized = np.arange(n_free, n_coefficients * n_free)
+    hessian = hessian.reshape(n_parameters, n_parameters)
+    penalized = np.arange(n_free, n_parameters)
     hessian[penalized, penalized] += 2.0 * l2_penalty
     return hessian
 

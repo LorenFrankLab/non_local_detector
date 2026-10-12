@@ -17,6 +17,7 @@ from scipy.special import softmax
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
+    DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     _estimate_discrete_transition,
     _state_aggregation_matrix,
@@ -1693,6 +1694,45 @@ class TestNonStationaryPriorAndConvergence:
             rtol=1e-6,
             atol=1e-8,
         )
+
+    @pytest.mark.parametrize(
+        ("regularization", "bounded"), [(0.1, True), (1e-10, False)]
+    )
+    def test_ridge_keeps_rare_transitions_off_zero(
+        self, regularization, bounded, caplog
+    ):
+        """Rare transitions leave some speed bands without counts, and
+        tracking outliers make a basis column with few samples. Unpenalized,
+        the converged optimum sends those transitions to ~0; the default
+        ridge (0.1) keeps them bounded. Either way the optimizer converges."""
+        rng = np.random.default_rng(4)
+        n_time, n_states = 50_001, 4
+        speed = rng.gamma(1.5, 12.0, n_time)
+        speed[rng.uniform(size=n_time) < 0.6] = 0.0
+        speed[rng.choice(n_time, 20, replace=False)] = rng.uniform(300, 2000, 20)
+        stay = np.array([0.99, 0.98, 0.96, 0.95])
+        transition = (
+            np.full((n_states, n_states), 0.0) + ((1 - stay) / (n_states - 1))[:, None]
+        )
+        np.fill_diagonal(transition, stay)
+        response = _sampled_transition_responses(
+            rng, np.broadcast_to(transition, (n_time - 1, n_states, n_states))
+        )
+        _, initial_coefficients, design_matrix = DiscreteNonStationaryDiagonal(
+            stay
+        ).make_state_transition({"speed": speed})
+
+        with caplog.at_level("WARNING"):
+            _, estimated = estimate_non_stationary_state_transition_from_responses(
+                initial_coefficients,
+                design_matrix,
+                response,
+                stickiness=np.array([1e5, 1e5, 300.0, 300.0]),
+                transition_regularization=regularization,
+            )
+
+        assert not [r for r in caplog.records if "optimization" in r.getMessage()]
+        assert bool(estimated.min() > 1e-5) is bounded
 
     def test_reaches_optimum_on_long_recording(self):
         """On a long recording the returned coefficients are at the optimum of

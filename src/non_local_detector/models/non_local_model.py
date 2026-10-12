@@ -140,7 +140,10 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
     discrete_transition_stickiness : Stickiness, optional
         Stickiness parameters for each state, by default [1e6, 1e6, 300.0, 300.0].
     discrete_transition_regularization : float, optional
-        Regularization parameter for discrete transitions, by default 1e-10.
+        L2 penalty on the non-intercept coefficients of covariate-dependent
+        discrete transitions (a Gaussian prior with standard deviation
+        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions for each state, by default None.
     observation_models : Observations, optional
@@ -232,7 +235,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.0,
         discrete_transition_stickiness: Stickiness | None = None,
-        discrete_transition_regularization: float = 1e-10,
+        discrete_transition_regularization: float = 0.1,
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
@@ -322,7 +325,10 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
     discrete_transition_stickiness : Stickiness, optional
         Stickiness parameters for each state, by default [1e6, 1e6, 300.0, 300.0].
     discrete_transition_regularization : float, optional
-        Regularization parameter for discrete transitions, by default 1e-10.
+        L2 penalty on the non-intercept coefficients of covariate-dependent
+        discrete transitions (a Gaussian prior with standard deviation
+        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions for each state, by default None.
     observation_models : Observations, optional
@@ -415,7 +421,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.0,
         discrete_transition_stickiness: Stickiness | None = None,
-        discrete_transition_regularization: float = 1e-10,
+        discrete_transition_regularization: float = 0.1,
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
