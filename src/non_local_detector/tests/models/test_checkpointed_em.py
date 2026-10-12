@@ -646,3 +646,45 @@ def test_dense_em_within_memory_does_not_warn(monkeypatch):
         warnings.simplefilter("always")
         model.estimate_parameters(**data, max_iter=1, transition_representation="dense")
     assert not [w for w in caught if "Dense EM needs" in str(w.message)]
+
+
+def _with_opaque_random_walks(model):
+    """Swap RandomWalk blocks for a subclass the operator builder cannot read."""
+    from dataclasses import dataclass, fields
+
+    from non_local_detector.continuous_state_transitions import RandomWalk
+
+    @dataclass
+    class OpaqueRandomWalk(RandomWalk):
+        pass
+
+    model.continuous_transition_types = [
+        [
+            OpaqueRandomWalk(
+                **{f.name: getattr(block, f.name) for f in fields(block) if f.init}
+            )
+            if type(block) is RandomWalk
+            else block
+            for block in row
+        ]
+        for row in model.continuous_transition_types
+    ]
+    return model
+
+
+def test_auto_em_falls_back_to_dense_for_transitions_without_an_operator():
+    """A transition "auto" cannot build in bounded form runs dense EM, as the
+    dense constructor accepts it; asking for structured EM still fails."""
+    from non_local_detector.transition_operators import UnsupportedTransitionError
+
+    model, data = _recording("sorted")
+    results = _with_opaque_random_walks(model).estimate_parameters(
+        **data, max_iter=1, transition_representation="auto"
+    )
+    assert results.attrs["em_transition_representation"] == "dense"
+    assert not _uses_operator(model)
+    model, data = _recording("sorted")
+    with pytest.raises(UnsupportedTransitionError):
+        _with_opaque_random_walks(model).estimate_parameters(
+            **data, max_iter=1, transition_representation="auto", chunk_size=50
+        )

@@ -3152,6 +3152,43 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def fit_encoding_model(self):
         """Fit the encoding model. To be implemented by inheriting class."""
 
+    def _fit_for_em(self, fit, transition_representation, structured_required):
+        """Run EM's internal fit; "auto" falls back to a dense fit when needed.
+
+        "auto" cannot build some transitions in bounded form that the dense
+        constructor accepts (opaque custom constructors with deferred graph
+        distances, or dense fallback blocks over ``max_dense_transition_bytes``).
+        Unless a structured-EM option requires the operator, those run dense EM.
+
+        Parameters
+        ----------
+        fit : callable
+            ``fit(transition_representation)`` runs the detector's ``fit``.
+        transition_representation : str
+        structured_required : bool
+            Whether ``chunk_size``, ``result_path`` or ``replay_cache_bytes``
+            was given.
+
+        Returns
+        -------
+        transition_representation : str
+            "dense" after a fallback, otherwise the requested representation.
+        """
+        from non_local_detector.transition_operators import (
+            DenseTransitionBudgetError,
+            UnsupportedTransitionError,
+        )
+
+        try:
+            fit(transition_representation)
+        except (UnsupportedTransitionError, DenseTransitionBudgetError) as error:
+            if transition_representation != "auto" or structured_required:
+                raise
+            logger.info("EM with transition_representation='auto': dense (%s)", error)
+            fit("dense")
+            return "dense"
+        return transition_representation
+
     def _choose_em_representation(self, n_time: int) -> None:
         """Run EM dense when it is faster and fits; otherwise keep the operator.
 
@@ -5501,23 +5538,30 @@ class ClusterlessDetector(_DetectorBase):
             if position is None
             else (position[:, np.newaxis] if position.ndim == 1 else position),
         )
-        self.fit(
-            position_time,
-            position,
-            spike_times,
-            spike_waveform_features,
-            is_training=is_training,
-            encoding_group_labels=encoding_group_labels,
-            environment_labels=environment_labels,
-            discrete_transition_covariate_data=discrete_transition_covariate_data,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
-            transition_representation=transition_representation,
-            max_dense_transition_bytes=max_dense_transition_bytes,
+        structured_required = (
+            chunk_size is not None
+            or result_path is not None
+            or replay_cache_bytes is not None
         )
-        if transition_representation == "auto" and (
-            chunk_size is None and result_path is None and replay_cache_bytes is None
-        ):
+        transition_representation = self._fit_for_em(
+            lambda representation: self.fit(
+                position_time,
+                position,
+                spike_times,
+                spike_waveform_features,
+                is_training=is_training,
+                encoding_group_labels=encoding_group_labels,
+                environment_labels=environment_labels,
+                discrete_transition_covariate_data=discrete_transition_covariate_data,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
+                transition_representation=representation,
+                max_dense_transition_bytes=max_dense_transition_bytes,
+            ),
+            transition_representation,
+            structured_required,
+        )
+        if transition_representation == "auto" and not structured_required:
             self._choose_em_representation(len(time_edges) - 1)
         self._encoding_model_data = {
             "position_time": position_time,
@@ -6669,22 +6713,29 @@ class SortedSpikesDetector(_DetectorBase):
         # Mirror predict(): bins affected by NaN positions are missing
         # observations in the E-step.
         is_missing = _missing_bins(time_edges, is_missing, position_time, position)
-        self.fit(
-            position_time,
-            position,
-            spike_times,
-            is_training=is_training,
-            encoding_group_labels=encoding_group_labels,
-            environment_labels=environment_labels,
-            discrete_transition_covariate_data=discrete_transition_covariate_data,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
-            transition_representation=transition_representation,
-            max_dense_transition_bytes=max_dense_transition_bytes,
+        structured_required = (
+            chunk_size is not None
+            or result_path is not None
+            or replay_cache_bytes is not None
         )
-        if transition_representation == "auto" and (
-            chunk_size is None and result_path is None and replay_cache_bytes is None
-        ):
+        transition_representation = self._fit_for_em(
+            lambda representation: self.fit(
+                position_time,
+                position,
+                spike_times,
+                is_training=is_training,
+                encoding_group_labels=encoding_group_labels,
+                environment_labels=environment_labels,
+                discrete_transition_covariate_data=discrete_transition_covariate_data,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
+                transition_representation=representation,
+                max_dense_transition_bytes=max_dense_transition_bytes,
+            ),
+            transition_representation,
+            structured_required,
+        )
+        if transition_representation == "auto" and not structured_required:
             self._choose_em_representation(len(time_edges) - 1)
         self._encoding_model_data = {
             "position_time": position_time,
