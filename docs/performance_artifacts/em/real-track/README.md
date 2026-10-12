@@ -35,6 +35,8 @@ window, package-source hash and device.
 | `52068f24` | `f4dd609`: rebased, with the count-scaling and KDE-dtype fixes and per-run memory release in the profiler |
 | `ac120b53` | `52068f24` plus the prediction replay cache (`005fc10`) |
 | `33f55750` | `58f961b`: plus `auto` EM selection and its full-transition budget check |
+| `b5c9ec7d` | `db9a79f`: plus the cgroup-aware replay cache and the measured `auto` threshold |
+| `f3a286c1` | `b5c9ec7d` plus padded occupancy samples and a full-row last chunk (`df79fe4`, `d2b767c`, before a type annotation) |
 
 ## Full recording (709,319 rows)
 
@@ -261,6 +263,27 @@ Most of the difference is likelihood compilation, which warm runs do not
 repeat: at 4 cm the chunked structured likelihood compiled 202 times (346 s,
 51 of them in the second E-step) against 88 times (130 s) for dense in one
 chunk.
+
+Two causes accounted for most of the structured excess. EM refits the
+occupancy KDE from decode bins, one sample fewer than the position samples of
+the first fit, and the local kernels took those samples unpadded, so every
+electrode's local kernel recompiled in the second E-step (dense EM too). And
+the shorter last chunk was a new shape for every likelihood kernel (58
+compilations, 81 s). `ab-{old,new}-structured-2d-4cm-{0,1}` (breeze, GPU 8,
+host load about 10 throughout, run old, new, old, new) measure the fixes
+(`df79fe4`, `d2b767c`):
+
+| Report | Code | First call | Instrumented warm | Likelihood compiles (E-step 1, 2) | Device peak |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `ab-old-structured-2d-4cm-0` | `b5c9ec7d` | 720.9 s | 319.8 s | 151 (225 s), 51 (103 s) | 3.48 GB |
+| `ab-old-structured-2d-4cm-1` | `b5c9ec7d` | 723.9 s | 316.6 s | 151 (226 s), 51 (104 s) | 3.48 GB |
+| `ab-new-structured-2d-4cm-0` | `f3a286c1` | **529.3 s** | 313.8 s | 93 (146 s), 1 (0.5 s) | 3.49 GB |
+| `ab-new-structured-2d-4cm-1` | `f3a286c1` | **534.3 s** | 320.1 s | 93 (145 s), 1 (0.5 s) | 3.49 GB |
+
+The remaining first-E-step compiles are per-electrode shapes, and chunks
+whose spike counts reach a padded size not seen before (1 to 6 more per
+chunk). Padding the occupancy samples (709,321 to 712,704) moved the local
+log likelihood by at most 7.7e-7 relative.
 
 ### Clusterless KDE likelihood against recording length
 
