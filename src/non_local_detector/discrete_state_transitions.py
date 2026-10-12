@@ -908,6 +908,7 @@ def estimate_non_stationary_state_transition_from_responses(
     optimization_method: str = "L-BFGS-B",
     maxiter: int | None = 100,
     disp: bool = False,
+    frozen_rows: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate a non-stationary transition model from expected counts.
 
@@ -936,6 +937,9 @@ def estimate_non_stationary_state_transition_from_responses(
         Maximum iterations for optimizer, by default 100.
     disp : bool, optional
         Display optimizer convergence messages, by default False.
+    frozen_rows : np.ndarray of bool, shape (n_states,), optional
+        Rows that keep their ``transition_coefficients`` instead of being
+        estimated. None (default) estimates every row.
 
     Returns
     -------
@@ -958,6 +962,16 @@ def estimate_non_stationary_state_transition_from_responses(
 
     # Estimate the transition coefficients for each state
     for from_state, row_alpha in enumerate(alpha):
+        if frozen_rows is not None and frozen_rows[from_state]:
+            estimated_transition_coefficients[:, from_state, :] = (
+                transition_coefficients[:, from_state, :]
+            )
+            estimated_transition_matrix[:, from_state, :] = np.exp(
+                _centered_log_probabilities(
+                    design_matrix, estimated_transition_coefficients[:, from_state, :]
+                )
+            )
+            continue
         objective_args = (
             design_matrix[:-1],
             response[:, from_state, :],
@@ -1578,6 +1592,7 @@ def _discrete_transition_from_statistics(
     transition_stickiness: float | np.ndarray,
     transition_regularization: float,
     transition_prior_weight: float | np.ndarray = 0.0,
+    frozen_rows: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Discrete transition M-step from expected transition statistics.
 
@@ -1591,6 +1606,9 @@ def _discrete_transition_from_statistics(
     transition_concentration, transition_stickiness, transition_regularization,
     transition_prior_weight
         As in :func:`_estimate_discrete_transition`.
+    frozen_rows : np.ndarray of bool, shape (n_states,), optional
+        Covariate-dependent rows that keep their coefficients. Stationary
+        frozen rows are restored by the caller.
 
     Returns
     -------
@@ -1627,6 +1645,7 @@ def _discrete_transition_from_statistics(
             concentration=transition_concentration,
             stickiness=transition_stickiness,
             transition_regularization=transition_regularization,
+            frozen_rows=frozen_rows,
         )
     else:
         if (
