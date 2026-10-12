@@ -13,6 +13,8 @@ from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
+    KDEModel,
+    _padded_occupancy_count,
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
     SpikeSelection,
@@ -55,6 +57,13 @@ def test_padded_sample_counts_add_at_most_a_quarter():
         assert n <= size <= 1.25 * n
     assert _padded_sample_count(0) == _padded_sample_count(16) == 16
     assert len({_padded_sample_count(n) for n in range(1025, 2049)}) == 4
+
+
+def test_padded_occupancy_counts_add_at_most_one_sixty_fourth():
+    for n in range(1, 70000, 7):
+        size = _padded_occupancy_count(n)
+        assert n <= size <= n + n / 64
+    assert len({_padded_occupancy_count(n) for n in range(4097, 8193)}) == 64
 
 
 def test_spike_row_ids_normalize_invalid_rows_and_pad_with_dropped_row():
@@ -295,3 +304,50 @@ def test_electrodes_with_nearby_encoding_sizes_share_compiled_kernels():
     for is_local in (False, True):
         predict(recording, is_local, None)
     assert [kernel._cache_size() for kernel in kernels] == [1, 1]
+
+
+def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
+    """EM refits the occupancy from decode bins, one sample fewer than the
+    position samples of the first fit; the local kernel must not recompile."""
+    rng = np.random.default_rng(33)
+    env = Environment(place_bin_size=5.0, position_range=((0.0, 30.0), (0.0, 30.0)))
+    position_time = np.arange(0, 20.0, 1 / 30)
+    position = np.column_stack(
+        (15 + 10 * np.sin(position_time), 15 + 10 * np.cos(position_time))
+    )
+    env = env.fit_place_grid(position, infer_track_interior=False)
+    encoding_times = [np.sort(rng.uniform(0, 20, 200))]
+    encoding = fit_clusterless_kde_encoding_model(
+        position_time=position_time,
+        position=position,
+        spike_times=encoding_times,
+        spike_waveform_features=[rng.normal(0, 30, (200, 4))],
+        environment=env,
+        disable_progress_bar=True,
+    )
+    decode_times = [np.sort(rng.uniform(0, 2, 40))]
+    recording = (
+        env,
+        position_time,
+        position,
+        encoding,
+        decode_times,
+        [rng.normal(0, 30, (40, 4))],
+        np.arange(0, 2.0 + 1e-9, 0.002),
+    )
+    occupancy_model = encoding["occupancy_model"]
+    n_samples = occupancy_model.samples_.shape[0]
+    assert _padded_occupancy_count(n_samples) == _padded_occupancy_count(n_samples - 1)
+    refit = KDEModel(
+        std=occupancy_model.std, block_size=occupancy_model.block_size
+    ).fit(occupancy_model.samples_[:-1], weights=occupancy_model.weights_[:-1])
+    kernel = clusterless_kde._add_electrode_local_terms
+    kernel.clear_cache()
+    first = predict(recording, True, None)
+    second = predict(
+        (*recording[:3], {**encoding, "occupancy_model": refit}, *recording[4:]),
+        True,
+        None,
+    )
+    assert kernel._cache_size() == 1
+    assert np.all(np.isfinite(first)) and np.all(np.isfinite(second))

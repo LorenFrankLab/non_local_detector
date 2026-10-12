@@ -1,4 +1,4 @@
-from collections.abc import Sequence, Sized
+from collections.abc import Callable, Sequence, Sized
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TypeVar
@@ -1316,6 +1316,19 @@ def _padded_sample_count(n_samples: int) -> int:
     return 16 if n_samples <= 16 else _quarter_octave(n_samples)
 
 
+def _padded_occupancy_count(n_samples: int) -> int:
+    """Occupancy KDE samples: 64 sizes per octave, at most 1/64 padding.
+
+    Occupancy samples grow with the recording and each one is evaluated at
+    every spike, so they are padded more finely than encoding samples. EM
+    refits them from decode bins, one fewer than the position samples of the
+    first fit; both counts then usually share a size, so the local kernels
+    do not recompile.
+    """
+    step = 1 << max((n_samples - 1).bit_length() - 7, 0)
+    return -(-n_samples // step) * step
+
+
 def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
     """Decoding spikes per electrode kernel call, from a few sizes.
 
@@ -1356,6 +1369,7 @@ def _padded_samples(
     spike_time_order: "_SpikeTimeOrder",
     samples: np.ndarray | jnp.ndarray,
     weights: np.ndarray | jnp.ndarray | None,
+    count: Callable[[int], int] = _padded_sample_count,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Device KDE samples and weights padded with zero-weight rows, once per prediction.
 
@@ -1369,6 +1383,8 @@ def _padded_samples(
     samples : array, shape (n_samples, n_dims)
     weights : array, shape (n_samples,), or None
         None means uniform weights.
+    count : callable, optional
+        Padded size for a sample count, by default ``_padded_sample_count``.
 
     Returns
     -------
@@ -1376,7 +1392,7 @@ def _padded_samples(
     """
 
     def build():
-        n_samples = _padded_sample_count(np.shape(samples)[0])
+        n_samples = count(np.shape(samples)[0])
         sample_weights = (
             np.ones(np.shape(samples)[0]) if weights is None else np.asarray(weights)
         )
@@ -1385,7 +1401,9 @@ def _padded_samples(
             jnp.asarray(_pad_rows(sample_weights, n_samples)),
         )
 
-    return spike_time_order.memo("padded_samples", (samples, weights), build)
+    return spike_time_order.memo(
+        f"padded_samples:{count.__name__}", (samples, weights), build
+    )
 
 
 # Up to this many evaluation blocks are traced individually: faster on CPU

@@ -16,6 +16,7 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     _log_kernel_matrix,
     _pad_rows,
+    _padded_occupancy_count,
     _padded_samples,
     _padded_spike_count,
     _SpikeTimeOrder,
@@ -1124,6 +1125,12 @@ def compute_local_log_likelihood(
                 electrode_gpi_model.samples_,
                 electrode_gpi_model.weights_,
             )
+            occupancy_samples, occupancy_weights = _padded_samples(
+                _spike_time_order,
+                occupancy_model.samples_,
+                occupancy_model.weights_,
+                count=_padded_occupancy_count,
+            )
             log_likelihood, summed_expected_counts = _add_electrode_local_terms(
                 log_likelihood,
                 summed_expected_counts,
@@ -1137,8 +1144,8 @@ def compute_local_log_likelihood(
                 padded_weights,
                 position_std_array,
                 electrode_waveform_std,
-                occupancy_model.samples_,
-                occupancy_model.weights_,
+                occupancy_samples,
+                occupancy_weights,
                 occupancy_std,
                 gpi_samples,
                 gpi_weights,
