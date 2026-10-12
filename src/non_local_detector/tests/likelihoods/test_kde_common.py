@@ -414,20 +414,30 @@ def test_empty_eval_points_block_kde_zero_block_size():
 
 
 def test_dtype_parity_float32_float64():
+    """The float32 KDE agrees with a float64 evaluation of the same inputs."""
     r = rng(13)
     samples64 = r.normal(size=(120, 2)).astype(np.float64)
     eval64 = r.normal(size=(15, 2)).astype(np.float64)
-    std64 = jnp.array([0.9, 1.1], dtype=jnp.float64)
-    w64 = jnp.ones((samples64.shape[0],), dtype=jnp.float64)
-    out64 = kde(jnp.asarray(eval64), jnp.asarray(samples64), std64, w64)
-
-    samples32 = samples64.astype(np.float32)
-    eval32 = eval64.astype(np.float32)
-    std32 = jnp.array([0.9, 1.1], dtype=jnp.float32)
-    w32 = jnp.ones((samples32.shape[0],), dtype=jnp.float32)
-    out32 = kde(jnp.asarray(eval32), jnp.asarray(samples32), std32, w32)
-
-    assert jnp.allclose(out32.astype(jnp.float64), out64, rtol=1e-5, atol=1e-6)
+    with precision_mode(True):
+        out64 = kde(
+            jnp.asarray(eval64),
+            jnp.asarray(samples64),
+            jnp.array([0.9, 1.1], dtype=jnp.float64),
+            jnp.ones((samples64.shape[0],), dtype=jnp.float64),
+        )
+        assert out64.dtype == jnp.float64
+        out64 = np.asarray(out64)
+    with precision_mode(False):
+        out32 = kde(
+            jnp.asarray(eval64.astype(np.float32)),
+            jnp.asarray(samples64.astype(np.float32)),
+            jnp.array([0.9, 1.1], dtype=jnp.float32),
+            jnp.ones((samples64.shape[0],), dtype=jnp.float32),
+        )
+        assert out32.dtype == jnp.float32
+    np.testing.assert_allclose(
+        np.asarray(out32, np.float64), out64, rtol=1e-5, atol=1e-6
+    )
 
 
 def test_get_position_at_time_linear_interpolation():
@@ -574,7 +584,9 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
     std = jnp.array([0.7, 1.3])
     direct = (log_kde if log_space else kde)(points, samples, std, weights)
 
-    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * 4 * 64)
+    # 64 rows of the kernel's dtype: float64 under x64 (8 bytes), else float32.
+    itemsize = np.dtype(jax.dtypes.canonicalize_dtype(jnp.float64)).itemsize
+    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * itemsize * 64)
     kernel_name = "log_kde" if log_space else "kde"
     original = getattr(common, kernel_name)
     rows = []
