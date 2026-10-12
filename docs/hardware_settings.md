@@ -101,41 +101,50 @@ number of encoding spikes. If they don't fit, set `encoding_block_size` and
 
 ## Parameter estimation (EM)
 
-By default `estimate_parameters` uses the dense filter and smoother. It keeps
-several arrays of size (time bins × state bins) in memory, so its memory grows
-with session length. In a 180 cm open field at 2 cm each such float32 array
-takes about 2 GB per minute of recording; at 4 cm, about 0.53 GB. A linearized
-track has far fewer state bins (514 for the track below), so its arrays are
-about 0.06 GB per minute.
+`estimate_parameters` runs one of two EM algorithms, and by default
+(`transition_representation="auto"`) chooses between them:
 
-### Bounded-memory EM
+| Your data | What runs by default | What to pass |
+| --- | --- | --- |
+| Linearized track, or a coarse 2-D grid (4 cm in a 180 cm arena) | Dense EM (faster there) | Nothing |
+| Finer 2-D grids, or sessions whose dense arrays would not fit | Structured EM (bounded device memory) | `result_path=...` to keep host memory bounded too |
+| Reproducing older results exactly | — | `transition_representation="dense"` |
 
-`estimate_parameters(..., transition_representation="structured")` (or
-`"auto"`, which allows dense blocks for transitions without a structured form,
-such as random walks on a track graph) runs every E-step on the checkpointed
-driver. Device working memory then scales with `chunk_size` times the state
-bins instead of the recording length: on the 23.6 min recording below, on a
-2 cm 2-D grid, 2.4 GB instead of 56.3 GB. Pass `result_path` to write the
-final posterior to a store on disk instead of holding it in host memory (host
-peak 14.2 GB, against 71.4 GB holding it and 109.5 GB for dense EM on that
-grid). `replay_cache_bytes` (default 16 GiB, or half the available host
-memory if smaller, counting a container's memory limit) keeps forward-pass rows
-in host memory so the backward replay does not recompute them. With the whole
-recording cached (about 14 GB of host memory there), 3 iterations took 272 s
-after compilation, holding the posterior in memory, against 501 s for dense EM.
-An earlier version took about 100 s longer with a 4 GiB cache than with the
-whole recording cached. Chunks beyond the budget are recomputed, so a smaller
-budget costs time, not correctness. On the track, where dense EM fits easily,
-dense EM is faster (168 s against 230 s with the replay cache, before the
-structured speedups).
-`transition_representation="auto"` picks dense EM when three conditions hold:
-the interior transition is at most 16 MiB in float32, the full transition
-(every state bin, float64) fits `max_dense_transition_bytes`, and dense EM's
-arrays fit in half the device memory. It picks structured EM otherwise, or when
-`chunk_size`, `result_path` or `replay_cache_bytes` is given. On a 2-D grid of
-the recording below, dense EM was faster up to 13.5 MB of interior transition
-(3 cm, 250 s against 276 s) and slower at 21.9 MB (2.5 cm, 348 s against
-255 s). `chunk_size` sets the rows per checkpoint chunk.
+`results.attrs["em_transition_representation"]` records which ran, with the
+chunking it used.
+
+**Dense EM** keeps several arrays of size (time bins × state bins) in memory,
+so its memory grows with the session. In a 180 cm open field at 2 cm each
+float32 array takes about 2 GB per minute of recording; at 4 cm, about 0.5 GB.
+A linearized track has far fewer state bins (514 for the track below), about
+0.06 GB per minute. When its arrays are unlikely to fit, it warns before it
+starts. `n_chunks` splits its filter and smoother into row chunks.
+
+**Structured EM** runs every E-step on the checkpointed driver: the recording
+is filtered in chunks of `chunk_size` time bins, the boundary between chunks
+is saved, and each chunk is replayed backward for smoothing. Device memory
+depends on `chunk_size` and the grid, not on the recording length. On the
+23.6 min recording below, on a 2 cm 2-D grid:
+
+| | Dense EM (`n_chunks=8`) | Structured EM | Structured EM with `result_path` |
+| --- | ---: | ---: | ---: |
+| Device memory | 56 GB | 2.4 GB | 2.4 GB |
+| Host memory | 110 GB | 71 GB (the posterior, held in memory) | 14 GB |
+| 3 iterations, after compilation | 501 s | 272 s | |
+
+`replay_cache_bytes` keeps forward-pass rows in host memory so the backward
+replay does not recompute them; by default up to 16 GiB, or half the available
+host memory if smaller (counting a container's memory limit). Chunks beyond
+the budget are recomputed, so a smaller budget costs time, not correctness.
+
+"auto" runs dense EM when the float32 interior transition is at most 16 MiB,
+the full transition (every state bin, float64) fits
+`max_dense_transition_bytes`, and dense EM's arrays fit in half the device
+memory; also when `n_chunks` is given, or when a transition has no bounded
+structured form. It runs structured EM otherwise, or when `chunk_size`,
+`result_path` or `replay_cache_bytes` is given. On a 2-D grid of the recording
+below, dense EM was faster up to 13.5 MB of interior transition (3 cm, 250 s
+against 276 s) and slower at 21.9 MB (2.5 cm, 348 s against 255 s).
 
 ### A real recording on a linearized track
 

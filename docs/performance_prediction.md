@@ -2,8 +2,8 @@
 
 These opt-in APIs build on the 0.7 time/Hz contracts. Existing `fit()` and
 `predict()` calls keep their dense behavior. The modes apply to prediction with
-fitted parameters. Viterbi keeps its dense algorithm; EM is dense by default and
-can run on the same checkpointed driver (see
+fitted parameters. Viterbi keeps its dense algorithm; EM runs on the same
+checkpointed driver when its default `"auto"` (or `"structured"`) chooses it (see
 [hardware_settings.md](hardware_settings.md#bounded-memory-em)). For
 suggested settings on 24 GB GPUs, A100s and CPUs, see
 [hardware_settings.md](hardware_settings.md).
@@ -194,11 +194,10 @@ prediction, but does not avoid dense setup or bound arbitrary custom workspace.
 For structured models, `continuous_state_transitions_` is a read-only lazy dense
 view. Feasible selections and explicit conversion are budgeted; oversized dense
 access from plotting, dense prediction or Viterbi fails before allocation.
-Pickling retains the compact operator. EM refits its model with the dense path
-by default; `estimate_parameters(transition_representation="structured")` (or
-`"auto"`) runs every E-step on the checkpointed driver instead, so its device
-memory does not grow with recording length (2.4 GB for 23.6 min on a 2 cm 2-D
-grid). Its host memory still holds the returned posterior unless `result_path`
+Pickling retains the compact operator. `estimate_parameters` chooses dense or
+structured EM by default (`transition_representation="auto"`); structured EM
+runs every E-step on the checkpointed driver, so its device memory does not
+grow with recording length (2.4 GB for 23.6 min on a 2 cm 2-D grid). Its host memory still holds the returned posterior unless `result_path`
 is given, and the clusterless KDE likelihood's cost grows faster than the
 recording during EM. Viterbi stays dense and is not suitable for full-hour
 spatial workloads.
