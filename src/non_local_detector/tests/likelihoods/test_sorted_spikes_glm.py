@@ -400,17 +400,30 @@ class TestBatchedPoissonRegression:
             assert objective(actual[cell], y) <= objective(reference, y) + 1e-6
 
     def test_batched_rows_match_single_cell_fits(self, problem):
+        """Batching all cells reaches the single-cell optimum.
+
+        The batched and single-cell solves sum in different float32 orders on
+        some CPUs, so their Newton steps can stop at slightly different points
+        of a flat optimum (coefficients differed by up to 1.8e-4 on a Linux CI
+        runner and are identical on macOS); the float64 objective is what must
+        agree. A 2e-4 coefficient perturbation changes it by about 1.7e-7.
+        """
         design_matrix, spikes, weights = problem
         batched = np.asarray(
             fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
         )
-        for cell, y in enumerate(spikes):
-            np.testing.assert_allclose(
-                batched[cell],
-                fit_poisson_regression(design_matrix, y, weights, 1e-3),
-                rtol=1e-5,
-                atol=1e-6,
-            )
+        single = np.stack(
+            [
+                np.asarray(fit_poisson_regression(design_matrix, y, weights, 1e-3))
+                for y in spikes
+            ]
+        )
+        np.testing.assert_allclose(
+            _poisson_objective64(design_matrix, spikes, weights, batched, 1e-3),
+            _poisson_objective64(design_matrix, spikes, weights, single, 1e-3),
+            rtol=0,
+            atol=1e-8,
+        )
 
     def test_row_blocks_and_padding_do_not_change_the_fit(self, problem, monkeypatch):
         """Long recordings sum over many row blocks, the last one padded.
