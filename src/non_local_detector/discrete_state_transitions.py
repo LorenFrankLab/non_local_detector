@@ -911,6 +911,11 @@ def estimate_non_stationary_state_transition_from_responses(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate a non-stationary transition model from expected counts.
 
+    Each row maximizes its expected complete-data log-likelihood, summed over
+    time bins, plus a Dirichlet prior counted once per row (as for stationary
+    transitions, so ``stickiness`` means the same pseudo-counts for both) and
+    an L2 penalty, in float64. See :func:`dirichlet_neg_log_likelihood`.
+
     Parameters
     ----------
     transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
@@ -944,6 +949,7 @@ def estimate_non_stationary_state_transition_from_responses(
         (n_coefficients, n_states, (n_states - 1))
     )
 
+    design_matrix = np.asarray(design_matrix, dtype=np.float64)
     n_time = design_matrix.shape[0]
     estimated_transition_matrix = np.zeros((n_time, n_states, n_states))
 
@@ -965,6 +971,17 @@ def estimate_non_stationary_state_transition_from_responses(
         # only forward `disp` to methods that still accept it.
         if optimization_method != "L-BFGS-B":
             options["disp"] = disp
+        else:
+            # Stop on the projected gradient, not on the relative change of
+            # the objective: summed over a long recording the objective is
+            # large, so the default relative tolerance stops steps that still
+            # gain about 1e-3 nats. A gradient of 1e-7 (default 1e-5) keeps
+            # rows the data barely determine reproducible across EM paths
+            # whose expected counts differ at float32 rounding; it costs at
+            # most a few iterations, after which the float64 objective stops
+            # changing.
+            options["ftol"] = 0.0
+            options["gtol"] = 1e-7
         minimize_kwargs = {
             "fun": dirichlet_neg_log_likelihood,
             "x0": transition_coefficients[:, from_state].ravel(),
@@ -1012,11 +1029,10 @@ def estimate_non_stationary_state_transition_from_responses(
                 (n_coefficients, n_states - 1)
             )
 
-        linear_predictor = (
-            design_matrix @ estimated_transition_coefficients[:, from_state, :]
-        )
-        estimated_transition_matrix[:, from_state, :] = jnp.exp(
-            jax_centered_log_softmax_forward(linear_predictor)
+        estimated_transition_matrix[:, from_state, :] = np.exp(
+            _centered_log_probabilities(
+                design_matrix, estimated_transition_coefficients[:, from_state, :]
+            )
         )
 
     return estimated_transition_coefficients, estimated_transition_matrix
@@ -1153,65 +1169,163 @@ def estimate_stationary_state_transition_from_counts(
     return new_transition_matrix
 
 
-@jax.jit
-def dirichlet_neg_log_likelihood(
-    coefficients: jnp.ndarray,
-    design_matrix: jnp.ndarray,
-    response: jnp.ndarray,
-    alpha: float | jnp.ndarray = 1.0,
-    l2_penalty: float = 1e-5,
-) -> float:
-    """Negative expected complete log likelihood for Dirichlet-Multinomial model.
+def _centered_log_probabilities(
+    design_matrix: np.ndarray, coefficients: np.ndarray
+) -> np.ndarray:
+    """Float64 log transition probabilities with the last state as reference.
 
     Parameters
     ----------
-    coefficients : jnp.ndarray, shape (n_coefficients * (n_states - 1),)
+    design_matrix : np.ndarray, shape (n_samples, n_coefficients)
+    coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+
+    Returns
+    -------
+    log_probabilities : np.ndarray, shape (n_samples, n_states)
+    """
+    linear_predictor = design_matrix @ coefficients
+    logits = np.concatenate(
+        (linear_predictor, np.zeros((linear_predictor.shape[0], 1))), axis=1
+    )
+    return numpy_log_softmax(logits, axis=1)
+
+
+def _row_objective_terms(
+    coefficients: np.ndarray,
+    design_matrix: np.ndarray,
+    response: np.ndarray,
+    alpha: float | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Float64 inputs shared by the row objective, gradient and Hessian."""
+    design_matrix = np.asarray(design_matrix, dtype=np.float64)
+    response = np.asarray(response, dtype=np.float64)
+    coefficients = np.asarray(coefficients, dtype=np.float64).reshape(
+        (design_matrix.shape[1], -1)
+    )
+    # The Dirichlet prior counts once per row, as for stationary transitions:
+    # its alpha - 1 pseudo-counts are spread evenly over the time bins.
+    weights = response + (np.asarray(alpha, dtype=np.float64) - 1.0) / len(response)
+    log_probabilities = _centered_log_probabilities(design_matrix, coefficients)
+    return design_matrix, coefficients, weights, log_probabilities
+
+
+def dirichlet_neg_log_likelihood(
+    coefficients: np.ndarray,
+    design_matrix: np.ndarray,
+    response: np.ndarray,
+    alpha: float | np.ndarray = 1.0,
+    l2_penalty: float = 1e-5,
+) -> float:
+    """Negative log posterior of one covariate-dependent transition row.
+
+    ``-sum_t (r_t + (alpha - 1) / n) . log p_t + l2_penalty * |beta[1:]|^2``,
+    summed over the ``n`` time bins in float64: the expected complete-data
+    log-likelihood of the row plus a Dirichlet prior counted once, as for a
+    stationary row, and an L2 penalty.
+
+    Parameters
+    ----------
+    coefficients : np.ndarray, shape (n_coefficients * (n_states - 1),)
         Flattened regression coefficients.
-    design_matrix : jnp.ndarray, shape (n_samples, n_coefficients)
+    design_matrix : np.ndarray, shape (n_samples, n_coefficients)
         Covariate design matrix.
-    response : jnp.ndarray, shape (n_samples, n_states)
-        Expected counts or probabilities for each state transition.
-    alpha : float | jnp.ndarray, shape (n_states,), optional
-        Dirichlet prior parameters for this row of the transition matrix.
-        If float, assumed uniform. Defaults to 1.0 (no prior effect).
-        The non-stationary objective adds ``alpha - 1`` to each time sample's
-        response before averaging over samples. For stationary transitions,
-        the estimator instead adds ``alpha - 1`` once to the summed joint
-        distribution.
+    response : np.ndarray, shape (n_samples, n_states)
+        Expected transition counts from this row at each time bin.
+    alpha : float or np.ndarray, shape (n_states,), optional
+        Dirichlet prior parameters for this row. Defaults to 1.0 (no prior).
     l2_penalty : float, optional
-        L2 regularization penalty on coefficients (excluding intercept).
-        Defaults to 1e-5. The intercept is assumed to be the first coefficient
-        row (``coefficients[0]``), as produced by patsy ``"1 + ..."`` formulas.
+        L2 penalty on coefficients (excluding intercept), by default 1e-5.
+        The intercept is assumed to be the first coefficient row
+        (``coefficients[0]``), as produced by patsy ``"1 + ..."`` formulas.
         A ``"0 + ..."`` formula or hand-built design matrix without a leading
         intercept column would penalize the wrong rows.
 
     Returns
     -------
-    negative_expected_complete_log_likelihood : float
-        The loss value to be minimized.
+    negative_log_posterior : float
     """
-    n_coefficients = design_matrix.shape[1]
-
-    # shape (n_coefficients, n_states - 1)
-    coefficients = coefficients.reshape((n_coefficients, -1))
-
-    # shape (n_samples, n_states)
-    log_probs = jax_centered_log_softmax_forward(design_matrix @ coefficients)
-
-    # Dirichlet prior as a per-time response offset. The objective is averaged
-    # over samples, so this behaves as per-time regularization rather than the
-    # stationary estimator's once-per-summed-row pseudo-count.
-    n_samples = response.shape[0]
-    prior = alpha - 1.0
-
-    neg_log_likelihood = -1.0 * jnp.sum((response + prior) * log_probs) / n_samples
-    l2_penalty_term = l2_penalty * jnp.sum(coefficients[1:] ** 2)
-
-    return neg_log_likelihood + l2_penalty_term
+    _, coefficients, weights, log_probabilities = _row_objective_terms(
+        coefficients, design_matrix, response, alpha
+    )
+    return float(
+        -np.sum(weights * log_probabilities)
+        + l2_penalty * np.sum(coefficients[1:] ** 2)
+    )
 
 
-dirichlet_gradient = jax.grad(dirichlet_neg_log_likelihood)
-dirichlet_hessian = jax.hessian(dirichlet_neg_log_likelihood)
+def dirichlet_gradient(
+    coefficients: np.ndarray,
+    design_matrix: np.ndarray,
+    response: np.ndarray,
+    alpha: float | np.ndarray = 1.0,
+    l2_penalty: float = 1e-5,
+) -> np.ndarray:
+    """Gradient of :func:`dirichlet_neg_log_likelihood`.
+
+    Parameters
+    ----------
+    coefficients, design_matrix, response, alpha, l2_penalty
+        As in :func:`dirichlet_neg_log_likelihood`.
+
+    Returns
+    -------
+    gradient : np.ndarray, shape (n_coefficients * (n_states - 1),)
+    """
+    design_matrix, coefficients, weights, log_probabilities = _row_objective_terms(
+        coefficients, design_matrix, response, alpha
+    )
+    probabilities = np.exp(log_probabilities[:, :-1])
+    residual = weights[:, :-1] - weights.sum(axis=1, keepdims=True) * probabilities
+    gradient = -design_matrix.T @ residual
+    gradient[1:] += 2.0 * l2_penalty * coefficients[1:]
+    return gradient.ravel()
+
+
+def dirichlet_hessian(
+    coefficients: np.ndarray,
+    design_matrix: np.ndarray,
+    response: np.ndarray,
+    alpha: float | np.ndarray = 1.0,
+    l2_penalty: float = 1e-5,
+) -> np.ndarray:
+    """Hessian of :func:`dirichlet_neg_log_likelihood`.
+
+    Parameters
+    ----------
+    coefficients, design_matrix, response, alpha, l2_penalty
+        As in :func:`dirichlet_neg_log_likelihood`.
+
+    Returns
+    -------
+    hessian : np.ndarray, shape (n_parameters, n_parameters)
+        ``n_parameters = n_coefficients * (n_states - 1)``, in the order of
+        the flattened coefficients.
+    """
+    design_matrix, coefficients, weights, log_probabilities = _row_objective_terms(
+        coefficients, design_matrix, response, alpha
+    )
+    n_coefficients, n_free = coefficients.shape
+    probabilities = np.exp(log_probabilities[:, :-1])
+    total = weights.sum(axis=1)
+    # sum_t W_t x_tc x_td (p_tk [k == l] - p_tk p_tl)
+    weighted_design = design_matrix * total[:, np.newaxis]
+    hessian = -np.einsum(
+        "tc,tk,td,tl->ckdl",
+        weighted_design,
+        probabilities,
+        design_matrix,
+        probabilities,
+        optimize=True,
+    )
+    diagonal = np.einsum(
+        "tc,tk,td->ckd", weighted_design, probabilities, design_matrix, optimize=True
+    )
+    for k in range(n_free):
+        hessian[:, k, :, k] += diagonal[:, k, :]
+    hessian = hessian.reshape(n_coefficients * n_free, n_coefficients * n_free)
+    penalized = np.arange(n_free, n_coefficients * n_free)
+    hessian[penalized, penalized] += 2.0 * l2_penalty
+    return hessian
 
 
 def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
@@ -1380,9 +1494,9 @@ def _transition_log_prior(
 
     Stationary: ``sum_ij c_ij log A_ij`` with the pseudo-counts ``c`` the
     stationary M-step adds once per row. Covariate-dependent:
-    ``sum_t sum_ij (alpha_ij - 1) log A_t,ij - n * lambda * |beta_i[1:]|^2``
-    over the ``n = n_time - 1`` transitions, the per-row loss of
-    :func:`dirichlet_neg_log_likelihood` times ``-n`` minus its data term.
+    ``sum_ij (alpha_ij - 1) mean_t log A_t,ij - lambda * |beta_i[1:]|^2``
+    over the ``n_time - 1`` transitions, the prior and penalty terms of
+    :func:`dirichlet_neg_log_likelihood`, negated.
 
     Parameters
     ----------
@@ -1428,13 +1542,10 @@ def _transition_log_prior(
         linear_predictor = np.concatenate(
             (linear_predictor, np.zeros(linear_predictor.shape[:-1] + (1,))), axis=-1
         )
-        summed_log_probs = numpy_log_softmax(linear_predictor, axis=-1).sum(axis=0)
-        row_log_prior = np.sum((alpha - 1.0) * summed_log_probs, axis=-1)
-        n_samples = statistics.shape[0]
-        row_log_prior -= (
-            n_samples
-            * transition_regularization
-            * np.sum(coefficients[1:] ** 2, axis=(0, 2))
+        mean_log_probs = numpy_log_softmax(linear_predictor, axis=-1).mean(axis=0)
+        row_log_prior = np.sum((alpha - 1.0) * mean_log_probs, axis=-1)
+        row_log_prior -= transition_regularization * np.sum(
+            coefficients[1:] ** 2, axis=(0, 2)
         )
         return float(np.sum(row_log_prior[rows]))
 
