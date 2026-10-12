@@ -9,6 +9,7 @@ from non_local_detector import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.integration
 
@@ -206,19 +207,37 @@ def test_checkpointed_em_with_missing_bins():
     _assert_same_fit(structured, dense)
 
 
-@pytest.mark.parametrize("representation", ["structured", "auto"])
-def test_structured_em_rejects_row_chunks(representation):
+def test_structured_em_rejects_row_chunks():
     model, data = _recording("sorted")
-    with pytest.raises(ValueError, match="chunk_size"):
+    with pytest.raises(ValidationError, match="n_chunks"):
         model.estimate_parameters(
-            **data, max_iter=1, n_chunks=4, transition_representation=representation
+            **data, max_iter=1, n_chunks=4, transition_representation="structured"
+        )
+
+
+def test_auto_em_with_row_chunks_runs_dense_em():
+    """n_chunks is a dense-EM option, so "auto" honors it with dense EM."""
+    model, data = _recording("sorted")
+    dense = _fit(model, data, n_chunks=4, transition_representation="dense")
+    model, data = _recording("sorted")
+    auto = _fit(model, data, n_chunks=4, transition_representation="auto")
+    assert not _uses_operator(model)
+    _assert_same_fit(auto, dense)
+    model, data = _recording("sorted")
+    with pytest.raises(ValidationError, match="n_chunks .* cannot be combined"):
+        model.estimate_parameters(
+            **data,
+            max_iter=1,
+            n_chunks=4,
+            chunk_size=50,
+            transition_representation="auto",
         )
 
 
 def test_dense_em_rejects_checkpoint_chunks():
     """chunk_size must not silently run unbounded dense EM."""
     model, data = _recording("sorted")
-    with pytest.raises(ValueError, match="structured"):
+    with pytest.raises(ValidationError, match="structured"):
         model.estimate_parameters(**data, max_iter=1, chunk_size=50)
 
 
@@ -299,7 +318,7 @@ def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
     transitions = np.array(model.discrete_state_transitions_)
     encoding = model.encoding_model_
     log_likelihood = model.log_likelihood_
-    with pytest.raises(ValueError, match="chunk_size|replay_cache_bytes"):
+    with pytest.raises(ValidationError, match="chunk_size|replay_cache_bytes"):
         model.estimate_parameters(**data, max_iter=1, **options)
     np.testing.assert_array_equal(model.discrete_state_transitions_, transitions)
     assert model.encoding_model_ is encoding
@@ -347,9 +366,9 @@ def test_checkpointed_em_writes_the_final_posterior_to_disk(tmp_path):
 
 def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
     model, data = _recording("sorted")
-    with pytest.raises(ValueError, match="structured"):
+    with pytest.raises(ValidationError, match="structured"):
         model.estimate_parameters(**data, max_iter=1, result_path=tmp_path / "a")
-    with pytest.raises(ValueError, match="store_log_likelihood"):
+    with pytest.raises(ValidationError, match="store_log_likelihood"):
         model.estimate_parameters(
             **data,
             max_iter=1,
@@ -405,7 +424,7 @@ def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch, famil
 
 def test_dense_em_rejects_a_replay_cache():
     model, data = _recording("sorted")
-    with pytest.raises(ValueError, match="replay_cache_bytes"):
+    with pytest.raises(ValidationError, match="replay_cache_bytes"):
         model.estimate_parameters(**data, max_iter=1, replay_cache_bytes=2**20)
 
 

@@ -444,46 +444,103 @@ def _validate_em_options(
     replay_cache_bytes : int or None
         Structured EM's replay cache budget.
     """
+    for name, value, minimum in (
+        ("chunk_size", chunk_size, 1),
+        ("replay_cache_bytes", replay_cache_bytes, 0),
+    ):
+        if value is not None and (
+            isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, np.integer))
+            or value < minimum
+        ):
+            raise ValidationError(
+                f"Invalid {name} for estimate_parameters",
+                expected=f"an integer >= {minimum}, or None for the default",
+                got=f"{value!r} ({type(value).__name__})",
+                hint=(
+                    "Pass whole rows, e.g. chunk_size=20_000."
+                    if name == "chunk_size"
+                    else "Pass bytes as an integer, e.g. replay_cache_bytes=8 * 2**30."
+                ),
+            )
     if structured and n_chunks != 1:
-        raise ValueError(
-            "Structured or auto transition EM runs on checkpoint chunks; set "
-            "chunk_size instead of n_chunks, or use "
-            'transition_representation="dense" with n_chunks.'
+        raise ValidationError(
+            "n_chunks applies only to dense EM",
+            got=f"n_chunks={n_chunks} with structured EM",
+            hint=(
+                "Structured EM already bounds memory with checkpoint chunks: set "
+                "chunk_size (rows per chunk) instead, or pass "
+                'transition_representation="dense" to estimate_parameters to '
+                "run dense EM in n_chunks chunks."
+            ),
         )
-    if chunk_size is not None and (
-        isinstance(chunk_size, (bool, np.bool_))
-        or not isinstance(chunk_size, (int, np.integer))
-        or chunk_size <= 0
-    ):
-        raise ValueError("chunk_size must be a positive integer")
-    if replay_cache_bytes is not None and (
-        isinstance(replay_cache_bytes, (bool, np.bool_))
-        or not isinstance(replay_cache_bytes, (int, np.integer))
-        or replay_cache_bytes < 0
-    ):
-        raise ValueError("replay_cache_bytes must be a nonnegative integer")
-    if chunk_size is not None and not structured:
-        raise ValueError(
-            "chunk_size applies only to structured-transition EM; fit with "
-            'transition_representation="structured" or "auto", or use '
-            "n_chunks for dense EM."
-        )
-    if result_path is not None and not structured:
-        raise ValueError(
-            "result_path applies only to structured-transition EM; fit with "
-            'transition_representation="structured" or "auto".'
-        )
-    if replay_cache_bytes is not None and not structured:
-        raise ValueError(
-            "replay_cache_bytes applies only to structured-transition EM; fit "
-            'with transition_representation="structured" or "auto".'
-        )
+    if not structured:
+        checkpoint_options = [
+            name
+            for name, value in (
+                ("chunk_size", chunk_size),
+                ("result_path", result_path),
+                ("replay_cache_bytes", replay_cache_bytes),
+            )
+            if value is not None
+        ]
+        if checkpoint_options:
+            raise ValidationError(
+                f"{', '.join(checkpoint_options)} applies only to structured EM",
+                got=f"{', '.join(checkpoint_options)} with dense EM",
+                hint=(
+                    'Pass transition_representation="structured" or "auto" to '
+                    "estimate_parameters, or drop "
+                    f"{', '.join(checkpoint_options)} for dense EM."
+                ),
+            )
     if result_path is not None and store_log_likelihood:
-        raise ValueError(
-            "store_log_likelihood keeps the full likelihood in memory; with "
-            "result_path, request return_outputs='log_likelihood' to write it "
-            "to the store instead."
+        raise ValidationError(
+            "store_log_likelihood cannot be combined with result_path",
+            got="store_log_likelihood=True and a result_path",
+            hint=(
+                "store_log_likelihood keeps the full likelihood in memory; with "
+                "result_path, request return_outputs='log_likelihood' to write "
+                "it to the store instead."
+            ),
         )
+
+
+def _em_representation(
+    transition_representation: str,
+    n_chunks: int,
+    chunk_size,
+    result_path,
+    replay_cache_bytes,
+) -> str:
+    """The representation EM fits with: "auto" with ``n_chunks`` runs dense.
+
+    ``n_chunks`` is a dense-EM option and ``chunk_size``, ``result_path`` and
+    ``replay_cache_bytes`` are structured-EM options, so with "auto" the one
+    given decides the path; both together are rejected.
+    """
+    if transition_representation != "auto" or n_chunks == 1:
+        return transition_representation
+    checkpoint_options = [
+        name
+        for name, value in (
+            ("chunk_size", chunk_size),
+            ("result_path", result_path),
+            ("replay_cache_bytes", replay_cache_bytes),
+        )
+        if value is not None
+    ]
+    if checkpoint_options:
+        raise ValidationError(
+            "n_chunks (dense EM) cannot be combined with "
+            f"{', '.join(checkpoint_options)} (structured EM)",
+            got=f"n_chunks={n_chunks} and {', '.join(checkpoint_options)}",
+            hint=(
+                "Drop n_chunks to run structured EM, or drop "
+                f"{', '.join(checkpoint_options)} to run dense EM in chunks."
+            ),
+        )
+    return "dense"
 
 
 def _validate_estimation_arguments(
@@ -5343,6 +5400,13 @@ class ClusterlessDetector(_DetectorBase):
         """
         _validate_encoding_update_damping(encoding_update_damping)
         # Before the internal fit, which replaces the fitted state.
+        transition_representation = _em_representation(
+            transition_representation,
+            n_chunks,
+            chunk_size,
+            result_path,
+            replay_cache_bytes,
+        )
         _validate_em_options(
             transition_representation != "dense",
             n_chunks,
@@ -6510,6 +6574,13 @@ class SortedSpikesDetector(_DetectorBase):
         """
         _validate_encoding_update_damping(encoding_update_damping)
         # Before the internal fit, which replaces the fitted state.
+        transition_representation = _em_representation(
+            transition_representation,
+            n_chunks,
+            chunk_size,
+            result_path,
+            replay_cache_bytes,
+        )
         _validate_em_options(
             transition_representation != "dense",
             n_chunks,
