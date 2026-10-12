@@ -26,6 +26,7 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 from non_local_detector import _validation as val
 from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.checkpointed_inference import (
+    _available_host_bytes,
     default_chunk_size,
     default_replay_cache_bytes,
 )
@@ -422,6 +423,19 @@ def _device_memory_limit() -> int | None:
     return None if not stats else stats.get("bytes_limit")
 
 
+def _structured_em_options(chunk_size, result_path, replay_cache_bytes) -> list[str]:
+    """Names of the structured-EM options that were given."""
+    return [
+        name
+        for name, value in (
+            ("chunk_size", chunk_size),
+            ("result_path", result_path),
+            ("replay_cache_bytes", replay_cache_bytes),
+        )
+        if value is not None
+    ]
+
+
 def _validate_em_options(
     structured: bool,
     n_chunks: int,
@@ -478,15 +492,9 @@ def _validate_em_options(
             ),
         )
     if not structured:
-        checkpoint_options = [
-            name
-            for name, value in (
-                ("chunk_size", chunk_size),
-                ("result_path", result_path),
-                ("replay_cache_bytes", replay_cache_bytes),
-            )
-            if value is not None
-        ]
+        checkpoint_options = _structured_em_options(
+            chunk_size, result_path, replay_cache_bytes
+        )
         if checkpoint_options:
             raise ValidationError(
                 f"{', '.join(checkpoint_options)} applies only to structured EM",
@@ -509,16 +517,40 @@ def _validate_em_options(
         )
 
 
-def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
-    """Warn before one-chunk dense EM that ``"auto"`` would not run dense.
+def _dense_em_memory(n_time: int, n_bins: int) -> tuple[int, int | None, str]:
+    """Bytes one-chunk dense EM holds, the memory it draws on, and where.
 
-    Uses the same rule as ``"auto"``: ``_DENSE_EM_WORKING_ARRAYS`` float32
-    time-by-state-bin arrays against half the device limit, or half the
-    available host memory on CPU. On the 23.6 min 2-D recording (A100) the
-    estimate was 27.0 and 41.8 GB at 4 and 3 cm (measured peaks 23.7 and
-    36.6 GB) and 53.1 GB at 2.5 cm, which ran out of a 63.8 GB limit, so the
-    full limit is not a safe line. The estimate is approximate, so this warns
-    rather than raising.
+    ``_DENSE_EM_WORKING_ARRAYS`` float32 time-by-state-bin arrays, against the
+    device limit, or the available host memory on CPU (None if unknown).
+
+    Parameters
+    ----------
+    n_time : int
+        Decode bins.
+    n_bins : int
+        Interior state bins.
+
+    Returns
+    -------
+    needed : int
+    limit : int or None
+    where : {"device", "host"}
+    """
+    needed = _DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+    limit = _device_memory_limit()
+    if limit is not None:
+        return needed, limit, "device"
+    return needed, _available_host_bytes(), "host"
+
+
+def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
+    """Warn before one-chunk dense EM whose arrays exceed half the memory.
+
+    The line "auto" uses (see ``_dense_em_memory``). On the 23.6 min 2-D
+    recording (A100) the estimate was 27.0 and 41.8 GB at 4 and 3 cm
+    (measured peaks 23.7 and 36.6 GB) and 53.1 GB at 2.5 cm, which ran out of
+    a 63.8 GB limit, so the full limit is not a safe line. The estimate is
+    approximate, so this warns rather than raising.
 
     Parameters
     ----------
@@ -527,13 +559,7 @@ def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
     n_bins : int
         Interior state bins.
     """
-    from non_local_detector.checkpointed_inference import _available_host_bytes
-
-    needed = _DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
-    limit = _device_memory_limit()
-    where = "device"
-    if limit is None:
-        limit, where = _available_host_bytes(), "host"
+    needed, limit, where = _dense_em_memory(n_time, n_bins)
     if limit is None or needed <= limit // 2:
         return
     warnings.warn(
@@ -547,41 +573,48 @@ def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
     )
 
 
-def _em_representation(
+def _resolve_em_options(
     transition_representation: str,
     n_chunks: int,
     chunk_size,
     result_path,
+    store_log_likelihood: bool,
     replay_cache_bytes,
 ) -> str:
-    """The representation EM fits with: "auto" with ``n_chunks`` runs dense.
+    """Resolve "auto" with ``n_chunks`` to dense EM, then validate the options.
 
     ``n_chunks`` is a dense-EM option and ``chunk_size``, ``result_path`` and
     ``replay_cache_bytes`` are structured-EM options, so with "auto" the one
     given decides the path; both together are rejected.
+
+    Returns
+    -------
+    transition_representation : str
     """
-    if transition_representation != "auto" or n_chunks == 1:
-        return transition_representation
-    checkpoint_options = [
-        name
-        for name, value in (
-            ("chunk_size", chunk_size),
-            ("result_path", result_path),
-            ("replay_cache_bytes", replay_cache_bytes),
-        )
-        if value is not None
-    ]
-    if checkpoint_options:
-        raise ValidationError(
-            "n_chunks (dense EM) cannot be combined with "
-            f"{', '.join(checkpoint_options)} (structured EM)",
-            got=f"n_chunks={n_chunks} and {', '.join(checkpoint_options)}",
-            hint=(
-                "Drop n_chunks to run structured EM, or drop "
-                f"{', '.join(checkpoint_options)} to run dense EM in chunks."
-            ),
-        )
-    return "dense"
+    checkpoint_options = _structured_em_options(
+        chunk_size, result_path, replay_cache_bytes
+    )
+    if transition_representation == "auto" and n_chunks != 1:
+        if checkpoint_options:
+            raise ValidationError(
+                "n_chunks (dense EM) cannot be combined with "
+                f"{', '.join(checkpoint_options)} (structured EM)",
+                got=f"n_chunks={n_chunks} and {', '.join(checkpoint_options)}",
+                hint=(
+                    "Drop n_chunks to run structured EM, or drop "
+                    f"{', '.join(checkpoint_options)} to run dense EM in chunks."
+                ),
+            )
+        transition_representation = "dense"
+    _validate_em_options(
+        transition_representation != "dense",
+        n_chunks,
+        chunk_size,
+        result_path,
+        store_log_likelihood,
+        replay_cache_bytes,
+    )
+    return transition_representation
 
 
 def _validate_estimation_arguments(
@@ -2870,7 +2903,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         *,
         outputs=("acausal_state_probabilities",),
         transition_statistics=None,
-        replay_cache_bytes=0,
+        replay_cache_bytes,
     ):
         """One whole-recording E-step on the checkpointed driver.
 
@@ -2879,9 +2912,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         time_edges : np.ndarray, shape (n_time + 1,)
         log_likelihood_args : tuple
         is_missing : np.ndarray, shape (n_time,), or None
-        chunk_size : int or None
-            Rows per checkpoint chunk; None sizes chunks by the likelihood
-            byte budget.
+        chunk_size : int
+            Rows per checkpoint chunk.
         outputs : iterable of str
             Driver outputs. Spatial outputs are held in memory.
         transition_statistics : {None, "counts", "responses"}
@@ -2895,7 +2927,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         from non_local_detector.checkpointed_inference import (
             _SPATIAL,
             checkpointed_forward_backward,
-            default_chunk_size,
         )
 
         self._validate_time_contract()
@@ -2903,8 +2934,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             time_edges, *self._learned_transition_time_bin_width()
         )
         interior = self.is_track_interior_state_bins_
-        if chunk_size is None:
-            chunk_size = default_chunk_size(np.count_nonzero(interior), np.float32)
         outputs = set(outputs)
         return checkpointed_forward_backward(
             edges,
@@ -2939,13 +2968,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         requested_outputs,
         return_outputs,
         max_read_bytes,
-        replay_cache_bytes=0,
+        replay_cache_bytes,
     ) -> xr.Dataset:
-        """Decode with complete conditioning and bounded spatial working memory."""
+        """Decode with complete conditioning and bounded spatial working memory.
+
+        ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
+        """
         from non_local_detector.checkpointed_inference import (
             checkpointed_forward_backward,
-            default_chunk_size,
         )
+
+        if replay_cache_bytes is None:
+            replay_cache_bytes = default_replay_cache_bytes()
 
         if (
             output_mode == "compact"
@@ -3152,27 +3186,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def fit_encoding_model(self):
         """Fit the encoding model. To be implemented by inheriting class."""
 
-    def _fit_for_em(self, fit, transition_representation, structured_required):
-        """Run EM's internal fit; "auto" falls back to a dense fit when needed.
+    def _fit_em_model(
+        self, fit, transition_representation, n_time, structured_required
+    ):
+        """Run EM's internal fit and, for "auto", choose dense or structured EM.
 
         "auto" cannot build some transitions in bounded form that the dense
         constructor accepts (opaque custom constructors with deferred graph
         distances, or dense fallback blocks over ``max_dense_transition_bytes``).
-        Unless a structured-EM option requires the operator, those run dense EM.
+        Unless a structured-EM option requires the operator, those run dense EM;
+        otherwise ``_choose_em_representation`` picks the path.
 
         Parameters
         ----------
         fit : callable
             ``fit(transition_representation)`` runs the detector's ``fit``.
         transition_representation : str
+            Resolved by ``_resolve_em_options``.
+        n_time : int
+            Decode bins.
         structured_required : bool
             Whether ``chunk_size``, ``result_path`` or ``replay_cache_bytes``
             was given.
-
-        Returns
-        -------
-        transition_representation : str
-            "dense" after a fallback, otherwise the requested representation.
         """
         from non_local_detector.transition_operators import (
             DenseTransitionBudgetError,
@@ -3186,8 +3221,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 raise
             logger.info("EM with transition_representation='auto': dense (%s)", error)
             fit("dense")
-            return "dense"
-        return transition_representation
+            return
+        if transition_representation == "auto" and not structured_required:
+            self._choose_em_representation(n_time)
 
     def _choose_em_representation(self, n_time: int) -> None:
         """Run EM dense when it is faster and fits; otherwise keep the operator.
@@ -3196,8 +3232,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         interior transition is at most ``_AUTO_DENSE_TRANSITION_BYTES``, the
         full dense transition it stores (every state bin, float64, as the
         dense constructor builds it) fits ``max_dense_transition_bytes``, and
-        about ``_DENSE_EM_WORKING_ARRAYS`` (time bins x state bins) float32
-        arrays fit in half the device memory (unchecked when it is unknown).
+        dense EM's arrays fit in half the device memory, or half the available
+        host memory on CPU (see ``_dense_em_memory``; unchecked when unknown).
         The dense matrix comes from the fitted operator, which matches the
         dense constructor.
 
@@ -3207,8 +3243,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Decode bins.
         """
         n_bins = int(np.count_nonzero(self.is_track_interior_state_bins_))
-        limit = _device_memory_limit()
-        working = _DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+        working, limit, _ = _dense_em_memory(n_time, n_bins)
         n_total = int(self.state_ind_.shape[0])
         use_dense = (
             n_bins * n_bins * 4 <= _AUTO_DENSE_TRANSITION_BYTES
@@ -3367,20 +3402,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             store_log_likelihood,
             replay_cache_bytes,
         )
-        if replay_cache_bytes is None:
-            replay_cache_bytes = default_replay_cache_bytes()
-        # Recorded on the results, so users can tell which EM path ran.
+        # Resolved once and recorded on the results, so users can tell which
+        # EM path ran and with what chunks.
         if checkpointed:
+            if chunk_size is None:
+                chunk_size = default_chunk_size(
+                    np.count_nonzero(self.is_track_interior_state_bins_), np.float32
+                )
+            if replay_cache_bytes is None:
+                replay_cache_bytes = default_replay_cache_bytes()
             em_attrs = {
                 "em_transition_representation": "structured",
-                "em_chunk_size": int(
-                    default_chunk_size(
-                        np.count_nonzero(self.is_track_interior_state_bins_),
-                        np.float32,
-                    )
-                    if chunk_size is None
-                    else chunk_size
-                ),
+                "em_chunk_size": int(chunk_size),
                 "em_replay_cache_bytes": int(replay_cache_bytes),
             }
         else:
@@ -3425,10 +3458,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ):
             cache_likelihood = True
 
-        is_nonstationary = _is_nonstationary(
-            self.discrete_transition_coefficients_,
-            self.discrete_transition_design_matrix_,
-        )
+        # Structured EM accumulates the discrete M-step's statistics in its
+        # replay: per-row responses for covariate transitions, else counts.
+        transition_statistics = None
+        if checkpointed and estimate_discrete_transition:
+            transition_statistics = (
+                "responses"
+                if _is_nonstationary(
+                    self.discrete_transition_coefficients_,
+                    self.discrete_transition_design_matrix_,
+                )
+                else "counts"
+            )
         if estimate_discrete_transition and not checkpointed:
             interior_state_bins = self.is_track_interior_state_bins_
             interior_state_ind = self.state_ind_[interior_state_bins]
@@ -3463,13 +3504,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     log_likelihood_args,
                     is_missing,
                     chunk_size,
-                    transition_statistics=(
-                        None
-                        if not estimate_discrete_transition
-                        else "responses"
-                        if is_nonstationary
-                        else "counts"
-                    ),
+                    transition_statistics=transition_statistics,
                     replay_cache_bytes=replay_cache_bytes,
                 )
                 acausal_state_probabilities = e_step.dataset[
@@ -3725,26 +3760,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 outputs=outputs,
                 replay_cache_bytes=replay_cache_bytes,
             )
-            (
-                acausal_posterior,
-                acausal_state_probabilities,
-                causal_state_probabilities,
-                predictive_state_probabilities,
-                log_likelihood,
-                causal_posterior,
-                predictive_posterior,
-            ) = (
-                final.dataset[name].values if name in final.dataset else None
-                for name in (
-                    "acausal_posterior",
-                    "acausal_state_probabilities",
-                    "causal_state_probabilities",
-                    "predictive_state_probabilities",
-                    "log_likelihood",
-                    "causal_posterior",
-                    "predictive_posterior",
-                )
+            values = {name: final.dataset[name].values for name in final.dataset}
+            acausal_posterior = values["acausal_posterior"]
+            acausal_state_probabilities = values["acausal_state_probabilities"]
+            causal_state_probabilities = values.get("causal_state_probabilities")
+            predictive_state_probabilities = values.get(
+                "predictive_state_probabilities"
             )
+            log_likelihood = values.get("log_likelihood")
+            causal_posterior = values.get("causal_posterior")
+            predictive_posterior = values.get("predictive_posterior")
             marginal_log_likelihood = final.marginal_log_likelihood
             self._degenerate_timesteps_ = final.diagnostics["degenerate_indices"]
         else:
@@ -5298,11 +5323,7 @@ class ClusterlessDetector(_DetectorBase):
                 requested_outputs=requested_outputs,
                 return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
-                replay_cache_bytes=(
-                    default_replay_cache_bytes()
-                    if replay_cache_bytes is None
-                    else replay_cache_bytes
-                ),
+                replay_cache_bytes=replay_cache_bytes,
             )
 
         (
@@ -5515,15 +5536,8 @@ class ClusterlessDetector(_DetectorBase):
         """
         _validate_encoding_update_damping(encoding_update_damping)
         # Before the internal fit, which replaces the fitted state.
-        transition_representation = _em_representation(
+        transition_representation = _resolve_em_options(
             transition_representation,
-            n_chunks,
-            chunk_size,
-            result_path,
-            replay_cache_bytes,
-        )
-        _validate_em_options(
-            transition_representation != "dense",
             n_chunks,
             chunk_size,
             result_path,
@@ -5548,12 +5562,7 @@ class ClusterlessDetector(_DetectorBase):
             if position is None
             else (position[:, np.newaxis] if position.ndim == 1 else position),
         )
-        structured_required = (
-            chunk_size is not None
-            or result_path is not None
-            or replay_cache_bytes is not None
-        )
-        transition_representation = self._fit_for_em(
+        self._fit_em_model(
             lambda representation: self.fit(
                 position_time,
                 position,
@@ -5569,10 +5578,11 @@ class ClusterlessDetector(_DetectorBase):
                 max_dense_transition_bytes=max_dense_transition_bytes,
             ),
             transition_representation,
-            structured_required,
+            len(time_edges) - 1,
+            structured_required=bool(
+                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
+            ),
         )
-        if transition_representation == "auto" and not structured_required:
-            self._choose_em_representation(len(time_edges) - 1)
         self._encoding_model_data = {
             "position_time": position_time,
             "position": position,
@@ -6487,11 +6497,7 @@ class SortedSpikesDetector(_DetectorBase):
                 requested_outputs=requested_outputs,
                 return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
-                replay_cache_bytes=(
-                    default_replay_cache_bytes()
-                    if replay_cache_bytes is None
-                    else replay_cache_bytes
-                ),
+                replay_cache_bytes=replay_cache_bytes,
             )
 
         (
@@ -6704,15 +6710,8 @@ class SortedSpikesDetector(_DetectorBase):
         """
         _validate_encoding_update_damping(encoding_update_damping)
         # Before the internal fit, which replaces the fitted state.
-        transition_representation = _em_representation(
+        transition_representation = _resolve_em_options(
             transition_representation,
-            n_chunks,
-            chunk_size,
-            result_path,
-            replay_cache_bytes,
-        )
-        _validate_em_options(
-            transition_representation != "dense",
             n_chunks,
             chunk_size,
             result_path,
@@ -6731,12 +6730,7 @@ class SortedSpikesDetector(_DetectorBase):
         # Mirror predict(): bins affected by NaN positions are missing
         # observations in the E-step.
         is_missing = _missing_bins(time_edges, is_missing, position_time, position)
-        structured_required = (
-            chunk_size is not None
-            or result_path is not None
-            or replay_cache_bytes is not None
-        )
-        transition_representation = self._fit_for_em(
+        self._fit_em_model(
             lambda representation: self.fit(
                 position_time,
                 position,
@@ -6751,10 +6745,11 @@ class SortedSpikesDetector(_DetectorBase):
                 max_dense_transition_bytes=max_dense_transition_bytes,
             ),
             transition_representation,
-            structured_required,
+            len(time_edges) - 1,
+            structured_required=bool(
+                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
+            ),
         )
-        if transition_representation == "auto" and not structured_required:
-            self._choose_em_representation(len(time_edges) - 1)
         self._encoding_model_data = {
             "position_time": position_time,
             "position": position,
