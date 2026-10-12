@@ -21,7 +21,9 @@ glue between them):
   filter/smoother (dense, or the checkpointed driver with
   ``--transition-representation``), whose exclusive time includes the host
   copies of its posteriors;
-- ``encoding_m_step`` and ``discrete_m_step``.
+- ``encoding_m_step`` and ``discrete_m_step``;
+- ``results``: building the returned Dataset, with ``masked_posterior``
+  for each spatial array expanded to every state bin.
 
 Each stage records inclusive and exclusive seconds, compile count and
 seconds, and how much it raised the device and host peaks. Optional
@@ -339,6 +341,8 @@ def instrumented(profiler, detector_class):
         (base, "_estimate_discrete_transition", "discrete_m_step"),
         (base, "_discrete_transition_from_statistics", "discrete_m_step"),
         (checkpointed, "checkpointed_forward_backward", "filter_smoother"),
+        (detector_class, "_convert_results_to_xarray", "results"),
+        (detector_class, "_create_masked_posterior", "masked_posterior"),
     ]
     saved = []
     try:
@@ -355,7 +359,11 @@ def instrumented(profiler, detector_class):
                 continue
             original = owner.__dict__[attribute]
             saved.append((owner, attribute, original))
-            setattr(owner, attribute, profiler.wrap(name, original))
+            if isinstance(original, staticmethod):
+                wrapped = staticmethod(profiler.wrap(name, original.__func__))
+            else:
+                wrapped = profiler.wrap(name, original)
+            setattr(owner, attribute, wrapped)
         yield
     finally:
         for owner, attribute, original in reversed(saved):
