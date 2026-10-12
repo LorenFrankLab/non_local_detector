@@ -1,21 +1,17 @@
 """Padded, compiled clusterless diffusion kernels share executables across sizes."""
 
-import jax
+import numpy as np
+import pytest
 
-jax.config.update("jax_platform_name", "cpu")
-
-import numpy as np  # noqa: E402
-import pytest  # noqa: E402
-
-from non_local_detector import time_edges_from_centers  # noqa: E402
-from non_local_detector.environment import Environment  # noqa: E402
-from non_local_detector.likelihoods import clusterless_diffusion  # noqa: E402
-from non_local_detector.likelihoods.clusterless_diffusion import (  # noqa: E402
+from non_local_detector import time_edges_from_centers
+from non_local_detector.environment import Environment
+from non_local_detector.likelihoods import clusterless_diffusion
+from non_local_detector.likelihoods.clusterless_diffusion import (
     _effective_block,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
-from non_local_detector.likelihoods.common import (  # noqa: E402
+from non_local_detector.likelihoods.common import (
     _padded_sample_count,
     _padded_spike_count,
 )
