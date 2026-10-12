@@ -12,6 +12,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.optimize import minimize
+from scipy.special import softmax
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
@@ -1224,6 +1226,125 @@ class TestExpandedTransitionMstepEndToEnd:
         )
 
         assert error < 0.10
+
+
+def _noisy_expanded_hmm_observations(
+    seed: int, n_time: int, emission_sharpness: float
+) -> np.ndarray:
+    """Log likelihoods of categorical observations that only partly reveal
+    the expanded state, shape (n_time, n_states * n_bins)."""
+    initial_conditions, discrete_transition, blocks = _expanded_hmm_parameters()
+    n_expanded, n_symbols = 6, 4
+    emissions = softmax(
+        emission_sharpness
+        * np.random.default_rng(123).normal(size=(n_expanded, n_symbols)),
+        axis=1,
+    )
+    rng = np.random.default_rng(seed)
+    states, bins = _simulate_expanded_hmm(
+        rng, initial_conditions, discrete_transition, blocks, n_time
+    )
+    symbols = np.array(
+        [rng.choice(n_symbols, p=emissions[e]) for e in states * 2 + bins]
+    )
+    return np.log(emissions[:, symbols].T)
+
+
+def _expanded_hmm_marginal_log_likelihood(
+    discrete_transition: np.ndarray, log_likelihoods: np.ndarray
+) -> float:
+    """Scaled forward algorithm in float64, independent of the package."""
+    initial_conditions, _, blocks = _expanded_hmm_parameters()
+    expanded_transition = np.block(
+        [[discrete_transition[i, j] * blocks[i][j] for j in range(3)] for i in range(3)]
+    )
+    scale = log_likelihoods.max(axis=1)
+    likelihoods = np.exp(log_likelihoods - scale[:, None])
+    alpha = np.repeat(initial_conditions, 2) / 2 * likelihoods[0]
+    log_marginal = scale.sum()
+    for t in range(1, len(likelihoods)):
+        norm = alpha.sum()
+        log_marginal += np.log(norm)
+        alpha = (alpha / norm) @ expanded_transition * likelihoods[t]
+    return float(log_marginal + np.log(alpha.sum()))
+
+
+def _direct_transition_mle(log_likelihoods: np.ndarray) -> tuple[np.ndarray, float]:
+    """Maximize the marginal log-likelihood over row-softmax logits."""
+
+    def to_transition(logits):
+        return softmax(np.column_stack((logits.reshape(3, 2), np.zeros(3))), axis=1)
+
+    result = minimize(
+        lambda logits: -_expanded_hmm_marginal_log_likelihood(
+            to_transition(logits), log_likelihoods
+        ),
+        np.zeros(6),
+        method="BFGS",
+        options={"gtol": 1e-7},
+    )
+    return to_transition(result.x), -float(result.fun)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+class TestEMConvergesToMaximumLikelihood:
+    """Iterated EM reaches the maximum-likelihood transition matrix.
+
+    Noisy emissions leave the states hidden, so the answer depends on EM
+    iterating to its fixed point, not on one M-step over near-observed states.
+    The maximum is found independently by maximizing a float64 forward
+    algorithm's marginal log-likelihood.
+    """
+
+    def test_em_fixed_point_is_the_mle_from_any_start(self):
+        log_likelihoods = _noisy_expanded_hmm_observations(
+            seed=1, n_time=1_000, emission_sharpness=2.0
+        )
+        mle, mle_log_likelihood = _direct_transition_mle(log_likelihoods)
+        initial_conditions, _, blocks = _expanded_hmm_parameters()
+
+        estimates = []
+        for start in (
+            np.full((3, 3), 1.0 / 3.0),
+            np.full((3, 3), 0.05) + 0.85 * np.eye(3),
+        ):
+            detector = _FixedLikelihoodDetector(
+                log_likelihoods,
+                discrete_initial_conditions=initial_conditions,
+                discrete_transition=start,
+                continuous_transition_blocks=blocks,
+            )
+            detector._fit(position=np.array([[0.25], [1.25]]))
+            results = detector.estimate_parameters(
+                time_edges=time_edges_from_centers(np.arange(1_000, dtype=float)),
+                estimate_initial_conditions=False,
+                estimate_discrete_transition=True,
+                estimate_encoding_model=False,
+                max_iter=2_000,
+                tolerance=1e-9,
+            )
+            estimate = np.asarray(detector.discrete_state_transitions_)
+            estimate_log_likelihood = _expanded_hmm_marginal_log_likelihood(
+                estimate, log_likelihoods
+            )
+
+            assert detector.converged_
+            assert detector.em_monotonicity_violations_ == []
+            # The package's final E-step evaluates the estimate as the
+            # independent forward algorithm does (float32 likelihoods).
+            np.testing.assert_allclose(
+                results.attrs["marginal_log_likelihoods"][-1],
+                estimate_log_likelihood,
+                atol=1e-3,
+            )
+            # Within EM's slow final approach of the maximum (measured
+            # 1.6e-3 and 2.4e-3 nats), never above it.
+            assert -1e-4 < mle_log_likelihood - estimate_log_likelihood < 1e-2
+            np.testing.assert_allclose(estimate, mle, atol=0.02)
+            estimates.append(estimate)
+
+        np.testing.assert_allclose(estimates[0], estimates[1], atol=0.02)
 
 
 @pytest.mark.unit
