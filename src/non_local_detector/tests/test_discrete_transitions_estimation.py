@@ -6,6 +6,7 @@ Tests the core EM algorithm functions:
 - _discrete_transition_statistics and _discrete_transition_from_statistics
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import jax
@@ -13,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy.optimize import minimize
-from scipy.special import softmax
+from scipy.special import logsumexp, softmax, xlogy
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
@@ -1271,26 +1272,6 @@ def _expanded_hmm_marginal_log_likelihood(
     return float(log_marginal + np.log(alpha.sum()))
 
 
-def _direct_transition_mle(log_likelihoods: np.ndarray) -> tuple[np.ndarray, float]:
-    """Maximize the marginal log-likelihood over row-softmax logits."""
-
-    def to_transition(logits):
-        return softmax(np.column_stack((logits.reshape(3, 2), np.zeros(3))), axis=1)
-
-    def negative_log_likelihood(logits):
-        return -_expanded_hmm_marginal_log_likelihood(
-            to_transition(logits), log_likelihoods
-        )
-
-    result = minimize(
-        negative_log_likelihood,
-        np.zeros(6),
-        method="BFGS",
-        options={"gtol": 1e-7},
-    )
-    return to_transition(result.x), -float(result.fun)
-
-
 def _map_objective(
     discrete_transition: np.ndarray,
     log_likelihoods: np.ndarray,
@@ -1298,9 +1279,7 @@ def _map_objective(
     free_rows: np.ndarray,
 ) -> float:
     """Marginal log-likelihood plus the Dirichlet log prior of the free rows."""
-    log_prior = np.sum(
-        pseudo_counts[free_rows] * np.log(discrete_transition[free_rows])
-    )
+    log_prior = np.sum(xlogy(pseudo_counts[free_rows], discrete_transition[free_rows]))
     return _expanded_hmm_marginal_log_likelihood(
         discrete_transition, log_likelihoods
     ) + float(log_prior)
@@ -1309,19 +1288,22 @@ def _map_objective(
 def _direct_transition_map(
     log_likelihoods: np.ndarray,
     pseudo_counts: np.ndarray,
-    frozen_row: int,
-    frozen_values: np.ndarray,
+    frozen_row: int | None = None,
+    frozen_values: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float]:
     """Maximize ``_map_objective`` over the free rows' softmax logits, with
-    one row held at ``frozen_values``."""
+    ``frozen_row`` held at ``frozen_values``. Zero pseudo-counts and no frozen
+    row give the maximum-likelihood estimate."""
     free_rows = np.arange(3) != frozen_row
+    n_free = int(free_rows.sum())
 
     def to_transition(logits):
         transition = np.empty((3, 3))
         transition[free_rows] = softmax(
-            np.column_stack((logits.reshape(2, 2), np.zeros(2))), axis=1
+            np.column_stack((logits.reshape(n_free, 2), np.zeros(n_free))), axis=1
         )
-        transition[frozen_row] = frozen_values
+        if frozen_row is not None:
+            transition[frozen_row] = frozen_values
         return transition
 
     def negative_objective(logits):
@@ -1330,9 +1312,54 @@ def _direct_transition_map(
         )
 
     result = minimize(
-        negative_objective, np.zeros(4), method="BFGS", options={"gtol": 1e-7}
+        negative_objective, np.zeros(2 * n_free), method="BFGS", options={"gtol": 1e-7}
     )
     return to_transition(result.x), -float(result.fun)
+
+
+@pytest.fixture(scope="module")
+def noisy_hmm():
+    """Observations that only partly reveal the expanded state, and the
+    maximum-likelihood transitions found by direct maximization."""
+    log_likelihoods = _noisy_expanded_hmm_observations(
+        seed=1, n_time=1_000, emission_sharpness=2.0
+    )
+    mle, mle_log_likelihood = _direct_transition_map(log_likelihoods, np.zeros((3, 3)))
+    return SimpleNamespace(
+        log_likelihoods=log_likelihoods,
+        mle=mle,
+        mle_log_likelihood=mle_log_likelihood,
+    )
+
+
+def _em_estimate(
+    log_likelihoods: np.ndarray, discrete_transition: np.ndarray, **attributes
+):
+    """Run EM on the discrete transitions alone, from ``discrete_transition``,
+    with ``attributes`` set on the detector before it is fit."""
+    initial_conditions, _, blocks = _expanded_hmm_parameters()
+    detector = _FixedLikelihoodDetector(
+        log_likelihoods,
+        discrete_initial_conditions=initial_conditions,
+        discrete_transition=discrete_transition,
+        continuous_transition_blocks=blocks,
+    )
+    for name, value in attributes.items():
+        setattr(detector, name, value)
+    detector._fit(position=np.array([[0.25], [1.25]]))
+    results = detector.estimate_parameters(
+        time_edges=time_edges_from_centers(
+            np.arange(len(log_likelihoods), dtype=float)
+        ),
+        estimate_initial_conditions=False,
+        estimate_discrete_transition=True,
+        estimate_encoding_model=False,
+        max_iter=2_000,
+        tolerance=1e-9,
+    )
+    assert detector.converged_
+    assert detector.em_monotonicity_violations_ == []
+    return np.asarray(detector.discrete_state_transitions_), results
 
 
 @pytest.mark.slow
@@ -1346,40 +1373,17 @@ class TestEMConvergesToMaximumLikelihood:
     algorithm's marginal log-likelihood.
     """
 
-    def test_em_fixed_point_is_the_mle_from_any_start(self):
-        log_likelihoods = _noisy_expanded_hmm_observations(
-            seed=1, n_time=1_000, emission_sharpness=2.0
-        )
-        mle, mle_log_likelihood = _direct_transition_mle(log_likelihoods)
-        initial_conditions, _, blocks = _expanded_hmm_parameters()
-
+    def test_em_fixed_point_is_the_mle_from_any_start(self, noisy_hmm):
         estimates = []
         for start in (
             np.full((3, 3), 1.0 / 3.0),
             np.full((3, 3), 0.05) + 0.85 * np.eye(3),
         ):
-            detector = _FixedLikelihoodDetector(
-                log_likelihoods,
-                discrete_initial_conditions=initial_conditions,
-                discrete_transition=start,
-                continuous_transition_blocks=blocks,
-            )
-            detector._fit(position=np.array([[0.25], [1.25]]))
-            results = detector.estimate_parameters(
-                time_edges=time_edges_from_centers(np.arange(1_000, dtype=float)),
-                estimate_initial_conditions=False,
-                estimate_discrete_transition=True,
-                estimate_encoding_model=False,
-                max_iter=2_000,
-                tolerance=1e-9,
-            )
-            estimate = np.asarray(detector.discrete_state_transitions_)
+            estimate, results = _em_estimate(noisy_hmm.log_likelihoods, start)
             estimate_log_likelihood = _expanded_hmm_marginal_log_likelihood(
-                estimate, log_likelihoods
+                estimate, noisy_hmm.log_likelihoods
             )
 
-            assert detector.converged_
-            assert detector.em_monotonicity_violations_ == []
             # The package's final E-step evaluates the estimate as the
             # independent forward algorithm does (float32 likelihoods).
             np.testing.assert_allclose(
@@ -1389,8 +1393,9 @@ class TestEMConvergesToMaximumLikelihood:
             )
             # Within EM's slow final approach of the maximum (measured
             # 1.6e-3 and 2.4e-3 nats), never above it.
-            assert -1e-4 < mle_log_likelihood - estimate_log_likelihood < 1e-2
-            np.testing.assert_allclose(estimate, mle, atol=0.02)
+            gap = noisy_hmm.mle_log_likelihood - estimate_log_likelihood
+            assert -1e-4 < gap < 1e-2
+            np.testing.assert_allclose(estimate, noisy_hmm.mle, atol=0.02)
             estimates.append(estimate)
 
         np.testing.assert_allclose(estimates[0], estimates[1], atol=0.02)
@@ -1407,10 +1412,8 @@ class TestEMConvergesToMapEstimate:
     checks the whole loop rather than each M-step or the penalty formula.
     """
 
-    def test_em_fixed_point_is_the_map_estimate_from_any_start(self):
-        log_likelihoods = _noisy_expanded_hmm_observations(
-            seed=1, n_time=1_000, emission_sharpness=2.0
-        )
+    def test_em_fixed_point_is_the_map_estimate_from_any_start(self, noisy_hmm):
+        log_likelihoods = noisy_hmm.log_likelihoods
         concentration, stickiness = 2.0, np.array([40.0, 20.0, 0.0])
         pseudo_counts = (
             get_transition_prior(concentration, stickiness, n_states=3) - 1.0
@@ -1420,43 +1423,27 @@ class TestEMConvergesToMapEstimate:
         map_estimate, map_objective = _direct_transition_map(
             log_likelihoods, pseudo_counts, frozen_row, frozen_values
         )
-        mle, _ = _direct_transition_mle(log_likelihoods)
         # The prior moves the free rows far from the maximum-likelihood
         # estimate (0.24 measured), so matching the MAP estimate is not
         # matching the MLE.
-        assert np.abs(map_estimate - mle)[free_rows].max() > 0.1
-        initial_conditions, _, blocks = _expanded_hmm_parameters()
+        assert np.abs(map_estimate - noisy_hmm.mle)[free_rows].max() > 0.1
 
         estimates = []
         for start in (
             np.full((2, 3), 1.0 / 3.0),
             np.full((2, 3), 0.05) + 0.85 * np.eye(2, 3),
         ):
-            detector = _FixedLikelihoodDetector(
+            estimate, results = _em_estimate(
                 log_likelihoods,
-                discrete_initial_conditions=initial_conditions,
-                discrete_transition=np.vstack((start, frozen_values)),
-                continuous_transition_blocks=blocks,
+                np.vstack((start, frozen_values)),
+                discrete_transition_concentration=concentration,
+                discrete_transition_stickiness=stickiness,
+                frozen_discrete_transition_rows=[frozen_row],
             )
-            detector.discrete_transition_concentration = concentration
-            detector.discrete_transition_stickiness = stickiness
-            detector.frozen_discrete_transition_rows = [frozen_row]
-            detector._fit(position=np.array([[0.25], [1.25]]))
-            results = detector.estimate_parameters(
-                time_edges=time_edges_from_centers(np.arange(1_000, dtype=float)),
-                estimate_initial_conditions=False,
-                estimate_discrete_transition=True,
-                estimate_encoding_model=False,
-                max_iter=2_000,
-                tolerance=1e-9,
-            )
-            estimate = np.asarray(detector.discrete_state_transitions_)
             estimate_objective = _map_objective(
                 estimate, log_likelihoods, pseudo_counts, free_rows
             )
 
-            assert detector.converged_
-            assert detector.em_monotonicity_violations_ == []
             np.testing.assert_array_equal(estimate[frozen_row], frozen_values)
             # EM's final objective is the one maximized here (float32
             # likelihoods; 1.9e-6 and 1.3e-5 measured).
@@ -2336,6 +2323,54 @@ class TestTransitionLogPrior:
             -(n_time - 1) * summed_loss,
             rtol=1e-5,
         )
+
+    def test_non_stationary_change_is_float64_accurate(self):
+        """The covariate log prior changes between nearby coefficients as a
+        float64 reference does, far inside ``EM_MONOTONICITY_SLACK``; the
+        M-step's float32 loss does not resolve changes this small."""
+        rng = np.random.default_rng(3)
+        n_time, n_coefficients, n_states = 200_000, 2, 4
+        design_matrix = np.column_stack(
+            (np.ones(n_time), np.sin(np.arange(n_time) / 500.0))
+        )
+        # Stay probability about 0.999, the regime of real recordings; the
+        # last target state is the reference category.
+        coefficients = rng.normal(0, 0.1, (n_coefficients, n_states, n_states - 1))
+        for row in range(n_states - 1):
+            coefficients[0, row, row] += 8.0
+        coefficients[0, n_states - 1] -= 8.0
+        nearby = coefficients + 1e-4 * rng.normal(size=coefficients.shape)
+        response = np.zeros((n_time - 1, n_states, n_states))
+        concentration, stickiness, regularization = 1.0, 1e3, 1e-5
+        alpha = get_transition_prior(concentration, stickiness, n_states)
+
+        def reference(coefficients):
+            total = 0.0
+            for row in range(n_states):
+                logits = design_matrix[:-1] @ coefficients[:, row]
+                logits = np.column_stack((logits, np.zeros(n_time - 1)))
+                log_probs = logits - logsumexp(logits, axis=1, keepdims=True)
+                total += np.sum((alpha[row] - 1.0) * log_probs)
+                total -= (
+                    (n_time - 1) * regularization * np.sum(coefficients[1:, row] ** 2)
+                )
+            return total
+
+        def log_prior(coefficients):
+            return _transition_log_prior(
+                response,
+                None,
+                coefficients,
+                design_matrix,
+                concentration,
+                stickiness,
+                regularization,
+            )
+
+        scale = abs(reference(coefficients))
+        change = log_prior(nearby) - log_prior(coefficients)
+        reference_change = reference(nearby) - reference(coefficients)
+        assert abs(change - reference_change) < 1e-10 * scale
 
     def test_zero_probability_entries(self):
         """A zero entry with no pseudo-count contributes nothing; a zero entry
