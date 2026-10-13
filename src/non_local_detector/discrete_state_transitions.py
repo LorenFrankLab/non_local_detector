@@ -1189,6 +1189,11 @@ def dirichlet_neg_log_likelihood(
     -------
     negative_expected_complete_log_likelihood : float
         The loss value to be minimized.
+
+    Notes
+    -----
+    EM's convergence check evaluates this loss's prior and penalty terms in
+    float64 through :func:`_transition_log_prior`, which must change with it.
     """
     n_coefficients = design_matrix.shape[1]
 
@@ -1356,6 +1361,12 @@ def _transition_log_prior(
     if _is_nonstationary(
         discrete_transition_coefficients, discrete_transition_design_matrix
     ):
+        # Re-derives dirichlet_neg_log_likelihood's prior and penalty in
+        # float64 instead of calling it: that loss is float32 under JAX's
+        # default config, and the change it gave between nearby coefficients
+        # erred by up to 2.2e-6 of the log prior (1e6 bins, stay probability
+        # 0.999), which can exceed EM_MONOTONICITY_SLACK. Change both
+        # together; test_non_stationary_matches_m_step_loss checks they agree.
         coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)
         design_matrix = np.asarray(discrete_transition_design_matrix, dtype=np.float64)
         linear_predictor = np.einsum("tc,csk->tsk", design_matrix[:-1], coefficients)
