@@ -13,13 +13,10 @@ from patsy import (  # type: ignore[import-untyped]
     dmatrix,
 )
 from scipy.optimize import minimize  # type: ignore[import-untyped]
-from scipy.special import (
-    log_softmax as numpy_log_softmax,  # type: ignore[import-untyped]
+from scipy.special import (  # type: ignore[import-untyped]
+    log_softmax as numpy_log_softmax,
 )
-from scipy.special import (
-    softmax,  # type: ignore[import-untyped]
-    xlogy,  # type: ignore[import-untyped]
-)
+from scipy.special import softmax, xlogy
 
 logger = logging.getLogger(__name__)
 
