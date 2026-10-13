@@ -16,7 +16,10 @@ from scipy.optimize import minimize  # type: ignore[import-untyped]
 from scipy.special import (
     log_softmax as numpy_log_softmax,  # type: ignore[import-untyped]
 )
-from scipy.special import softmax  # type: ignore[import-untyped]
+from scipy.special import (
+    softmax,  # type: ignore[import-untyped]
+    xlogy,  # type: ignore[import-untyped]
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1441,10 +1444,9 @@ def _transition_log_prior(
     pseudo_counts = _stationary_pseudo_counts(
         statistics, alpha, _row_prior_weights(transition_prior_weight, n_states)
     )
-    with np.errstate(divide="ignore"):
-        log_transition = np.log(np.asarray(discrete_transition, dtype=np.float64))
-    # 0 * log(0) = 0: an impossible transition costs nothing without pseudo-counts.
-    terms = np.where(pseudo_counts == 0, 0.0, pseudo_counts * log_transition)
+    # xlogy gives 0 * log(0) = 0: an impossible transition costs nothing
+    # without pseudo-counts, and -inf with them.
+    terms = xlogy(pseudo_counts, np.asarray(discrete_transition, dtype=np.float64))
     return float(np.sum(terms[rows]))
 
 

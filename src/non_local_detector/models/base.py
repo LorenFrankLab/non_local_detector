@@ -3387,7 +3387,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             ``attrs["marginal_log_likelihoods"]`` and ``attrs["em_objectives"]``
             give each E-step's marginal log-likelihood and penalized
             log-likelihood (plus the discrete-transition log prior), the
-            quantity EM's convergence and monotonicity checks use.
+            quantity EM's convergence and monotonicity checks use. With
+            ``discrete_transition_prior_weight > 0`` each check compares two
+            iterations under the prior of the M-step between them, so the
+            difference of consecutive ``em_objectives`` need not equal the
+            change the check saw.
         """
         marginal_log_likelihoods = []
         # EM monitors the marginal log-likelihood plus the log prior of the
@@ -3859,24 +3863,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.degenerate_timesteps_ = self._degenerate_timesteps_
 
         # The final E-step evaluates the last M-step's parameters, so check it
-        # like an in-loop iteration.
-        log_prior_before, log_prior_after = m_step_log_priors[-1]
-        previous_objective = marginal_log_likelihoods[-2] + log_prior_before
-        objectives.append(marginal_log_likelihoods[-1] + log_prior_after)
-        _, final_is_increasing = check_converged(
-            objectives[-1], previous_objective, tolerance
-        )
-        if not final_is_increasing:
-            decrease = previous_objective - objectives[-1]
-            warnings.warn(
-                f"Final E-step penalized log-likelihood (marginal log-likelihood "
-                f"+ transition log prior) decreased by {decrease:.3e}. This "
-                f"indicates an inconsistency between the E-step and the M-step "
-                f"output and is unusual; the returned posterior may not reflect "
-                f"the fitted parameters.",
-                UserWarning,
-                stacklevel=2,
+        # like an in-loop iteration (there is none when max_iter=0).
+        if m_step_log_priors:
+            log_prior_before, log_prior_after = m_step_log_priors[-1]
+            previous_objective = marginal_log_likelihoods[-2] + log_prior_before
+            objectives.append(marginal_log_likelihoods[-1] + log_prior_after)
+            _, final_is_increasing = check_converged(
+                objectives[-1], previous_objective, tolerance
             )
+            if not final_is_increasing:
+                decrease = previous_objective - objectives[-1]
+                warnings.warn(
+                    f"Final E-step penalized log-likelihood (marginal log-likelihood "
+                    f"+ transition log prior) decreased by {decrease:.3e}. This "
+                    f"indicates an inconsistency between the E-step and the M-step "
+                    f"output and is unusual; the returned posterior may not reflect "
+                    f"the fitted parameters.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         em_attrs["em_objectives"] = np.asarray(objectives)
 
         if store_log_likelihood:

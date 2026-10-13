@@ -318,6 +318,24 @@ class TestEMConvergenceSurfacing:
         assert decoder.converged_ is False
         assert decoder.n_iter_ == 1
 
+    def test_zero_iterations_returns_posterior(self, sim):
+        """``max_iter=0`` skips EM but still returns the final E-step posterior."""
+
+        decoder = ClusterlessDecoder()
+        with pytest.warns(UserWarning, match="did not converge"):
+            results = decoder.estimate_parameters(
+                position_time=sim.position_time,
+                position=sim.position,
+                spike_times=sim.spike_times,
+                spike_waveform_features=sim.spike_waveform_features,
+                time_edges=time_edges_from_centers(sim.position_time),
+                max_iter=0,
+                estimate_encoding_model=False,
+            )
+
+        assert decoder.n_iter_ == 0
+        assert "acausal_posterior" in results
+
 
 @pytest.mark.slow
 @pytest.mark.integration
