@@ -28,6 +28,7 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.core import EM_MONOTONICITY_SLACK, check_converged
+from non_local_detector.discrete_state_transitions import _transition_log_prior
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -74,6 +75,21 @@ def _shift_marginal(monkeypatch, model, shift):
         return (acausal, state_probabilities, marginal + shift(next(calls)), *rest)
 
     monkeypatch.setattr(model, "_predict", shifted)
+
+
+def _assert_penalized_objective_rises(detector, results, caught):
+    """Every EM check, including the final E-step's, rose by more than float
+    rounding, and EM recorded and warned about no decrease."""
+    objectives = np.asarray(results.attrs["em_objectives"])
+    previous = np.asarray(results.attrs["em_previous_objectives"])
+    assert objectives.shape == np.shape(results.attrs["marginal_log_likelihoods"])
+    np.testing.assert_array_less(
+        -EM_MONOTONICITY_SLACK * np.abs(objectives[1:]), objectives[1:] - previous
+    )
+    assert detector.em_monotonicity_violations_ == []
+    assert not [w for w in caught if "decreased" in str(w.message)], [
+        str(w.message) for w in caught
+    ]
 
 
 def _assert_monotonic(lls, label=""):
@@ -498,46 +514,74 @@ class TestEMMonitorsMapObjective:
     marginal log-likelihood alone."""
 
     @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
-    @pytest.mark.parametrize("covariate", [False, True], ids=["stationary", "speed"])
     def test_prior_driven_likelihood_decrease_is_not_a_violation(
-        self, sorted_sim, covariate, transition_representation
+        self, sorted_sim, transition_representation
     ):
         """The default stickiness (1e5 pseudo-counts on two diagonals) pulls the
-        marginal log-likelihood down, for stationary and speed-dependent
-        transitions, while every check of the penalized log-likelihood rises."""
-        detector_kwargs, covariate_kwargs = {}, {}
-        if covariate:
-            detector_kwargs["discrete_transition_type"] = DiscreteNonStationaryDiagonal(
-                np.full(4, 0.98), formula="1 + speed"
-            )
-            covariate_kwargs["discrete_transition_covariate_data"] = {
-                "speed": sorted_sim.speed
-            }
-        detector = NonLocalSortedSpikesDetector(**detector_kwargs)
+        marginal log-likelihood down, while every check of the penalized
+        log-likelihood rises."""
+        detector = NonLocalSortedSpikesDetector()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             results = detector.estimate_parameters(
                 **sorted_sim.fit_args,
-                **covariate_kwargs,
                 max_iter=10,
                 tolerance=1e-14,
                 estimate_encoding_model=False,
                 transition_representation=transition_representation,
             )
 
-        log_likelihoods = np.asarray(results.attrs["marginal_log_likelihoods"])
-        objectives = np.asarray(results.attrs["em_objectives"])
-        previous = np.asarray(results.attrs["em_previous_objectives"])
-        assert objectives.shape == log_likelihoods.shape
         # The scenario under test: the prior pulls the likelihood down.
-        assert np.any(np.diff(log_likelihoods) < 0)
-        np.testing.assert_array_less(
-            -EM_MONOTONICITY_SLACK * np.abs(objectives[1:]), objectives[1:] - previous
+        assert np.any(np.diff(results.attrs["marginal_log_likelihoods"]) < 0)
+        _assert_penalized_objective_rises(detector, results, caught)
+
+    @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
+    def test_covariate_transitions_raise_the_penalized_objective(
+        self, sorted_sim, transition_representation
+    ):
+        """Speed-dependent transitions with the default stickiness: the
+        Dirichlet prior pulls the marginal log-likelihood down, every check of
+        the penalized log-likelihood rises, and the final objective includes
+        the covariate transitions' float64 log prior.
+
+        The 1e5 pseudo-counts per bin push stay probabilities near 1, beyond
+        what a float32 M-step loss resolves."""
+        detector = NonLocalSortedSpikesDetector(
+            discrete_transition_type=DiscreteNonStationaryDiagonal(
+                np.full(4, 0.98), formula="1 + speed"
+            )
         )
-        assert detector.em_monotonicity_violations_ == []
-        assert not [w for w in caught if "decreased" in str(w.message)], [
-            str(w.message) for w in caught
-        ]
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            results = detector.estimate_parameters(
+                **sorted_sim.fit_args,
+                discrete_transition_covariate_data={"speed": sorted_sim.speed},
+                max_iter=10,
+                tolerance=1e-14,
+                estimate_encoding_model=False,
+                transition_representation=transition_representation,
+            )
+
+        # The scenario under test: the prior pulls the likelihood down.
+        assert np.any(np.diff(results.attrs["marginal_log_likelihoods"]) < 0)
+        _assert_penalized_objective_rises(detector, results, caught)
+        n_transitions = len(sorted_sim.fit_args["time_edges"]) - 2
+        log_prior = _transition_log_prior(
+            np.empty((n_transitions, 4, 4)),
+            None,
+            detector.discrete_transition_coefficients_,
+            detector.discrete_transition_design_matrix_,
+            detector.discrete_transition_concentration,
+            detector.discrete_transition_stickiness,
+            detector.discrete_transition_regularization,
+        )
+        assert log_prior < 0
+        np.testing.assert_allclose(
+            results.attrs["em_objectives"][-1]
+            - results.attrs["marginal_log_likelihoods"][-1],
+            log_prior,
+            rtol=1e-9,
+        )
 
     @pytest.mark.parametrize("prior_weight", [0.0, 0.5])
     def test_saved_objectives_reproduce_every_check(
