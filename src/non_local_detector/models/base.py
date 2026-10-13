@@ -3315,7 +3315,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Convergence tolerance for the EM algorithm, by default 1e-4. EM
             stops when the penalized log-likelihood (marginal log-likelihood
             plus the discrete-transition log prior) changes by less than this
-            fraction of its magnitude without decreasing.
+            fraction of its magnitude without decreasing. With
+            ``discrete_transition_prior_weight > 0`` the last M-step must also
+            change every transition probability by less than ``tolerance``.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -3388,12 +3390,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             ``attrs["marginal_log_likelihoods"]`` and ``attrs["em_objectives"]``
             give each E-step's marginal log-likelihood and penalized
             log-likelihood (plus the discrete-transition log prior), the
-            quantity EM's convergence and monotonicity checks use. With
-            ``discrete_transition_prior_weight > 0`` each check compares two
-            iterations under the prior of the M-step between them, so the
-            difference of consecutive ``em_objectives`` need not equal the
-            change the check saw. With ``max_iter=0`` there is no M-step
-            prior; the sole objective is the final marginal log-likelihood.
+            quantity EM's convergence and monotonicity checks use. Each check
+            compares two E-steps under the prior of the M-step between them:
+            ``check_converged(em_objectives[k + 1], em_previous_objectives[k],
+            tolerance)`` reproduces it, with ``attrs["em_previous_objectives"]``
+            the earlier E-step's objective under that prior. With
+            ``discrete_transition_prior_weight > 0`` the prior changes with
+            each E-step, so ``em_previous_objectives[k]`` can differ from
+            ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
+            prior; the sole objective is the final marginal log-likelihood
+            and ``em_previous_objectives`` is empty.
         """
         marginal_log_likelihoods = []
         # EM monitors the marginal log-likelihood plus the log prior of the
@@ -3404,11 +3410,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # hands the next one its objective and the log prior of its M-step's
         # output.
         objectives: list[float] = []
+        # The objective each check compared objectives[k + 1] with.
+        previous_objectives: list[float] = []
         previous_objective = next_log_prior = np.nan
         n_iter = 0
         converged = False
+        objective_converged = False
         is_increasing = True
         objective_change = np.inf
+        transition_change = np.inf
 
         time_edges, time_bin_width = _validate_estimation_arguments(
             time_edges,
@@ -3501,10 +3511,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # transition) scale with each E-step's expected counts. Any other prior
         # is fixed, so an M-step's input has the log prior the previous M-step
         # computed for its output.
-        prior_tracks_counts = not _is_nonstationary(
-            self.discrete_transition_coefficients_,
-            self.discrete_transition_design_matrix_,
-        ) and bool(np.any(np.asarray(self.discrete_transition_prior_weight) > 0))
+        prior_tracks_counts = (
+            estimate_discrete_transition
+            and not _is_nonstationary(
+                self.discrete_transition_coefficients_,
+                self.discrete_transition_design_matrix_,
+            )
+            and bool(np.any(np.asarray(self.discrete_transition_prior_weight) > 0))
+        )
         if estimate_discrete_transition and not checkpointed:
             interior_state_bins = self.is_track_interior_state_bins_
             interior_state_ind = self.state_ind_[interior_state_bins]
@@ -3679,6 +3693,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     )
                 else:
                     log_prior_before = next_log_prior
+                if prior_tracks_counts:
+                    transitions_before = np.array(self.discrete_state_transitions_)
                 (
                     self.discrete_state_transitions_,
                     self.discrete_transition_coefficients_,
@@ -3710,6 +3726,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     *prior,
                     free_rows=free_rows,
                 )
+                if prior_tracks_counts:
+                    moved = self.discrete_state_transitions_ - transitions_before
+                    transition_change = float(np.max(np.abs(moved)))
             else:
                 log_prior_before = log_prior_after = 0.0
 
@@ -3737,9 +3756,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             marginal_log_likelihoods.append(marginal_log_likelihood)
             if n_iter > 1:
                 objectives.append(marginal_log_likelihood + next_log_prior)
+                previous_objectives.append(previous_objective)
                 objective_change = objectives[-1] - previous_objective
-                converged, is_increasing = check_converged(
+                objective_converged, is_increasing = check_converged(
                     objectives[-1], previous_objective, tolerance
+                )
+                # A data-adaptive prior changes with every E-step, so a flat
+                # objective alone does not mean the transitions have settled:
+                # the last M-step must also have moved them by < tolerance.
+                converged = objective_converged and (
+                    not prior_tracks_counts or transition_change < tolerance
                 )
 
                 if not is_increasing:
@@ -3765,6 +3791,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"likelihood: {marginal_log_likelihoods[-1]}, "
                     f"penalized: {objectives[-1]}, "
                     f"change: {objective_change}"
+                    + (
+                        f", transition change: {transition_change}"
+                        if prior_tracks_counts
+                        else ""
+                    )
                 )
             else:
                 logger.info(
@@ -3795,6 +3826,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "be judged; this usually means degenerate timesteps (every "
                     "state impossible), listed in degenerate_timesteps_ after "
                     "the fit."
+                )
+            elif objective_converged:
+                advice = (
+                    "The penalized log-likelihood changed by less than "
+                    "tolerance, but with discrete_transition_prior_weight > 0 "
+                    "the last M-step must also move every transition "
+                    f"probability by less than tolerance, and it moved one by "
+                    f"{transition_change:.3e}; consider increasing max_iter."
                 )
             else:
                 advice = "Consider increasing max_iter or relaxing tolerance."
@@ -3901,6 +3940,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         final_is_increasing = True
         if n_iter > 0:
             objectives.append(marginal_log_likelihood + next_log_prior)
+            previous_objectives.append(previous_objective)
             _, final_is_increasing = check_converged(
                 objectives[-1], previous_objective, tolerance
             )
@@ -3922,6 +3962,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             objectives.append(marginal_log_likelihoods[-1])
         self.converged_ = bool(converged) and final_is_increasing
         em_attrs["em_objectives"] = np.asarray(objectives)
+        em_attrs["em_previous_objectives"] = np.asarray(previous_objectives)
 
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihood
@@ -5546,7 +5587,9 @@ class ClusterlessDetector(_DetectorBase):
             Convergence tolerance for the EM algorithm, by default 1e-4. EM
             stops when the penalized log-likelihood (marginal log-likelihood
             plus the discrete-transition log prior) changes by less than this
-            fraction of its magnitude without decreasing.
+            fraction of its magnitude without decreasing. With
+            ``discrete_transition_prior_weight > 0`` the last M-step must also
+            change every transition probability by less than ``tolerance``.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -6723,7 +6766,9 @@ class SortedSpikesDetector(_DetectorBase):
             Convergence tolerance for EM, by default 0.0001. EM
             stops when the penalized log-likelihood (marginal log-likelihood
             plus the discrete-transition log prior) changes by less than this
-            fraction of its magnitude without decreasing.
+            fraction of its magnitude without decreasing. With
+            ``discrete_transition_prior_weight > 0`` the last M-step must also
+            change every transition probability by less than ``tolerance``.
         cache_likelihood : bool, optional
             Store the likelihood for faster iterations, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to

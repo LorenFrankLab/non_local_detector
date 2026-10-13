@@ -23,6 +23,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
+from non_local_detector.core import check_converged
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -438,6 +439,56 @@ class TestEMConvergenceSurfacing:
         assert "is -inf" in max_iter_messages[0]
         assert "relaxing tolerance" not in max_iter_messages[0]
 
+    @pytest.mark.parametrize(
+        ("prior_weight", "expected_n_iter"),
+        # A fixed prior stops at the first check that passes; a data-adaptive
+        # prior keeps going while the transitions still move.
+        [(0.0, 2), (0.5, 4)],
+    )
+    def test_adaptive_prior_also_requires_settled_transitions(
+        self, monkeypatch, prior_weight, expected_n_iter
+    ):
+        """With ``discrete_transition_prior_weight > 0`` the prior changes
+        with each E-step, so a flat objective is not enough: every
+        transition probability must also have moved by less than
+        ``tolerance`` in the last M-step."""
+        from non_local_detector.models import base as base_module
+
+        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
+            make_simulated_data(seed=42, n_neurons=5)
+        )
+        # Every objective check passes, so only the transition change can
+        # keep EM going.
+        monkeypatch.setattr(
+            base_module, "check_converged", lambda curr, prev, tolerance: (True, True)
+        )
+        detector = NonLocalSortedSpikesDetector(
+            discrete_transition_prior_weight=prior_weight
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            detector.estimate_parameters(
+                position_time=time,
+                position=position,
+                spike_times=spike_times,
+                time_edges=time_edges_from_centers(time),
+                is_training=~is_event,
+                max_iter=4,
+                tolerance=1e-12,
+                estimate_encoding_model=False,
+            )
+
+        assert detector.n_iter_ == expected_n_iter
+        assert detector.converged_ is (prior_weight == 0.0)
+        max_iter_messages = [
+            str(w.message) for w in caught if "did not converge" in str(w.message)
+        ]
+        if prior_weight > 0:
+            (message,) = max_iter_messages
+            assert "must also move every transition probability" in message
+        else:
+            assert max_iter_messages == []
+
     @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
     def test_zero_iterations_returns_posterior(self, sim, transition_representation):
         """``max_iter=0`` skips EM but still returns the final E-step posterior."""
@@ -504,3 +555,47 @@ class TestEMMonitorsMapObjective:
         assert not [w for w in caught if "decreased" in str(w.message)], [
             str(w.message) for w in caught
         ]
+
+    @pytest.mark.parametrize("prior_weight", [0.0, 0.5])
+    def test_saved_objectives_reproduce_every_check(self, prior_weight):
+        """``em_objectives[k + 1]`` and ``em_previous_objectives[k]`` are the
+        two values check ``k`` compared, under one M-step's prior, so they
+        reproduce the recorded violations. A data-adaptive prior changes with
+        each E-step, so the previous objective then differs from the saved
+        objective of the same E-step."""
+        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
+            make_simulated_data(seed=42, n_neurons=5)
+        )
+        tolerance = 1e-14
+        detector = NonLocalSortedSpikesDetector(
+            discrete_transition_prior_weight=prior_weight
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = detector.estimate_parameters(
+                position_time=time,
+                position=position,
+                spike_times=spike_times,
+                time_edges=time_edges_from_centers(time),
+                is_training=~is_event,
+                max_iter=6,
+                tolerance=tolerance,
+                estimate_encoding_model=False,
+            )
+
+        objectives = np.asarray(results.attrs["em_objectives"])
+        previous = np.asarray(results.attrs["em_previous_objectives"])
+        # One check per in-loop iteration after the first, plus the final E-step.
+        assert previous.shape == (detector.n_iter_,)
+        assert objectives.shape == (detector.n_iter_ + 1,)
+        increasing = [
+            check_converged(current, earlier, tolerance)[1]
+            for current, earlier in zip(objectives[1:], previous, strict=True)
+        ]
+        assert detector.em_monotonicity_violations_ == [
+            k + 2 for k, is_increasing in enumerate(increasing) if not is_increasing
+        ]
+        if prior_weight == 0.0:
+            np.testing.assert_array_equal(previous, objectives[:-1])
+        else:
+            assert np.all(previous[1:] != objectives[1:-1])
