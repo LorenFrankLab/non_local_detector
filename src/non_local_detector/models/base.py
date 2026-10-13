@@ -171,7 +171,12 @@ def _label_checkpointed_result(dataset, metadata):
     """Attach native labels and a bounded lazy padded view to a stored result."""
     from non_local_detector.result_store import pad_state_bins
 
-    dataset.attrs["marginal_log_likelihoods"] = dataset.attrs["marginal_log_likelihood"]
+    attrs = dataset.attrs
+    # The JSON metadata of a store EM wrote holds its traces as lists.
+    for name in ("marginal_log_likelihoods", "em_objectives", "em_previous_objectives"):
+        if name in attrs:
+            attrs[name] = np.asarray(attrs[name], dtype=float)
+    attrs.setdefault("marginal_log_likelihoods", attrs["marginal_log_likelihood"])
     if "time_bin_end_inclusive" not in dataset.coords:
         dataset = dataset.assign_coords(
             time_bin_end_inclusive=(
@@ -2974,10 +2979,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         return_outputs,
         max_read_bytes,
         replay_cache_bytes,
+        em_attrs=None,
     ) -> xr.Dataset:
         """Decode with complete conditioning and bounded spatial working memory.
 
         ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
+        ``em_attrs`` maps this pass's marginal log-likelihood to EM's
+        attributes, which a result store keeps with the rest so that
+        ``load_results`` returns them.
         """
         from non_local_detector.checkpointed_inference import (
             checkpointed_forward_backward,
@@ -3136,7 +3145,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             selected_rows=selected,
             dtype=np.float32,
             max_read_bytes=max_read_bytes,
-            result_attrs=attrs,
+            result_attrs=(
+                attrs
+                if em_attrs is None
+                else lambda marginal: {**attrs, **em_attrs(marginal)}
+            ),
             replay_cache_bytes=replay_cache_bytes,
             **transition_args,
         )
@@ -3403,7 +3416,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             each E-step, so ``em_previous_objectives[k]`` can differ from
             ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
             prior; the sole objective is the final marginal log-likelihood
-            and ``em_previous_objectives`` is empty.
+            and ``em_previous_objectives`` is empty. A ``result_path`` store
+            keeps these attributes, so ``load_results`` returns them too.
         """
         marginal_log_likelihoods = []
         # EM monitors the marginal log-likelihood plus the log prior of the
@@ -3416,7 +3430,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         objectives: list[float] = []
         # The objective each check compared objectives[k + 1] with.
         previous_objectives: list[float] = []
-        previous_objective = next_log_prior = np.nan
+        # The log prior of the next E-step's parameters under the last M-step's
+        # prior; there is none before the first M-step.
+        next_log_prior = 0.0
         n_iter = 0
         converged = False
         objective_converged = False
@@ -3748,12 +3764,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             n_iter += 1
 
             marginal_log_likelihoods.append(marginal_log_likelihood)
+            # This E-step evaluated the last M-step's output, under that
+            # M-step's prior; the first E-step has only its own M-step's.
+            objectives.append(
+                marginal_log_likelihood
+                + (next_log_prior if n_iter > 1 else log_prior_before)
+            )
             if n_iter > 1:
-                objectives.append(marginal_log_likelihood + next_log_prior)
-                previous_objectives.append(previous_objective)
-                objective_change = objectives[-1] - previous_objective
+                objective_change = objectives[-1] - previous_objectives[-1]
                 objective_converged, is_increasing = check_converged(
-                    objectives[-1], previous_objective, tolerance
+                    objectives[-1], previous_objectives[-1], tolerance
                 )
                 # A data-adaptive prior changes with every E-step, so a flat
                 # objective alone does not mean the transitions have settled:
@@ -3769,7 +3789,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     # see core._warn_degenerate_and_nan_timesteps).
                     warnings.warn(
                         f"EM iteration {n_iter}: penalized log-likelihood "
-                        f"decreased from {previous_objective:.6f} to "
+                        f"decreased from {previous_objectives[-1]:.6f} to "
                         f"{objectives[-1]:.6f} (change={objective_change:.6e}; "
                         f"marginal log-likelihood + transition log prior). "
                         f"A MAP M-step cannot lower it; re-fitting the encoding "
@@ -3797,10 +3817,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
             # The next E-step evaluates this M-step's output; it is checked
             # against this E-step, both under this M-step's prior.
-            previous_objective = marginal_log_likelihood + log_prior_before
+            previous_objectives.append(marginal_log_likelihood + log_prior_before)
             next_log_prior = log_prior_after
-            if n_iter == 1:
-                objectives.append(previous_objective)
 
         # converged_ is set after the final E-step, which evaluates the
         # returned parameters and can still find a decrease.
@@ -3840,6 +3858,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 stacklevel=2,
             )
 
+        def em_traces(final_log_likelihood: float) -> dict[str, list[float]]:
+            """EM's traces, given the final E-step's marginal log-likelihood.
+
+            The final E-step evaluates the returned parameters, the last
+            M-step's output, under that M-step's prior (none with max_iter=0).
+            """
+            return {
+                "marginal_log_likelihoods": [
+                    *marginal_log_likelihoods,
+                    final_log_likelihood,
+                ],
+                "em_objectives": [*objectives, final_log_likelihood + next_log_prior],
+                "em_previous_objectives": list(previous_objectives),
+            }
+
         # Final E-step after the last M-step so the returned posterior reflects
         # the final fitted parameters. Without this, the returned arrays are
         # the E-step computed *before* the last M-step and disagree with
@@ -3860,6 +3893,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 return_outputs=return_outputs,
                 max_read_bytes=DEFAULT_MAX_READ_BYTES,
                 replay_cache_bytes=replay_cache_bytes,
+                # The store is complete before its marginal log-likelihood
+                # reaches this method, so it writes the traces itself.
+                em_attrs=lambda marginal: {**em_attrs, **em_traces(marginal)},
             )
             marginal_log_likelihood = float(stored.attrs["marginal_log_likelihood"])
         elif checkpointed:
@@ -3918,7 +3954,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     store_log_likelihood or "log_likelihood" in requested_outputs
                 ),
             )
-        marginal_log_likelihoods.append(marginal_log_likelihood)
+        traces = em_traces(marginal_log_likelihood)
 
         # The preceding final E-step's _predict recorded the degenerate
         # (all-impossible) timesteps during its forward pass; expose them as a
@@ -3927,20 +3963,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # disabled (n_chunks > 1), where the returned log-likelihoods are None.
         self.degenerate_timesteps_ = self._degenerate_timesteps_
 
-        # The final E-step evaluates the returned parameters, the last M-step's
-        # output, so check it like an in-loop iteration (there is none when
+        # Check the final E-step like an in-loop iteration (there is none when
         # max_iter=0). It counts as iteration n_iter + 1, and a decrease here
         # means the fit has not converged.
+        final_objective = traces["em_objectives"][-1]
         final_is_increasing = True
         if n_iter > 0:
-            objectives.append(marginal_log_likelihood + next_log_prior)
-            previous_objectives.append(previous_objective)
             _, final_is_increasing = check_converged(
-                objectives[-1], previous_objective, tolerance
+                final_objective, previous_objectives[-1], tolerance
             )
             if not final_is_increasing:
                 self.em_monotonicity_violations_.append(n_iter + 1)
-                decrease = previous_objective - objectives[-1]
+                decrease = previous_objectives[-1] - final_objective
                 warnings.warn(
                     f"Final E-step penalized log-likelihood (marginal log-likelihood "
                     f"+ transition log prior) decreased by {decrease:.3e}. This "
@@ -3951,12 +3985,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     UserWarning,
                     stacklevel=2,
                 )
-        else:
-            # No M-step ran, so there is no associated transition log prior.
-            objectives.append(marginal_log_likelihoods[-1])
         self.converged_ = bool(converged) and final_is_increasing
-        em_attrs["em_objectives"] = np.asarray(objectives)
-        em_attrs["em_previous_objectives"] = np.asarray(previous_objectives)
 
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihood
@@ -3965,16 +3994,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             del self._encoding_model_data
 
         if result_path is not None:
-            stored.attrs["marginal_log_likelihoods"] = np.asarray(
-                marginal_log_likelihoods
-            )
-            stored.attrs.update(em_attrs)
+            # The store already holds the EM attributes and traces.
             return stored
+        em_attrs["em_objectives"] = np.asarray(traces["em_objectives"])
+        em_attrs["em_previous_objectives"] = np.asarray(
+            traces["em_previous_objectives"]
+        )
         results = self._convert_results_to_xarray(
             time_centers,
             acausal_posterior,
             acausal_state_probabilities,
-            marginal_log_likelihoods,
+            traces["marginal_log_likelihoods"],
             time_edges=time_edges,
             is_missing=is_missing,
             log_likelihood=(

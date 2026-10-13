@@ -51,7 +51,8 @@ def _recording(family):
 
 
 def _fit(model, data, **kwargs):
-    results = model.estimate_parameters(**data, max_iter=3, tolerance=1e-12, **kwargs)
+    kwargs.setdefault("max_iter", 3)
+    results = model.estimate_parameters(**data, tolerance=1e-12, **kwargs)
     # Structured EM, or auto with a checkpoint option, runs on the operator.
     checkpoint_options = {"chunk_size", "result_path", "replay_cache_bytes"}
     if kwargs.get("transition_representation") == "structured" or (
@@ -327,8 +328,33 @@ def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
     assert model.log_likelihood_ is log_likelihood
 
 
+def _assert_store_keeps_em_traces(in_memory, stored, loaded, n_iter):
+    """A result store reloads EM's traces and options as the fit returned
+    them, and as the same fit held in memory computed them."""
+    shapes = {
+        "marginal_log_likelihoods": (n_iter + 1,),
+        "em_objectives": (n_iter + 1,),
+        "em_previous_objectives": (n_iter,),
+    }
+    for name, shape in shapes.items():
+        assert isinstance(loaded.attrs[name], np.ndarray), name
+        assert loaded.attrs[name].shape == shape, name
+        # The store's JSON metadata round-trips floats exactly.
+        np.testing.assert_array_equal(loaded.attrs[name], stored.attrs[name])
+        # The final E-step writing a store is a different compiled program.
+        np.testing.assert_allclose(
+            loaded.attrs[name], in_memory.attrs[name], rtol=1e-6, atol=0.0
+        )
+    for name in ("em_transition_representation", "em_chunk_size"):
+        assert loaded.attrs[name] == stored.attrs[name] == in_memory.attrs[name]
+    # The default replay cache follows the memory available to each fit.
+    replay = "em_replay_cache_bytes"
+    assert loaded.attrs[replay] == stored.attrs[replay]
+
+
 def test_checkpointed_em_writes_the_final_posterior_to_disk(tmp_path):
-    """With result_path the final E-step streams its outputs to a store."""
+    """With result_path the final E-step streams its outputs to a store, which
+    reloads with EM's traces."""
     model, data = _recording("sorted")
     in_memory = _fit(
         model,
@@ -364,6 +390,24 @@ def test_checkpointed_em_writes_the_final_posterior_to_disk(tmp_path):
         rtol=1e-6,
         atol=1e-7,
     )
+    _assert_store_keeps_em_traces(in_memory, stored, loaded, model.n_iter_)
+
+
+@pytest.mark.filterwarnings("ignore:EM did not converge")
+def test_em_result_store_without_iterations_keeps_the_em_traces(tmp_path):
+    """With max_iter=0 no M-step runs, and the store still reloads the final
+    E-step's trace."""
+    kwargs = {
+        "max_iter": 0,
+        "transition_representation": "structured",
+        "chunk_size": 64,
+    }
+    model, data = _recording("sorted")
+    in_memory = _fit(model, data, **kwargs)[0]
+    model, data = _recording("sorted")
+    stored = _fit(model, data, result_path=tmp_path / "em", **kwargs)[0]
+    loaded = model.load_results(tmp_path / "em")
+    _assert_store_keeps_em_traces(in_memory, stored, loaded, n_iter=0)
 
 
 def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
