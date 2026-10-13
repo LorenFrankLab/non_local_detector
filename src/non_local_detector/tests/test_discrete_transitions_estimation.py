@@ -21,6 +21,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
+    _float64_jax,
     _state_aggregation_matrix,
     _stationary_counts_block,
     _transition_log_prior,
@@ -1668,6 +1669,93 @@ class TestEstimateNonStationaryStateTransition:
         for t in range(trans_matrix.shape[0]):
             assert_stochastic_matrix(trans_matrix[t])
 
+    def test_reaches_the_float64_minimum_of_its_objective(self):
+        """With 1e5 pseudo-counts per time bin the stay probabilities approach
+        1, past what a float32 objective resolves. Each row's M-step still
+        never raises its objective, and ends at the minimum an independent
+        float64 optimizer of the same objective finds."""
+        rng = np.random.default_rng(0)
+        n_time, n_states = 20_000, 4
+        speed = np.abs(np.cumsum(rng.normal(0, 0.5, n_time)))
+        speed = 50 * speed / speed.max()
+        design_matrix = np.column_stack((np.ones(n_time), speed))
+        # Expected transitions: each state's occupancy times a sticky row.
+        leave = 1e-3 * (1 + speed[:-1, None, None] / 50)
+        response = rng.uniform(0.1, 0.9, (n_time - 1, n_states, 1)) * np.where(
+            np.eye(n_states, dtype=bool), 1 - 3 * leave, leave
+        )
+        stickiness = np.array([1e5, 1e5, 0.0, 0.0])
+        alpha = get_transition_prior(1.0, stickiness, n_states)
+        start = np.zeros((2, n_states, n_states - 1))
+        for row in range(n_states - 1):
+            start[0, row, row] = 5.0
+        start[0, n_states - 1] = -5.0
+
+        coefficients, transition = (
+            estimate_non_stationary_state_transition_from_responses(
+                start,
+                design_matrix,
+                response,
+                concentration=1.0,
+                stickiness=stickiness,
+                transition_regularization=1e-5,
+            )
+        )
+
+        def objective(flat_coefficients, row):
+            """The row's M-step loss in float64, times the number of samples."""
+            coefficients_row = flat_coefficients.reshape(2, -1)
+            # The last target state is the reference category.
+            linear_predictor = np.column_stack(
+                (design_matrix[:-1] @ coefficients_row, np.zeros(n_time - 1))
+            )
+            log_probs = linear_predictor - logsumexp(
+                linear_predictor, axis=1, keepdims=True
+            )
+            weights = response[:, row] + alpha[row] - 1.0
+            penalty = (n_time - 1) * 1e-5 * np.sum(coefficients_row[1:] ** 2)
+            return -np.sum(weights * log_probs) + penalty
+
+        for row in range(n_states):
+            before = objective(start[:, row].ravel(), row)
+            after = objective(coefficients[:, row].ravel(), row)
+            # Started from the estimate, so it can only improve on it.
+            best = minimize(
+                objective,
+                coefficients[:, row].ravel(),
+                args=(row,),
+                method="Nelder-Mead",
+                options={"xatol": 1e-10, "fatol": 1e-10, "maxiter": 20_000},
+            )
+            assert after <= before, row
+            assert after - best.fun < 1e-3, (row, after - best.fun)
+        np.testing.assert_allclose(transition.sum(axis=-1), 1.0, atol=1e-12)
+
+    def test_newton_methods_reach_the_same_estimate(self):
+        """A Newton method, which uses the Hessian, and the default L-BFGS-B
+        reach the same estimate."""
+        rng = np.random.default_rng(6)
+        n_time, n_states = 500, 3
+        design_matrix = np.column_stack(
+            (np.ones(n_time), np.sin(np.arange(n_time) / 50))
+        )
+        response = rng.dirichlet(np.ones(n_states) * 2, size=(n_time - 1, n_states))
+        start = np.zeros((2, n_states, n_states - 1))
+        estimates = [
+            estimate_non_stationary_state_transition_from_responses(
+                start,
+                design_matrix,
+                response,
+                concentration=1.5,
+                stickiness=5.0,
+                transition_regularization=1e-3,
+                optimization_method=method,
+                maxiter=500,
+            )[0]
+            for method in ("L-BFGS-B", "trust-exact")
+        ]
+        np.testing.assert_allclose(estimates[1], estimates[0], atol=1e-4)
+
     def test_uses_improved_coefficients_when_optimizer_reports_failure(self):
         """A non-converged optimizer result should be used if it improves loss."""
         n_time = 5
@@ -2294,40 +2382,54 @@ class TestTransitionLogPrior:
             0.0,
         )
 
-        log_probs = np.stack(
-            [
-                np.asarray(
-                    jax_centered_log_softmax_forward(
-                        design_matrix[:-1] @ coefficients[:, row]
+        linear_predictor = np.concatenate(
+            (
+                np.einsum("tc,csk->tsk", design_matrix[:-1], coefficients),
+                np.zeros((n_time - 1, n_states, 1)),
+            ),
+            axis=-1,
+        )
+        log_probs = linear_predictor - logsumexp(
+            linear_predictor, axis=-1, keepdims=True
+        )
+        expected_log_likelihood = np.sum(response * log_probs)
+        # In float64, as the M-step evaluates its loss.
+        with _float64_jax():
+            summed_loss = sum(
+                float(
+                    dirichlet_neg_log_likelihood(
+                        coefficients[:, row].ravel(),
+                        design_matrix[:-1],
+                        response[:, row],
+                        alpha[row],
+                        regularization,
                     )
                 )
                 for row in range(n_states)
-            ],
-            axis=1,
-        )
-        expected_log_likelihood = np.sum(response * log_probs)
-        summed_loss = sum(
-            float(
-                dirichlet_neg_log_likelihood(
-                    coefficients[:, row].ravel(),
-                    design_matrix[:-1],
-                    response[:, row],
-                    alpha[row],
-                    regularization,
-                )
             )
-            for row in range(n_states)
-        )
         np.testing.assert_allclose(
             expected_log_likelihood + log_prior,
             -(n_time - 1) * summed_loss,
-            rtol=1e-5,
+            rtol=1e-12,
         )
+
+    def test_non_stationary_without_transitions_is_zero(self):
+        """A one-bin recording has no transitions, so no covariate prior."""
+        log_prior = _transition_log_prior(
+            np.empty((0, 3, 3)),
+            None,
+            np.zeros((2, 3, 2)),
+            np.ones((1, 2)),
+            1.0,
+            np.array([5.0, 0.0, 0.0]),
+            1e-5,
+        )
+        assert log_prior == 0.0
 
     def test_non_stationary_change_is_float64_accurate(self):
         """The covariate log prior changes between nearby coefficients as a
-        float64 reference does, far inside ``EM_MONOTONICITY_SLACK``; the
-        M-step's float32 loss does not resolve changes this small."""
+        float64 reference does, far inside ``EM_MONOTONICITY_SLACK``, which a
+        float32 evaluation does not resolve."""
         rng = np.random.default_rng(3)
         n_time, n_coefficients, n_states = 200_000, 2, 4
         design_matrix = np.column_stack(

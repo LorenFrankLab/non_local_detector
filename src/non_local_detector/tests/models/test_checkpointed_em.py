@@ -177,6 +177,27 @@ def test_checkpointed_em_with_covariate_transitions(variant, tmp_path):
     )
 
 
+@pytest.mark.parametrize("transition_representation", ["dense", "structured"])
+def test_covariate_em_on_one_bin_converges(transition_representation):
+    """One bin has no transitions, so no covariate prior: EM converges with no
+    monotonicity violation."""
+    model, data = _recording("sorted")
+    model.discrete_transition_type = DiscreteNonStationaryDiagonal(
+        np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
+    )
+    data["time_edges"] = np.array([0.0, 0.02])
+    results = model.estimate_parameters(
+        **data,
+        discrete_transition_covariate_data={"speed": np.array([0.5])},
+        max_iter=5,
+        estimate_encoding_model=False,
+        transition_representation=transition_representation,
+    )
+    assert model.converged_
+    assert model.em_monotonicity_violations_ == []
+    assert np.all(np.isfinite(results.attrs["em_objectives"]))
+
+
 @pytest.mark.parametrize(
     "flags",
     [
