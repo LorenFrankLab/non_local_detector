@@ -21,7 +21,11 @@ glue between them):
   filter/smoother (dense, or the checkpointed driver with
   ``--transition-representation``), whose exclusive time includes the host
   copies of its posteriors;
-- ``encoding_m_step`` and ``discrete_m_step``;
+- ``encoding_m_step`` and ``discrete_m_step`` (dense EM's expected
+  transition statistics, which structured EM accumulates in its E-step, and
+  the transition update);
+- ``transition_log_prior``: the penalty EM's convergence check adds to the
+  marginal log-likelihood;
 - ``results``: building the returned Dataset, with ``masked_posterior``
   for each spatial array expanded to every state bin.
 
@@ -338,8 +342,10 @@ def instrumented(profiler, detector_class):
         (detector_class, "compute_log_likelihood", "likelihood"),
         (base, "chunked_filter_smoother", "filter_smoother"),
         (base, "chunked_filter_smoother_covariate_dependent", "filter_smoother"),
-        (base, "_estimate_discrete_transition", "discrete_m_step"),
+        (base, "_estimate_discrete_transition", "discrete_m_step"),  # older checkouts
+        (base, "_discrete_transition_statistics", "discrete_m_step"),
         (base, "_discrete_transition_from_statistics", "discrete_m_step"),
+        (base, "_transition_log_prior", "transition_log_prior"),
         (checkpointed, "checkpointed_forward_backward", "filter_smoother"),
         (detector_class, "_convert_results_to_xarray", "results"),
         (detector_class, "_create_masked_posterior", "masked_posterior"),
