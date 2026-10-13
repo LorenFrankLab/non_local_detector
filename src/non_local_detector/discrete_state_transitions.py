@@ -1242,7 +1242,7 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
     return transition_matrix
 
 
-def _estimate_discrete_transition(
+def _discrete_transition_statistics(
     causal_posterior: np.ndarray,
     predictive_posterior: np.ndarray,
     acausal_posterior: np.ndarray,
@@ -1251,15 +1251,8 @@ def _estimate_discrete_transition(
     discrete_transition: np.ndarray,
     discrete_transition_coefficients: np.ndarray | None,
     discrete_transition_design_matrix: DesignMatrix | None,
-    transition_concentration: float,
-    transition_stickiness: float | np.ndarray,
-    transition_regularization: float,
-    transition_prior_weight: float | np.ndarray = 0.0,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """Estimate the discrete transition matrix (stationary or non-stationary).
-
-    Always uses the exact expanded-state M-step that aggregates bin-level
-    pair posteriors into discrete-state transition counts/responses.
+) -> np.ndarray:
+    """Expected discrete transition statistics from the expanded posteriors.
 
     Parameters
     ----------
@@ -1279,63 +1272,6 @@ def _estimate_discrete_transition(
         Current coefficient estimate (if non-stationary).
     discrete_transition_design_matrix : patsy.DesignMatrix | None
         Design matrix (if non-stationary).
-    transition_concentration : float
-        Dirichlet prior concentration.
-    transition_stickiness : float or np.ndarray
-        Dirichlet prior stickiness.
-    transition_regularization : float
-        L2 penalty for non-stationary coefficients.
-    transition_prior_weight : float, optional
-        Data-adaptive prior weight for stationary transitions. When > 0,
-        pseudo-counts scale with expected transition counts. Only applies
-        to the stationary path. By default 0.0.
-
-    Returns
-    -------
-    estimated_discrete_transition : np.ndarray
-        Updated transition matrix.
-    estimated_discrete_transition_coefficients : np.ndarray | None
-        Updated coefficients (if non-stationary).
-    """
-    statistics = _discrete_transition_statistics(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        continuous_transition,
-        state_ind,
-        discrete_transition,
-        discrete_transition_coefficients,
-        discrete_transition_design_matrix,
-    )
-    return _discrete_transition_from_statistics(
-        statistics,
-        discrete_transition_coefficients,
-        discrete_transition_design_matrix,
-        transition_concentration,
-        transition_stickiness,
-        transition_regularization,
-        transition_prior_weight,
-    )
-
-
-def _discrete_transition_statistics(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    continuous_transition: np.ndarray,
-    state_ind: np.ndarray,
-    discrete_transition: np.ndarray,
-    discrete_transition_coefficients: np.ndarray | None,
-    discrete_transition_design_matrix: DesignMatrix | None,
-) -> np.ndarray:
-    """Expected discrete transition statistics from the expanded posteriors.
-
-    Parameters
-    ----------
-    causal_posterior, predictive_posterior, acausal_posterior,
-    continuous_transition, state_ind, discrete_transition,
-    discrete_transition_coefficients, discrete_transition_design_matrix
-        As in :func:`_estimate_discrete_transition`.
 
     Returns
     -------
@@ -1401,7 +1337,7 @@ def _transition_log_prior(
         Shape (n_time, n_coefficients) for a covariate-dependent transition.
     transition_concentration, transition_stickiness, transition_regularization,
     transition_prior_weight
-        As in :func:`_estimate_discrete_transition`.
+        As in :func:`_discrete_transition_from_statistics`.
     free_rows : np.ndarray of bool, shape (n_states,), optional
         Rows the M-step estimates. Frozen rows are constant and left out.
         All rows by default.
@@ -1475,10 +1411,18 @@ def _discrete_transition_from_statistics(
         Expected transition counts, shape (n_states, n_states), for a
         stationary transition; per-row responses, shape
         (n_time - 1, n_states, n_states), for a covariate transition.
-    discrete_transition_coefficients, discrete_transition_design_matrix,
-    transition_concentration, transition_stickiness, transition_regularization,
-    transition_prior_weight
-        As in :func:`_estimate_discrete_transition`.
+    discrete_transition_coefficients, discrete_transition_design_matrix
+        As in :func:`_discrete_transition_statistics`.
+    transition_concentration : float
+        Dirichlet prior concentration.
+    transition_stickiness : float or np.ndarray
+        Dirichlet prior stickiness.
+    transition_regularization : float
+        L2 penalty for non-stationary coefficients.
+    transition_prior_weight : float, optional
+        Data-adaptive prior weight for stationary transitions. When > 0,
+        pseudo-counts scale with expected transition counts. Only applies
+        to the stationary path. By default 0.0.
 
     Returns
     -------

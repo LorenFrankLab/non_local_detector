@@ -3,7 +3,7 @@
 Tests the core EM algorithm functions:
 - estimate_non_stationary_state_transition_from_responses
 - estimate_stationary_state_transition_from_counts
-- _estimate_discrete_transition
+- _discrete_transition_statistics and _discrete_transition_from_statistics
 """
 
 from unittest.mock import patch
@@ -18,7 +18,8 @@ from scipy.special import softmax
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteStationaryCustom,
-    _estimate_discrete_transition,
+    _discrete_transition_from_statistics,
+    _discrete_transition_statistics,
     _state_aggregation_matrix,
     _stationary_counts_block,
     _transition_log_prior,
@@ -1901,8 +1902,9 @@ class TestPriorWeightScaling:
 
 
 @pytest.mark.unit
-class TestEstimateDiscreteTransition:
-    """Test _estimate_discrete_transition wrapper function."""
+class TestDiscreteTransitionMStep:
+    """The EM discrete M-step: expected statistics from the expanded
+    posteriors, then the transition update from them."""
 
     def test_stationary_diagonal(self, posterior_data):
         """Test with stationary diagonal transition type using singleton bins."""
@@ -1913,7 +1915,7 @@ class TestEstimateDiscreteTransition:
         state_ind = np.arange(n_states)
         continuous_transition = np.eye(n_states)
 
-        new_trans, _ = _estimate_discrete_transition(
+        statistics = _discrete_transition_statistics(
             causal_posterior=post["causal_posterior"],
             predictive_posterior=post["predictive_distribution"],
             acausal_posterior=post["acausal_posterior"],
@@ -1922,6 +1924,11 @@ class TestEstimateDiscreteTransition:
             discrete_transition=post["transition_matrix"],
             discrete_transition_coefficients=None,
             discrete_transition_design_matrix=None,
+        )
+        new_trans, _ = _discrete_transition_from_statistics(
+            statistics,
+            None,
+            None,
             transition_concentration=1.0,
             transition_stickiness=1.0,
             transition_regularization=1e-5,
@@ -1967,7 +1974,7 @@ class TestEstimateDiscreteTransition:
             ]
         )
 
-        new_trans, _ = _estimate_discrete_transition(
+        statistics = _discrete_transition_statistics(
             causal_posterior=causal_posterior,
             predictive_posterior=predictive_posterior,
             acausal_posterior=acausal_posterior,
@@ -1976,6 +1983,11 @@ class TestEstimateDiscreteTransition:
             discrete_transition=discrete_transition,
             discrete_transition_coefficients=None,
             discrete_transition_design_matrix=None,
+        )
+        new_trans, _ = _discrete_transition_from_statistics(
+            statistics,
+            None,
+            None,
             transition_concentration=1.0,
             transition_stickiness=0.0,
             transition_regularization=1e-5,
@@ -1993,7 +2005,7 @@ class TestEstimateDiscreteTransition:
         continuous_transition = np.eye(n_states)
         time_varying_trans = np.tile(post["transition_matrix"], (n_time, 1, 1))
 
-        new_trans, new_coeffs = _estimate_discrete_transition(
+        statistics = _discrete_transition_statistics(
             causal_posterior=post["causal_posterior"],
             predictive_posterior=post["predictive_distribution"],
             acausal_posterior=post["acausal_posterior"],
@@ -2002,6 +2014,11 @@ class TestEstimateDiscreteTransition:
             discrete_transition=time_varying_trans,
             discrete_transition_coefficients=dm["transition_coefficients"],
             discrete_transition_design_matrix=dm["design_matrix"][:n_time],
+        )
+        new_trans, new_coeffs = _discrete_transition_from_statistics(
+            statistics,
+            dm["transition_coefficients"],
+            dm["design_matrix"][:n_time],
             transition_concentration=1.0,
             transition_stickiness=1.0,
             transition_regularization=1e-5,
@@ -2069,7 +2086,7 @@ class TestEstimateDiscreteTransition:
             "estimate_non_stationary_state_transition_from_responses",
             side_effect=fake_from_responses,
         ):
-            new_trans, new_coeffs = _estimate_discrete_transition(
+            statistics = _discrete_transition_statistics(
                 causal_posterior=causal_posterior,
                 predictive_posterior=predictive_posterior,
                 acausal_posterior=acausal_posterior,
@@ -2078,6 +2095,11 @@ class TestEstimateDiscreteTransition:
                 discrete_transition=discrete_transition,
                 discrete_transition_coefficients=transition_coefficients,
                 discrete_transition_design_matrix=design_matrix,
+            )
+            new_trans, new_coeffs = _discrete_transition_from_statistics(
+                statistics,
+                transition_coefficients,
+                design_matrix,
                 transition_concentration=1.0,
                 transition_stickiness=0.0,
                 transition_regularization=1e-5,
