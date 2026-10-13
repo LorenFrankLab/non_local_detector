@@ -1088,16 +1088,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     Attributes
     ----------
     converged_ : bool
-        True if EM converged within max_iter iterations. Set by
-        ``estimate_parameters``.
+        True if EM converged within max_iter iterations and the final E-step,
+        which evaluates the returned parameters, did not decrease the
+        penalized log-likelihood. Set by ``estimate_parameters``.
     n_iter_ : int
         Number of EM iterations actually performed. Set by
         ``estimate_parameters``.
     em_monotonicity_violations_ : list[int]
         Iteration indices (1-based) where the penalized log-likelihood
         (marginal log-likelihood plus the discrete-transition log prior)
-        decreased. Empty list when EM is well-behaved. Set by
-        ``estimate_parameters``.
+        decreased; the final E-step counts as iteration ``n_iter_ + 1``.
+        Empty list when EM is well-behaved. Set by ``estimate_parameters``.
     degenerate_timesteps_ : np.ndarray
         Time indices (0-based) where the final E-step had all-``-inf``
         log-likelihoods (every state impossible) and the posterior fell back
@@ -3776,10 +3777,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             if n_iter == 1:
                 objectives.append(previous_objective)
 
-        self.converged_ = bool(converged)
+        # converged_ is set after the final E-step, which evaluates the
+        # returned parameters and can still find a decrease.
         self.n_iter_ = int(n_iter)
 
-        if not self.converged_:
+        if not converged:
             if not is_increasing:
                 advice = (
                     "The penalized log-likelihood decreased in the last "
@@ -3892,27 +3894,33 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # disabled (n_chunks > 1), where the returned log-likelihoods are None.
         self.degenerate_timesteps_ = self._degenerate_timesteps_
 
-        # The final E-step evaluates the last M-step's output, so check it like
-        # an in-loop iteration (there is none when max_iter=0).
+        # The final E-step evaluates the returned parameters, the last M-step's
+        # output, so check it like an in-loop iteration (there is none when
+        # max_iter=0). It counts as iteration n_iter + 1, and a decrease here
+        # means the fit has not converged.
+        final_is_increasing = True
         if n_iter > 0:
             objectives.append(marginal_log_likelihood + next_log_prior)
             _, final_is_increasing = check_converged(
                 objectives[-1], previous_objective, tolerance
             )
             if not final_is_increasing:
+                self.em_monotonicity_violations_.append(n_iter + 1)
                 decrease = previous_objective - objectives[-1]
                 warnings.warn(
                     f"Final E-step penalized log-likelihood (marginal log-likelihood "
                     f"+ transition log prior) decreased by {decrease:.3e}. This "
                     f"indicates an inconsistency between the E-step and the M-step "
                     f"output and is unusual; the returned posterior may not reflect "
-                    f"the fitted parameters.",
+                    f"the fitted parameters. converged_ is False and iteration "
+                    f"{n_iter + 1} is recorded in em_monotonicity_violations_.",
                     UserWarning,
                     stacklevel=2,
                 )
         else:
             # No M-step ran, so there is no associated transition log prior.
             objectives.append(marginal_log_likelihoods[-1])
+        self.converged_ = bool(converged) and final_is_increasing
         em_attrs["em_objectives"] = np.asarray(objectives)
 
         if store_log_likelihood:

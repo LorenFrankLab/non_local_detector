@@ -296,6 +296,47 @@ class TestEMConvergenceSurfacing:
             f"got: {[str(w.message) for w in caught]}"
         )
 
+    def test_final_e_step_decrease_is_not_convergence(self, monkeypatch, sim):
+        """The final E-step evaluates the returned parameters, so a decrease
+        there is a monotonicity violation and leaves the fit unconverged, even
+        when the loop met its tolerance."""
+
+        decoder = ClusterlessDecoder()
+        original_predict = decoder._predict
+
+        def perturbed_predict(*args, **kwargs):
+            acausal, state_probabilities, marginal, *rest = original_predict(
+                *args, **kwargs
+            )
+            # Only the final E-step asks to accumulate the likelihoods.
+            if "accumulate_log_likelihoods" in kwargs:
+                marginal = marginal - 1000.0
+            return (acausal, state_probabilities, marginal, *rest)
+
+        monkeypatch.setattr(decoder, "_predict", perturbed_predict)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            decoder.estimate_parameters(
+                position_time=sim.position_time,
+                position=sim.position,
+                spike_times=sim.spike_times,
+                spike_waveform_features=sim.spike_waveform_features,
+                time_edges=time_edges_from_centers(sim.position_time),
+                max_iter=20,
+                estimate_encoding_model=False,
+            )
+
+        messages = [str(w.message) for w in caught]
+        # The loop met its tolerance: no max-iter warning.
+        assert decoder.n_iter_ < 20
+        assert not [m for m in messages if "did not converge" in m]
+        assert decoder.converged_ is False
+        assert decoder.em_monotonicity_violations_ == [decoder.n_iter_ + 1]
+        final = [m for m in messages if "inconsistency between the E-step" in m]
+        assert len(final) == 1
+        assert "converged_ is False" in final[0]
+
     def test_max_iter_warning_emitted(self, sim):
         """A fit that exits because ``max_iter`` was reached (with an
         unreachable tolerance) sets ``converged_=False``, ``n_iter_==max_iter``,
@@ -350,7 +391,8 @@ class TestEMConvergenceSurfacing:
                 estimate_encoding_model=False,
             )
 
-        assert decoder.em_monotonicity_violations_ == [2, 3]
+        # Iterations 2 and 3, and the final E-step as iteration 4.
+        assert decoder.em_monotonicity_violations_ == [2, 3, 4]
         max_iter_messages = [
             str(w.message) for w in caught if "did not converge" in str(w.message)
         ]
