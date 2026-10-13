@@ -3398,10 +3398,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # EM monitors the marginal log-likelihood plus the log prior of the
         # discrete transitions, the objective a MAP M-step never decreases;
         # the likelihood alone can fall when the prior pulls the transitions.
-        # Each M-step records its log prior before and after the update, both
-        # under its own prior (data-adaptive pseudo-counts change per E-step).
+        # Each check compares two E-steps under the prior of the M-step between
+        # them (data-adaptive pseudo-counts change per E-step), so an iteration
+        # hands the next one its objective and the log prior of its M-step's
+        # output.
         objectives: list[float] = []
-        m_step_log_priors: list[tuple[float, float]] = []
+        previous_objective = next_log_prior = np.nan
         n_iter = 0
         converged = False
         objective_change = np.inf
@@ -3493,6 +3495,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
                 else "counts"
             )
+        # Data-adaptive pseudo-counts (prior_weight > 0 on a stationary
+        # transition) scale with each E-step's expected counts. Any other prior
+        # is fixed, so an M-step's input has the log prior the previous M-step
+        # computed for its output.
+        prior_tracks_counts = not _is_nonstationary(
+            self.discrete_transition_coefficients_,
+            self.discrete_transition_design_matrix_,
+        ) and bool(np.any(np.asarray(self.discrete_transition_prior_weight) > 0))
         if estimate_discrete_transition and not checkpointed:
             interior_state_bins = self.is_track_interior_state_bins_
             interior_state_ind = self.state_ind_[interior_state_bins]
@@ -3656,14 +3666,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 free_rows = (
                     ~self._frozen_discrete_transition_rows_mask_ if is_frozen else None
                 )
-                log_prior_before = _transition_log_prior(
-                    statistics,
-                    self.discrete_state_transitions_,
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
-                    *prior,
-                    free_rows=free_rows,
-                )
+                if n_iter == 0 or prior_tracks_counts:
+                    log_prior_before = _transition_log_prior(
+                        statistics,
+                        self.discrete_state_transitions_,
+                        self.discrete_transition_coefficients_,
+                        self.discrete_transition_design_matrix_,
+                        *prior,
+                        free_rows=free_rows,
+                    )
+                else:
+                    log_prior_before = next_log_prior
                 (
                     self.discrete_state_transitions_,
                     self.discrete_transition_coefficients_,
@@ -3695,9 +3708,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     *prior,
                     free_rows=free_rows,
                 )
-                m_step_log_priors.append((log_prior_before, log_prior_after))
             else:
-                m_step_log_priors.append((0.0, 0.0))
+                log_prior_before = log_prior_after = 0.0
 
             if estimate_initial_conditions:
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
@@ -3722,10 +3734,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
             marginal_log_likelihoods.append(marginal_log_likelihood)
             if n_iter > 1:
-                # The previous M-step produced the parameters of this E-step.
-                log_prior_before, log_prior_after = m_step_log_priors[-2]
-                previous_objective = marginal_log_likelihoods[-2] + log_prior_before
-                objectives.append(marginal_log_likelihoods[-1] + log_prior_after)
+                objectives.append(marginal_log_likelihood + next_log_prior)
                 objective_change = objectives[-1] - previous_objective
                 converged, is_increasing = check_converged(
                     objectives[-1], previous_objective, tolerance
@@ -3756,12 +3765,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"change: {objective_change}"
                 )
             else:
-                objectives.append(
-                    marginal_log_likelihoods[-1] + m_step_log_priors[-1][0]
-                )
                 logger.info(
                     f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
                 )
+            # The next E-step evaluates this M-step's output; it is checked
+            # against this E-step, both under this M-step's prior.
+            previous_objective = marginal_log_likelihood + log_prior_before
+            next_log_prior = log_prior_after
+            if n_iter == 1:
+                objectives.append(previous_objective)
 
         self.converged_ = bool(converged)
         self.n_iter_ = int(n_iter)
@@ -3863,12 +3875,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # disabled (n_chunks > 1), where the returned log-likelihoods are None.
         self.degenerate_timesteps_ = self._degenerate_timesteps_
 
-        # The final E-step evaluates the last M-step's parameters, so check it
-        # like an in-loop iteration (there is none when max_iter=0).
-        if m_step_log_priors:
-            log_prior_before, log_prior_after = m_step_log_priors[-1]
-            previous_objective = marginal_log_likelihoods[-2] + log_prior_before
-            objectives.append(marginal_log_likelihoods[-1] + log_prior_after)
+        # The final E-step evaluates the last M-step's output, so check it like
+        # an in-loop iteration (there is none when max_iter=0).
+        if n_iter > 0:
+            objectives.append(marginal_log_likelihood + next_log_prior)
             _, final_is_increasing = check_converged(
                 objectives[-1], previous_objective, tolerance
             )
