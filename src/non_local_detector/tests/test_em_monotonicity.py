@@ -13,6 +13,7 @@ Tests cover:
   ``em_monotonicity_violations_``).
 """
 
+import inspect
 import itertools
 import warnings
 from types import SimpleNamespace
@@ -84,6 +85,21 @@ def _assert_monotonic(lls, label=""):
             f"{lls[i]:.6f} < {lls[i - 1]:.6f} "
             f"(diff={lls[i] - lls[i - 1]:.2e})"
         )
+
+
+@pytest.mark.unit
+def test_encoding_refit_is_opt_in():
+    """The encoding refit is not an exact M-step, so no ``estimate_parameters``
+    runs it by default."""
+    from non_local_detector.models.base import (
+        ClusterlessDetector,
+        SortedSpikesDetector,
+        _DetectorBase,
+    )
+
+    for cls in (_DetectorBase, ClusterlessDetector, SortedSpikesDetector):
+        parameters = inspect.signature(cls.estimate_parameters).parameters
+        assert parameters["estimate_encoding_model"].default is False, cls
 
 
 @pytest.mark.slow

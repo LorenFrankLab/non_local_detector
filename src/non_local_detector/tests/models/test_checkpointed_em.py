@@ -51,6 +51,9 @@ def _recording(family):
 
 
 def _fit(model, data, **kwargs):
+    # Parity covers the encoding refit too: structured EM must drop its cached
+    # likelihood after each refit as dense EM does.
+    kwargs.setdefault("estimate_encoding_model", True)
     kwargs.setdefault("max_iter", 3)
     results = model.estimate_parameters(**data, tolerance=1e-12, **kwargs)
     # Structured EM, or auto with a checkpoint option, runs on the operator.

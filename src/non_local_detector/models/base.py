@@ -3289,7 +3289,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         is_missing: np.ndarray | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
-        estimate_encoding_model: bool = True,
+        estimate_encoding_model: bool = False,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -3321,11 +3321,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
-            Estimate the place fields based on the Local state, by default True.
-            The refit weights the encoding model, which every state shares,
-            by the Local state's posterior alone, so it is not an exact
-            M-step and can lower the penalized log-likelihood. Pass False
-            when EM must never lower it.
+            Re-fit the place fields in each M-step, weighted by the Local
+            state's posterior, by default False. Every state shares the
+            encoding model, so weighting it by the Local state alone is not
+            an exact M-step: it can lower the penalized log-likelihood, which
+            EM reports as a monotonicity violation and never counts as
+            convergence. Off by default for that reason.
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
@@ -5554,7 +5555,7 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
-        estimate_encoding_model: bool = True,
+        estimate_encoding_model: bool = False,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -5604,11 +5605,12 @@ class ClusterlessDetector(_DetectorBase):
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
-            Estimate the place fields based on the Local state, by default True.
-            The refit weights the encoding model, which every state shares,
-            by the Local state's posterior alone, so it is not an exact
-            M-step and can lower the penalized log-likelihood. Pass False
-            when EM must never lower it.
+            Re-fit the place fields in each M-step, weighted by the Local
+            state's posterior, by default False. Every state shares the
+            encoding model, so weighting it by the Local state alone is not
+            an exact M-step: it can lower the penalized log-likelihood, which
+            EM reports as a monotonicity violation and never counts as
+            convergence. Off by default for that reason.
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
@@ -6735,7 +6737,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
-        estimate_encoding_model: bool = True,
+        estimate_encoding_model: bool = False,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -6787,11 +6789,12 @@ class SortedSpikesDetector(_DetectorBase):
         estimate_discrete_transition : bool, optional
             Estimate the discrete transition matrix, by default True
         estimate_encoding_model : bool, optional
-            Estimate the place fields based on the Local state, by default True.
-            The refit weights the encoding model, which every state shares,
-            by the Local state's posterior alone, so it is not an exact
-            M-step and can lower the penalized log-likelihood. Pass False
-            when EM must never lower it.
+            Re-fit the place fields in each M-step, weighted by the Local
+            state's posterior, by default False. Every state shares the
+            encoding model, so weighting it by the Local state alone is not
+            an exact M-step: it can lower the penalized log-likelihood, which
+            EM reports as a monotonicity violation and never counts as
+            convergence. Off by default for that reason.
         max_iter : int, optional
             Maximuim number of EM iterations, by default 20
         tolerance : float, optional
