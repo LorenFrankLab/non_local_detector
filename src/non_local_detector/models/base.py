@@ -3309,6 +3309,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
             Estimate the place fields based on the Local state, by default True.
+            The refit weights the encoding model, which every state shares,
+            by the Local state's posterior alone, so it is not an exact
+            M-step and can lower the penalized log-likelihood. Pass False
+            when EM must never lower it.
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
@@ -5580,7 +5584,11 @@ class ClusterlessDetector(_DetectorBase):
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
-            Estimate the place fields based on the Local state, by default True
+            Estimate the place fields based on the Local state, by default True.
+            The refit weights the encoding model, which every state shares,
+            by the Local state's posterior alone, so it is not an exact
+            M-step and can lower the penalized log-likelihood. Pass False
+            when EM must never lower it.
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
@@ -6760,6 +6768,10 @@ class SortedSpikesDetector(_DetectorBase):
             Estimate the discrete transition matrix, by default True
         estimate_encoding_model : bool, optional
             Estimate the place fields based on the Local state, by default True.
+            The refit weights the encoding model, which every state shares,
+            by the Local state's posterior alone, so it is not an exact
+            M-step and can lower the penalized log-likelihood. Pass False
+            when EM must never lower it.
         max_iter : int, optional
             Maximuim number of EM iterations, by default 20
         tolerance : float, optional
