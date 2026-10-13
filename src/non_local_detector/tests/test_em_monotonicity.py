@@ -318,7 +318,8 @@ class TestEMConvergenceSurfacing:
         assert decoder.converged_ is False
         assert decoder.n_iter_ == 1
 
-    def test_zero_iterations_returns_posterior(self, sim):
+    @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
+    def test_zero_iterations_returns_posterior(self, sim, transition_representation):
         """``max_iter=0`` skips EM but still returns the final E-step posterior."""
 
         decoder = ClusterlessDecoder()
@@ -331,10 +332,16 @@ class TestEMConvergenceSurfacing:
                 time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=0,
                 estimate_encoding_model=False,
+                transition_representation=transition_representation,
             )
 
         assert decoder.n_iter_ == 0
         assert "acausal_posterior" in results
+        assert results.attrs["em_objectives"].shape == (1,)
+        np.testing.assert_array_equal(
+            results.attrs["em_objectives"],
+            results.attrs["marginal_log_likelihoods"],
+        )
 
 
 @pytest.mark.slow

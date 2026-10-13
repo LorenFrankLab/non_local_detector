@@ -3391,7 +3391,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             ``discrete_transition_prior_weight > 0`` each check compares two
             iterations under the prior of the M-step between them, so the
             difference of consecutive ``em_objectives`` need not equal the
-            change the check saw.
+            change the check saw. With ``max_iter=0`` there is no M-step
+            prior; the sole objective is the final marginal log-likelihood.
         """
         marginal_log_likelihoods = []
         # EM monitors the marginal log-likelihood plus the log prior of the
@@ -3882,6 +3883,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     UserWarning,
                     stacklevel=2,
                 )
+        else:
+            # No M-step ran, so there is no associated transition log prior.
+            objectives.append(marginal_log_likelihoods[-1])
         em_attrs["em_objectives"] = np.asarray(objectives)
 
         if store_log_likelihood:
