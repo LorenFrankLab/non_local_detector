@@ -13,17 +13,20 @@ Tests cover:
   ``em_monotonicity_violations_``).
 """
 
+import itertools
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from non_local_detector import (
     ClusterlessDecoder,
+    DiscreteNonStationaryDiagonal,
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
-from non_local_detector.core import check_converged
+from non_local_detector.core import EM_MONOTONICITY_SLACK, check_converged
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -37,6 +40,39 @@ def sim():
         n_runs=3,
         seed=42,
     )
+
+
+@pytest.fixture(scope="module")
+def sorted_sim():
+    """Five-neuron sorted-spikes recording: its speed and the EM fit arguments."""
+    speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
+        seed=42, n_neurons=5
+    )
+    return SimpleNamespace(
+        speed=speed,
+        fit_args={
+            "position_time": time,
+            "position": position,
+            "spike_times": spike_times,
+            "time_edges": time_edges_from_centers(time),
+            "is_training": ~is_event,
+        },
+    )
+
+
+def _shift_marginal(monkeypatch, model, shift):
+    """Add ``shift(call_number)`` to the marginal log-likelihood of each E-step.
+
+    E-steps are numbered from 1, and the final E-step after the loop counts.
+    """
+    original = model._predict
+    calls = itertools.count(1)
+
+    def shifted(*args, **kwargs):
+        acausal, state_probabilities, marginal, *rest = original(*args, **kwargs)
+        return (acausal, state_probabilities, marginal + shift(next(calls)), *rest)
+
+    monkeypatch.setattr(model, "_predict", shifted)
 
 
 def _assert_monotonic(lls, label=""):
@@ -251,70 +287,15 @@ class TestEMConvergenceSurfacing:
             f"got: {[str(w.message) for w in caught]}"
         )
 
-    def test_final_e_step_inconsistency_warns(self, monkeypatch, sim):
-        """If the post-EM final E-step produces a marginal log-likelihood far
-        below the last in-loop value, a ``UserWarning`` flags the E-step/M-step
-        inconsistency."""
-
-        decoder = ClusterlessDecoder()
-        original_predict = decoder._predict
-        state = {"n": 0}
-
-        def perturbed_predict(*args, **kwargs):
-            state["n"] += 1
-            result = original_predict(*args, **kwargs)
-            # With max_iter=1 the final E-step is the SECOND _predict call.
-            # Drop its marginal log-likelihood sharply to simulate an
-            # E-step/M-step inconsistency.
-            if state["n"] == 2:
-                result = list(result)
-                result[2] = result[2] - 1000.0
-                result = tuple(result)
-            return result
-
-        monkeypatch.setattr(decoder, "_predict", perturbed_predict)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            decoder.estimate_parameters(
-                position_time=sim.position_time,
-                position=sim.position,
-                spike_times=sim.spike_times,
-                spike_waveform_features=sim.spike_waveform_features,
-                time_edges=time_edges_from_centers(sim.position_time),
-                max_iter=1,
-                estimate_encoding_model=False,
-            )
-
-        inconsistency = [
-            w
-            for w in caught
-            if issubclass(w.category, UserWarning)
-            and "inconsistency between the E-step" in str(w.message)
-        ]
-        assert inconsistency, (
-            "Expected a final-E-step inconsistency UserWarning; "
-            f"got: {[str(w.message) for w in caught]}"
-        )
-
     def test_final_e_step_decrease_is_not_convergence(self, monkeypatch, sim):
         """The final E-step evaluates the returned parameters, so a decrease
         there is a monotonicity violation and leaves the fit unconverged, even
         when the loop met its tolerance."""
 
         decoder = ClusterlessDecoder()
-        original_predict = decoder._predict
-
-        def perturbed_predict(*args, **kwargs):
-            acausal, state_probabilities, marginal, *rest = original_predict(
-                *args, **kwargs
-            )
-            # Only the final E-step asks to accumulate the likelihoods.
-            if "accumulate_log_likelihoods" in kwargs:
-                marginal = marginal - 1000.0
-            return (acausal, state_probabilities, marginal, *rest)
-
-        monkeypatch.setattr(decoder, "_predict", perturbed_predict)
+        # A tolerance any increase meets ends the loop at iteration 2, so the
+        # final E-step is the third.
+        _shift_marginal(monkeypatch, decoder, lambda n: -1000.0 if n == 3 else 0.0)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -325,12 +306,13 @@ class TestEMConvergenceSurfacing:
                 spike_waveform_features=sim.spike_waveform_features,
                 time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=20,
+                tolerance=1.0,
                 estimate_encoding_model=False,
             )
 
         messages = [str(w.message) for w in caught]
         # The loop met its tolerance: no max-iter warning.
-        assert decoder.n_iter_ < 20
+        assert decoder.n_iter_ == 2
         assert not [m for m in messages if "did not converge" in m]
         assert decoder.converged_ is False
         assert decoder.em_monotonicity_violations_ == [decoder.n_iter_ + 1]
@@ -367,18 +349,8 @@ class TestEMConvergenceSurfacing:
         max-iter warning after one must not suggest relaxing tolerance."""
 
         decoder = ClusterlessDecoder()
-        original_predict = decoder._predict
-        state = {"n": 0}
-
-        def decreasing_predict(*args, **kwargs):
-            state["n"] += 1
-            acausal, state_probabilities, marginal, *rest = original_predict(
-                *args, **kwargs
-            )
-            # Far larger than any real EM gain, so every E-step decreases.
-            return (acausal, state_probabilities, marginal - 1e6 * state["n"], *rest)
-
-        monkeypatch.setattr(decoder, "_predict", decreasing_predict)
+        # Far larger than any real EM gain, so every E-step decreases.
+        _shift_marginal(monkeypatch, decoder, lambda n: -1e6 * n)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -408,13 +380,7 @@ class TestEMConvergenceSurfacing:
         is ``-inf`` instead of suggesting a looser tolerance."""
 
         decoder = ClusterlessDecoder()
-        original_predict = decoder._predict
-
-        def degenerate_predict(*args, **kwargs):
-            acausal, state_probabilities, _, *rest = original_predict(*args, **kwargs)
-            return (acausal, state_probabilities, -np.inf, *rest)
-
-        monkeypatch.setattr(decoder, "_predict", degenerate_predict)
+        _shift_marginal(monkeypatch, decoder, lambda n: -np.inf)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -446,7 +412,7 @@ class TestEMConvergenceSurfacing:
         [(0.0, 2), (0.5, 4)],
     )
     def test_adaptive_prior_also_requires_settled_transitions(
-        self, monkeypatch, prior_weight, expected_n_iter
+        self, monkeypatch, sorted_sim, prior_weight, expected_n_iter
     ):
         """With ``discrete_transition_prior_weight > 0`` the prior changes
         with each E-step, so a flat objective is not enough: every
@@ -454,9 +420,6 @@ class TestEMConvergenceSurfacing:
         ``tolerance`` in the last M-step."""
         from non_local_detector.models import base as base_module
 
-        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
-            make_simulated_data(seed=42, n_neurons=5)
-        )
         # Every objective check passes, so only the transition change can
         # keep EM going.
         monkeypatch.setattr(
@@ -468,11 +431,7 @@ class TestEMConvergenceSurfacing:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             detector.estimate_parameters(
-                position_time=time,
-                position=position,
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                is_training=~is_event,
+                **sorted_sim.fit_args,
                 max_iter=4,
                 tolerance=1e-12,
                 estimate_encoding_model=False,
@@ -523,22 +482,27 @@ class TestEMMonitorsMapObjective:
     marginal log-likelihood alone."""
 
     @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
+    @pytest.mark.parametrize("covariate", [False, True], ids=["stationary", "speed"])
     def test_prior_driven_likelihood_decrease_is_not_a_violation(
-        self, transition_representation
+        self, sorted_sim, covariate, transition_representation
     ):
-        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
-            make_simulated_data(seed=42, n_neurons=5)
-        )
-        # Default stickiness puts 1e5 pseudo-counts on two diagonals.
-        detector = NonLocalSortedSpikesDetector()
+        """The default stickiness (1e5 pseudo-counts on two diagonals) pulls the
+        marginal log-likelihood down, for stationary and speed-dependent
+        transitions, while every check of the penalized log-likelihood rises."""
+        detector_kwargs, covariate_kwargs = {}, {}
+        if covariate:
+            detector_kwargs["discrete_transition_type"] = DiscreteNonStationaryDiagonal(
+                np.full(4, 0.98), formula="1 + speed"
+            )
+            covariate_kwargs["discrete_transition_covariate_data"] = {
+                "speed": sorted_sim.speed
+            }
+        detector = NonLocalSortedSpikesDetector(**detector_kwargs)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             results = detector.estimate_parameters(
-                position_time=time,
-                position=position,
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                is_training=~is_event,
+                **sorted_sim.fit_args,
+                **covariate_kwargs,
                 max_iter=10,
                 tolerance=1e-14,
                 estimate_encoding_model=False,
@@ -547,37 +511,38 @@ class TestEMMonitorsMapObjective:
 
         log_likelihoods = np.asarray(results.attrs["marginal_log_likelihoods"])
         objectives = np.asarray(results.attrs["em_objectives"])
+        previous = np.asarray(results.attrs["em_previous_objectives"])
         assert objectives.shape == log_likelihoods.shape
         # The scenario under test: the prior pulls the likelihood down.
         assert np.any(np.diff(log_likelihoods) < 0)
-        assert np.all(np.diff(objectives) >= -1e-6 * np.abs(objectives[1:]))
+        np.testing.assert_array_less(
+            -EM_MONOTONICITY_SLACK * np.abs(objectives[1:]), objectives[1:] - previous
+        )
         assert detector.em_monotonicity_violations_ == []
         assert not [w for w in caught if "decreased" in str(w.message)], [
             str(w.message) for w in caught
         ]
 
     @pytest.mark.parametrize("prior_weight", [0.0, 0.5])
-    def test_saved_objectives_reproduce_every_check(self, prior_weight):
+    def test_saved_objectives_reproduce_every_check(
+        self, monkeypatch, sorted_sim, prior_weight
+    ):
         """``em_objectives[k + 1]`` and ``em_previous_objectives[k]`` are the
         two values check ``k`` compared, under one M-step's prior, so they
         reproduce the recorded violations. A data-adaptive prior changes with
         each E-step, so the previous objective then differs from the saved
         objective of the same E-step."""
-        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
-            make_simulated_data(seed=42, n_neurons=5)
-        )
         tolerance = 1e-14
         detector = NonLocalSortedSpikesDetector(
             discrete_transition_prior_weight=prior_weight
         )
+        # This fit has no violations of its own, so lower the fourth E-step's
+        # marginal log-likelihood to give the checks one to reproduce.
+        _shift_marginal(monkeypatch, detector, lambda n: -1000.0 if n == 4 else 0.0)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             results = detector.estimate_parameters(
-                position_time=time,
-                position=position,
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                is_training=~is_event,
+                **sorted_sim.fit_args,
                 max_iter=6,
                 tolerance=tolerance,
                 estimate_encoding_model=False,
@@ -592,6 +557,7 @@ class TestEMMonitorsMapObjective:
             check_converged(current, earlier, tolerance)[1]
             for current, earlier in zip(objectives[1:], previous, strict=True)
         ]
+        assert detector.em_monotonicity_violations_ == [4]
         assert detector.em_monotonicity_violations_ == [
             k + 2 for k, is_increasing in enumerate(increasing) if not is_increasing
         ]
