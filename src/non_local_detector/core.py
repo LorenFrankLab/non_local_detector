@@ -1942,7 +1942,7 @@ def check_converged(
     -------
     is_converged : bool
         True if the objective did not decrease and its relative change is
-        below ``tolerance``.
+        below ``tolerance``. False while the objective stays ``-inf``.
     is_increasing : bool
         True if the objective did not decrease by more than float rounding.
 
@@ -1951,6 +1951,10 @@ def check_converged(
     previous_log_likelihood = float(previous_log_likelihood)
     if previous_log_likelihood == -np.inf and np.isfinite(log_likelihood):
         # Leaving an impossible starting point: an increase, not a NaN ratio.
+        return False, True
+    if previous_log_likelihood == log_likelihood == -np.inf:
+        # Still impossible (e.g. a degenerate timestep in every E-step): no
+        # decrease, but no change to judge convergence by.
         return False, True
 
     # Relative, not absolute: the objective is a sum over time bins, so its

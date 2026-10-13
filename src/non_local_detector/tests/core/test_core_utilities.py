@@ -631,3 +631,11 @@ class TestCheckConverged:
         is_converged, is_increasing = check_converged(-50.0, -np.inf, tolerance=1e-4)
         assert is_increasing
         assert not is_converged
+
+    def test_staying_at_negative_infinity_is_not_a_violation(self):
+        """A degenerate timestep makes every E-step's marginal log-likelihood
+        ``-inf``. That is no decrease, but there is no change to judge
+        convergence by."""
+        is_converged, is_increasing = check_converged(-np.inf, -np.inf, tolerance=1e-4)
+        assert is_increasing
+        assert not is_converged

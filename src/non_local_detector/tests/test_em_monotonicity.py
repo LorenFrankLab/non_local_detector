@@ -318,6 +318,84 @@ class TestEMConvergenceSurfacing:
         assert decoder.converged_ is False
         assert decoder.n_iter_ == 1
 
+    def test_max_iter_after_a_decrease_does_not_suggest_a_looser_tolerance(
+        self, monkeypatch, sim
+    ):
+        """A decrease never counts as convergence at any tolerance, so the
+        max-iter warning after one must not suggest relaxing tolerance."""
+
+        decoder = ClusterlessDecoder()
+        original_predict = decoder._predict
+        state = {"n": 0}
+
+        def decreasing_predict(*args, **kwargs):
+            state["n"] += 1
+            acausal, state_probabilities, marginal, *rest = original_predict(
+                *args, **kwargs
+            )
+            # Far larger than any real EM gain, so every E-step decreases.
+            return (acausal, state_probabilities, marginal - 1e6 * state["n"], *rest)
+
+        monkeypatch.setattr(decoder, "_predict", decreasing_predict)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            decoder.estimate_parameters(
+                position_time=sim.position_time,
+                position=sim.position,
+                spike_times=sim.spike_times,
+                spike_waveform_features=sim.spike_waveform_features,
+                time_edges=time_edges_from_centers(sim.position_time),
+                max_iter=3,
+                estimate_encoding_model=False,
+            )
+
+        assert decoder.em_monotonicity_violations_ == [2, 3]
+        max_iter_messages = [
+            str(w.message) for w in caught if "did not converge" in str(w.message)
+        ]
+        assert len(max_iter_messages) == 1
+        assert "decreased in the last iteration" in max_iter_messages[0]
+        assert "relaxing tolerance" not in max_iter_messages[0]
+
+    def test_negative_infinity_objective_is_not_a_violation(self, monkeypatch, sim):
+        """A degenerate timestep makes every E-step's marginal log-likelihood
+        ``-inf`` while the posterior stays finite. EM then records no
+        monotonicity violations, and its max-iter warning says the objective
+        is ``-inf`` instead of suggesting a looser tolerance."""
+
+        decoder = ClusterlessDecoder()
+        original_predict = decoder._predict
+
+        def degenerate_predict(*args, **kwargs):
+            acausal, state_probabilities, _, *rest = original_predict(*args, **kwargs)
+            return (acausal, state_probabilities, -np.inf, *rest)
+
+        monkeypatch.setattr(decoder, "_predict", degenerate_predict)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            decoder.estimate_parameters(
+                position_time=sim.position_time,
+                position=sim.position,
+                spike_times=sim.spike_times,
+                spike_waveform_features=sim.spike_waveform_features,
+                time_edges=time_edges_from_centers(sim.position_time),
+                max_iter=3,
+                estimate_encoding_model=False,
+            )
+
+        messages = [
+            str(w.message) for w in caught if issubclass(w.category, UserWarning)
+        ]
+        assert decoder.em_monotonicity_violations_ == []
+        assert not [message for message in messages if "decreased" in message]
+        assert decoder.converged_ is False
+        max_iter_messages = [m for m in messages if "did not converge" in m]
+        assert len(max_iter_messages) == 1
+        assert "is -inf" in max_iter_messages[0]
+        assert "relaxing tolerance" not in max_iter_messages[0]
+
     @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
     def test_zero_iterations_returns_posterior(self, sim, transition_representation):
         """``max_iter=0`` skips EM but still returns the final E-step posterior."""

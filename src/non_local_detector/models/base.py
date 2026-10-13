@@ -3406,6 +3406,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         previous_objective = next_log_prior = np.nan
         n_iter = 0
         converged = False
+        is_increasing = True
         objective_change = np.inf
 
         time_edges, time_bin_width = _validate_estimation_arguments(
@@ -3779,11 +3780,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.n_iter_ = int(n_iter)
 
         if not self.converged_:
+            if not is_increasing:
+                advice = (
+                    "The penalized log-likelihood decreased in the last "
+                    "iteration, and EM never counts a decrease as convergence, "
+                    "so a looser tolerance will not help; see the monotonicity "
+                    "warnings above for likely causes."
+                )
+            elif n_iter > 1 and objectives[-1] == -np.inf:
+                advice = (
+                    "The penalized log-likelihood is -inf, so its change cannot "
+                    "be judged; this usually means degenerate timesteps (every "
+                    "state impossible), listed in degenerate_timesteps_ after "
+                    "the fit."
+                )
+            else:
+                advice = "Consider increasing max_iter or relaxing tolerance."
             warnings.warn(
                 f"EM did not converge after max_iter={max_iter} iterations "
                 f"(final penalized log-likelihood change={objective_change:.3e}, "
                 f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
-                f"Consider increasing max_iter or relaxing tolerance.",
+                f"{advice}",
                 UserWarning,
                 stacklevel=2,
             )
