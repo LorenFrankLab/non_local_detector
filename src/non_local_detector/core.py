@@ -1949,13 +1949,12 @@ def check_converged(
     """
     log_likelihood = float(log_likelihood)
     previous_log_likelihood = float(previous_log_likelihood)
-    if previous_log_likelihood == -np.inf and np.isfinite(log_likelihood):
-        # Leaving an impossible starting point: an increase, not a NaN ratio.
-        return False, True
-    if previous_log_likelihood == log_likelihood == -np.inf:
-        # Still impossible (e.g. a degenerate timestep in every E-step): no
-        # decrease, but no change to judge convergence by.
-        return False, True
+    if not (np.isfinite(log_likelihood) and np.isfinite(previous_log_likelihood)):
+        # A -inf objective (an impossible timestep, or a prior on a zero
+        # transition) has no relative change: compare the values directly,
+        # without a NaN ratio. -inf after -inf is no decrease, but leaves no
+        # change to judge convergence by; NaN is never an increase.
+        return False, bool(log_likelihood >= previous_log_likelihood)
 
     # Relative, not absolute: the objective is a sum over time bins, so its
     # magnitude, and the size of a negligible change, scales with recording
