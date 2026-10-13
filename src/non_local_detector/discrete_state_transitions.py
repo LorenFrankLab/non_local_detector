@@ -279,6 +279,12 @@ _PAIR_SUM_BLOCK_BYTES = 256 * 1024**2
 _CONTRACTION_SUB_ROWS = 256
 
 
+# Time rows per block of the covariate transition log prior, so its float64
+# temporaries (a few (rows, n_states, n_states) arrays) stay bounded however
+# long the recording is.
+_LOG_PRIOR_BLOCK_ROWS = 65_536
+
+
 def _blocked_contraction(left: jnp.ndarray, right: jnp.ndarray) -> jnp.ndarray:
     """``left.T @ right`` summed over the rows in short partial products.
 
@@ -1369,13 +1375,21 @@ def _transition_log_prior(
         # together; test_non_stationary_matches_m_step_loss checks they agree.
         coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)
         design_matrix = np.asarray(discrete_transition_design_matrix, dtype=np.float64)
-        linear_predictor = np.einsum("tc,csk->tsk", design_matrix[:-1], coefficients)
-        # Last target state is the reference category (zero linear predictor),
-        # as in jax_centered_log_softmax_forward.
-        linear_predictor = np.concatenate(
-            (linear_predictor, np.zeros(linear_predictor.shape[:-1] + (1,))), axis=-1
-        )
-        summed_log_probs = numpy_log_softmax(linear_predictor, axis=-1).sum(axis=0)
+        predictors = design_matrix[:-1]
+        summed_log_probs = np.zeros((n_states, n_states))
+        for start in range(0, len(predictors), _LOG_PRIOR_BLOCK_ROWS):
+            linear_predictor = np.einsum(
+                "tc,csk->tsk",
+                predictors[start : start + _LOG_PRIOR_BLOCK_ROWS],
+                coefficients,
+            )
+            # Last target state is the reference category (zero linear
+            # predictor), as in jax_centered_log_softmax_forward.
+            linear_predictor = np.concatenate(
+                (linear_predictor, np.zeros(linear_predictor.shape[:-1] + (1,))),
+                axis=-1,
+            )
+            summed_log_probs += numpy_log_softmax(linear_predictor, axis=-1).sum(axis=0)
         row_log_prior = np.sum((alpha - 1.0) * summed_log_probs, axis=-1)
         n_samples = statistics.shape[0]
         row_log_prior -= (
