@@ -3499,28 +3499,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ):
             cache_likelihood = True
 
+        covariate_transitions = _is_nonstationary(
+            self.discrete_transition_coefficients_,
+            self.discrete_transition_design_matrix_,
+        )
         # Structured EM accumulates the discrete M-step's statistics in its
         # replay: per-row responses for covariate transitions, else counts.
         transition_statistics = None
         if checkpointed and estimate_discrete_transition:
-            transition_statistics = (
-                "responses"
-                if _is_nonstationary(
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
-                )
-                else "counts"
-            )
+            transition_statistics = "responses" if covariate_transitions else "counts"
         # Data-adaptive pseudo-counts (prior_weight > 0 on a stationary
         # transition) scale with each E-step's expected counts. Any other prior
         # is fixed, so an M-step's input has the log prior the previous M-step
         # computed for its output.
         prior_tracks_counts = (
             estimate_discrete_transition
-            and not _is_nonstationary(
-                self.discrete_transition_coefficients_,
-                self.discrete_transition_design_matrix_,
-            )
+            and not covariate_transitions
             and bool(np.any(np.asarray(self.discrete_transition_prior_weight) > 0))
         )
         if estimate_discrete_transition and not checkpointed:
@@ -3529,6 +3523,30 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             interior_continuous_transition = self.continuous_state_transitions_[
                 np.ix_(interior_state_bins, interior_state_bins)
             ]
+        prior = (
+            self.discrete_transition_concentration,
+            self.discrete_transition_stickiness,
+            self.discrete_transition_regularization,
+            self.discrete_transition_prior_weight,
+        )
+        # Frozen rows are restored after each M-step, so they do not enter the
+        # objective it maximizes.
+        is_frozen = (
+            self._frozen_discrete_transition_rows_baseline_ is not None
+            and self.discrete_state_transitions_.ndim == 2
+        )
+        free_rows = ~self._frozen_discrete_transition_rows_mask_ if is_frozen else None
+
+        def transition_log_prior(statistics: np.ndarray) -> float:
+            """Log prior of the current transitions under one M-step's prior."""
+            return _transition_log_prior(
+                statistics,
+                self.discrete_state_transitions_,
+                self.discrete_transition_coefficients_,
+                self.discrete_transition_design_matrix_,
+                *prior,
+                free_rows=free_rows,
+            )
 
         # Initialize the EM-result attributes together, after validation, so a
         # validation failure above leaves NONE of them set (all-or-nothing).
@@ -3671,32 +3689,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         self.discrete_transition_design_matrix_,
                     )
                 )
-                prior = (
-                    self.discrete_transition_concentration,
-                    self.discrete_transition_stickiness,
-                    self.discrete_transition_regularization,
-                    self.discrete_transition_prior_weight,
+                log_prior_before = (
+                    transition_log_prior(statistics)
+                    if n_iter == 0 or prior_tracks_counts
+                    else next_log_prior
                 )
-                # Frozen rows are restored below, so they do not enter the
-                # objective this M-step maximizes.
-                is_frozen = (
-                    self._frozen_discrete_transition_rows_baseline_ is not None
-                    and self.discrete_state_transitions_.ndim == 2
-                )
-                free_rows = (
-                    ~self._frozen_discrete_transition_rows_mask_ if is_frozen else None
-                )
-                if n_iter == 0 or prior_tracks_counts:
-                    log_prior_before = _transition_log_prior(
-                        statistics,
-                        self.discrete_state_transitions_,
-                        self.discrete_transition_coefficients_,
-                        self.discrete_transition_design_matrix_,
-                        *prior,
-                        free_rows=free_rows,
-                    )
-                else:
-                    log_prior_before = next_log_prior
                 if prior_tracks_counts:
                     transitions_before = np.array(self.discrete_state_transitions_)
                 (
@@ -3722,14 +3719,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.discrete_state_transitions_[
                         self._frozen_discrete_transition_rows_mask_
                     ] = self._frozen_discrete_transition_rows_baseline_
-                log_prior_after = _transition_log_prior(
-                    statistics,
-                    self.discrete_state_transitions_,
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
-                    *prior,
-                    free_rows=free_rows,
-                )
+                log_prior_after = transition_log_prior(statistics)
                 if prior_tracks_counts:
                     moved = self.discrete_state_transitions_ - transitions_before
                     transition_change = float(np.max(np.abs(moved)))
