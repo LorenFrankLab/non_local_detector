@@ -94,8 +94,31 @@ def empirical_transition(states: np.ndarray) -> np.ndarray:
 
 
 def fit_transitions(
-    recording, transition_representation: str = "dense", **model_kwargs
+    recording: tuple[np.ndarray, np.ndarray, list[np.ndarray], np.ndarray],
+    transition_representation: str = "dense",
+    **model_kwargs,
 ) -> NonLocalSortedSpikesDetector:
+    """Estimate the discrete transitions of a simulated recording by EM.
+
+    The place fields are fit on the true Local bins and held fixed, so EM
+    updates only the transitions and initial conditions; it runs until the
+    penalized log-likelihood changes by less than 1e-8 relative.
+
+    Parameters
+    ----------
+    recording : tuple
+        ``(time, position, spike_times, states)`` from
+        :func:`simulate_non_local_recording`.
+    transition_representation : {"dense", "structured"}, optional
+        EM transition path, by default "dense".
+    **model_kwargs
+        Passed to :class:`NonLocalSortedSpikesDetector`.
+
+    Returns
+    -------
+    detector : NonLocalSortedSpikesDetector
+        The fitted detector.
+    """
     time, position, spike_times, states = recording
     detector = NonLocalSortedSpikesDetector(
         environments=Environment(
@@ -140,15 +163,28 @@ def recording():
     return simulate_non_local_recording(seed=0, duration_s=120.0)
 
 
+@pytest.fixture(scope="module")
+def maximum_likelihood_fit(recording):
+    """Fit maximum-likelihood EM at most once per transition representation."""
+    fits: dict[str, NonLocalSortedSpikesDetector] = {}
+
+    def fit(transition_representation: str) -> NonLocalSortedSpikesDetector:
+        if transition_representation not in fits:
+            fits[transition_representation] = fit_transitions(
+                recording, transition_representation, **MAXIMUM_LIKELIHOOD
+            )
+        return fits[transition_representation]
+
+    return fit
+
+
 @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
 def test_maximum_likelihood_em_recovers_true_transitions(
-    recording, transition_representation
+    recording, maximum_likelihood_fit, transition_representation
 ):
     """Without a prior, EM's estimate matches the transition frequencies of
     the hidden state sequence (and so the true matrix)."""
-    detector = fit_transitions(
-        recording, transition_representation, **MAXIMUM_LIKELIHOOD
-    )
+    detector = maximum_likelihood_fit(transition_representation)
     estimate = np.asarray(detector.discrete_state_transitions_)
     oracle = empirical_transition(recording[3])
 
@@ -158,12 +194,12 @@ def test_maximum_likelihood_em_recovers_true_transitions(
     np.testing.assert_allclose(estimate, TRUE_TRANSITION, atol=TRUE_ATOL)
 
 
-def test_default_prior_shrinks_toward_its_stickiness(recording):
+def test_default_prior_shrinks_toward_its_stickiness(recording, maximum_likelihood_fit):
     """The default prior and frozen No-Spike row move the estimate away from
     the maximum-likelihood one in the documented direction."""
     default = np.asarray(fit_transitions(recording).discrete_state_transitions_)
     maximum_likelihood = np.asarray(
-        fit_transitions(recording, **MAXIMUM_LIKELIHOOD).discrete_state_transitions_
+        maximum_likelihood_fit("dense").discrete_state_transitions_
     )
 
     # 1e5 pseudo-counts on the Local diagonal pull its stay probability up.

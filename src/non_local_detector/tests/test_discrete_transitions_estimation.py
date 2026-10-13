@@ -2110,10 +2110,6 @@ class TestDiscreteTransitionMStep:
         assert captured["response"][0, 1, 2] > captured["response"][0, 0, 2]
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 def _random_stochastic(rng: np.random.Generator, n_states: int) -> np.ndarray:
     matrix = rng.uniform(0.05, 1.0, (n_states, n_states))
     return matrix / matrix.sum(axis=1, keepdims=True)
@@ -2236,3 +2232,7 @@ class TestTransitionLogPrior:
             counts, transition, None, None, 2.0, 0.0, 0.0
         )
         assert uniform_prior == -np.inf
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
