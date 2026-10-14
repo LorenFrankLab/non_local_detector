@@ -49,3 +49,10 @@ four waveform dimensions, seven warm calls gave median 0.451 ms before and
 6.826 ms after the initial logsumexp repair. These runs shared a host with
 other validation work; they quantify a material throughput cost, not a
 performance guarantee. Both outputs were finite with shape (100, 200).
+
+The repository-wide run passed 3,675 cases and skipped seven. Two existing
+NaN-propagation tests exposed that the all-zero-weight shortcut hid invalid
+encoding marks. The shortcut now bypasses reductions only when kernel inputs
+contain no NaNs; malformed inputs retain their NaN evidence. The failed cases,
+empty-tile value/gradient tests, new regressions and padding checks were rerun
+after this correction. Stored golden comparisons passed unchanged.

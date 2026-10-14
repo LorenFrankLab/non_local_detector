@@ -930,8 +930,23 @@ def estimate_log_joint_mark_intensity(
         _LOG_REDUCTION_POSITION_ROWS,
         max(n_pos, 1) if pos_tile_size is None else pos_tile_size,
     )
+    invalid_kernel_inputs = (
+        jnp.any(jnp.isnan(encoding_spike_waveform_features))
+        | jnp.any(jnp.isnan(decoding_spike_waveform_features))
+        | jnp.any(jnp.isnan(waveform_stds))
+    )
+    if use_streaming:
+        invalid_kernel_inputs |= (
+            jnp.any(jnp.isnan(encoding_positions))
+            | jnp.any(jnp.isnan(position_eval_points))
+            | jnp.any(jnp.isnan(position_std))
+        )
+    else:
+        invalid_kernel_inputs |= jnp.any(jnp.isnan(log_position_distance))
     return jax.lax.cond(
-        jnp.any(jnp.isfinite(log_w)) | jnp.any(jnp.isnan(log_w)),
+        jnp.any(jnp.isfinite(log_w))
+        | jnp.any(jnp.isnan(log_w))
+        | invalid_kernel_inputs,
         lambda: _estimate_with_enc_chunking(
             decoding_spike_waveform_features,
             encoding_spike_waveform_features,
