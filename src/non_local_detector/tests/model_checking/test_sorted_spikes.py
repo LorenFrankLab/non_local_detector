@@ -346,3 +346,21 @@ class TestPlotting:
         np.testing.assert_allclose(points[:, 0], expected_lags)
         np.testing.assert_allclose(points[:, 1], expected_lags * sampling_frequency)
         plt.close("all")
+
+    @pytest.mark.parametrize(
+        ("lag_max", "max_lag_index"), [(0.29, 29), (0.58, 58), (0.579, 57)]
+    )
+    def test_autocorrelation_keeps_fractional_boundary_lags(
+        self, lag_max, max_lag_index
+    ):
+        """Fractional limits retain equal endpoints and exclude larger lags."""
+        autocorrelation = np.arange(-60.0, 61.0)
+        expected_values = np.arange(-max_lag_index, max_lag_index + 1)
+        _, ax = plt.subplots()
+        plot_rescaled_ISI_autocorrelation(
+            autocorrelation, ax=ax, sampling_frequency=100.0, lag_max=lag_max
+        )
+        points = ax.collections[0].get_offsets()
+        np.testing.assert_allclose(points[:, 0], expected_values / 100.0)
+        np.testing.assert_allclose(points[:, 1], expected_values)
+        plt.close("all")

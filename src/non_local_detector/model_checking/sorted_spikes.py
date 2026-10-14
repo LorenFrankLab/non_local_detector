@@ -692,14 +692,8 @@ def plot_rescaled_ISI_autocorrelation(
     n_spikes = rescaled_ISI_autocorrelation.size // 2 + 1
     lag = np.arange(-n_spikes + 1, n_spikes) / sampling_frequency
 
-    # Zero lag is at index n_spikes - 1; keep lags with |lag| <= lag_max.
-    zero_lag = n_spikes - 1
-    max_lag_ind = (
-        zero_lag
-        if lag_max is None
-        else min(int(lag_max * sampling_frequency), zero_lag)
-    )
-    lag_ind = slice(zero_lag - max_lag_ind, zero_lag + max_lag_ind + 1)
+    # Select actual lag values so fractional limits retain equal endpoints.
+    lag_ind = slice(None) if lag_max is None else np.abs(lag) <= lag_max
 
     if ax is None:
         ax = plt.gca()
