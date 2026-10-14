@@ -53,6 +53,7 @@ from non_local_detector.time_edges import (
 _LOG_REDUCTION_ENCODING_ROWS = 2048
 _LOG_REDUCTION_POSITION_ROWS = 256
 _LOG_REDUCTION_QUERY_ROWS = 128
+_LOG_DIRECT_REDUCTION_BYTES = 16 * 1024**2
 
 
 def _masked_logsumexp(values):
@@ -146,6 +147,44 @@ def _stabilized_log_kernel_product(log_mark, log_position, log_weights):
         (result, suspect),
     )
     return jnp.where(invalid, jnp.nan, result)
+
+
+def _direct_log_kernel_product(log_mark, log_position, log_weights):
+    """Direct parallel reduction for a spatial tile checked against a byte limit."""
+    log_weights = jnp.broadcast_to(log_weights, (log_mark.shape[0],))
+    weighted_position = log_position + log_weights[:, None]
+    return jax.vmap(
+        lambda column: _masked_logsumexp(weighted_position + column[:, None]),
+        in_axes=1,
+    )(log_mark)
+
+
+def _streamed_log_kernel_product(log_mark, log_position, log_weights):
+    """Amortize tiny GPU tiles with a direct reduction bounded to 16 MiB.
+
+    Small streamed GEMMs spend more time launching kernels and checking the
+    fallback than multiplying. For a bounded encoding x query x position
+    tile, CUDA/ROCm instead fuse the exact reduction. The platform choice is
+    resolved during lowering; the compiler sees only the selected branch.
+    Larger tiles and other backends retain guarded GEMM. The dtype-aware
+    limit is independent of full recording, query block, and grid sizes.
+    """
+    workspace = (
+        log_mark.shape[0]
+        * log_mark.shape[1]
+        * log_position.shape[1]
+        * jnp.result_type(log_mark, log_position, log_weights).itemsize
+    )
+    if workspace > _LOG_DIRECT_REDUCTION_BYTES:
+        return _stabilized_log_kernel_product(log_mark, log_position, log_weights)
+    return jax.lax.platform_dependent(
+        log_mark,
+        log_position,
+        log_weights,
+        cuda=_direct_log_kernel_product,
+        rocm=_direct_log_kernel_product,
+        default=_stabilized_log_kernel_product,
+    )
 
 
 def _log_joint_from_log_marginal(
@@ -554,9 +593,12 @@ def _estimate_with_enc_chunking(
                         (enc_start, pos_start),
                         (enc_tile_size, pos_tile_size),
                     )
-                contribution = _stabilized_log_kernel_product(
-                    log_mark, log_position, weights
+                product = (
+                    _streamed_log_kernel_product
+                    if use_streaming
+                    else _stabilized_log_kernel_product
                 )
+                contribution = product(log_mark, log_position, weights)
                 current = jax.lax.dynamic_slice_in_dim(
                     marginal, pos_start, pos_tile_size, axis=1
                 )

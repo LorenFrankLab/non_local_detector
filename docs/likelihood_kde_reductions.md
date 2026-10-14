@@ -43,6 +43,14 @@ so another query's fallback cannot change a regular output. Existing
 local/nonlocal, weighted, padded, streaming, float32/float64 and determinism
 controls keep their tolerances; no stored numerical reference data is changed.
 
+On CUDA/ROCm, small streamed tiles use a direct parallel logsumexp when their
+dtype-aware encoding-by-query-by-position workspace is at most 16 MiB. Tiny
+GEMMs otherwise spend substantial time launching kernels and checking fallback
+predicates. This fixed limit keeps the reduction independent of recording,
+decoder block, and grid sizes. JAX resolves the platform branch during lowering,
+so CPU and larger tiles retain guarded GEMM. The direct branch uses the same
+safe empty-support reduction and does not relax tail accuracy.
+
 Independent review added analytical derivative regressions: all-zero encoding
 weights have zero weight derivatives, and a completely masked prefix tile
 cannot poison the gradients of later supported samples. Empty logsumexp and

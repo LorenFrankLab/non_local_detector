@@ -8,6 +8,7 @@ import pytest
 from non_local_detector.likelihoods.clusterless_kde_log import (
     _compute_log_mark_kernel_gemm,
     _stabilized_log_kernel_product,
+    _streamed_log_kernel_product,
     estimate_log_joint_mark_intensity,
 )
 
@@ -161,3 +162,66 @@ def test_suspect_positive_mass_uses_the_direct_log_reduction():
     actual = jax.jit(_stabilized_log_kernel_product)(marks, positions, jnp.zeros(3))
     expected = np.logaddexp(-100.0, -80.0 + np.log(2.0))
     np.testing.assert_allclose(actual[0, 0], expected, rtol=1e-6, atol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dtype,limit", [(jnp.float32, 128), (jnp.float64, 64)])
+def test_streamed_gpu_direct_policy_has_a_fixed_workspace_bound(
+    monkeypatch, dtype, limit
+):
+    selected = []
+
+    def forced_cuda(*args, **branches):
+        selected.append(True)
+        return branches["cuda"](*args)
+
+    monkeypatch.setattr(jax.lax, "platform_dependent", forced_cuda)
+    if hasattr(jax, "enable_x64"):
+        enable_x64 = jax.enable_x64
+    else:
+        from jax.experimental import enable_x64
+
+    with enable_x64(True):
+        for queries, expect_direct in ((limit, True), (limit + 1, False)):
+            selected.clear()
+            jax.make_jaxpr(_streamed_log_kernel_product)(
+                jax.ShapeDtypeStruct((256, queries), dtype),
+                jax.ShapeDtypeStruct((256, 128), dtype),
+                jax.ShapeDtypeStruct((256,), dtype),
+            )
+            assert bool(selected) is expect_direct
+
+
+@pytest.mark.unit
+def test_streamed_direct_gpu_branch_preserves_tails_batching_and_empty_gradients(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        jax.lax, "platform_dependent", lambda *args, **branches: branches["cuda"](*args)
+    )
+    position = jnp.asarray([[-100.0], [0.0]])
+    marks = jnp.asarray([[0.0, 0.0], [0.0, -100.0]])
+    weights = jnp.zeros(2)
+    alone = _streamed_log_kernel_product(marks[:, 1:], position, weights)
+    together = _streamed_log_kernel_product(marks, position, weights)
+    np.testing.assert_allclose(alone[0], together[1], rtol=1e-6, atol=1e-5)
+    np.testing.assert_allclose(alone[0, 0], -100.0 + np.log(2.0), rtol=1e-6)
+    gradient = jax.grad(
+        lambda kernel: _streamed_log_kernel_product(
+            kernel, position, jnp.full(2, -jnp.inf)
+        ).sum()
+    )(marks)
+    np.testing.assert_array_equal(gradient, 0.0)
+
+
+@pytest.mark.unit
+def test_small_streamed_cpu_tiles_retain_the_guarded_gemm():
+    if jax.default_backend() != "cpu":
+        pytest.skip("Checks the CPU lowering branch")
+    rng = np.random.default_rng(591)
+    marks = jnp.asarray(rng.normal(size=(17, 4)), dtype=jnp.float32)
+    position = jnp.asarray(rng.normal(size=(17, 3)), dtype=jnp.float32)
+    weights = jnp.asarray(rng.normal(size=17), dtype=jnp.float32)
+    original = jax.jit(_stabilized_log_kernel_product)(marks, position, weights)
+    streamed = jax.jit(_streamed_log_kernel_product)(marks, position, weights)
+    np.testing.assert_array_equal(streamed, original)
