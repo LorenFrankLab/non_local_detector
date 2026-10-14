@@ -71,7 +71,9 @@ def sample_posterior(
     n_time = posterior.shape[0]
 
     posterior_samples = [
-        rv_histogram((posterior[time_ind], place_bin_edges)).rvs(size=n_samples)
+        rv_histogram((posterior[time_ind], place_bin_edges), density=False).rvs(
+            size=n_samples
+        )
         for time_ind in range(n_time)
     ]
 
