@@ -331,15 +331,24 @@ def _cached_source_kernel(
     tile_size = _source_tile_size(memory_budget, n_bins, rank)
     for start in range(0, missing_sources.size, tile_size):
         block_sources = missing_sources[start : start + tile_size]
+        # Keep the GEMM width fixed for the final partial tile. Otherwise the
+        # compact support can select a different float32 dot-product lowering
+        # than the full operator, and cancellation in truncated heat columns
+        # amplifies the rounding difference in tail log intensities. Padding
+        # remains within the same budget-selected source workspace; only the
+        # requested columns enter the persistent cache.
+        padded_sources = np.pad(
+            block_sources, (0, tile_size - block_sources.size), mode="edge"
+        )
         kernel[:, np.searchsorted(cache_sources, block_sources)] = np.asarray(
             _positive_source_columns(
                 eigvals,
                 eigvecs,
                 labels,
-                jnp.asarray(block_sources),
+                jnp.asarray(padded_sources),
                 position_std=position_std,
             )
-        )
+        )[:, : block_sources.size]
     kernel = jnp.asarray(kernel)
     if environment is not None:
         frozen_sources = cache_sources.copy()
