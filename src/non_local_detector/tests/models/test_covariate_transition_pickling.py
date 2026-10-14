@@ -8,12 +8,16 @@ import copy
 import pickle
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from non_local_detector import (
     DiscreteNonStationaryDiagonal,
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
+)
+from non_local_detector.discrete_state_transitions import (
+    predict_discrete_state_transitions,
 )
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -98,3 +102,36 @@ def test_covariates_stay_out_of_params(fitted):
     covariates are fitted state, not a parameter."""
     detector, _ = fitted
     assert not any("covariate" in name for name in detector.get_params())
+
+
+@pytest.mark.parametrize("container", [dict, pd.DataFrame])
+@pytest.mark.parametrize(
+    "round_trip",
+    [lambda detector: pickle.loads(pickle.dumps(detector)), copy.deepcopy],
+    ids=["pickle", "deepcopy"],
+)
+def test_round_trip_ignores_later_changes_to_the_covariates(container, round_trip):
+    """The kept covariates are a snapshot: changing the caller's data after
+    the fit does not move the knots a round trip rebuilds."""
+    covariates = container({"speed": np.linspace(0.0, 50.0, 201)})
+    detector = NonLocalSortedSpikesDetector(
+        discrete_transition_type=DiscreteNonStationaryDiagonal(np.full(4, 0.9))
+    )
+    detector.initialize_discrete_state_transition(covariates)
+    # Speed-dependent coefficients, so the knots change the predictions.
+    n_basis = detector.discrete_transition_coefficients_.shape[0] - 1
+    detector.discrete_transition_coefficients_[1:, 0, 0] = np.linspace(
+        -3.0, 3.0, n_basis
+    )
+
+    def predict(model):
+        return predict_discrete_state_transitions(
+            model.discrete_transition_design_matrix_,
+            model.discrete_transition_coefficients_,
+            {"speed": np.linspace(0.0, 50.0, 101)},
+        )
+
+    expected = predict(detector)
+    covariates["speed"] *= 2.0
+
+    np.testing.assert_array_equal(predict(round_trip(detector)), expected)

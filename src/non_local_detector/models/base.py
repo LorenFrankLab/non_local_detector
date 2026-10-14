@@ -2269,10 +2269,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_transition_coefficients_,
             self.discrete_transition_design_matrix_,
         ) = self.discrete_transition_type.make_state_transition(covariate_data)
-        # patsy design matrices cannot be pickled or deep-copied; keep the
-        # covariates so ``__setstate__`` can rebuild the design matrix.
+        # patsy design matrices cannot be pickled or deep-copied; keep a copy
+        # of the covariates so ``__setstate__`` can rebuild the design matrix
+        # with the fitted knots even if the caller later changes them.
         self._discrete_transition_covariate_data_ = (
-            None if self.discrete_transition_design_matrix_ is None else covariate_data
+            None
+            if self.discrete_transition_design_matrix_ is None
+            else copy.deepcopy(covariate_data)
         )
 
         # Snapshot frozen rows of a stationary matrix so the EM M-step can
