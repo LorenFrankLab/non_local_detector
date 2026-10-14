@@ -70,7 +70,11 @@ source = "vcs"
 version-file = "src/non_local_detector/_version.py"
 
 [tool.hatch.build.targets.sdist]
-exclude = [".git_archival.txt"]
+exclude = [
+    ".git_archival.txt",
+    "/docs/performance_artifacts/**",
+    "/.claude/docs/gmm-background-diagnosis/**",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/non_local_detector"]

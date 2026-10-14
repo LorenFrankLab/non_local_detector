@@ -164,3 +164,7 @@ _version.py
 *.parquet
 *.nc
 /viewer_bundles
+
+# Local profiling evidence and diagnostic reports
+/docs/performance_artifacts/
+/.claude/docs/gmm-background-diagnosis/
