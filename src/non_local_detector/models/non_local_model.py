@@ -141,8 +141,8 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         Stickiness parameters for each state, by default [1e5, 1e5, 300.0, 300.0].
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions (a Gaussian prior with standard deviation
-        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions for each state, by default None.
@@ -326,8 +326,8 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         Stickiness parameters for each state, by default [1e5, 1e5, 300.0, 300.0].
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions (a Gaussian prior with standard deviation
-        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions for each state, by default None.

@@ -40,8 +40,8 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         Stickiness parameter for discrete transitions, by default np.array([0.0]).
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions (a Gaussian prior with standard deviation
-        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions, by default None (uses RandomWalk).
@@ -149,8 +149,8 @@ class ClusterlessDecoder(ClusterlessDetector):
         Stickiness parameter for discrete transitions, by default np.array([0.0]).
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions (a Gaussian prior with standard deviation
-        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions, by default None (uses RandomWalk).

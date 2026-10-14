@@ -53,8 +53,8 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         [100000.0, 30.0, 200.0] with very high no-spike persistence.
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions (a Gaussian prior with standard deviation
-        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions or None, optional
         Transition types for continuous states. If None, uses default:
@@ -186,8 +186,8 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         [100000.0, 30.0, 200.0] with very high no-spike persistence.
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions (a Gaussian prior with standard deviation
-        ``1 / sqrt(2 * regularization)`` on the log-odds), by default 0.1.
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions or None, optional
         Transition types for continuous states. If None, uses simplified
