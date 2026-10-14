@@ -15,10 +15,7 @@ from patsy import (  # type: ignore[import-untyped]
 )
 from patsy.splines import BS  # type: ignore[import-untyped]
 from scipy.optimize import minimize  # type: ignore[import-untyped]
-from scipy.special import (  # type: ignore[import-untyped]
-    log_softmax as numpy_log_softmax,
-)
-from scipy.special import softmax, xlogy
+from scipy.special import softmax, xlogy  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -996,45 +993,53 @@ def estimate_non_stationary_state_transition_from_responses(
         options["ftol"] = 0.0
         options["gtol"] = 1e-7
 
-    for from_state, row_alpha in enumerate(alpha):
-        if frozen_rows is not None and frozen_rows[from_state]:
-            row_coefficients = transition_coefficients[:, from_state, :]
-        else:
-            row_coefficients = _fit_covariate_row(
-                transition_coefficients[:, from_state, :],
-                (
-                    design_matrix[:-1],
-                    response[:, from_state, :],
-                    row_alpha,
+    with _float64_jax():
+        # Every row's fit shares the design matrix's blocks.
+        design_blocks = _transition_blocks(design_matrix[:-1])
+        for from_state, row_alpha in enumerate(alpha):
+            if frozen_rows is not None and frozen_rows[from_state]:
+                row_coefficients = transition_coefficients[:, from_state, :]
+            else:
+                row_coefficients = _fit_covariate_row(
+                    transition_coefficients[:, from_state, :],
+                    *_row_problem(design_blocks, response[:, from_state, :], row_alpha),
                     transition_regularization,
-                ),
-                optimization_method,
-                options,
-                from_state,
-            )
-        estimated_transition_coefficients[:, from_state, :] = row_coefficients
-        estimated_transition_matrix[:, from_state, :] = np.exp(
-            _centered_log_probabilities(design_matrix, row_coefficients)
-        )
+                    optimization_method,
+                    options,
+                    from_state,
+                )
+            estimated_transition_coefficients[:, from_state, :] = row_coefficients
+            device_coefficients = jnp.asarray(row_coefficients, dtype=jnp.float64)
+            for start in range(0, n_time, _COVARIATE_BLOCK_ROWS):
+                rows = slice(start, start + _COVARIATE_BLOCK_ROWS)
+                estimated_transition_matrix[rows, from_state, :] = jnp.exp(
+                    jax_centered_log_softmax_forward(
+                        jnp.asarray(design_matrix[rows], dtype=jnp.float64)
+                        @ device_coefficients
+                    )
+                )
 
     return estimated_transition_coefficients, estimated_transition_matrix
 
 
 def _fit_covariate_row(
     initial_coefficients: np.ndarray,
-    objective_args: tuple,
+    blocks: list,
+    prior_per_bin: jnp.ndarray,
+    l2_penalty: float,
     optimization_method: str,
     options: dict,
     from_state: int,
 ) -> np.ndarray:
-    """Minimize one row's :func:`dirichlet_neg_log_likelihood`.
+    """Minimize one row's :func:`dirichlet_neg_log_likelihood` over its
+    blocks of transitions. Call with JAX in float64.
 
     Parameters
     ----------
     initial_coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
-    objective_args : tuple
-        ``(design_matrix, response, alpha, l2_penalty)`` for the row, as in
-        :func:`dirichlet_neg_log_likelihood`.
+    blocks, prior_per_bin
+        From :func:`_row_problem`.
+    l2_penalty : float
     optimization_method : str
     options : dict
         Options for `scipy.optimize.minimize`.
@@ -1047,27 +1052,27 @@ def _fit_covariate_row(
         The initial coefficients when there are no transitions to fit or the
         optimizer does not lower the loss.
     """
-    if len(objective_args[1]) == 0:
+    if not blocks:
         return initial_coefficients
     x0 = np.asarray(initial_coefficients, dtype=np.float64).ravel()
+    args = (blocks, prior_per_bin, l2_penalty)
     minimize_kwargs = {
-        "fun": dirichlet_neg_log_likelihood,
+        "fun": _blocked_loss_and_gradient,
         "x0": x0,
         "method": optimization_method,
-        "jac": dirichlet_gradient,
-        "args": objective_args,
+        "jac": True,
+        "args": args,
         "options": options,
     }
     if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
-        minimize_kwargs["hess"] = dirichlet_hessian
+        minimize_kwargs["hess"] = _blocked_hessian
     result = minimize(**minimize_kwargs)
 
     # EM never lowers its penalized log-likelihood only if no M-step raises
     # its own loss, so the optimizer's coefficients replace the previous ones
     # only when they do not, whatever the optimizer reports.
-    result_loss = dirichlet_neg_log_likelihood(result.x, *objective_args)
-    initial_loss = dirichlet_neg_log_likelihood(x0, *objective_args)
-    if not (np.isfinite(result_loss) and result_loss <= initial_loss):
+    result_loss = _blocked_loss(result.x, *args)
+    if not (np.isfinite(result_loss) and result_loss <= _blocked_loss(x0, *args)):
         logger.warning(
             "Transition optimization did not lower the loss for state %d: %s. "
             "Keeping previous coefficients.",
@@ -1216,44 +1221,152 @@ def estimate_stationary_state_transition_from_counts(
     return new_transition_matrix
 
 
-def _centered_log_probabilities(
-    design_matrix: np.ndarray, coefficients: np.ndarray
-) -> np.ndarray:
-    """Float64 log transition probabilities with the last state as reference.
+def _block_loss(
+    coefficients: jnp.ndarray,
+    design_matrix: jnp.ndarray,
+    response: jnp.ndarray,
+    prior_per_bin: jnp.ndarray,
+) -> jnp.ndarray:
+    """``-sum_t (r_t + prior_per_bin) . log p_t`` over one block of time bins.
 
     Parameters
     ----------
-    design_matrix : np.ndarray, shape (n_samples, n_coefficients)
-    coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+    coefficients : jnp.ndarray, shape (n_coefficients * (n_states - 1),)
+    design_matrix : jnp.ndarray, shape (n_block, n_coefficients)
+    response : jnp.ndarray, shape (n_block, n_states)
+    prior_per_bin : jnp.ndarray, shape (n_states,)
+        The row's Dirichlet pseudo-counts ``alpha - 1`` divided by the number
+        of time bins of the whole row, so that the prior counts once.
 
     Returns
     -------
-    log_probabilities : np.ndarray, shape (n_samples, n_states)
+    loss : jnp.ndarray, shape ()
     """
-    linear_predictor = design_matrix @ coefficients
-    logits = np.concatenate(
-        (linear_predictor, np.zeros((linear_predictor.shape[0], 1))), axis=1
+    log_probabilities = jax_centered_log_softmax_forward(
+        design_matrix @ coefficients.reshape((design_matrix.shape[1], -1))
     )
-    return numpy_log_softmax(logits, axis=1)
+    return -jnp.sum((response + prior_per_bin) * log_probabilities)
 
 
-def _row_objective_terms(
-    coefficients: np.ndarray,
-    design_matrix: np.ndarray,
+_jit_block_loss = jax.jit(_block_loss)
+_block_loss_and_gradient = jax.jit(jax.value_and_grad(_block_loss))
+_block_hessian = jax.jit(jax.hessian(_block_loss))
+
+
+def _transition_blocks(
+    values: np.ndarray, dtype: type | None = np.float64
+) -> list[jnp.ndarray]:
+    """Device blocks of ``_COVARIATE_BLOCK_ROWS`` rows of ``values``.
+
+    Call with JAX in float64; ``dtype=None`` keeps the values' own type.
+    """
+    return [
+        jnp.asarray(values[start : start + _COVARIATE_BLOCK_ROWS], dtype=dtype)
+        for start in range(0, len(values), _COVARIATE_BLOCK_ROWS)
+    ]
+
+
+def _row_problem(
+    design_blocks: list[jnp.ndarray],
     response: np.ndarray,
     alpha: float | np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Float64 inputs shared by the row objective, gradient and Hessian."""
-    design_matrix = np.asarray(design_matrix, dtype=np.float64)
-    response = np.asarray(response, dtype=np.float64)
-    coefficients = np.asarray(coefficients, dtype=np.float64).reshape(
-        (design_matrix.shape[1], -1)
+) -> tuple[list, jnp.ndarray]:
+    """One row's blocks of transitions and its prior pseudo-counts per bin.
+
+    Call with JAX in float64.
+
+    Parameters
+    ----------
+    design_blocks : list of jnp.ndarray
+        :func:`_transition_blocks` of the design matrix's transition rows.
+    response : np.ndarray, shape (n_samples, n_states)
+    alpha : float or np.ndarray, shape (n_states,)
+
+    Returns
+    -------
+    blocks : list of (jnp.ndarray, jnp.ndarray)
+        ``(design, response)`` blocks; empty without transitions.
+    prior_per_bin : jnp.ndarray, shape (n_states,)
+        ``(alpha - 1) / n_samples``, zero without transitions.
+    """
+    n_samples, n_states = np.shape(response)
+    blocks = list(
+        zip(design_blocks, _transition_blocks(response, dtype=None), strict=True)
     )
-    # The Dirichlet prior counts once per row, as for stationary transitions:
-    # its alpha - 1 pseudo-counts are spread evenly over the time bins.
-    weights = response + (np.asarray(alpha, dtype=np.float64) - 1.0) / len(response)
-    log_probabilities = _centered_log_probabilities(design_matrix, coefficients)
-    return design_matrix, coefficients, weights, log_probabilities
+    pseudo_counts = np.broadcast_to(np.asarray(alpha, dtype=np.float64), (n_states,))
+    prior_per_bin = (pseudo_counts - 1.0) / max(n_samples, 1)
+    return blocks, jnp.asarray(prior_per_bin, dtype=jnp.float64)
+
+
+def _blocked_loss(
+    coefficients: np.ndarray,
+    blocks: list,
+    prior_per_bin: jnp.ndarray,
+    l2_penalty: float,
+) -> float:
+    """:func:`dirichlet_neg_log_likelihood` over blocks of transitions.
+
+    Call with JAX in float64.
+    """
+    coefficients = np.asarray(coefficients, dtype=np.float64)
+    n_free = prior_per_bin.shape[0] - 1
+    # Summed on the device, so the blocks are not each copied to the host.
+    device_coefficients = jnp.asarray(coefficients)
+    loss = sum(
+        _jit_block_loss(device_coefficients, design, response, prior_per_bin)
+        for design, response in blocks
+    )
+    # The flattened coefficients start with the intercept's n_free entries,
+    # which are not penalized.
+    return float(loss) + l2_penalty * float(np.sum(coefficients[n_free:] ** 2))
+
+
+def _blocked_loss_and_gradient(
+    coefficients: np.ndarray,
+    blocks: list,
+    prior_per_bin: jnp.ndarray,
+    l2_penalty: float,
+) -> tuple[float, np.ndarray]:
+    """:func:`dirichlet_neg_log_likelihood` and its gradient over blocks of
+    transitions, for scipy. Call with JAX in float64."""
+    coefficients = np.asarray(coefficients, dtype=np.float64)
+    n_free = prior_per_bin.shape[0] - 1
+    # Summed on the device, so the blocks are not each copied to the host.
+    device_coefficients = jnp.asarray(coefficients)
+    device_loss, device_gradient = jnp.zeros(()), jnp.zeros(coefficients.shape)
+    for design, response in blocks:
+        block_loss, block_gradient = _block_loss_and_gradient(
+            device_coefficients, design, response, prior_per_bin
+        )
+        device_loss = device_loss + block_loss
+        device_gradient = device_gradient + block_gradient
+    gradient = np.array(device_gradient, dtype=np.float64)
+    loss = float(device_loss) + l2_penalty * float(np.sum(coefficients[n_free:] ** 2))
+    gradient[n_free:] += 2.0 * l2_penalty * coefficients[n_free:]
+    return loss, gradient
+
+
+def _blocked_hessian(
+    coefficients: np.ndarray,
+    blocks: list,
+    prior_per_bin: jnp.ndarray,
+    l2_penalty: float,
+) -> np.ndarray:
+    """:func:`dirichlet_neg_log_likelihood`'s Hessian over blocks of
+    transitions, for scipy. Call with JAX in float64."""
+    coefficients = np.asarray(coefficients, dtype=np.float64)
+    n_free = prior_per_bin.shape[0] - 1
+    # Summed on the device, so the blocks are not each copied to the host.
+    device_coefficients = jnp.asarray(coefficients)
+    device_hessian = jnp.zeros((coefficients.size, coefficients.size))
+    for design, response in blocks:
+        device_hessian = device_hessian + _block_hessian(
+            device_coefficients, design, response, prior_per_bin
+        )
+    hessian = np.array(device_hessian, dtype=np.float64)
+    penalized = np.arange(n_free, coefficients.size)
+    hessian[penalized, penalized] += 2.0 * l2_penalty
+    return hessian
 
 
 def dirichlet_neg_log_likelihood(
@@ -1266,9 +1379,10 @@ def dirichlet_neg_log_likelihood(
     """Negative log posterior of one covariate-dependent transition row.
 
     ``-sum_t (r_t + (alpha - 1) / n) . log p_t + l2_penalty * |beta[1:]|^2``,
-    summed over the ``n`` time bins in float64: the expected complete-data
+    summed over the ``n`` time bins: the expected complete-data
     log-likelihood of the row plus a Dirichlet prior counted once, as for a
-    stationary row, and an L2 penalty.
+    stationary row, and an L2 penalty. Evaluated with JAX in float64 over
+    blocks of ``_COVARIATE_BLOCK_ROWS`` time bins, as the M-step evaluates it.
 
     Parameters
     ----------
@@ -1291,13 +1405,12 @@ def dirichlet_neg_log_likelihood(
     -------
     negative_log_posterior : float
     """
-    _, coefficients, weights, log_probabilities = _row_objective_terms(
-        coefficients, design_matrix, response, alpha
-    )
-    return float(
-        -np.sum(weights * log_probabilities)
-        + l2_penalty * np.sum(coefficients[1:] ** 2)
-    )
+    with _float64_jax():
+        return _blocked_loss(
+            coefficients,
+            *_row_problem(_transition_blocks(design_matrix), response, alpha),
+            l2_penalty,
+        )
 
 
 def dirichlet_gradient(
@@ -1318,14 +1431,12 @@ def dirichlet_gradient(
     -------
     gradient : np.ndarray, shape (n_coefficients * (n_states - 1),)
     """
-    design_matrix, coefficients, weights, log_probabilities = _row_objective_terms(
-        coefficients, design_matrix, response, alpha
-    )
-    probabilities = np.exp(log_probabilities[:, :-1])
-    residual = weights[:, :-1] - weights.sum(axis=1, keepdims=True) * probabilities
-    gradient = -design_matrix.T @ residual
-    gradient[1:] += 2.0 * l2_penalty * coefficients[1:]
-    return gradient.ravel()
+    with _float64_jax():
+        return _blocked_loss_and_gradient(
+            coefficients,
+            *_row_problem(_transition_blocks(design_matrix), response, alpha),
+            l2_penalty,
+        )[1]
 
 
 def dirichlet_hessian(
@@ -1348,35 +1459,12 @@ def dirichlet_hessian(
         ``n_parameters = n_coefficients * (n_states - 1)``, in the order of
         the flattened coefficients.
     """
-    design_matrix, coefficients, weights, log_probabilities = _row_objective_terms(
-        coefficients, design_matrix, response, alpha
-    )
-    n_coefficients, n_free = coefficients.shape
-    n_parameters = n_coefficients * n_free
-    probabilities = np.exp(log_probabilities[:, :-1])
-    total = weights.sum(axis=1)
-    # H[(c, k), (d, l)] = sum_t W_t x_tc x_td (p_tk [k == l] - p_tk p_tl),
-    # as two matrix products over time; column (c, k) is c * n_free + k,
-    # the order of the flattened coefficients.
-    weighted_terms = (
-        (design_matrix * total[:, np.newaxis])[:, :, np.newaxis]
-        * probabilities[:, np.newaxis, :]
-    ).reshape(-1, n_parameters)
-    design_terms = (
-        design_matrix[:, :, np.newaxis] * probabilities[:, np.newaxis, :]
-    ).reshape(-1, n_parameters)
-    hessian = -(weighted_terms.T @ design_terms).reshape(
-        n_coefficients, n_free, n_coefficients, n_free
-    )
-    diagonal = (weighted_terms.T @ design_matrix).reshape(
-        n_coefficients, n_free, n_coefficients
-    )
-    for k in range(n_free):
-        hessian[:, k, :, k] += diagonal[:, k, :]
-    hessian = hessian.reshape(n_parameters, n_parameters)
-    penalized = np.arange(n_free, n_parameters)
-    hessian[penalized, penalized] += 2.0 * l2_penalty
-    return hessian
+    with _float64_jax():
+        return _blocked_hessian(
+            coefficients,
+            *_row_problem(_transition_blocks(design_matrix), response, alpha),
+            l2_penalty,
+        )
 
 
 def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
@@ -1521,24 +1609,36 @@ def _transition_log_prior(
     if _is_nonstationary(
         discrete_transition_coefficients, discrete_transition_design_matrix
     ):
-        if statistics.shape[0] == 0:
+        n_samples = statistics.shape[0]
+        if n_samples == 0:
             # A recording without transitions has no covariate prior, and the
             # M-step keeps its coefficients.
             return 0.0
         coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)
-        design_matrix = np.asarray(discrete_transition_design_matrix, dtype=np.float64)
-        linear_predictor = np.einsum("tc,csk->tsk", design_matrix[:-1], coefficients)
-        # Last target state is the reference category (zero linear predictor),
-        # as in jax_centered_log_softmax_forward.
-        linear_predictor = np.concatenate(
-            (linear_predictor, np.zeros(linear_predictor.shape[:-1] + (1,))), axis=-1
+        design_matrix = np.asarray(discrete_transition_design_matrix)
+        free_states = np.flatnonzero(rows)
+        prior_per_bin = (alpha - 1.0) / n_samples
+        # Minus the M-step's loss with no expected transitions: its prior and
+        # penalty alone, with one block of the design matrix on the device at
+        # a time.
+        log_prior = -transition_regularization * float(
+            np.sum(coefficients[1:, free_states] ** 2)
         )
-        mean_log_probs = numpy_log_softmax(linear_predictor, axis=-1).mean(axis=0)
-        row_log_prior = np.sum((alpha - 1.0) * mean_log_probs, axis=-1)
-        row_log_prior -= transition_regularization * np.sum(
-            coefficients[1:] ** 2, axis=(0, 2)
-        )
-        return float(np.sum(row_log_prior[rows]))
+        with _float64_jax():
+            for start in range(0, n_samples, _COVARIATE_BLOCK_ROWS):
+                stop = min(start + _COVARIATE_BLOCK_ROWS, n_samples)
+                design = jnp.asarray(design_matrix[start:stop], dtype=jnp.float64)
+                no_counts = jnp.zeros((stop - start, n_states))
+                for row in free_states:
+                    log_prior -= float(
+                        _jit_block_loss(
+                            coefficients[:, row].ravel(),
+                            design,
+                            no_counts,
+                            jnp.asarray(prior_per_bin[row]),
+                        )
+                    )
+        return log_prior
 
     pseudo_counts = _stationary_pseudo_counts(
         statistics, alpha, _row_prior_weights(transition_prior_weight, n_states)
