@@ -60,7 +60,7 @@ import pandas as pd  # type: ignore[import-untyped]
 from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
 from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import preparation_key, prepare_encoding_support
 from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -176,9 +176,14 @@ def make_spline_predict_matrix(
     -------
     jnp.ndarray, shape (n_position_bins, n_spline_basis)
     """
-    position = jnp.asarray(position)
-    is_nan = jnp.any(jnp.isnan(position), axis=1)
-    position = jnp.where(is_nan[:, jnp.newaxis], 0.0, position)
+    # Patsy evaluates on the host. Preserve JAX's original dtype conversion,
+    # while avoiding a host->device->host round trip for quadrature geometry.
+    position = np.asarray(position)
+    position = position.astype(
+        jax.dtypes.canonicalize_dtype(position.dtype), copy=False
+    )
+    is_nan = np.any(np.isnan(position), axis=1)
+    position = np.where(is_nan[:, np.newaxis], 0.0, position)
 
     predict_data = {}
     for ind in range(position.shape[1]):
@@ -202,6 +207,8 @@ GLM_MAX_NEWTON_STEPS = 50
 _GLM_MAX_STEP_HALVINGS = 30
 # Bounds the per-block (n_cells, block_rows, n_coefficients) Hessian product.
 _GLM_BLOCK_BYTES = 256 * 2**20
+# Patsy temporaries are bounded independently of the complete recording.
+_GLM_DESIGN_ROWS = 32768
 
 
 @partial(jax.jit, static_argnames=("block_rows", "derivatives"))
@@ -339,7 +346,11 @@ def fit_poisson_regressions(
     -------
     coefficients : jnp.ndarray, shape (n_cells, n_coefficients)
     """
-    design_matrix = np.asarray(design_matrix, dtype=np.float32)
+    design_matrix = (
+        jnp.asarray(design_matrix, dtype=jnp.float32)
+        if isinstance(design_matrix, jax.Array)
+        else np.asarray(design_matrix, dtype=np.float32)
+    )
     event_sums = (
         None
         if _event_design_sums is None
@@ -378,7 +389,11 @@ def fit_poisson_regressions(
     )
     n_padded = -(-n_time // block_rows) * block_rows
     padding = n_padded - n_time
-    design = jnp.asarray(np.pad(design_matrix, ((0, padding), (0, 0))))
+    design = (
+        jnp.pad(design_matrix, ((0, padding), (0, 0)))
+        if isinstance(design_matrix, jax.Array)
+        else jnp.asarray(np.pad(design_matrix, ((0, padding), (0, 0))))
+    )
     counts = jnp.asarray(
         np.pad(spikes, ((0, 0), (0, padding))) if event_sums is None else spikes
     )
@@ -715,9 +730,6 @@ def fit_sorted_spikes_glm_encoding_model(
     )
     emission_design_info = emission_design_matrix.design_info
 
-    emission_predict_matrix = make_spline_predict_matrix(
-        emission_design_info, interior_place_bin_centers
-    )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
     else:
@@ -729,15 +741,40 @@ def fit_sorted_spikes_glm_encoding_model(
     exposure_quadrature = support.quadrature(
         position, spatial_scale=emission_knot_spacing
     )
+    device = jax.config.jax_default_device or jax.local_devices()[0]
+    signature = (
+        preparation_key(
+            basis_positions, place_bin_edges, position, emission_knot_spacing
+        ),
+        device,
+        bool(jax.config.jax_enable_x64),
+    )
+    support.prepare_namespace("glm", signature)
+    predict_key = ("glm", signature, "prediction")
+    emission_predict_matrix = support.prepared(predict_key)
+    if emission_predict_matrix is None:
+        emission_predict_matrix = make_spline_predict_matrix(
+            emission_design_info, interior_place_bin_centers
+        )
+        support.remember_preparation(predict_key, emission_predict_matrix)
     if exposure_quadrature.times.size:
         quadrature_positions = exposure_quadrature.positions
         if environment.track_graph is not None and quadrature_positions.shape[1] > 1:
             quadrature_positions = environment._linear_position(quadrature_positions)[
                 :, None
             ]
-        emission_design_matrix = make_spline_predict_matrix(
-            emission_design_info, quadrature_positions
-        )
+        design_blocks = []
+        for start in range(0, len(quadrature_positions), _GLM_DESIGN_ROWS):
+            stop = min(start + _GLM_DESIGN_ROWS, len(quadrature_positions))
+            key = ("glm", signature, "quadrature", start, stop)
+            block = support.prepared(key)
+            if block is None:
+                block = make_spline_predict_matrix(
+                    emission_design_info, quadrature_positions[start:stop]
+                )
+                support.remember_preparation(key, block)
+            design_blocks.append(block)
+        emission_design_matrix = jnp.concatenate(design_blocks)
         exposure = exposure_quadrature.weighted_exposure(weights)
     else:
         emission_design_matrix = emission_predict_matrix
@@ -750,16 +787,20 @@ def fit_sorted_spikes_glm_encoding_model(
         times = np.asarray(neuron_spike_times)[support.contains(neuron_spike_times)]
         for start in range(0, times.size, 65536):
             event_times = times[start : start + 65536]
-            event_positions = get_position_at_time(
-                position_time,
-                position,
-                event_times,
-                environment,
-                encoding_support=support,
-            )
-            event_basis = np.asarray(
-                make_spline_predict_matrix(emission_design_info, event_positions)
-            )
+            key = ("glm", signature, "events", preparation_key(event_times))
+            event_basis = support.prepared(key)
+            if event_basis is None:
+                event_positions = get_position_at_time(
+                    position_time,
+                    position,
+                    event_times,
+                    environment,
+                    encoding_support=support,
+                )
+                event_basis = np.asarray(
+                    make_spline_predict_matrix(emission_design_info, event_positions)
+                )
+                support.remember_preparation(key, event_basis)
             event_weights = support.interpolate(weights, event_times, fill_value=0.0)
             event_design_sums[neuron] += np.sum(
                 event_weights[:, None] * event_basis, axis=0, dtype=np.float64

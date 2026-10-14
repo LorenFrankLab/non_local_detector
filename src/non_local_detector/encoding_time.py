@@ -7,7 +7,10 @@ Event weights are dimensionless; integrated sample exposure is in seconds.
 
 import hashlib
 from dataclasses import dataclass
+from functools import partial
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 from non_local_detector.exceptions import DataError, ValidationError
@@ -18,6 +21,128 @@ _QUADRATURE_MAX_BYTES = 512 * 2**20
 _QUADRATURE_SOURCE_ROWS = 2048
 _QUADRATURE_FILL_PARTS = 8192
 _QUADRATURE_NODES, _QUADRATURE_WEIGHTS = np.polynomial.legendre.leggauss(4)
+
+
+def preparation_key(*values):
+    """Content/dtype/shape key; mutations and equal-valued copies are checked."""
+    digest = hashlib.blake2b(digest_size=16)
+    for value in values:
+        if value is None:
+            digest.update(b"None;")
+            continue
+        array = np.ascontiguousarray(value)
+        digest.update(array.dtype.str.encode())
+        digest.update(np.asarray(array.shape, dtype=np.intp).tobytes())
+        digest.update(memoryview(array).cast("B"))
+    return digest.digest()
+
+
+def cached_encoding_support(
+    owner,
+    position_time,
+    position,
+    *,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+):
+    """Reuse one immutable detector support, checked by content on each refit."""
+    key = preparation_key(
+        position_time, position, encoding_time_range, valid_position_intervals
+    )
+    cached = getattr(owner, "_encoding_support_cache_", None)
+    if cached is not None and cached[0] == key:
+        cached[1]._reused_by_refit = True
+        return cached[1]
+    support = EncodingSupport(
+        position_time,
+        position,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+    )
+    if support.preparation_nbytes <= _QUADRATURE_CACHE_BYTES:
+        owner._encoding_support_cache_ = (key, support)
+    elif hasattr(owner, "_encoding_support_cache_"):
+        del owner._encoding_support_cache_
+    return support
+
+
+@jax.jit
+def _prepared_kde_log_density(log_kernel, exposure, total_exposure=None):
+    if exposure.shape[0] == 0:
+        return jnp.full(log_kernel.shape[1], -jnp.inf, dtype=log_kernel.dtype)
+    active = exposure > 0.0
+    log_weights = jnp.where(active, jnp.log(jnp.where(active, exposure, 1.0)), -jnp.inf)
+    total = jnp.sum(exposure) if total_exposure is None else total_exposure
+    normalizer = jnp.log(jnp.where(total > 0.0, total, 1.0))
+    terms = jnp.where(total > 0.0, log_kernel + log_weights[:, None], 0.0)
+    value = jax.nn.logsumexp(terms, axis=0) - normalizer
+    return jnp.where(total > 0.0, value, -jnp.inf)
+
+
+@partial(jax.jit, static_argnames=("n_samples",))
+def _integrated_kde_operator_tile(
+    centers, samples, std, durations, left, right, fraction, *, n_samples
+):
+    """Log positive quadrature mass assigned to each original sample basis."""
+    from non_local_detector.likelihoods.common import (
+        _log_kernel_matrix,
+        deterministic_row_sum,
+    )
+
+    kernel = _log_kernel_matrix(centers, samples, std)
+
+    def basis_mass(indices, part):
+        positive = part > 0.0
+        log_part = jnp.where(
+            positive, jnp.log(jnp.where(positive, part, 1.0)), -jnp.inf
+        )
+        terms = kernel + jnp.log(durations)[:, None] + log_part[:, None]
+        maximum = jax.ops.segment_max(
+            terms, indices, num_segments=n_samples, indices_are_sorted=True
+        )
+        offset = jnp.where(jnp.isfinite(maximum), maximum, 0.0)
+        mass = deterministic_row_sum(
+            jnp.exp(terms - offset[indices]),
+            indices,
+            n_samples,
+            indices_are_sorted=True,
+        )
+        return jnp.where(
+            mass > 0.0, offset + jnp.log(jnp.where(mass > 0.0, mass, 1.0)), -jnp.inf
+        )
+
+    return jnp.logaddexp(basis_mass(left, 1.0 - fraction), basis_mass(right, fraction))
+
+
+@jax.jit
+def _prepared_kde_operator_density(operator, weights, total_exposure):
+    """Scaled GEMM with a log-mass fallback when changed weights lose overlap."""
+    log_mass, scaled_mass, offset = operator
+    maximum_weight = jnp.max(weights)
+    safe_maximum = jnp.where(maximum_weight > 0.0, maximum_weight, 1.0)
+    scaled_weights = weights / safe_maximum
+    numerator = jnp.matmul(
+        scaled_weights, scaled_mass, precision=jax.lax.Precision.HIGHEST
+    )
+    normalizer = jnp.log(jnp.where(total_exposure > 0.0, total_exposure, 1.0))
+    fast = (
+        offset
+        + jnp.log(jnp.where(numerator > 0.0, numerator, 1.0))
+        + jnp.log(safe_maximum)
+        - normalizer
+    )
+    # Every discarded/flush-to-zero coefficient is below tiny. Bound their
+    # weighted sum and use true log mass if it can exceed one epsilon relative.
+    finfo = jnp.finfo(scaled_mass.dtype)
+    unsafe = numerator <= (finfo.tiny / finfo.eps) * jnp.sum(scaled_weights)
+    result = jax.lax.cond(
+        jnp.any(unsafe) & (total_exposure > 0.0),
+        lambda: jnp.where(
+            unsafe, _prepared_kde_log_density(log_mass, weights, total_exposure), fast
+        ),
+        lambda: fast,
+    )
+    return jnp.where(total_exposure > 0.0, result, -jnp.inf)
 
 
 @dataclass(frozen=True)
@@ -110,10 +235,14 @@ class EncodingSupport:
             )
         if np.any(np.isinf(position)):
             raise DataError("position contains infinite values", data_name="position")
-        self.time = time
+        self.time = time.copy()
         self.exposure = np.zeros(time.size)
         self.segments = []
         self._quadrature_cache = None
+        self._quadrature_key = None
+        self._prepared_cache = {}
+        self._prepared_namespaces = {}
+        self._reused_by_refit = False
         finite = np.all(np.isfinite(position), axis=1)
         self.indices = np.flatnonzero(finite)
         intervals = None
@@ -162,8 +291,9 @@ class EncodingSupport:
                 np.asarray(position_time), name="position_time"
             )
             bounds = np.array([time[0] - width / 2, time[-1] + width / 2])
-        self.bounds = bounds
+        self.bounds = np.array(bounds, copy=True)
         if not self.indices.size:
+            self._freeze_geometry()
             return
         # Establish each tracking segment before splitting on missing samples.
         # Acquisition bounds then clip these original interpolation bases;
@@ -198,6 +328,132 @@ class EncodingSupport:
                     continue
                 self.segments.append((lower, upper, run))
                 self._integrate(lower, upper, run)
+        self._freeze_geometry()
+
+    def _freeze_geometry(self):
+        for array in (self.time, self.exposure, self.indices, self.bounds):
+            array.flags.writeable = False
+        self.segments = tuple(self.segments)
+        for _, _, indices in self.segments:
+            indices.flags.writeable = False
+
+    @property
+    def preparation_nbytes(self):
+        """Aggregate support, quadrature and retained host/device preparation."""
+        support_bytes = sum(
+            array.nbytes
+            for array in (self.time, self.exposure, self.indices, self.bounds)
+        )
+        support_bytes += sum(indices.nbytes for _, _, indices in self.segments)
+        quadrature_bytes = (
+            0 if self._quadrature_cache is None else self._quadrature_cache[1].nbytes
+        )
+        return (
+            support_bytes
+            + quadrature_bytes
+            + sum(value[1] for value in self._prepared_cache.values())
+        )
+
+    def prepare_namespace(self, name, key):
+        """Retire a family's previous configuration without an identity cache."""
+        if self._prepared_namespaces.get(name) != key:
+            self._prepared_cache = {
+                k: v for k, v in self._prepared_cache.items() if k[0] != name
+            }
+            self._prepared_namespaces[name] = key
+
+    def prepared(self, key):
+        item = self._prepared_cache.get(key)
+        return None if item is None else item[0]
+
+    def remember_preparation(self, key, value):
+        """Retain a bounded prefix of immutable arrays; overflow is recomputed."""
+        leaves = jax.tree_util.tree_leaves(value)
+        nbytes = sum(int(leaf.nbytes) for leaf in leaves) + 128
+        if (
+            key in self._prepared_cache
+            or self.preparation_nbytes + nbytes > _QUADRATURE_CACHE_BYTES
+        ):
+            return False
+        for leaf in leaves:
+            if isinstance(leaf, np.ndarray):
+                leaf.flags.writeable = False
+        self._prepared_cache[key] = (value, nbytes)
+        return True
+
+    def cached_kde_log_density(
+        self, quadrature, samples, centers, std, weights, *, _reuse_only=False
+    ):
+        """Integrated mass on original tracking weights, cached on a fixed grid.
+
+        Retain this operator only when it fits the shared 32 MiB preparation
+        cap. Each sample's positive quadrature mass is aggregated in log space
+        before exposure weights change. Large requests keep blocked KDE. A
+        scaled matrix product handles supported mass and log mass handles tails.
+        """
+        if _reuse_only and not self._reused_by_refit:
+            # Cold fits retain their existing evaluation and accumulation order.
+            # Construct the fixed operator only when public weighted refits reuse
+            # this support, avoiding a second KDE evaluation on every cold fit.
+            return None
+        from non_local_detector.likelihoods.common import _KDE_BLOCK_KERNEL_BYTES
+
+        device = jax.config.jax_default_device or jax.local_devices()[0]
+        dtype = np.dtype(jnp.float64 if jax.config.jax_enable_x64 else jnp.float32)
+        if len(centers) == 0:
+            return jnp.empty(0, dtype=dtype)
+        signature = (preparation_key(samples, centers, std), device, dtype.str)
+        self.prepare_namespace("kde", signature)
+        key = ("kde", signature)
+        operator = self.prepared(key)
+        if operator is None:
+            size = (2 * len(self.time) * len(centers) + len(centers)) * dtype.itemsize
+            if self.preparation_nbytes + size + 128 > _QUADRATURE_CACHE_BYTES:
+                return None
+            tile_size = max(
+                1,
+                min(
+                    64,
+                    _KDE_BLOCK_KERNEL_BYTES
+                    // (8 * dtype.itemsize * max(len(samples), 1)),
+                ),
+            )
+            points, samples_device, std_device = (
+                jnp.asarray(centers),
+                jnp.asarray(samples),
+                jnp.asarray(std),
+            )
+            durations, left, right, fraction = (
+                jnp.asarray(value)
+                for value in (
+                    quadrature.durations,
+                    quadrature.left,
+                    quadrature.right,
+                    quadrature.fraction,
+                )
+            )
+            blocks = [
+                _integrated_kde_operator_tile(
+                    points[start : start + tile_size],
+                    samples_device,
+                    std_device,
+                    durations,
+                    left,
+                    right,
+                    fraction,
+                    n_samples=len(self.time),
+                )
+                for start in range(0, len(centers), tile_size)
+            ]
+            log_mass = jnp.concatenate(blocks, axis=1)
+            offset = jnp.max(log_mass, axis=0)
+            offset = jnp.where(jnp.isfinite(offset), offset, 0.0)
+            operator = (log_mass, jnp.exp(log_mass - offset[None, :]), offset)
+            self.remember_preparation(key, operator)
+        exposure = quadrature.weighted_exposure(weights)
+        return _prepared_kde_operator_density(
+            operator, jnp.asarray(weights), jnp.sum(jnp.asarray(exposure))
+        )
 
     def _integrate(self, start, stop, indices):
         time = self.time[indices]
@@ -317,6 +573,11 @@ class EncodingSupport:
             digest.update(np.asarray(edge.shape, dtype=np.intp).tobytes())
             digest.update(edge.tobytes())
         key = digest.digest()
+        if self._quadrature_key != key:
+            self._prepared_cache.clear()
+            self._prepared_namespaces.clear()
+            self._quadrature_cache = None
+            self._quadrature_key = key
         if self._quadrature_cache is not None and self._quadrature_cache[0] == key:
             return self._quadrature_cache[1]
 
@@ -542,9 +803,8 @@ class EncodingSupport:
         result = ExposureQuadrature(times, points, durations, left, right, fraction)
         for value in vars(result).values():
             value.flags.writeable = False
-        self._quadrature_cache = (
-            (key, result) if result.nbytes <= _QUADRATURE_CACHE_BYTES else None
-        )
+        if self.preparation_nbytes + result.nbytes <= _QUADRATURE_CACHE_BYTES:
+            self._quadrature_cache = (key, result)
         return result
 
 

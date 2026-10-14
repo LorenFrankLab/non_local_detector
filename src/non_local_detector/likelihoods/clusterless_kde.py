@@ -570,21 +570,34 @@ def fit_clusterless_kde_encoding_model(
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     exposure_quadrature = support.quadrature(position, spatial_scale=position_std)
-    occupancy_samples, occupancy_weights = drop_zero_weight_samples(
-        exposure_quadrature.positions, exposure_quadrature.weighted_exposure(weights)
-    )
+    occupancy_samples = exposure_quadrature.positions
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
         occupancy_samples = environment._linear_position(occupancy_samples)[:, None]
+    cached_log_occupancy = support.cached_kde_log_density(
+        exposure_quadrature,
+        occupancy_samples,
+        interior_place_bin_centers,
+        position_std,
+        weights,
+        _reuse_only=True,
+    )
+    occupancy_samples, occupancy_weights = drop_zero_weight_samples(
+        occupancy_samples, exposure_quadrature.weighted_exposure(weights)
+    )
     occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
         occupancy_samples, weights=jnp.asarray(occupancy_weights)
     )
 
-    occupancy = _predict_kde_density(
-        occupancy_model,
-        interior_place_bin_centers,
-        encoding_block_size,
-        position_block_size,
+    occupancy = (
+        jnp.exp(cached_log_occupancy)
+        if cached_log_occupancy is not None
+        else _predict_kde_density(
+            occupancy_model,
+            interior_place_bin_centers,
+            encoding_block_size,
+            position_block_size,
+        )
     )
     encoding_positions = []
     encoding_weights = []

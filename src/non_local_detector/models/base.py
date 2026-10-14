@@ -52,7 +52,7 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
     predict_discrete_state_transitions,
 )
-from non_local_detector.encoding_time import EncodingSupport
+from non_local_detector.encoding_time import EncodingSupport, cached_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
@@ -2228,6 +2228,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ``__setstate__`` rebuilds it from the fitted covariates.
         """
         state = super().__getstate__()
+        if "_encoding_support_cache_" in state:
+            state = dict(state)
+            state.pop("_encoding_support_cache_")
         if state.get("discrete_transition_design_matrix_") is not None:
             state = dict(state)
             state["discrete_transition_design_matrix_"] = None
@@ -4795,7 +4798,8 @@ class ClusterlessDetector(_DetectorBase):
 
         is_training = np.asarray(is_training).squeeze()
 
-        support = EncodingSupport(
+        support = cached_encoding_support(
+            self,
             position_time,
             position,
             encoding_time_range=encoding_time_range,
@@ -6051,7 +6055,8 @@ class SortedSpikesDetector(_DetectorBase):
             )
 
         is_training = np.asarray(is_training).squeeze()
-        support = EncodingSupport(
+        support = cached_encoding_support(
+            self,
             position_time,
             position,
             encoding_time_range=encoding_time_range,
