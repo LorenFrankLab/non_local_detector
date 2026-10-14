@@ -319,3 +319,48 @@ class TestPlotting:
         ax = plot_rescaled_ISI_autocorrelation(ac, sampling_frequency=2.0, lag_max=5.0)
         assert isinstance(ax, plt.Axes)
         plt.close("all")
+
+    @pytest.mark.parametrize(
+        ("sampling_frequency", "lag_max", "expected_lags"),
+        [
+            (1.0, None, np.arange(-4, 5)),
+            (1.0, 2.0, np.arange(-2, 3)),
+            (2.0, 1.0, np.arange(-2, 3) / 2.0),
+            (1.0, 100.0, np.arange(-4, 5)),
+        ],
+    )
+    def test_autocorrelation_plots_lags_centered_on_zero(
+        self, sampling_frequency, lag_max, expected_lags
+    ):
+        """Every lag with |lag| <= lag_max is plotted at its own value."""
+        # Five spikes: lags -4..4, zero lag at index 4; value = lag index.
+        autocorrelation = np.arange(-4.0, 5.0)
+        _, ax = plt.subplots()
+        plot_rescaled_ISI_autocorrelation(
+            autocorrelation,
+            ax=ax,
+            sampling_frequency=sampling_frequency,
+            lag_max=lag_max,
+        )
+        points = ax.collections[0].get_offsets()
+        np.testing.assert_allclose(points[:, 0], expected_lags)
+        np.testing.assert_allclose(points[:, 1], expected_lags * sampling_frequency)
+        plt.close("all")
+
+    @pytest.mark.parametrize(
+        ("lag_max", "max_lag_index"), [(0.29, 29), (0.58, 58), (0.579, 57)]
+    )
+    def test_autocorrelation_keeps_fractional_boundary_lags(
+        self, lag_max, max_lag_index
+    ):
+        """Fractional limits retain equal endpoints and exclude larger lags."""
+        autocorrelation = np.arange(-60.0, 61.0)
+        expected_values = np.arange(-max_lag_index, max_lag_index + 1)
+        _, ax = plt.subplots()
+        plot_rescaled_ISI_autocorrelation(
+            autocorrelation, ax=ax, sampling_frequency=100.0, lag_max=lag_max
+        )
+        points = ax.collections[0].get_offsets()
+        np.testing.assert_allclose(points[:, 0], expected_values / 100.0)
+        np.testing.assert_allclose(points[:, 1], expected_values)
+        plt.close("all")

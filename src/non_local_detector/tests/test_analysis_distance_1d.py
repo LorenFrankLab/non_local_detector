@@ -351,6 +351,25 @@ class TestGetAheadBehindDistance:
         np.testing.assert_allclose(dist[0], 0.3, atol=1e-10)  # ahead
         np.testing.assert_allclose(dist[1], -0.3, atol=1e-10)  # behind
 
+    def test_missing_orientation_gives_nan(self):
+        """Without a heading, ahead or behind is undefined: the time step is
+        NaN instead of being signed as if the animal faced the edge's first
+        node. Other time steps are unaffected."""
+        track_graph = _make_positioned_track(4, edge_length=1.0)
+
+        dist = get_ahead_behind_distance(
+            track_graph,
+            np.array([[0.5, 0.0], [0.5, 0.0], [0.5, 0.0]]),
+            np.array([[0, 1], [0, 1], [0, 1]]),
+            np.array([np.nan, 0.0, np.nan]),
+            np.array([[0.8, 0.0], [0.8, 0.0], [0.2, 0.0]]),
+            np.array([[0, 1], [0, 1], [0, 1]]),
+        )
+
+        assert np.isnan(dist[0])
+        np.testing.assert_allclose(dist[1], 0.3, atol=1e-10)
+        assert np.isnan(dist[2])
+
 
 @pytest.mark.unit
 class TestGetMapSpeedSingleSample:

@@ -676,7 +676,8 @@ def plot_rescaled_ISI_autocorrelation(
     sampling_frequency : float, optional
         Sampling frequency of the data in Hz. Default is 1.0.
     lag_max : float, optional
-        Maximum lag to display in time units. If None, shows all lags.
+        Maximum lag to display in time units; lags with ``|lag| <= lag_max``
+        are shown. If None, shows all lags.
 
     Returns
     -------
@@ -691,8 +692,8 @@ def plot_rescaled_ISI_autocorrelation(
     n_spikes = rescaled_ISI_autocorrelation.size // 2 + 1
     lag = np.arange(-n_spikes + 1, n_spikes) / sampling_frequency
 
-    lag_max = n_spikes if lag_max is None else int(lag_max * sampling_frequency)
-    lag_ind = slice(-lag_max + 1, lag_max)
+    # Select actual lag values so fractional limits retain equal endpoints.
+    lag_ind = slice(None) if lag_max is None else np.abs(lag) <= lag_max
 
     if ax is None:
         ax = plt.gca()

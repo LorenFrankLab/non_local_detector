@@ -419,7 +419,8 @@ def get_ahead_behind_distance(
         Tuple of node IDs representing the edge of the `track_graph` that the
         animal is currently on at each time point.
     actual_orientation : np.ndarray, shape (n_time,)
-        Orientation of the animal in radians at each time point.
+        Orientation of the animal in radians at each time point. NaN
+        orientations give NaN distances.
     mental_position_2d : np.ndarray, shape (n_time, 2)
         Most likely decoded 2D position (MAP estimate) at each time point.
     mental_position_edges : np.ndarray, shape (n_time, 2)
@@ -435,7 +436,8 @@ def get_ahead_behind_distance(
     ahead_behind_distance : np.ndarray, shape (n_time,)
         The shortest path distance along the track graph. Positive if the
         mental position is ahead of the animal based on its orientation,
-        negative if behind. Units are the same as the graph edge distances.
+        negative if behind, NaN where the orientation is NaN. Units are the
+        same as the graph edge distances.
 
     Notes
     -----
@@ -454,6 +456,11 @@ def get_ahead_behind_distance(
         mental_position_edges,
         strict=False,
     ):
+        if np.isnan(orientation):
+            # Ahead or behind is undefined without a heading.
+            ahead_behind_distance.append(np.nan)
+            continue
+
         # Insert nodes for actual position, mental position, head
         copy_graph = _setup_track_graph(
             copy_graph, actual_pos, actual_edge, orientation, map_pos, map_edge

@@ -269,7 +269,12 @@ def get_2D_distance(
     position1 : np.ndarray, shape (n_time, 2)
     position2 : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
-    edges : list or None
+        Graph of the environment's place bins (e.g.
+        ``Environment.track_graphDD``). If None, distances are Euclidean.
+    edges : list of np.ndarray or None
+        Bin edges for each spatial dimension (``Environment.edges_``) of the
+        grid whose bins are the ``track_graph`` nodes. Required when
+        ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
 
     Returns
@@ -288,15 +293,14 @@ def get_2D_distance(
     if track_graph is None:
         distance = np.linalg.norm(position1 - position2, axis=1)
     else:
+        if edges is None:
+            raise ValueError("edges parameter is required when track_graph is provided")
         node_positions = nx.get_node_attributes(track_graph, "pos")
         node_ids = np.asarray(list(node_positions.keys()))
         node_positions = np.asarray(list(node_positions.values()))
 
         # remove outer boundary edge
-        if edges is not None:
-            bin_edges = [e[1:-1] for e in edges]
-        else:
-            bin_edges = []
+        bin_edges = [e[1:-1] for e in edges]
 
         if precomputed_distance:
             bin_ind1 = get_bin_ind(position1, bin_edges)
@@ -349,7 +353,12 @@ def head_direction_simliarity(
         heading vector ``v``), not a 2-D vector.
     map_estimate : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
-    edges : list or None
+        Graph of the environment's place bins (e.g.
+        ``Environment.track_graphDD``). If None, distances are Euclidean.
+    edges : list of np.ndarray or None
+        Bin edges for each spatial dimension (``Environment.edges_``) of the
+        grid whose bins are the ``track_graph`` nodes. Required when
+        ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
 
     Returns
@@ -403,7 +412,12 @@ def get_ahead_behind_distance2D(
         heading vector ``v``), not a 2-D vector.
     map_position : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
-    edges : list or None
+        Graph of the environment's place bins (e.g.
+        ``Environment.track_graphDD``). If None, distances are Euclidean.
+    edges : list of np.ndarray or None
+        Bin edges for each spatial dimension (``Environment.edges_``) of the
+        grid whose bins are the ``track_graph`` nodes. Required when
+        ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
 
     Returns
