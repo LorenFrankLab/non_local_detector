@@ -57,9 +57,7 @@ def test_clipped_support_counts_original_interpolation_anchors_for_gmm_cap():
     # Only the basis functions at original rows 1, 2, and 3 carry exposure.
     # The two outer anchors remain statistical observations despite their
     # timestamps lying outside the acquisition clip.
-    with pytest.warns(
-        UserWarning, match="reduced occupancy components from 10 to 3"
-    ):
+    with pytest.warns(UserWarning, match="reduced occupancy components from 10 to 3"):
         fit = fit_clusterless_gmm_encoding_model(
             time,
             position,

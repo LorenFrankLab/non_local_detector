@@ -214,6 +214,20 @@ spline boundaries. Those three cases now pass without changing tolerances. The
 corrected GMM fixture retains 34 underflowing bins on a 200-unit track; its
 ground-rate error stays below the existing 1% tolerance. A follow-up run passes
 all 128 selected GLM, trajectory, cross-model, physical-time, and GMM optimization
-tests, plus all four new GMM component-cap regressions. Original golden references
-remain unchanged and available for explicit review of this intentional algorithm
-change.
+tests, plus all four new GMM component-cap regressions. These results compare
+against the original references before the approved refresh below.
+
+## Approved output-reference refresh
+
+On 2026-10-14 the user explicitly approved refreshing the documented output
+references. This branch regenerates only `clusterless_decoder_golden.pkl`,
+`random_walk_transition_golden.pkl` and `nonlocal_detector_golden.pkl` from the
+unchanged pinned inputs. The sorted output and all comparison tolerances are
+unchanged. All four golden tests pass after refresh. The numerical comparison
+tables above retain the original values for review.
+
+The complete seven-fix integration passes 43 independent marked-process checks
+and 296 public-detector checks. This PR and the background PR both change the
+NonLocal binary output reference; integrating both requires computing their
+combined output from the pinned inputs, rather than choosing one branch's
+binary reference.
