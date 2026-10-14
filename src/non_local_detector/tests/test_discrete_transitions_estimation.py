@@ -6,6 +6,7 @@ Tests the core EM algorithm functions:
 - _discrete_transition_statistics and _discrete_transition_from_statistics
 """
 
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -18,13 +19,15 @@ from scipy.special import logsumexp, softmax, xlogy
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
+    DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
-    _float64_jax,
     _state_aggregation_matrix,
     _stationary_counts_block,
     _transition_log_prior,
+    dirichlet_gradient,
+    dirichlet_hessian,
     dirichlet_neg_log_likelihood,
     estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_counts_from_factorized_posteriors,
@@ -1670,10 +1673,11 @@ class TestEstimateNonStationaryStateTransition:
             assert_stochastic_matrix(trans_matrix[t])
 
     def test_reaches_the_float64_minimum_of_its_objective(self):
-        """With 1e5 pseudo-counts per time bin the stay probabilities approach
-        1, past what a float32 objective resolves. Each row's M-step still
-        never raises its objective, and ends at the minimum an independent
-        float64 optimizer of the same objective finds."""
+        """The default stickiness's 1e5 pseudo-counts, against about 1e4
+        expected transitions per row, push two rows' stay probabilities to
+        about 0.9995. Each row's M-step still never raises its objective, and
+        ends at the minimum an independent float64 optimizer of the same
+        objective finds."""
         rng = np.random.default_rng(0)
         n_time, n_states = 20_000, 4
         speed = np.abs(np.cumsum(rng.normal(0, 0.5, n_time)))
@@ -1703,7 +1707,8 @@ class TestEstimateNonStationaryStateTransition:
         )
 
         def objective(flat_coefficients, row):
-            """The row's M-step loss in float64, times the number of samples."""
+            """The row's M-step loss in float64: summed over the transitions,
+            with the Dirichlet prior counted once."""
             coefficients_row = flat_coefficients.reshape(2, -1)
             # The last target state is the reference category.
             linear_predictor = np.column_stack(
@@ -1712,8 +1717,8 @@ class TestEstimateNonStationaryStateTransition:
             log_probs = linear_predictor - logsumexp(
                 linear_predictor, axis=1, keepdims=True
             )
-            weights = response[:, row] + alpha[row] - 1.0
-            penalty = (n_time - 1) * 1e-5 * np.sum(coefficients_row[1:] ** 2)
+            weights = response[:, row] + (alpha[row] - 1.0) / (n_time - 1)
+            penalty = 1e-5 * np.sum(coefficients_row[1:] ** 2)
             return -np.sum(weights * log_probs) + penalty
 
         for row in range(n_states):
@@ -1731,9 +1736,27 @@ class TestEstimateNonStationaryStateTransition:
             assert after - best.fun < 1e-3, (row, after - best.fun)
         np.testing.assert_allclose(transition.sum(axis=-1), 1.0, atol=1e-12)
 
+    @pytest.mark.parametrize("method", ["trust-exact", "L-BFGS-B"])
+    def test_single_state_has_nothing_to_fit(self, method):
+        """One state has no free transition coefficients, so the M-step keeps
+        them and the only transition stays at probability 1."""
+        n_time = 20
+        design_matrix = np.column_stack((np.ones(n_time), np.linspace(0, 1, n_time)))
+        coefficients, transition = (
+            estimate_non_stationary_state_transition_from_responses(
+                np.zeros((2, 1, 0)),
+                design_matrix,
+                np.ones((n_time - 1, 1, 1)),
+                stickiness=5.0,
+                optimization_method=method,
+            )
+        )
+        assert coefficients.shape == (2, 1, 0)
+        np.testing.assert_array_equal(transition, np.ones((n_time, 1, 1)))
+
     def test_newton_methods_reach_the_same_estimate(self):
-        """A Newton method, which uses the Hessian, and the default L-BFGS-B
-        reach the same estimate."""
+        """L-BFGS-B and the default trust-exact, a Newton method that uses the
+        Hessian, reach the same estimate."""
         rng = np.random.default_rng(6)
         n_time, n_states = 500, 3
         design_matrix = np.column_stack(
@@ -1792,6 +1815,222 @@ class TestEstimateNonStationaryStateTransition:
             jax_centered_log_softmax_forward(improved_row[np.newaxis])
         )[0]
         np.testing.assert_allclose(transition_matrix[0, 0], expected_row, atol=1e-6)
+
+
+def _sampled_transition_responses(
+    rng: np.random.Generator, transition: np.ndarray
+) -> np.ndarray:
+    """One-hot next states drawn independently for every row and time bin.
+
+    Parameters
+    ----------
+    transition : np.ndarray, shape (n_time - 1, n_states, n_states)
+
+    Returns
+    -------
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+    """
+    cumulative = np.cumsum(transition, axis=-1)
+    draws = rng.uniform(size=transition.shape[:2] + (1,))
+    next_state = np.minimum((draws > cumulative).sum(axis=-1), transition.shape[-1] - 1)
+    return np.eye(transition.shape[-1])[next_state]
+
+
+@pytest.mark.unit
+class TestNonStationaryPriorAndConvergence:
+    """The covariate M-step's prior counts once per row, as for stationary
+    transitions, and its optimizer reaches the optimum on long recordings."""
+
+    def test_intercept_only_design_matches_stationary_map_estimate(self):
+        """With only an intercept, a covariate transition is stationary, so
+        the M-step must give the stationary MAP estimate for the same prior.
+        A prior added at every time bin instead swamps the data."""
+        rng = np.random.default_rng(0)
+        n_time, n_states = 20_001, 3
+        true_transition = np.array(
+            [[0.97, 0.02, 0.01], [0.05, 0.90, 0.05], [0.10, 0.10, 0.80]]
+        )
+        response = _sampled_transition_responses(
+            rng, np.broadcast_to(true_transition, (n_time - 1, n_states, n_states))
+        )
+        stickiness = np.array([300.0, 100.0, 0.0])
+
+        _, covariate_transition = (
+            estimate_non_stationary_state_transition_from_responses(
+                np.zeros((1, n_states, n_states - 1)),
+                np.ones((n_time, 1)),
+                response,
+                concentration=1.0,
+                stickiness=stickiness,
+                transition_regularization=0.0,
+            )
+        )
+        stationary_transition = estimate_stationary_state_transition_from_counts(
+            response.sum(axis=0), stickiness=stickiness, concentration=1.0
+        )
+
+        np.testing.assert_allclose(
+            covariate_transition[0], stationary_transition, atol=1e-6
+        )
+        np.testing.assert_allclose(covariate_transition[-1], covariate_transition[0])
+
+    def test_gradient_and_hessian_match_finite_differences(self):
+        rng = np.random.default_rng(3)
+        design_matrix = np.column_stack((np.ones(200), rng.normal(size=(200, 2))))
+        response = rng.dirichlet(np.ones(4), size=200)
+        args = (design_matrix, response, np.array([5.0, 1.0, 2.0, 1.0]), 0.3)
+        coefficients = rng.normal(0, 0.5, 3 * 3)
+        step = 1e-6
+        identity = np.eye(coefficients.size)
+
+        numerical_gradient = [
+            (
+                dirichlet_neg_log_likelihood(coefficients + step * e, *args)
+                - dirichlet_neg_log_likelihood(coefficients - step * e, *args)
+            )
+            / (2 * step)
+            for e in identity
+        ]
+        numerical_hessian = np.stack(
+            [
+                (
+                    dirichlet_gradient(coefficients + step * e, *args)
+                    - dirichlet_gradient(coefficients - step * e, *args)
+                )
+                / (2 * step)
+                for e in identity
+            ]
+        )
+
+        np.testing.assert_allclose(
+            dirichlet_gradient(coefficients, *args), numerical_gradient, rtol=1e-6
+        )
+        np.testing.assert_allclose(
+            dirichlet_hessian(coefficients, *args),
+            numerical_hessian,
+            rtol=1e-6,
+            atol=1e-8,
+        )
+
+    def test_m_step_functions_default_to_the_detectors_ridge(self):
+        """Direct calls get the same L2 penalty as a detector's M-step."""
+        from non_local_detector import NonLocalSortedSpikesDetector
+
+        detector_default = (
+            NonLocalSortedSpikesDetector().discrete_transition_regularization
+        )
+        defaults = [
+            inspect.signature(estimate_non_stationary_state_transition_from_responses)
+            .parameters["transition_regularization"]
+            .default
+        ] + [
+            inspect.signature(function).parameters["l2_penalty"].default
+            for function in (
+                dirichlet_neg_log_likelihood,
+                dirichlet_gradient,
+                dirichlet_hessian,
+            )
+        ]
+        assert defaults == [detector_default] * 4
+
+    @pytest.mark.parametrize(
+        ("regularization", "bounded"), [(0.1, True), (1e-10, False)]
+    )
+    def test_ridge_keeps_rare_transitions_off_zero(
+        self, regularization, bounded, caplog
+    ):
+        """Rare transitions leave some speed bands without counts, and
+        tracking outliers make a basis column with few samples. Unpenalized,
+        the converged optimum sends those transitions to ~0; the default
+        ridge (0.1) keeps them bounded. Either way the optimizer converges."""
+        rng = np.random.default_rng(4)
+        n_time, n_states = 50_001, 4
+        speed = rng.gamma(1.5, 12.0, n_time)
+        speed[rng.uniform(size=n_time) < 0.6] = 0.0
+        speed[rng.choice(n_time, 20, replace=False)] = rng.uniform(300, 2000, 20)
+        stay = np.array([0.99, 0.98, 0.96, 0.95])
+        transition = (
+            np.full((n_states, n_states), 0.0) + ((1 - stay) / (n_states - 1))[:, None]
+        )
+        np.fill_diagonal(transition, stay)
+        response = _sampled_transition_responses(
+            rng, np.broadcast_to(transition, (n_time - 1, n_states, n_states))
+        )
+        _, initial_coefficients, design_matrix = DiscreteNonStationaryDiagonal(
+            stay
+        ).make_state_transition({"speed": speed})
+
+        with caplog.at_level("WARNING"):
+            _, estimated = estimate_non_stationary_state_transition_from_responses(
+                initial_coefficients,
+                design_matrix,
+                response,
+                stickiness=np.array([1e5, 1e5, 300.0, 300.0]),
+                transition_regularization=regularization,
+            )
+
+        assert not [r for r in caplog.records if "optimization" in r.getMessage()]
+        assert bool(estimated.min() > 1e-5) is bounded
+
+    def test_reaches_optimum_on_long_recording(self):
+        """On a long recording the returned coefficients are at the optimum of
+        the summed objective, not stopped early by a tolerance scaled for a
+        per-bin average."""
+        rng = np.random.default_rng(1)
+        n_time, n_states = 200_001, 3
+        covariate = rng.gamma(2.0, 10.0, size=n_time)
+        design_matrix = np.column_stack(
+            (np.ones(n_time), np.log1p(covariate), np.sqrt(covariate))
+        )
+        true_coefficients = rng.normal(0, 0.5, (3, n_states, n_states - 1))
+        true_coefficients[0] += 2.0 * np.eye(n_states)[:, : n_states - 1]
+        logits = np.einsum("tc,csk->tsk", design_matrix[:-1], true_coefficients)
+        true_transition = softmax(
+            np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1),
+            axis=-1,
+        )
+        response = _sampled_transition_responses(rng, true_transition)
+        prior = {
+            "concentration": 1.0,
+            "stickiness": np.array([50.0, 0.0, 10.0]),
+            "transition_regularization": 1e-3,
+        }
+
+        coefficients, _ = estimate_non_stationary_state_transition_from_responses(
+            np.zeros_like(true_coefficients), design_matrix, response, **prior
+        )
+        alpha = 1.0 + np.diag(prior["stickiness"])
+        n_samples = n_time - 1
+
+        def negative_log_posterior(flat, row):
+            """Summed float64 objective: expected log-likelihood, Dirichlet
+            prior counted once, L2 on non-intercept coefficients."""
+            beta = flat.reshape(3, n_states - 1)
+            logits = design_matrix[:-1] @ beta
+            log_probs = (
+                logits
+                - np.logaddexp.reduce(
+                    np.column_stack((logits, np.zeros(n_samples))), axis=1
+                )[:, None]
+            )
+            log_probs = np.column_stack((log_probs, log_probs[:, :1] - logits[:, :1]))
+            weights = response[:, row] + (alpha[row] - 1.0) / n_samples
+            penalty = prior["transition_regularization"] * np.sum(beta[1:] ** 2)
+            return -np.sum(weights * log_probs) + penalty
+
+        for row in range(n_states):
+            reference = minimize(
+                negative_log_posterior,
+                coefficients[:, row].ravel(),
+                args=(row,),
+                method="BFGS",
+                options={"gtol": 1e-8},
+            )
+            gap = negative_log_posterior(coefficients[:, row].ravel(), row) - min(
+                reference.fun, negative_log_posterior(coefficients[:, row].ravel(), row)
+            )
+            # Summed over ~200,000 transitions: within 1e-3 nats of optimal.
+            assert gap < 1e-3, f"row {row} stopped {gap:.3g} nats short"
 
 
 @pytest.mark.unit
@@ -2358,7 +2597,7 @@ class TestTransitionLogPrior:
             assert objective(nearby / nearby.sum(axis=1, keepdims=True)) <= best
 
     def test_non_stationary_matches_m_step_loss(self):
-        """Expected log-likelihood + log prior equals -n times the summed
+        """Expected log-likelihood + log prior equals minus the summed
         per-row loss that the non-stationary M-step minimizes."""
         rng = np.random.default_rng(2)
         n_time, n_coefficients, n_states = 40, 3, 3
@@ -2393,24 +2632,19 @@ class TestTransitionLogPrior:
             linear_predictor, axis=-1, keepdims=True
         )
         expected_log_likelihood = np.sum(response * log_probs)
-        # In float64, as the M-step evaluates its loss.
-        with _float64_jax():
-            summed_loss = sum(
-                float(
-                    dirichlet_neg_log_likelihood(
-                        coefficients[:, row].ravel(),
-                        design_matrix[:-1],
-                        response[:, row],
-                        alpha[row],
-                        regularization,
-                    )
-                )
-                for row in range(n_states)
+        summed_loss = sum(
+            dirichlet_neg_log_likelihood(
+                coefficients[:, row].ravel(),
+                design_matrix[:-1],
+                response[:, row],
+                alpha[row],
+                regularization,
             )
+            for row in range(n_states)
+        )
+        # Both in float64, as the M-step evaluates its loss.
         np.testing.assert_allclose(
-            expected_log_likelihood + log_prior,
-            -(n_time - 1) * summed_loss,
-            rtol=1e-12,
+            expected_log_likelihood + log_prior, -summed_loss, rtol=1e-12
         )
 
     def test_non_stationary_without_transitions_is_zero(self):
@@ -2452,10 +2686,10 @@ class TestTransitionLogPrior:
                 logits = design_matrix[:-1] @ coefficients[:, row]
                 logits = np.column_stack((logits, np.zeros(n_time - 1)))
                 log_probs = logits - logsumexp(logits, axis=1, keepdims=True)
-                total += np.sum((alpha[row] - 1.0) * log_probs)
-                total -= (
-                    (n_time - 1) * regularization * np.sum(coefficients[1:, row] ** 2)
-                )
+                # The prior counts once per row: alpha - 1 times the mean log
+                # probability over the transitions.
+                total += np.sum((alpha[row] - 1.0) * log_probs) / (n_time - 1)
+                total -= regularization * np.sum(coefficients[1:, row] ** 2)
             return total
 
         def log_prior(coefficients):

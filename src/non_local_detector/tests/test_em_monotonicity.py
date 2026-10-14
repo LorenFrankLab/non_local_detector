@@ -539,13 +539,10 @@ class TestEMMonitorsMapObjective:
     def test_covariate_transitions_raise_the_penalized_objective(
         self, sorted_sim, transition_representation
     ):
-        """Speed-dependent transitions with the default stickiness: the
-        Dirichlet prior pulls the marginal log-likelihood down, every check of
-        the penalized log-likelihood rises, and the final objective includes
-        the covariate transitions' float64 log prior.
-
-        The 1e5 pseudo-counts per bin push stay probabilities near 1, beyond
-        what a float32 M-step loss resolves."""
+        """Speed-dependent transitions with the default stickiness: every
+        check of the penalized log-likelihood rises, and the final objective
+        includes the covariate transitions' float64 log prior, without the
+        default frozen No-Spike row."""
         detector = NonLocalSortedSpikesDetector(
             discrete_transition_type=DiscreteNonStationaryDiagonal(
                 np.full(4, 0.98), formula="1 + speed"
@@ -562,8 +559,6 @@ class TestEMMonitorsMapObjective:
                 transition_representation=transition_representation,
             )
 
-        # The scenario under test: the prior pulls the likelihood down.
-        assert np.any(np.diff(results.attrs["marginal_log_likelihoods"]) < 0)
         _assert_penalized_objective_rises(detector, results, caught)
         n_transitions = len(sorted_sim.fit_args["time_edges"]) - 2
         log_prior = _transition_log_prior(
@@ -574,6 +569,7 @@ class TestEMMonitorsMapObjective:
             detector.discrete_transition_concentration,
             detector.discrete_transition_stickiness,
             detector.discrete_transition_regularization,
+            free_rows=~detector._frozen_discrete_transition_rows_mask_,
         )
         assert log_prior < 0
         np.testing.assert_allclose(

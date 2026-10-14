@@ -52,7 +52,10 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         Stickiness parameters for state persistence, by default
         [100000.0, 30.0, 200.0] with very high no-spike persistence.
     discrete_transition_regularization : float, optional
-        Regularization parameter for transitions, by default 1e-10.
+        L2 penalty on the non-intercept coefficients of covariate-dependent
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
+        Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions or None, optional
         Transition types for continuous states. If None, uses default:
         [[Discrete(), Uniform(), Uniform()], [Discrete(), RandomWalk(), Uniform()],
@@ -100,7 +103,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness | None = None,
-        discrete_transition_regularization: float = 1e-10,
+        discrete_transition_regularization: float = 0.1,
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
@@ -182,7 +185,10 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         Stickiness parameters for state persistence, by default
         [100000.0, 30.0, 200.0] with very high no-spike persistence.
     discrete_transition_regularization : float, optional
-        Regularization parameter for transitions, by default 1e-10.
+        L2 penalty on the non-intercept coefficients of covariate-dependent
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
+        Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions or None, optional
         Transition types for continuous states. If None, uses simplified
         two-state model: [[RandomWalk(), Uniform()], [Uniform(), Uniform()]].
@@ -229,7 +235,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness | None = None,
-        discrete_transition_regularization: float = 1e-10,
+        discrete_transition_regularization: float = 0.1,
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,

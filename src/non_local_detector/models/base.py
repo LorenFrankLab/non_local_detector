@@ -1195,8 +1195,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             retain the values specified by ``discrete_transition_type``
             regardless of what the data suggests. Use this to pin
             structural states (e.g., a No-Spike self-transition) that
-            should not be learned from data. Only applies to stationary
-            (2D) transition matrices.
+            should not be learned from data. For covariate-dependent
+            transitions, frozen rows keep their initial coefficients, so they
+            stay at their initial (time-constant) values.
         local_position_std : float or None, optional
             Controls the Local state's spatial representation:
 
@@ -2221,6 +2222,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             transition.make_state_transition(self.environments)
                         )
 
+    def __getstate__(self) -> dict:
+        """Pickle without the patsy design matrix, which cannot be pickled.
+
+        ``__setstate__`` rebuilds it from the fitted covariates.
+        """
+        state = super().__getstate__()
+        if state.get("discrete_transition_design_matrix_") is not None:
+            state = dict(state)
+            state["discrete_transition_design_matrix_"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        super().__setstate__(state)
+        covariate_data = state.get("_discrete_transition_covariate_data_")
+        if covariate_data is not None and (
+            self.discrete_transition_design_matrix_ is None
+        ):
+            self.discrete_transition_design_matrix_ = (
+                self.discrete_transition_type.make_state_transition(covariate_data)[2]
+            )
+
     def initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict | None = None
     ) -> None:
@@ -2247,28 +2269,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_transition_coefficients_,
             self.discrete_transition_design_matrix_,
         ) = self.discrete_transition_type.make_state_transition(covariate_data)
+        # patsy design matrices cannot be pickled or deep-copied; keep a copy
+        # of the covariates so ``__setstate__`` can rebuild the design matrix
+        # with the fitted knots even if the caller later changes them.
+        self._discrete_transition_covariate_data_ = (
+            None
+            if self.discrete_transition_design_matrix_ is None
+            else copy.deepcopy(covariate_data)
+        )
 
-        # Snapshot frozen rows from the initial matrix so the EM M-step
-        # can restore them after every update. Only meaningful for
-        # stationary (2D) transition matrices — if the user requests
-        # frozen rows with a non-stationary transition type, warn.
-        if self._frozen_discrete_transition_rows_mask_ is not None:
-            if self.discrete_state_transitions_.ndim == 2:
-                self._frozen_discrete_transition_rows_baseline_ = (
-                    self.discrete_state_transitions_[
-                        self._frozen_discrete_transition_rows_mask_
-                    ].copy()
-                )
-            else:
-                warnings.warn(
-                    "frozen_discrete_transition_rows is set but the "
-                    "discrete transition matrix is non-stationary "
-                    f"(ndim={self.discrete_state_transitions_.ndim}). "
-                    "Row freezing is only applied to stationary matrices "
-                    "and will be ignored here.",
-                    stacklevel=2,
-                )
-                self._frozen_discrete_transition_rows_baseline_ = None
+        # Snapshot frozen rows of a stationary matrix so the EM M-step can
+        # restore them after every update. Covariate-dependent frozen rows
+        # instead keep their coefficients: the M-step skips them.
+        if (
+            self._frozen_discrete_transition_rows_mask_ is not None
+            and self.discrete_state_transitions_.ndim == 2
+        ):
+            self._frozen_discrete_transition_rows_baseline_ = (
+                self.discrete_state_transitions_[
+                    self._frozen_discrete_transition_rows_mask_
+                ].copy()
+            )
         else:
             self._frozen_discrete_transition_rows_baseline_ = None
 
@@ -3546,13 +3567,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_transition_regularization,
             self.discrete_transition_prior_weight,
         )
-        # Frozen rows are restored after each M-step, so they do not enter the
+        # Frozen rows are not estimated (covariate-dependent rows are skipped,
+        # stationary rows restored after each M-step), so they do not enter the
         # objective it maximizes.
-        is_frozen = (
-            self._frozen_discrete_transition_rows_baseline_ is not None
-            and self.discrete_state_transitions_.ndim == 2
-        )
-        free_rows = ~self._frozen_discrete_transition_rows_mask_ if is_frozen else None
+        frozen_rows = self._frozen_discrete_transition_rows_mask_
+        free_rows = None if frozen_rows is None else ~frozen_rows
 
         def transition_log_prior(statistics: np.ndarray) -> float:
             """Log prior of the current transitions under one M-step's prior."""
@@ -3721,6 +3740,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.discrete_transition_coefficients_,
                     self.discrete_transition_design_matrix_,
                     *prior,
+                    frozen_rows=frozen_rows,
                 )
                 # The learned transitions are per bin at this width.
                 self.transition_time_bin_width_ = time_bin_width
@@ -3732,7 +3752,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 # This is a constrained M-step; EM converges to the
                 # constrained fixed point rather than the unconstrained
                 # maximizer, which is the desired behavior here.
-                if is_frozen:
+                if self._frozen_discrete_transition_rows_baseline_ is not None:
                     self.discrete_state_transitions_[
                         self._frozen_discrete_transition_rows_mask_
                     ] = self._frozen_discrete_transition_rows_baseline_
