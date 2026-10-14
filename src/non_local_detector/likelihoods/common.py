@@ -1808,12 +1808,16 @@ def _prepared_kde_log_density(
     model, points, spike_time_order, *, predict_log=None, policy=""
 ):
     """Cache true density for immutable points and fitted leaves during prediction."""
+
+    def predict():
+        if predict_log is None:
+            return kde_log_density(model, points)
+        return predict_log(model, points)
+
     return spike_time_order.memo_kde(
         f"kde_log_density:{model.block_size}:{policy}",
         (model, model.samples_, model.weights_, model.std, points),
-        lambda: kde_log_density(model, points)
-        if predict_log is None
-        else predict_log(model, points),
+        predict,
     )
 
 
