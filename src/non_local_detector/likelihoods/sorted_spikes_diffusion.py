@@ -81,6 +81,26 @@ def _interior_bin_indices(
     return full_to_local[environment.get_bin_ind(positions)]
 
 
+def _histogram_trajectory_exposure(
+    quadrature, weights, environment, full_to_local, n_interior
+):
+    """Accumulate residence-time mass without copying the full trajectory grid."""
+    field = np.zeros(n_interior)
+    for rows, mass in quadrature.iter_weighted_exposure(weights):
+        active = mass > 0
+        if not np.any(active):
+            continue
+        points = quadrature.positions[rows][active]
+        if environment.track_graph is not None and points.shape[1] > 1:
+            points = environment._linear_position(points)[:, None]
+        field += np.bincount(
+            _interior_bin_indices(environment, points, full_to_local),
+            weights=mass[active],
+            minlength=n_interior,
+        )
+    return field
+
+
 def _validate_local_interpolation(local_interpolation: str) -> str:
     """Validate the local place-field lookup mode."""
     if local_interpolation not in _LOCAL_INTERPOLATION_MODES:
@@ -313,18 +333,17 @@ def pixellate_interior_fields(
     full_to_local = _full_to_local(node_order, n_total_bins)
 
     occupancy_field: np.ndarray
-    active = exposure_weights > 0
-    if np.any(active):
-        occupancy_positions = get_position_at_time(
-            position_time, position, position_time[active], environment
-        )
-        occupancy_field = np.bincount(
-            _interior_bin_indices(environment, occupancy_positions, full_to_local),
-            weights=exposure_weights[active],
-            minlength=n_interior,
-        )
-    else:
-        occupancy_field = np.zeros(n_interior)
+    # Split at rectangular-grid crossings as well as spatial subdivisions.
+    # Graph projections can change bins inside a raw-coordinate cell, so those
+    # use the same fine spatial rule without pretending their crossings are exact.
+    grid_edges = environment.edges_ if environment.track_graph is None else None
+    spatial_scale = np.min(np.asarray(environment.place_bin_size))
+    exposure_quadrature = support.quadrature(
+        position, spatial_scale=spatial_scale, bin_edges=grid_edges
+    )
+    occupancy_field = _histogram_trajectory_exposure(
+        exposure_quadrature, weights, environment, full_to_local, n_interior
+    )
 
     weight_sum = exposure_weights.sum()
     mean_rates: list[float] = []

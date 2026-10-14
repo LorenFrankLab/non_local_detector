@@ -569,8 +569,9 @@ def fit_clusterless_kde_encoding_model(
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
+    exposure_quadrature = support.quadrature(position, spatial_scale=position_std)
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
-        position, exposure_weights
+        exposure_quadrature.positions, exposure_quadrature.weighted_exposure(weights)
     )
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D

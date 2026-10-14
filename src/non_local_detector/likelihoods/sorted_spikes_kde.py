@@ -306,8 +306,9 @@ def fit_sorted_spikes_kde_encoding_model(
     else:
         weights = validate_weights(weights, position.shape[0])
 
+    exposure_quadrature = support.quadrature(position, spatial_scale=position_std)
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
-        position, exposure_weights
+        exposure_quadrature.positions, exposure_quadrature.weighted_exposure(weights)
     )
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D

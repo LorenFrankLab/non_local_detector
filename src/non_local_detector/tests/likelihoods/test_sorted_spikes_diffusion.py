@@ -1013,6 +1013,12 @@ def test_less_edge_bias_than_kde():
         position_range=((0.0, 50.0), (0.0, 50.0)),
     ).fit_place_grid(position, infer_track_interior=True)
     sampling_frequency = 200
+    # These draws are independent occupancy snapshots, rather than a continuous
+    # trajectory through the straight lines connecting them. Missing rows
+    # declare that disconnected tracking support and retain endpoint holds.
+    snapshots = np.full((2 * len(position), 2), np.nan)
+    snapshots[::2] = position
+    position = snapshots
     time = np.arange(position.shape[0]) / sampling_frequency
     spike_times = [time[:50]]  # occupancy is spike-independent; a token cell
     std = 6.0

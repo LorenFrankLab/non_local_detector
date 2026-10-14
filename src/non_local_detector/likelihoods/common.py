@@ -663,7 +663,12 @@ def get_position_at_time(
         )
     else:
         position_at_spike_times = encoding_support.interpolate(position, spike_times)
-    if env is not None and env.track_graph is not None:
+    if (
+        env is not None
+        and env.track_graph is not None
+        and position_at_spike_times.ndim > 1
+        and position_at_spike_times.shape[1] > 1
+    ):
         if position_at_spike_times.shape[0] > 0:
             position_at_spike_times = env._linear_position(position_at_spike_times)[
                 :, None

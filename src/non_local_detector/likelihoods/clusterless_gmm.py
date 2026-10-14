@@ -550,7 +550,12 @@ def fit_clusterless_gmm_encoding_model(
             UserWarning,
             stacklevel=2,
         )
-    occupancy_sample_weight = _gmm_sample_weight(exposure_weights, False)
+    exposure_quadrature = support.quadrature(
+        position, spatial_scale=np.min(np.asarray(environment.place_bin_size))
+    )
+    occupancy_sample_weight = _gmm_sample_weight(
+        exposure_quadrature.weighted_exposure(weights), False
+    )
 
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
@@ -564,10 +569,12 @@ def fit_clusterless_gmm_encoding_model(
 
     # If environment has a graph and positions are 2D+, linearize to 1D for occupancy/GPI
     if environment.track_graph is not None and position.shape[1] > 1:
-        position1D = environment._linear_position(np.asarray(position))[:, None]
+        position1D = environment._linear_position(exposure_quadrature.positions)[
+            :, None
+        ]
         pos_for_occ = _as_jnp(position1D)
     else:
-        pos_for_occ = position
+        pos_for_occ = _as_jnp(exposure_quadrature.positions)
 
     # Count the rows the GMM will actually fit on, using the array it fits: its
     # zero-weight cutoff depends on that array's dtype, so counting every

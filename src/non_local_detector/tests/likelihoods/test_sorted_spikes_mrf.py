@@ -819,6 +819,11 @@ def _fit_two_rooms_with_right_room_weights(right_room_weights):
     spike_times = [time[rng.random(time.shape[0]) < 0.05] for _ in range(2)]
     in_right_room = position[:, 0] > 20.0
     weights = np.where(in_right_room, right_room_weights, 1.0)
+    # The fixture jumps between disconnected rooms. Declare each continuous
+    # same-room run; interpolating across those jumps would expose both rooms
+    # during a positive-to-zero weight transition.
+    runs = np.split(np.arange(len(time)), np.flatnonzero(np.diff(in_right_room)) + 1)
+    intervals = [[time[run[0]] - 0.0025, time[run[-1]] + 0.0025] for run in runs]
 
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,
@@ -827,6 +832,7 @@ def _fit_two_rooms_with_right_room_weights(right_room_weights):
         environment=env,
         weights=weights,
         penalty=1.0,
+        valid_position_intervals=intervals,
     )
     node_order = np.asarray(encoding["node_order"])
     right_bins = env.place_bin_centers_[node_order, 0] > 20.0

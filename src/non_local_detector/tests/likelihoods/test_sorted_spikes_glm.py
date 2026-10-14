@@ -471,7 +471,7 @@ def test_encoding_fit_solves_all_cells_in_one_call(
     calls = []
 
     def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
-        calls.append(np.shape(spikes))
+        calls.append(np.shape(kwargs.get("_event_design_sums", spikes)))
         return fit_poisson_regressions(
             design_matrix, spikes, weights, l2_penalty, **kwargs
         )
@@ -775,11 +775,14 @@ def _fit_glm(
 
 
 def _spy_event_counts(monkeypatch):
-    """Record the (event counts, exposure) pairs the GLM hands the optimizer."""
+    """Record the (event basis sums, quadrature exposure) supplied to the fit."""
     captured = []
 
     def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
-        captured.extend((np.asarray(row), np.asarray(weights)) for row in spikes)
+        captured.extend(
+            (np.asarray(row), np.asarray(weights))
+            for row in kwargs["_event_design_sums"]
+        )
         return fit_poisson_regressions(
             design_matrix, spikes, weights, l2_penalty, **kwargs
         )
@@ -790,16 +793,11 @@ def _spy_event_counts(monkeypatch):
 
 @pytest.mark.unit
 class TestWeightedEventOwnership:
-    """The GLM event term splits each spike's interpolated weight between the
-    two position samples that bracket it.
+    """Actual spike basis values retain the canonical interpolated event weight.
 
-    A spike a fraction ``a`` of the way from sample ``i`` to ``i + 1`` adds
-    ``(1 - a) * w_i`` to row ``i`` and ``a * w_{i+1}`` to row ``i + 1``. The two
-    parts sum to the spike's interpolated weight, so group ownership is
-    unchanged, and a row receives event mass only where its own exposure
-    weight is positive. Putting the whole weight on the left row gives a row
-    with zero exposure positive events at a 0 -> 1 mask transition, and the
-    spline rate there diverges.
+    Exposure follows the same continuous weight and position trajectory rather
+    than assigning spikes to sample endpoints. The intercept statistic is total
+    weighted event mass, independently of the other spline coordinates.
     """
 
     def test_constant_rate_mle_is_weighted_events_per_exposure(self):
@@ -834,8 +832,9 @@ class TestWeightedEventOwnership:
         )
 
         ((event_counts, exposure),) = captured
-        np.testing.assert_allclose(event_counts, [0.0, 1.0, 0.0, 1.5, 0.0])
-        np.testing.assert_array_equal(exposure, mask)
+        np.testing.assert_allclose(event_counts[0], 2.5)
+        np.testing.assert_allclose(exposure.sum(), mask.sum())
+        assert np.all(exposure >= 0)
         assert np.all(np.isfinite(encoding["place_fields"]))
         log_likelihood = predict_sorted_spikes_glm_log_likelihood(
             position_time, position, spike_times, time_edges=position_time, **encoding
@@ -867,18 +866,17 @@ class TestWeightedEventOwnership:
 
         ((event_counts, _),) = captured
         np.testing.assert_allclose(
-            event_counts.sum(),
+            event_counts[0],
             np.interp(spike_times, position_time, weights).sum(),
             rtol=1e-12,
         )
-        np.testing.assert_array_equal(event_counts[weights == 0.0], 0.0)
+        assert np.all(np.isfinite(event_counts))
         assert np.all(np.isfinite(encoding["place_fields"]))
 
-    def test_unit_weights_split_each_spike_between_bracketing_samples(
+    def test_unit_weights_preserve_endpoint_and_interior_spike_mass(
         self, monkeypatch, simple_1d_environment
     ):
-        """Interior events split linearly; endpoint half-cell events belong
-        entirely to their nearest endpoint sample."""
+        """Endpoint holds and interior events retain one unit of mass each."""
         captured = _spy_event_counts(monkeypatch)
         position_time = np.arange(5.0)
         spike_times = [np.array([-0.5, 0.25, 1.0, 3.75, 4.0, 4.5])]
@@ -891,7 +889,7 @@ class TestWeightedEventOwnership:
         )
 
         ((event_counts, _),) = captured
-        np.testing.assert_allclose(event_counts, [1.75, 1.25, 0.0, 0.25, 2.75])
+        np.testing.assert_allclose(event_counts[0], 6.0)
 
 
 @pytest.mark.unit
@@ -1021,6 +1019,13 @@ def test_track_graph_fit_linearizes_two_dimensional_position():
     """
     env, time, position, spike_times, _ = _corner_track_data()
     linear = env._linear_position(position)[:, None]
+    # XY interpolation across a corner is a chord, while linear track
+    # interpolation follows arc length. Compare equivalent trajectories by
+    # declaring each same-edge span separately, with tracking gaps at corners.
+    edge_runs = np.split(
+        np.arange(len(time)), np.flatnonzero(np.diff(position[:, 1] > 0)) + 1
+    )
+    intervals = [[time[run[0]] - 0.0025, time[run[-1]] + 0.0025] for run in edge_runs]
 
     def fit(positions):
         return fit_sorted_spikes_glm_encoding_model(
@@ -1033,6 +1038,7 @@ def test_track_graph_fit_linearizes_two_dimensional_position():
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
             emission_knot_spacing=2.0,
+            valid_position_intervals=intervals,
             disable_progress_bar=True,
         )
 

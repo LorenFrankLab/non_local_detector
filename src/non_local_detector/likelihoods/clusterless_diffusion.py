@@ -97,6 +97,7 @@ from non_local_detector.likelihoods.diffusion import (
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
+    _histogram_trajectory_exposure,
     _interior_bin_indices,
 )
 from non_local_detector.time_edges import (
@@ -381,18 +382,14 @@ def fit_clusterless_diffusion_encoding_model(
 
     # ---- occupancy pi = H O / (sum w_pos * dV), floored at EPS ----
     occupancy_field: np.ndarray
-    active = exposure_weights > 0
-    if np.any(active):
-        occupancy_positions = get_position_at_time(
-            position_time, position, position_time[active], environment
-        )
-        occupancy_field = np.bincount(
-            _interior_bin_indices(environment, occupancy_positions, full_to_local),
-            weights=exposure_weights[active],
-            minlength=n_interior,
-        )
-    else:
-        occupancy_field = np.zeros(n_interior)
+    exposure_quadrature = support.quadrature(
+        position,
+        spatial_scale=np.min(np.asarray(environment.place_bin_size)),
+        bin_edges=environment.edges_ if environment.track_graph is None else None,
+    )
+    occupancy_field = _histogram_trajectory_exposure(
+        exposure_quadrature, weights, environment, full_to_local, n_interior
+    )
     occupancy_hat = _diffuse_field(
         occupancy_field, Lam, Q, position_std, labels, n_components
     )

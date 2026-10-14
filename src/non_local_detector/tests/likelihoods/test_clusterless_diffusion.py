@@ -496,6 +496,9 @@ def test_binary_weights_match_hard_subset():
     t_np = position_time
     weights = np.where((t_np >= 3.0) & (t_np <= 7.0), 1.0, 0.0)
     block = (t_np >= 3.0) & (t_np <= 7.0)
+    # Match the subset's tracking support, including held endpoint half-cells.
+    # Binary posterior weights alone interpolate through boundary ramps.
+    intervals = [[t_np[block][0] - 0.05, t_np[block][-1] + 0.05]]
 
     common = {
         "position_std": POSITION_STD,
@@ -509,6 +512,7 @@ def test_binary_weights_match_hard_subset():
         [jnp.asarray(all_feats)],
         env,
         weights=weights,
+        valid_position_intervals=intervals,
         **common,
     )
     subset = fit_clusterless_diffusion_encoding_model(
@@ -518,6 +522,7 @@ def test_binary_weights_match_hard_subset():
         [jnp.asarray(all_feats[in_block])],
         env,
         weights=None,
+        valid_position_intervals=intervals,
         **common,
     )
 

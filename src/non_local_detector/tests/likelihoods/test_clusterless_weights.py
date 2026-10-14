@@ -50,7 +50,7 @@ def _predict_nonlocal(env, encoding, t_pos, pos, dec_spike_times, dec_feats, t_e
     )
 
 
-def _fit(env, t_pos, pos, spike_times, feats, weights=None):
+def _fit(env, t_pos, pos, spike_times, feats, weights=None, **support_params):
     return fit_clusterless_kde_encoding_model(
         position_time=t_pos,
         position=pos,
@@ -62,6 +62,7 @@ def _fit(env, t_pos, pos, spike_times, feats, weights=None):
         waveform_std=1.0,
         block_size=16,
         disable_progress_bar=True,
+        **support_params,
     )
 
 
@@ -104,8 +105,20 @@ def test_binary_weights_match_subset_fit_clusterless_kde(simple_1d_environment):
     t_np = np.asarray(t_pos)
     weights = np.where((t_np >= 3.0) & (t_np <= 7.0), 1.0, 0.0)
     block = (t_np >= 3.0) & (t_np <= 7.0)
+    # A binary posterior mask has linear transition ramps in continuous time.
+    # Declare matching tracking support so this comparison uses the same held
+    # endpoint positions as the physically restricted subset.
+    intervals = [[float(t_np[block][0]) - 0.05, float(t_np[block][-1]) + 0.05]]
 
-    weighted = _fit(env, t_pos, pos, [all_spike_times], [all_feats], weights=weights)
+    weighted = _fit(
+        env,
+        t_pos,
+        pos,
+        [all_spike_times],
+        [all_feats],
+        weights=weights,
+        valid_position_intervals=intervals,
+    )
     subset = _fit(
         env,
         t_pos[block],
@@ -113,6 +126,7 @@ def test_binary_weights_match_subset_fit_clusterless_kde(simple_1d_environment):
         [all_spike_times[in_block]],
         [all_feats[in_block]],
         weights=None,
+        valid_position_intervals=intervals,
     )
 
     t_edges = jnp.linspace(0.0, 10.0, 6)

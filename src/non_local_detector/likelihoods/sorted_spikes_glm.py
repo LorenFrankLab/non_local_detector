@@ -211,6 +211,8 @@ def _poisson_regression_sums(
     weights,
     coefficients,
     rate_floor,
+    event_design_sums=None,
+    reference_coefficients=None,
     *,
     block_rows,
     derivatives,
@@ -247,16 +249,31 @@ def _poisson_regression_sums(
     def add_block(block, sums):
         start = block * block_rows
         X = jax.lax.dynamic_slice_in_dim(design_matrix, start, block_rows)
-        y = jax.lax.dynamic_slice_in_dim(spikes, start, block_rows, axis=1)
         w = jax.lax.dynamic_slice_in_dim(weights, start, block_rows)
         unfloored = jnp.exp(jnp.matmul(coefficients, X.T, precision=highest))
-        above_floor = unfloored > rate_floor
-        rate = jnp.where(above_floor, unfloored, rate_floor)
-        data = jnp.sum(jax.scipy.special.xlogy(y, rate) - w * rate, axis=1)
+        if event_design_sums is None:
+            y = jax.lax.dynamic_slice_in_dim(spikes, start, block_rows, axis=1)
+            above_floor = unfloored > rate_floor
+            rate = jnp.where(above_floor, unfloored, rate_floor)
+            data = jnp.sum(jax.scipy.special.xlogy(y, rate) - w * rate, axis=1)
+            residual = jnp.where(above_floor, y - w * rate, 0.0)
+            curvature = jnp.where(above_floor, w * rate, 0.0)
+        else:
+            # The event term is linear in coefficients and is added once below.
+            # The exponential link is smooth during point-process fitting; the
+            # prediction floor is only needed for silent/unidentified units.
+            if reference_coefficients is None:
+                data = -jnp.sum(w * unfloored, axis=1)
+            else:
+                reference_rate = jnp.exp(
+                    jnp.matmul(reference_coefficients, X.T, precision=highest)
+                )
+                delta_eta = jnp.matmul(coefficients, X.T, precision=highest)
+                data = -jnp.sum(w * reference_rate * jnp.expm1(delta_eta), axis=1)
+            residual = -w * unfloored
+            curvature = w * unfloored
         if not derivatives:
             return (sums[0] + data,)
-        residual = jnp.where(above_floor, y - w * rate, 0.0)
-        curvature = jnp.where(above_floor, w * rate, 0.0)
         return (
             sums[0] + data,
             sums[1] + jnp.matmul(residual, X, precision=highest),
@@ -270,16 +287,18 @@ def _poisson_regression_sums(
             jnp.zeros((n_cells, n_coefficients), dtype),
             jnp.zeros((n_cells, n_coefficients, n_coefficients), dtype),
         )
-    return jax.lax.fori_loop(0, design_matrix.shape[0] // block_rows, add_block, sums)
+    sums = jax.lax.fori_loop(0, design_matrix.shape[0] // block_rows, add_block, sums)
+    return sums
 
 
 def fit_poisson_regressions(
     design_matrix: np.ndarray,
-    spikes: np.ndarray,
+    spikes: np.ndarray | None,
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
     *,
     rate_floor: float = EPS,
+    _event_design_sums: np.ndarray | None = None,
 ) -> jnp.ndarray:
     """Fit weighted Poisson regressions for many cells sharing one design.
 
@@ -309,13 +328,28 @@ def fit_poisson_regressions(
         L2 regression penalty, by default 1e-7
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
+    _event_design_sums : np.ndarray, optional
+        Internal continuous point-process event sufficient statistics,
+        ``sum_events weight * basis`` per cell. In this mode ``spikes`` is None,
+        the design/weights describe quadrature exposure, and the first basis
+        column must be the intercept. The fitting link is exponential, with
+        the floor used to initialize silent or zero-exposure cells.
 
     Returns
     -------
     coefficients : jnp.ndarray, shape (n_cells, n_coefficients)
     """
     design_matrix = np.asarray(design_matrix, dtype=np.float32)
-    spikes = np.asarray(spikes, dtype=np.float32)
+    event_sums = (
+        None
+        if _event_design_sums is None
+        else np.asarray(_event_design_sums, dtype=np.float32)
+    )
+    spikes = (
+        np.asarray(spikes, dtype=np.float32)
+        if event_sums is None
+        else np.empty((event_sums.shape[0], 0), dtype=np.float32)
+    )
     weights = np.asarray(weights, dtype=np.float32)
     n_cells = spikes.shape[0]
     n_time, n_coefficients = design_matrix.shape
@@ -331,7 +365,12 @@ def fit_poisson_regressions(
         coefficients[:, 0] = np.log(rate_floor)
         return jnp.asarray(coefficients)
     weight_sum = max(total_exposure, EPS)
-    average_rate = np.sum(spikes, axis=1, dtype=np.float64) / total_exposure
+    event_mass = (
+        np.sum(spikes, axis=1, dtype=np.float64)
+        if event_sums is None
+        else event_sums[:, 0].astype(np.float64)
+    )
+    average_rate = event_mass / total_exposure
     coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor))
 
     block_rows = int(
@@ -340,24 +379,41 @@ def fit_poisson_regressions(
     n_padded = -(-n_time // block_rows) * block_rows
     padding = n_padded - n_time
     design = jnp.asarray(np.pad(design_matrix, ((0, padding), (0, 0))))
-    counts = jnp.asarray(np.pad(spikes, ((0, 0), (0, padding))))
+    counts = jnp.asarray(
+        np.pad(spikes, ((0, 0), (0, padding))) if event_sums is None else spikes
+    )
     exposure = jnp.asarray(np.pad(weights, (0, padding)))
     penalized = np.ones(n_coefficients)
     penalized[0] = 0.0
 
-    def evaluate(coefficients, derivatives):
+    def evaluate(coefficients, derivatives, reference=None):
+        evaluated_coefficients = (
+            coefficients if reference is None else coefficients - reference
+        )
         sums = _poisson_regression_sums(
             design,
             counts,
             exposure,
-            jnp.asarray(coefficients, dtype=jnp.float32),
+            jnp.asarray(evaluated_coefficients, dtype=jnp.float32),
             rate_floor,
+            None if event_sums is None else jnp.asarray(event_sums),
+            None if reference is None else jnp.asarray(reference, dtype=jnp.float32),
             block_rows=block_rows,
             derivatives=derivatives,
         )
         sums = [np.asarray(value, dtype=np.float64) for value in sums]
+        if event_sums is not None:
+            sums[0] += np.sum(event_sums * evaluated_coefficients, axis=1)
+            if derivatives:
+                sums[1] += event_sums
         sums[0] = -sums[0] / weight_sum + l2_penalty * np.sum(
-            penalized * coefficients**2, axis=1
+            penalized
+            * (
+                coefficients**2
+                if reference is None
+                else (coefficients - reference) * (coefficients + reference)
+            ),
+            axis=1,
         )
         if derivatives:
             sums[1] = -sums[1] / weight_sum + 2 * l2_penalty * penalized * coefficients
@@ -395,7 +451,15 @@ def fit_poisson_regressions(
             pending = ~accepted
             rows = np.flatnonzero(active)[pending]
             candidate[rows] += step[pending, None] * direction[pending]
-            (candidate_loss,) = evaluate(candidate, derivatives=False)
+            if event_sums is None:
+                (candidate_loss,) = evaluate(candidate, derivatives=False)
+            else:
+                # Evaluate the change with expm1: subtracting two float32
+                # objectives can reject a valid Newton step before convergence.
+                (candidate_delta,) = evaluate(
+                    candidate, derivatives=False, reference=coefficients
+                )
+                candidate_loss = loss + candidate_delta
             # Armijo sufficient decrease, per cell.
             decreased = np.isfinite(candidate_loss[rows]) & (
                 candidate_loss[rows]
@@ -627,41 +691,18 @@ def fit_sorted_spikes_glm_encoding_model(
         environment.place_bin_centers_[is_track_interior]
     )
 
-    encoding_positions = position[support.indices]
-    if (
-        environment.track_graph is not None
-        and encoding_positions.shape[1] > 1
-        and len(encoding_positions)
-    ):
-        # The spline is defined on the track's 1-D bin edges, as the KDE fits
-        # and the prediction path use linear position.
-        encoding_positions = environment._linear_position(
-            np.asarray(encoding_positions)
-        )[:, None]
     # A known recording duration can expose a stationary/singleton sample.
     # Define its spline on the environment, then retain only actual encoding
     # rows for the event and exposure terms. A one-center grid uses an intercept.
-    basis_positions = (
-        encoding_positions
-        if len(encoding_positions) and np.all(np.ptp(encoding_positions, axis=0) > 0)
-        else np.asarray(interior_place_bin_centers)
-    )
+    # Anchor the spline's centering/bounds to the environment, independently of
+    # tracking sampling frequency and posterior weights during EM updates.
+    basis_positions = np.asarray(interior_place_bin_centers)
     emission_design_matrix = make_spline_design_matrix(
         np.asarray(basis_positions),
         place_bin_edges,
         knot_spacing=emission_knot_spacing,
     )
     emission_design_info = emission_design_matrix.design_info
-    emission_design_matrix = (
-        jnp.asarray(emission_design_matrix)
-        if basis_positions is encoding_positions
-        else make_spline_predict_matrix(
-            emission_design_info,
-            encoding_positions
-            if len(encoding_positions)
-            else interior_place_bin_centers,
-        )
-    )
 
     emission_predict_matrix = make_spline_predict_matrix(
         emission_design_info, interior_place_bin_centers
@@ -674,25 +715,51 @@ def fit_sorted_spikes_glm_encoding_model(
     # Ensure weights is not None for type checking
     assert weights is not None
 
-    if len(support.indices):
-        event_counts = np.stack(
-            [
-                np.asarray(support.event_counts(neuron_spike_times, weights))[
-                    support.indices
-                ]
-                for neuron_spike_times in spike_times
+    exposure_quadrature = support.quadrature(
+        position, spatial_scale=emission_knot_spacing
+    )
+    if exposure_quadrature.times.size:
+        quadrature_positions = exposure_quadrature.positions
+        if environment.track_graph is not None and quadrature_positions.shape[1] > 1:
+            quadrature_positions = environment._linear_position(quadrature_positions)[
+                :, None
             ]
-        ).reshape(len(spike_times), -1)
-        exposure = exposure_weights[support.indices]
+        emission_design_matrix = make_spline_predict_matrix(
+            emission_design_info, quadrature_positions
+        )
+        exposure = exposure_quadrature.weighted_exposure(weights)
     else:
-        event_counts = np.zeros((len(spike_times), len(emission_design_matrix)))
+        emission_design_matrix = emission_predict_matrix
         exposure = np.zeros(len(emission_design_matrix))
+    event_design_sums = np.zeros((len(spike_times), emission_design_matrix.shape[1]))
+    # Events are evaluated where they occurred. Endpoint allocation approximates
+    # B(x(t_event)) by a temporal mixture of endpoint bases, which can miss fields
+    # visited entirely between tracking samples. Accumulate bounded event blocks.
+    for neuron, neuron_spike_times in enumerate(spike_times):
+        times = np.asarray(neuron_spike_times)[support.contains(neuron_spike_times)]
+        for start in range(0, times.size, 65536):
+            event_times = times[start : start + 65536]
+            event_positions = get_position_at_time(
+                position_time,
+                position,
+                event_times,
+                environment,
+                encoding_support=support,
+            )
+            event_basis = np.asarray(
+                make_spline_predict_matrix(emission_design_info, event_positions)
+            )
+            event_weights = support.interpolate(weights, event_times, fill_value=0.0)
+            event_design_sums[neuron] += np.sum(
+                event_weights[:, None] * event_basis, axis=0, dtype=np.float64
+            )
     coefficients = fit_poisson_regressions(
         emission_design_matrix,
-        event_counts,
+        None,
         exposure,
         l2_penalty=l2_penalty,
         rate_floor=RATE_EPS_HZ,
+        _event_design_sums=event_design_sums,
     )
     interior_rates = _glm_rates(
         jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
