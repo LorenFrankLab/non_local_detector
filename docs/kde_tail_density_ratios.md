@@ -54,3 +54,10 @@ active.
 Validation at implementation: 91 focused tests passed, all four stored golden
 regressions passed unchanged, and ten likelihood property tests passed. The full
 property and test-suite results are recorded with the PR.
+
+The compiled sorted local helper retains its existing probability-occupancy
+argument and ordinary arithmetic. Public prediction additionally supplies true
+log occupancy for the tail fallback and NaN diagnostics. This preserves legacy
+low-level vector-position and unsupported-position calls while keeping the
+public finite-tail correction. The local accumulation and tail suites passed
+113 tests after that compatibility check; all 57 property tests also passed.

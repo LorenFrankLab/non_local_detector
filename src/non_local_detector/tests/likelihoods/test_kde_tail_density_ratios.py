@@ -14,7 +14,7 @@ from non_local_detector.likelihoods import (
     predict_clusterless_kde_log_log_likelihood,
     predict_sorted_spikes_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import log_density_intensity
+from non_local_detector.likelihoods.common import KDEModel, log_density_intensity
 from non_local_detector.likelihoods.streamed_kde import (
     _streamed_joint_mark_log_intensity,
 )
@@ -182,3 +182,25 @@ def test_tiled_tail_ratio_has_finite_correct_gradient_with_zero_weight_prefix():
         value, -0.02 - 0.5 * np.log(2 * np.pi), rtol=1e-5, atol=2e-5
     )
     np.testing.assert_allclose(gradient, -0.2, rtol=1e-5, atol=1e-6)
+
+
+def test_sorted_public_local_path_preserves_nan_position_diagnostic():
+    model = KDEModel(std=1.0, block_size=2).fit(jnp.array([[0.0], [1.0]]))
+    result = predict_sorted_spikes_kde_log_likelihood(
+        position_time=np.array([0.0, 1.0]),
+        position=np.full((2, 1), np.nan),
+        spike_times=[np.empty(0)],
+        environment=None,
+        marginal_models=[model],
+        occupancy_model=model,
+        occupancy=jnp.ones(1),
+        mean_rates=[1.0],
+        place_fields=jnp.ones((1, 1)),
+        no_spike_part_log_likelihood=jnp.ones(1),
+        is_track_interior=np.ones(1, bool),
+        is_local=True,
+        time_edges=np.array([0.0, 1.0]),
+        disable_progress_bar=True,
+    )
+    assert result.shape == (1, 1)
+    assert np.isnan(np.asarray(result)[0, 0])
