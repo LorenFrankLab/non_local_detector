@@ -224,6 +224,7 @@ def fit_sorted_spikes_kde_encoding_model(
     block_size: int = 100,
     disable_progress_bar: bool = False,
     *,
+    cache_occupancy_operator: bool = False,
     encoding_time_range=None,
     valid_position_intervals=None,
     _encoding_support=None,
@@ -249,6 +250,11 @@ def fit_sorted_spikes_kde_encoding_model(
         Size of blocks for KDE computation, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    cache_occupancy_operator : bool, optional
+        Opt into a bounded integrated occupancy operator on weighted refits,
+        by default False. Construction has a substantial initial cost; enable
+        only after profiling long runs. Support and quadrature reuse remain
+        enabled independently of this option.
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
@@ -311,13 +317,17 @@ def fit_sorted_spikes_kde_encoding_model(
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
         occupancy_samples = environment._linear_position(occupancy_samples)[:, None]
-    cached_log_occupancy = support.cached_kde_log_density(
-        exposure_quadrature,
-        occupancy_samples,
-        interior_place_bin_centers,
-        position_std,
-        weights,
-        _reuse_only=True,
+    cached_log_occupancy = (
+        support.cached_kde_log_density(
+            exposure_quadrature,
+            occupancy_samples,
+            interior_place_bin_centers,
+            position_std,
+            weights,
+            _reuse_only=True,
+        )
+        if cache_occupancy_operator
+        else None
     )
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
         occupancy_samples, exposure_quadrature.weighted_exposure(weights)

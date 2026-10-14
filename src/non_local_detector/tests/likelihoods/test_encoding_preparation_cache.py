@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector import SortedSpikesDecoder
+from non_local_detector import ClusterlessDecoder, SortedSpikesDecoder
 from non_local_detector.encoding_time import EncodingSupport, cached_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.sorted_spikes_glm import (
@@ -52,14 +52,15 @@ def test_support_content_cache_reuses_copies_and_invalidates_mutation_and_bounds
     np.testing.assert_array_equal(third.time, old_time)
 
 
-def test_public_refit_keeps_support_and_drops_it_from_serialization():
+@pytest.mark.parametrize("cache_operator", [False, True])
+def test_public_refit_keeps_support_and_drops_it_from_serialization(cache_operator):
     time, position, spikes, env = _data()
+    params = {"position_std": 2.0, "disable_progress_bar": True}
+    if cache_operator:
+        params["cache_occupancy_operator"] = True
     detector = SortedSpikesDecoder(
         environments=env,
-        sorted_spikes_algorithm_params={
-            "position_std": 2.0,
-            "disable_progress_bar": True,
-        },
+        sorted_spikes_algorithm_params=params,
         infer_track_interior=False,
     )
     detector.fit(position_time=time, position=position, spike_times=spikes)
@@ -70,11 +71,83 @@ def test_public_refit_keeps_support_and_drops_it_from_serialization():
     )
     assert detector._encoding_support_cache_[1] is first
     assert first.quadrature(position, spatial_scale=2.0) is quadrature
-    operator = next(
+    operators = [
         value[0] for key, value in first._prepared_cache.items() if key[0] == "kde"
-    )
-    assert operator[0].shape == (len(time), len(env.place_bin_centers_))
+    ]
+    if cache_operator:
+        assert operators[0][0].shape == (len(time), len(env.place_bin_centers_))
+    else:
+        from non_local_detector.likelihoods.sorted_spikes_kde import (
+            fit_sorted_spikes_kde_encoding_model,
+        )
+
+        assert not operators
+        reference = fit_sorted_spikes_kde_encoding_model(
+            time,
+            position,
+            spikes,
+            env,
+            weights=np.linspace(0.2, 1.0, len(time)),
+            **params,
+        )
+        np.testing.assert_array_equal(
+            detector.encoding_model_[("", 0)]["place_fields"], reference["place_fields"]
+        )
+        np.testing.assert_array_equal(
+            detector.encoding_model_[("", 0)]["occupancy"], reference["occupancy"]
+        )
     assert "_encoding_support_cache_" not in detector.__getstate__()
+    old_positions = quadrature.positions.copy()
+    position[0, 0] += 0.25
+    detector.fit_encoding_model(time, position, spikes)
+    changed = detector._encoding_support_cache_[1]
+    assert changed is not first
+    assert not changed._prepared_cache
+    np.testing.assert_array_equal(quadrature.positions, old_positions)
+
+
+@pytest.mark.parametrize("algorithm", ["clusterless_kde", "clusterless_kde_log"])
+@pytest.mark.parametrize("cache_operator", [False, True])
+def test_clusterless_public_refit_support_only_and_operator_opt_in(
+    algorithm, cache_operator
+):
+    from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
+
+    time, position, spikes, env = _data()
+    features = [np.column_stack((np.sin(spikes[0]), np.cos(spikes[0])))]
+    params = {"position_std": 2.0, "waveform_std": 2.0, "disable_progress_bar": True}
+    if cache_operator:
+        params["cache_occupancy_operator"] = True
+    detector = ClusterlessDecoder(
+        environments=env,
+        clusterless_algorithm=algorithm,
+        clusterless_algorithm_params=params,
+        infer_track_interior=False,
+    )
+    detector.fit(time, position, spikes, features)
+    support = detector._encoding_support_cache_[1]
+    quadrature = support.quadrature(position, spatial_scale=2.0)
+    weights = np.linspace(0.2, 1.0, len(time))
+    detector.fit_encoding_model(time, position, spikes, features, weights=weights)
+    assert detector._encoding_support_cache_[1] is support
+    assert support.quadrature(position, spatial_scale=2.0) is quadrature
+    operators = [
+        value[0] for key, value in support._prepared_cache.items() if key[0] == "kde"
+    ]
+    if cache_operator:
+        assert operators[0][0].shape == (len(time), len(env.place_bin_centers_))
+    else:
+        assert not operators
+        fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
+        reference = fit(
+            time, position, spikes, features, env, weights=weights, **params
+        )
+        np.testing.assert_array_equal(
+            detector.encoding_model_[("", 0)]["occupancy"], reference["occupancy"]
+        )
+        np.testing.assert_array_equal(
+            detector.encoding_model_[("", 0)]["mean_rates"], reference["mean_rates"]
+        )
 
 
 def test_prepared_cache_and_quadrature_share_one_aggregate_budget(monkeypatch):

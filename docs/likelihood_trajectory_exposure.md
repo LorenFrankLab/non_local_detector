@@ -248,8 +248,12 @@ old configuration, rather than accumulating results across grid or bandwidth
 changes. The quadrature accuracy, geometry budget, nodes and endpoint/gap
 contracts remain unchanged.
 
-For repeated KDE fits on the same trajectory and spatial grid, preparation
-integrates quadrature mass onto the original tracking basis:
+Default KDE refits reuse support and quadrature while preserving the existing
+KDE evaluation and accumulation order. The fixed-grid occupancy operator is an
+explicit opt-in for profiled long runs: set `cache_occupancy_operator=True` in
+`sorted_spikes_algorithm_params` or `clusterless_algorithm_params`. Sorted KDE,
+clusterless KDE and clusterless log-KDE fitters accept the option. It integrates
+quadrature mass onto the original tracking basis:
 
 ```text
 A[i,b] = sum_q duration[q] * Gaussian(center[b], position[q]) * basis_i(time[q])
@@ -270,16 +274,25 @@ exponentiation. Supported mass uses a scaled
 log-space evaluation when a change in posterior weights activates a distant
 source. Normalization is applied before the large spatial offset is restored.
 The retained operator uses three original-sample-by-bin arrays and one bin
-offset array. The 4,096-sample/512-bin float32 example retains about **24.9 MiB**
-including its support and quadrature. A 100,000-sample/128-bin operator exceeds
+offset array. The opt-in 4,096-sample/512-bin float32 example retains about
+**24.9 MiB** including its support and quadrature. A 100,000-sample/128-bin operator exceeds
 the cap and uses the existing blocked KDE evaluation.
 
-Operator construction is lazy: a cold public fit keeps its existing occupancy
-evaluation and accumulation order, and a subsequent unchanged-support refit
+Opt-in operator construction is lazy: a cold public fit keeps its existing
+occupancy evaluation and accumulation order, and a subsequent unchanged-support refit
 builds the operator for reuse. The first such refit includes construction and
-compilation. Stored first-fit golden outputs are unchanged. Refitted float32
-results can differ through the new accumulation order; comparisons against an
+compilation. Stored first-fit golden outputs are unchanged. Opt-in refitted
+float32 results can differ through the new accumulation order; comparisons against an
 independent float64 quadrature oracle are retained in the performance review.
+
+Matched Zephyr profiling of the opt-in path records first-refit costs of
+867 ms on CPU and 1,602 ms on GPU, including construction and compilation.
+With executables warm, constructing a new model's operator still costs about
+385 ms CPU and 403 ms GPU. Steady CPU refits improve from 17.9 to 7.1 ms, requiring
+roughly 80 refits to amortize the first construction; measured GPU refits increase
+from 8.0 to 16.1 ms. This setup and storage are therefore excluded from ordinary
+refits by default. The default 4,096-sample/512-bin support and quadrature retain
+about **0.88 MiB**; nonlinear GLM design reuse remains enabled.
 
 GLM exposure still evaluates `exp(B beta)` at every quadrature node for each
 coefficient iterate. Its Patsy prediction design is built in blocks of at most
@@ -301,10 +314,13 @@ CPU/GPU profiling supplies the performance assessment. Larger cold fits still
 pay for corrected quadrature and nonlinear GLM exposure, and designs exceeding
 the preparation cap are partly or wholly recomputed.
 
-The constructor follow-up passes 45 focused cache, tail, exposure and golden
-checks. Its additional regressions cover reduced workspace limits, a single
+The constructor and default-policy follow-ups pass 50 focused cache, tail,
+exposure and golden checks. Their additional regressions cover reduced workspace limits, a single
 column exceeding that limit, empty tracking geometry and zero basis mass beside
 an active deep-tail source, including mostly missing tracking. All four stored
 golden comparisons remain unchanged. An independent float64 oracle for shared
 endpoints, clipped gaps, missing-data splits and singleton support agrees within
 3.6e-15 in log density; stationary far-tail ratios are exact.
+The six public-refit policy cases cover all three KDE fitters with the option
+omitted or enabled. Default weighted refits match fresh-support occupancy and
+place fields bitwise, and mutating tracking replaces the retained geometry.
