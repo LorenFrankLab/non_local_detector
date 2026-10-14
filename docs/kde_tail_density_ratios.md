@@ -70,3 +70,10 @@ Fifteen additional regressions verify identical-source densities at positions
 200 through 1,457, global weight-scale invariance, analytical Gaussian gradients
 and zero gradients for empty/zero-weight support. These and the existing common,
 tail and four golden cases pass at their unchanged tolerances (101 cases).
+
+The seven-fix likelihood/model-checking run passed 1,754 cases and skipped
+three; its sole failure was an old test explicitly requiring tiny positive
+mean rates to be replaced by `EPS`. That expectation conflicts with this
+repair's declared true-positive-rate formula. The test now checks the analytical
+`log(rate) + log(density) - log(occupancy)` value and the exact relative-rate
+shift, with its existing comparison tolerance. No implementation changed.
