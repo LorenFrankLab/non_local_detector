@@ -576,10 +576,19 @@ def fit_clusterless_gmm_encoding_model(
     else:
         pos_for_occ = _as_jnp(exposure_quadrature.positions)
 
-    # Count the rows the GMM will actually fit on, using the array it fits: its
-    # zero-weight cutoff depends on that array's dtype, so counting every
-    # positive weight here could reserve more components than there are rows.
-    occupancy_n_samples = _effective_sample_count(pos_for_occ, occupancy_sample_weight)
+    # Quadrature controls integration accuracy, not statistical model size.
+    # Cap components by the original tracking observations with usable exposure,
+    # using the fitted dtype's existing weight cutoff. The zero-weight fallback
+    # fits the supported trajectory without posterior weights. Also retain the
+    # numerical cap on the quadrature rows actually admitted by the GMM fit.
+    source_exposure = exposure_weights if weight_sum > 0 else support.exposure
+    source_n_samples = _effective_sample_count(
+        jnp.asarray(position, dtype=pos_for_occ.dtype), source_exposure
+    )
+    occupancy_n_samples = min(
+        source_n_samples,
+        _effective_sample_count(pos_for_occ, occupancy_sample_weight),
+    )
     if occupancy_n_samples < 1:
         raise ValidationError(
             "clusterless GMM has no position samples to fit the occupancy density",

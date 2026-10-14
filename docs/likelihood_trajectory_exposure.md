@@ -28,6 +28,11 @@ path used for spike positioning. GMM occupancy fitting uses weighted quadrature
 samples. Mean firing rates and `encoding_exposure_seconds` retain their existing
 physical-time definition.
 
+Occupancy GMM component limits still count original tracking observations with
+positive physical exposure, rather than quadrature nodes. Increasing integration
+resolution must not increase statistical model complexity. A zero-weight fit
+retains the existing fallback based on tracking support.
+
 The GLM now evaluates its basis at actual spike positions and accumulates
 `S_n = sum_events weight * basis`. Its data likelihood is
 
@@ -37,7 +42,10 @@ L_n(beta) = S_n @ beta - sum_q exposure_q * exp(basis_q @ beta)
 
 The spline definition is anchored to the environment rather than the tracking
 sample distribution. This avoids changing its bounds and centering merely by
-resampling a trajectory or updating EM weights. The documented penalty remains
+resampling a trajectory or updating EM weights. Its anchors include physical bin
+edge extrema in varying dimensions; natural boundary conditions therefore apply
+at the actual environment limits rather than half a bin inside them. Dimensions
+represented by a single bin center retain an intercept-only basis. The documented penalty remains
 unchanged. Newton line searches evaluate objective differences with `expm1`,
 avoiding cancellation between two large float32 objectives. Existing tolerances,
 iteration limits, and convergence criteria are unchanged. Prediction still uses
@@ -109,6 +117,21 @@ New regressions verify:
 - KDE, diffusion, MRF, clusterless ground rates, and GMM occupancy moments behave
   consistently with their declared continuous trajectories.
 - Cache reuse is weight-independent and respects its memory cap.
+- GMM component caps are unchanged when integration resolution increases.
+- Natural spline boundaries span physical environment support while single-center
+  grids retain an intercept-only GLM.
+
+The full-suite cross-model example exposed a boundary construction error in the
+initial implementation: center-only spline anchors set natural boundaries to
+2.5 and 97.5 on a physical track spanning 0 to 100. For neuron 2 the GLM field
+peaked at bin 18, while the KDE field peaked at bin 14. Including physical edge
+anchors restores GLM peaks `[4, 12, 14]`, matching the KDE peaks, without changing
+the existing two-bin comparison tolerance or any coefficient penalty. An
+independent float64 SciPy optimization uses 32-point Gauss–Legendre integration
+on each spline interval, exact endpoint holds, actual event bases, and the same
+documented L2 penalty of 0.5. Across all three neurons it agrees within 1.62e-6 in
+coefficients and 2.13e-6 relative in place fields; its gradient infinity norms are
+below 1e-11. The solver and its convergence criteria remain unchanged.
 
 Existing synthetic tests that intended disconnected occupancy snapshots or
 teleports between rooms/corner edges now declare missing tracking or explicit
@@ -183,8 +206,14 @@ hard-subset tracking-contract cases now pass, together with all 17 new tests
 (19/19 in that targeted verification, before the two construction regressions
 were added).
 
-Golden verification currently reports one passing and three failing original
-reference comparisons, as quantified above. Full-suite verification is pending
-resource coordination with the other likelihood-fix branches. Original golden
-references remain available for an explicit review of this intentional algorithm
+The first full suite completed with 3,682 passed, seven skipped, and six failed.
+Three failures are the intentional golden-reference differences quantified above.
+The remaining failures exposed the disconnected-snapshot assumption in the GMM
+underflow fixture, quadrature-based occupancy component caps, and center-only GLM
+spline boundaries. Those three cases now pass without changing tolerances. The
+corrected GMM fixture retains 34 underflowing bins on a 200-unit track; its
+ground-rate error stays below the existing 1% tolerance. A follow-up run passes
+all 128 selected GLM, trajectory, cross-model, physical-time, and GMM optimization
+tests, plus all four new GMM component-cap regressions. Original golden references
+remain unchanged and available for explicit review of this intentional algorithm
 change.

@@ -697,6 +697,17 @@ def fit_sorted_spikes_glm_encoding_model(
     # Anchor the spline's centering/bounds to the environment, independently of
     # tracking sampling frequency and posterior weights during EM updates.
     basis_positions = np.asarray(interior_place_bin_centers)
+    varying_dimensions = np.ptp(basis_positions, axis=0) > 0
+    if np.any(varying_dimensions):
+        # Natural spline boundaries belong at physical bin edges. Using only
+        # centers constrains the spline half a bin inside each track endpoint,
+        # changes its coefficient prior, and extrapolates inside known support.
+        # Dimensions represented by one center remain intercept-only.
+        boundary_positions = np.tile(basis_positions[0], (2, 1))
+        boundary_positions[:, varying_dimensions] = np.vstack(
+            (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
+        )[:, varying_dimensions]
+        basis_positions = np.vstack((basis_positions, boundary_positions))
     emission_design_matrix = make_spline_design_matrix(
         np.asarray(basis_positions),
         place_bin_edges,
