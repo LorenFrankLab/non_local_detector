@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde_log import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
@@ -79,7 +80,7 @@ def _fit_kwargs(env, **overrides):
 def test_fit_rejects_nonpositive_position_std(simple_1d_environment, bad_std):
     """A zero/negative bandwidth is a config error and must raise at fit time
     (loudly), not be silently clamped to a near-delta kernel inside the kernel."""
-    with pytest.raises(ValueError, match="position_std"):
+    with pytest.raises(ValidationError, match="position_std"):
         fit_clusterless_kde_encoding_model(
             **_fit_kwargs(simple_1d_environment, position_std=bad_std)
         )
@@ -87,7 +88,7 @@ def test_fit_rejects_nonpositive_position_std(simple_1d_environment, bad_std):
 
 @pytest.mark.parametrize("bad_std", [0.0, -1.0])
 def test_fit_rejects_nonpositive_waveform_std(simple_1d_environment, bad_std):
-    with pytest.raises(ValueError, match="waveform_std"):
+    with pytest.raises(ValidationError, match="waveform_std"):
         fit_clusterless_kde_encoding_model(
             **_fit_kwargs(simple_1d_environment, waveform_std=bad_std)
         )
