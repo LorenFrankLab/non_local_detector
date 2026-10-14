@@ -302,9 +302,13 @@ def test_quadrature_gaussian_occupancy_matches_independent_integral():
         )
         actual = np.dot(masses, density)
         expected = quad(
-            lambda t, point=point: np.interp(t, time, weights)
-            * np.exp(-0.5 * ((np.interp(t, time, position[:, 0]) - point) / 0.7) ** 2)
-            / (0.7 * np.sqrt(2 * np.pi)),
+            lambda t, point=point: (
+                np.interp(t, time, weights)
+                * np.exp(
+                    -0.5 * ((np.interp(t, time, position[:, 0]) - point) / 0.7) ** 2
+                )
+                / (0.7 * np.sqrt(2 * np.pi))
+            ),
             0.3,
             2.8,
             points=[1.7],
