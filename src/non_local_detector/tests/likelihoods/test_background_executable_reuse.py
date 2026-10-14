@@ -1,6 +1,7 @@
 """Ragged mark populations reuse padded reference-aware scoring executables."""
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
@@ -118,6 +119,45 @@ def test_nonlocal_density_fields_are_prepared_once_for_prediction(monkeypatch):
             row_slice=row_slice,
         )
     assert calls == [model["occupancy_model"], model["gpi_models"][0]]
+
+
+@pytest.mark.unit
+def test_fused_gmm_bounds_cartesian_scoring_without_changing_event_rows(monkeypatch):
+    from non_local_detector.likelihoods import clusterless_gmm
+
+    original = clusterless_gmm._gmm_score
+    scored_counts = []
+
+    def score(points, *args):
+        scored_counts.append(points.shape[0])
+        return original(points, *args)
+
+    monkeypatch.setattr(clusterless_gmm, "_gmm_score", score)
+    background_marks._background_gmm_rows.clear_cache()
+    features = np.linspace(-1.0, 1.0, 64, dtype=np.float32)[:, None]
+    rows = np.arange(64) % 32
+    positions = jnp.linspace(-0.5, 0.5, 513)[:, None]
+    joint_parameters = (jnp.zeros((1, 2)), jnp.eye(2)[None, :, :], jnp.ones(1))
+    occupancy_parameters = (jnp.zeros((1, 1)), jnp.ones((1, 1, 1)), jnp.ones(1))
+    result = background_marks._background_gmm_rows(
+        jnp.asarray(features),
+        jnp.asarray(rows),
+        jnp.full(64, -100.0),
+        positions,
+        joint_parameters,
+        occupancy_parameters,
+        jnp.asarray(0.0),
+        is_local=False,
+        n_rows=32,
+        indices_are_sorted=False,
+        joint_covariance_type="full",
+        occupancy_covariance_type="full",
+    )
+    expected = np.zeros(32)
+    np.add.at(expected, rows, -0.5 * features[:, 0] ** 2 - 0.5 * np.log(2 * np.pi))
+    assert_allclose(result, np.broadcast_to(expected[:, None], result.shape), atol=1e-6)
+    assert scored_counts
+    assert max(scored_counts) <= len(features) * 128
 
 
 @pytest.mark.unit

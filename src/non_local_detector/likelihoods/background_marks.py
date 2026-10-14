@@ -682,51 +682,87 @@ def _background_gmm_rows(
     """Traceable parameter tuples support both historical and normalized GMMs."""
     from non_local_detector.likelihoods import clusterless_gmm
 
-    if not has_rate:
-        raw = jnp.full(
-            (features.shape[0],)
-            if is_local
-            else (features.shape[0], positions.shape[0]),
-            -jnp.inf,
-        )
-    elif conditional is not None:
-        raw = clusterless_gmm._raw_gmm_log_intensity_from_parameters(
-            positions,
-            features,
-            conditional,
-            gpi_parameters,
-            occupancy_parameters,
-            log_rate,
-            is_local=is_local,
-            joint_covariance_type=joint_covariance_type,
-            gpi_covariance_type=gpi_covariance_type,
-            occupancy_covariance_type=occupancy_covariance_type,
-        )
-    else:
-        points = (
-            jnp.concatenate((positions, features), axis=1)
-            if is_local
-            else jnp.concatenate(
-                (
-                    jnp.tile(positions, (features.shape[0], 1)),
-                    jnp.repeat(features, positions.shape[0], axis=0),
-                ),
-                axis=1,
+    def score_rows(evaluation_positions):
+        if not has_rate:
+            raw = jnp.full(
+                (features.shape[0],)
+                if is_local
+                else (features.shape[0], evaluation_positions.shape[0]),
+                -jnp.inf,
             )
-        )
-        raw = log_rate + (
-            clusterless_gmm._gmm_score(points, joint_parameters, joint_covariance_type)
-            - clusterless_gmm._gmm_score(
-                points[:, : positions.shape[1]],
+        elif conditional is not None:
+            raw = clusterless_gmm._raw_gmm_log_intensity_from_parameters(
+                evaluation_positions,
+                features,
+                conditional,
+                gpi_parameters,
                 occupancy_parameters,
-                occupancy_covariance_type,
+                log_rate,
+                is_local=is_local,
+                joint_covariance_type=joint_covariance_type,
+                gpi_covariance_type=gpi_covariance_type,
+                occupancy_covariance_type=occupancy_covariance_type,
             )
+        else:
+            points = (
+                jnp.concatenate((evaluation_positions, features), axis=1)
+                if is_local
+                else jnp.concatenate(
+                    (
+                        jnp.tile(evaluation_positions, (features.shape[0], 1)),
+                        jnp.repeat(features, evaluation_positions.shape[0], axis=0),
+                    ),
+                    axis=1,
+                )
+            )
+            raw = log_rate + (
+                clusterless_gmm._gmm_score(
+                    points, joint_parameters, joint_covariance_type
+                )
+                - clusterless_gmm._gmm_score(
+                    points[:, : evaluation_positions.shape[1]],
+                    occupancy_parameters,
+                    occupancy_covariance_type,
+                )
+            )
+            if not is_local:
+                raw = raw.reshape(features.shape[0], evaluation_positions.shape[0])
+        return _mix_background_rows(
+            raw, log_reference, row_ids, n_rows, is_local, indices_are_sorted
         )
-        if not is_local:
-            raw = raw.reshape(features.shape[0], positions.shape[0])
-    return _mix_background_rows(
-        raw, log_reference, row_ids, n_rows, is_local, indices_are_sorted
-    )
+
+    if is_local or positions.shape[0] <= 128:
+        return score_rows(positions)
+    # Bound the mark x position Cartesian sample axis inside this executable.
+    # Fusion otherwise keeps the scorer's full temporary arena alive through
+    # mixture/reduction, despite a modest logical live-buffer peak. Position
+    # tiling preserves the padded event axis and its deterministic sum tree.
+    position_tile = 128
+    first_rows = score_rows(positions[:position_tile])
+    total = jnp.zeros((n_rows, positions.shape[0]), dtype=first_rows.dtype)
+    total = jax.lax.dynamic_update_slice(total, first_rows, (0, 0))
+    n_tiles = (positions.shape[0] + position_tile - 1) // position_tile
+
+    def add_position_tile(number, total):
+        requested_start = number * position_tile
+        column_start = jnp.minimum(requested_start, positions.shape[0] - position_tile)
+        block_positions = jax.lax.dynamic_slice_in_dim(
+            positions, column_start, position_tile
+        )
+        rows = score_rows(block_positions)
+        # An overlapping final tile avoids artificial spatial points. Preserve
+        # its already-written prefix so each real column is stored once.
+        current = jax.lax.dynamic_slice_in_dim(
+            total, column_start, position_tile, axis=1
+        )
+        rows = jnp.where(
+            (column_start + jnp.arange(position_tile) >= requested_start)[None, :],
+            rows,
+            current,
+        )
+        return jax.lax.dynamic_update_slice(total, rows, (0, column_start))
+
+    return jax.lax.fori_loop(1, n_tiles, add_position_tile, total)
 
 
 @partial(
