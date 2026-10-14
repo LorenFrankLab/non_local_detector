@@ -138,7 +138,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
     discrete_transition_concentration : float, optional
         Concentration parameter for discrete transitions, by default 1.0.
     discrete_transition_stickiness : Stickiness, optional
-        Stickiness parameters for each state, by default [1e6, 1e6, 300.0, 300.0].
+        Stickiness parameters for each state, by default [1e5, 1e5, 300.0, 300.0].
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
         discrete transitions (a Gaussian prior with standard deviation
@@ -323,7 +323,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
     discrete_transition_concentration : float, optional
         Concentration parameter for discrete transitions, by default 1.0.
     discrete_transition_stickiness : Stickiness, optional
-        Stickiness parameters for each state, by default [1e6, 1e6, 300.0, 300.0].
+        Stickiness parameters for each state, by default [1e5, 1e5, 300.0, 300.0].
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
         discrete transitions (a Gaussian prior with standard deviation
