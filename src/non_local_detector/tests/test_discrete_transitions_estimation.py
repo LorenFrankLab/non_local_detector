@@ -1736,6 +1736,24 @@ class TestEstimateNonStationaryStateTransition:
             assert after - best.fun < 1e-3, (row, after - best.fun)
         np.testing.assert_allclose(transition.sum(axis=-1), 1.0, atol=1e-12)
 
+    @pytest.mark.parametrize("method", ["trust-exact", "L-BFGS-B"])
+    def test_single_state_has_nothing_to_fit(self, method):
+        """One state has no free transition coefficients, so the M-step keeps
+        them and the only transition stays at probability 1."""
+        n_time = 20
+        design_matrix = np.column_stack((np.ones(n_time), np.linspace(0, 1, n_time)))
+        coefficients, transition = (
+            estimate_non_stationary_state_transition_from_responses(
+                np.zeros((2, 1, 0)),
+                design_matrix,
+                np.ones((n_time - 1, 1, 1)),
+                stickiness=5.0,
+                optimization_method=method,
+            )
+        )
+        assert coefficients.shape == (2, 1, 0)
+        np.testing.assert_array_equal(transition, np.ones((n_time, 1, 1)))
+
     def test_newton_methods_reach_the_same_estimate(self):
         """L-BFGS-B and the default trust-exact, a Newton method that uses the
         Hessian, reach the same estimate."""

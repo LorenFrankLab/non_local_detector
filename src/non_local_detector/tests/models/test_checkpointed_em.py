@@ -8,6 +8,8 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    SortedSpikesDecoder,
+    time_edges_from_centers,
 )
 from non_local_detector.exceptions import ValidationError
 
@@ -195,6 +197,31 @@ def test_covariate_em_on_one_bin_converges(transition_representation):
     )
     assert model.converged_
     assert model.em_monotonicity_violations_ == []
+    assert np.all(np.isfinite(results.attrs["em_objectives"]))
+
+
+@pytest.mark.parametrize("transition_representation", ["dense", "structured"])
+def test_single_state_covariate_em(transition_representation):
+    """A one-state decoder has no covariate coefficients to fit; EM runs and
+    keeps its only transition at probability 1."""
+    decoder = SortedSpikesDecoder(
+        discrete_transition_type=DiscreteNonStationaryDiagonal(
+            np.ones(1), formula="1 + speed"
+        )
+    )
+    time = np.linspace(0.0, 2.0, 101)
+    results = decoder.estimate_parameters(
+        position_time=time,
+        position=10.0 + 10.0 * np.sin(2.0 * np.pi * time),
+        spike_times=[np.arange(0.1, 1.9, 0.2)],
+        time_edges=time_edges_from_centers(time),
+        discrete_transition_covariate_data={"speed": np.linspace(0.0, 100.0, 101)},
+        max_iter=2,
+        estimate_encoding_model=False,
+        transition_representation=transition_representation,
+    )
+    assert results.sizes["time"] == 101
+    np.testing.assert_array_equal(decoder.discrete_state_transitions_, 1.0)
     assert np.all(np.isfinite(results.attrs["em_objectives"]))
 
 

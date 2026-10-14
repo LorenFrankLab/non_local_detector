@@ -1050,12 +1050,13 @@ def _fit_covariate_row(
     Returns
     -------
     coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
-        The initial coefficients when there are no transitions to fit or the
-        optimizer does not lower the loss.
+        The initial coefficients when there are no transitions or no
+        coefficients to fit (one state, whose only transition is certain), or
+        when the optimizer does not lower the loss.
     """
-    if not blocks:
-        return initial_coefficients
     x0 = np.asarray(initial_coefficients, dtype=np.float64).ravel()
+    if not blocks or x0.size == 0:
+        return initial_coefficients
     args = (blocks, prior_per_bin, l2_penalty)
     minimize_kwargs = {
         "fun": _blocked_loss_and_gradient,
