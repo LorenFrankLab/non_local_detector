@@ -280,18 +280,63 @@ def _raw_gmm_log_intensity(
         return jnp.full(shape, -jnp.inf)
     if preparation is None:
         preparation = _SpikeTimeOrder()
+    conditional = _conditional_parameters(joint, positions.shape[1], preparation)
+    gpi, occupancy = model["gpi_models"][electrode], model["occupancy_model"]
+    return _raw_gmm_log_intensity_from_parameters(
+        positions,
+        marks,
+        conditional,
+        _gmm_parameters(gpi),
+        _gmm_parameters(occupancy),
+        jnp.log(rate),
+        is_local=is_local,
+        joint_covariance_type=joint.covariance_type,
+        gpi_covariance_type=gpi.covariance_type,
+        occupancy_covariance_type=occupancy.covariance_type,
+    )
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "is_local",
+        "joint_covariance_type",
+        "gpi_covariance_type",
+        "occupancy_covariance_type",
+    ),
+)
+def _raw_gmm_log_intensity_from_parameters(
+    positions,
+    marks,
+    conditional,
+    gpi_parameters,
+    occupancy_parameters,
+    log_rate,
+    *,
+    is_local,
+    joint_covariance_type,
+    gpi_covariance_type,
+    occupancy_covariance_type,
+):
+    """Pure normalized event score for compiled background and row reduction.
+
+    The host wrapper prepares Schur-complement factors once; all evaluation and
+    spatial density arithmetic here can be staged within one larger executable.
+    """
+    shape = (marks.shape[0],) if is_local else (marks.shape[0], positions.shape[0])
     if is_local:
         evaluation_positions, evaluation_marks = positions, marks
     else:
         evaluation_positions = jnp.tile(positions, (marks.shape[0], 1))
         evaluation_marks = jnp.repeat(marks, positions.shape[0], axis=0)
-    conditional = _conditional_parameters(joint, positions.shape[1], preparation)
     log_conditional = _gmm_conditional_score(
-        evaluation_positions, evaluation_marks, conditional, joint.covariance_type
+        evaluation_positions, evaluation_marks, conditional, joint_covariance_type
     )
-    log_ground = jnp.log(rate) + (
-        model["gpi_models"][electrode].score_samples(evaluation_positions)
-        - model["occupancy_model"].score_samples(evaluation_positions)
+    log_ground = log_rate + (
+        _gmm_score(evaluation_positions, gpi_parameters, gpi_covariance_type)
+        - _gmm_score(
+            evaluation_positions, occupancy_parameters, occupancy_covariance_type
+        )
     )
     return (log_ground + log_conditional).reshape(shape)
 

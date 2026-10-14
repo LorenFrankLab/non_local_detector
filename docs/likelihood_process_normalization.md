@@ -84,11 +84,20 @@ Full-rank kernels change only where column correction affects numerical roundoff
 deliberately aggressive truncation can change spatial likelihoods substantially.
 Saved diffusion encoding models using the old nonlinear correction require refit.
 
-Source columns are generated in tiles even when a full cache fits. A complete
-float32 kernel is retained only below `min(64 MiB, memory_budget / 4)`; otherwise
-there is no dense kernel cache and each field is accumulated from source tiles.
+Prediction compacts each mark field onto the sorted union of encoding spike
+bins, `S`, and uses `H_positive[:, S] @ D[S]`. This removes only exactly zero
+rows: every retained encoding spike contributes its source bin even when its
+current EM weight is zero, so subsequent zero-to-positive weight changes remain
+valid. Columns are normalized across all destination bins before local selection.
+
+Source columns are generated in tiles even when a cache fits. Only the occupied
+float32 columns and their support key are retained, within the aggregate limit
+`min(64 MiB, memory_budget / 4)`; otherwise there is no dense kernel cache and
+each field is accumulated from tiles of its occupied source columns.
 The environment shares one cached operator across encoding groups and EM refits,
-replacing it when the basis or bandwidth changes. Grid refits invalidate this
+replacing it when the basis, bandwidth, or source support changes. Occupancy may
+have support beyond encoding bins; its occupied columns are reconstructed without
+retaining an additional operator cache. Grid refits invalidate this
 cache, and serialization excludes the transient environment copy. A prediction
 with a reduced budget can bypass a larger fitted cache. As with existing decode
 blocking, one source column is the minimum workspace for tiny budgets.
@@ -97,11 +106,16 @@ changing physical coordinates or bin widths is rejected even when interior-bin
 indices and counts remain identical. That check also applies to raw operator
 reuse by the background likelihood.
 
-Caching costs `4 * n_bins**2` bytes and prediction uses a dense operator matmul.
-Without caching, tiled column reconstruction uses the eigenbasis again for each
-field block and can be slower on large grids. This is the bounded-memory
-correctness baseline; a future positive linear sparse heat approximation could
-recover lower-rank costs without field-dependent clipping.
+The retained operator costs `4 * n_bins * len(S)` bytes plus its integer support
+key. For 4,608 bins and 1,000 occupied source bins, its values need 17.6 MiB,
+compared with 81 MiB for all columns. Uncached reconstruction likewise scales
+with `len(S)` rather than every spatial bin. Connected-component isolation,
+column normalization, bin measures, and `Precision.HIGHEST` are preserved.
+
+The unfloored GMM path also exposes a pure array-parameter scoring function,
+allowing the background likelihood to compile conditional marks, spatial density
+ratios, mixture evaluation, and deterministic row reduction together. Host checks
+and cached Schur-complement preparation remain outside that executable.
 
 ## Numerical and performance checks
 
@@ -137,3 +151,15 @@ direct-conditional precision and grid-revision follow-ups, the GMM, diffusion,
 normalization, optimization, padding, and save/load suite passed 127 tests with
 one existing skip. The follow-ups added 23 analytical regression cases; no
 golden files or numerical tolerances were changed.
+
+The occupied-source performance follow-up passed 199 diffusion, normalization,
+integration, cache, and property checks, plus 72 GMM/padding/optimization/golden
+checks with one existing skip. Four stored golden comparisons remain unchanged.
+New compact/full comparisons cover cached and budget-forced tiled operators,
+disconnected components, zero-to-positive EM weights, source-support replacement,
+bandwidth/rank replacement, and the aggregate cache bound. A seeded two-electrode
+before/after float32 capture differed by at most `4.3e-7` relative in occupancy
+and GPI and `4.2e-7` relative in local/non-local likelihoods (`7.63e-6` maximum
+absolute log difference). These changes reflect matrix shape and accumulation
+rounding after zero rows are removed; normalization and component isolation
+remain within the existing tests. No stored references or tolerances were edited.

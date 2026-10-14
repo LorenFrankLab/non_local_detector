@@ -270,29 +270,53 @@ def _source_cache_budget(memory_budget):
 
 
 def _cached_source_kernel(
-    eigvals, eigvecs, labels, position_std, memory_budget, environment=None
+    eigvals,
+    eigvecs,
+    labels,
+    position_std,
+    memory_budget,
+    environment=None,
+    *,
+    sources=None,
 ):
-    """Cache the operator only when it fits the bounded persistent cache budget.
+    """Cache occupied source columns within one aggregate persistent budget.
 
-    Source columns are generated in tiles even when the full cache fits. Larger
-    grids keep no dense kernel and use the same column generator at prediction.
+    The environment retains one operator entry, shared by encoding groups and
+    refits with the same immutable source support. A replacement evicts the old
+    entry; independent per-electrode caches cannot multiply the budget.
     """
     n_bins, rank = eigvecs.shape
-    if _WORKING_ITEMSIZE * n_bins**2 > _source_cache_budget(memory_budget):
+    sources = (
+        np.arange(n_bins, dtype=np.int32)
+        if sources is None
+        else np.asarray(sources, dtype=np.int32)
+    )
+    cache_bytes = _WORKING_ITEMSIZE * n_bins * sources.size + sources.nbytes
+    if cache_bytes > _source_cache_budget(memory_budget):
+        if environment is not None and hasattr(
+            environment, "_diffusion_source_kernel_"
+        ):
+            del environment._diffusion_source_kernel_
         return jnp.zeros((n_bins, 0), dtype=jnp.float32)
     cached = getattr(environment, "_diffusion_source_kernel_", None)
-    if cached is not None and cached[0] is eigvecs and cached[1] == position_std:
-        return cached[2]
-    kernel = np.empty((n_bins, n_bins), dtype=np.float32)
+    if (
+        cached is not None
+        and len(cached) == 4
+        and cached[0] is eigvecs
+        and cached[1] == position_std
+        and np.array_equal(cached[2], sources)
+    ):
+        return cached[3]
+    kernel = np.empty((n_bins, sources.size), dtype=np.float32)
     tile_size = _source_tile_size(memory_budget, n_bins, rank)
-    for start in range(0, n_bins, tile_size):
-        stop = min(start + tile_size, n_bins)
+    for start in range(0, sources.size, tile_size):
+        stop = min(start + tile_size, sources.size)
         kernel[:, start:stop] = np.asarray(
             _positive_source_columns(
                 eigvals,
                 eigvecs,
                 labels,
-                jnp.arange(start, stop),
+                jnp.asarray(sources[start:stop]),
                 position_std=position_std,
             )
         )
@@ -300,7 +324,14 @@ def _cached_source_kernel(
     if environment is not None:
         # One entry shares the operator across encoding groups and EM refits;
         # changing the graph/bandwidth replaces it rather than growing a cache.
-        environment._diffusion_source_kernel_ = (eigvecs, position_std, kernel)
+        frozen_sources = sources.copy()
+        frozen_sources.setflags(write=False)
+        environment._diffusion_source_kernel_ = (
+            eigvecs,
+            position_std,
+            frozen_sources,
+            kernel,
+        )
     return kernel
 
 
@@ -316,7 +347,11 @@ def _prediction_source_operator(model, eigvecs):
     n_bins, rank = eigvecs.shape
     tile_size = _source_tile_size(memory_budget, n_bins, rank)
     kernel = jnp.asarray(model["source_kernel"])
-    if kernel.size * _WORKING_ITEMSIZE > _source_cache_budget(memory_budget):
+    source_indices = model.get("source_bin_indices")
+    support_bytes = 0 if source_indices is None else source_indices.nbytes
+    if kernel.size * _WORKING_ITEMSIZE + support_bytes > _source_cache_budget(
+        memory_budget
+    ):
         kernel = jnp.zeros((n_bins, 0), dtype=jnp.float32)
     # The cached path does not use tiles; keep its executable independent of the
     # workspace budget whenever the same bounded kernel cache fits.
@@ -335,25 +370,45 @@ def _check_diffusion_grid_revision(model):
 
 @partial(jax.jit, static_argnames=("position_std", "source_tile_size"))
 def _linear_heat_apply(
-    eigvals, eigvecs, labels, fields, source_kernel, *, position_std, source_tile_size
+    eigvals,
+    eigvecs,
+    labels,
+    fields,
+    source_kernel,
+    *,
+    position_std,
+    source_tile_size,
+    source_bins=None,
 ):
-    """Apply one fixed positive linear operator with a bounded source workspace."""
+    """Apply positive columns to fields on the supplied compact source support.
+
+    Column normalization always covers all destination bins, even when a caller
+    later selects only an animal's local destination. Empty source support maps
+    to a zero field on all destinations.
+    """
     if source_kernel.shape[1]:
         return jnp.matmul(source_kernel, fields, precision=jax.lax.Precision.HIGHEST)
-    n_bins = fields.shape[0]
-    n_tiles = (n_bins + source_tile_size - 1) // source_tile_size
-    padded_fields = jnp.pad(fields, ((0, n_tiles * source_tile_size - n_bins), (0, 0)))
+    n_bins, n_sources = eigvecs.shape[0], fields.shape[0]
+    result = jnp.zeros((n_bins, fields.shape[1]), dtype=fields.dtype)
+    if n_sources == 0:
+        return result
+    if source_bins is None:
+        source_bins = jnp.arange(n_sources)
+    n_tiles = (n_sources + source_tile_size - 1) // source_tile_size
+    padding = n_tiles * source_tile_size - n_sources
+    padded_fields = jnp.pad(fields, ((0, padding), (0, 0)))
+    padded_sources = jnp.pad(source_bins, (0, padding), mode="edge")
 
     def add_tile(tile, result):
         first = tile * source_tile_size
-        sources = jnp.minimum(first + jnp.arange(source_tile_size), n_bins - 1)
+        sources = jax.lax.dynamic_slice_in_dim(padded_sources, first, source_tile_size)
         columns = _positive_source_columns(
             eigvals, eigvecs, labels, sources, position_std=position_std
         )
         values = jax.lax.dynamic_slice_in_dim(padded_fields, first, source_tile_size)
         return result + jnp.matmul(columns, values, precision=jax.lax.Precision.HIGHEST)
 
-    return jax.lax.fori_loop(0, n_tiles, add_tile, jnp.zeros_like(fields))
+    return jax.lax.fori_loop(0, n_tiles, add_tile, result)
 
 
 def _diffuse_field(
@@ -365,6 +420,7 @@ def _diffuse_field(
     n_components: int,
     source_kernel,
     source_tile_size,
+    source_bins=None,
 ) -> np.ndarray:
     """Diffuse a single ``(n_interior,)`` count field, returned as a host array.
 
@@ -372,6 +428,14 @@ def _diffuse_field(
     both promote to a single-column field, apply the same fixed source operator,
     then squeeze back to ``(n_interior,)`` on host.
     """
+    if source_bins is not None:
+        # Occupancy can have support beyond the retained encoding spike bins.
+        # Generate only its occupied columns, without retaining a second cache.
+        occupied = np.flatnonzero(field)
+        if not np.all(np.isin(occupied, source_bins, assume_unique=True)):
+            source_bins = occupied
+            source_kernel = jnp.zeros((Q.shape[0], 0), dtype=jnp.float32)
+        field = field[source_bins]
     field_hat = _linear_heat_apply(
         Lam,
         Q,
@@ -380,6 +444,7 @@ def _diffuse_field(
         source_kernel,
         position_std=position_std,
         source_tile_size=source_tile_size,
+        source_bins=None if source_bins is None else jnp.asarray(source_bins),
     )
     return np.asarray(field_hat)[:, 0]
 
@@ -503,9 +568,6 @@ def fit_clusterless_diffusion_encoding_model(
 
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
     source_tile_size = _source_tile_size(memory_budget, n_interior, resolved_rank)
-    source_kernel = _cached_source_kernel(
-        Lam, Q, labels, position_std, memory_budget, environment
-    )
 
     weight_sum = float(exposure_weights.sum())  # weighted occupancy seconds
 
@@ -523,30 +585,11 @@ def fit_clusterless_diffusion_encoding_model(
         )
     else:
         occupancy_field = np.zeros(n_interior)
-    occupancy_hat = _diffuse_field(
-        occupancy_field,
-        Lam,
-        Q,
-        position_std,
-        labels,
-        n_components,
-        source_kernel,
-        source_tile_size,
-    )
-    safe_weight_sum = weight_sum if weight_sum > 0 else 1.0
-    occupancy = np.clip(occupancy_hat / (safe_weight_sum * bin_sizes), EPS, None)
-    if weight_sum == 0:
-        warnings.warn(
-            "occupancy weights sum to 0; the diffusion occupancy is degenerate and a "
-            "safe denominator is used. Every electrode will be zero-rate.",
-            UserWarning,
-            stacklevel=2,
-        )
-
     # ---- per electrode: marks, bin indices, weights, mean rate, ground process ----
     encoding_bin_indices: list[np.ndarray] = []
     encoding_marks: list[jnp.ndarray] = []
     encoding_weights: list[jnp.ndarray] = []
+    encoding_fit_weights: list[np.ndarray] = []
     weight_total: list[float] = []
     mean_rates: list[float] = []
     summed_ground_process_intensity = np.zeros((n_interior,))
@@ -593,6 +636,7 @@ def fit_clusterless_diffusion_encoding_model(
         encoding_bin_indices.append(bins[order])
         encoding_marks.append(jnp.asarray(np.asarray(bounded_features)[order]))
         encoding_weights.append(jnp.asarray(np.asarray(spike_weights)[order]))
+        encoding_fit_weights.append(np.asarray(spike_weights)[order])
         weight_total.append(w_total)
 
         if w_total == 0:
@@ -607,9 +651,65 @@ def fit_clusterless_diffusion_encoding_model(
             )
             continue
 
-        mean_rate = weighted_mean_rate(spike_weights, weight_sum)
-        mean_rates.append(mean_rate)
-        spike_field = np.bincount(bins, weights=spike_weights, minlength=n_interior)
+        mean_rates.append(weighted_mean_rate(spike_weights, weight_sum))
+
+    # Retain every encoding bin, including spikes whose current EM weight is
+    # zero. The support therefore remains valid when a refit activates them.
+    source_bin_indices = np.unique(
+        np.concatenate(encoding_bin_indices)
+        if encoding_bin_indices
+        else np.empty(0, dtype=np.int32)
+    ).astype(np.int32)
+    source_bin_indices.setflags(write=False)
+    encoding_source_indices = [
+        np.searchsorted(source_bin_indices, bins).astype(np.int32)
+        for bins in encoding_bin_indices
+    ]
+    for source_indices in encoding_source_indices:
+        source_indices.setflags(write=False)
+    source_kernel = _cached_source_kernel(
+        Lam,
+        Q,
+        labels,
+        position_std,
+        memory_budget,
+        environment,
+        sources=source_bin_indices,
+    )
+
+    occupancy_hat = _diffuse_field(
+        occupancy_field,
+        Lam,
+        Q,
+        position_std,
+        labels,
+        n_components,
+        source_kernel,
+        source_tile_size,
+        source_bin_indices,
+    )
+    safe_weight_sum = weight_sum if weight_sum > 0 else 1.0
+    occupancy = np.clip(occupancy_hat / (safe_weight_sum * bin_sizes), EPS, None)
+    if weight_sum == 0:
+        warnings.warn(
+            "occupancy weights sum to 0; the diffusion occupancy is degenerate and a "
+            "safe denominator is used. Every electrode will be zero-rate.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    for bins, spike_weights, w_total, mean_rate in zip(
+        encoding_bin_indices,
+        encoding_fit_weights,
+        weight_total,
+        mean_rates,
+        strict=True,
+    ):
+        if w_total == 0:
+            continue
+        spike_field = np.bincount(
+            bins, weights=np.asarray(spike_weights), minlength=n_interior
+        )
         spike_field_hat = _diffuse_field(
             spike_field,
             Lam,
@@ -619,6 +719,7 @@ def fit_clusterless_diffusion_encoding_model(
             n_components,
             source_kernel,
             source_tile_size,
+            source_bin_indices,
         )
         p_gpi = spike_field_hat / (w_total * bin_sizes)
         summed_ground_process_intensity += mean_rate * p_gpi / occupancy
@@ -634,6 +735,8 @@ def fit_clusterless_diffusion_encoding_model(
         "summed_ground_process_intensity": summed_ground_process_intensity,
         "unfloored_ground_process_intensity": unfloored_ground_process_intensity,
         "encoding_bin_indices": encoding_bin_indices,
+        "encoding_source_indices": encoding_source_indices,
+        "source_bin_indices": source_bin_indices,
         "encoding_marks": encoding_marks,
         "encoding_weights": encoding_weights,
         "weight_total": weight_total,
@@ -654,7 +757,7 @@ def fit_clusterless_diffusion_encoding_model(
     }
 
 
-def _padded_encoding(bins, marks, weights, n_bins: int):
+def _padded_encoding(bins, marks, weights, n_bins: int, source_bins=None):
     """Device encoding bins, marks and weights in bin order, padded with dropped rows.
 
     Predict sums by bin with ``indices_are_sorted=True``. Models fitted before
@@ -673,6 +776,16 @@ def _padded_encoding(bins, marks, weights, n_bins: int):
     if np.any(bins[1:] < bins[:-1]):
         order = np.argsort(bins, kind="stable")
         bins, marks, weights = bins[order], marks[order], weights[order]
+    if source_bins is not None:
+        sources = np.asarray(source_bins)
+        compact_bins = np.searchsorted(sources, bins)
+        if np.any(compact_bins >= sources.size) or np.any(
+            sources[compact_bins] != bins
+        ):
+            raise ValidationError(
+                "encoding bin support changed; refit the encoding model before decoding."
+            )
+        bins = compact_bins.astype(np.int32)
     n_padded = _padded_sample_count(bins.shape[0])
     padded_bins = np.full(n_padded, n_bins, dtype=bins.dtype)
     padded_bins[: bins.shape[0]] = bins
@@ -696,6 +809,7 @@ def _diffused_mark_field(
     n_components: int,
     source_kernel,
     source_tile_size,
+    source_bins=None,
 ):
     """``H_t D_e`` for one block of decoding spikes, shape (n_bins, n_block).
 
@@ -706,7 +820,7 @@ def _diffused_mark_field(
     D = deterministic_row_sum(
         encoding_weights[:, None] * mark_kernel,
         encoding_bins,
-        eigvecs.shape[0],
+        eigvecs.shape[0] if source_bins is None else source_bins.shape[0],
         indices_are_sorted=True,
     )
     return _linear_heat_apply(
@@ -717,6 +831,7 @@ def _diffused_mark_field(
         source_kernel,
         position_std=position_std,
         source_tile_size=source_tile_size,
+        source_bins=source_bins,
     )
 
 
@@ -747,6 +862,7 @@ def _add_electrode_diffusion_intensities(
     mean_rate,
     weight_total,
     source_kernel,
+    source_bins=None,
     *,
     position_std,
     n_components,
@@ -797,6 +913,7 @@ def _add_electrode_diffusion_intensities(
             n_components,
             source_kernel,
             source_tile_size,
+            source_bins,
         )
         # bin_sizes (dV) makes p_e a proper joint density (recovers the mark
         # marginal, guarded by test_mark_marginal_recovery). It cancels in the
@@ -846,6 +963,7 @@ def _add_electrode_local_diffusion_terms(
     mean_rate,
     weight_total,
     source_kernel,
+    source_bins=None,
     *,
     position_std,
     n_components,
@@ -895,6 +1013,7 @@ def _add_electrode_local_diffusion_terms(
             n_components,
             source_kernel,
             source_tile_size,
+            source_bins,
         )
         p_e_at_animal = P[bins, jnp.arange(block_size)] / (
             weight_total * bin_sizes[bins]
@@ -1034,6 +1153,11 @@ def predict_clusterless_diffusion_log_likelihood(
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
 
     source_kernel, source_tile_size = _prediction_source_operator(encoding_model, Q)
+    source_bin_indices = encoding_model.get("source_bin_indices")
+    source_bins = (
+        None if source_bin_indices is None else jnp.asarray(source_bin_indices)
+    )
+    n_sources = n_bins if source_bins is None else source_bins.shape[0]
 
     if is_local:
         # The local path reads the animal's position; non-local ignores it and the
@@ -1123,13 +1247,19 @@ def predict_clusterless_diffusion_log_likelihood(
 
             enc_bins, enc_marks, enc_weights = _spike_time_order.memo(
                 "padded_diffusion_encoding",
-                (electrode_bins, electrode_marks, electrode_weights),
+                (
+                    electrode_bins,
+                    electrode_marks,
+                    electrode_weights,
+                    source_bin_indices,
+                ),
                 partial(
                     _padded_encoding,
                     electrode_bins,
                     electrode_marks,
                     electrode_weights,
-                    n_bins,
+                    n_sources,
+                    source_bin_indices,
                 ),
             )
             safe_weight_total = (
@@ -1168,6 +1298,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 electrode_mean_rate,
                 safe_weight_total,
                 source_kernel,
+                source_bins,
                 position_std=position_std,
                 n_components=n_components,
                 block_size=min(effective_block, n_padded),
@@ -1249,13 +1380,14 @@ def predict_clusterless_diffusion_log_likelihood(
 
         enc_bins, enc_marks, enc_weights = _spike_time_order.memo(
             "padded_diffusion_encoding",
-            (electrode_bins, electrode_marks, electrode_weights),
+            (electrode_bins, electrode_marks, electrode_weights, source_bin_indices),
             partial(
                 _padded_encoding,
                 electrode_bins,
                 electrode_marks,
                 electrode_weights,
-                n_bins,
+                n_sources,
+                source_bin_indices,
             ),
         )
         # weight_total_e > 0 here; belt-and-suspenders safe denominator.
@@ -1296,6 +1428,7 @@ def predict_clusterless_diffusion_log_likelihood(
             electrode_mean_rate,
             safe_weight_total,
             source_kernel,
+            source_bins,
             position_std=position_std,
             n_components=n_components,
             block_size=min(effective_block, n_padded),
