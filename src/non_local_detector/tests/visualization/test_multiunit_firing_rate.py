@@ -26,3 +26,18 @@ def test_single_timestamp_is_rejected():
 
     with pytest.raises(ValidationError, match="at least two"):
         get_multiunit_firing_rate([np.array([0.5])], np.array([0.5]))
+
+
+@pytest.mark.unit
+def test_irregular_rows_use_their_own_exposure():
+    """The rate times each bin's duration recovers its spike count."""
+    time = np.array([0.0, 0.1, 1.1])
+    spikes = [time.copy(), np.array([0.1, 1.1])]
+
+    rate = np.asarray(
+        get_multiunit_firing_rate(spikes, time, smoothing_sigma=1e-6)
+    ).ravel()
+
+    durations = np.array([0.1, 0.55, 1.0])
+    np.testing.assert_allclose(rate, [10.0, 2.0 / 0.55, 2.0])
+    np.testing.assert_allclose(rate * durations, [1.0, 2.0, 2.0])
