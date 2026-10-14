@@ -6,7 +6,7 @@ Tests cover the core public functions that can be tested in isolation.
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from patsy import PatsyError
+from patsy import PatsyError, build_design_matrices
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
@@ -458,3 +458,54 @@ class TestNonStationaryNaNCovariates:
 
         with pytest.raises(PatsyError):
             model.make_state_transition(covariate_data)
+
+
+@pytest.mark.unit
+class TestDefaultCovariateSpline:
+    """The default covariate formula places spline knots where the data are
+    and accepts covariates outside the fitted range."""
+
+    @staticmethod
+    def _design(speed):
+        _, _, design_matrix = DiscreteNonStationaryDiagonal(
+            diagonal_values=np.array([0.99, 0.98, 0.98, 0.98])
+        ).make_state_transition({"speed": speed})
+        return design_matrix
+
+    def test_speed_below_fixed_knots(self):
+        """Speeds that never reach 64 cm/s (issue #54) fit, with full rank."""
+        design_matrix = np.asarray(self._design(np.linspace(0.0, 50.0, 1000)))
+        assert np.linalg.matrix_rank(design_matrix) == design_matrix.shape[1]
+
+    def test_zero_heavy_speed_keeps_every_column_supported(self):
+        """Ties at zero (an animal at rest) do not stack knots: every basis
+        column has data and the design stays well conditioned."""
+        rng = np.random.default_rng(0)
+        speed = rng.gamma(1.5, 12.0, 20_000)
+        speed[rng.uniform(size=speed.size) < 0.7] = 0.0
+        design_matrix = np.asarray(self._design(speed))
+        singular_values = np.linalg.svd(design_matrix, compute_uv=False)
+
+        assert design_matrix.shape[1] == 9
+        assert np.all(design_matrix.sum(axis=0) > 10.0)
+        assert singular_values[0] / singular_values[-1] < 1e4
+
+    def test_prediction_outside_fitted_range_uses_boundary(self):
+        """New covariates beyond the fitted range evaluate at the nearest
+        boundary instead of raising."""
+        design_matrix = self._design(np.linspace(0.0, 50.0, 1000))
+        new_rows = np.asarray(
+            build_design_matrices(
+                [design_matrix.design_info],
+                {"speed": np.array([-5.0, 0.0, 50.0, 80.0])},
+            )[0]
+        )
+        np.testing.assert_allclose(new_rows[0], new_rows[1])
+        np.testing.assert_allclose(new_rows[3], new_rows[2])
+
+    def test_explicit_knots_still_supported(self):
+        _, _, design_matrix = DiscreteNonStationaryDiagonal(
+            diagonal_values=np.array([0.99, 0.98]),
+            formula="1 + bs(speed, knots=[10.0, 20.0])",
+        ).make_state_transition({"speed": np.linspace(0.0, 50.0, 100)})
+        assert design_matrix.shape == (100, 6)

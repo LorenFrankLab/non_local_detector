@@ -9,11 +9,14 @@ Covers:
   unchanged while other rows update
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
 from non_local_detector import (
     ClusterlessDecoder,
+    DiscreteNonStationaryDiagonal,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
@@ -239,6 +242,51 @@ class TestFrozenRowEndToEnd:
         assert not np.array_equal(final_other_row, initial_other_row), (
             "Expected Local (row 0) to update during EM — if it didn't, "
             "the frozen-row test is not meaningfully exercising the restore"
+        )
+
+    @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
+    def test_covariate_transition_keeps_frozen_row(self, transition_representation):
+        """With covariate-dependent transitions, a frozen row keeps its
+        initial coefficients, so it stays constant over time, while the other
+        rows are estimated."""
+        speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
+            seed=42, n_neurons=5
+        )
+        detector = NonLocalSortedSpikesDetector(
+            discrete_transition_type=DiscreteNonStationaryDiagonal(
+                np.array([0.99, 0.98, 0.96, 0.96]), formula="1 + speed"
+            ),
+        )
+        initial_transitions, initial_coefficients, _ = (
+            detector.discrete_transition_type.make_state_transition({"speed": speed})
+        )
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=".*Row freezing.*")
+            detector.estimate_parameters(
+                position_time=time,
+                position=position,
+                spike_times=spike_times,
+                time_edges=time_edges_from_centers(time),
+                is_training=~is_event,
+                max_iter=3,
+                estimate_encoding_model=False,
+                discrete_transition_covariate_data={"speed": speed},
+                transition_representation=transition_representation,
+            )
+
+        np.testing.assert_array_equal(
+            detector.discrete_transition_coefficients_[:, 1],
+            initial_coefficients[:, 1],
+        )
+        np.testing.assert_allclose(
+            detector.discrete_state_transitions_[:, 1],
+            np.broadcast_to(initial_transitions[0, 1], (len(speed), 4)),
+            rtol=1e-6,
+        )
+        assert not np.allclose(
+            detector.discrete_transition_coefficients_[:, 0],
+            initial_coefficients[:, 0],
         )
 
     def test_opt_out_allows_no_spike_row_to_update(self):

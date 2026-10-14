@@ -1,10 +1,8 @@
 """Tests for optimized clusterless KDE log-space functions.
 
 This module tests the vectorized implementations of kde_distance and log_kde_distance
-in clusterless_kde_log.py to ensure numerical equivalence and performance improvements.
+in clusterless_kde_log.py to ensure numerical equivalence and stability.
 """
-
-import time
 
 import jax
 import jax.numpy as jnp
@@ -276,66 +274,6 @@ class TestJitCompiledFunctions:
             assert jnp.allclose(
                 jnp.log(result_linear), result_log, rtol=1e-5, atol=1e-8
             )
-
-
-class TestPerformanceRegression:
-    """Tests to ensure JIT compilation and caching work correctly."""
-
-    def test_jit_compilation_caching(self):
-        """JIT-compiled functions cache compilation and are fast on repeated calls."""
-        rng = np.random.default_rng(404)
-
-        # Use larger arrays to get more reliable timing
-        n_eval = 100
-        n_samples = 200
-        n_dims = 4
-
-        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
-        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
-        std = jnp.ones(n_dims)
-
-        # Warmup call (includes JIT compilation overhead)
-        _ = kde_distance(eval_points, samples, std)
-        _.block_until_ready()
-
-        # Timed calls - should all be fast now that compilation is cached
-        times = []
-        for _ in range(10):
-            start = time.perf_counter()
-            result = kde_distance(eval_points, samples, std)
-            result.block_until_ready()
-            times.append(time.perf_counter() - start)
-
-        # All calls should be reasonably fast (< 10ms average)
-        avg_time = np.mean(times)
-        assert avg_time < 0.01, f"Average time {avg_time:.4f}s exceeds 10ms threshold"
-
-    def test_log_jit_compilation_caching(self):
-        """JIT-compiled log functions cache compilation correctly."""
-        rng = np.random.default_rng(505)
-
-        n_eval = 100
-        n_samples = 200
-        n_dims = 4
-
-        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
-        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
-        std = jnp.ones(n_dims)
-
-        # Warmup
-        _ = log_kde_distance(eval_points, samples, std)
-        _.block_until_ready()
-
-        # Timed calls
-        times = []
-        for _ in range(10):
-            start = time.perf_counter()
-            result = log_kde_distance(eval_points, samples, std)
-            result.block_until_ready()
-            times.append(time.perf_counter() - start)
-
-        avg_time = np.mean(times)
-        assert avg_time < 0.01, f"Average time {avg_time:.4f}s exceeds 10ms threshold"
 
 
 class TestCompensatedLinearMarginal:

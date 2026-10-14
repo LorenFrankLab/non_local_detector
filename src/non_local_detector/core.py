@@ -1908,48 +1908,62 @@ def most_likely_sequence_covariate_dependent(
 
 
 ## Convergence check ##
+# A relative decrease this small is float rounding, not a monotonicity
+# violation: the per-row evidence increments are float32-accurate (their sum
+# is float64), so two evaluations of the same objective can differ by a few
+# float32 ulps relative to its magnitude.
+EM_MONOTONICITY_SLACK = 10 * float(np.finfo(np.float32).eps)
+
+
 def check_converged(
     log_likelihood: float,
     previous_log_likelihood: float,
     tolerance: float = 1e-4,
 ) -> tuple[bool, bool]:
-    """We have converged if the slope of the log-likelihood function falls below 'tolerance',
+    """Check EM convergence and monotonicity from two objective values.
 
-    i.e., |f(t) - f(t-1)| / avg < tolerance,
-    where avg = (|f(t)| + |f(t-1)|)/2 and f(t) is log lik at iteration t.
+    EM has converged when the objective no longer decreases and its relative
+    change, ``|f(t) - f(t-1)| / avg`` with ``avg = (|f(t)| + |f(t-1)|) / 2``,
+    falls below ``tolerance``. A decrease larger than float rounding
+    (``EM_MONOTONICITY_SLACK`` relative) is a monotonicity violation and never
+    counts as convergence, however small it is relative to ``tolerance``.
 
     Parameters
     ----------
-    log_likelihood : np.ndarray
-        Current log likelihood
-    previous_log_likelihood : np.ndarray
-        Previous log likelihood
+    log_likelihood : float
+        Current objective (marginal log-likelihood plus any log prior the
+        M-step maximizes).
+    previous_log_likelihood : float
+        Previous objective.
     tolerance : float, optional
-        threshold for similarity, by default 1e-4
+        Relative-change threshold for convergence, by default 1e-4.
 
     Returns
     -------
     is_converged : bool
-        True if the relative change in log-likelihood is below ``tolerance``.
+        True if the objective did not decrease and its relative change is
+        below ``tolerance``. False while the objective stays ``-inf``.
     is_increasing : bool
-        True if the log-likelihood did not decrease by more than ``tolerance``.
-        A decrease smaller than ``tolerance`` is treated as noise rather than a
-        true monotonicity violation, matching the slack used by the final-E-step
-        consistency check.
+        True if the objective did not decrease by more than float rounding.
 
     """
-    delta_log_likelihood = abs(log_likelihood - previous_log_likelihood)
+    log_likelihood = float(log_likelihood)
+    previous_log_likelihood = float(previous_log_likelihood)
+    if not (np.isfinite(log_likelihood) and np.isfinite(previous_log_likelihood)):
+        # A -inf objective (an impossible timestep, or a prior on a zero
+        # transition) has no relative change: compare the values directly,
+        # without a NaN ratio. -inf after -inf is no decrease, but leaves no
+        # change to judge convergence by; NaN is never an increase.
+        return False, bool(log_likelihood >= previous_log_likelihood)
+
+    # Relative, not absolute: the objective is a sum over time bins, so its
+    # magnitude, and the size of a negligible change, scales with recording
+    # length.
     avg_log_likelihood = (
         abs(log_likelihood) + abs(previous_log_likelihood) + np.spacing(1)
     ) / 2
-
-    # Compare the *relative* change against the tolerance (matching
-    # ``is_converged`` below), not an absolute difference. The marginal
-    # log-likelihood is a sum over timesteps, so its magnitude scales with
-    # dataset size; an absolute slack would spuriously flag negligible
-    # floating-point decreases on large datasets as monotonicity violations.
     relative_change = (log_likelihood - previous_log_likelihood) / avg_log_likelihood
-    is_increasing = relative_change >= -tolerance
-    is_converged = (delta_log_likelihood / avg_log_likelihood) < tolerance
+    is_increasing = bool(relative_change >= -EM_MONOTONICITY_SLACK)
+    is_converged = is_increasing and bool(abs(relative_change) < tolerance)
 
     return is_converged, is_increasing

@@ -39,7 +39,10 @@ class SortedSpikesDecoder(SortedSpikesDetector):
     discrete_transition_stickiness : Stickiness, optional
         Stickiness parameter for discrete transitions, by default np.array([0.0]).
     discrete_transition_regularization : float, optional
-        Regularization parameter for discrete transitions, by default 1e-10.
+        L2 penalty on the non-intercept coefficients of covariate-dependent
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
+        Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions, by default None (uses RandomWalk).
     observation_models : Observations, optional
@@ -77,7 +80,7 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.0,
         discrete_transition_stickiness: Stickiness | None = None,
-        discrete_transition_regularization: float = 1e-10,
+        discrete_transition_regularization: float = 0.1,
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
@@ -145,7 +148,10 @@ class ClusterlessDecoder(ClusterlessDetector):
     discrete_transition_stickiness : Stickiness, optional
         Stickiness parameter for discrete transitions, by default np.array([0.0]).
     discrete_transition_regularization : float, optional
-        Regularization parameter for discrete transitions, by default 1e-10.
+        L2 penalty on the non-intercept coefficients of covariate-dependent
+        discrete transitions, equivalent to a Gaussian prior with standard
+        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
+        Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
         Types of continuous state transitions, by default None (uses RandomWalk).
     observation_models : Observations, optional
@@ -185,7 +191,7 @@ class ClusterlessDecoder(ClusterlessDetector):
         discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness | None = None,
-        discrete_transition_regularization: float = 1e-10,
+        discrete_transition_regularization: float = 0.1,
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,

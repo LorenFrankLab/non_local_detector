@@ -203,8 +203,9 @@ def test_kde_gmm_density_equivalence(equivalence_data):
         )
 
 
-def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
-    """Verify end-to-end likelihood equivalence between KDE and bandwidth-matched GMM.
+@pytest.mark.parametrize("is_local", [False, True], ids=["nonlocal", "local"])
+def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
+    """Verify local and non-local KDE likelihoods against a bandwidth-matched GMM.
 
     Uses the full predict pipeline for both KDE and a manually constructed GMM
     encoding model, and verifies the log-likelihoods match.
@@ -248,7 +249,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
         summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],
         position_std=kde_enc["position_std"],
         waveform_std=kde_enc["waveform_std"],
-        is_local=False,
+        is_local=is_local,
         disable_progress_bar=True,
     )
 
@@ -311,10 +312,16 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
         spike_times=spike_times_jnp,
         spike_waveform_features=spike_features_jnp,
         **gmm_encoding,
-        is_local=False,
+        is_local=is_local,
     )
 
-    # The likelihoods should match closely
+    expected_shape = (
+        len(time_edges) - 1,
+        1 if is_local else len(interior_bins),
+    )
+    assert ll_kde.shape == ll_gmm.shape == expected_shape
+    assert np.all(np.isfinite(ll_kde))
+    assert np.all(np.isfinite(ll_gmm))
     np.testing.assert_allclose(
         np.asarray(ll_gmm),
         np.asarray(ll_kde),

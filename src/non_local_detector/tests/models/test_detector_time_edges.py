@@ -339,6 +339,7 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
         **fit_args,
         time_edges=edges,
         max_iter=1,
+        estimate_encoding_model=True,
         min_encoding_local_mass=0.0,
         min_encoding_local_ess=0.0,
     )
@@ -508,6 +509,7 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
         **fit_args,
         time_edges=edges,
         max_iter=1,
+        estimate_encoding_model=True,
         min_encoding_local_mass=0.0,
         min_encoding_local_ess=0.0,
     )

@@ -82,6 +82,9 @@ def test_zero_damping_is_accepted(sorted_inputs):
     """The default (zero) keeps the existing EM path."""
     detector = NonLocalSortedSpikesDetector()
     results = detector.estimate_parameters(
-        **sorted_inputs, max_iter=1, encoding_update_damping=0.0
+        **sorted_inputs,
+        max_iter=1,
+        estimate_encoding_model=True,
+        encoding_update_damping=0.0,
     )
     assert "acausal_state_probabilities" in results

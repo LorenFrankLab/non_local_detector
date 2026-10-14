@@ -1,17 +1,8 @@
-"""Test GMM convergence to KDE with increasing components.
+"""Tests for GMM fitting convergence and basic clusterless likelihood behavior.
 
-GMM is a parametric approximation to KDE. As the number of GMM components increases,
-GMM should converge to KDE. This test verifies:
-
-1. Mathematical formulation consistency
-2. Convergence with increasing components
-3. Implementation correctness
-
-Key mathematical relationships:
-- KDE: p(x,m|s) = (1/N) Σ_i K_pos(x, x_i) K_mark(m, m_i)
-- GMM: p(x,m|s) = Σ_k π_k N(x,m | μ_k, Σ_k)
-
-As K→∞, GMM → KDE (in the limit).
+Numerical KDE/GMM equivalence is checked in test_kde_gmm_equivalence.py using
+bandwidth-matched models. This module checks fitted ground-process intensities,
+likelihood finiteness, and EM convergence diagnostics.
 """
 
 import warnings
@@ -68,52 +59,6 @@ def convergence_test_data():
         "spike_features": spike_features,
         "environment": environment,
     }
-
-
-def test_mathematical_formula_consistency(convergence_test_data):
-    """Verify the mathematical formulas match between KDE and GMM.
-
-    KDE formula (line 99-101 in clusterless_kde.py):
-        log(mean_rate * marginal_density / occupancy)
-
-    GMM formula (line 556 in clusterless_gmm.py):
-        log(mean_rate) + joint_logp - log_occ
-        = log(mean_rate) + log(p(x,m)) - log(occupancy(x))
-        = log(mean_rate * p(x,m) / occupancy(x))
-
-    These should be mathematically identical!
-    """
-
-    # The formulas are:
-    # KDE: log(λ * p(x,m) / π(x))  where p is marginal_density, π is occupancy
-    # GMM: log(λ) + log(p(x,m)) - log(π(x))
-
-    # These are the same by logarithm properties:
-    # log(a * b / c) = log(a) + log(b) - log(c)
-
-    # Let's verify with synthetic values
-    mean_rate = 5.0
-    marginal_density = 0.3
-    occupancy = 0.1
-
-    # KDE formula
-    kde_formula = np.log(mean_rate * marginal_density / occupancy)
-
-    # GMM formula
-    gmm_formula = np.log(mean_rate) + np.log(marginal_density) - np.log(occupancy)
-
-    print("\n=== Formula Verification ===")
-    print(
-        f"KDE: log({mean_rate} * {marginal_density} / {occupancy}) = {kde_formula:.6f}"
-    )
-    print(
-        f"GMM: log({mean_rate}) + log({marginal_density}) - log({occupancy}) = {gmm_formula:.6f}"
-    )
-    print(f"Difference: {abs(kde_formula - gmm_formula):.10f}")
-
-    assert np.isclose(kde_formula, gmm_formula, rtol=1e-10), (
-        "KDE and GMM formulas should be mathematically identical"
-    )
 
 
 def test_ground_process_intensity_calculation(convergence_test_data):
@@ -174,48 +119,8 @@ def test_ground_process_intensity_calculation(convergence_test_data):
     assert np.all(gpi_gmm >= 0)
 
 
-def test_segment_sum_correctness(convergence_test_data):
-    """Verify segment_sum is used correctly in GMM.
-
-    KDE uses: jax.ops.segment_sum(..., indices_are_sorted=True)
-    GMM uses: segment_sum(..., indices_are_sorted=True)
-
-    These should be equivalent (different import paths).
-    """
-    # Create test data
-    values = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    segment_ids = jnp.array([0, 0, 1, 1, 2])
-
-    # KDE way
-    result_kde = jax.ops.segment_sum(
-        values, segment_ids, num_segments=3, indices_are_sorted=True
-    )
-
-    # GMM way (from jax.ops import segment_sum)
-    from jax.ops import segment_sum
-
-    result_gmm = segment_sum(
-        values, segment_ids, num_segments=3, indices_are_sorted=True
-    )
-
-    print("\n=== segment_sum Verification ===")
-    print(f"Input: values={values}, segment_ids={segment_ids}")
-    print(f"KDE result: {result_kde}")
-    print(f"GMM result: {result_gmm}")
-
-    assert jnp.allclose(result_kde, result_gmm), (
-        "segment_sum implementations should match"
-    )
-
-
-def test_log_space_operations(convergence_test_data):
-    """Verify log-space operations are done correctly in GMM.
-
-    Common bugs:
-    1. Adding logs instead of multiplying: log(a) + log(b) ✓, but a + b ✗
-    2. Mixing log and linear space: log(a) + b ✗
-    3. segment_sum on logs without log-sum-exp trick
-    """
+def test_gmm_nonlocal_likelihood_is_finite(convergence_test_data):
+    """A fitted GMM produces finite non-local likelihoods on this small dataset."""
     data = convergence_test_data
 
     position_time = jnp.asarray(data["position_time"])
@@ -251,19 +156,6 @@ def test_log_space_operations(convergence_test_data):
     print("\n=== Log-Space Operations Check ===")
     print(f"Output range: [{np.min(ll_gmm):.2f}, {np.max(ll_gmm):.2f}]")
     print(f"All finite: {np.all(np.isfinite(ll_gmm))}")
-
-    # Check formula: log_likelihood should contain:
-    # 1. -GPI term (negative, in linear space then used as-is)
-    # 2. Per-spike terms: log(rate) + joint_logp - log_occ (all in log space)
-
-    # The -GPI term is LINEAR, not log! This is CORRECT for Poisson likelihood.
-    # L = -λ + Σ log(λ * p(x,m) / π(x))
-
-    # Key insight: GMM line 510-512 uses -summed_ground (linear space) ✓
-    # Then adds log-space spike contributions ✓
-
-    # This is mathematically correct! The Poisson log-likelihood is:
-    # log P(spikes) = -λ(x) + Σ_spikes log(λ(x) * p(x,m) / π(x))
 
     assert np.all(np.isfinite(ll_gmm)), "All likelihoods should be finite"
 

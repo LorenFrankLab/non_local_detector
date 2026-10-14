@@ -48,6 +48,13 @@ def main():
     parser.add_argument("--rate-spread", type=float, default=0.0)
     parser.add_argument("--mark-dimensions", type=int, default=4)
     parser.add_argument("--max-iter", type=int, default=3)
+    parser.add_argument(
+        "--estimate-encoding-model",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="refit the encoding model in each M-step (passed explicitly, so "
+        "checkouts with other defaults run the same workload)",
+    )
     parser.add_argument("--n-chunks", type=int, default=1)
     parser.add_argument("--require-backend", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--output", type=Path, required=True)
@@ -113,6 +120,7 @@ def main():
         "spike_rate_hz": args.spike_rate,
         "rate_spread": args.rate_spread,
         "max_iter": args.max_iter,
+        "estimate_encoding_model": args.estimate_encoding_model,
         "n_chunks": args.n_chunks,
         "backend": backend,
         "device": str(jax.local_devices()[0]),
@@ -133,7 +141,10 @@ def main():
             )
             start = time.perf_counter()
             results = model.estimate_parameters(
-                **em_kwargs, max_iter=args.max_iter, n_chunks=args.n_chunks
+                **em_kwargs,
+                max_iter=args.max_iter,
+                n_chunks=args.n_chunks,
+                estimate_encoding_model=args.estimate_encoding_model,
             )
             states = np.asarray(results["acausal_state_probabilities"])
             report[f"{label}_seconds"] = time.perf_counter() - start

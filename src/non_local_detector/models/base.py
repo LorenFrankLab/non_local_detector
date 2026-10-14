@@ -46,8 +46,9 @@ from non_local_detector.core import (
 )
 from non_local_detector.discrete_state_transitions import (
     _discrete_transition_from_statistics,
-    _estimate_discrete_transition,
+    _discrete_transition_statistics,
     _is_nonstationary,
+    _transition_log_prior,
     centered_softmax_forward,
     predict_discrete_state_transitions,
 )
@@ -170,7 +171,12 @@ def _label_checkpointed_result(dataset, metadata):
     """Attach native labels and a bounded lazy padded view to a stored result."""
     from non_local_detector.result_store import pad_state_bins
 
-    dataset.attrs["marginal_log_likelihoods"] = dataset.attrs["marginal_log_likelihood"]
+    attrs = dataset.attrs
+    # The JSON metadata of a store EM wrote holds its traces as lists.
+    for name in ("marginal_log_likelihoods", "em_objectives", "em_previous_objectives"):
+        if name in attrs:
+            attrs[name] = np.asarray(attrs[name], dtype=float)
+    attrs.setdefault("marginal_log_likelihoods", attrs["marginal_log_likelihood"])
     if "time_bin_end_inclusive" not in dataset.coords:
         dataset = dataset.assign_coords(
             time_bin_end_inclusive=(
@@ -1087,15 +1093,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     Attributes
     ----------
     converged_ : bool
-        True if EM converged within max_iter iterations. Set by
-        ``estimate_parameters``.
+        True if EM converged within max_iter iterations and the final E-step,
+        which evaluates the returned parameters, did not decrease the
+        penalized log-likelihood. Set by ``estimate_parameters``.
     n_iter_ : int
         Number of EM iterations actually performed. Set by
         ``estimate_parameters``.
     em_monotonicity_violations_ : list[int]
-        Iteration indices (1-based) where marginal log-likelihood
-        decreased. Empty list when EM is well-behaved. Set by
-        ``estimate_parameters``.
+        Iteration indices (1-based) where the penalized log-likelihood
+        (marginal log-likelihood plus the discrete-transition log prior)
+        decreased; the final E-step counts as iteration ``n_iter_ + 1``.
+        Empty list when EM is well-behaved. Set by ``estimate_parameters``.
     degenerate_timesteps_ : np.ndarray
         Time indices (0-based) where the final E-step had all-``-inf``
         log-likelihoods (every state impossible) and the posterior fell back
@@ -1187,8 +1195,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             retain the values specified by ``discrete_transition_type``
             regardless of what the data suggests. Use this to pin
             structural states (e.g., a No-Spike self-transition) that
-            should not be learned from data. Only applies to stationary
-            (2D) transition matrices.
+            should not be learned from data. For covariate-dependent
+            transitions, frozen rows keep their initial coefficients, so they
+            stay at their initial (time-constant) values.
         local_position_std : float or None, optional
             Controls the Local state's spatial representation:
 
@@ -2213,6 +2222,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             transition.make_state_transition(self.environments)
                         )
 
+    def __getstate__(self) -> dict:
+        """Pickle without the patsy design matrix, which cannot be pickled.
+
+        ``__setstate__`` rebuilds it from the fitted covariates.
+        """
+        state = super().__getstate__()
+        if state.get("discrete_transition_design_matrix_") is not None:
+            state = dict(state)
+            state["discrete_transition_design_matrix_"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        super().__setstate__(state)
+        covariate_data = state.get("_discrete_transition_covariate_data_")
+        if covariate_data is not None and (
+            self.discrete_transition_design_matrix_ is None
+        ):
+            self.discrete_transition_design_matrix_ = (
+                self.discrete_transition_type.make_state_transition(covariate_data)[2]
+            )
+
     def initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict | None = None
     ) -> None:
@@ -2239,28 +2269,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_transition_coefficients_,
             self.discrete_transition_design_matrix_,
         ) = self.discrete_transition_type.make_state_transition(covariate_data)
+        # patsy design matrices cannot be pickled or deep-copied; keep a copy
+        # of the covariates so ``__setstate__`` can rebuild the design matrix
+        # with the fitted knots even if the caller later changes them.
+        self._discrete_transition_covariate_data_ = (
+            None
+            if self.discrete_transition_design_matrix_ is None
+            else copy.deepcopy(covariate_data)
+        )
 
-        # Snapshot frozen rows from the initial matrix so the EM M-step
-        # can restore them after every update. Only meaningful for
-        # stationary (2D) transition matrices — if the user requests
-        # frozen rows with a non-stationary transition type, warn.
-        if self._frozen_discrete_transition_rows_mask_ is not None:
-            if self.discrete_state_transitions_.ndim == 2:
-                self._frozen_discrete_transition_rows_baseline_ = (
-                    self.discrete_state_transitions_[
-                        self._frozen_discrete_transition_rows_mask_
-                    ].copy()
-                )
-            else:
-                warnings.warn(
-                    "frozen_discrete_transition_rows is set but the "
-                    "discrete transition matrix is non-stationary "
-                    f"(ndim={self.discrete_state_transitions_.ndim}). "
-                    "Row freezing is only applied to stationary matrices "
-                    "and will be ignored here.",
-                    stacklevel=2,
-                )
-                self._frozen_discrete_transition_rows_baseline_ = None
+        # Snapshot frozen rows of a stationary matrix so the EM M-step can
+        # restore them after every update. Covariate-dependent frozen rows
+        # instead keep their coefficients: the M-step skips them.
+        if (
+            self._frozen_discrete_transition_rows_mask_ is not None
+            and self.discrete_state_transitions_.ndim == 2
+        ):
+            self._frozen_discrete_transition_rows_baseline_ = (
+                self.discrete_state_transitions_[
+                    self._frozen_discrete_transition_rows_mask_
+                ].copy()
+            )
         else:
             self._frozen_discrete_transition_rows_baseline_ = None
 
@@ -2971,10 +3000,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         return_outputs,
         max_read_bytes,
         replay_cache_bytes,
+        em_attrs=None,
     ) -> xr.Dataset:
         """Decode with complete conditioning and bounded spatial working memory.
 
         ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
+        ``em_attrs`` maps this pass's marginal log-likelihood to EM's
+        attributes, which a result store keeps with the rest so that
+        ``load_results`` returns them.
         """
         from non_local_detector.checkpointed_inference import (
             checkpointed_forward_backward,
@@ -3133,7 +3166,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             selected_rows=selected,
             dtype=np.float32,
             max_read_bytes=max_read_bytes,
-            result_attrs=attrs,
+            result_attrs=(
+                attrs
+                if em_attrs is None
+                else lambda marginal: {**attrs, **em_attrs(marginal)}
+            ),
             replay_cache_bytes=replay_cache_bytes,
             **transition_args,
         )
@@ -3273,7 +3310,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         is_missing: np.ndarray | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
-        estimate_encoding_model: bool = True,
+        estimate_encoding_model: bool = False,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -3305,11 +3342,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
-            Estimate the place fields based on the Local state, by default True.
+            Re-fit the place fields in each M-step, weighted by the Local
+            state's posterior, by default False. Every state shares the
+            encoding model, so weighting it by the Local state alone is not
+            an exact M-step: it can lower the penalized log-likelihood, which
+            EM reports as a monotonicity violation and never counts as
+            convergence. Off by default for that reason.
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
-            Convergence tolerance for the EM algorithm, by default 1e-4.
+            Convergence tolerance for the EM algorithm, by default 1e-4. EM
+            stops when the penalized log-likelihood (marginal log-likelihood
+            plus the discrete-transition log prior) changes by less than this
+            fraction of its magnitude without decreasing. With
+            ``discrete_transition_prior_weight > 0`` the last M-step must also
+            change every transition probability by less than ``tolerance``.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -3378,12 +3425,42 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         results : xr.Dataset
-            Results of the decoding, including posterior probabilities and marginal log likelihoods.
+            Results of the decoding, including posterior probabilities.
+            ``attrs["marginal_log_likelihoods"]`` and ``attrs["em_objectives"]``
+            give each E-step's marginal log-likelihood and penalized
+            log-likelihood (plus the discrete-transition log prior), the
+            quantity EM's convergence and monotonicity checks use. Each check
+            compares two E-steps under the prior of the M-step between them:
+            ``check_converged(em_objectives[k + 1], em_previous_objectives[k],
+            tolerance)`` reproduces it, with ``attrs["em_previous_objectives"]``
+            the earlier E-step's objective under that prior. With
+            ``discrete_transition_prior_weight > 0`` the prior changes with
+            each E-step, so ``em_previous_objectives[k]`` can differ from
+            ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
+            prior; the sole objective is the final marginal log-likelihood
+            and ``em_previous_objectives`` is empty. A ``result_path`` store
+            keeps these attributes, so ``load_results`` returns them too.
         """
         marginal_log_likelihoods = []
+        # EM monitors the marginal log-likelihood plus the log prior of the
+        # discrete transitions, the objective a MAP M-step never decreases;
+        # the likelihood alone can fall when the prior pulls the transitions.
+        # Each check compares two E-steps under the prior of the M-step between
+        # them (data-adaptive pseudo-counts change per E-step), so an iteration
+        # hands the next one its objective and the log prior of its M-step's
+        # output.
+        objectives: list[float] = []
+        # The objective each check compared objectives[k + 1] with.
+        previous_objectives: list[float] = []
+        # The log prior of the next E-step's parameters under the last M-step's
+        # prior; there is none before the first M-step.
+        next_log_prior = 0.0
         n_iter = 0
         converged = False
-        log_likelihood_change = np.inf
+        objective_converged = False
+        is_increasing = True
+        objective_change = np.inf
+        transition_change = np.inf
 
         time_edges, time_bin_width = _validate_estimation_arguments(
             time_edges,
@@ -3460,24 +3537,52 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ):
             cache_likelihood = True
 
+        covariate_transitions = _is_nonstationary(
+            self.discrete_transition_coefficients_,
+            self.discrete_transition_design_matrix_,
+        )
         # Structured EM accumulates the discrete M-step's statistics in its
         # replay: per-row responses for covariate transitions, else counts.
         transition_statistics = None
         if checkpointed and estimate_discrete_transition:
-            transition_statistics = (
-                "responses"
-                if _is_nonstationary(
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
-                )
-                else "counts"
-            )
+            transition_statistics = "responses" if covariate_transitions else "counts"
+        # Data-adaptive pseudo-counts (prior_weight > 0 on a stationary
+        # transition) scale with each E-step's expected counts. Any other prior
+        # is fixed, so an M-step's input has the log prior the previous M-step
+        # computed for its output.
+        prior_tracks_counts = (
+            estimate_discrete_transition
+            and not covariate_transitions
+            and bool(np.any(np.asarray(self.discrete_transition_prior_weight) > 0))
+        )
         if estimate_discrete_transition and not checkpointed:
             interior_state_bins = self.is_track_interior_state_bins_
             interior_state_ind = self.state_ind_[interior_state_bins]
             interior_continuous_transition = self.continuous_state_transitions_[
                 np.ix_(interior_state_bins, interior_state_bins)
             ]
+        prior = (
+            self.discrete_transition_concentration,
+            self.discrete_transition_stickiness,
+            self.discrete_transition_regularization,
+            self.discrete_transition_prior_weight,
+        )
+        # Frozen rows are not estimated (covariate-dependent rows are skipped,
+        # stationary rows restored after each M-step), so they do not enter the
+        # objective it maximizes.
+        frozen_rows = self._frozen_discrete_transition_rows_mask_
+        free_rows = None if frozen_rows is None else ~frozen_rows
+
+        def transition_log_prior(statistics: np.ndarray) -> float:
+            """Log prior of the current transitions under one M-step's prior."""
+            return _transition_log_prior(
+                statistics,
+                self.discrete_state_transitions_,
+                self.discrete_transition_coefficients_,
+                self.discrete_transition_design_matrix_,
+                *prior,
+                free_rows=free_rows,
+            )
 
         # Initialize the EM-result attributes together, after validation, so a
         # validation failure above leaves NONE of them set (all-or-nothing).
@@ -3606,31 +3711,36 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         run_log_likelihoods = None
 
             if estimate_discrete_transition:
-                prior = (
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
-                    self.discrete_transition_concentration,
-                    self.discrete_transition_stickiness,
-                    self.discrete_transition_regularization,
-                    self.discrete_transition_prior_weight,
-                )
-                (
-                    self.discrete_state_transitions_,
-                    self.discrete_transition_coefficients_,
-                ) = (
-                    _discrete_transition_from_statistics(
-                        e_step.transition_statistics, *prior
-                    )
+                statistics = (
+                    e_step.transition_statistics
                     if checkpointed
-                    else _estimate_discrete_transition(
+                    else _discrete_transition_statistics(
                         causal_posterior,
                         predictive_posterior,
                         acausal_posterior,
                         interior_continuous_transition,
                         interior_state_ind,
                         self.discrete_state_transitions_,
-                        *prior,
+                        self.discrete_transition_coefficients_,
+                        self.discrete_transition_design_matrix_,
                     )
+                )
+                log_prior_before = (
+                    transition_log_prior(statistics)
+                    if n_iter == 0 or prior_tracks_counts
+                    else next_log_prior
+                )
+                if prior_tracks_counts:
+                    transitions_before = np.array(self.discrete_state_transitions_)
+                (
+                    self.discrete_state_transitions_,
+                    self.discrete_transition_coefficients_,
+                ) = _discrete_transition_from_statistics(
+                    statistics,
+                    self.discrete_transition_coefficients_,
+                    self.discrete_transition_design_matrix_,
+                    *prior,
+                    frozen_rows=frozen_rows,
                 )
                 # The learned transitions are per bin at this width.
                 self.transition_time_bin_width_ = time_bin_width
@@ -3642,13 +3752,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 # This is a constrained M-step; EM converges to the
                 # constrained fixed point rather than the unconstrained
                 # maximizer, which is the desired behavior here.
-                if (
-                    self._frozen_discrete_transition_rows_baseline_ is not None
-                    and self.discrete_state_transitions_.ndim == 2
-                ):
+                if self._frozen_discrete_transition_rows_baseline_ is not None:
                     self.discrete_state_transitions_[
                         self._frozen_discrete_transition_rows_mask_
                     ] = self._frozen_discrete_transition_rows_baseline_
+                log_prior_after = transition_log_prior(statistics)
+                if prior_tracks_counts:
+                    moved = self.discrete_state_transitions_ - transitions_before
+                    transition_change = float(np.max(np.abs(moved)))
+            else:
+                log_prior_before = log_prior_after = 0.0
 
             if estimate_initial_conditions:
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
@@ -3672,14 +3785,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             n_iter += 1
 
             marginal_log_likelihoods.append(marginal_log_likelihood)
+            # This E-step evaluated the last M-step's output, under that
+            # M-step's prior; the first E-step has only its own M-step's.
+            objectives.append(
+                marginal_log_likelihood
+                + (next_log_prior if n_iter > 1 else log_prior_before)
+            )
             if n_iter > 1:
-                log_likelihood_change = (
-                    marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
+                objective_change = objectives[-1] - previous_objectives[-1]
+                objective_converged, is_increasing = check_converged(
+                    objectives[-1], previous_objectives[-1], tolerance
                 )
-                converged, is_increasing = check_converged(
-                    marginal_log_likelihoods[-1],
-                    marginal_log_likelihoods[-2],
-                    tolerance,
+                # A data-adaptive prior changes with every E-step, so a flat
+                # objective alone does not mean the transitions have settled:
+                # the last M-step must also have moved them by < tolerance.
+                converged = objective_converged and (
+                    not prior_tracks_counts or transition_change < tolerance
                 )
 
                 if not is_increasing:
@@ -3688,12 +3809,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     # degenerate-timestep warnings use logger.warning instead;
                     # see core._warn_degenerate_and_nan_timesteps).
                     warnings.warn(
-                        f"EM iteration {n_iter}: marginal log-likelihood "
-                        f"decreased from {marginal_log_likelihoods[-2]:.6f} to "
-                        f"{marginal_log_likelihoods[-1]:.6f} "
-                        f"(change={log_likelihood_change:.6e}). This usually "
-                        f"indicates a bug in the M-step, an aggressive "
-                        f"convergence tolerance, or a numerical instability.",
+                        f"EM iteration {n_iter}: penalized log-likelihood "
+                        f"decreased from {previous_objectives[-1]:.6f} to "
+                        f"{objectives[-1]:.6f} (change={objective_change:.6e}; "
+                        f"marginal log-likelihood + transition log prior). "
+                        f"A MAP M-step cannot lower it; re-fitting the encoding "
+                        f"model inside EM, a covariate transition fit stopping "
+                        f"early, or a numerical instability can.",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -3702,25 +3824,75 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 logger.info(
                     f"iteration {n_iter}, "
                     f"likelihood: {marginal_log_likelihoods[-1]}, "
-                    f"change: {log_likelihood_change}"
+                    f"penalized: {objectives[-1]}, "
+                    f"change: {objective_change}"
+                    + (
+                        f", transition change: {transition_change}"
+                        if prior_tracks_counts
+                        else ""
+                    )
                 )
             else:
                 logger.info(
                     f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
                 )
+            # The next E-step evaluates this M-step's output; it is checked
+            # against this E-step, both under this M-step's prior.
+            previous_objectives.append(marginal_log_likelihood + log_prior_before)
+            next_log_prior = log_prior_after
 
-        self.converged_ = bool(converged)
+        # converged_ is set after the final E-step, which evaluates the
+        # returned parameters and can still find a decrease.
         self.n_iter_ = int(n_iter)
 
-        if not self.converged_:
+        if not converged:
+            if not is_increasing:
+                advice = (
+                    "The penalized log-likelihood decreased in the last "
+                    "iteration, and EM never counts a decrease as convergence, "
+                    "so a looser tolerance will not help; see the monotonicity "
+                    "warnings above for likely causes."
+                )
+            elif n_iter > 1 and objectives[-1] == -np.inf:
+                advice = (
+                    "The penalized log-likelihood is -inf, so its change cannot "
+                    "be judged; this usually means degenerate timesteps (every "
+                    "state impossible), listed in degenerate_timesteps_ after "
+                    "the fit."
+                )
+            elif objective_converged:
+                advice = (
+                    "The penalized log-likelihood changed by less than "
+                    "tolerance, but with discrete_transition_prior_weight > 0 "
+                    "the last M-step must also move every transition "
+                    f"probability by less than tolerance, and it moved one by "
+                    f"{transition_change:.3e}; consider increasing max_iter."
+                )
+            else:
+                advice = "Consider increasing max_iter or relaxing tolerance."
             warnings.warn(
                 f"EM did not converge after max_iter={max_iter} iterations "
-                f"(final log-likelihood change={log_likelihood_change:.3e}, "
+                f"(final penalized log-likelihood change={objective_change:.3e}, "
                 f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
-                f"Consider increasing max_iter or relaxing tolerance.",
+                f"{advice}",
                 UserWarning,
                 stacklevel=2,
             )
+
+        def em_traces(final_log_likelihood: float) -> dict[str, list[float]]:
+            """EM's traces, given the final E-step's marginal log-likelihood.
+
+            The final E-step evaluates the returned parameters, the last
+            M-step's output, under that M-step's prior (none with max_iter=0).
+            """
+            return {
+                "marginal_log_likelihoods": [
+                    *marginal_log_likelihoods,
+                    final_log_likelihood,
+                ],
+                "em_objectives": [*objectives, final_log_likelihood + next_log_prior],
+                "em_previous_objectives": list(previous_objectives),
+            }
 
         # Final E-step after the last M-step so the returned posterior reflects
         # the final fitted parameters. Without this, the returned arrays are
@@ -3742,6 +3914,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 return_outputs=return_outputs,
                 max_read_bytes=DEFAULT_MAX_READ_BYTES,
                 replay_cache_bytes=replay_cache_bytes,
+                # The store is complete before its marginal log-likelihood
+                # reaches this method, so it writes the traces itself.
+                em_attrs=lambda marginal: {**em_attrs, **em_traces(marginal)},
             )
             marginal_log_likelihood = float(stored.attrs["marginal_log_likelihood"])
         elif checkpointed:
@@ -3800,7 +3975,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     store_log_likelihood or "log_likelihood" in requested_outputs
                 ),
             )
-        marginal_log_likelihoods.append(marginal_log_likelihood)
+        traces = em_traces(marginal_log_likelihood)
 
         # The preceding final E-step's _predict recorded the degenerate
         # (all-impossible) timesteps during its forward pass; expose them as a
@@ -3809,26 +3984,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # disabled (n_chunks > 1), where the returned log-likelihoods are None.
         self.degenerate_timesteps_ = self._degenerate_timesteps_
 
-        if len(marginal_log_likelihoods) >= 2:
-            # Use the same relative monotonicity slack as the in-loop check
-            # (check_converged's is_increasing) so the two stay consistent; a
-            # bare absolute threshold against a sum-over-time log-likelihood
-            # would fire spuriously.
+        # Check the final E-step like an in-loop iteration (there is none when
+        # max_iter=0). It counts as iteration n_iter + 1, and a decrease here
+        # means the fit has not converged.
+        final_objective = traces["em_objectives"][-1]
+        final_is_increasing = True
+        if n_iter > 0:
             _, final_is_increasing = check_converged(
-                marginal_log_likelihoods[-1],
-                marginal_log_likelihoods[-2],
-                tolerance,
+                final_objective, previous_objectives[-1], tolerance
             )
             if not final_is_increasing:
-                decrease = marginal_log_likelihoods[-2] - marginal_log_likelihoods[-1]
+                self.em_monotonicity_violations_.append(n_iter + 1)
+                decrease = previous_objectives[-1] - final_objective
                 warnings.warn(
-                    f"Final E-step log-likelihood decreased by {decrease:.3e} "
-                    f"(tolerance={tolerance:.3e}). This indicates an inconsistency "
-                    f"between the E-step and the M-step output and is unusual; the "
-                    f"returned posterior may not reflect the fitted parameters.",
+                    f"Final E-step penalized log-likelihood (marginal log-likelihood "
+                    f"+ transition log prior) decreased by {decrease:.3e}. This "
+                    f"indicates an inconsistency between the E-step and the M-step "
+                    f"output and is unusual; the returned posterior may not reflect "
+                    f"the fitted parameters. converged_ is False and iteration "
+                    f"{n_iter + 1} is recorded in em_monotonicity_violations_.",
                     UserWarning,
                     stacklevel=2,
                 )
+        self.converged_ = bool(converged) and final_is_increasing
 
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihood
@@ -3837,16 +4015,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             del self._encoding_model_data
 
         if result_path is not None:
-            stored.attrs["marginal_log_likelihoods"] = np.asarray(
-                marginal_log_likelihoods
-            )
-            stored.attrs.update(em_attrs)
+            # The store already holds the EM attributes and traces.
             return stored
+        em_attrs["em_objectives"] = np.asarray(traces["em_objectives"])
+        em_attrs["em_previous_objectives"] = np.asarray(
+            traces["em_previous_objectives"]
+        )
         results = self._convert_results_to_xarray(
             time_centers,
             acausal_posterior,
             acausal_state_probabilities,
-            marginal_log_likelihoods,
+            traces["marginal_log_likelihoods"],
             time_edges=time_edges,
             is_missing=is_missing,
             log_likelihood=(
@@ -5396,7 +5575,7 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
-        estimate_encoding_model: bool = True,
+        estimate_encoding_model: bool = False,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -5446,11 +5625,21 @@ class ClusterlessDetector(_DetectorBase):
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
-            Estimate the place fields based on the Local state, by default True
+            Re-fit the place fields in each M-step, weighted by the Local
+            state's posterior, by default False. Every state shares the
+            encoding model, so weighting it by the Local state alone is not
+            an exact M-step: it can lower the penalized log-likelihood, which
+            EM reports as a monotonicity violation and never counts as
+            convergence. Off by default for that reason.
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
-            Convergence tolerance for the EM algorithm, by default 1e-4.
+            Convergence tolerance for the EM algorithm, by default 1e-4. EM
+            stops when the penalized log-likelihood (marginal log-likelihood
+            plus the discrete-transition log prior) changes by less than this
+            fraction of its magnitude without decreasing. With
+            ``discrete_transition_prior_weight > 0`` the last M-step must also
+            change every transition probability by less than ``tolerance``.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -6568,7 +6757,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
-        estimate_encoding_model: bool = True,
+        estimate_encoding_model: bool = False,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -6620,11 +6809,21 @@ class SortedSpikesDetector(_DetectorBase):
         estimate_discrete_transition : bool, optional
             Estimate the discrete transition matrix, by default True
         estimate_encoding_model : bool, optional
-            Estimate the place fields based on the Local state, by default True.
+            Re-fit the place fields in each M-step, weighted by the Local
+            state's posterior, by default False. Every state shares the
+            encoding model, so weighting it by the Local state alone is not
+            an exact M-step: it can lower the penalized log-likelihood, which
+            EM reports as a monotonicity violation and never counts as
+            convergence. Off by default for that reason.
         max_iter : int, optional
             Maximuim number of EM iterations, by default 20
         tolerance : float, optional
-            Convergence tolerance for EM, by default 0.0001
+            Convergence tolerance for EM, by default 0.0001. EM
+            stops when the penalized log-likelihood (marginal log-likelihood
+            plus the discrete-transition log prior) changes by less than this
+            fraction of its magnitude without decreasing. With
+            ``discrete_transition_prior_weight > 0`` the last M-step must also
+            change every transition probability by less than ``tolerance``.
         cache_likelihood : bool, optional
             Store the likelihood for faster iterations, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
