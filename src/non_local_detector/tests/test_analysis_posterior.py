@@ -113,6 +113,23 @@ class TestMaximumAPosterioriEstimate:
 class TestSamplePosterior:
     """Test posterior sampling correctness."""
 
+    def test_unequal_bin_widths_preserve_probability_mass(self, monkeypatch):
+        """Bin width changes the within-bin density, not the bin's mass."""
+        from scipy.stats import rv_histogram  # type: ignore[import-untyped]
+
+        def draw_quantiles(distribution, size):
+            return distribution.ppf((np.arange(size) + 0.5) / size)
+
+        monkeypatch.setattr(rv_histogram, "rvs", draw_quantiles)
+        posterior = xr.DataArray([[0.5, 0.5], [0.8, 0.2]], dims=["time", "position"])
+
+        samples = sample_posterior(
+            posterior, np.array([0.0, 1.0, 10.0]), n_samples=1000
+        )
+
+        np.testing.assert_allclose((samples < 1.0).mean(axis=1), [0.5, 0.8])
+        np.testing.assert_allclose(samples.mean(axis=1), [3.0, 1.5])
+
     def test_delta_function_samples_in_correct_bin(self):
         """All samples from a delta posterior should be in the peak bin."""
         bin_edges = np.arange(0.0, 6.0, 1.0)  # 5 bins: [0,1), [1,2), ..., [4,5)

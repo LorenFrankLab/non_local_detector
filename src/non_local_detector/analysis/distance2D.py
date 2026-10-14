@@ -4,7 +4,10 @@ import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
 from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import (
+    Environment,
+    make_nD_track_graph_from_environment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,63 +27,7 @@ def make_2D_track_graph_from_environment(
     track_graph : nx.Graph
     """
 
-    track_graph = nx.Graph()
-
-    if environment.place_bin_centers_ is None:
-        raise ValueError("place_bin_centers_ is required for track graph construction")
-
-    if environment.is_track_interior_ is not None:
-        interior_data = environment.is_track_interior_.ravel()
-    else:
-        interior_data = np.ones(len(environment.place_bin_centers_), dtype=bool)
-
-    for node_id, (node_position, is_interior) in enumerate(
-        zip(
-            environment.place_bin_centers_,
-            interior_data,
-            strict=False,
-        )
-    ):
-        track_graph.add_node(
-            node_id, pos=tuple(node_position), is_track_interior=is_interior
-        )
-
-    if environment.is_track_interior_ is None:
-        raise ValueError("is_track_interior_ is required for edge construction")
-    if environment.centers_shape_ is None:
-        raise ValueError("centers_shape_ is required for edge construction")
-
-    edges = []
-    for x_ind, y_ind in zip(*np.nonzero(environment.is_track_interior_), strict=False):
-        x_inds, y_inds = np.meshgrid(
-            x_ind + np.asarray([-1, 0, 1]),
-            y_ind + np.asarray([-1, 0, 1]),
-            indexing="ij",
-        )
-        adj_edges = environment.is_track_interior_[x_inds, y_inds]
-        adj_edges[1, 1] = False
-
-        node_id = np.ravel_multi_index((x_ind, y_ind), environment.centers_shape_)
-        adj_node_ids = np.ravel_multi_index(
-            (x_inds[adj_edges], y_inds[adj_edges]),
-            environment.centers_shape_,
-        )
-        edges.append(
-            np.concatenate(np.meshgrid(node_id, adj_node_ids, indexing="ij"), axis=1)
-        )
-
-    edges = np.concatenate(edges)
-
-    for node1, node2 in edges:
-        pos1 = np.asarray(track_graph.nodes[node1]["pos"])
-        pos2 = np.asarray(track_graph.nodes[node2]["pos"])
-        distance = np.linalg.norm(pos1 - pos2)
-        track_graph.add_edge(node1, node2, distance=distance)
-
-    for edge_id, edge in enumerate(track_graph.edges):
-        track_graph.edges[edge]["edge_id"] = edge_id
-
-    return track_graph
+    return make_nD_track_graph_from_environment(environment)
 
 
 def get_bin_ind(sample: np.ndarray, edges: list) -> np.ndarray:

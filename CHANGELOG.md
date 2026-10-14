@@ -91,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HPD thresholds handle missing spatial bins per frame and return NaN for frames without posterior mass. An undefined first frame in the default conditional non-local posterior no longer prevents analysis of later frames.
+- Caller-supplied Cartesian `is_track_interior` masks now define the fitted geometry, with shape and boolean dtype validation and a copy that protects fitted geometry from later caller mutation. The exported 2-D graph helper uses the same bounds-aware graph construction as the environment.
+- `EmpiricalMovement` uses the fitted bin edges for both source and destination positions, supporting inferred ranges and ordinary per-dimension `position_range` specifications.
+- Encoding updates in EM select local observations by `is_local`, independently of state labels, and sum their posterior mass when more than one local observation is present.
+- Posterior sampling preserves probability mass for unequal-width spatial bins, and multiunit firing rates use each row's own exposure duration on irregular timestamp grids.
 - `analysis.distance2D.get_2D_distance` and `get_ahead_behind_distance2D` raise a `ValueError` naming `edges` when given a `track_graph` without `edges`, as `head_direction_simliarity` already did, instead of an `IndexError` from the bin lookup (#5). The `track_graph` and `edges` arguments are now documented.
 - `model_checking.sorted_spikes.plot_rescaled_ISI_autocorrelation` (and the `TimeRescaling` method) plots the autocorrelation again. The lag slice counted its start from the end of the array and its stop from the start, so it was empty whenever `lag_max` was at most the number of spikes, including the default; only the confidence lines were drawn. It now shows every lag with `|lag| <= lag_max`, centred on zero lag (#64).
 - `analysis.distance1D.get_ahead_behind_distance` returns NaN for time steps with a NaN orientation. A NaN heading compared as "not facing" the edge's second node, so these steps got a finite distance signed as if the animal faced the first node (#7). `get_ahead_behind_distance2D` already returned NaN.

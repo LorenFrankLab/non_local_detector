@@ -129,17 +129,15 @@ def test_deferred_environment_matches_topology_and_queries(monkeypatch):
     )
     mask = np.ones(eager.centers_shape_, dtype=bool)
     mask[2, 1:-1] = False
-    eager = Environment(
-        **kwargs, is_track_interior=mask, is_track_interior_=mask
-    ).fit_place_grid(np.array([[0.0, 0.0], [5.0, 6.0]]), infer_track_interior=False)
+    eager = Environment(**kwargs, is_track_interior=mask).fit_place_grid(
+        np.array([[0.0, 0.0], [5.0, 6.0]]), infer_track_interior=False
+    )
 
     def forbidden(*args, **kwargs):
         raise AssertionError("eager all-pairs construction was called")
 
     monkeypatch.setattr(nx, "shortest_path_length", forbidden)
-    lazy_env = Environment(
-        **kwargs, is_track_interior=mask, is_track_interior_=mask
-    ).fit_place_grid(
+    lazy_env = Environment(**kwargs, is_track_interior=mask).fit_place_grid(
         np.array([[0.0, 0.0], [5.0, 6.0]]),
         infer_track_interior=False,
         compute_all_pairs_distances=False,

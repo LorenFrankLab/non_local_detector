@@ -11,7 +11,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from non_local_detector.core import filter, smoother, viterbi
@@ -203,15 +203,21 @@ class TestHMMInvariants:
 
     @settings(deadline=None)  # JAX JIT compilation can exceed any fixed deadline
     @given(
-        probability_distribution(min_size=3, max_size=5),
-        stochastic_matrix(min_size=3, max_size=5),
+        st.integers(min_value=3, max_value=5),
+        st.data(),
     )
     def test_viterbi_with_deterministic_observations_follows_evidence(
-        self, init, trans
+        self, n_states, data
     ):
         """Property: with very strong evidence, viterbi should follow observations."""
-        n_states = len(init)
-        assume(trans.shape[0] == n_states)
+        init = data.draw(
+            probability_distribution(min_size=n_states, max_size=n_states),
+            label="initial distribution",
+        )
+        trans = data.draw(
+            stochastic_matrix(min_size=n_states, max_size=n_states),
+            label="transition matrix",
+        )
 
         # Create sequence that strongly indicates states: 0, 1, 2, 0, 1
         n_timesteps = min(5, n_states)
