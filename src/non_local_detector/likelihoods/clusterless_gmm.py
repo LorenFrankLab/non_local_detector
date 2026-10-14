@@ -71,7 +71,10 @@ def _as_jnp(x) -> jnp.ndarray:
     jnp.ndarray
         JAX array version of input.
     """
-    return x if isinstance(x, jnp.ndarray) else jnp.asarray(x)
+    result = x if isinstance(x, jnp.ndarray) else jnp.asarray(x)
+    if jnp.issubdtype(result.dtype, jnp.integer) or result.dtype == jnp.bool_:
+        result = result.astype(jnp.result_type(result.dtype, jnp.zeros(())))
+    return result
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
@@ -591,7 +594,6 @@ def fit_clusterless_gmm_encoding_model(
             stacklevel=2,
         )
 
-    is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     # Fit occupancy GMM and precompute per-bin terms

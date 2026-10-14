@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import jax.scipy
 import numpy as np
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     _concatenate_row_blocks,
     _spike_counts_matrix,
@@ -44,7 +45,10 @@ def _poisson_row_log_likelihood(counts, expected_counts):
 
     def add_unit(total, inputs):
         count, expected = inputs
-        event = jax.lax.optimization_barrier(jax.scipy.special.xlogy(count, expected))
+        safe_expected = jnp.where(count == 0, 1.0, expected)
+        event = jax.lax.optimization_barrier(
+            jax.scipy.special.xlogy(count, safe_expected)
+        )
         term = jax.lax.optimization_barrier(event - expected)
         return total + term, None
 
@@ -135,6 +139,11 @@ def predict_no_spike_log_likelihood(
     >>> log_lik.shape
     (100, 1)
     """
+    if np.ndim(no_spike_rate) != 0 or (
+        not isinstance(no_spike_rate, jax.core.Tracer)
+        and (not np.isfinite(no_spike_rate) or no_spike_rate < 0)
+    ):
+        raise ValidationError("no_spike_rate must be a finite nonnegative scalar")
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:

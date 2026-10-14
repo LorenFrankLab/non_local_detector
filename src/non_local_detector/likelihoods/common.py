@@ -92,6 +92,24 @@ def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
     return jnp.asarray(std)
 
 
+def validate_bandwidth(std, n_dims: int, name: str) -> jnp.ndarray:
+    """Normalize scalar/vector bandwidths and reject invalid fitted kernels."""
+    values = np.asarray(std, dtype=float)
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValidationError(f"{name} must contain only finite positive values")
+    if values.ndim == 0:
+        values = np.full(n_dims, values.item())
+    if values.shape != (n_dims,):
+        raise ValidationError(
+            f"{name} must be scalar or have shape ({n_dims},), got {values.shape}"
+        )
+    with np.errstate(over="ignore", under="ignore"):
+        values = values.astype(jax.dtypes.canonicalize_dtype(values.dtype))
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValidationError(f"{name} is not representable as finite positive values")
+    return jnp.asarray(values)
+
+
 def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
     """Validate per-sample weights shared by the sorted-spikes and clusterless fits.
 

@@ -73,6 +73,7 @@ from non_local_detector.likelihoods.common import (
     drop_zero_weight_samples,
     get_position_at_time,
     resolve_row_slice,
+    validate_bandwidth,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
@@ -283,14 +284,8 @@ def fit_sorted_spikes_kde_encoding_model(
         _encoding_support=_encoding_support,
     )
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
-    if isinstance(position_std, int | float):
-        if environment.track_graph is not None and position.shape[1] > 1:
-            position_std = jnp.array([position_std])
-        else:
-            position_std = jnp.array([position_std] * position.shape[1])
-
-    # Ensure position_std is a JAX array for KDEModel
-    assert isinstance(position_std, jnp.ndarray)
+    n_dims = 1 if environment.track_graph is not None else position.shape[1]
+    position_std = validate_bandwidth(position_std, n_dims, "position_std")
 
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -374,7 +369,11 @@ def fit_sorted_spikes_kde_encoding_model(
             )
         )
 
-    place_fields = jnp.stack(place_fields, axis=0)
+    place_fields = (
+        jnp.stack(place_fields, axis=0)
+        if place_fields
+        else jnp.zeros((0, len(is_track_interior)))
+    )
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
 
     n_nan_density_bins = int(nan_density_count)
