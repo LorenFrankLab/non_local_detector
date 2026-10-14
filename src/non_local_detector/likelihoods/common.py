@@ -1709,6 +1709,107 @@ class KDEModel:
         return block_log_kde(eval_points, self.samples_, std, block_size, self.weights_)
 
 
+def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
+    """True log density, with zero total fitted weight represented as zero mass."""
+    values = model.predict_log(points)
+    total = jnp.sum(model.weights_)
+    return jnp.where(
+        jnp.isnan(total), jnp.nan, jnp.where(total > 0.0, values, -jnp.inf)
+    )
+
+
+def traced_kde_log_density(points, samples, std, block_size, weights):
+    """Traceable true-density counterpart of :func:`kde_log_density`."""
+    values = _traced_block_log_kde(points, samples, std, block_size, weights)
+    total = jnp.sum(weights)
+    return jnp.where(
+        jnp.isnan(total), jnp.nan, jnp.where(total > 0.0, values, -jnp.inf)
+    )
+
+
+def log_density_intensity(mean_rate, log_density, log_occupancy):
+    """Log(rate * density / occupancy), with density ratios formed before rates.
+
+    An unsupported occupancy or numerator gives zero signal, rather than NaN
+    from subtracting two negative infinities. Finite tails and NaN diagnostics
+    remain visible. Callers apply their final intensity floor after this ratio.
+    """
+    safe_occupancy = jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)
+    safe_rate = jnp.where(mean_rate == 0.0, 1.0, mean_rate)
+    log_rate = jnp.where(mean_rate == 0.0, -jnp.inf, jnp.log(safe_rate))
+    result = log_rate + (log_density - safe_occupancy)
+    no_support = (
+        jnp.isneginf(log_occupancy) | jnp.isneginf(log_density) | (mean_rate == 0.0)
+    ) & ~jnp.isnan(result)
+    return jnp.where(no_support, -jnp.inf, result)
+
+
+def local_kde_log_ratio(
+    positions,
+    marks,
+    encoding_positions,
+    encoding_marks,
+    position_std,
+    mark_std,
+    log_occupancy,
+    weights,
+    block_size,
+):
+    """Joint KDE/occupancy ratio, dividing position kernels before adding marks.
+
+    Keeping the mark term separate preserves its normalizer when position log
+    densities are large enough that adding it would round it away in float32.
+    Evaluation blocking retains the shared KDE kernel-workspace limit.
+    """
+    n_position_dims = positions.shape[1]
+    points = jnp.concatenate((positions, marks, log_occupancy[:, None]), axis=1)
+    samples = jnp.concatenate((encoding_positions, encoding_marks), axis=1)
+    std = jnp.concatenate((position_std, mark_std))
+
+    def kernel(query, samples, std, weights):
+        def supported(_):
+            log_occ = query[:, -1]
+            safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
+            log_position = (
+                _log_kernel_matrix(
+                    query[:, :n_position_dims],
+                    samples[:, :n_position_dims],
+                    std[:n_position_dims],
+                )
+                - safe_occ[None, :]
+            )
+            log_marks = _log_kernel_matrix(
+                query[:, n_position_dims:-1],
+                samples[:, n_position_dims:],
+                std[n_position_dims:],
+            )
+            safe_weights = jnp.where(weights > 0.0, weights, 1.0)
+            log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)
+            ratio = logsumexp(
+                log_position + log_marks + log_weights[:, None], axis=0
+            ) - jnp.log(jnp.sum(weights))
+            return jnp.where(jnp.isneginf(log_occ), -jnp.inf, ratio)
+
+        return jax.lax.cond(
+            jnp.sum(weights) > 0.0,
+            supported,
+            lambda _: jnp.full(query.shape[0], -jnp.inf),
+            None,
+        )
+
+    def blocked(query, samples, std, rows, weights):
+        return jnp.concatenate(
+            [
+                kernel(query[start : start + rows], samples, std, weights)
+                for start in range(0, query.shape[0], rows)
+            ]
+        )
+
+    if points.shape[0] == 0:
+        return jnp.zeros(0)
+    return _traced_blocks(blocked, kernel, points, samples, std, block_size, weights)
+
+
 def select_spike_rows(
     array: "np.ndarray | jnp.ndarray", selection: SpikeSelection
 ) -> np.ndarray:

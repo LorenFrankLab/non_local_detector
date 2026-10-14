@@ -19,15 +19,16 @@ from non_local_detector.likelihoods.common import (
     _padded_samples,
     _padded_spike_count,
     _SpikeTimeOrder,
-    _traced_block_kde,
-    _traced_block_log_kde,
     as_std_array,
     decode_bin_centers,
     deterministic_row_sum,
     drop_zero_weight_samples,
     get_position_at_time,
     interpolate_weights_at_spike_times,
+    kde_log_density,
+    local_kde_log_ratio,
     log_bin_duration_evidence,
+    log_density_intensity,
     log_gaussian_pdf,
     resolve_row_slice,
     safe_log,
@@ -35,6 +36,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     spike_row_ids,
     sum_spikes_into_rows,
+    traced_kde_log_density,
     validate_finite,
     validate_population_lengths,
     validate_weights,
@@ -80,8 +82,7 @@ def _log_joint_from_log_marginal(
     ``estimate_log_joint_mark_intensity`` floors independently via ``safe_log`` and
     does not route through here.)
 
-    A positive mean rate is folded in via ``safe_log`` (rates below ``EPS`` floor to
-    ``LOG_EPS``, exactly as the previous ``safe_log(mean_rate)`` did); a rate of exactly
+    A positive mean rate is folded in through its true log; a rate of exactly
     0 uses ``-inf`` so the whole term floors to ``LOG_EPS``. A zero rate always
     coincides with a ``-inf`` marginal on the non-local paths (so this is unchanged
     there) and is what the local path needs to floor a de-weighted electrode.
@@ -108,13 +109,9 @@ def _log_joint_from_log_marginal(
     -------
     log_joint : jnp.ndarray, shape (n_rows, n_position_bins)
     """
-    # A positive rate uses safe_log (rates below EPS floor to LOG_EPS, exactly as the
-    # previous safe_log(mean_rate) did); a rate of exactly 0 forces -inf so the whole
-    # term floors to LOG_EPS (a zero rate always coincides with a -inf marginal on the
-    # non-local paths, so this is unchanged there, and it is what the local path needs).
-    log_mean_rate = jnp.where(mean_rate > 0.0, safe_log(mean_rate, eps=EPS), -jnp.inf)
-    log_occ = safe_log(occupancy, eps=EPS)
-    log_joint = log_mean_rate + log_marginal - log_occ[None, :]
+    # Floor the resulting intensity, rather than its rate or density factors.
+    log_occ = jnp.log(occupancy)
+    log_joint = log_density_intensity(mean_rate, log_marginal, log_occ[None, :])
     # Floor degenerate bins -- zero occupancy (no support) or a true zero-mass marginal
     # (-inf, incl. a zero mean rate) -- to LOG_EPS, but exclude NaN (`& ~isnan`) so a
     # broken computation still reaches core.py's diagnostics instead of being masked.
@@ -396,6 +393,7 @@ def _estimate_with_enc_chunking(
     position_eval_points: jnp.ndarray | None = None,
     position_std: jnp.ndarray | None = None,
     use_streaming: bool = False,
+    position_log_normalizer: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Compute log joint mark intensity with encoding spike chunking.
 
@@ -554,6 +552,8 @@ def _estimate_with_enc_chunking(
                 enc_chunk_positions,  # (enc_tile_size, n_pos_dims)
                 position_std,  # (n_pos_dims,)
             )
+            if position_log_normalizer is not None:
+                log_pos_chunk = log_pos_chunk - position_log_normalizer[None, :]
             # Returns: (enc_tile_size, n_pos)
 
             # Mask padded entries (beyond n_enc) with -inf
@@ -756,6 +756,7 @@ def _compensated_linear_marginal_chunked(
     encoding_positions: jnp.ndarray | None = None,
     position_eval_points: jnp.ndarray | None = None,
     position_std: jnp.ndarray | None = None,
+    position_log_normalizer: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Chunked compensated-linear marginal with online max tracking.
 
@@ -863,6 +864,8 @@ def _compensated_linear_marginal_chunked(
                 enc_pos_chunk,
                 position_std,
             )
+            if position_log_normalizer is not None:
+                logK_pos_chunk = logK_pos_chunk - position_log_normalizer[None, :]
         else:
             logK_pos_chunk = jax.lax.dynamic_slice(
                 log_position_distance,
@@ -955,6 +958,7 @@ def estimate_log_joint_mark_intensity(
     position_eval_points: jnp.ndarray | None = None,
     position_std: jnp.ndarray | None = None,
     encoding_weights: jnp.ndarray | None = None,
+    log_occupancy: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -1009,6 +1013,7 @@ def estimate_log_joint_mark_intensity(
     needed.
     """
     n_encoding_spikes = encoding_spike_waveform_features.shape[0]
+    position_log_normalizer = None
 
     # Reject unsupported combinations before any array work so the failure is a
     # clear message rather than a downstream exp(None) TypeError.
@@ -1021,6 +1026,16 @@ def estimate_log_joint_mark_intensity(
     if not use_gemm:
         # Linear-space computation (matches reference exactly)
         # Convert log position back to linear for matrix multiply
+        if log_occupancy is not None:
+            log_position_distance = (
+                log_position_distance
+                - jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)[None, :]
+            )
+            occupancy = jnp.where(
+                jnp.isneginf(log_occupancy),
+                0.0,
+                jnp.where(jnp.isnan(log_occupancy), jnp.nan, 1.0),
+            )
         position_distance = jnp.exp(log_position_distance)
 
         spike_waveform_feature_distance = kde_distance(
@@ -1104,6 +1119,20 @@ def estimate_log_joint_mark_intensity(
         n_pos = log_position_distance.shape[1]
     n_dec = decoding_spike_waveform_features.shape[0]
 
+    if log_occupancy is not None:
+        # Divide position kernels by occupancy before adding mark log densities.
+        # This preserves small conditional mark terms even in very distant tails.
+        normalizer = jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)
+        if use_streaming:
+            position_log_normalizer = normalizer
+        else:
+            log_position_distance = log_position_distance - normalizer[None, :]
+        occupancy = jnp.where(
+            jnp.isneginf(log_occupancy),
+            0.0,
+            jnp.where(jnp.isnan(log_occupancy), jnp.nan, 1.0),
+        )
+
     # Per-encoding-spike log weight, added (not folded into the mark kernel) so the
     # kernel row-maxima used for stabilization stay finite even when a spike has zero
     # weight (log_w = -inf); a -inf term then cleanly zeroes that spike's contribution
@@ -1139,6 +1168,7 @@ def estimate_log_joint_mark_intensity(
                 encoding_positions=encoding_positions,
                 position_eval_points=position_eval_points,
                 position_std=position_std,
+                position_log_normalizer=position_log_normalizer,
             )
         # >8D features: fall back to logsumexp tiling
         return _estimate_with_enc_chunking(
@@ -1155,6 +1185,7 @@ def estimate_log_joint_mark_intensity(
             position_eval_points=position_eval_points,
             position_std=position_std,
             use_streaming=use_streaming,
+            position_log_normalizer=position_log_normalizer,
         )
 
     # No encoding chunking: compute full logK_mark matrix
@@ -1305,6 +1336,7 @@ def _add_electrode_log_mark_intensities(
     place_bin_centers: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
+    log_occupancy: jnp.ndarray,
     *,
     block_size: int,
     pos_tile_size: int | None,
@@ -1350,6 +1382,7 @@ def _add_electrode_log_mark_intensities(
             log_position_distance,
             pos_tile_size=pos_tile_size,
             encoding_weights=encoding_weights,
+            log_occupancy=log_occupancy,
         ),
         decoding_features.reshape(n_blocks, block_size, -1),
     ).reshape(-1, occupancy.shape[0])
@@ -1430,14 +1463,7 @@ def _add_electrode_local_terms(
     -------
     log_likelihood, expected_counts : jnp.ndarray, shape (n_rows,)
     """
-    log_marginal_density = _traced_block_log_kde(
-        jnp.concatenate((spike_positions, decoding_features), axis=1),
-        jnp.concatenate((encoding_positions, encoding_features), axis=1),
-        jnp.concatenate((position_std, waveform_stds)),
-        block_size,
-        encoding_weights,
-    )
-    occupancy_at_spikes = _traced_block_kde(
+    log_occupancy_at_spikes = traced_kde_log_density(
         spike_positions,
         occupancy_samples,
         occupancy_std,
@@ -1445,10 +1471,19 @@ def _add_electrode_local_terms(
         occupancy_weights,
     )
     # See compute_local_log_likelihood for the per-spike combine and floor.
+    log_ratio = local_kde_log_ratio(
+        spike_positions,
+        decoding_features,
+        encoding_positions,
+        encoding_features,
+        position_std,
+        waveform_stds,
+        log_occupancy_at_spikes,
+        encoding_weights,
+        block_size,
+    )
     spike_contribution = jnp.maximum(
-        _log_joint_from_log_marginal(
-            log_marginal_density[None, :], scaled_rate, occupancy_at_spikes
-        )[0],
+        log_density_intensity(scaled_rate, log_ratio, jnp.zeros_like(log_ratio)),
         LOG_EPS,
     )
     log_likelihood = log_likelihood + deterministic_row_sum(
@@ -1457,13 +1492,11 @@ def _add_electrode_local_terms(
         log_likelihood.shape[0],
         indices_are_sorted=indices_are_sorted,
     )
-    gpi_density = _traced_block_kde(
+    log_gpi_density = traced_kde_log_density(
         positions, gpi_samples, gpi_std, gpi_block_size, gpi_weights
     )
-    expected_counts = expected_counts + mean_rate * jnp.where(
-        occupancy > 0.0,
-        gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-        0.0,
+    expected_counts = expected_counts + jnp.exp(
+        log_density_intensity(mean_rate, log_gpi_density, occupancy)
     )
     return log_likelihood, expected_counts
 
@@ -1484,6 +1517,7 @@ def block_estimate_log_joint_mark_intensity(
     position_eval_points: jnp.ndarray | None = None,
     position_std: jnp.ndarray | None = None,
     encoding_weights: jnp.ndarray | None = None,
+    log_occupancy: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -1562,6 +1596,7 @@ def block_estimate_log_joint_mark_intensity(
             position_eval_points=position_eval_points,
             position_std=position_std,
             encoding_weights=encoding_weights,
+            log_occupancy=log_occupancy,
         )
         block_results.append(block_result[:actual_len])
 
@@ -1696,6 +1731,7 @@ def fit_clusterless_kde_encoding_model(
     )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
+    log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
     encoding_positions = []
     encoding_weights = []
     mean_rates = []
@@ -1748,11 +1784,9 @@ def fit_clusterless_kde_encoding_model(
         )
         gpi_models.append(gpi_model)
 
-        gpi_density = gpi_model.predict(interior_place_bin_centers)
-        summed_ground_process_intensity += mean_rates[-1] * jnp.where(
-            occupancy > 0.0,
-            gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-            EPS,
+        log_gpi_density = kde_log_density(gpi_model, interior_place_bin_centers)
+        summed_ground_process_intensity += jnp.exp(
+            log_density_intensity(mean_rates[-1], log_gpi_density, log_occupancy)
         )
 
     # Clip the summed intensity once (not per electrode) so an empty bin gets a
@@ -1763,6 +1797,7 @@ def fit_clusterless_kde_encoding_model(
 
     return {
         "occupancy": occupancy,
+        "log_occupancy": log_occupancy,
         "occupancy_model": occupancy_model,
         "gpi_models": gpi_models,
         "encoding_spike_waveform_features": bounded_spike_waveform_features,
@@ -1811,6 +1846,7 @@ def predict_clusterless_kde_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
+    log_occupancy: jnp.ndarray | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -1942,6 +1978,8 @@ def predict_clusterless_kde_log_likelihood(
     else:
         is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+        if log_occupancy is None:
+            log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
         log_likelihood = (
             -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
@@ -2016,6 +2054,7 @@ def predict_clusterless_kde_log_likelihood(
                     interior_place_bin_centers,
                     occupancy,
                     electrode_mean_rate * RATE_REFERENCE_SECONDS,
+                    log_occupancy,
                     block_size=min(block_size, n_padded),
                     pos_tile_size=pos_tile_size,
                     indices_are_sorted=selection.indices_are_sorted,
@@ -2053,6 +2092,7 @@ def predict_clusterless_kde_log_likelihood(
                     ),
                     position_std=position_std if use_streaming else None,
                     encoding_weights=electrode_encoding_weights,
+                    log_occupancy=log_occupancy,
                 ),
                 selection,
             )
@@ -2161,7 +2201,7 @@ def compute_local_log_likelihood(
         decode_bin_centers(time_edges, row_start, row_stop),
         environment,
     )
-    occupancy = occupancy_model.predict(interpolated_position)
+    occupancy = kde_log_density(occupancy_model, interpolated_position)
 
     log_likelihood = jnp.zeros((n_rows,))
     summed_expected_counts = jnp.zeros((n_rows,))

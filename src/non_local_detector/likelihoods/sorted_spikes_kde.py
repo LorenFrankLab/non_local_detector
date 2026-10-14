@@ -58,7 +58,6 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    EPS,
     RATE_EPS_HZ,
     KDEModel,
     _blocked_nonlocal_poisson_log_likelihood,
@@ -67,12 +66,14 @@ from non_local_detector.likelihoods.common import (
     _padded_sample_count,
     _spike_counts_matrix,
     _SpikeTimeOrder,
-    _traced_block_kde,
     as_std_array,
     decode_bin_centers,
     drop_zero_weight_samples,
     get_position_at_time,
+    kde_log_density,
+    log_density_intensity,
     resolve_row_slice,
+    traced_kde_log_density,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
@@ -137,7 +138,7 @@ def _kde_leaf_groups(models, n_dims):
 
 @partial(jax.jit, static_argnames=("block_sizes",))
 def _local_kde_log_likelihood(
-    points, occupancy, counts, mean_rates, durations, groups, order, *, block_sizes
+    points, log_occupancy, counts, mean_rates, durations, groups, order, *, block_sizes
 ):
     """Evaluate fitted KDE leaves and Poisson rows in one compiled call.
 
@@ -167,8 +168,8 @@ def _local_kde_log_likelihood(
 
         def neuron_term(leaf):
             neuron_samples, neuron_weights, std, mean_rate, count = leaf
-            marginal = jax.lax.optimization_barrier(
-                _traced_block_kde(
+            log_marginal = jax.lax.optimization_barrier(
+                traced_kde_log_density(
                     points,
                     neuron_samples,
                     std,
@@ -176,14 +177,8 @@ def _local_kde_log_likelihood(
                     neuron_weights,
                 )
             )
-            marginal = jnp.where(jnp.isnan(marginal), 0.0, marginal)
             rate = jax.lax.optimization_barrier(
-                mean_rate
-                * jnp.where(
-                    occupancy > 0.0,
-                    marginal / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                    EPS,
-                )
+                jnp.exp(log_density_intensity(mean_rate, log_marginal, log_occupancy))
             )
             rate = jax.lax.optimization_barrier(
                 jnp.clip(rate, min=RATE_EPS_HZ, max=None)
@@ -317,6 +312,7 @@ def fit_sorted_spikes_kde_encoding_model(
     )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
+    log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
     mean_rates = []
     place_fields = []
@@ -351,22 +347,23 @@ def fit_sorted_spikes_kde_encoding_model(
         )
         marginal_models.append(neuron_marginal_model)
         marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
+        log_marginal = kde_log_density(
+            neuron_marginal_model, interior_place_bin_centers
+        )
         # NaN here means a degenerate KDE (e.g., zero-variance spike
         # features), not "no density" — track the count so it can be
         # surfaced rather than silently zeroed.
         nan_mask = jnp.isnan(marginal_density)
         nan_density_count = nan_density_count + jnp.sum(nan_mask)
-        marginal_density = jnp.where(nan_mask, 0.0, marginal_density)
         place_fields.append(
             jnp.zeros((is_track_interior.shape[0],))
             .at[is_track_interior]
             .set(
                 jnp.clip(
-                    mean_rates[-1]
-                    * jnp.where(
-                        occupancy > 0.0,
-                        marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                        EPS,
+                    jnp.exp(
+                        log_density_intensity(
+                            mean_rates[-1], log_marginal, log_occupancy
+                        )
                     ),
                     min=RATE_EPS_HZ,
                     max=None,
@@ -381,7 +378,7 @@ def fit_sorted_spikes_kde_encoding_model(
     if n_nan_density_bins > 0:
         warnings.warn(
             f"KDE marginal density was NaN at {n_nan_density_bins} "
-            f"(neuron, bin) location(s); these were set to zero. NaN density "
+            f"(neuron, bin) location(s); the invalid likelihood remains visible. NaN density "
             f"usually indicates a degenerate KDE (zero-variance or identical "
             f"spike features, or position_std=0). Inspect the encoding-spike "
             f"feature distribution.",
@@ -394,6 +391,7 @@ def fit_sorted_spikes_kde_encoding_model(
         "marginal_models": marginal_models,
         "occupancy_model": occupancy_model,
         "occupancy": occupancy,
+        "log_occupancy": log_occupancy,
         "mean_rates": mean_rates,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
@@ -424,6 +422,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
+    log_occupancy: jnp.ndarray | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -501,7 +500,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         interpolated_position = get_position_at_time(
             position_time, position, row_time, environment
         )
-        occupancy = occupancy_model.predict(interpolated_position)
+        log_occupancy = kde_log_density(occupancy_model, interpolated_position)
 
         # Fitted KDE models run compiled over spike-count row blocks, so the
         # host count matrix and compiled graph stay bounded for any request.
@@ -516,7 +515,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         points = jnp.asarray(interpolated_position)
         if points.ndim == 1:
             points = points[:, None]
-        occupancy = jnp.asarray(occupancy)
+        log_occupancy = jnp.asarray(log_occupancy)
         groups, block_sizes, order = _spike_time_order.memo(
             f"kde_leaf_groups_{points.shape[1]}",
             tuple(marginal_models),
@@ -535,7 +534,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             )
             return _local_kde_log_likelihood(
                 points[rows],
-                occupancy[rows],
+                log_occupancy[rows],
                 jnp.asarray(counts),
                 jnp.asarray(mean_rates),
                 durations[rows],
