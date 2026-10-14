@@ -512,6 +512,10 @@ def checkpointed_forward_backward(
     are summed per chunk on the device and across chunks in host float64;
     responses cost ``n_time * n_states**2`` values.
 
+    ``result_attrs`` are attributes of the returned dataset, and of the result
+    store's metadata; a callable is given the pass's marginal log-likelihood
+    and returns them, for attributes that depend on it.
+
     ``replay_cache_bytes`` keeps each forward-pass chunk that still fits in the
     remaining budget in host memory, and the replay uses those instead of
     recomputing. When the outputs need only filtered rows (no likelihood or
@@ -967,6 +971,8 @@ def checkpointed_forward_backward(
             "diagnostic_row_mask_encoding": "packbits_little_hex",
             "diagnostics_are_global": True,
         }
+        if callable(result_attrs):
+            result_attrs = result_attrs(marginal)
         attrs = {
             **(result_attrs or {}),
             "marginal_log_likelihood": marginal,

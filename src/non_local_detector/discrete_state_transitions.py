@@ -15,12 +15,25 @@ from patsy import (  # type: ignore[import-untyped]
 )
 from patsy.splines import BS  # type: ignore[import-untyped]
 from scipy.optimize import minimize  # type: ignore[import-untyped]
-from scipy.special import (
-    log_softmax as numpy_log_softmax,  # type: ignore[import-untyped]
+from scipy.special import (  # type: ignore[import-untyped]
+    log_softmax as numpy_log_softmax,
 )
-from scipy.special import softmax  # type: ignore[import-untyped]
+from scipy.special import softmax, xlogy
 
 logger = logging.getLogger(__name__)
+
+
+def _float64_jax():
+    """A context in which JAX computes in float64.
+
+    The scoped switch is ``jax.enable_x64`` in current JAX and
+    ``jax.experimental.enable_x64`` in older releases such as 0.6.
+    """
+    if hasattr(jax, "enable_x64"):
+        return jax.enable_x64(True)
+    from jax.experimental import enable_x64
+
+    return enable_x64(True)
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
@@ -279,6 +292,11 @@ _PAIR_SUM_BLOCK_BYTES = 256 * 1024**2
 # rows (5.7e-4 relative over 50,000 rows); short partial sums added together
 # keep it near the single-sum bound for this many rows.
 _CONTRACTION_SUB_ROWS = 256
+
+
+# Transitions per block of the covariate M-step loss and its log prior, so
+# their float64 temporaries stay bounded however long the recording is.
+_COVARIATE_BLOCK_ROWS = 65_536
 
 
 def _blocked_contraction(left: jnp.ndarray, right: jnp.ndarray) -> jnp.ndarray:
@@ -965,90 +983,106 @@ def estimate_non_stationary_state_transition_from_responses(
     alpha = get_transition_prior(concentration, stickiness, n_states)
     _assert_map_compatible_alpha(alpha)
 
-    # Estimate the transition coefficients for each state
+    options: dict = {}
+    if maxiter is not None:
+        options["maxiter"] = maxiter
+    # scipy deprecated `disp`/`iprint` for L-BFGS-B (removal in 1.18), so
+    # only forward `disp` to methods that still accept it.
+    if optimization_method != "L-BFGS-B":
+        options["disp"] = disp
+    else:
+        # If L-BFGS-B is requested, stop on the projected gradient, not on
+        # the relative change of the summed (large) objective.
+        options["ftol"] = 0.0
+        options["gtol"] = 1e-7
+
     for from_state, row_alpha in enumerate(alpha):
         if frozen_rows is not None and frozen_rows[from_state]:
-            estimated_transition_coefficients[:, from_state, :] = (
-                transition_coefficients[:, from_state, :]
-            )
-            estimated_transition_matrix[:, from_state, :] = np.exp(
-                _centered_log_probabilities(
-                    design_matrix, estimated_transition_coefficients[:, from_state, :]
-                )
-            )
-            continue
-        objective_args = (
-            design_matrix[:-1],
-            response[:, from_state, :],
-            row_alpha,
-            transition_regularization,
-        )
-        options: dict = {}
-        if maxiter is not None:
-            options["maxiter"] = maxiter
-        # scipy deprecated `disp`/`iprint` for L-BFGS-B (removal in 1.18), so
-        # only forward `disp` to methods that still accept it.
-        if optimization_method != "L-BFGS-B":
-            options["disp"] = disp
+            row_coefficients = transition_coefficients[:, from_state, :]
         else:
-            # If L-BFGS-B is requested, stop on the projected gradient, not on
-            # the relative change of the summed (large) objective.
-            options["ftol"] = 0.0
-            options["gtol"] = 1e-7
-        minimize_kwargs = {
-            "fun": dirichlet_neg_log_likelihood,
-            "x0": transition_coefficients[:, from_state].ravel(),
-            "method": optimization_method,
-            "jac": dirichlet_gradient,
-            "args": objective_args,
-            "options": options,
-        }
-        if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
-            minimize_kwargs["hess"] = dirichlet_hessian
-
-        result = minimize(**minimize_kwargs)
-
-        use_result = result.success
-        if not result.success and hasattr(result, "fun"):
-            initial_loss = float(
-                dirichlet_neg_log_likelihood(
-                    transition_coefficients[:, from_state].ravel(),
-                    *objective_args,
-                )
-            )
-            result_loss = float(result.fun)
-            use_result = np.isfinite(result_loss) and result_loss < initial_loss
-
-        if not use_result:
-            logger.warning(
-                "Transition optimization did not converge for state %d: %s. "
-                "Keeping previous coefficients.",
+            row_coefficients = _fit_covariate_row(
+                transition_coefficients[:, from_state, :],
+                (
+                    design_matrix[:-1],
+                    response[:, from_state, :],
+                    row_alpha,
+                    transition_regularization,
+                ),
+                optimization_method,
+                options,
                 from_state,
-                result.message,
             )
-            # Keep previous coefficients for this row
-            estimated_transition_coefficients[:, from_state, :] = (
-                transition_coefficients[:, from_state, :]
-            )
-        else:
-            if not result.success:
-                logger.warning(
-                    "Transition optimization did not report convergence for state %d: "
-                    "%s. Using improved coefficients.",
-                    from_state,
-                    result.message,
-                )
-            estimated_transition_coefficients[:, from_state, :] = result.x.reshape(
-                (n_coefficients, n_states - 1)
-            )
-
+        estimated_transition_coefficients[:, from_state, :] = row_coefficients
         estimated_transition_matrix[:, from_state, :] = np.exp(
-            _centered_log_probabilities(
-                design_matrix, estimated_transition_coefficients[:, from_state, :]
-            )
+            _centered_log_probabilities(design_matrix, row_coefficients)
         )
 
     return estimated_transition_coefficients, estimated_transition_matrix
+
+
+def _fit_covariate_row(
+    initial_coefficients: np.ndarray,
+    objective_args: tuple,
+    optimization_method: str,
+    options: dict,
+    from_state: int,
+) -> np.ndarray:
+    """Minimize one row's :func:`dirichlet_neg_log_likelihood`.
+
+    Parameters
+    ----------
+    initial_coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+    objective_args : tuple
+        ``(design_matrix, response, alpha, l2_penalty)`` for the row, as in
+        :func:`dirichlet_neg_log_likelihood`.
+    optimization_method : str
+    options : dict
+        Options for `scipy.optimize.minimize`.
+    from_state : int
+        The row, for log messages.
+
+    Returns
+    -------
+    coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+        The initial coefficients when there are no transitions to fit or the
+        optimizer does not lower the loss.
+    """
+    if len(objective_args[1]) == 0:
+        return initial_coefficients
+    x0 = np.asarray(initial_coefficients, dtype=np.float64).ravel()
+    minimize_kwargs = {
+        "fun": dirichlet_neg_log_likelihood,
+        "x0": x0,
+        "method": optimization_method,
+        "jac": dirichlet_gradient,
+        "args": objective_args,
+        "options": options,
+    }
+    if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
+        minimize_kwargs["hess"] = dirichlet_hessian
+    result = minimize(**minimize_kwargs)
+
+    # EM never lowers its penalized log-likelihood only if no M-step raises
+    # its own loss, so the optimizer's coefficients replace the previous ones
+    # only when they do not, whatever the optimizer reports.
+    result_loss = dirichlet_neg_log_likelihood(result.x, *objective_args)
+    initial_loss = dirichlet_neg_log_likelihood(x0, *objective_args)
+    if not (np.isfinite(result_loss) and result_loss <= initial_loss):
+        logger.warning(
+            "Transition optimization did not lower the loss for state %d: %s. "
+            "Keeping previous coefficients.",
+            from_state,
+            result.message,
+        )
+        return initial_coefficients
+    if not result.success:
+        logger.warning(
+            "Transition optimization did not report convergence for state %d: "
+            "%s. Using improved coefficients.",
+            from_state,
+            result.message,
+        )
+    return result.x.reshape(np.shape(initial_coefficients))
 
 
 def _row_prior_weights(prior_weight: float | np.ndarray, n_states: int) -> np.ndarray:
@@ -1373,7 +1407,7 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
     return transition_matrix
 
 
-def _estimate_discrete_transition(
+def _discrete_transition_statistics(
     causal_posterior: np.ndarray,
     predictive_posterior: np.ndarray,
     acausal_posterior: np.ndarray,
@@ -1382,15 +1416,8 @@ def _estimate_discrete_transition(
     discrete_transition: np.ndarray,
     discrete_transition_coefficients: np.ndarray | None,
     discrete_transition_design_matrix: DesignMatrix | None,
-    transition_concentration: float,
-    transition_stickiness: float | np.ndarray,
-    transition_regularization: float,
-    transition_prior_weight: float | np.ndarray = 0.0,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """Estimate the discrete transition matrix (stationary or non-stationary).
-
-    Always uses the exact expanded-state M-step that aggregates bin-level
-    pair posteriors into discrete-state transition counts/responses.
+) -> np.ndarray:
+    """Expected discrete transition statistics from the expanded posteriors.
 
     Parameters
     ----------
@@ -1410,63 +1437,6 @@ def _estimate_discrete_transition(
         Current coefficient estimate (if non-stationary).
     discrete_transition_design_matrix : patsy.DesignMatrix | None
         Design matrix (if non-stationary).
-    transition_concentration : float
-        Dirichlet prior concentration.
-    transition_stickiness : float or np.ndarray
-        Dirichlet prior stickiness.
-    transition_regularization : float
-        L2 penalty for non-stationary coefficients.
-    transition_prior_weight : float, optional
-        Data-adaptive prior weight for stationary transitions. When > 0,
-        pseudo-counts scale with expected transition counts. Only applies
-        to the stationary path. By default 0.0.
-
-    Returns
-    -------
-    estimated_discrete_transition : np.ndarray
-        Updated transition matrix.
-    estimated_discrete_transition_coefficients : np.ndarray | None
-        Updated coefficients (if non-stationary).
-    """
-    statistics = _discrete_transition_statistics(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        continuous_transition,
-        state_ind,
-        discrete_transition,
-        discrete_transition_coefficients,
-        discrete_transition_design_matrix,
-    )
-    return _discrete_transition_from_statistics(
-        statistics,
-        discrete_transition_coefficients,
-        discrete_transition_design_matrix,
-        transition_concentration,
-        transition_stickiness,
-        transition_regularization,
-        transition_prior_weight,
-    )
-
-
-def _discrete_transition_statistics(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    continuous_transition: np.ndarray,
-    state_ind: np.ndarray,
-    discrete_transition: np.ndarray,
-    discrete_transition_coefficients: np.ndarray | None,
-    discrete_transition_design_matrix: DesignMatrix | None,
-) -> np.ndarray:
-    """Expected discrete transition statistics from the expanded posteriors.
-
-    Parameters
-    ----------
-    causal_posterior, predictive_posterior, acausal_posterior,
-    continuous_transition, state_ind, discrete_transition,
-    discrete_transition_coefficients, discrete_transition_design_matrix
-        As in :func:`_estimate_discrete_transition`.
 
     Returns
     -------
@@ -1532,7 +1502,7 @@ def _transition_log_prior(
         Shape (n_time, n_coefficients) for a covariate-dependent transition.
     transition_concentration, transition_stickiness, transition_regularization,
     transition_prior_weight
-        As in :func:`_estimate_discrete_transition`.
+        As in :func:`_discrete_transition_from_statistics`.
     free_rows : np.ndarray of bool, shape (n_states,), optional
         Rows the M-step estimates. Frozen rows are constant and left out.
         All rows by default.
@@ -1551,6 +1521,10 @@ def _transition_log_prior(
     if _is_nonstationary(
         discrete_transition_coefficients, discrete_transition_design_matrix
     ):
+        if statistics.shape[0] == 0:
+            # A recording without transitions has no covariate prior, and the
+            # M-step keeps its coefficients.
+            return 0.0
         coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)
         design_matrix = np.asarray(discrete_transition_design_matrix, dtype=np.float64)
         linear_predictor = np.einsum("tc,csk->tsk", design_matrix[:-1], coefficients)
@@ -1569,10 +1543,9 @@ def _transition_log_prior(
     pseudo_counts = _stationary_pseudo_counts(
         statistics, alpha, _row_prior_weights(transition_prior_weight, n_states)
     )
-    with np.errstate(divide="ignore"):
-        log_transition = np.log(np.asarray(discrete_transition, dtype=np.float64))
-    # 0 * log(0) = 0: an impossible transition costs nothing without pseudo-counts.
-    terms = np.where(pseudo_counts == 0, 0.0, pseudo_counts * log_transition)
+    # xlogy gives 0 * log(0) = 0: an impossible transition costs nothing
+    # without pseudo-counts, and -inf with them.
+    terms = xlogy(pseudo_counts, np.asarray(discrete_transition, dtype=np.float64))
     return float(np.sum(terms[rows]))
 
 
@@ -1605,10 +1578,18 @@ def _discrete_transition_from_statistics(
         Expected transition counts, shape (n_states, n_states), for a
         stationary transition; per-row responses, shape
         (n_time - 1, n_states, n_states), for a covariate transition.
-    discrete_transition_coefficients, discrete_transition_design_matrix,
-    transition_concentration, transition_stickiness, transition_regularization,
-    transition_prior_weight
-        As in :func:`_estimate_discrete_transition`.
+    discrete_transition_coefficients, discrete_transition_design_matrix
+        As in :func:`_discrete_transition_statistics`.
+    transition_concentration : float
+        Dirichlet prior concentration.
+    transition_stickiness : float or np.ndarray
+        Dirichlet prior stickiness.
+    transition_regularization : float
+        L2 penalty for non-stationary coefficients.
+    transition_prior_weight : float, optional
+        Data-adaptive prior weight for stationary transitions. When > 0,
+        pseudo-counts scale with expected transition counts. Only applies
+        to the stationary path. By default 0.0.
     frozen_rows : np.ndarray of bool, shape (n_states,), optional
         Covariate-dependent rows that keep their coefficients. Stationary
         frozen rows are restored by the caller.
@@ -1960,14 +1941,19 @@ def predict_discrete_state_transitions(
 
     n_states = discrete_transition_coefficients.shape[1]
 
-    rows = []
-    for from_state in range(n_states):
-        rows.append(
+    # The float64 probabilities the covariate M-step fits; each row has shape
+    # (n_time, n_states), stacked to (n_time, n_states, n_states).
+    with _float64_jax():
+        design_matrix = jnp.asarray(np.asarray(design_matrix, dtype=np.float64))
+        coefficients = jnp.asarray(
+            np.asarray(discrete_transition_coefficients, dtype=np.float64)
+        )
+        rows = [
             jnp.exp(
                 jax_centered_log_softmax_forward(
-                    design_matrix @ discrete_transition_coefficients[:, from_state, :]
+                    design_matrix @ coefficients[:, from_state, :]
                 )
             )
-        )
-    # rows[i] has shape (n_time, n_states), stack along axis=1 to get (n_time, n_states, n_states)
-    return np.asarray(jnp.stack(rows, axis=1))
+            for from_state in range(n_states)
+        ]
+        return np.asarray(jnp.stack(rows, axis=1))

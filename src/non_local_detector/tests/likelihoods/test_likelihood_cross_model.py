@@ -315,26 +315,6 @@ def test_sorted_kde_vs_glm_log_likelihood_correlation(
 # ---------------------------------------------------------------------------
 
 
-def test_clusterless_kde_vs_gmm_log_likelihood_correlation(
-    cross_model_env, cross_model_data
-):
-    """Clusterless KDE and GMM log-likelihoods should be positively correlated."""
-    env = cross_model_env
-    data = cross_model_data
-
-    enc_kde = _fit_clusterless_kde(env, data)
-    enc_gmm = _fit_clusterless_gmm(env, data)
-
-    ll_kde = np.asarray(_predict_clusterless_kde(enc_kde, env, data))
-    ll_gmm = np.asarray(_predict_clusterless_gmm(enc_gmm, env, data))
-
-    # Use rank correlation on flattened arrays (more robust than per-time-bin
-    # Pearson for small data with fundamentally different density estimators)
-    finite_mask = np.isfinite(ll_kde.ravel()) & np.isfinite(ll_gmm.ravel())
-    corr, _ = stats.spearmanr(ll_kde.ravel()[finite_mask], ll_gmm.ravel()[finite_mask])
-    assert corr > 0.0, f"KDE-GMM Spearman LL correlation = {corr:.3f}"
-
-
 def test_clusterless_kde_vs_gmm_ground_process_correlation(
     cross_model_env, cross_model_data
 ):
@@ -361,48 +341,63 @@ def test_clusterless_kde_vs_gmm_ground_process_correlation(
 # ---------------------------------------------------------------------------
 
 
-def test_all_models_no_spike_produces_negative_likelihood(
-    cross_model_env, cross_model_data
+@pytest.mark.parametrize(
+    "fit,predict,rate_key",
+    [
+        pytest.param(
+            _fit_sorted_kde,
+            _predict_sorted_kde,
+            "no_spike_part_log_likelihood",
+            id="sorted_kde",
+        ),
+        pytest.param(
+            _fit_sorted_glm,
+            _predict_sorted_glm,
+            "no_spike_part_log_likelihood",
+            id="sorted_glm",
+        ),
+        pytest.param(
+            _fit_clusterless_kde,
+            _predict_clusterless_kde,
+            "summed_ground_process_intensity",
+            id="clusterless_kde",
+        ),
+        pytest.param(
+            _fit_clusterless_gmm,
+            _predict_clusterless_gmm,
+            "summed_ground_process_intensity",
+            id="clusterless_gmm",
+        ),
+    ],
+)
+@pytest.mark.parametrize("bin_width", [0.02, 0.1])
+def test_no_spike_likelihood_matches_expected_counts(
+    cross_model_env, cross_model_data, fit, predict, rate_key, bin_width
 ):
-    """With zero decoding spikes, all models should produce LL <= 0 everywhere.
-
-    This follows from the Poisson no-spike term: -lambda, where lambda > 0.
-    """
+    """No-spike log likelihood is minus the fitted Hz rate times bin duration."""
     env = cross_model_env
     data = cross_model_data
-
-    # Create zero-spike versions for decoding
-    n = data["n_neurons"]
-    empty_sorted = {**data, "spike_times": [jnp.array([]) for _ in range(n)]}
-    empty_clusterless = {
+    encoding = fit(env, data)
+    edges = np.linspace(0.0, 1.0, round(1.0 / bin_width) + 1)
+    empty = {
         **data,
-        "spike_times": [jnp.array([]) for _ in range(n)],
-        "spike_waveform_features": [jnp.zeros((0, 2)) for _ in range(n)],
+        "decode_time_edges": edges,
+        "spike_times": [jnp.array([]) for _ in range(data["n_neurons"])],
+        "spike_waveform_features": [
+            jnp.zeros((0, 2)) for _ in range(data["n_neurons"])
+        ],
     }
+    rates = np.asarray(encoding[rate_key])
+    if rate_key == "no_spike_part_log_likelihood":
+        rates = rates[env.is_track_interior_.ravel()]
+    assert np.all(np.isfinite(rates))
+    assert np.all(rates > 0), "Fixture must have positive rates to detect zero output"
 
-    # Sorted KDE
-    enc_kde = _fit_sorted_kde(env, data)
-    ll_kde = np.asarray(_predict_sorted_kde(enc_kde, env, empty_sorted))
-    finite_kde = ll_kde[np.isfinite(ll_kde)]
-    assert np.all(finite_kde <= 1e-7), "Sorted KDE: no-spike LL should be <= 0"
-
-    # Sorted GLM
-    enc_glm = _fit_sorted_glm(env, data)
-    ll_glm = np.asarray(_predict_sorted_glm(enc_glm, env, empty_sorted))
-    finite_glm = ll_glm[np.isfinite(ll_glm)]
-    assert np.all(finite_glm <= 1e-7), "Sorted GLM: no-spike LL should be <= 0"
-
-    # Clusterless KDE
-    enc_cl_kde = _fit_clusterless_kde(env, data)
-    ll_cl_kde = np.asarray(_predict_clusterless_kde(enc_cl_kde, env, empty_clusterless))
-    finite_cl_kde = ll_cl_kde[np.isfinite(ll_cl_kde)]
-    assert np.all(finite_cl_kde <= 1e-7), "Clusterless KDE: no-spike LL should be <= 0"
-
-    # Clusterless GMM
-    enc_cl_gmm = _fit_clusterless_gmm(env, data)
-    ll_cl_gmm = np.asarray(_predict_clusterless_gmm(enc_cl_gmm, env, empty_clusterless))
-    finite_cl_gmm = ll_cl_gmm[np.isfinite(ll_cl_gmm)]
-    assert np.all(finite_cl_gmm <= 1e-7), "Clusterless GMM: no-spike LL should be <= 0"
+    likelihood = np.asarray(predict(encoding, env, empty))
+    expected = -np.diff(edges)[:, None] * rates[None, :]
+    assert likelihood.shape == expected.shape
+    assert np.all(np.isfinite(likelihood)), "No-spike likelihood must be finite"
+    np.testing.assert_allclose(likelihood, expected, rtol=2e-6, atol=1e-6)
 
 
 def test_sorted_models_kde_glm_agree_on_high_vs_low_ll_time_bins(

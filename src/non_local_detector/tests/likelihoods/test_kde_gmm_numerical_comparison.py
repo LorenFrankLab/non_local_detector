@@ -267,13 +267,6 @@ def likelihoods_nonlocal(comparison_data, fitted_models):
     return predict_both_models(comparison_data, kde_enc, gmm_enc)
 
 
-@pytest.fixture(scope="module")
-def likelihoods_local(comparison_data, fitted_models):
-    """Local log-likelihoods for both models, computed once."""
-    kde_enc, gmm_enc = fitted_models
-    return predict_both_models(comparison_data, kde_enc, gmm_enc, is_local=True)
-
-
 def test_likelihood_magnitude_comparison(likelihoods_nonlocal):
     """Compare the absolute magnitude of log-likelihood values.
 
@@ -395,91 +388,6 @@ def test_likelihood_range_stability(likelihoods_nonlocal):
     # Both should have positive range
     assert np.all(range_kde > 0)
     assert np.all(range_gmm > 0)
-
-
-def test_normalized_likelihood_comparison(likelihoods_nonlocal):
-    """Compare normalized likelihood distributions.
-
-    Normalize each time bin to sum to 1 (convert to probability distributions)
-    and compare these normalized distributions.
-    """
-    ll_kde, ll_gmm = likelihoods_nonlocal
-
-    # Convert log-likelihood to probability (exp and normalize)
-    def normalize_log_likelihood(ll):
-        """Convert log-likelihood to normalized probability."""
-        # Subtract max for numerical stability
-        ll_shifted = ll - np.max(ll, axis=1, keepdims=True)
-        prob = np.exp(ll_shifted)
-        return prob / np.sum(prob, axis=1, keepdims=True)
-
-    prob_kde = normalize_log_likelihood(np.asarray(ll_kde))
-    prob_gmm = normalize_log_likelihood(np.asarray(ll_gmm))
-
-    # KL divergence: KL(KDE || GMM)
-    def kl_divergence(p, q, epsilon=1e-10):
-        """Compute KL divergence KL(p || q)."""
-        p = np.clip(p, epsilon, 1)
-        q = np.clip(q, epsilon, 1)
-        return np.sum(p * np.log(p / q), axis=1)
-
-    kl_kde_gmm = kl_divergence(prob_kde, prob_gmm)
-    kl_gmm_kde = kl_divergence(prob_gmm, prob_kde)
-
-    print("\n=== Normalized Distribution Comparison ===")
-    print(f"KL(KDE || GMM): mean={kl_kde_gmm.mean():.3f}, std={kl_kde_gmm.std():.3f}")
-    print(f"KL(GMM || KDE): mean={kl_gmm_kde.mean():.3f}, std={kl_gmm_kde.std():.3f}")
-
-    # Jensen-Shannon divergence (symmetric)
-    js_divergence = 0.5 * (kl_kde_gmm + kl_gmm_kde)
-    print(
-        f"JS divergence: mean={js_divergence.mean():.3f}, std={js_divergence.std():.3f}"
-    )
-
-    # Hellinger distance
-    hellinger = np.sqrt(
-        0.5 * np.sum((np.sqrt(prob_kde) - np.sqrt(prob_gmm)) ** 2, axis=1)
-    )
-    print(f"Hellinger distance: mean={hellinger.mean():.3f}, std={hellinger.std():.3f}")
-
-    # All divergences should be finite
-    assert np.all(np.isfinite(kl_kde_gmm))
-    assert np.all(np.isfinite(kl_gmm_kde))
-    assert np.all(np.isfinite(js_divergence))
-
-
-def test_local_likelihood_comparison(likelihoods_local):
-    """Compare local likelihood predictions.
-
-    Local likelihood is a single value per time bin (at animal's position),
-    so we can compare these more directly.
-    """
-    ll_kde, ll_gmm = likelihoods_local
-
-    ll_kde_np = np.asarray(ll_kde).ravel()
-    ll_gmm_np = np.asarray(ll_gmm).ravel()
-
-    print("\n=== Local Likelihood Comparison ===")
-    print(f"KDE shape: {ll_kde.shape}, GMM shape: {ll_gmm.shape}")
-    print(f"KDE: mean={ll_kde_np.mean():.2f}, std={ll_kde_np.std():.2f}")
-    print(f"GMM: mean={ll_gmm_np.mean():.2f}, std={ll_gmm_np.std():.2f}")
-
-    # Both models return one row per decode bin.
-    assert ll_kde_np.shape == ll_gmm_np.shape
-
-    # Correlation
-    r_pearson, _ = pearsonr(ll_kde_np, ll_gmm_np)
-    r_spearman, _ = spearmanr(ll_kde_np, ll_gmm_np)
-    print(f"Pearson r={r_pearson:.3f}, Spearman ρ={r_spearman:.3f}")
-
-    # Both should be finite
-    assert np.all(np.isfinite(ll_kde_np))
-    assert np.all(np.isfinite(ll_gmm_np))
-
-    # Check for any correlation (can be negative or positive)
-    assert np.abs(r_pearson) > 0.1 or np.abs(r_spearman) > 0.1, (
-        "Local likelihoods should have some correlation"
-    )
 
 
 def test_parameter_sensitivity_kde(

@@ -4,7 +4,6 @@ This module tests the memory optimization changes to predict_clusterless_gmm_log
 specifically:
 1. Blocking parity: Verify blocked processing matches full vmap results
 2. Bin tiling parity: Verify bin tiling matches no tiling
-3. Memory scaling: Verify expected memory reductions
 """
 
 import jax.numpy as jnp
@@ -253,61 +252,6 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         atol=1e-6,
         err_msg="Combined optimizations changed results",
     )
-
-
-def test_gmm_memory_scaling():
-    """Verify the transient memory scaling formula.
-
-    This is a mathematical verification (not runtime profiling) that
-    spike/bin tiling does not allocate a recording-length block accumulator.
-    """
-    # Problem configuration
-    n_time = 60 * 60 * 500  # One hour decoded in 2 ms bins
-    n_spikes = 5000
-    n_bins = 2000
-    spike_block_size = 1000
-    bin_tile_size = 256
-
-    # Memory without any optimization (all spikes × all bins)
-    # Each float32 is 4 bytes
-    mem_full = n_spikes * n_bins * 4 / 1e6  # MB
-
-    # Memory with spike blocking only
-    mem_spike_block = spike_block_size * n_bins * 4 / 1e6  # MB
-
-    # Memory with both optimizations
-    mem_both = spike_block_size * bin_tile_size * 4 / 1e6  # MB
-
-    # The persistent likelihood necessarily scales with recording length. A
-    # segment_sum(num_segments=n_time) would create this additional temporary for
-    # every block/tile; direct scatter accumulation must not.
-    mem_output = n_time * n_bins * 4 / 1e6
-    mem_dense_tile_accumulator = n_time * bin_tile_size * 4 / 1e6
-
-    # Expected reductions
-    reduction_spike_block = mem_full / mem_spike_block
-    reduction_both = mem_full / mem_both
-
-    # Verify expected reductions
-    assert reduction_spike_block == n_spikes / spike_block_size  # Should be 5×
-    assert reduction_both == (n_spikes / spike_block_size) * (
-        n_bins / bin_tile_size
-    )  # Should be ~39×
-
-    # Verify absolute values are reasonable
-    assert mem_full == 40.0  # 40 MB
-    assert mem_spike_block == 8.0  # 8 MB
-    assert mem_both == pytest.approx(1.024, abs=0.01)  # ~1 MB
-    assert mem_output == 14_400.0  # persistent result, 14.4 GB
-    assert mem_dense_tile_accumulator == 1_843.2  # avoided per-block temporary
-
-    # Print for documentation
-    print("\nMemory scaling verification:")
-    print(f"  Full processing: {mem_full:.1f} MB")
-    print(
-        f"  Spike blocking only: {mem_spike_block:.1f} MB ({reduction_spike_block:.0f}× reduction)"
-    )
-    print(f"  Both optimizations: {mem_both:.3f} MB ({reduction_both:.0f}× reduction)")
 
 
 def test_gmm_edge_cases(gmm_simulation_data):

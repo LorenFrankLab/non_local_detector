@@ -8,6 +8,8 @@ Testing philosophy: Each function should be tested for:
 4. Mathematical properties (probability constraints, etc.)
 """
 
+import warnings
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -629,5 +631,24 @@ class TestCheckConverged:
         matrix with a zero entry the prior penalizes) is an increase, not a
         NaN comparison."""
         is_converged, is_increasing = check_converged(-50.0, -np.inf, tolerance=1e-4)
+        assert is_increasing
+        assert not is_converged
+
+    def test_falling_to_negative_infinity_is_a_violation(self):
+        """A ``-inf`` objective after a finite one (e.g. a refit that makes a
+        timestep impossible) is a decrease, decided without a NaN ratio."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            is_converged, is_increasing = check_converged(
+                -np.inf, -50.0, tolerance=1e-4
+            )
+        assert not is_increasing
+        assert not is_converged
+
+    def test_staying_at_negative_infinity_is_not_a_violation(self):
+        """A degenerate timestep makes every E-step's marginal log-likelihood
+        ``-inf``. That is no decrease, but there is no change to judge
+        convergence by."""
+        is_converged, is_increasing = check_converged(-np.inf, -np.inf, tolerance=1e-4)
         assert is_increasing
         assert not is_converged
