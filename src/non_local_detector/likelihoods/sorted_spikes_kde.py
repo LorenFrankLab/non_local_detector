@@ -65,11 +65,11 @@ from non_local_detector.likelihoods.common import (
     _concatenate_row_blocks,
     _pad_rows,
     _padded_sample_count,
+    _prepare_kde_local_inputs,
     _spike_counts_matrix,
     _SpikeTimeOrder,
     _traced_block_kde,
     as_std_array,
-    decode_bin_centers,
     drop_zero_weight_samples,
     get_position_at_time,
     kde_log_density,
@@ -540,14 +540,28 @@ def predict_sorted_spikes_kde_log_likelihood(
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
-    row_time = decode_bin_centers(time_edges, row_start, row_stop)
     if is_local:
-        # Need to interpolate position
-        interpolated_position = get_position_at_time(
-            position_time, position, row_time, environment
+        interpolated_position, log_occupancy = _prepare_kde_local_inputs(
+            occupancy_model,
+            position_time,
+            position,
+            environment,
+            _time_grid,
+            row_start,
+            row_stop,
+            _spike_time_order,
         )
-        occupancy = occupancy_model.predict(interpolated_position)
-        log_occupancy = kde_log_density(occupancy_model, interpolated_position)
+        occupancy = _spike_time_order.memo_kde(
+            f"kde_probability_occupancy:{occupancy_model.block_size}",
+            (
+                occupancy_model,
+                occupancy_model.samples_,
+                occupancy_model.weights_,
+                occupancy_model.std,
+                interpolated_position,
+            ),
+            lambda: occupancy_model.predict(interpolated_position),
+        )
 
         # Fitted KDE models run compiled over spike-count row blocks, so the
         # host count matrix and compiled graph stay bounded for any request.

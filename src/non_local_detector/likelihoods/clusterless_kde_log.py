@@ -18,9 +18,12 @@ from non_local_detector.likelihoods.common import (
     _padded_occupancy_count,
     _padded_samples,
     _padded_spike_count,
+    _prepare_kde_local_inputs,
+    _prepared_kde_log_density,
+    _prepared_kde_nonlocal_points,
+    _prepared_kde_position_log_kernel,
     _SpikeTimeOrder,
     as_std_array,
-    decode_bin_centers,
     deterministic_row_sum,
     drop_zero_weight_samples,
     get_position_at_time,
@@ -1341,6 +1344,7 @@ def _add_electrode_log_mark_intensities(
     block_size: int,
     pos_tile_size: int | None,
     indices_are_sorted: bool,
+    log_position_distance: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Add one electrode's non-local log marked intensities to their rows.
 
@@ -1368,9 +1372,10 @@ def _add_electrode_log_mark_intensities(
     -------
     total : jnp.ndarray, shape (n_rows, n_bins)
     """
-    log_position_distance = log_kde_distance(
-        place_bin_centers, encoding_positions, std=position_std
-    )
+    if log_position_distance is None:
+        log_position_distance = log_kde_distance(
+            place_bin_centers, encoding_positions, std=position_std
+        )
     n_blocks = decoding_features.shape[0] // block_size
     intensities = jax.lax.map(
         lambda block: estimate_log_joint_mark_intensity(
@@ -1431,6 +1436,7 @@ def _add_electrode_local_terms(
     occupancy_block_size: int,
     gpi_block_size: int,
     indices_are_sorted: bool,
+    log_gpi_density: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Add one electrode's local spike terms and expected count rate.
 
@@ -1492,9 +1498,10 @@ def _add_electrode_local_terms(
         log_likelihood.shape[0],
         indices_are_sorted=indices_are_sorted,
     )
-    log_gpi_density = traced_kde_log_density(
-        positions, gpi_samples, gpi_std, gpi_block_size, gpi_weights
-    )
+    if log_gpi_density is None:
+        log_gpi_density = traced_kde_log_density(
+            positions, gpi_samples, gpi_std, gpi_block_size, gpi_weights
+        )
     expected_counts = expected_counts + jnp.exp(
         log_density_intensity(mean_rate, log_gpi_density, occupancy)
     )
@@ -1978,6 +1985,9 @@ def predict_clusterless_kde_log_likelihood(
     else:
         is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+        prepared_place_bin_centers = _prepared_kde_nonlocal_points(
+            environment, _spike_time_order
+        )
         if log_occupancy is None:
             log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
@@ -2058,6 +2068,12 @@ def predict_clusterless_kde_log_likelihood(
                     block_size=min(block_size, n_padded),
                     pos_tile_size=pos_tile_size,
                     indices_are_sorted=selection.indices_are_sorted,
+                    log_position_distance=_prepared_kde_position_log_kernel(
+                        _spike_time_order,
+                        prepared_place_bin_centers,
+                        padded_positions,
+                        position_std,
+                    ),
                 )
                 continue
 
@@ -2194,14 +2210,16 @@ def compute_local_log_likelihood(
     if encoding_weights is None:
         encoding_weights = [None] * len(encoding_positions)
 
-    # Need to interpolate position at the requested rows only
-    interpolated_position = get_position_at_time(
+    interpolated_position, occupancy = _prepare_kde_local_inputs(
+        occupancy_model,
         position_time,
         position,
-        decode_bin_centers(time_edges, row_start, row_stop),
         environment,
+        _time_grid,
+        row_start,
+        row_stop,
+        _spike_time_order,
     )
-    occupancy = kde_log_density(occupancy_model, interpolated_position)
 
     log_likelihood = jnp.zeros((n_rows,))
     summed_expected_counts = jnp.zeros((n_rows,))
@@ -2307,6 +2325,9 @@ def compute_local_log_likelihood(
             occupancy_block_size=occupancy_model.block_size or n_padded,
             gpi_block_size=electrode_gpi_model.block_size or n_rows,
             indices_are_sorted=selection.indices_are_sorted,
+            log_gpi_density=_prepared_kde_log_density(
+                electrode_gpi_model, interpolated_position, _spike_time_order
+            ),
         )
 
     # Subtract the summed ground-process intensity once, floored at EPS to

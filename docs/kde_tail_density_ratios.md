@@ -71,6 +71,34 @@ Fifteen additional regressions verify identical-source densities at positions
 and zero gradients for empty/zero-weight support. These and the existing common,
 tail and four golden cases pass at their unchanged tolerances (101 cases).
 
+The performance follow-up compiles standard fitted-model true log-density
+evaluation, total-weight checks, and empty/NaN selection into one graph. Custom
+`KDEModel` subclasses retain their own `predict_log` behavior. Local prediction
+shares row interpolation, occupancy, and ground-process log densities through
+the prediction's `_SpikeTimeOrder`; small nonlocal spatial log kernels and
+device bin centers use the same preparation. Linear KDE derives probability
+and log position kernels from one calculation. Large spatial kernels retain
+their existing compiled scorer instead of becoming persistent cache entries.
+
+Preparation stays within one immutable prediction, with a 32 MiB and 256-entry
+LRU limit. Its byte accounting conservatively counts strong source-array
+references as well as results, including old fitted leaves after replacement.
+Keys include model samples, weights, bandwidth and block policy, original
+tracking inputs, time grid, and row range. A fresh prediction gets a fresh
+cache. Kernels can accept a prepared GPI density while retaining their original
+uncached contract for direct callers. The ordinary probability arithmetic,
+intensity floors, log-tail fallback, and numerical tolerances are unchanged.
+
+On the local CPU, the existing seeded `linear_kde` workload with reusable
+prediction preparation, three warmups and seven synchronized calls measured
+local prediction at 2.154 ms before and 1.069 ms after, nonlocal prediction at
+2.018 and 1.648 ms, and public likelihood construction at 5.038 and 3.787 ms.
+Five fresh warm fits measured 13.92 and 14.02 ms; no fit speedup is claimed.
+Nonlocal outputs were bitwise equal to the captured baseline, and local/public
+outputs differed by at most 2.98e-8 from reduction placement. All outputs were
+finite and repeatable, with zero new warm compilations. Hardware-specific
+CPU/GPU confirmation remains part of the full performance review.
+
 The seven-fix likelihood/model-checking run passed 1,754 cases and skipped
 three; its sole failure was an old test explicitly requiring tiny positive
 mean rates to be replaced by `EPS`. That expectation conflicts with this

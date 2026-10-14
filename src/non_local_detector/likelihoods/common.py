@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from collections.abc import Callable, Sequence, Sized
 from dataclasses import dataclass, field
 from functools import partial
@@ -726,6 +727,10 @@ class _SpikeTimeOrder:
     def __init__(self) -> None:
         self._entries: dict[int, tuple[object, np.ndarray, bool]] = {}
         self._prepared: dict[tuple, tuple[tuple, object]] = {}
+        self._kde_prepared: OrderedDict[tuple, tuple[tuple, object, int]] = (
+            OrderedDict()
+        )
+        self._kde_prepared_bytes = 0
 
     def memo(self, name: str, sources: tuple, build):
         """Return ``build()``, computed once per ``name`` and ``sources`` identities.
@@ -737,6 +742,32 @@ class _SpikeTimeOrder:
         if key not in self._prepared:
             self._prepared[key] = (sources, build())
         return self._prepared[key][1]
+
+    def memo_kde(self, name: str, sources: tuple, build):
+        """Prediction-scoped preparation, bounding values and retained source arrays.
+
+        Counting source arrays conservatively includes already resident inputs.
+        It also bounds old fitted leaves retained after a model is refitted.
+        """
+        key = (name, *map(id, sources))
+        if key in self._kde_prepared:
+            self._kde_prepared.move_to_end(key)
+            return self._kde_prepared[key][1]
+        value = build()
+        size = sum(
+            int(getattr(leaf, "nbytes", 0))
+            for leaf in jax.tree_util.tree_leaves((sources, value))
+        )
+        if size <= _KDE_PREPARATION_BYTES:
+            while self._kde_prepared and (
+                self._kde_prepared_bytes + size > _KDE_PREPARATION_BYTES
+                or len(self._kde_prepared) >= _KDE_PREPARATION_ENTRIES
+            ):
+                _, (_, _, old_size) = self._kde_prepared.popitem(last=False)
+                self._kde_prepared_bytes -= old_size
+            self._kde_prepared[key] = (sources, value, size)
+            self._kde_prepared_bytes += size
+        return value
 
     def get(self, spike_times) -> tuple[np.ndarray, bool]:
         """Return the original input's host values and established ordering."""
@@ -1734,6 +1765,20 @@ class KDEModel:
 
 def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
     """True log density, with zero total fitted weight represented as zero mass."""
+    if type(model) is KDEModel:
+        if model.samples_ is None:
+            raise RuntimeError("This KDE instance is not fitted yet.")
+        points = jnp.asarray(points)
+        if points.ndim == 1:
+            points = points[:, None]
+        return _compiled_kde_log_density(
+            points,
+            model.samples_,
+            as_std_array(model.std, points.shape[1]),
+            points.shape[0] if model.block_size is None else model.block_size,
+            model.weights_,
+        )
+    # Preserve custom KDE subclasses' predict_log implementations.
     values = model.predict_log(points)
     total = jnp.sum(model.weights_)
     return jnp.where(
@@ -1743,10 +1788,104 @@ def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
 
 def traced_kde_log_density(points, samples, std, block_size, weights):
     """Traceable true-density counterpart of :func:`kde_log_density`."""
+    if points.shape[0] == 0:
+        return jnp.full((0,), LOG_EPS)
     values = _traced_block_log_kde(points, samples, std, block_size, weights)
     total = jnp.sum(weights)
     return jnp.where(
         jnp.isnan(total), jnp.nan, jnp.where(total > 0.0, values, -jnp.inf)
+    )
+
+
+_compiled_kde_log_density = jax.jit(
+    traced_kde_log_density, static_argnames=("block_size",)
+)
+_KDE_PREPARATION_BYTES = 32 * 1024**2
+_KDE_PREPARATION_ENTRIES = 256
+
+
+def _prepared_kde_log_density(
+    model, points, spike_time_order, *, predict_log=None, policy=""
+):
+    """Cache true density for immutable points and fitted leaves during prediction."""
+    return spike_time_order.memo_kde(
+        f"kde_log_density:{model.block_size}:{policy}",
+        (model, model.samples_, model.weights_, model.std, points),
+        lambda: kde_log_density(model, points)
+        if predict_log is None
+        else predict_log(model, points),
+    )
+
+
+def _prepare_kde_local_inputs(
+    model,
+    position_time,
+    position,
+    environment,
+    time_grid,
+    row_start,
+    row_stop,
+    spike_time_order,
+    *,
+    predict_log=None,
+    policy="",
+):
+    """Interpolate one row range and prepare its occupancy density once.
+
+    The cache belongs to one immutable prediction. A new prediction rechecks
+    original inputs, and replacing fitted leaves invalidates density entries.
+    Keys retain strong source references; row chunks share a 32 MiB LRU budget.
+    """
+    points = spike_time_order.memo_kde(
+        f"kde_local_position:{row_start}:{row_stop}",
+        (position_time, position, environment, time_grid),
+        lambda: get_position_at_time(
+            position_time,
+            position,
+            decode_bin_centers(time_grid.edges, row_start, row_stop),
+            environment,
+        ),
+    )
+    return points, _prepared_kde_log_density(
+        model, points, spike_time_order, predict_log=predict_log, policy=policy
+    )
+
+
+_compiled_position_log_kernel = jax.jit(_log_kernel_matrix)
+
+
+def _prepared_kde_nonlocal_points(environment, spike_time_order):
+    """Device spatial centers shared by states and chunks of this prediction."""
+    return spike_time_order.memo_kde(
+        "kde_nonlocal_points",
+        (environment.place_bin_centers_, environment.is_track_interior_),
+        lambda: jnp.asarray(
+            environment.place_bin_centers_[environment.is_track_interior_.ravel()]
+        ),
+    )
+
+
+def _prepared_kde_position_log_kernel(spike_time_order, points, samples, std):
+    """Reuse small spatial kernels; larger ones stay inside the bounded scorer.
+
+    One kernel may occupy at most one quarter of the prediction's preparation
+    budget so multiple electrodes do not evict all local geometry/densities.
+    Returning None retains the scorer's original compiled computation.
+    """
+    accumulator = jax.dtypes.canonicalize_dtype(jnp.float64)
+    std_dtype = getattr(std, "dtype", None)
+    if std_dtype is None:
+        std_dtype = np.asarray(std).dtype
+    itemsize = jnp.result_type(points, samples, std_dtype, accumulator).itemsize
+    size = int(points.shape[0]) * int(samples.shape[0]) * itemsize
+    if size > _KDE_PREPARATION_BYTES // 4:
+        return None
+    return spike_time_order.memo_kde(
+        "kde_position_log_kernel",
+        (points, samples, std),
+        lambda: _compiled_position_log_kernel(
+            points, samples, as_std_array(std, points.shape[1])
+        ),
     )
 
 
