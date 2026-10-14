@@ -157,7 +157,47 @@ def test_fused_gmm_bounds_cartesian_scoring_without_changing_event_rows(monkeypa
     np.add.at(expected, rows, -0.5 * features[:, 0] ** 2 - 0.5 * np.log(2 * np.pi))
     assert_allclose(result, np.broadcast_to(expected[:, None], result.shape), atol=1e-6)
     assert scored_counts
-    assert max(scored_counts) <= len(features) * 128
+    # Both alternatives are staged: CPU caps at512 columns, accelerators128.
+    assert max(scored_counts) <= len(features) * 512
+    assert len(features) * 128 in scored_counts
+    assert len(features) * 512 in scored_counts
+
+
+@pytest.mark.unit
+def test_gmm_tile_policy_is_selected_by_lowering_platform():
+    parameters = (jnp.zeros((1, 2)), jnp.eye(2)[None], jnp.ones(1))
+    occupancy = (jnp.zeros((1, 1)), jnp.ones((1, 1, 1)), jnp.ones(1))
+    closed = jax.make_jaxpr(
+        lambda: background_marks._background_gmm_rows(
+            jnp.zeros((16, 1)),
+            jnp.arange(16),
+            jnp.full(16, -100.0),
+            jnp.linspace(-0.5, 0.5, 513)[:, None],
+            parameters,
+            occupancy,
+            jnp.asarray(0.0),
+            is_local=False,
+            n_rows=16,
+            indices_are_sorted=True,
+            joint_covariance_type="full",
+            occupancy_covariance_type="full",
+        )
+    )()
+
+    def names(value):
+        if hasattr(value, "jaxpr"):
+            return names(value.jaxpr)
+        if hasattr(value, "eqns"):
+            return {equation.primitive.name for equation in value.eqns} | set().union(
+                *(names(equation.params) for equation in value.eqns)
+            )
+        if isinstance(value, dict):
+            return set().union(*(names(item) for item in value.values()))
+        if isinstance(value, (list, tuple)):
+            return set().union(*(names(item) for item in value))
+        return set()
+
+    assert "platform_index" in names(closed)
 
 
 @pytest.mark.unit

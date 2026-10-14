@@ -733,36 +733,47 @@ def _background_gmm_rows(
 
     if is_local or positions.shape[0] <= 128:
         return score_rows(positions)
-    # Bound the mark x position Cartesian sample axis inside this executable.
-    # Fusion otherwise keeps the scorer's full temporary arena alive through
-    # mixture/reduction, despite a modest logical live-buffer peak. Position
-    # tiling preserves the padded event axis and its deterministic sum tree.
-    position_tile = 128
-    first_rows = score_rows(positions[:position_tile])
-    total = jnp.zeros((n_rows, positions.shape[0]), dtype=first_rows.dtype)
-    total = jax.lax.dynamic_update_slice(total, first_rows, (0, 0))
-    n_tiles = (positions.shape[0] + position_tile - 1) // position_tile
 
-    def add_position_tile(number, total):
-        requested_start = number * position_tile
-        column_start = jnp.minimum(requested_start, positions.shape[0] - position_tile)
-        block_positions = jax.lax.dynamic_slice_in_dim(
-            positions, column_start, position_tile
-        )
-        rows = score_rows(block_positions)
-        # An overlapping final tile avoids artificial spatial points. Preserve
-        # its already-written prefix so each real column is stored once.
-        current = jax.lax.dynamic_slice_in_dim(
-            total, column_start, position_tile, axis=1
-        )
-        rows = jnp.where(
-            (column_start + jnp.arange(position_tile) >= requested_start)[None, :],
-            rows,
-            current,
-        )
-        return jax.lax.dynamic_update_slice(total, rows, (0, column_start))
+    def score_position_tiles(position_tile):
+        if positions.shape[0] <= position_tile:
+            return score_rows(positions)
+        # Keep the padded event axis intact so the row reduction tree is
+        # independent of position tiles. Infer the original scorer's dtype.
+        first_rows = score_rows(positions[:position_tile])
+        total = jnp.zeros((n_rows, positions.shape[0]), dtype=first_rows.dtype)
+        total = jax.lax.dynamic_update_slice(total, first_rows, (0, 0))
+        n_tiles = (positions.shape[0] + position_tile - 1) // position_tile
 
-    return jax.lax.fori_loop(1, n_tiles, add_position_tile, total)
+        def add_position_tile(number, total):
+            requested_start = number * position_tile
+            column_start = jnp.minimum(
+                requested_start, positions.shape[0] - position_tile
+            )
+            block_positions = jax.lax.dynamic_slice_in_dim(
+                positions, column_start, position_tile
+            )
+            rows = score_rows(block_positions)
+            # The overlapping final tile preserves its previously stored prefix.
+            current = jax.lax.dynamic_slice_in_dim(
+                total, column_start, position_tile, axis=1
+            )
+            rows = jnp.where(
+                (column_start + jnp.arange(position_tile) >= requested_start)[None, :],
+                rows,
+                current,
+            )
+            return jax.lax.dynamic_update_slice(total, rows, (0, column_start))
+
+        return jax.lax.fori_loop(1, n_tiles, add_position_tile, total)
+
+    # Narrow accelerator tiles limit the fused scorer's temporary arena. CPUs
+    # benefit from larger GEMMs, while a 512-column cap still bounds their
+    # Cartesian scoring workspace. Select at lowering, including AOT export
+    # to another platform, rather than querying Python's default device.
+    return jax.lax.platform_dependent(
+        cpu=lambda: score_position_tiles(512),
+        default=lambda: score_position_tiles(128),
+    )
 
 
 @partial(
