@@ -231,3 +231,66 @@ and 296 public-detector checks. This PR and the background PR both change the
 NonLocal binary output reference; integrating both requires computing their
 combined output from the pinned inputs, rather than choosing one branch's
 binary reference.
+
+## Bounded preparation across weighted refits
+
+Public encoding refits now retain one content-checked `EncodingSupport` on the
+detector. Position/time values, dtypes, shapes, acquisition bounds and tracking
+intervals enter the key; changing their contents creates a fresh support even
+when the caller mutates an array in place. Stored time, exposure and segment
+indices are immutable copies. The transient support cache is excluded from
+detector serialization.
+
+Support arrays, quadrature geometry, prepared device/host arrays and conservative
+segment/dictionary metadata share the existing **32 MiB** preparation cap. Large
+or heavily fragmented support is not retained. Prepared families retire their
+old configuration, rather than accumulating results across grid or bandwidth
+changes. The quadrature accuracy, geometry budget, nodes and endpoint/gap
+contracts remain unchanged.
+
+For repeated KDE fits on the same trajectory and spatial grid, preparation
+integrates quadrature mass onto the original tracking basis:
+
+```text
+A[i,b] = sum_q duration[q] * Gaussian(center[b], position[q]) * basis_i(time[q])
+occupancy[b] = sum_i weight[i] * A[i,b] / total_exposure
+```
+
+The operator is constructed in bounded position tiles with deterministic source
+reductions. Each original sample's Gaussian offset is stored separately from
+its integrated temporal/basis mass. This prevents duration and weight logs from
+being rounded away in deep spatial tails. Supported mass uses a scaled
+`Precision.HIGHEST` matrix product; a conservative discarded-mass bound selects
+log-space evaluation when a change in posterior weights activates a distant
+source. Normalization is applied before the large spatial offset is restored.
+The retained operator uses three original-sample-by-bin arrays and one bin
+offset array. The 4,096-sample/512-bin float32 example retains about **24.9 MiB**
+including its support and quadrature. A 100,000-sample/128-bin operator exceeds
+the cap and uses the existing blocked KDE evaluation.
+
+Operator construction is lazy: a cold public fit keeps its existing occupancy
+evaluation and accumulation order, and a subsequent unchanged-support refit
+builds the operator for reuse. The first such refit includes construction and
+compilation. Stored first-fit golden outputs are unchanged. Refitted float32
+results can differ through the new accumulation order; comparisons against an
+independent float64 quadrature oracle are retained in the performance review.
+
+GLM exposure still evaluates `exp(B beta)` at every quadrature node for each
+coefficient iterate. Its Patsy prediction design is built in blocks of at most
+32,768 rows, avoiding recording-sized construction temporaries. A bounded prefix
+of device design blocks, prediction geometry and event bases is reused across
+weight changes. Existing design matrices stay on their device during fitting.
+Grid contents, spline spacing, tracking contents, device/dtype and track graph
+projection geometry/configuration enter the cache key. Refitting a rotated graph
+with identical one-dimensional bin edges therefore invalidates the old design.
+
+The performance follow-up passes 103 focused cache, analytical-tail, trajectory,
+GLM, exposure-mask and golden checks, plus 208 KDE, weights, time-edge and
+property checks. All four stored golden comparisons pass without edits to
+references or numerical tolerances. A local CPU diagnostic with 100,000 tracking
+samples and 128 bins retained bitwise-identical first-fit and weighted-refit
+place fields: median warm KDE refit changed from 36.3 to 15.4 ms, and GLM from
+2,021.7 to 1,578.8 ms. These local measurements are diagnostics; matched Zephyr
+CPU/GPU profiling supplies the performance assessment. Larger cold fits still
+pay for corrected quadrature and nonlinear GLM exposure, and designs exceeding
+the preparation cap are partly or wholly recomputed.

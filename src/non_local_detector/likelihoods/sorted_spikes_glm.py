@@ -752,7 +752,13 @@ def fit_sorted_spikes_glm_encoding_model(
         for node, attributes in graph.nodes(data=True):
             projection_values.extend((repr(node), attributes.get("pos")))
         for left, right, attributes in graph.edges(data=True):
-            projection_values.extend((repr((left, right)), attributes.get("distance")))
+            projection_values.extend(
+                (
+                    repr((left, right)),
+                    attributes.get("distance"),
+                    attributes.get("edge_id"),
+                )
+            )
         projection_key = preparation_key(*projection_values)
     signature = (
         preparation_key(
