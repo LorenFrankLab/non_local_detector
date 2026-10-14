@@ -7,7 +7,6 @@ Event weights are dimensionless; integrated sample exposure is in seconds.
 
 import hashlib
 from dataclasses import dataclass
-from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -20,6 +19,7 @@ _QUADRATURE_CACHE_BYTES = 32 * 2**20
 _QUADRATURE_MAX_BYTES = 512 * 2**20
 _QUADRATURE_SOURCE_ROWS = 2048
 _QUADRATURE_FILL_PARTS = 8192
+_KDE_OPERATOR_WORKSPACE_BYTES = 64 * 2**20
 _SUPPORT_SEGMENT_BYTES = 256
 _SUPPORT_METADATA_BYTES = 1024
 _PREPARATION_ENTRY_BYTES = 512
@@ -37,7 +37,8 @@ def preparation_key(*values):
         array = np.ascontiguousarray(value)
         digest.update(array.dtype.str.encode())
         digest.update(np.asarray(array.shape, dtype=np.intp).tobytes())
-        digest.update(memoryview(array).cast("B"))
+        if array.size:
+            digest.update(memoryview(array).cast("B"))
     return digest.digest()
 
 
@@ -95,43 +96,47 @@ def _prepared_kde_log_density(
     return jnp.where(has_mass, value, -jnp.inf)
 
 
-@partial(jax.jit, static_argnames=("n_samples",))
+@jax.jit
+def _quadrature_log_kernel_tile(centers, samples, std):
+    from non_local_detector.likelihoods.common import _log_kernel_matrix
+
+    return _log_kernel_matrix(centers, samples, std)
+
+
 def _integrated_kde_operator_tile(
     centers, samples, std, left_mass, right_mass, left, right, *, n_samples
 ):
-    """Log positive quadrature mass assigned to each original sample basis."""
-    from non_local_detector.likelihoods.common import (
-        _log_kernel_matrix,
-        deterministic_row_sum,
-    )
+    """Native Gaussian kernel with bounded, deterministic host basis grouping.
 
-    kernel = _log_kernel_matrix(centers, samples, std)
-
-    def basis_maximum(indices, mass):
-        return jax.ops.segment_max(
-            jnp.where(mass[:, None] > 0.0, kernel, -jnp.inf),
-            indices,
-            num_segments=n_samples,
-            indices_are_sorted=True,
+    Sorted interpolation indices allow reduceat instead of compiling a large
+    scatter/segmented scan just to prepare immutable geometry. Temporal mass is
+    accumulated in float64 before storing the fitted working dtype.
+    """
+    kernel = np.asarray(_quadrature_log_kernel_tile(centers, samples, std))
+    maximum = np.full((n_samples, kernel.shape[1]), -np.inf, dtype=kernel.dtype)
+    if len(kernel) == 0:
+        return maximum, maximum.copy()
+    groups = []
+    for indices, part_mass in ((left, left_mass), (right, right_mass)):
+        starts = np.r_[0, np.flatnonzero(np.diff(indices)) + 1]
+        rows = indices[starts]
+        grouped_max = np.maximum.reduceat(
+            np.where(part_mass[:, None] > 0.0, kernel, -np.inf), starts, axis=0
         )
-
-    maximum = jnp.maximum(
-        basis_maximum(left, left_mass), basis_maximum(right, right_mass)
-    )
-    offset = jnp.where(jnp.isfinite(maximum), maximum, 0.0)
-
-    def basis_mass(indices, part_mass):
-        return deterministic_row_sum(
-            jnp.exp(kernel - offset[indices]) * part_mass[:, None],
-            indices,
-            n_samples,
-            indices_are_sorted=True,
-        )
-
-    mass = basis_mass(left, left_mass) + basis_mass(right, right_mass)
-    log_time_mass = jnp.where(
-        mass > 0.0, jnp.log(jnp.where(mass > 0.0, mass, 1.0)), -jnp.inf
-    )
+        maximum[rows] = np.maximum(maximum[rows], grouped_max)
+        groups.append((indices, part_mass, starts, rows))
+    offset = np.where(np.isfinite(maximum), maximum, 0.0)
+    mass = np.zeros(maximum.shape, dtype=np.float64)
+    relative = np.empty(kernel.shape, dtype=np.float64)
+    for indices, part_mass, starts, rows in groups:
+        relative[:] = kernel
+        relative[part_mass <= 0.0] = -np.inf
+        relative -= offset[indices]
+        np.exp(relative, out=relative)
+        relative *= part_mass[:, None]
+        mass[rows] += np.add.reduceat(relative, starts, axis=0)
+    log_time_mass = np.full(maximum.shape, -np.inf, dtype=np.float64)
+    np.log(mass, out=log_time_mass, where=mass > 0.0)
     return maximum, log_time_mass
 
 
@@ -436,8 +441,6 @@ class EncodingSupport:
             # Construct the fixed operator only when public weighted refits reuse
             # this support, avoiding a second KDE evaluation on every cold fit.
             return None
-        from non_local_detector.likelihoods.common import _KDE_BLOCK_KERNEL_BYTES
-
         device = jax.config.jax_default_device or jax.local_devices()[0]
         dtype = np.dtype(jnp.float64 if jax.config.jax_enable_x64 else jnp.float32)
         if len(centers) == 0:
@@ -453,21 +456,19 @@ class EncodingSupport:
                 > _QUADRATURE_CACHE_BYTES
             ):
                 return None
-            tile_size = max(
-                1,
-                min(
-                    64,
-                    _KDE_BLOCK_KERNEL_BYTES
-                    // (8 * dtype.itemsize * max(len(samples), 1)),
-                ),
+            workspace_per_column = (
+                8 * np.dtype(np.float64).itemsize * max(len(samples), len(self.time), 1)
             )
+            if workspace_per_column > _KDE_OPERATOR_WORKSPACE_BYTES:
+                return None
+            tile_size = min(64, _KDE_OPERATOR_WORKSPACE_BYTES // workspace_per_column)
             points, samples_device, std_device = (
-                jnp.asarray(centers),
+                np.asarray(centers),
                 jnp.asarray(samples),
                 jnp.asarray(std),
             )
             left_mass, right_mass, left, right = (
-                jnp.asarray(value)
+                np.asarray(value)
                 for value in (
                     quadrature.durations * (1.0 - quadrature.fraction),
                     quadrature.durations * quadrature.fraction,
@@ -475,8 +476,11 @@ class EncodingSupport:
                     quadrature.right,
                 )
             )
-            blocks = [
-                _integrated_kde_operator_tile(
+            kernel_offsets = np.empty((len(self.time), len(centers)), dtype=dtype)
+            log_time_mass = np.empty(kernel_offsets.shape, dtype=dtype)
+            for start in range(0, len(centers), tile_size):
+                stop = min(start + tile_size, len(centers))
+                block_offset, block_mass = _integrated_kde_operator_tile(
                     points[start : start + tile_size],
                     samples_device,
                     std_device,
@@ -486,19 +490,28 @@ class EncodingSupport:
                     right,
                     n_samples=len(self.time),
                 )
-                for start in range(0, len(centers), tile_size)
-            ]
-            kernel_offsets = jnp.concatenate([block[0] for block in blocks], axis=1)
-            log_time_mass = jnp.concatenate([block[1] for block in blocks], axis=1)
-            offset = jnp.max(
-                jnp.where(jnp.isfinite(log_time_mass), kernel_offsets, -jnp.inf), axis=0
+                kernel_offsets[:, start:stop] = block_offset
+                log_time_mass[:, start:stop] = block_mass
+            del block_offset, block_mass
+            offset = np.max(
+                np.where(np.isfinite(log_time_mass), kernel_offsets, -np.inf), axis=0
             )
-            offset = jnp.where(jnp.isfinite(offset), offset, 0.0)
+            offset = np.where(np.isfinite(offset), offset, 0.0)
+            scaled_mass = np.empty(kernel_offsets.shape, dtype=dtype)
+            for start in range(0, len(centers), tile_size):
+                stop = min(start + tile_size, len(centers))
+                scaled_mass[:, start:stop] = np.exp(
+                    (
+                        kernel_offsets[:, start:stop].astype(np.float64)
+                        - offset[None, start:stop]
+                    )
+                    + log_time_mass[:, start:stop].astype(np.float64)
+                )
             operator = (
-                kernel_offsets,
-                log_time_mass,
-                jnp.exp((kernel_offsets - offset[None, :]) + log_time_mass),
-                offset,
+                jnp.asarray(kernel_offsets),
+                jnp.asarray(log_time_mass),
+                jnp.asarray(scaled_mass),
+                jnp.asarray(offset),
             )
             self.remember_preparation(key, operator)
         exposure = quadrature.weighted_exposure(weights)

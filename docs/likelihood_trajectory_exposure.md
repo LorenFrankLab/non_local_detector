@@ -256,10 +256,16 @@ A[i,b] = sum_q duration[q] * Gaussian(center[b], position[q]) * basis_i(time[q])
 occupancy[b] = sum_i weight[i] * A[i,b] / total_exposure
 ```
 
-The operator is constructed in bounded position tiles with deterministic source
-reductions. Each original sample's Gaussian offset is stored separately from
-its integrated temporal/basis mass. This prevents duration and weight logs from
-being rounded away in deep spatial tails. Supported mass uses a scaled
+The operator is constructed in bounded position tiles. Gaussian log kernels use
+the existing native JAX arithmetic; sorted interpolation indices allow
+deterministic NumPy grouped reductions with float64 temporal mass before storing
+the fitted working dtype. This avoids compiling a large segmented scatter/scan
+for immutable preparation. Each original sample's Gaussian offset is stored
+separately from its integrated temporal/basis mass. This prevents duration and
+weight logs from being rounded away in deep spatial tails. Construction has a
+separate 64 MiB workspace cap; if even one position column exceeds it, the fit
+keeps blocked KDE evaluation. Zero interpolation coefficients are excluded before
+exponentiation. Supported mass uses a scaled
 `Precision.HIGHEST` matrix product; a conservative discarded-mass bound selects
 log-space evaluation when a change in posterior weights activates a distant
 source. Normalization is applied before the large spatial offset is restored.
@@ -294,3 +300,11 @@ place fields: median warm KDE refit changed from 36.3 to 15.4 ms, and GLM from
 CPU/GPU profiling supplies the performance assessment. Larger cold fits still
 pay for corrected quadrature and nonlinear GLM exposure, and designs exceeding
 the preparation cap are partly or wholly recomputed.
+
+The constructor follow-up passes 45 focused cache, tail, exposure and golden
+checks. Its additional regressions cover reduced workspace limits, a single
+column exceeding that limit, empty tracking geometry and zero basis mass beside
+an active deep-tail source, including mostly missing tracking. All four stored
+golden comparisons remain unchanged. An independent float64 oracle for shared
+endpoints, clipped gaps, missing-data splits and singleton support agrees within
+3.6e-15 in log density; stationary far-tail ratios are exact.

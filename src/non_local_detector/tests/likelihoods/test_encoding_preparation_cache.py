@@ -92,6 +92,122 @@ def test_prepared_cache_and_quadrature_share_one_aggregate_budget(monkeypatch):
     assert support.quadrature(position, spatial_scale=2.0) is quadrature
 
 
+@pytest.mark.parametrize("mostly_missing", [False, True])
+def test_integrated_kde_construction_respects_its_temporary_workspace(
+    monkeypatch, mostly_missing
+):
+    from non_local_detector import encoding_time
+    from non_local_detector.likelihoods.common import KDEModel
+
+    time, position, _, env = _data(65)
+    if mostly_missing:
+        position[:-7] = np.nan
+    support = EncodingSupport(time, position)
+    quadrature = support.quadrature(position, spatial_scale=2.0)
+    budget = (
+        2
+        * 8
+        * np.dtype(np.float64).itemsize
+        * max(len(quadrature.positions), len(time))
+    )
+    monkeypatch.setattr(
+        encoding_time, "_KDE_OPERATOR_WORKSPACE_BYTES", budget, raising=False
+    )
+    original = encoding_time._integrated_kde_operator_tile
+    calls = []
+
+    def tracked(centers, samples, *args, **kwargs):
+        calls.append((len(centers), len(samples)))
+        return original(centers, samples, *args, **kwargs)
+
+    monkeypatch.setattr(encoding_time, "_integrated_kde_operator_tile", tracked)
+    weights = np.linspace(0.2, 1.0, len(time))
+    actual = support.cached_kde_log_density(
+        quadrature,
+        quadrature.positions,
+        env.place_bin_centers_,
+        np.array([2.0]),
+        weights,
+    )
+    assert len(calls) > 1
+    assert all(
+        columns * max(rows, len(time)) * 8 * 8 <= budget for columns, rows in calls
+    )
+    expected = (
+        KDEModel(std=np.array([2.0]))
+        .fit(quadrature.positions, weights=quadrature.weighted_exposure(weights))
+        .predict_log(env.place_bin_centers_)
+    )
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_integrated_kde_skips_construction_when_one_column_exceeds_workspace(
+    monkeypatch,
+):
+    from non_local_detector import encoding_time
+
+    time, position, _, env = _data(65)
+    support = EncodingSupport(time, position)
+    quadrature = support.quadrature(position, spatial_scale=2.0)
+    monkeypatch.setattr(
+        encoding_time,
+        "_KDE_OPERATOR_WORKSPACE_BYTES",
+        8 * np.dtype(np.float64).itemsize * len(quadrature.positions) - 1,
+    )
+    assert (
+        support.cached_kde_log_density(
+            quadrature,
+            quadrature.positions,
+            env.place_bin_centers_,
+            np.array([2.0]),
+            np.ones(len(time)),
+        )
+        is None
+    )
+    assert not support._prepared_cache
+
+
+def test_integrated_kde_zero_basis_mass_cannot_poison_a_distant_source():
+    from non_local_detector.encoding_time import _integrated_kde_operator_tile
+    from non_local_detector.likelihoods.common import _log_kernel_matrix
+
+    centers, positions, std = np.array([[0.0]]), np.array([[0.0], [200.0]]), np.ones(1)
+    offset, mass = _integrated_kde_operator_tile(
+        centers,
+        positions,
+        std,
+        np.array([0.0, 1.0]),
+        np.zeros(2),
+        np.zeros(2, dtype=np.intp),
+        np.ones(2, dtype=np.intp),
+        n_samples=2,
+    )
+    np.testing.assert_array_equal(
+        offset[:1], _log_kernel_matrix(centers, positions[1:], std)
+    )
+    np.testing.assert_array_equal(mass[:1], np.zeros((1, 1)))
+    assert np.isneginf(offset[1, 0])
+    assert np.isneginf(mass[1, 0])
+
+
+def test_prepared_kde_empty_tracking_support_has_no_mass():
+    from non_local_detector.encoding_time import preparation_key
+
+    assert preparation_key(np.empty((0, 1))) != preparation_key(np.empty((0, 2)))
+    time = np.linspace(0.0, 1.0, 17)
+    position = np.full((len(time), 1), np.nan)
+    support = EncodingSupport(time, position)
+    quadrature = support.quadrature(position, spatial_scale=2.0)
+    actual = support.cached_kde_log_density(
+        quadrature,
+        quadrature.positions,
+        np.array([[0.0], [200.0]]),
+        np.ones(1),
+        np.ones(len(time)),
+    )
+    assert np.all(np.isneginf(actual))
+
+
 def test_glm_weighted_refit_reuses_design_and_invalidates_knot_and_grid_changes(
     monkeypatch,
 ):
