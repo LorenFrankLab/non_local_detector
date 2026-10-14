@@ -1813,6 +1813,7 @@ def predict_clusterless_kde_log_likelihood(
     encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
+    background_mark_models: list | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
 
@@ -1909,6 +1910,25 @@ def predict_clusterless_kde_log_likelihood(
         encoding_weights=encoding_weights,
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    if background_mark_models is not None:
+        from non_local_detector.likelihoods.background_marks import (
+            predict_clusterless_with_background,
+        )
+
+        return predict_clusterless_with_background(
+            "clusterless_kde_log",
+            dict(locals()),
+            position_time,
+            position,
+            spike_times,
+            spike_waveform_features,
+            time_edges,
+            background_mark_models=background_mark_models,
+            is_local=is_local,
+            row_slice=row_slice,
+            spike_time_order=_spike_time_order,
+            time_grid=_time_grid,
+        )
     # Uniform (None) weights per electrode when the caller passes none, so the loop
     # and the local path can zip a weight per electrode uniformly.
     per_electrode_weights = (

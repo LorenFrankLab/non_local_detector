@@ -479,6 +479,7 @@ def fit_clusterless_diffusion_encoding_model(
         p_gpi = spike_field_hat / (w_total * bin_sizes)
         summed_ground_process_intensity += mean_rate * p_gpi / occupancy
 
+    unfloored_ground_process_intensity = summed_ground_process_intensity.copy()
     summed_ground_process_intensity = np.clip(
         summed_ground_process_intensity, RATE_EPS_HZ, None
     )
@@ -487,6 +488,7 @@ def fit_clusterless_diffusion_encoding_model(
         "environment": environment,
         "occupancy": occupancy,
         "summed_ground_process_intensity": summed_ground_process_intensity,
+        "unfloored_ground_process_intensity": unfloored_ground_process_intensity,
         "encoding_bin_indices": encoding_bin_indices,
         "encoding_marks": encoding_marks,
         "encoding_weights": encoding_weights,
@@ -804,6 +806,26 @@ def predict_clusterless_diffusion_log_likelihood(
     if rate_units != "Hz":
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
+    background_mark_models = encoding_model.get("background_mark_models")
+    if background_mark_models is not None:
+        from non_local_detector.likelihoods.background_marks import (
+            predict_clusterless_with_background,
+        )
+
+        return predict_clusterless_with_background(
+            "clusterless_diffusion",
+            encoding_model,
+            position_time,
+            position,
+            spike_times,
+            spike_waveform_features,
+            time_edges,
+            background_mark_models=background_mark_models,
+            is_local=is_local,
+            row_slice=row_slice,
+            spike_time_order=_spike_time_order,
+            time_grid=_time_grid,
         )
     environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
     occupancy = jnp.asarray(encoding_model["occupancy"])

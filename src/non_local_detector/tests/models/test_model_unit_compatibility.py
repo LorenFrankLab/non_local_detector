@@ -204,6 +204,13 @@ def test_no_spike_state_uses_constructor_hz_rate_without_encoding_entry(
     )
     expected = -5.0 * np.diff(edges)
     expected[10] += np.log(5.0 * np.diff(edges)[10])
+    if family == "clusterless":
+        from scipy.stats import norm
+
+        reference = detector.background_mark_models_[0]
+        expected[10] += norm.logpdf(
+            spike_args[1][0][0], loc=reference.location, scale=reference.scale
+        ).sum()
     np.testing.assert_allclose(
         result.log_likelihood.to_numpy()[:, 0], expected, rtol=1e-5
     )

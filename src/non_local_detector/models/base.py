@@ -61,6 +61,10 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     predict_no_spike_log_likelihood,
 )
+from non_local_detector.likelihoods.background_marks import (
+    background_mark_row_terms,
+    fit_background_mark_model,
+)
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     decode_bin_centers,
@@ -2638,6 +2642,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             for obs in self.observation_models
             if not obs.is_no_spike
         }
+        if isinstance(self, ClusterlessDetector) and (
+            getattr(self, "background_mark_contract_", None) != 1
+            or not hasattr(self, "background_mark_models_")
+            or not hasattr(self, "background_mark_dimensions_")
+            or not hasattr(self, "background_mark_sources_")
+        ):
+            raise ValidationError(
+                "Saved clusterless model has no normalized background mark contract; refit before decoding.",
+                hint="The shared mark reference must be fitted from permitted training spikes; it cannot be reconstructed from decoding marks.",
+            )
         for key in required_keys:
             model = self.encoding_model_.get(key)
             units = model.get("rate_units") if isinstance(model, Mapping) else None
@@ -2649,12 +2663,37 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "Call fit(...) or estimate_parameters(..., time_edges=...) "
                     "with the original recording. No-Spike uses its constructor rate in Hz.",
                 )
+            if (
+                isinstance(self, ClusterlessDetector)
+                and model.get("background_mark_models")
+                is not self.background_mark_models_
+            ):
+                raise ValidationError(
+                    f"Encoding entry {key!r} has an inconsistent background mark reference; refit before decoding."
+                )
 
     def _validate_decode_population(self, spike_times, spike_waveform_features=None):
         """Validate active fitted populations before missing-data shortcuts."""
         is_clusterless = isinstance(self, ClusterlessDetector)
         if is_clusterless:
             validate_spike_feature_population(spike_times, spike_waveform_features)
+            validate_population_lengths(
+                "electrode",
+                spike_times=spike_times,
+                background_mark_models=self.background_mark_models_,
+                mark_dimensions=self.background_mark_dimensions_,
+            )
+            for electrode, (features, expected) in enumerate(
+                zip(
+                    spike_waveform_features,
+                    self.background_mark_dimensions_,
+                    strict=True,
+                )
+            ):
+                if np.shape(features)[1] != expected:
+                    raise ValidationError(
+                        f"Waveform-feature dimensionality for electrode {electrode} does not match the fitted background mark model"
+                    )
         else:
             for neuron, times in enumerate(spike_times):
                 if len(np.shape(times)) != 1:
@@ -3702,6 +3741,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         self.fit_encoding_model(
                             **self._encoding_model_data,
                             weights=local_state_weights,
+                            **(
+                                {"_refit_background_marks": False}
+                                if isinstance(self, ClusterlessDetector)
+                                else {}
+                            ),
                         )
 
                         # The encoding model changed, so the likelihood
@@ -4734,6 +4778,7 @@ class ClusterlessDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
+        _refit_background_marks: bool = True,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -4807,6 +4852,14 @@ class ClusterlessDetector(_DetectorBase):
         # Build the new models locally so a failed refit keeps the previous
         # encoding model and its stored log likelihood.
         encoding_model: dict = {}
+        requested_environments = [
+            obs.environment_name for obs in self.observation_models
+        ]
+        background_weights = np.asarray(is_training, dtype=float) * np.isin(
+            environment_labels, requested_environments
+        )
+        if weights is not None:
+            background_weights = background_weights * np.asarray(weights)
 
         # An encoding model is shared by ``(environment_name, encoding_group)``;
         # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
@@ -4856,8 +4909,71 @@ class ClusterlessDetector(_DetectorBase):
                 **kwargs,
             )
 
+        if _refit_background_marks or not hasattr(self, "background_mark_models_"):
+            fallback_std = (
+                np.sqrt(kwargs.get("gmm_reg_covar", 1.0))
+                if self.clusterless_algorithm == "clusterless_gmm"
+                else kwargs.get("waveform_std", 24.0)
+            )
+            background_mark_models = []
+            reference_training = []
+            for times, features in zip(
+                spike_times, spike_waveform_features, strict=True
+            ):
+                reference_weights = interpolate_weights_at_spike_times(
+                    times, position_time, background_weights, encoding_support=support
+                )
+                reference_weights = np.where(
+                    support.contains(times), reference_weights, 0.0
+                )
+                reference_training.append((features, reference_weights))
+                background_mark_models.append(
+                    fit_background_mark_model(features, reference_weights, fallback_std)
+                )
+            background_mark_sources = [
+                {"kind": "electrode"} if model is not None else {"kind": "unidentified"}
+                for model in background_mark_models
+            ]
+            for electrode, model in enumerate(background_mark_models):
+                if model is not None:
+                    continue
+                dimensions = np.shape(spike_waveform_features[electrode])[1]
+                donors = [
+                    i
+                    for i, (features, sample_weights) in enumerate(reference_training)
+                    if np.shape(features)[1] == dimensions
+                    and np.any(sample_weights > 0)
+                ]
+                if donors:
+                    pooled_marks = np.concatenate(
+                        [reference_training[i][0] for i in donors]
+                    )
+                    pooled_weights = np.concatenate(
+                        [reference_training[i][1] for i in donors]
+                    )
+                    background_mark_models[electrode] = fit_background_mark_model(
+                        pooled_marks, pooled_weights, fallback_std
+                    )
+                    background_mark_sources[electrode] = {
+                        "kind": "pooled_same_dimension",
+                        "donor_electrodes": tuple(donors),
+                    }
+        else:
+            # Posterior weighting updates the active encoding process, not the
+            # state-independent reference measure chosen from training data.
+            background_mark_models = self.background_mark_models_
+            background_mark_sources = self.background_mark_sources_
+        for model in encoding_model.values():
+            model["background_mark_models"] = background_mark_models
+
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
+        self.background_mark_models_ = background_mark_models
+        self.background_mark_sources_ = background_mark_sources
+        self.background_mark_dimensions_ = [
+            np.shape(features)[1] for features in spike_waveform_features
+        ]
+        self.background_mark_contract_ = 1
         self.time_contract_ = {
             "version": 1,
             "rate_units": "Hz",
@@ -5142,6 +5258,16 @@ class ClusterlessDetector(_DetectorBase):
                     _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
                     _time_grid=_time_grid,
+                )
+                likelihood_results[state_id] = likelihood_results[
+                    state_id
+                ] + background_mark_row_terms(
+                    self.background_mark_models_,
+                    spike_times,
+                    spike_waveform_features,
+                    time_edges,
+                    row_slice,
+                    _spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(

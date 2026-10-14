@@ -795,6 +795,7 @@ def predict_clusterless_gmm_log_likelihood(
     mark_dimensions: list[int],
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
+    background_mark_models: list | None = None,
     **kwargs,
 ) -> jnp.ndarray:
     """
@@ -852,6 +853,25 @@ def predict_clusterless_gmm_log_likelihood(
     if rate_units != "Hz":
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
+    if background_mark_models is not None:
+        from non_local_detector.likelihoods.background_marks import (
+            predict_clusterless_with_background,
+        )
+
+        return predict_clusterless_with_background(
+            "clusterless_gmm",
+            dict(locals()),
+            position_time,
+            position,
+            spike_times,
+            spike_waveform_features,
+            time_edges,
+            background_mark_models=background_mark_models,
+            is_local=is_local,
+            row_slice=row_slice,
+            spike_time_order=_spike_time_order,
+            time_grid=_time_grid,
         )
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
