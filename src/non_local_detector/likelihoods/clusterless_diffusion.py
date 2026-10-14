@@ -279,11 +279,12 @@ def _cached_source_kernel(
     *,
     sources=None,
 ):
-    """Cache occupied source columns within one aggregate persistent budget.
+    """Resolve requested occupied columns from one bounded environment cache.
 
-    The environment retains one operator entry, shared by encoding groups and
-    refits with the same immutable source support. A replacement evicts the old
-    entry; independent per-electrode caches cannot multiply the budget.
+    Encoding models keep source indices rather than strong matrix references.
+    Related encoding groups share a union of columns when it fits; otherwise
+    the current requested support replaces the previous cache. Only the returned
+    subset is a transient prediction or fitting buffer.
     """
     n_bins, rank = eigvecs.shape
     sources = (
@@ -291,40 +292,57 @@ def _cached_source_kernel(
         if sources is None
         else np.asarray(sources, dtype=np.int32)
     )
-    cache_bytes = _WORKING_ITEMSIZE * n_bins * sources.size + sources.nbytes
-    if cache_bytes > _source_cache_budget(memory_budget):
+    budget = _source_cache_budget(memory_budget)
+    if _WORKING_ITEMSIZE * n_bins * sources.size + sources.nbytes > budget:
         if environment is not None and hasattr(
             environment, "_diffusion_source_kernel_"
         ):
             del environment._diffusion_source_kernel_
         return jnp.zeros((n_bins, 0), dtype=jnp.float32)
     cached = getattr(environment, "_diffusion_source_kernel_", None)
-    if (
+    compatible = (
         cached is not None
         and len(cached) == 4
         and cached[0] is eigvecs
         and cached[1] == position_std
-        and np.array_equal(cached[2], sources)
-    ):
-        return cached[3]
-    kernel = np.empty((n_bins, sources.size), dtype=np.float32)
+        and cached[2].nbytes + cached[3].nbytes <= budget
+    )
+    cache_sources = sources
+    if compatible:
+        if np.array_equal(sources, cached[2]):
+            return cached[3]
+        contained = np.all(np.isin(sources, cached[2], assume_unique=True))
+        if contained:
+            return cached[3][:, np.searchsorted(cached[2], sources)]
+        union = np.union1d(cached[2], sources).astype(np.int32)
+        if _WORKING_ITEMSIZE * n_bins * union.size + union.nbytes <= budget:
+            cache_sources = union
+        else:
+            compatible = False
+    kernel = np.empty((n_bins, cache_sources.size), dtype=np.float32)
+    missing_sources = cache_sources
+    if compatible:
+        # Preserve already computed columns exactly rather than rebuilding them
+        # with a different tile width, which changes float32 GEMM rounding.
+        kernel[:, np.searchsorted(cache_sources, cached[2])] = np.asarray(cached[3])
+        missing_sources = cache_sources[
+            ~np.isin(cache_sources, cached[2], assume_unique=True)
+        ]
     tile_size = _source_tile_size(memory_budget, n_bins, rank)
-    for start in range(0, sources.size, tile_size):
-        stop = min(start + tile_size, sources.size)
-        kernel[:, start:stop] = np.asarray(
+    for start in range(0, missing_sources.size, tile_size):
+        block_sources = missing_sources[start : start + tile_size]
+        kernel[:, np.searchsorted(cache_sources, block_sources)] = np.asarray(
             _positive_source_columns(
                 eigvals,
                 eigvecs,
                 labels,
-                jnp.asarray(sources[start:stop]),
+                jnp.asarray(block_sources),
                 position_std=position_std,
             )
         )
     kernel = jnp.asarray(kernel)
     if environment is not None:
-        # One entry shares the operator across encoding groups and EM refits;
-        # changing the graph/bandwidth replaces it rather than growing a cache.
-        frozen_sources = sources.copy()
+        frozen_sources = cache_sources.copy()
         frozen_sources.setflags(write=False)
         environment._diffusion_source_kernel_ = (
             eigvecs,
@@ -332,7 +350,9 @@ def _cached_source_kernel(
             frozen_sources,
             kernel,
         )
-    return kernel
+    if np.array_equal(cache_sources, sources):
+        return kernel
+    return kernel[:, np.searchsorted(cache_sources, sources)]
 
 
 def _prediction_source_operator(model, eigvecs):
@@ -348,6 +368,19 @@ def _prediction_source_operator(model, eigvecs):
     tile_size = _source_tile_size(memory_budget, n_bins, rank)
     kernel = jnp.asarray(model["source_kernel"])
     source_indices = model.get("source_bin_indices")
+    if model.get("source_kernel_cache") == "environment" and not kernel.shape[1]:
+        eigvals, _, labels, _ = get_device_basis(
+            model["environment"], model["resolved_rank"]
+        )
+        kernel = _cached_source_kernel(
+            eigvals,
+            eigvecs,
+            labels,
+            model["position_std"],
+            memory_budget,
+            model["environment"],
+            sources=source_indices,
+        )
     support_bytes = 0 if source_indices is None else source_indices.nbytes
     if kernel.size * _WORKING_ITEMSIZE + support_bytes > _source_cache_budget(
         memory_budget
@@ -742,7 +775,10 @@ def fit_clusterless_diffusion_encoding_model(
         "weight_total": weight_total,
         "mean_rates": mean_rates,
         "resolved_rank": resolved_rank,
-        "source_kernel": source_kernel,
+        # The environment owns the only persistent matrix. Keeping this fitted
+        # model alive cannot prevent an evicted group's cache from being freed.
+        "source_kernel": jnp.zeros((n_interior, 0), dtype=jnp.float32),
+        "source_kernel_cache": "environment",
         "spatial_operator": "positive_source_columns",
         "grid_revision": getattr(environment, "_place_grid_revision_", 0),
         "node_order": node_order,

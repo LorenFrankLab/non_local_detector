@@ -11,6 +11,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_diffusion import (
     _linear_heat_apply,
     _positive_source_columns,
+    _prediction_source_operator,
     _source_cache_budget,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
@@ -55,7 +56,13 @@ def test_source_kernel_is_shared_across_refits_and_invalidated_with_grid():
     second = fit_clusterless_diffusion_encoding_model(
         **kwargs, weights=np.array([1.0, 0.5, 1.0])
     )
-    assert first["source_kernel"] is second["source_kernel"]
+    from non_local_detector.likelihoods.diffusion import get_device_basis
+
+    _, basis, _, _ = get_device_basis(env, first["resolved_rank"])
+    assert (
+        _prediction_source_operator(first, basis)[0]
+        is _prediction_source_operator(second, basis)[0]
+    )
     assert "_diffusion_source_kernel_" not in env.__getstate__()
     env.fit_place_grid(env.place_bin_centers_, infer_track_interior=False)
     assert not hasattr(env, "_diffusion_source_kernel_")
@@ -294,7 +301,9 @@ def test_diffusion_mark_integral_recovers_ground_process_after_truncation(
     expected = ground[1:2] if is_local else ground
     recovered = trapezoid(np.exp(np.asarray(likelihood) + expected), marks, axis=0)
     np.testing.assert_allclose(recovered, expected, rtol=1e-5, atol=1e-6)
-    assert encoding["source_kernel"].nbytes <= _source_cache_budget(memory_budget)
+    cache = getattr(encoding["environment"], "_diffusion_source_kernel_", None)
+    cache_bytes = 0 if cache is None else cache[-1].nbytes + cache[-2].nbytes
+    assert cache_bytes <= _source_cache_budget(memory_budget)
 
 
 @pytest.mark.parametrize("rank", [2, 4, 6])

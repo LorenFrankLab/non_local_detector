@@ -117,6 +117,15 @@ allowing the background likelihood to compile conditional marks, spatial density
 ratios, mixture evaluation, and deterministic row reduction together. Host checks
 and cached Schur-complement preparation remain outside that executable.
 
+Encoding models retain compact source indices and an empty operator placeholder;
+the environment owns the persistent matrix. Different encoding groups reuse a
+union of occupied columns when it fits the same aggregate cache budget. If the
+union exceeds that budget, lookup replaces the cached support. A model kept alive
+after replacement therefore cannot retain an evicted operator. Prediction selects
+its needed columns into a temporary buffer, which is never memoized across
+observation states or chunks. Existing columns are copied exactly when the union
+grows, preserving their original float32 rounding.
+
 ## Numerical and performance checks
 
 Tests integrate public local and non-local event intensities over Gaussian marks,
