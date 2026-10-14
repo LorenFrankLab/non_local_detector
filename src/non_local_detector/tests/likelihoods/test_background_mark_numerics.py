@@ -113,3 +113,46 @@ def test_joint_kde_weight_scaling_preserves_small_positive_gemm_mass(
     log_weights = np.log(weights.astype(float))
     expected = logsumexp(log_kernel + log_weights) - logsumexp(log_weights)
     assert_allclose(result, expected, atol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("local", [False, True])
+@pytest.mark.parametrize("sample_tile", [None, 1])
+def test_far_tail_retains_distinct_source_weight_normalization(local, sample_tile):
+    """The shared extreme kernel cancels before distinct normalized masses."""
+    x = 200.0
+    model = _repeated_position_model(x, sample_tile)
+    sources = np.array([[0.0], [1.0]])
+    occupancy_weights = np.array([0.05, 0.002])
+    spike_weights = np.array([0.2, 0.3])
+    model.update(
+        occupancy_model=KDEModel(std=np.ones(1)).fit(
+            sources, weights=occupancy_weights
+        ),
+        gpi_models=[KDEModel(std=np.ones(1)).fit(sources, weights=spike_weights)],
+        encoding_positions=[sources],
+        encoding_spike_waveform_features=[np.array([[-1.0], [1.0]])],
+        encoding_weights=[spike_weights],
+    )
+    # At x=200 the x=0 kernel is smaller by exp(-199.5). Its contribution is
+    # negligible, so the exact limiting ratio uses each law's normalized mass
+    # at x=1. These masses must survive cancellation of the extreme kernel.
+    ground = (spike_weights[1] / spike_weights.sum()) / (
+        occupancy_weights[1] / occupancy_weights.sum()
+    )
+    raw = _raw_kde_marks(
+        model, 0, np.array([[x]]), np.ones((1, 1)), local, sample_tile
+    )
+    assert_allclose(raw, np.log(ground) - 0.5 * np.log(2 * np.pi), atol=1e-5)
+    silent = predict_clusterless_with_background(
+        "clusterless_kde",
+        model,
+        np.array([0.0, 1.0]),
+        np.full((2, 1), x),
+        [np.empty(0)],
+        [np.empty((0, 1))],
+        np.array([0.0, 1.0]),
+        background_mark_models=[BackgroundMarkModel(np.zeros(1), np.ones(1))],
+        is_local=local,
+    )
+    assert_allclose(silent, -(ground + RATE_EPS_HZ), atol=1e-5)

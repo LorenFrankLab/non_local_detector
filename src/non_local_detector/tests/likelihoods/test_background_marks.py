@@ -447,3 +447,23 @@ def test_position_tiles_bound_background_compensator_density_workspace(monkeypat
     )
     assert result.shape == (1, 37)
     assert query_sizes == [4] * 9 + [1] + [4] * 9 + [1]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tile", [None, 1])
+@pytest.mark.parametrize("invalid_source", ["encoded_positions", "encoded_marks"])
+def test_joint_background_kde_propagates_inactive_nan_source(tile, invalid_source):
+    from non_local_detector.likelihoods.background_marks import _kde_log_joint_nonlocal
+
+    inputs = {
+        "positions": np.zeros((1, 1)),
+        "features": np.zeros((1, 1)),
+        "encoded_positions": np.zeros((2, 1)),
+        "encoded_marks": np.zeros((2, 1)),
+        "position_std": np.ones(1),
+        "waveform_std": np.ones(1),
+        "weights": np.array([0.0, 1.0]),
+    }
+    inputs[invalid_source][0, 0] = np.nan
+    result = _kde_log_joint_nonlocal(**inputs, sample_tile=tile)
+    assert np.isnan(np.asarray(result)).all()

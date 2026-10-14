@@ -298,9 +298,25 @@ def _kde_log_joint_nonlocal(
     batch invariance. The fallback covers a lack of overlapping mass between
     their respective maxima; summing tiles uses logaddexp without density floors.
     """
+    invalid_source = (
+        jnp.any(jnp.isnan(encoded_positions))
+        | jnp.any(jnp.isnan(encoded_marks))
+        | jnp.any(jnp.isnan(weights))
+        | jnp.any(jnp.isnan(jnp.asarray(position_std)))
+        | jnp.any(jnp.isnan(jnp.asarray(waveform_std)))
+    )
+    invalid = (
+        invalid_source
+        | jnp.any(jnp.isnan(features), axis=1)[:, None]
+        | jnp.any(jnp.isnan(positions), axis=1)[None, :]
+    )
     n_samples = encoded_positions.shape[0]
     if not n_samples:
-        return jnp.full((features.shape[0], positions.shape[0]), -jnp.inf)
+        return jnp.where(
+            invalid,
+            jnp.nan,
+            jnp.full((features.shape[0], positions.shape[0]), -jnp.inf),
+        )
     tile = min(sample_tile or n_samples, n_samples)
     output = jnp.full((features.shape[0], positions.shape[0]), -jnp.inf)
     maximum_weight = jnp.max(weights)
@@ -390,9 +406,10 @@ def _kde_log_joint_nonlocal(
         )
 
     output = jax.lax.fori_loop(0, n_tiles, add_tile, output)
-    return jnp.where(
+    result = jnp.where(
         total > 0, output - jnp.log(jnp.where(total > 0, total, 1)), -jnp.inf
     )
+    return jnp.where(invalid, jnp.nan, result)
 
 
 def _joint_logsumexp_fallback(operand: tuple[jnp.ndarray, ...]) -> jnp.ndarray:

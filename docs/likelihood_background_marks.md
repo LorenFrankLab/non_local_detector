@@ -149,6 +149,16 @@ golden mismatch** in 40.33 seconds. This includes all background regressions,
 canonical event ownership, model unit compatibility, probability/HMM properties,
 and four pinned golden tests. The two independent numerical/gradient regression
 files first reproduced 27 failures, then passed all 41 cases after repair.
+Four additional distinct-source, unequal-weight far-tail cases pass for local
+and non-local marked intensity and ground rates. A subsequent NaN-contract
+regression reproduced four failures for inactive invalid joint-kernel sources;
+an explicit propagation guard fixes those without changing finite-input
+formulas. The final three-file background suite has **80 passing tests**.
+
+An integration checkout combining the independent GMM/diffusion normalization
+repair and this background component passed **84 normalization/background
+tests**, including the fixed diffusion source-operator hook and all GMM
+covariance families.
 
 The earlier full suite had **3683 passing, seven skipped, and eight failing
 tests** in 1396.91 seconds. Four failures concerned training coverage now fixed
