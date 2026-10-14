@@ -321,16 +321,17 @@ def _compute_log_mark_kernel_gemm(
     encoding_features: jnp.ndarray,
     waveform_stds: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Compute log mark kernel using GEMM (matrix multiplication) instead of per-dimension loop.
+    """Stable log Gaussian mark kernel for the GEMM marginal paths.
 
-    This is mathematically equivalent to the loop-based approach but much faster for
-    multi-dimensional features. The Gaussian kernel in log-space:
+    Subtract each pair's features before scaling and squaring. Expanding the
+    squared distance as ``||x||^2 + ||y||^2 - 2*x@y`` loses nearby distances
+    when features have large offsets, even at HIGHEST matmul precision. A
+    shared centering point cannot prevent this for widely separated clusters.
 
-        log K(x, y) = -0.5 * sum_d [(x_d - y_d)^2 / sigma_d^2] - log_norm_const
-                    = -0.5 * sum_d [(x_d/sigma_d)^2 + (y_d/sigma_d)^2 - 2*(x_d/sigma_d)*(y_d/sigma_d)] - log_norm_const
-                    = -0.5 * (||x_scaled||^2 + ||y_scaled||^2 - 2 * x_scaled @ y_scaled^T) - log_norm_const
-
-    The cross term x_scaled @ y_scaled^T is a single matrix multiply (GEMM).
+    Accumulate one feature at a time, with only an ``(n_enc, n_dec)`` array
+    per feature rather than an ``(n_enc, n_dec, n_features)`` temporary. XLA
+    can fuse these elementwise operations. The historical function name is
+    retained; the compensated-linear marginal still uses GEMM.
 
     Parameters
     ----------
@@ -348,10 +349,8 @@ def _compute_log_mark_kernel_gemm(
     """
     n_features = waveform_stds.shape[0]
 
-    # Precompute inverse standard deviations and normalization constant
-    # Clip to avoid division by zero for degenerate feature dimensions
+    # Preserve the shared bandwidth floor and Gaussian normalizer.
     waveform_stds = jnp.clip(waveform_stds, min=EPS)
-    inv_sigma = 1.0 / waveform_stds  # (n_features,)
 
     # Log normalization constant: -0.5 * (D * log(2π) + 2 * sum(log(sigma)))
     # Factor of 2 because we have sum of log(sigma), not log(sigma^2)
@@ -359,24 +358,58 @@ def _compute_log_mark_kernel_gemm(
         n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
     )
 
-    # Scale features by inverse standard deviations
-    Y = encoding_features * inv_sigma[None, :]  # (n_enc, n_features)
-    X = decoding_features * inv_sigma[None, :]  # (n_dec, n_features)
+    feature_dtype = jnp.result_type(
+        decoding_features, encoding_features, waveform_stds, jnp.float32
+    )
+    # Raw ADC marks can be signed/unsigned integers; subtraction must not wrap.
+    decoding_features = decoding_features.astype(feature_dtype)
+    encoding_features = encoding_features.astype(feature_dtype)
+    # Standalone callers can supply a length-one bandwidth for all features.
+    bandwidths = jnp.broadcast_to(waveform_stds, (encoding_features.shape[1],))
 
-    # Compute squared norms
-    y2 = jnp.sum(Y**2, axis=1)  # (n_enc,)
-    x2 = jnp.sum(X**2, axis=1)  # (n_dec,)
+    def squared_distances(guard_overflow: bool) -> jnp.ndarray:
+        sq_dist = jnp.zeros(
+            (encoding_features.shape[0], decoding_features.shape[0]),
+            dtype=feature_dtype,
+        )
+        for decoding_dim, encoding_dim, sigma in zip(
+            decoding_features.T, encoding_features.T, bandwidths, strict=True
+        ):
+            encoding_column, decoding_row = encoding_dim[:, None], decoding_dim[None, :]
+            difference = encoding_column - decoding_row
+            if guard_overflow:
+                overflow = (
+                    jnp.isinf(difference)
+                    & jnp.isfinite(encoding_column)
+                    & jnp.isfinite(decoding_row)
+                )
+                # A broad sigma can make a finite distance even if subtraction
+                # overflows. Only those pairs subtract scaled features. Mask
+                # before division to keep inactive terms out of derivatives.
+                scaled_difference = jnp.where(overflow, 0.0, difference) / sigma
+                scaled_difference += (
+                    jnp.where(overflow, encoding_column, 0.0) / sigma
+                    - jnp.where(overflow, decoding_row, 0.0) / sigma
+                )
+            else:
+                scaled_difference = difference / sigma
+            sq_dist += scaled_difference**2
+        return sq_dist
 
-    # GEMM: compute cross terms X @ Y^T = (n_dec, n_features) @ (n_features, n_enc)
-    cross_term = jnp.matmul(
-        X, Y.T, precision=jax.lax.Precision.HIGHEST
-    )  # (n_dec, n_enc)
-
-    # Combine: log K[i,j] = -0.5 * (y2[i] + x2[j] - 2*cross_term[j,i]) + log_norm_const
-    # Note: We need (n_enc, n_dec) output, so transpose the cross term
-    # Clamp squared distances to non-negative to avoid catastrophic cancellation
-    # when x ≈ y (the expanded GEMM form can produce small negative values).
-    sq_dist = jnp.maximum(y2[:, None] + x2[None, :] - 2.0 * cross_term.T, 0.0)
+    # No pair can overflow subtraction when both operands are within half the
+    # dtype limit. Check the feature arrays once, so ordinary waveforms avoid
+    # per-pair overflow masks and the downstream logsumexp does not fuse those
+    # masks across every spatial bin.
+    half_limit = jnp.finfo(feature_dtype).max / 2
+    can_overflow = jnp.any(jnp.abs(encoding_features) > half_limit) | jnp.any(
+        jnp.abs(decoding_features) > half_limit
+    )
+    sq_dist: jnp.ndarray = jax.lax.cond(
+        can_overflow,
+        lambda _: squared_distances(True),
+        lambda _: squared_distances(False),
+        None,
+    )
     logK_mark = log_norm_const - 0.5 * sq_dist  # (n_enc, n_dec)
 
     return logK_mark
