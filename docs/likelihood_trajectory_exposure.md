@@ -117,6 +117,16 @@ sides: a binary posterior weight alone creates linear boundary ramps, whereas a
 truncated tracking record holds endpoint positions. Internal GLM spies now inspect
 actual event statistics. Assertion tolerances have not been relaxed.
 
+The GMM equal-density underflow fixture also declares isolated, equal-duration
+tracking snapshots. Its original random consecutive positions now describe
+continuous motion and therefore a different occupancy distribution. Binary-exact
+timestamps and a wider snapshot distribution keep this arithmetic fixture
+reasonably conditioned after weighted float32 moment accumulation: 34 of 40 bins
+still underflow, the deepest log occupancy is -4,447.77, and the maximum relative
+ground-rate difference is 0.00633 within its original 1% tolerance. The corrected
+fixture passes on the baseline, this branch and the combined fixes. Its reference
+formula and assertions are unchanged.
+
 ## Before/after counterexample
 
 Use `time = arange(11)` and one-dimensional positions

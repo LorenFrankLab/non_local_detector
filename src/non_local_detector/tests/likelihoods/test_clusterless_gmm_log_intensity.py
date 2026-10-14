@@ -105,16 +105,23 @@ def _predict_kwargs(env, occupancy, joint, rate, spike_times, marks, **extra):
 def _fit_far_from_most_bins(seed: int):
     """Fit single-Gaussian models on data confined to one end of a long track.
 
-    One spike is placed at every position sample, so the GPI and occupancy
-    models see identical samples and the true ground-process ratio is exactly
-    the mean rate at every bin — including bins so far from the data that both
-    densities underflow in float32.
+    Each random position is an isolated tracking snapshot with equal-duration
+    support. One spike is placed at every snapshot, so the GPI and occupancy
+    distributions agree. Connecting these independent positions as a continuous
+    trajectory would instead concentrate exposure between the snapshots.
+    The ground-process ratio is the mean rate even where both densities
+    underflow in float32.
     """
     rng = np.random.default_rng(seed)
     env = _env_1d(0.0, 200.0, bin_size=5.0)
     n_pos = 2000
-    position_time = np.linspace(0.0, 100.0, n_pos)
-    position = np.clip(rng.normal(2.5, 1.0, n_pos), 0.0, 200.0)[:, None]
+    # Binary-exact timing gives every isolated snapshot the same exposure.
+    position_time = np.arange(n_pos) / 16.0
+    position = np.clip(rng.normal(2.5, 2.0, n_pos), 0.0, 200.0)[:, None]
+    half_snapshot_duration = (position_time[1] - position_time[0]) / 4.0
+    snapshot_intervals = np.column_stack(
+        (position_time - half_snapshot_duration, position_time + half_snapshot_duration)
+    )
     marks = rng.normal(0.0, 1.0, (n_pos, 1))
     model = fit_clusterless_gmm_encoding_model(
         position_time=position_time,
@@ -125,6 +132,7 @@ def _fit_far_from_most_bins(seed: int):
         gmm_components_occupancy=1,
         gmm_components_gpi=1,
         gmm_components_joint=1,
+        valid_position_intervals=snapshot_intervals,
         disable_progress_bar=True,
     )
     return model, env
