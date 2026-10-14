@@ -142,7 +142,7 @@ original intensity.
    maximum float32 normalization errors are `3.5762786865234375e-7`. The fixture
    includes an electrode
    with no training spikes, which uses the documented pooled reference.
-   **No golden/snapshot files or numerical tolerances were updated.**
+   **At this comparison, no golden/snapshot files or tolerances had been updated.**
 
 Final focused validation has **271 passing tests and the one explained NonLocal
 golden mismatch** in 40.33 seconds. This includes all background regressions,
@@ -177,3 +177,19 @@ path** (2.79 times the runtime, an additional 4.17 ms). The background path was
 11.53 ms before hoisting the current electrode's spatial matrix. These are
 shared-machine measurements, not a controlled GPU comparison; the extra
 normalized reference and stable per-event reductions have a material cost.
+
+## Approved output-reference refresh
+
+On 2026-10-14 the user explicitly approved refreshing the documented output
+references. Only `nonlocal_detector_golden.pkl` was regenerated on this branch;
+all pinned input files and comparison tolerances are unchanged. The four golden
+tests pass after refresh. The tables above preserve the original numerical
+comparison for review.
+
+The complete seven-fix integration also passes 43 independent marked-process
+checks and 296 public-detector checks, including all GMM covariance formats,
+disconnected diffusion, fractional exposure, persistence and checkpointing.
+Its largest original-reference difference is 0.0011674603 at the same No-Spike
+entry; no winning posterior or state category changes. The background and
+exposure PRs both change the NonLocal binary output reference. Their combined
+reference must be computed from the pinned inputs when integrating those PRs.

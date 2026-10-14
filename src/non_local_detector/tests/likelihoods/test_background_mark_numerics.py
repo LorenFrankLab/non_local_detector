@@ -140,9 +140,7 @@ def test_far_tail_retains_distinct_source_weight_normalization(local, sample_til
     ground = (spike_weights[1] / spike_weights.sum()) / (
         occupancy_weights[1] / occupancy_weights.sum()
     )
-    raw = _raw_kde_marks(
-        model, 0, np.array([[x]]), np.ones((1, 1)), local, sample_tile
-    )
+    raw = _raw_kde_marks(model, 0, np.array([[x]]), np.ones((1, 1)), local, sample_tile)
     assert_allclose(raw, np.log(ground) - 0.5 * np.log(2 * np.pi), atol=1e-5)
     silent = predict_clusterless_with_background(
         "clusterless_kde",
