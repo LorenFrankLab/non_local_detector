@@ -1061,9 +1061,7 @@ def predict_clusterless_with_background(
             encoded_positions, encoded_marks, encoding_weights = order.memo(
                 "background_kde_encoding",
                 (encoded_positions, encoded_marks, encoding_weights),
-                lambda encoded_positions=encoded_positions,
-                encoded_marks=encoded_marks,
-                encoding_weights=encoding_weights: (
+                lambda encoded_positions=encoded_positions, encoded_marks=encoded_marks, encoding_weights=encoding_weights: (
                     jnp.asarray(encoded_positions),
                     jnp.asarray(encoded_marks),
                     jnp.ones(np.shape(encoded_marks)[0])
