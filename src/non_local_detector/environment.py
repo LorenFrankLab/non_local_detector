@@ -320,6 +320,7 @@ class Environment:
         """
         state = self.__dict__.copy()
         state.pop("_diffusion_device_basis_", None)  # transient JAX device cache
+        state.pop("_diffusion_source_kernel_", None)  # shared transient source operator
         state.pop("_linear_position_cache_", None)  # rebuilt on demand
         return state
 
@@ -601,6 +602,8 @@ class Environment:
             del self._diffusion_heat_kernel_rank_
         if hasattr(self, "_diffusion_device_basis_"):
             del self._diffusion_device_basis_
+        if hasattr(self, "_diffusion_source_kernel_"):
+            del self._diffusion_source_kernel_
         if hasattr(self, "_linear_position_cache_"):
             del self._linear_position_cache_
 
@@ -695,6 +698,7 @@ class Environment:
             self.is_track_boundary_ = None
 
         self._is_fitted = True
+        self._place_grid_revision_ = getattr(self, "_place_grid_revision_", 0) + 1
         return self
 
     def plot_grid(self, ax: matplotlib.axes.Axes | None = None) -> matplotlib.axes.Axes:

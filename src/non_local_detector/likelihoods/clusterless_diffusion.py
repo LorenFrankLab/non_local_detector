@@ -4,8 +4,9 @@ An opt-in clusterless likelihood, selected via
 ``clusterless_algorithm="clusterless_diffusion"`` on
 :class:`~non_local_detector.models.base.ClusterlessDetector` and its subclasses. It
 estimates the same mark intensity as :mod:`clusterless_kde` but replaces the Gaussian
-*position* kernel with the environment's graph heat kernel ``exp(-t L)`` (``t =
-position_std**2 / 2``). The *mark* kernel stays a Gaussian over waveform features
+*position* kernel with fixed positive, mass-preserving source columns derived
+from the graph heat kernel ``exp(-t L)`` (``t = position_std**2 / 2``).
+The *mark* kernel stays a Gaussian over waveform features
 (via ``kde_distance``): ``position_std`` is the physical heat-kernel bandwidth (in
 coordinate units) and ``waveform_std`` is the mark bandwidth, exactly as in
 ``clusterless_kde``. This is the clusterless analog of :mod:`sorted_spikes_diffusion`.
@@ -16,10 +17,9 @@ Two properties motivate it over KDE:
   environment's track topology (diffusion distance on the graph), not Euclidean
   distance, so it does not leak across walls, holes, or junctions the way a Gaussian
   KDE smoothed in coordinate space can.
-- **Speed.** Occupancy and each electrode's ground-process field are diffused once
-  at fit; predict applies one cached low-rank heat-kernel matmul per decode-spike
-  block instead of KDE's pairwise ``O(n_bins * n_enc * n_decode)`` position kernel.
-  The speedup grows with the encoding-spike count (relative to the heat-kernel rank).
+- **Reuse.** Occupancy and each electrode's ground-process field are smoothed once
+  at fit. A bounded source-operator cache is shared across encoding groups and
+  EM refits. Larger grids generate source columns in memory-bounded tiles.
 
 This is purely additive: the default clusterless likelihood remains
 ``clusterless_kde``.
@@ -29,7 +29,13 @@ For electrode ``e`` the joint mark density on interior bins is
     D_e[:, j]   = sum_i w_i * K_mark(m_j, m_i) * onehot(bin(x_i))
     p_e(x, m_j) = (H_t D_e)[x, j] / ( (sum_i w_i) * dV(x) )
 
-where ``w_i`` are the per-encoding-spike EM weights, ``K_mark`` is the Gaussian
+Here ``H_t`` denotes the fixed operator whose individual heat-kernel source
+columns are clipped to non-negative values and normalized within their source
+component. Applying this correction before mixing sources keeps smoothing
+linear, so integrating the joint mark density recovers its fitted GPI even with
+a truncated eigenbasis.
+
+``w_i`` are the per-encoding-spike EM weights, ``K_mark`` is the Gaussian
 mark kernel (its normalizer already included by ``kde_distance``), ``H_t`` is the
 mass-conserving heat kernel (:func:`heat_kernel_apply`), ``sum_i w_i`` the weighted
 encoding count, and ``dV(x) = bin_sizes`` the per-bin measure. Dividing by
@@ -93,7 +99,6 @@ from non_local_detector.likelihoods.diffusion import (
     check_smoothing_bandwidth,
     environment_graph,
     get_device_basis,
-    heat_kernel_apply,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
@@ -110,6 +115,7 @@ logger = logging.getLogger(__name__)
 # float32 working dtype for the diffusion matmul; its item size drives the memory
 # policy -- do not hardcode 4 elsewhere.
 _WORKING_ITEMSIZE = np.dtype(np.float32).itemsize
+_SOURCE_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 
 def _validate_diffusion_params(
@@ -233,6 +239,123 @@ def _effective_block(
     return min(1 << (raw.bit_length() - 1), block_size)
 
 
+@partial(jax.jit, static_argnames=("position_std",))
+def _positive_source_columns(eigvals, eigvecs, labels, sources, *, position_std):
+    """Fixed positive, mass-preserving columns of the approximate heat operator.
+
+    Correct each point-source column before mixing fields. Correcting an entire
+    mark-dependent field instead is nonlinear and its mark integral does not
+    recover the separately diffused ground-process field.
+    """
+    coefficients = jnp.exp(-(position_std**2 / 2.0) * eigvals)
+    columns = jnp.matmul(
+        eigvecs,
+        coefficients[:, None] * eigvecs[sources].T,
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    columns = jnp.where(labels[:, None] == labels[sources][None, :], columns, 0.0)
+    columns = jnp.maximum(columns, 0.0)
+    mass = jnp.sum(columns, axis=0)
+    return columns / jnp.where(mass > 0.0, mass, 1.0)[None, :]
+
+
+def _source_tile_size(memory_budget, n_bins, rank):
+    """Bound source-column workspace; one column is the minimum useful tile."""
+    capacity = max(memory_budget // (8 * _WORKING_ITEMSIZE * (n_bins + rank)), 1)
+    return min(256, n_bins, 1 << (capacity.bit_length() - 1))
+
+
+def _source_cache_budget(memory_budget):
+    return min(_SOURCE_CACHE_MAX_BYTES, memory_budget // 4)
+
+
+def _cached_source_kernel(
+    eigvals, eigvecs, labels, position_std, memory_budget, environment=None
+):
+    """Cache the operator only when it fits the bounded persistent cache budget.
+
+    Source columns are generated in tiles even when the full cache fits. Larger
+    grids keep no dense kernel and use the same column generator at prediction.
+    """
+    n_bins, rank = eigvecs.shape
+    if _WORKING_ITEMSIZE * n_bins**2 > _source_cache_budget(memory_budget):
+        return jnp.zeros((n_bins, 0), dtype=jnp.float32)
+    cached = getattr(environment, "_diffusion_source_kernel_", None)
+    if cached is not None and cached[0] is eigvecs and cached[1] == position_std:
+        return cached[2]
+    kernel = np.empty((n_bins, n_bins), dtype=np.float32)
+    tile_size = _source_tile_size(memory_budget, n_bins, rank)
+    for start in range(0, n_bins, tile_size):
+        stop = min(start + tile_size, n_bins)
+        kernel[:, start:stop] = np.asarray(
+            _positive_source_columns(
+                eigvals,
+                eigvecs,
+                labels,
+                jnp.arange(start, stop),
+                position_std=position_std,
+            )
+        )
+    kernel = jnp.asarray(kernel)
+    if environment is not None:
+        # One entry shares the operator across encoding groups and EM refits;
+        # changing the graph/bandwidth replaces it rather than growing a cache.
+        environment._diffusion_source_kernel_ = (eigvecs, position_std, kernel)
+    return kernel
+
+
+def _prediction_source_operator(model, eigvecs):
+    """Resolve the fitted operator cache under the prediction's memory budget."""
+    _check_diffusion_grid_revision(model)
+    if model.get("spatial_operator") != "positive_source_columns":
+        raise ValidationError(
+            "Encoding model uses the legacy nonlinear diffusion normalization; "
+            "refit the encoding model before decoding."
+        )
+    memory_budget = int(model["memory_budget"])
+    n_bins, rank = eigvecs.shape
+    tile_size = _source_tile_size(memory_budget, n_bins, rank)
+    kernel = jnp.asarray(model["source_kernel"])
+    if kernel.size * _WORKING_ITEMSIZE > _source_cache_budget(memory_budget):
+        kernel = jnp.zeros((n_bins, 0), dtype=jnp.float32)
+    # The cached path does not use tiles; keep its executable independent of the
+    # workspace budget whenever the same bounded kernel cache fits.
+    return kernel, 1 if kernel.shape[1] else tile_size
+
+
+def _check_diffusion_grid_revision(model):
+    if model.get("grid_revision") != getattr(
+        model["environment"], "_place_grid_revision_", 0
+    ):
+        raise ValidationError(
+            "encoding model is stale: the environment's physical grid was refit; "
+            "refit the encoding model before decoding."
+        )
+
+
+@partial(jax.jit, static_argnames=("position_std", "source_tile_size"))
+def _linear_heat_apply(
+    eigvals, eigvecs, labels, fields, source_kernel, *, position_std, source_tile_size
+):
+    """Apply one fixed positive linear operator with a bounded source workspace."""
+    if source_kernel.shape[1]:
+        return jnp.matmul(source_kernel, fields, precision=jax.lax.Precision.HIGHEST)
+    n_bins = fields.shape[0]
+    n_tiles = (n_bins + source_tile_size - 1) // source_tile_size
+    padded_fields = jnp.pad(fields, ((0, n_tiles * source_tile_size - n_bins), (0, 0)))
+
+    def add_tile(tile, result):
+        first = tile * source_tile_size
+        sources = jnp.minimum(first + jnp.arange(source_tile_size), n_bins - 1)
+        columns = _positive_source_columns(
+            eigvals, eigvecs, labels, sources, position_std=position_std
+        )
+        values = jax.lax.dynamic_slice_in_dim(padded_fields, first, source_tile_size)
+        return result + jnp.matmul(columns, values, precision=jax.lax.Precision.HIGHEST)
+
+    return jax.lax.fori_loop(0, n_tiles, add_tile, jnp.zeros_like(fields))
+
+
 def _diffuse_field(
     field: np.ndarray,
     Lam: jnp.ndarray,
@@ -240,20 +363,23 @@ def _diffuse_field(
     position_std: float,
     labels: jnp.ndarray,
     n_components: int,
+    source_kernel,
+    source_tile_size,
 ) -> np.ndarray:
     """Diffuse a single ``(n_interior,)`` count field, returned as a host array.
 
     Shared by the occupancy and per-electrode ground-process fields at fit time:
-    both promote to a single-column field, diffuse via :func:`heat_kernel_apply`,
+    both promote to a single-column field, apply the same fixed source operator,
     then squeeze back to ``(n_interior,)`` on host.
     """
-    field_hat = heat_kernel_apply(
+    field_hat = _linear_heat_apply(
         Lam,
         Q,
-        position_std,
-        jnp.asarray(field[:, None], dtype=jnp.float32),
         labels,
-        n_components=n_components,
+        jnp.asarray(field[:, None], dtype=jnp.float32),
+        source_kernel,
+        position_std=position_std,
+        source_tile_size=source_tile_size,
     )
     return np.asarray(field_hat)[:, 0]
 
@@ -376,6 +502,10 @@ def fit_clusterless_diffusion_encoding_model(
     resolved_rank = int(eigvecs.shape[1])
 
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
+    source_tile_size = _source_tile_size(memory_budget, n_interior, resolved_rank)
+    source_kernel = _cached_source_kernel(
+        Lam, Q, labels, position_std, memory_budget, environment
+    )
 
     weight_sum = float(exposure_weights.sum())  # weighted occupancy seconds
 
@@ -394,7 +524,14 @@ def fit_clusterless_diffusion_encoding_model(
     else:
         occupancy_field = np.zeros(n_interior)
     occupancy_hat = _diffuse_field(
-        occupancy_field, Lam, Q, position_std, labels, n_components
+        occupancy_field,
+        Lam,
+        Q,
+        position_std,
+        labels,
+        n_components,
+        source_kernel,
+        source_tile_size,
     )
     safe_weight_sum = weight_sum if weight_sum > 0 else 1.0
     occupancy = np.clip(occupancy_hat / (safe_weight_sum * bin_sizes), EPS, None)
@@ -474,11 +611,19 @@ def fit_clusterless_diffusion_encoding_model(
         mean_rates.append(mean_rate)
         spike_field = np.bincount(bins, weights=spike_weights, minlength=n_interior)
         spike_field_hat = _diffuse_field(
-            spike_field, Lam, Q, position_std, labels, n_components
+            spike_field,
+            Lam,
+            Q,
+            position_std,
+            labels,
+            n_components,
+            source_kernel,
+            source_tile_size,
         )
         p_gpi = spike_field_hat / (w_total * bin_sizes)
         summed_ground_process_intensity += mean_rate * p_gpi / occupancy
 
+    unfloored_ground_process_intensity = summed_ground_process_intensity
     summed_ground_process_intensity = np.clip(
         summed_ground_process_intensity, RATE_EPS_HZ, None
     )
@@ -487,12 +632,16 @@ def fit_clusterless_diffusion_encoding_model(
         "environment": environment,
         "occupancy": occupancy,
         "summed_ground_process_intensity": summed_ground_process_intensity,
+        "unfloored_ground_process_intensity": unfloored_ground_process_intensity,
         "encoding_bin_indices": encoding_bin_indices,
         "encoding_marks": encoding_marks,
         "encoding_weights": encoding_weights,
         "weight_total": weight_total,
         "mean_rates": mean_rates,
         "resolved_rank": resolved_rank,
+        "source_kernel": source_kernel,
+        "spatial_operator": "positive_source_columns",
+        "grid_revision": getattr(environment, "_place_grid_revision_", 0),
         "node_order": node_order,
         "bin_sizes": bin_sizes,
         "position_std": position_std,
@@ -545,6 +694,8 @@ def _diffused_mark_field(
     labels,
     position_std: float,
     n_components: int,
+    source_kernel,
+    source_tile_size,
 ):
     """``H_t D_e`` for one block of decoding spikes, shape (n_bins, n_block).
 
@@ -558,8 +709,14 @@ def _diffused_mark_field(
         eigvecs.shape[0],
         indices_are_sorted=True,
     )
-    return heat_kernel_apply(
-        eigvals, eigvecs, position_std, D, labels, n_components=n_components
+    return _linear_heat_apply(
+        eigvals,
+        eigvecs,
+        labels,
+        D,
+        source_kernel,
+        position_std=position_std,
+        source_tile_size=source_tile_size,
     )
 
 
@@ -570,6 +727,7 @@ def _diffused_mark_field(
         "n_components",
         "block_size",
         "indices_are_sorted",
+        "source_tile_size",
     ),
     donate_argnums=0,
 )
@@ -588,11 +746,13 @@ def _add_electrode_diffusion_intensities(
     bin_sizes,
     mean_rate,
     weight_total,
+    source_kernel,
     *,
     position_std,
     n_components,
     block_size,
     indices_are_sorted,
+    source_tile_size,
 ):
     """Add one electrode's non-local log mark intensities to their rows.
 
@@ -635,6 +795,8 @@ def _add_electrode_diffusion_intensities(
             labels,
             position_std,
             n_components,
+            source_kernel,
+            source_tile_size,
         )
         # bin_sizes (dV) makes p_e a proper joint density (recovers the mark
         # marginal, guarded by test_mark_marginal_recovery). It cancels in the
@@ -663,6 +825,7 @@ def _add_electrode_diffusion_intensities(
         "n_components",
         "block_size",
         "indices_are_sorted",
+        "source_tile_size",
     ),
     donate_argnums=0,
 )
@@ -682,16 +845,18 @@ def _add_electrode_local_diffusion_terms(
     bin_sizes,
     mean_rate,
     weight_total,
+    source_kernel,
     *,
     position_std,
     n_components,
     block_size,
     indices_are_sorted,
+    source_tile_size,
 ):
     """Add one electrode's local log mark intensities to their rows.
 
-    The clip and mass rescale in the heat kernel act per column, so the local
-    value is read from the same diffused column as the non-local one, at the
+    The same fixed positive source operator is used, so the local
+    value is read from the same smoothed column as the non-local one, at the
     animal's interior bin.
 
     Parameters
@@ -728,6 +893,8 @@ def _add_electrode_local_diffusion_terms(
             labels,
             position_std,
             n_components,
+            source_kernel,
+            source_tile_size,
         )
         p_e_at_animal = P[bins, jnp.arange(block_size)] / (
             weight_total * bin_sizes[bins]
@@ -780,7 +947,7 @@ def predict_clusterless_diffusion_log_likelihood(
         Decode spike waveform features (marks) for each electrode.
     is_local : bool, optional
         If True, evaluate the likelihood at the animal's position (nearest interior
-        bin; the ``D_e`` construction and ``heat_kernel_apply`` call are identical to
+        bin; the ``D_e`` construction and source operator are identical to
         the non-local path -- only the readout differs). By default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
@@ -849,6 +1016,7 @@ def predict_clusterless_diffusion_log_likelihood(
     # the diffusion matmul do not catch it, silently misattributing the likelihood to
     # the wrong bins. Compare the fit-time node_order against the environment's
     # current one and fail loudly instead. Re-fit the encoding model after any refit.
+    _check_diffusion_grid_revision(encoding_model)
     current_node_order = environment_graph(environment)[1]
     if not np.array_equal(np.asarray(node_order), np.asarray(current_node_order)):
         raise ValidationError(
@@ -864,6 +1032,8 @@ def predict_clusterless_diffusion_log_likelihood(
         )
 
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
+
+    source_kernel, source_tile_size = _prediction_source_operator(encoding_model, Q)
 
     if is_local:
         # The local path reads the animal's position; non-local ignores it and the
@@ -997,10 +1167,12 @@ def predict_clusterless_diffusion_log_likelihood(
                 bin_sizes,
                 electrode_mean_rate,
                 safe_weight_total,
+                source_kernel,
                 position_std=position_std,
                 n_components=n_components,
                 block_size=min(effective_block, n_padded),
                 indices_are_sorted=selection.indices_are_sorted,
+                source_tile_size=source_tile_size,
             )
 
         return (
@@ -1123,10 +1295,12 @@ def predict_clusterless_diffusion_log_likelihood(
             bin_sizes,
             electrode_mean_rate,
             safe_weight_total,
+            source_kernel,
             position_std=position_std,
             n_components=n_components,
             block_size=min(effective_block, n_padded),
             indices_are_sorted=selection.indices_are_sorted,
+            source_tile_size=source_tile_size,
         )
 
     return (

@@ -1,7 +1,8 @@
 """Reference-value tests for the clusterless GMM log-intensity arithmetic.
 
-The marked-point-process log intensity of a spike is
-``log(rate) + log p(pos, mark) - log p(pos)``. Two historical defects:
+The marked-point-process event intensity is the separately estimated ground
+intensity multiplied by the joint GMM's normalized conditional mark density.
+Two historical defects:
 
 1. The joint log density was clamped at ``LOG_EPS`` *before* the subtraction,
    so a tail spike (``log p(pos, mark) = -60``, ``log p(pos) = -8``) scored
@@ -171,7 +172,9 @@ class TestTailSpikeIntensity:
         return (
             np.log(self.RATE)
             + _log_gaussian(joint_points, [5.0, 0.0], 1.0)
-            - _log_gaussian(positions, [5.0], 25.0)
+            # The separate GPI equals occupancy here, so ground intensity is
+            # RATE. Normalize marks using the joint's position marginal.
+            - _log_gaussian(positions, [5.0], 1.0)
         )
 
     @pytest.mark.parametrize("bin_tile_size", [None, 3], ids=["untiled", "tiled"])

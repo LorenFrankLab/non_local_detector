@@ -1,9 +1,10 @@
 """
 Clusterless decoding using Gaussian Mixture Models (GMM)
 
-Spike log intensities are the raw ``log(rate) + log p(pos, mark) - log
-p(pos)`` and the ground process is ``exp(log(rate) + log p_gpi(pos) - log
-p(pos))``, both formed in log space.
+Spike intensities are ``ground_intensity(pos) * p_joint(mark | pos)``.
+The ground process retains its separate GPI estimator, while the conditional
+mark density uses the joint GMM's analytical position marginal. All density
+ratios are formed in log space.
 """
 
 from __future__ import annotations
@@ -44,7 +45,10 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
+    _compute_log_det_cholesky,
+    _compute_precision_cholesky,
     _effective_sample_count,
+    _estimate_log_gaussian_prob,
     _estimate_log_prob_resp,
 )
 from non_local_detector.time_edges import (
@@ -145,6 +149,153 @@ def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jnp.ndarray, ...]:
     return gmm.means_, gmm.precisions_chol_, gmm.weights_
 
 
+def _gmm_position_parameters(
+    gmm: GaussianMixtureModel, n_position_dims: int
+) -> tuple[jnp.ndarray, ...]:
+    """Analytical position marginal, using covariance rather than precision blocks.
+
+    Marginalizing a Gaussian retains its mean and covariance subblocks; slicing
+    a precision matrix would instead describe a conditional distribution.
+    Mixture weights and component count are unchanged.
+    """
+    covariance = gmm.covariances_
+    if gmm.covariance_type == "full":
+        covariance = covariance[:, :n_position_dims, :n_position_dims]
+    elif gmm.covariance_type == "tied":
+        covariance = covariance[:n_position_dims, :n_position_dims]
+    elif gmm.covariance_type == "diag":
+        covariance = covariance[:, :n_position_dims]
+    return (
+        gmm.means_[:, :n_position_dims],
+        _compute_precision_cholesky(covariance, gmm.covariance_type),
+        gmm.weights_,
+    )
+
+
+def _gmm_conditional_parameters(gmm, n_position_dims):
+    """Marginal position parameters and Gaussian conditional-mark factors.
+
+    Compute Schur complements from the fitted covariance blocks on the host in
+    float64, then return factors in the fitted working dtype. This avoids
+    cancellation in the small conditional covariance without changing fitting.
+    """
+    means = gmm.means_
+    covariance = np.asarray(gmm.covariances_, dtype=np.float64)
+    n_components, n_features = means.shape
+    n_marks = n_features - n_position_dims
+    if gmm.covariance_type in ("full", "tied"):
+        xx = covariance[..., :n_position_dims, :n_position_dims]
+        xm = covariance[..., :n_position_dims, n_position_dims:]
+        regression = np.swapaxes(np.linalg.solve(xx, xm), -1, -2)
+        conditional_covariance = (
+            covariance[..., n_position_dims:, n_position_dims:] - regression @ xm
+        )
+    else:
+        regression = np.zeros((n_components, n_marks, n_position_dims))
+        conditional_covariance = (
+            covariance[:, n_position_dims:]
+            if gmm.covariance_type == "diag"
+            else covariance
+        )
+    return (
+        _gmm_position_parameters(gmm, n_position_dims),
+        means[:, n_position_dims:],
+        jnp.asarray(regression, dtype=means.dtype),
+        _compute_precision_cholesky(
+            jnp.asarray(conditional_covariance, dtype=means.dtype), gmm.covariance_type
+        ),
+    )
+
+
+def _conditional_parameters(gmm, n_position_dims, preparation):
+    return preparation.memo(
+        f"gmm_mark_conditional_{n_position_dims}",
+        (gmm.means_, gmm.covariances_, gmm.weights_),
+        partial(_gmm_conditional_parameters, gmm, n_position_dims),
+    )
+
+
+@partial(jax.jit, static_argnames=("covariance_type",))
+def _gmm_conditional_score(positions, marks, parameters, covariance_type):
+    """Normalized conditional mark mixture, without subtracting large joint logs."""
+    position, mark_means, regression, precision = parameters
+    position_means, position_precision, weights = position
+    n_marks = mark_means.shape[1]
+    if n_marks == 0:
+        return jnp.zeros(positions.shape[0], dtype=positions.dtype)
+    position_logp = _estimate_log_gaussian_prob(
+        positions, position_means, position_precision, covariance_type
+    )
+    # Remove position offsets BEFORE adding mixture weights. Identical position
+    # components then retain their weights even for log densities near -1e10.
+    position_max = jnp.max(
+        jnp.where(weights[None, :] > 0.0, position_logp, -jnp.inf), axis=1
+    )
+    position_max = jnp.where(jnp.isneginf(position_max), 0.0, position_max)
+    safe_weights = jnp.where(weights > 0.0, weights, 1.0)
+    log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)
+    logits = (position_logp - position_max[:, None]) + log_weights[None, :]
+    log_responsibilities = logits - jax.nn.logsumexp(logits, axis=1)[:, None]
+    if covariance_type in ("diag", "spherical"):
+        mark_logp = _estimate_log_gaussian_prob(
+            marks, mark_means, precision, covariance_type
+        )
+    else:
+
+        def component(args):
+            if covariance_type == "full":
+                position_mean, mark_mean, slope, factor = args
+            else:
+                position_mean, mark_mean = args
+                slope, factor = regression, precision
+            residual = (marks - mark_mean) - jnp.matmul(
+                positions - position_mean, slope.T, precision=jax.lax.Precision.HIGHEST
+            )
+            whitened = jnp.matmul(residual, factor, precision=jax.lax.Precision.HIGHEST)
+            return jnp.sum(whitened**2, axis=1)
+
+        leaves = (
+            (position_means, mark_means, regression, precision)
+            if covariance_type == "full"
+            else (position_means, mark_means)
+        )
+        mahalanobis = jax.lax.map(component, leaves).T
+        log_det = _compute_log_det_cholesky(precision, covariance_type, n_marks)
+        mark_logp = -0.5 * (n_marks * jnp.log(2.0 * jnp.pi) + mahalanobis) + log_det
+    return jax.nn.logsumexp(log_responsibilities + mark_logp, axis=1)
+
+
+def _raw_gmm_log_intensity(
+    model, electrode, positions, marks, is_local, preparation=None
+):
+    """Unfloored normalized event intensities for an optional background mixture.
+
+    Local inputs pair one position with each mark. Non-local inputs evaluate
+    every mark at every position, returning ``(n_marks, n_positions)``.
+    """
+    shape = (marks.shape[0],) if is_local else (marks.shape[0], positions.shape[0])
+    joint = model["joint_models"][electrode]
+    rate = model["mean_rates"][electrode]
+    if joint is None or float(rate) == 0.0:
+        return jnp.full(shape, -jnp.inf)
+    if preparation is None:
+        preparation = _SpikeTimeOrder()
+    if is_local:
+        evaluation_positions, evaluation_marks = positions, marks
+    else:
+        evaluation_positions = jnp.tile(positions, (marks.shape[0], 1))
+        evaluation_marks = jnp.repeat(marks, positions.shape[0], axis=0)
+    conditional = _conditional_parameters(joint, positions.shape[1], preparation)
+    log_conditional = _gmm_conditional_score(
+        evaluation_positions, evaluation_marks, conditional, joint.covariance_type
+    )
+    log_ground = jnp.log(rate) + (
+        model["gpi_models"][electrode].score_samples(evaluation_positions)
+        - model["occupancy_model"].score_samples(evaluation_positions)
+    )
+    return (log_ground + log_conditional).reshape(shape)
+
+
 def _gmm_score(
     points: jnp.ndarray, parameters: tuple[jnp.ndarray, ...], covariance_type: str
 ) -> jnp.ndarray:
@@ -167,7 +318,6 @@ def _add_electrode_gmm_intensities(
     bin_centers: jnp.ndarray,
     parameters: tuple[jnp.ndarray, ...],
     log_rate: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
     *,
     covariance_type: str,
     block_size: int,
@@ -185,9 +335,9 @@ def _add_electrode_gmm_intensities(
         Local rows; padding uses ``n_rows``, which the row sum drops.
     bin_centers : jnp.ndarray, shape (n_bins, n_position_dims)
     parameters : tuple of jnp.ndarray
-        The joint GMM's fitted means, Cholesky precisions and weights.
-    log_rate : jnp.ndarray, scalar
-    log_occupancy : jnp.ndarray, shape (n_bins,)
+        Cached position-marginal and Gaussian conditional-mark factors.
+    log_rate : jnp.ndarray, shape (n_bins,)
+        Log ground-process intensity at each bin.
 
     Returns
     -------
@@ -200,16 +350,13 @@ def _add_electrode_gmm_intensities(
         first = number * block_size
         block = jax.lax.dynamic_slice_in_dim(features, first, block_size)
         rows = jax.lax.dynamic_slice_in_dim(row_ids, first, block_size)
-        points = jnp.concatenate(
-            [tiled_bins, jnp.repeat(block, n_bins, axis=0)], axis=1
-        )
-        log_density = _gmm_score(points, parameters, covariance_type).reshape(
-            block_size, n_bins
-        )
+        log_density = _gmm_conditional_score(
+            tiled_bins, jnp.repeat(block, n_bins, axis=0), parameters, covariance_type
+        ).reshape(block_size, n_bins)
         # Density difference first (see _accumulate_log_likelihood_block).
         return deterministic_row_add(
             log_likelihood,
-            log_rate + (log_density - log_occupancy),
+            log_rate + log_density,
             rows,
             indices_are_sorted=indices_are_sorted,
         )
@@ -221,7 +368,7 @@ def _add_electrode_gmm_intensities(
 
 @partial(
     jax.jit,
-    static_argnames=("joint_type", "occupancy_type", "indices_are_sorted"),
+    static_argnames=("joint_type", "gpi_type", "occupancy_type", "indices_are_sorted"),
     donate_argnums=0,
 )
 def _add_electrode_gmm_spike_terms(
@@ -230,10 +377,12 @@ def _add_electrode_gmm_spike_terms(
     features: jnp.ndarray,
     row_ids: jnp.ndarray,
     joint: tuple[jnp.ndarray, ...],
+    gpi: tuple[jnp.ndarray, ...],
     occupancy: tuple[jnp.ndarray, ...],
     mean_rate: jnp.ndarray,
     *,
     joint_type: str,
+    gpi_type: str,
     occupancy_type: str,
     indices_are_sorted: bool,
 ) -> jnp.ndarray:
@@ -248,20 +397,27 @@ def _add_electrode_gmm_spike_terms(
     features : jnp.ndarray, shape (n_padded_spikes, n_features)
     row_ids : jnp.ndarray, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    joint, occupancy : tuple of jnp.ndarray
-        Fitted means, Cholesky precisions and weights of each GMM.
+    joint : tuple
+        Cached position-marginal and Gaussian conditional-mark factors.
+    gpi, occupancy : tuple of jnp.ndarray
+        Fitted means, Cholesky precisions and weights of each spatial GMM.
     mean_rate : jnp.ndarray, scalar
 
     Returns
     -------
     log_likelihood : jnp.ndarray, shape (n_rows,)
     """
-    joint_logp = _gmm_score(
-        jnp.concatenate([spike_positions, features], axis=1), joint, joint_type
+    conditional_logp = _gmm_conditional_score(
+        spike_positions, features, joint, joint_type
     )
     occupancy_logp = _gmm_score(spike_positions, occupancy, occupancy_type)
+    gpi_logp = _gmm_score(spike_positions, gpi, gpi_type)
     # Density difference first (see _accumulate_log_likelihood_block).
-    terms = safe_log(mean_rate, eps=RATE_EPS_HZ) + (joint_logp - occupancy_logp)
+    terms = (
+        safe_log(mean_rate, eps=RATE_EPS_HZ)
+        + (gpi_logp - occupancy_logp)
+        + conditional_logp
+    )
     return log_likelihood + deterministic_row_sum(
         terms,
         row_ids,
@@ -925,9 +1081,14 @@ def predict_clusterless_gmm_log_likelihood(
     )
 
     # Per-electrode contributions in log-space
-    for elect_feats, elect_times, joint_gmm, mean_rate in tqdm(
+    for elect_feats, elect_times, joint_gmm, gpi_gmm, mean_rate in tqdm(
         zip(
-            spike_waveform_features, spike_times, joint_models, mean_rates, strict=True
+            spike_waveform_features,
+            spike_times,
+            joint_models,
+            gpi_models,
+            mean_rates,
+            strict=True,
         ),
         desc="Non-Local Likelihood (GMM, log-space)",
         unit="electrode",
@@ -962,6 +1123,13 @@ def predict_clusterless_gmm_log_likelihood(
         if n_spikes == 0:
             continue
 
+        conditional_parameters = _conditional_parameters(
+            joint_gmm, interior_place_bin_centers.shape[1], _spike_time_order
+        )
+        log_ground_intensity = log_mean_rate + (
+            _gmm_logp(gpi_gmm, interior_place_bin_centers) - log_occupancy
+        )
+
         if bin_tile_size is None or bin_tile_size >= n_bins:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
@@ -974,9 +1142,8 @@ def predict_clusterless_gmm_log_likelihood(
                 ),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 interior_place_bin_centers,
-                _gmm_parameters(joint_gmm),
-                log_mean_rate,
-                log_occupancy,
+                conditional_parameters,
+                log_ground_intensity,
                 covariance_type=joint_gmm.covariance_type,
                 block_size=min(spike_block_size, n_padded),
                 indices_are_sorted=selection.indices_are_sorted,
@@ -1002,14 +1169,13 @@ def predict_clusterless_gmm_log_likelihood(
                     interior_place_bin_centers[bin_start:bin_end], (block_size, 1)
                 )
                 repeated_feats_tile = jnp.repeat(block_feats, n_tile, axis=0)
-                eval_points_tile = jnp.concatenate(
-                    [tiled_bins_tile, repeated_feats_tile], axis=1
-                )
-
                 # GMM evaluation, dispatched per tile
-                joint_logp_tile = _gmm_logp(joint_gmm, eval_points_tile).reshape(
-                    block_size, n_tile
-                )
+                joint_logp_tile = _gmm_conditional_score(
+                    tiled_bins_tile,
+                    repeated_feats_tile,
+                    conditional_parameters,
+                    joint_gmm.covariance_type,
+                ).reshape(block_size, n_tile)
 
                 # Scatter this block directly into the tile columns. The
                 # working arrays remain O(block_size × tile_size); the only
@@ -1019,8 +1185,8 @@ def predict_clusterless_gmm_log_likelihood(
                     joint_logp_tile,
                     block_seg_ids,
                     jnp.arange(bin_start, bin_end),
-                    log_mean_rate,
-                    log_occupancy[bin_start:bin_end],
+                    log_ground_intensity[bin_start:bin_end],
+                    jnp.zeros(n_tile),
                 )
 
     return (
@@ -1170,10 +1336,14 @@ def compute_local_log_likelihood(
                     _pad_rows(select_spike_rows(elect_feats, selection), n_padded)
                 ),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
-                _gmm_parameters(joint_gmm),
+                _conditional_parameters(
+                    joint_gmm, spike_positions.shape[1], _spike_time_order
+                ),
+                _gmm_parameters(gpi_gmm),
                 _gmm_parameters(occupancy_model),
                 mean_rate,
                 joint_type=joint_gmm.covariance_type,
+                gpi_type=gpi_gmm.covariance_type,
                 occupancy_type=occupancy_model.covariance_type,
                 indices_are_sorted=selection.indices_are_sorted,
             )

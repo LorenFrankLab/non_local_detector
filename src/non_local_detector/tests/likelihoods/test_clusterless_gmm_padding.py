@@ -3,6 +3,8 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.special import logsumexp
+from scipy.stats import multivariate_normal
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import clusterless_gmm
@@ -106,7 +108,7 @@ def reference(recording, is_local, row_slice):
     if not is_local:
         bins = jnp.asarray(encoding["interior_place_bin_centers"])
         total = -durations[:, None] * encoding["summed_ground_process_intensity"]
-        for spike_times, features, joint, _, rate in electrodes:
+        for spike_times, features, joint, gpi, rate in electrodes:
             selection = select_spikes_in_rows(
                 spike_times, start, stop, time_edges=edges
             )
@@ -130,7 +132,8 @@ def reference(recording, is_local, row_slice):
             )
             total = total + sum_spikes_into_rows(
                 safe_log(rate, eps=RATE_EPS_HZ)
-                + (log_density - encoding["log_occupancy"]),
+                + (gpi.score_samples(bins) - encoding["log_occupancy"])
+                + (log_density - _position_log_density(joint, bins)),
                 selection,
             )
     else:
@@ -156,17 +159,24 @@ def reference(recording, is_local, row_slice):
                     select_spike_rows(spike_times, selection),
                     env,
                 )
-                terms = safe_log(rate, eps=RATE_EPS_HZ) + (
-                    joint.score_samples(
-                        jnp.concatenate(
-                            [
-                                spike_positions,
-                                jnp.asarray(select_spike_rows(features, selection)),
-                            ],
-                            axis=1,
-                        )
+                terms = (
+                    safe_log(rate, eps=RATE_EPS_HZ)
+                    + (
+                        gpi.score_samples(spike_positions)
+                        - occupancy_model.score_samples(spike_positions)
                     )
-                    - occupancy_model.score_samples(spike_positions)
+                    + (
+                        joint.score_samples(
+                            jnp.concatenate(
+                                [
+                                    spike_positions,
+                                    jnp.asarray(select_spike_rows(features, selection)),
+                                ],
+                                axis=1,
+                            )
+                        )
+                        - _position_log_density(joint, spike_positions)
+                    )
                 )
                 total = total + sum_spikes_into_rows(terms, selection)
             expected = expected + _ground_process_intensity(
@@ -174,6 +184,26 @@ def reference(recording, is_local, row_slice):
             )
         total = (total - durations * jnp.clip(expected, min=RATE_EPS_HZ))[:, None]
     return total + log_bin_duration_evidence(times, edges, row_slice, None)[:, None]
+
+
+def _position_log_density(joint, positions):
+    """Independent SciPy mixture marginal from the position covariance blocks."""
+    n_dims = positions.shape[1]
+    components = [
+        np.log(weight)
+        + multivariate_normal.logpdf(
+            np.asarray(positions),
+            mean=np.asarray(mean)[:n_dims],
+            cov=np.asarray(covariance)[:n_dims, :n_dims],
+        )
+        for weight, mean, covariance in zip(
+            np.asarray(joint.weights_),
+            np.asarray(joint.means_),
+            np.asarray(joint.covariances_),
+            strict=True,
+        )
+    ]
+    return jnp.asarray(logsumexp(np.stack(components), axis=0))
 
 
 @pytest.mark.parametrize("is_local", [False, True])
