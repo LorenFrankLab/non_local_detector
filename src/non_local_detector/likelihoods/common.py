@@ -1584,6 +1584,17 @@ def log_kde(
 
     positive_weights = jnp.where(weights > 0, weights, 0.0)
     weight_scale = jnp.max(positive_weights)
+    # XLA can lower this division to multiplication by a reciprocal. For
+    # weights near the dtype maximum that reciprocal is subnormal and may
+    # flush to zero. A power-of-two prescale keeps both operands representable
+    # without changing ordinary-weight arithmetic; the barrier prevents
+    # cancellation of this protective scale during compiler reassociation.
+    positive_weights, weight_scale = jax.lax.cond(
+        weight_scale > 1.0 / jnp.finfo(positive_weights.dtype).tiny,
+        lambda pair: jax.lax.optimization_barrier((pair[0] * 0.25, pair[1] * 0.25)),
+        lambda pair: pair,
+        (positive_weights, weight_scale),
+    )
     positive_weights = positive_weights / jnp.where(weight_scale > 0, weight_scale, 1.0)
     total = jnp.sum(positive_weights)
 
@@ -1594,10 +1605,14 @@ def log_kde(
         terms = jnp.where(positive_weights[:, None] > 0, K_log, -jnp.inf)
         maximum = jnp.max(terms, axis=0)
         safe_maximum = jnp.where(jnp.isneginf(maximum), 0.0, maximum)
+        # A positive HIGHEST dot avoids shape-dependent reassociation of the
+        # multiply/sum across full and looped query batches. Its operand uses
+        # the same bounded kernel matrix already covered by KDE blocking.
         average = (
-            jnp.sum(
-                positive_weights[:, None] * jnp.exp(terms - safe_maximum[None, :]),
-                axis=0,
+            jnp.matmul(
+                positive_weights,
+                jnp.exp(terms - safe_maximum[None, :]),
+                precision=jax.lax.Precision.HIGHEST,
             )
             / total
         )
