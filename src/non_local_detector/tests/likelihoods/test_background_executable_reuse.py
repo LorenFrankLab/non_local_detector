@@ -185,12 +185,14 @@ def test_gmm_tile_policy_is_selected_by_lowering_platform():
     )()
 
     def names(value):
-        if hasattr(value, "jaxpr"):
-            return names(value.jaxpr)
         if hasattr(value, "eqns"):
             return {equation.primitive.name for equation in value.eqns} | set().union(
                 *(names(equation.params) for equation in value.eqns)
             )
+        # Newer JAX exposes Jaxpr.jaxpr as a reference to itself. Visit its
+        # equations before unwrapping ClosedJaxpr through the same attribute.
+        if hasattr(value, "jaxpr"):
+            return names(value.jaxpr)
         if isinstance(value, dict):
             return set().union(*(names(item) for item in value.values()))
         if isinstance(value, (list, tuple)):
