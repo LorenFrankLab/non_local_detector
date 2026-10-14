@@ -46,17 +46,20 @@ def test_float64_reference_matches_dense_and_reports_actual_precision(
         # this comparison isolates inference precision rather than comparing
         # different rounded likelihood inputs.
         n_rows = len(predict["time_edges"]) - 1
-        likelihood = np.concatenate(
-            [
-                np.asarray(
-                    model.compute_log_likelihood(
-                        **predict,
-                        row_slice=slice(start, min(start + chunk_size, n_rows)),
-                    )
+        likelihood_chunks = []
+        for start in range(0, n_rows, chunk_size):
+            stop = min(start + chunk_size, n_rows)
+            # The checkpoint driver shifts a short final request backwards to
+            # keep a full query batch, then discards its overlapping prefix.
+            first = max(min(start, n_rows - chunk_size), 0)
+            values = np.asarray(
+                model.compute_log_likelihood(
+                    **predict,
+                    row_slice=slice(first, stop),
                 )
-                for start in range(0, n_rows, chunk_size)
-            ]
-        )
+            )
+            likelihood_chunks.append(values[start - first :])
+        likelihood = np.concatenate(likelihood_chunks)
     with precision_mode(True):
         interior = model.is_track_interior_state_bins_
         initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
