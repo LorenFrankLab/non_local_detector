@@ -742,9 +742,26 @@ def fit_sorted_spikes_glm_encoding_model(
         position, spatial_scale=emission_knot_spacing
     )
     device = jax.config.jax_default_device or jax.local_devices()[0]
+    graph = environment.track_graph
+    projection_key = None
+    if graph is not None:
+        # A graph can be refit with identical one-dimensional bin edges while
+        # mapping the same measured XY positions onto a different track path.
+        # Include that projection geometry, not only its linearized grid.
+        projection_values = [environment.edge_order, environment.edge_spacing]
+        for node, attributes in graph.nodes(data=True):
+            projection_values.extend((repr(node), attributes.get("pos")))
+        for left, right, attributes in graph.edges(data=True):
+            projection_values.extend((repr((left, right)), attributes.get("distance")))
+        projection_key = preparation_key(*projection_values)
     signature = (
         preparation_key(
-            basis_positions, place_bin_edges, position, emission_knot_spacing
+            basis_positions,
+            place_bin_edges,
+            position,
+            emission_knot_spacing,
+            projection_key,
+            getattr(environment, "_place_grid_revision_", None),
         ),
         device,
         bool(jax.config.jax_enable_x64),

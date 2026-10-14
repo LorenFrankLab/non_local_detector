@@ -20,6 +20,10 @@ _QUADRATURE_CACHE_BYTES = 32 * 2**20
 _QUADRATURE_MAX_BYTES = 512 * 2**20
 _QUADRATURE_SOURCE_ROWS = 2048
 _QUADRATURE_FILL_PARTS = 8192
+_SUPPORT_SEGMENT_BYTES = 256
+_SUPPORT_METADATA_BYTES = 1024
+_PREPARATION_ENTRY_BYTES = 512
+_PREPARATION_NAMESPACE_BYTES = 256
 _QUADRATURE_NODES, _QUADRATURE_WEIGHTS = np.polynomial.legendre.leggauss(4)
 
 
@@ -67,21 +71,33 @@ def cached_encoding_support(
 
 
 @jax.jit
-def _prepared_kde_log_density(log_kernel, exposure, total_exposure=None):
+def _prepared_kde_log_density(
+    log_kernel, exposure, total_exposure=None, kernel_offsets=None
+):
     if exposure.shape[0] == 0:
         return jnp.full(log_kernel.shape[1], -jnp.inf, dtype=log_kernel.dtype)
     active = exposure > 0.0
     log_weights = jnp.where(active, jnp.log(jnp.where(active, exposure, 1.0)), -jnp.inf)
     total = jnp.sum(exposure) if total_exposure is None else total_exposure
     normalizer = jnp.log(jnp.where(total > 0.0, total, 1.0))
-    terms = jnp.where(total > 0.0, log_kernel + log_weights[:, None], 0.0)
-    value = jax.nn.logsumexp(terms, axis=0) - normalizer
-    return jnp.where(total > 0.0, value, -jnp.inf)
+    if kernel_offsets is None:
+        offset = jnp.zeros(log_kernel.shape[1], dtype=log_kernel.dtype)
+        relative_kernel = log_kernel
+    else:
+        supported = active[:, None] & jnp.isfinite(log_kernel)
+        maximum = jnp.max(jnp.where(supported, kernel_offsets, -jnp.inf), axis=0)
+        offset = jnp.where(jnp.isfinite(maximum), maximum, 0.0)
+        relative_kernel = (kernel_offsets - offset[None, :]) + log_kernel
+    terms = relative_kernel + log_weights[:, None]
+    has_mass = jnp.any(jnp.isfinite(terms), axis=0) & (total > 0.0)
+    terms = jnp.where(has_mass[None, :], terms, 0.0)
+    value = offset + (jax.nn.logsumexp(terms, axis=0) - normalizer)
+    return jnp.where(has_mass, value, -jnp.inf)
 
 
 @partial(jax.jit, static_argnames=("n_samples",))
 def _integrated_kde_operator_tile(
-    centers, samples, std, durations, left, right, fraction, *, n_samples
+    centers, samples, std, left_mass, right_mass, left, right, *, n_samples
 ):
     """Log positive quadrature mass assigned to each original sample basis."""
     from non_local_detector.likelihoods.common import (
@@ -91,33 +107,38 @@ def _integrated_kde_operator_tile(
 
     kernel = _log_kernel_matrix(centers, samples, std)
 
-    def basis_mass(indices, part):
-        positive = part > 0.0
-        log_part = jnp.where(
-            positive, jnp.log(jnp.where(positive, part, 1.0)), -jnp.inf
+    def basis_maximum(indices, mass):
+        return jax.ops.segment_max(
+            jnp.where(mass[:, None] > 0.0, kernel, -jnp.inf),
+            indices,
+            num_segments=n_samples,
+            indices_are_sorted=True,
         )
-        terms = kernel + jnp.log(durations)[:, None] + log_part[:, None]
-        maximum = jax.ops.segment_max(
-            terms, indices, num_segments=n_samples, indices_are_sorted=True
-        )
-        offset = jnp.where(jnp.isfinite(maximum), maximum, 0.0)
-        mass = deterministic_row_sum(
-            jnp.exp(terms - offset[indices]),
+
+    maximum = jnp.maximum(
+        basis_maximum(left, left_mass), basis_maximum(right, right_mass)
+    )
+    offset = jnp.where(jnp.isfinite(maximum), maximum, 0.0)
+
+    def basis_mass(indices, part_mass):
+        return deterministic_row_sum(
+            jnp.exp(kernel - offset[indices]) * part_mass[:, None],
             indices,
             n_samples,
             indices_are_sorted=True,
         )
-        return jnp.where(
-            mass > 0.0, offset + jnp.log(jnp.where(mass > 0.0, mass, 1.0)), -jnp.inf
-        )
 
-    return jnp.logaddexp(basis_mass(left, 1.0 - fraction), basis_mass(right, fraction))
+    mass = basis_mass(left, left_mass) + basis_mass(right, right_mass)
+    log_time_mass = jnp.where(
+        mass > 0.0, jnp.log(jnp.where(mass > 0.0, mass, 1.0)), -jnp.inf
+    )
+    return maximum, log_time_mass
 
 
 @jax.jit
 def _prepared_kde_operator_density(operator, weights, total_exposure):
     """Scaled GEMM with a log-mass fallback when changed weights lose overlap."""
-    log_mass, scaled_mass, offset = operator
+    kernel_offsets, log_time_mass, scaled_mass, offset = operator
     maximum_weight = jnp.max(weights)
     safe_maximum = jnp.where(maximum_weight > 0.0, maximum_weight, 1.0)
     scaled_weights = weights / safe_maximum
@@ -125,9 +146,8 @@ def _prepared_kde_operator_density(operator, weights, total_exposure):
         scaled_weights, scaled_mass, precision=jax.lax.Precision.HIGHEST
     )
     normalizer = jnp.log(jnp.where(total_exposure > 0.0, total_exposure, 1.0))
-    fast = (
-        offset
-        + jnp.log(jnp.where(numerator > 0.0, numerator, 1.0))
+    fast = offset + (
+        jnp.log(jnp.where(numerator > 0.0, numerator, 1.0))
         + jnp.log(safe_maximum)
         - normalizer
     )
@@ -138,7 +158,11 @@ def _prepared_kde_operator_density(operator, weights, total_exposure):
     result = jax.lax.cond(
         jnp.any(unsafe) & (total_exposure > 0.0),
         lambda: jnp.where(
-            unsafe, _prepared_kde_log_density(log_mass, weights, total_exposure), fast
+            unsafe,
+            _prepared_kde_log_density(
+                log_time_mass, weights, total_exposure, kernel_offsets
+            ),
+            fast,
         ),
         lambda: fast,
     )
@@ -345,6 +369,12 @@ class EncodingSupport:
             for array in (self.time, self.exposure, self.indices, self.bounds)
         )
         support_bytes += sum(indices.nbytes for _, _, indices in self.segments)
+        # Fragmented recordings can contain many small segment arrays. Reserve
+        # conservative tuple/scalar/array-header and dictionary metadata bytes.
+        support_bytes += _SUPPORT_METADATA_BYTES + _SUPPORT_SEGMENT_BYTES * len(
+            self.segments
+        )
+        support_bytes += _PREPARATION_NAMESPACE_BYTES * len(self._prepared_namespaces)
         quadrature_bytes = (
             0 if self._quadrature_cache is None else self._quadrature_cache[1].nbytes
         )
@@ -361,6 +391,16 @@ class EncodingSupport:
                 k: v for k, v in self._prepared_cache.items() if k[0] != name
             }
             self._prepared_namespaces[name] = key
+            # A new namespace also consumes bookkeeping space. Retire older
+            # preparation before that metadata can push a full cache over cap.
+            while self.preparation_nbytes > _QUADRATURE_CACHE_BYTES:
+                if self._prepared_cache:
+                    self._prepared_cache.pop(next(iter(self._prepared_cache)))
+                elif self._quadrature_cache is not None:
+                    self._quadrature_cache = None
+                else:
+                    self._prepared_namespaces.pop(name, None)
+                    break
 
     def prepared(self, key):
         item = self._prepared_cache.get(key)
@@ -369,7 +409,7 @@ class EncodingSupport:
     def remember_preparation(self, key, value):
         """Retain a bounded prefix of immutable arrays; overflow is recomputed."""
         leaves = jax.tree_util.tree_leaves(value)
-        nbytes = sum(int(leaf.nbytes) for leaf in leaves) + 128
+        nbytes = sum(int(leaf.nbytes) for leaf in leaves) + _PREPARATION_ENTRY_BYTES
         if (
             key in self._prepared_cache
             or self.preparation_nbytes + nbytes > _QUADRATURE_CACHE_BYTES
@@ -407,8 +447,11 @@ class EncodingSupport:
         key = ("kde", signature)
         operator = self.prepared(key)
         if operator is None:
-            size = (2 * len(self.time) * len(centers) + len(centers)) * dtype.itemsize
-            if self.preparation_nbytes + size + 128 > _QUADRATURE_CACHE_BYTES:
+            size = (3 * len(self.time) * len(centers) + len(centers)) * dtype.itemsize
+            if (
+                self.preparation_nbytes + size + _PREPARATION_ENTRY_BYTES
+                > _QUADRATURE_CACHE_BYTES
+            ):
                 return None
             tile_size = max(
                 1,
@@ -423,13 +466,13 @@ class EncodingSupport:
                 jnp.asarray(samples),
                 jnp.asarray(std),
             )
-            durations, left, right, fraction = (
+            left_mass, right_mass, left, right = (
                 jnp.asarray(value)
                 for value in (
-                    quadrature.durations,
+                    quadrature.durations * (1.0 - quadrature.fraction),
+                    quadrature.durations * quadrature.fraction,
                     quadrature.left,
                     quadrature.right,
-                    quadrature.fraction,
                 )
             )
             blocks = [
@@ -437,18 +480,26 @@ class EncodingSupport:
                     points[start : start + tile_size],
                     samples_device,
                     std_device,
-                    durations,
+                    left_mass,
+                    right_mass,
                     left,
                     right,
-                    fraction,
                     n_samples=len(self.time),
                 )
                 for start in range(0, len(centers), tile_size)
             ]
-            log_mass = jnp.concatenate(blocks, axis=1)
-            offset = jnp.max(log_mass, axis=0)
+            kernel_offsets = jnp.concatenate([block[0] for block in blocks], axis=1)
+            log_time_mass = jnp.concatenate([block[1] for block in blocks], axis=1)
+            offset = jnp.max(
+                jnp.where(jnp.isfinite(log_time_mass), kernel_offsets, -jnp.inf), axis=0
+            )
             offset = jnp.where(jnp.isfinite(offset), offset, 0.0)
-            operator = (log_mass, jnp.exp(log_mass - offset[None, :]), offset)
+            operator = (
+                kernel_offsets,
+                log_time_mass,
+                jnp.exp((kernel_offsets - offset[None, :]) + log_time_mass),
+                offset,
+            )
             self.remember_preparation(key, operator)
         exposure = quadrature.weighted_exposure(weights)
         return _prepared_kde_operator_density(

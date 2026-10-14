@@ -82,11 +82,11 @@ def test_prepared_cache_and_quadrature_share_one_aggregate_budget(monkeypatch):
 
     time, position, _, _ = _data(17)
     support = EncodingSupport(time, position)
-    monkeypatch.setattr(encoding_time, "_QUADRATURE_CACHE_BYTES", 8192)
+    monkeypatch.setattr(encoding_time, "_QUADRATURE_CACHE_BYTES", 12288)
     quadrature = support.quadrature(position, spatial_scale=2.0)
     support.remember_preparation(("test", 0), np.zeros(100, dtype=np.float32))
     support.remember_preparation(("test", 1), np.zeros(100_000, dtype=np.float32))
-    assert support.preparation_nbytes <= 8192
+    assert support.preparation_nbytes <= 12288
     assert support.prepared(("test", 0)) is not None
     assert support.prepared(("test", 1)) is None
     assert support.quadrature(position, spatial_scale=2.0) is quadrature
@@ -218,6 +218,31 @@ def test_support_cache_tracks_declared_intervals_without_freezing_caller_arrays(
     assert not first.contains([2.5])[0]
 
 
+def test_fragmented_support_metadata_is_counted_before_retaining_owner_cache(
+    monkeypatch,
+):
+    from non_local_detector import encoding_time
+
+    class Owner:
+        pass
+
+    time = np.linspace(0.0, 1.0, 511)
+    position = np.zeros((len(time), 1))
+    position[1::2] = np.nan
+    monkeypatch.setattr(encoding_time, "_QUADRATURE_CACHE_BYTES", 16384)
+    owner = Owner()
+    support = cached_encoding_support(owner, time, position)
+    array_bytes = sum(
+        value.nbytes
+        for value in (support.time, support.exposure, support.indices, support.bounds)
+    )
+    array_bytes += sum(indices.nbytes for _, _, indices in support.segments)
+    assert array_bytes < 16384
+    assert len(support.segments) == 256
+    assert support.preparation_nbytes > 16384
+    assert not hasattr(owner, "_encoding_support_cache_")
+
+
 def test_cached_kde_operator_invalidates_mutated_bandwidth_and_centers():
     from non_local_detector.likelihoods.common import KDEModel
 
@@ -283,7 +308,7 @@ def test_integrated_kde_cache_uses_original_rows_and_recovers_activated_tail():
     )
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
     assert np.all(np.isfinite(np.asarray(actual)))
-    assert float(np.asarray(operator[1])[-1, 0]) == 0.0, (
+    assert float(np.asarray(operator[2])[-1, 0]) == 0.0, (
         "tail must exercise log fallback"
     )
     single = support.cached_kde_log_density(
