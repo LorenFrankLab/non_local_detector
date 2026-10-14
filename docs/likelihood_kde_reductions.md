@@ -1,18 +1,19 @@
 # Batch-independent clusterless log-KDE
 
-The default log-KDE reduction now uses encoding and position tiles with online
-logsumexp accumulation. The maxima used by a reduction belong to each output,
-so adding a different decoding query cannot flush an existing query's kernel
-to zero. Defaults cap encoding tiles at 256 rows and position tiles at 128
-columns; decoding work is bounded by the predictor's existing block size.
-Requested smaller tiles are honored. Padding retains zero-weight encoding rows
-and drops padded decode events through the existing row reduction.
+The default log-KDE reduction uses independently scaled matrix multiplication
+with logaddexp accumulation across encoding tiles. Maxima belong to each query
+and position, so adding a decoding query cannot flush an existing query's
+kernel to zero. Defaults cap encoding tiles at 2,048 rows, position tiles at
+256 columns, and decoding query tiles at 128 rows. Requested smaller tiles are
+honored. The final tile overlaps earlier samples and masks that prefix, avoiding
+a padded copy of a large precomputed encoding-by-position matrix. Padded public
+decode events still drop out through the existing row reduction.
 
 The historical private compensated-linear entry points retain their signatures
-but also use logsumexp. Waveform feature count no longer selects a numerical
-approximation: low-dimensional queries can still have arbitrarily large
-dynamic range. The explicit `use_gemm=False` legacy probability-space reference
-remains available; it is not the underflow-safe default.
+but also use the guarded matrix product. Waveform feature count no longer
+selects a numerical approximation: low-dimensional queries can still have
+arbitrarily large dynamic range. The explicit `use_gemm=False` legacy
+probability-space reference remains available.
 
 Mark distances subtract each feature pair before scaling and squaring. This
 incorporates the distance repair already proposed in PR #70, including integer
@@ -32,11 +33,15 @@ Adding 10,000 to an encoding mark 0 and decoding mark 1 previously changed
 their log Gaussian kernel from −1.41894 to −0.91894. Pairwise subtraction
 preserves the original kernel.
 
-This intentionally trades some compensated-GEMM throughput for reliable tail
-likelihoods. A future fast path must demonstrate an error bound and fall back
-for suspect positive outputs as well as zero outputs. Existing local/nonlocal,
-weighted, padded, streaming, float32/float64 and determinism controls are kept
-at their existing tolerances; no stored numerical reference data is changed.
+The fast path bounds omitted scaled mass by three times the encoding tile size
+times the dtype's smallest normal value, accounting for flushed factors and
+products. A standard positive dot-product roundoff bound adjusts the comparison
+with four dtype epsilons of the computed mass. Suspect positive and zero outputs
+receive a direct logsumexp fallback. Scalar conditionals inside a sequential
+query loop bound its temporary workspace; only suspect entries are replaced,
+so another query's fallback cannot change a regular output. Existing
+local/nonlocal, weighted, padded, streaming, float32/float64 and determinism
+controls keep their tolerances; no stored numerical reference data is changed.
 
 Independent review added analytical derivative regressions: all-zero encoding
 weights have zero weight derivatives, and a completely masked prefix tile
@@ -49,6 +54,18 @@ four waveform dimensions, seven warm calls gave median 0.451 ms before and
 6.826 ms after the initial logsumexp repair. These runs shared a host with
 other validation work; they quantify a material throughput cost, not a
 performance guarantee. Both outputs were finite with shape (100, 200).
+
+The follow-up performance repair measured the existing seeded raw-kernel
+workloads on the local CPU with device inputs, three warmups and seven
+synchronized repetitions. Median time fell from 11.59 to 0.99 ms for the
+1,000-encoding/100-query/512-bin case, from 11.74 to 1.04 ms with 16 mark
+dimensions, and from 496.17 to 27.55 ms with 16,000 encodings and 256 queries.
+Compiled temporary workspace fell from 15.77 to 2.94 MiB for the default case
+and from 66.28 to 7.82 MiB for the large case. Compared with the prior direct
+logsumexp outputs, maximum absolute float32 differences were 3.82e-6, 1.53e-5,
+and 1.34e-5 respectively, from reordering positive reductions; all outputs
+remained finite. These local measurements supplement the controlled CPU/GPU
+performance review and do not predict other hardware's speed.
 
 The repository-wide run passed 3,675 cases and skipped seven. Two existing
 NaN-propagation tests exposed that the all-zero-weight shortcut hid invalid

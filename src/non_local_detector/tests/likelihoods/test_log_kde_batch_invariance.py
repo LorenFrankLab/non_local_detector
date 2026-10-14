@@ -7,6 +7,7 @@ import pytest
 
 from non_local_detector.likelihoods.clusterless_kde_log import (
     _compute_log_mark_kernel_gemm,
+    _stabilized_log_kernel_product,
     estimate_log_joint_mark_intensity,
 )
 
@@ -112,3 +113,51 @@ def test_broadcast_bandwidth_normalizes_every_mark_dimension():
     )
     expected = -2 * np.log(2 * np.sqrt(2 * np.pi))
     np.testing.assert_allclose(kernel, expected, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("encoding_count", [8192, 16000])
+def test_large_query_batches_keep_compiled_kernel_workspace_bounded(encoding_count):
+    """A public 10k-row block must not expand encoding x query x position."""
+    compiled = estimate_log_joint_mark_intensity.lower(
+        jax.ShapeDtypeStruct((512, 4), jnp.float32),
+        jax.ShapeDtypeStruct((encoding_count, 4), jnp.float32),
+        jax.ShapeDtypeStruct((4,), jnp.float32),
+        jax.ShapeDtypeStruct((512,), jnp.float32),
+        1.0,
+        jax.ShapeDtypeStruct((encoding_count, 512), jnp.float32),
+    ).compile()
+    workspace = compiled.memory_analysis().temp_size_in_bytes
+    assert workspace <= 32 * 2**20, f"{workspace / 2**20:.1f} MiB"
+
+
+@pytest.mark.unit
+def test_fallback_does_not_replace_unaffected_query_outputs():
+    """Adding a nonoverlapping tail may repair only that query's entries."""
+    rng = np.random.default_rng(901)
+    marks = rng.uniform(-3.0, 0.0, (64, 2)).astype(np.float32)
+    positions = rng.uniform(-3.0, 0.0, (64, 3)).astype(np.float32)
+    positions[:32, 2] = -100.0
+    positions[32:, 2] = 0.0
+    ordinary = jax.jit(_stabilized_log_kernel_product)(
+        jnp.asarray(marks), jnp.asarray(positions), jnp.zeros(64)
+    )
+    marks[:32, 1] = 0.0
+    marks[32:, 1] = -100.0
+    repaired = jax.jit(_stabilized_log_kernel_product)(
+        jnp.asarray(marks), jnp.asarray(positions), jnp.zeros(64)
+    )
+    np.testing.assert_array_equal(repaired[0], ordinary[0])
+    np.testing.assert_allclose(
+        repaired[1, 2], -100.0 + np.log(64.0), rtol=1e-6, atol=1e-5
+    )
+
+
+@pytest.mark.unit
+def test_suspect_positive_mass_uses_the_direct_log_reduction():
+    """A small positive sum can still omit a material flushed contribution."""
+    marks = jnp.asarray([[0.0], [-80.0], [-80.0]])
+    positions = jnp.asarray([[-100.0], [0.0], [0.0]])
+    actual = jax.jit(_stabilized_log_kernel_product)(marks, positions, jnp.zeros(3))
+    expected = np.logaddexp(-100.0, -80.0 + np.log(2.0))
+    np.testing.assert_allclose(actual[0, 0], expected, rtol=1e-6, atol=1e-5)

@@ -46,12 +46,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
-# Bound the three-dimensional reduction workspace independently of the size
-# of the fitted encoding support. Feature count cannot guarantee a safe
-# compensated-linear reduction: a query's tail can underflow beside another
-# query even when its final density ratio is representable.
-_LOG_REDUCTION_ENCODING_ROWS = 256
-_LOG_REDUCTION_POSITION_ROWS = 128
+# Bound each two-dimensional GEMM operand independently of encoding support
+# and the public decoder's (potentially 10k-row) spike block. Direct feature
+# differences avoid cancellation; per-query/position scaling and a guarded
+# logsumexp fallback preserve densities in nonoverlapping spatial/mark tails.
+_LOG_REDUCTION_ENCODING_ROWS = 2048
+_LOG_REDUCTION_POSITION_ROWS = 256
+_LOG_REDUCTION_QUERY_ROWS = 128
 
 
 def _masked_logsumexp(values):
@@ -67,6 +68,84 @@ def _masked_logaddexp(left, right):
     empty = jnp.isneginf(left) & jnp.isneginf(right)
     reduced = jnp.logaddexp(jnp.where(empty, 0.0, left), jnp.where(empty, 0.0, right))
     return jnp.where(empty, -jnp.inf, reduced)
+
+
+def _stabilized_log_kernel_product(log_mark, log_position, log_weights):
+    """Weighted log kernel product with independent output-axis scaling.
+
+    Inputs have shapes ``(encoding, query)``, ``(encoding, position)``, and
+    ``(encoding,)``. Positive dot products use highest-precision GEMM. Scaling
+    each query and position separately avoids dependence on other queries.
+    The product has no encoding x query x position temporary.
+
+    A missing normal/subnormal product contributes at most ``tiny`` after
+    scaling, as does each flushed factor. Three such bounds per encoding
+    sample conservatively cover missing mass. Account for the positive dot
+    product's standard ``gamma_n`` roundoff bound before testing that omitted
+    mass is below four dtype epsilons of the result. Suspect outputs alone
+    receive a bounded direct logsumexp; ordinary outputs retain their GEMM
+    value even when another query or position needs the fallback.
+    """
+    log_weights = jnp.broadcast_to(log_weights, (log_mark.shape[0],))
+    invalid = (
+        jnp.any(jnp.isnan(log_mark), axis=0)[:, None]
+        | jnp.any(jnp.isnan(log_position), axis=0)[None, :]
+        | jnp.any(jnp.isnan(log_weights))
+    )
+    if log_mark.shape[0] == 0:
+        return jnp.full((log_mark.shape[1], log_position.shape[1]), -jnp.inf)
+    active = ~jnp.isneginf(log_weights)
+    log_mark = jnp.where(active[:, None], log_mark, -jnp.inf)
+    weighted_position = log_position + log_weights[:, None]
+    mark_max = jnp.max(log_mark, axis=0)
+    position_max = jnp.max(weighted_position, axis=0)
+    mark_max = jnp.where(jnp.isfinite(mark_max), mark_max, 0.0)
+    position_max = jnp.where(jnp.isfinite(position_max), position_max, 0.0)
+    numerator = jnp.matmul(
+        jnp.exp(log_mark - mark_max).T,
+        jnp.exp(weighted_position - position_max),
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    positive = numerator > 0
+    log_sum = jnp.where(
+        positive, jnp.log(jnp.where(positive, numerator, 1.0)), -jnp.inf
+    )
+    result = log_sum + mark_max[:, None] + position_max[None, :]
+    dtype_info = jnp.finfo(numerator.dtype)
+    rounding = log_mark.shape[0] * dtype_info.eps
+    gamma = rounding / (1.0 - rounding) if rounding < 1.0 else np.inf
+    log_suspect = (
+        np.log(3 * log_mark.shape[0])
+        + np.log(dtype_info.tiny)
+        - np.log(4 * dtype_info.eps)
+        + np.log1p(gamma)
+    )
+    suspect = (log_sum <= log_suspect) | ~jnp.isfinite(log_sum)
+
+    def repair_output_rows(operand):
+        values, masks = operand
+
+        def repair_row(row, values):
+            mask = masks[row]
+
+            def exact_row(current):
+                exact = _masked_logsumexp(log_mark[:, row, None] + weighted_position)
+                replacement = jnp.where(mask, exact, current[row])
+                return current.at[row].set(replacement)
+
+            # A scalar cond in a sequential loop is deliberate: vmap(cond)
+            # executes both branches, recreating the original large reduction.
+            return jax.lax.cond(jnp.any(mask), exact_row, lambda x: x, values)
+
+        return jax.lax.fori_loop(0, log_mark.shape[1], repair_row, values)
+
+    result = jax.lax.cond(
+        jnp.any(suspect),
+        repair_output_rows,
+        lambda operand: operand[0],
+        (result, suspect),
+    )
+    return jnp.where(invalid, jnp.nan, result)
 
 
 def _log_joint_from_log_marginal(
@@ -403,47 +482,14 @@ def _estimate_with_enc_chunking(
     position_std: jnp.ndarray | None = None,
     use_streaming: bool = False,
 ) -> jnp.ndarray:
-    """Compute log joint mark intensity with encoding spike chunking.
+    """Bounded stabilized GEMM, accumulating encoding tiles in log space.
 
-    Uses online logsumexp to accumulate across encoding chunks, reducing
-    peak memory from O(n_enc * n_pos) to O(enc_tile_size * n_pos).
-
-    Supports two modes:
-    1. Precomputed: Uses precomputed log_position_distance matrix
-    2. Streaming: Computes position distances on-the-fly per chunk (saves memory)
-
-    Parameters
-    ----------
-    decoding_spike_waveform_features : jnp.ndarray, shape (n_dec, n_features)
-    encoding_spike_waveform_features : jnp.ndarray, shape (n_enc, n_features)
-    waveform_stds : jnp.ndarray, shape (n_features,)
-    occupancy : jnp.ndarray, shape (n_pos,)
-    mean_rate : float
-    log_position_distance : jnp.ndarray | None, shape (n_enc, n_pos)
-        Precomputed log position distances. Required if use_streaming=False.
-    log_w : jnp.ndarray, shape (n_enc,)
-        Per-encoding-spike log weight (uniform ``-log(n_enc)`` or ``log(w_e / sum_w)``).
-        Sliced per chunk; a ``-inf`` entry drops that spike out of the chunk's logsumexp.
-    enc_tile_size : int
-        Number of encoding spikes to process in each chunk
-    pos_tile_size : int | None
-        If provided, also tile over positions
-    encoding_positions : jnp.ndarray | None, shape (n_enc, n_pos_dims)
-        Encoding positions. Required if use_streaming=True.
-    position_eval_points : jnp.ndarray | None, shape (n_pos, n_pos_dims)
-        Position evaluation points (e.g., interior_place_bin_centers). Required if use_streaming=True.
-    position_std : jnp.ndarray | None, shape (n_pos_dims,)
-        Position standard deviations. Required if use_streaming=True.
-    use_streaming : bool, default=False
-        If True, compute position distances on-the-fly. Reduces memory but adds computation.
-
-    Returns
-    -------
-    log_joint : jnp.ndarray, shape (n_dec, n_pos)
+    Query, encoding, and position tiles bound both GEMM operands and the rare
+    direct logsumexp fallback. Streaming builds only an encoding x position
+    tile rather than a full spatial kernel.
     """
     n_enc = encoding_spike_waveform_features.shape[0]
     n_dec = decoding_spike_waveform_features.shape[0]
-
     if use_streaming:
         if (
             position_eval_points is None
@@ -458,210 +504,88 @@ def _estimate_with_enc_chunking(
         if log_position_distance is None:
             raise ValueError("use_streaming=False requires log_position_distance")
         n_pos = log_position_distance.shape[1]
-
-    # Pad encoding arrays to be divisible by enc_tile_size (required for dynamic_slice)
+    query_tile_size = min(n_dec, _LOG_REDUCTION_QUERY_ROWS)
+    enc_tile_size = min(n_enc, enc_tile_size, _LOG_REDUCTION_ENCODING_ROWS)
+    pos_tile_size = min(n_pos, pos_tile_size or n_pos, _LOG_REDUCTION_POSITION_ROWS)
     n_enc_chunks = (n_enc + enc_tile_size - 1) // enc_tile_size
-    n_enc_padded = n_enc_chunks * enc_tile_size
-    pad_enc = n_enc_padded - n_enc
+    n_query_chunks = (n_dec + query_tile_size - 1) // query_tile_size
+    n_pos_chunks = (n_pos + pos_tile_size - 1) // pos_tile_size
 
-    # Create validity mask for encoding spikes (used in streaming mode)
-    if use_streaming:
-        enc_valid_mask = jnp.arange(n_enc_padded) < n_enc  # Shape: (n_enc_padded,)
-
-    if pad_enc > 0:
-        # Pad waveform features with zeros
-        encoding_spike_waveform_features = jnp.pad(
-            encoding_spike_waveform_features,
-            ((0, pad_enc), (0, 0)),
-            mode="constant",
-            constant_values=0.0,
+    def process_query_chunk(query_idx, result):
+        requested_query_start = query_idx * query_tile_size
+        query_start = jnp.minimum(requested_query_start, n_dec - query_tile_size)
+        queries = jax.lax.dynamic_slice_in_dim(
+            decoding_spike_waveform_features, query_start, query_tile_size
         )
 
-        if use_streaming:
-            # Streaming mode: pad encoding positions with zeros (will be masked with -inf later)
-            encoding_positions = jnp.pad(
-                encoding_positions,
-                ((0, pad_enc), (0, 0)),
-                mode="constant",
-                constant_values=0.0,
+        def process_enc_chunk(enc_idx, marginal):
+            requested_enc_start = enc_idx * enc_tile_size
+            enc_start = jnp.minimum(requested_enc_start, n_enc - enc_tile_size)
+            marks = jax.lax.dynamic_slice_in_dim(
+                encoding_spike_waveform_features, enc_start, enc_tile_size
             )
-        else:
-            # Precomputed mode: pad log_position_distance with -inf
-            log_position_distance = jnp.pad(
-                log_position_distance,
-                ((0, pad_enc), (0, 0)),
-                mode="constant",
-                constant_values=-jnp.inf,
+            log_mark = _compute_log_mark_kernel_gemm(queries, marks, waveform_stds)
+            weights = jax.lax.dynamic_slice_in_dim(log_w, enc_start, enc_tile_size)
+            # Slice an overlapping final tile and mask its prefix, avoiding a
+            # padded copy of the potentially very large precomputed matrix.
+            weights = jnp.where(
+                enc_start + jnp.arange(enc_tile_size) >= requested_enc_start,
+                weights,
+                -jnp.inf,
             )
-        # Pad the per-spike log weight to match; the padded rows already have -inf
-        # log position distance, so the added weight is inert.
-        log_w = jnp.pad(log_w, (0, pad_enc), mode="constant", constant_values=-jnp.inf)
+            if use_streaming:
+                positions = jax.lax.dynamic_slice_in_dim(
+                    encoding_positions, enc_start, enc_tile_size
+                )
 
-    # Define vmapped function once (outside loop) for efficiency
-    def compute_for_one_spike(
-        log_pos_chunk: jnp.ndarray, y_col: jnp.ndarray
-    ) -> jnp.ndarray:
-        """Compute logsumexp for one decoding spike across encoding chunk.
+            def process_position_chunk(pos_idx, marginal):
+                requested_pos_start = pos_idx * pos_tile_size
+                pos_start = jnp.minimum(requested_pos_start, n_pos - pos_tile_size)
+                if use_streaming:
+                    eval_points = jax.lax.dynamic_slice_in_dim(
+                        position_eval_points, pos_start, pos_tile_size
+                    )
+                    log_position = log_kde_distance_streaming(
+                        eval_points, positions, position_std
+                    )
+                else:
+                    log_position = jax.lax.dynamic_slice(
+                        log_position_distance,
+                        (enc_start, pos_start),
+                        (enc_tile_size, pos_tile_size),
+                    )
+                contribution = _stabilized_log_kernel_product(
+                    log_mark, log_position, weights
+                )
+                current = jax.lax.dynamic_slice_in_dim(
+                    marginal, pos_start, pos_tile_size, axis=1
+                )
+                combined = jnp.where(
+                    (pos_start + jnp.arange(pos_tile_size) >= requested_pos_start)[
+                        None, :
+                    ],
+                    _masked_logaddexp(current, contribution),
+                    current,
+                )
+                return jax.lax.dynamic_update_slice(marginal, combined, (0, pos_start))
 
-        Parameters
-        ----------
-        log_pos_chunk : jnp.ndarray, shape (enc_tile_size, n_pos)
-            Already weighted: the per-spike log weight has been added per row.
-        y_col : jnp.ndarray, shape (enc_tile_size,)
+            return jax.lax.fori_loop(0, n_pos_chunks, process_position_chunk, marginal)
 
-        Returns
-        -------
-        jnp.ndarray, shape (n_pos,)
-        """
-        return _masked_logsumexp(log_pos_chunk + y_col[:, None])
-
-    # Predefine vmapped function for position tiling
-    def compute_for_one_spike_tile(
-        log_pos_tile: jnp.ndarray, y_col: jnp.ndarray
-    ) -> jnp.ndarray:
-        """Compute logsumexp for one decoding spike over position tile.
-
-        Parameters
-        ----------
-        log_pos_tile : jnp.ndarray, shape (enc_tile_size, tile_size)
-            Already weighted: the per-spike log weight has been added per row.
-        y_col : jnp.ndarray, shape (enc_tile_size,)
-
-        Returns
-        -------
-        jnp.ndarray, shape (tile_size,)
-        """
-        return _masked_logsumexp(log_pos_tile + y_col[:, None])
-
-    def process_enc_chunk(chunk_idx: int, log_marginal: jnp.ndarray) -> jnp.ndarray:
-        """Process one encoding chunk and accumulate with online logsumexp."""
-        enc_start = chunk_idx * enc_tile_size
-
-        # Extract encoding chunk (always enc_tile_size, possibly padded)
-        enc_chunk_features = jax.lax.dynamic_slice(
-            encoding_spike_waveform_features,
-            (enc_start, 0),
-            (enc_tile_size, encoding_spike_waveform_features.shape[1]),
+        marginal = jnp.full((query_tile_size, n_pos), -jnp.inf)
+        marginal = jax.lax.fori_loop(0, n_enc_chunks, process_enc_chunk, marginal)
+        current = jax.lax.dynamic_slice_in_dim(result, query_start, query_tile_size)
+        marginal = jnp.where(
+            (query_start + jnp.arange(query_tile_size) >= requested_query_start)[
+                :, None
+            ],
+            marginal,
+            current,
         )
+        return jax.lax.dynamic_update_slice(result, marginal, (query_start, 0))
 
-        # Get position distance for this encoding chunk: (enc_tile_size, n_pos)
-        if use_streaming:
-            # Streaming mode: compute position kernel on-the-fly
-            # Extract encoding positions for this chunk
-            enc_chunk_positions = jax.lax.dynamic_slice(
-                encoding_positions,
-                (enc_start, 0),
-                (enc_tile_size, encoding_positions.shape[1]),
-            )
-
-            # Compute position distances using streaming (avoids D×n_enc×n_pos intermediate)
-            log_pos_chunk = log_kde_distance_streaming(
-                position_eval_points,  # (n_pos, n_pos_dims)
-                enc_chunk_positions,  # (enc_tile_size, n_pos_dims)
-                position_std,  # (n_pos_dims,)
-            )
-            # Returns: (enc_tile_size, n_pos)
-
-            # Mask padded entries (beyond n_enc) with -inf
-            # Extract validity mask for this chunk
-            chunk_valid_mask = jax.lax.dynamic_slice(
-                enc_valid_mask,
-                (enc_start,),
-                (enc_tile_size,),
-            )
-            # Apply mask: invalid entries → -inf
-            log_pos_chunk = jnp.where(
-                chunk_valid_mask[:, None], log_pos_chunk, -jnp.inf
-            )
-        else:
-            # Precomputed mode: slice from full matrix
-            log_pos_chunk = jax.lax.dynamic_slice(
-                log_position_distance,
-                (enc_start, 0),
-                (enc_tile_size, n_pos),
-            )
-
-        # Fold this chunk's per-spike log weight into the position kernel so the
-        # logsumexp below is weighted. Added (not folded into the mark kernel) so a
-        # zero-weight spike (-inf) simply exps to 0 instead of poisoning a row max.
-        log_w_chunk = jax.lax.dynamic_slice(log_w, (enc_start,), (enc_tile_size,))
-        log_pos_chunk = log_pos_chunk + log_w_chunk[:, None]
-
-        # Compute log mark kernel for this encoding chunk: (enc_tile_size, n_dec)
-        logK_mark_chunk = _compute_log_mark_kernel_gemm(
-            decoding_spike_waveform_features,
-            enc_chunk_features,
-            waveform_stds,
-        )
-
-        # No need to mask logK_mark_chunk - padded entries already have -inf in log_pos_chunk
-
-        if pos_tile_size is None or pos_tile_size >= n_pos:
-            # No position tiling: process all positions at once
-            # vmap over decoding spikes: (n_dec, n_pos)
-            log_marginal_chunk = jax.vmap(compute_for_one_spike, in_axes=(None, 0))(
-                log_pos_chunk, logK_mark_chunk.T
-            )
-        else:
-            # Position tiling: use lax.fori_loop for JIT compilation
-            # Pad positions to be divisible by pos_tile_size
-            n_pos_chunks = (n_pos + pos_tile_size - 1) // pos_tile_size
-            n_pos_padded = n_pos_chunks * pos_tile_size
-            pad_pos = n_pos_padded - n_pos
-
-            if pad_pos > 0:
-                # Pad log_pos_chunk with -inf so they don't contribute
-                log_pos_chunk = jnp.pad(
-                    log_pos_chunk,
-                    ((0, 0), (0, pad_pos)),
-                    mode="constant",
-                    constant_values=-jnp.inf,
-                )
-
-            def process_pos_tile(
-                pos_chunk_idx: int, log_marginal_chunk: jnp.ndarray
-            ) -> jnp.ndarray:
-                """Process one position tile within encoding chunk."""
-                pos_start = pos_chunk_idx * pos_tile_size
-
-                log_pos_tile = jax.lax.dynamic_slice(
-                    log_pos_chunk,
-                    (0, pos_start),
-                    (enc_tile_size, pos_tile_size),
-                )
-
-                # vmap over decoding spikes for this position tile -> (n_dec, pos_tile_size)
-                log_marginal_tile = jax.vmap(
-                    compute_for_one_spike_tile, in_axes=(None, 0)
-                )(log_pos_tile, logK_mark_chunk.T)
-
-                # Update output with this tile
-                # fori_loop handles in-place updates efficiently when possible
-                return jax.lax.dynamic_update_slice(
-                    log_marginal_chunk, log_marginal_tile, (0, pos_start)
-                )
-
-            # Initialize chunk accumulator with -inf (logsumexp identity)
-            log_marginal_chunk = jnp.full((n_dec, n_pos_padded), -jnp.inf)
-            log_marginal_chunk = jax.lax.fori_loop(
-                0, n_pos_chunks, process_pos_tile, log_marginal_chunk
-            )
-
-            # Trim back to original size
-            log_marginal_chunk = log_marginal_chunk[:, :n_pos]
-
-        # Online logsumexp: accumulate this chunk into running total
-        return _masked_logaddexp(log_marginal, log_marginal_chunk)
-
-    # Initialize accumulator with -inf (identity for logsumexp)
-    log_marginal = jnp.full((n_dec, n_pos), -jnp.inf)
-
-    # Use lax.fori_loop instead of Python for-loop for JIT compilation
-    log_marginal = jax.lax.fori_loop(0, n_enc_chunks, process_enc_chunk, log_marginal)
-
-    # Fully masked positions accumulate to -inf; the shared combiner floors
-    # those (and zero-occupancy bins) to LOG_EPS.
-    return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
+    marginal = jnp.full((n_dec, n_pos), -jnp.inf)
+    marginal = jax.lax.fori_loop(0, n_query_chunks, process_query_chunk, marginal)
+    return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
 
 
 def _compensated_linear_marginal(
@@ -671,21 +595,14 @@ def _compensated_linear_marginal(
     occupancy: jnp.ndarray,
     mean_rate: float,
 ) -> jnp.ndarray:
-    """Historical private entry point, now an exact per-query log reduction.
-
-    Mapping one query at a time bounds temporary workspace to the supplied
-    encoding-by-position matrix. The public predictor further tiles both axes.
-    """
+    """Historical entry point using the guarded, independently scaled GEMM."""
     log_w = jnp.broadcast_to(log_w, (logK_mark.shape[0],))
     if logK_mark.shape[1] == 0:
         return jnp.zeros((0, log_position_distance.shape[1]))
 
-    def reduce_query(mark_column):
-        return _masked_logsumexp(
-            log_position_distance + log_w[:, None] + mark_column[:, None]
-        )
-
-    log_marginal = jax.lax.map(reduce_query, logK_mark.T)
+    log_marginal = _stabilized_log_kernel_product(
+        logK_mark, log_position_distance, log_w
+    )
     return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
 
@@ -755,7 +672,7 @@ def estimate_log_joint_mark_intensity(
         Log-space position kernel (output of log_kde_distance). Required if use_streaming=False.
         Using log-space prevents underflow from multi-dimensional Gaussian products.
     use_gemm : bool, optional
-        If True (default), use bounded logsumexp reductions and stable mark distances.
+        If True (default), use bounded stabilized GEMM with a guarded logsumexp fallback.
         If False, use linear-space computation (matches reference exactly).
     pos_tile_size : int | None, optional
         If provided, tile computation over position dimension in chunks (only for use_gemm=True).
@@ -919,9 +836,8 @@ def estimate_log_joint_mark_intensity(
             (encoding_weights < 0) | jnp.isnan(encoding_weights), jnp.nan, log_w
         )
 
-    # Keep every encoding reduction in log space. Bound default and requested
-    # tiles so a full-grid request does not materialize n_dec * n_enc * n_pos.
-    # The decoding axis is already bounded by the public predictor's block_size.
+    # Bound every GEMM operand and exact fallback independently of the public
+    # predictor's block_size. Accumulate encoding tiles in log space.
     reduction_enc_rows = min(
         _LOG_REDUCTION_ENCODING_ROWS,
         max(n_encoding_spikes, 1) if enc_tile_size is None else enc_tile_size,
