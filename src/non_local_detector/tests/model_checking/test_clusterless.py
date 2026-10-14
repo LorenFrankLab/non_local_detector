@@ -12,6 +12,7 @@ dividing the ``(n_spikes, n_features)`` joint mark intensity by it.
 
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from non_local_detector.model_checking.clusterless import (
     discrepancy_test,
@@ -124,6 +125,9 @@ class TestIntervalRescalingTransform:
             features,
             ground_process_intensity,
             joint_mark_intensity,
+            conditional_mark_cdf=lambda times, observed, order: norm.cdf(
+                observed[:, order]
+            ),
         )
 
         assert u_isi.shape == (3,)
@@ -131,17 +135,8 @@ class TestIntervalRescalingTransform:
         assert np.all((u_isi >= 0.0) & (u_isi <= 1.0))
         assert np.all((u_mark >= 0.0) & (u_mark <= 1.0))
 
-    def test_conditional_mark_uses_ground_intensity_at_spike_times(self):
-        """The mark intensity is divided by the ground intensity at the spikes.
-
-        With a time-varying ground intensity, the conditional mark intensity
-        fed to the Rosenblatt transform must use the ground intensity
-        interpolated at the spike times (shape ``(n_spikes,)``), not the raw
-        ``(n_time,)`` array. We verify by reproducing the pre-Rosenblatt
-        quotient: since ``rosenblatt_transform`` applies a per-column
-        empirical CDF (rank transform), feeding ``joint / ground_at_spikes``
-        and the hand-computed equivalent must yield identical uniform output.
-        """
+    def test_fitted_cdf_receives_observed_marks_at_spike_times(self):
+        """Mark rescaling evaluates a fixed model at observed marks, not densities."""
         n_time = 50
         n_features = 2
         time = np.linspace(0.0, 1.0, n_time)
@@ -152,6 +147,11 @@ class TestIntervalRescalingTransform:
         joint_mark_intensity = np.array(
             [[2.0, 4.0], [6.0, 8.0], [10.0, 12.0]], dtype=float
         )
+        calls = []
+
+        def conditional(times, observed, order):
+            calls.append((times, observed, order))
+            return norm.cdf(observed[:, order] - times[:, None])
 
         _, u_mark = interval_rescaling_transform(
             time,
@@ -159,16 +159,14 @@ class TestIntervalRescalingTransform:
             features,
             ground_process_intensity,
             joint_mark_intensity,
+            conditional_mark_cdf=conditional,
         )
 
-        # Reproduce the expected pre-Rosenblatt quotient and rank-transform it.
-        ground_at_spikes = np.interp(
-            electrode_spike_times, time, ground_process_intensity
+        np.testing.assert_allclose(
+            u_mark, norm.cdf(features - electrode_spike_times[:, None])
         )
-        expected_quotient = joint_mark_intensity / ground_at_spikes[:, None]
-        expected_u_mark = rosenblatt_transform(expected_quotient)
-
-        np.testing.assert_allclose(u_mark, expected_u_mark)
+        np.testing.assert_array_equal(calls[0][0], electrode_spike_times)
+        np.testing.assert_array_equal(calls[0][1], features)
 
     def test_permute_waveform_features_runs(self):
         """The optional feature permutation path executes without error."""
@@ -188,20 +186,15 @@ class TestIntervalRescalingTransform:
             ground_process_intensity,
             joint_mark_intensity,
             permute_waveform_features=True,
+            conditional_mark_cdf=lambda times, observed, order: norm.cdf(
+                observed[:, order]
+            ),
         )
         assert u_isi.shape == (3,)
         assert u_mark.shape == (3, n_features)
 
     def test_n_features_equals_n_time_does_not_silently_broadcast(self):
-        """``n_features == n_time`` is the case the old broadcast bug hid.
-
-        The previous implementation divided ``(n_spikes, n_features)`` by the
-        raw ``(n_time,)`` ground intensity. That raised for the common
-        ``n_features != n_time`` shapes, but silently *succeeded* with a wrong
-        per-feature divisor when ``n_features == n_time``. With the spike-time
-        interpolation the divisor is per-spike, so this shape produces the same
-        correct quotient as the hand-computed reference.
-        """
+        """Equal time/feature counts still evaluate CDFs at observed marks."""
         n_time = 3
         n_features = 3  # deliberately equal to n_time
         time = np.linspace(0.0, 1.0, n_time)
@@ -218,15 +211,12 @@ class TestIntervalRescalingTransform:
             features,
             ground_process_intensity,
             joint_mark_intensity,
+            conditional_mark_cdf=lambda times, observed, order: norm.cdf(
+                observed[:, order]
+            ),
         )
 
-        ground_at_spikes = np.interp(
-            electrode_spike_times, time, ground_process_intensity
-        )
-        expected = rosenblatt_transform(
-            joint_mark_intensity / ground_at_spikes[:, None]
-        )
-        np.testing.assert_allclose(u_mark, expected)
+        np.testing.assert_allclose(u_mark, norm.cdf(features))
 
     @pytest.mark.parametrize(
         "bad_value",

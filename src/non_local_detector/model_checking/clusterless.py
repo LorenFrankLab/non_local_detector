@@ -14,18 +14,28 @@ from collections.abc import Callable
 import numpy as np
 import scipy  # type: ignore[import-untyped]
 
+from non_local_detector.model_checking.conditional_marks import (
+    GaussianMixtureConditionalCDF as GaussianMixtureConditionalCDF,
+)
+from non_local_detector.model_checking.conditional_marks import (
+    gaussian_mixture_rosenblatt_transform as gaussian_mixture_rosenblatt_transform,
+)
+
 
 def interval_rescaling_transform(
     time: np.ndarray,
     electrode_spike_times: np.ndarray,
     electrode_spike_waveform_features: np.ndarray,
     ground_process_intensity: np.ndarray,
-    joint_mark_intensity: np.ndarray,
+    joint_mark_intensity: np.ndarray | None = None,
     permute_waveform_features: bool = False,
     *,
     rate_units: str = "Hz",
+    conditional_mark_cdf: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
+    | np.ndarray
+    | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Rescale interspike intervals and mark intensities for goodness-of-fit testing.
+    """Rescale intervals and observed marks using a fixed fitted distribution.
 
     Applies the time and mark rescaling transformations to convert spike trains
     and their associated waveform features into uniform distributions if the
@@ -43,10 +53,9 @@ def interval_rescaling_transform(
     ground_process_intensity : np.ndarray, shape (n_time,)
         Fitted ground process intensity in spikes per second by default.
         Hz rates are linearly interpolated and integrated over physical time.
-    joint_mark_intensity : np.ndarray, shape (n_spikes, n_waveform_features)
-        Joint mark-time intensity function evaluated at spike times and features.
-        Its temporal units must match ``ground_process_intensity`` so their
-        ratio is a conditional mark density.
+    joint_mark_intensity : np.ndarray or None, optional
+        Deprecated density-only input, retained for positional compatibility.
+        Evaluated densities cannot determine conditional CDFs and are ignored.
     permute_waveform_features : bool, optional
         Whether to randomly permute the order of waveform features during
         the Rosenblatt transformation. Default is False.
@@ -55,6 +64,14 @@ def interval_rescaling_transform(
         Explicit ``expected_counts`` retains legacy integration at unit sample
         spacing, including interpolation of that cumulative integral at spikes.
         It does not infer or convert counts from the supplied timestamps.
+    conditional_mark_cdf : callable or np.ndarray
+        Required fitted conditional CDF. A callable receives spike times,
+        the observed marks in original column order, and a feature permutation.
+        It returns sequential conditional CDFs in that permutation order,
+        conditioning each feature on preceding observed features and time or
+        position. An already evaluated array may be supplied when permutation
+        is disabled. Fit this distribution on separate training data; do not
+        estimate it from the marks being checked.
 
     Returns
     -------
@@ -73,22 +90,11 @@ def interval_rescaling_transform(
         rescaled_ground_process_isi
     )
 
-    # Rescale each mark dimension sequentially using a Rosenblatt transformation
-    # based on the conditional mark distribution given the spike time.
-    # The conditional mark intensity is joint_mark_intensity (evaluated at the
-    # spikes) divided by the ground intensity AT THOSE SAME SPIKE TIMES, so the
-    # (n_time,) ground intensity must first be evaluated at the spike times to
-    # align with joint_mark_intensity's rows (same np.interp idiom used by
-    # _compute_rescaled_isi above).
     ground_process_intensity_at_spikes = np.interp(
         electrode_spike_times, time, ground_process_intensity
     )
-    # A non-finite (nan/inf) or non-positive ground intensity makes the
-    # conditional mark intensity (joint / ground) inf or nan. The downstream
-    # Rosenblatt rank transform would launder that into a plausible-looking
-    # value in [0, 1], silently corrupting the goodness-of-fit result, so
-    # reject it loudly here. A `<= 0` test alone misses nan and +inf (both
-    # compare False against 0), so check finiteness explicitly.
+    # An observed event requires a finite positive fitted ground intensity.
+    # Validate it before accepting any supplied conditional mark CDF.
     invalid_ground = ~np.isfinite(ground_process_intensity_at_spikes) | (
         ground_process_intensity_at_spikes <= 0
     )
@@ -96,26 +102,53 @@ def interval_rescaling_transform(
         n_bad = int(np.count_nonzero(invalid_ground))
         raise ValueError(
             f"ground_process_intensity is non-finite or <= 0 at {n_bad} spike "
-            "time(s); the conditional mark intensity (joint / ground) is "
-            "undefined there, and the downstream Rosenblatt rank transform "
-            "would silently launder the resulting inf/nan into a "
-            "plausible-looking goodness-of-fit value. Clip the ground "
-            "intensity to a small positive floor or restrict to visited "
-            "regions before calling this function."
+            "time(s); the fitted model assigns no valid event intensity there. "
+            "Supply a model with finite positive rates at observed spikes, or "
+            "evaluate an explicitly selected region where the model is defined."
         )
-    conditional_mark_intensity = (
-        joint_mark_intensity / ground_process_intensity_at_spikes[:, np.newaxis]
-    )
-    n_features = joint_mark_intensity.shape[1]
+    marks = np.asarray(electrode_spike_waveform_features, dtype=float)
+    if (
+        marks.ndim != 2
+        or marks.shape[0] != len(electrode_spike_times)
+        or not np.isfinite(marks).all()
+    ):
+        raise ValueError(
+            "Observed marks must be a finite (n_spikes, n_features) matrix"
+        )
+    if conditional_mark_cdf is None:
+        raise ValueError(
+            "conditional_mark_cdf is required: supply a fitted conditional CDF callable or evaluated CDF values. Density-only joint_mark_intensity and empirical ranks cannot establish mark goodness of fit."
+        )
+    n_features = marks.shape[1]
     feature_indices = (
         np.random.permutation(n_features)
         if permute_waveform_features
         else np.arange(n_features)
     )
-    conditional_mark_intensity = conditional_mark_intensity[:, feature_indices]
-    uniform_conditional_mark_intensity = rosenblatt_transform(
-        conditional_mark_intensity
-    )
+    if callable(conditional_mark_cdf):
+        uniform_conditional_mark_intensity = np.asarray(
+            conditional_mark_cdf(
+                np.asarray(electrode_spike_times), marks, feature_indices
+            ),
+            dtype=float,
+        )
+    else:
+        if permute_waveform_features:
+            raise ValueError(
+                "Feature permutation requires a callable conditional_mark_cdf; precomputed CDF columns cannot be reconditioned"
+            )
+        uniform_conditional_mark_intensity = np.asarray(
+            conditional_mark_cdf, dtype=float
+        )
+    if uniform_conditional_mark_intensity.shape != marks.shape:
+        raise ValueError(
+            "conditional_mark_cdf must return one value per spike and feature"
+        )
+    if not np.isfinite(uniform_conditional_mark_intensity).all() or np.any(
+        (uniform_conditional_mark_intensity < 0)
+        | (uniform_conditional_mark_intensity > 1)
+    ):
+        raise ValueError("conditional_mark_cdf values must be finite and in [0, 1]")
 
     return uniform_rescaled_ground_process_isi, uniform_conditional_mark_intensity
 
@@ -229,11 +262,13 @@ def empirical_cdf(sample: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def rosenblatt_transform(samples: np.ndarray) -> np.ndarray:
-    """Apply the Rosenblatt transformation to convert samples to uniform distribution.
+    """Return empirical marginal ranks (a legacy name, not fitted rescaling).
 
-    The Rosenblatt transformation converts a multivariate sample to uniform
-    marginals using the probability integral transformation. For independent
-    variables, this reduces to applying the empirical CDF to each dimension.
+    Each column is ranked against its own observed empirical distribution.
+    Distinct values therefore look uniform regardless of the fitted model.
+    These descriptive ranks cannot establish goodness of fit and do not remove
+    dependence between columns. Use a fixed fitted conditional CDF for the
+    sequential probability-integral (Rosenblatt) transform.
 
     Parameters
     ----------
@@ -249,21 +284,20 @@ def rosenblatt_transform(samples: np.ndarray) -> np.ndarray:
 
     Notes
     -----
-    This implementation works for independent samples but not for dependent
-    samples. For dependent samples, conditional CDFs need to be numerically
-    integrated.
+    This utility does not use a statistical model. Its historical name is kept
+    for compatibility; :func:`empirical_marginal_rank_transform` is clearer.
     """
     dim = samples.shape[1]
-    transformed_samples = np.zeros_like(samples)
-
-    # Note: this works for independent samples, but not for dependent samples
-    # Need to numerically integrat conditional CDFs for dependent samples
+    transformed_samples = np.zeros(samples.shape, dtype=float)
 
     for i in range(dim):
         sorted_samples, cdf_values = empirical_cdf(samples[:, i])
         transformed_samples[:, i] = np.interp(samples[:, i], sorted_samples, cdf_values)
 
     return transformed_samples
+
+
+empirical_marginal_rank_transform = rosenblatt_transform
 
 
 def mark_conditional_intensity_transform(
