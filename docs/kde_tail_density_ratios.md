@@ -61,3 +61,12 @@ log occupancy for the tail fallback and NaN diagnostics. This preserves legacy
 low-level vector-position and unsupported-position calls while keeping the
 public finite-tail correction. The local accumulation and tail suites passed
 113 tests after that compatibility check; all 57 property tests also passed.
+
+Independent weighted-tail review found that the common log-KDE helper also
+rounded log weights before their normalization could cancel. It now normalizes
+the weighted, stabilized mass before adding the kernel offset. Weight rescaling
+keeps its sum representable, and empty support bypasses undefined reductions.
+Fifteen additional regressions verify identical-source densities at positions
+200 through 1,457, global weight-scale invariance, analytical Gaussian gradients
+and zero gradients for empty/zero-weight support. These and the existing common,
+tail and four golden cases pass at their unchanged tolerances (101 cases).

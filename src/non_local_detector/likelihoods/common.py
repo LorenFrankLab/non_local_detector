@@ -1545,20 +1545,43 @@ def log_kde(
     if eval_points.ndim == 1:
         eval_points = jnp.expand_dims(eval_points, axis=1)
 
+    if samples.shape[0] == 0:
+        return jnp.full(eval_points.shape[0], LOG_EPS)
+
     # log-kernel matrix K_log with shape (n_samp, n_eval)
     K_log = _log_kernel_matrix(eval_points, samples, std)
 
-    # True log-weight: a zero weight (log = -inf) drops the sample from both the
-    # numerator and the denominator, exactly like the linear ``kde``. ``safe_log``
-    # would floor a zero weight to LOG_EPS and leak that sample's kernel back in
-    # (visible at an eval point near a zero-weight sample but far from the rest).
-    safe_weights = jnp.where(weights > 0, weights, 1.0)
-    log_w = jnp.where(weights > 0, jnp.log(safe_weights), -jnp.inf)  # (n_samp,)
-    log_num = logsumexp(log_w[:, None] + K_log, axis=0)  # (n_eval,)
-    log_den = logsumexp(log_w)  # scalar; -inf only when every weight is 0
-    # All-zero weights -> no support anywhere. Return LOG_EPS (matching the linear
-    # kde's 0.0, which callers floor) instead of NaN from -inf - (-inf).
-    return jnp.where(jnp.isneginf(log_den), LOG_EPS, log_num - log_den)
+    positive_weights = jnp.where(weights > 0, weights, 0.0)
+    weight_scale = jnp.max(positive_weights)
+    positive_weights = positive_weights / jnp.where(weight_scale > 0, weight_scale, 1.0)
+    total = jnp.sum(positive_weights)
+
+    def supported(_):
+        # Keep the kernel offset separate from weight normalization. Adding a
+        # log weight to a huge negative kernel rounds away small terms before
+        # they can cancel; identical sources must retain their single kernel.
+        terms = jnp.where(positive_weights[:, None] > 0, K_log, -jnp.inf)
+        maximum = jnp.max(terms, axis=0)
+        safe_maximum = jnp.where(jnp.isneginf(maximum), 0.0, maximum)
+        average = (
+            jnp.sum(
+                positive_weights[:, None] * jnp.exp(terms - safe_maximum[None, :]),
+                axis=0,
+            )
+            / total
+        )
+        safe_average = jnp.where(average > 0, average, 1.0)
+        values = jnp.where(average == 0, -jnp.inf, maximum + jnp.log(safe_average))
+        # Invalid sources retain the established diagnostic even at zero mass.
+        return jnp.where(jnp.any(jnp.isnan(K_log), axis=0), jnp.nan, values)
+
+    # Bypass undefined empty reductions, including their derivatives.
+    return jax.lax.cond(
+        total > 0,
+        supported,
+        lambda _: jnp.full(eval_points.shape[0], LOG_EPS),
+        None,
+    )
 
 
 def block_log_kde(
