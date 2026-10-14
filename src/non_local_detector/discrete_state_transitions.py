@@ -921,7 +921,7 @@ def estimate_non_stationary_state_transition_from_responses(
     response: np.ndarray,
     concentration: float = 1.0,
     stickiness: float | np.ndarray = 0.0,
-    transition_regularization: float = 1e-5,
+    transition_regularization: float = 0.1,
     optimization_method: str = "trust-exact",
     maxiter: int | None = 100,
     disp: bool = False,
@@ -947,7 +947,8 @@ def estimate_non_stationary_state_transition_from_responses(
     stickiness : float or np.ndarray, optional
         Dirichlet prior stickiness parameter (diagonal enhancement), by default 0.0.
     transition_regularization : float, optional
-        L2 penalty on coefficients (excluding intercept), by default 1e-5.
+        L2 penalty on coefficients (excluding intercept), by default 0.1, as
+        for the detectors' ``discrete_transition_regularization``.
     optimization_method : str, optional
         Optimization method for `scipy.optimize.minimize`, by default
         "trust-exact": Newton steps with the exact float64 Hessian, which
@@ -1374,7 +1375,7 @@ def dirichlet_neg_log_likelihood(
     design_matrix: np.ndarray,
     response: np.ndarray,
     alpha: float | np.ndarray = 1.0,
-    l2_penalty: float = 1e-5,
+    l2_penalty: float = 0.1,
 ) -> float:
     """Negative log posterior of one covariate-dependent transition row.
 
@@ -1395,7 +1396,8 @@ def dirichlet_neg_log_likelihood(
     alpha : float or np.ndarray, shape (n_states,), optional
         Dirichlet prior parameters for this row. Defaults to 1.0 (no prior).
     l2_penalty : float, optional
-        L2 penalty on coefficients (excluding intercept), by default 1e-5.
+        L2 penalty on coefficients (excluding intercept), by default 0.1, as
+        for the detectors' ``discrete_transition_regularization``.
         The intercept is assumed to be the first coefficient row
         (``coefficients[0]``), as produced by patsy ``"1 + ..."`` formulas.
         A ``"0 + ..."`` formula or hand-built design matrix without a leading
@@ -1418,7 +1420,7 @@ def dirichlet_gradient(
     design_matrix: np.ndarray,
     response: np.ndarray,
     alpha: float | np.ndarray = 1.0,
-    l2_penalty: float = 1e-5,
+    l2_penalty: float = 0.1,
 ) -> np.ndarray:
     """Gradient of :func:`dirichlet_neg_log_likelihood`.
 
@@ -1444,7 +1446,7 @@ def dirichlet_hessian(
     design_matrix: np.ndarray,
     response: np.ndarray,
     alpha: float | np.ndarray = 1.0,
-    l2_penalty: float = 1e-5,
+    l2_penalty: float = 0.1,
 ) -> np.ndarray:
     """Hessian of :func:`dirichlet_neg_log_likelihood`.
 

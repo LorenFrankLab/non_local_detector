@@ -6,6 +6,7 @@ Tests the core EM algorithm functions:
 - _discrete_transition_statistics and _discrete_transition_from_statistics
 """
 
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1892,6 +1893,27 @@ class TestNonStationaryPriorAndConvergence:
             rtol=1e-6,
             atol=1e-8,
         )
+
+    def test_m_step_functions_default_to_the_detectors_ridge(self):
+        """Direct calls get the same L2 penalty as a detector's M-step."""
+        from non_local_detector import NonLocalSortedSpikesDetector
+
+        detector_default = (
+            NonLocalSortedSpikesDetector().discrete_transition_regularization
+        )
+        defaults = [
+            inspect.signature(estimate_non_stationary_state_transition_from_responses)
+            .parameters["transition_regularization"]
+            .default
+        ] + [
+            inspect.signature(function).parameters["l2_penalty"].default
+            for function in (
+                dirichlet_neg_log_likelihood,
+                dirichlet_gradient,
+                dirichlet_hessian,
+            )
+        ]
+        assert defaults == [detector_default] * 4
 
     @pytest.mark.parametrize(
         ("regularization", "bounded"), [(0.1, True), (1e-10, False)]
