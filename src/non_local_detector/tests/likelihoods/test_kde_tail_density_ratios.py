@@ -7,6 +7,7 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
+    clusterless_kde,
     fit_clusterless_kde_encoding_model,
     fit_clusterless_kde_log_encoding_model,
     fit_sorted_spikes_kde_encoding_model,
@@ -14,7 +15,19 @@ from non_local_detector.likelihoods import (
     predict_clusterless_kde_log_log_likelihood,
     predict_sorted_spikes_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import KDEModel, log_density_intensity
+from non_local_detector.likelihoods.common import (
+    _KDE_BLOCK_KERNEL_BYTES,
+    LOG_EPS,
+    KDEModel,
+    _batched_kde_rows,
+    _compiled_scaled_kde_log_density,
+    _kde_log_densities,
+    _log_space_kde_log_density,
+    _sorted_sample_keys,
+    kde_log_density,
+    log_density_intensity,
+    traced_kde_log_density,
+)
 from non_local_detector.likelihoods.streamed_kde import (
     _streamed_joint_mark_log_intensity,
 )
@@ -96,6 +109,47 @@ def test_mark_event_term_survives_small_position_densities(
     np.testing.assert_allclose(
         np.asarray(with_spike - baseline), expected, rtol=1e-5, atol=2e-5
     )
+
+
+@pytest.mark.parametrize("has_tails", [False, True])
+def test_non_local_kernel_gets_log_occupancy_only_with_occupancy_tails(
+    monkeypatch, has_tails
+):
+    """Without occupancy tails the log-space mark fallback stays out of the kernel."""
+    time = np.arange(50.0)
+    position = (np.zeros(50) if has_tails else np.linspace(0.0, 200.0, 50))[:, None]
+    env = Environment(
+        place_bin_size=5.0, position_range=((0.0, 200.0),)
+    ).fit_place_grid(position, infer_track_interior=False)
+    model = fit_clusterless_kde_encoding_model(
+        time,
+        position,
+        [time],
+        [np.zeros((50, 1))],
+        env,
+        position_std=1.0 if has_tails else 5.0,
+        waveform_std=1.0,
+        disable_progress_bar=True,
+    )
+    received = []
+    original = clusterless_kde._add_electrode_mark_intensities
+
+    def spy(*args, **kwargs):
+        received.append(args[11])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(clusterless_kde, "_add_electrode_mark_intensities", spy)
+    predict_clusterless_kde_log_likelihood(
+        time,
+        position,
+        [np.array([0.5])],
+        [np.zeros((1, 1))],
+        time_edges=np.array([0.0, 1.0]),
+        is_local=False,
+        **model,
+    )
+    assert len(received) == 1
+    assert (received[0] is not None) == has_tails
 
 
 @pytest.mark.parametrize("is_local", [False, True])
@@ -204,3 +258,247 @@ def test_sorted_public_local_path_preserves_nan_position_diagnostic():
     )
     assert result.shape == (1, 1)
     assert np.isnan(np.asarray(result)[0, 0])
+
+
+ENTRIES = ["traced", "host", "tiled"]
+
+
+def _true_log_density(entry, points, samples, std, block_size, weights):
+    """True log density through the traced kernel, the host entry or sample tiles."""
+    if entry == "traced":
+        return traced_kde_log_density(points, samples, std, block_size, weights)
+    model = KDEModel(std=std, block_size=block_size).fit(samples, weights)
+    if entry == "tiled":
+        return clusterless_kde._predict_kde_log_density(model, points, 128, block_size)
+    return kde_log_density(model, points)
+
+
+def _tail_case(n_dims):
+    """Points near weighted samples, then three hundreds to thousands of nats out."""
+    rng = np.random.default_rng(12)
+    samples = jnp.asarray(rng.normal(0.0, 5.0, (400, n_dims)), jnp.float32)
+    near = rng.normal(0.0, 5.0, (200, n_dims))
+    far = np.outer([60.0, 120.0, 400.0], np.ones(n_dims))
+    points = jnp.asarray(np.concatenate([near, far]), jnp.float32)
+    weights = jnp.asarray(rng.uniform(0.0, 1.0, 400), jnp.float32).at[:50].set(0.0)
+    return points, samples, jnp.full(n_dims, 2.0), weights
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+@pytest.mark.parametrize("n_dims", [1, 2])
+@pytest.mark.parametrize("block_size", [64, 10_000])
+def test_true_log_density_matches_log_space_evaluation_in_and_beyond_tails(
+    block_size, n_dims, entry
+):
+    """The one-pass scaled KDE matches full log-space evaluation everywhere.
+
+    Points near the samples are ordinary; the last three lie far in the tail,
+    where the traced kernel repairs their blocks in log space, and the host
+    entry point and sample tiles either scale them exactly (1D) or repair them
+    afterwards (in log space or with a running maximum).
+    """
+    points, samples, std, weights = _tail_case(n_dims)
+    actual = _true_log_density(entry, points, samples, std, block_size, weights)
+    expected = _log_space_kde_log_density(points, samples, std, block_size, weights)
+    assert np.isfinite(expected).all()
+    assert (np.asarray(expected[-3:]) < LOG_EPS).all()
+    assert (np.asarray(expected[:-3]) > LOG_EPS).all()
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=2e-5)
+
+
+def test_one_dimensional_pass_scales_distant_tails_without_log_space():
+    """Sorted sample keys give 1D tail points their exact scale in one pass."""
+    points, samples, std, weights = _tail_case(1)
+    values, needs_log_space = _compiled_scaled_kde_log_density(
+        points, samples, std, 64, weights, _sorted_sample_keys(points, samples, weights)
+    )
+    expected = _log_space_kde_log_density(points, samples, std, 64, weights)
+    assert not np.asarray(needs_log_space).any()
+    np.testing.assert_allclose(values, expected, rtol=1e-6, atol=2e-5)
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+def test_true_log_density_matches_log_space_for_extremely_light_neighbors(entry):
+    """A near sample whose weight is 1e-36 of the largest still sets the density.
+
+    The scale ignores weights, so the point is flagged and re-evaluated in log
+    space, which offsets by the largest weighted term; every entry agrees.
+    """
+    samples = jnp.asarray([[0.0], [300.0]])
+    weights = jnp.asarray([1e-36, 1.0])
+    points = jnp.asarray([[0.0]])
+    std = jnp.ones(1)
+    actual = _true_log_density(entry, points, samples, std, 64, weights)
+    expected = _log_space_kde_log_density(points, samples, std, 64, weights)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-4)
+
+
+@pytest.mark.parametrize("entry", [*ENTRIES, "predict_log"])
+def test_true_log_density_keeps_positive_weights_of_any_ratio(entry):
+    """A weight 1e-40 of the largest still sets the density where it dominates.
+
+    Dividing by the largest weight flushes that ratio to zero in float32; the
+    near sample's term then vanished and the far sample's -45,000 remained.
+    """
+    samples = jnp.asarray([[0.0], [300.0]])
+    weights = jnp.asarray([1e-30, 1e10])
+    points = jnp.asarray([[0.0]])
+    std = jnp.ones(1)
+    if entry == "predict_log":
+        actual = KDEModel(std=1.0).fit(samples, weights).predict_log(points)
+    else:
+        actual = _true_log_density(entry, points, samples, std, 64, weights)
+    expected = np.log(1e-30 / (1e-30 + 1e10)) - 0.5 * np.log(2 * np.pi)
+    np.testing.assert_allclose(actual, [expected], rtol=1e-6)
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+def test_true_log_density_recovers_mass_carried_by_terms_below_tiny(entry):
+    """Terms that each flush below ``tiny`` can still hold most of the mass.
+
+    The nearest sample carries a relative weight of 1e-37; a thousand samples
+    13.4 bandwidths away each contribute about 1e-39 of its kernel, which
+    float32 flushes to zero, yet together they hold 91% of the density.
+    Offsetting each point by its largest weighted term keeps them.
+    """
+    samples = jnp.asarray([[0.0]] + [[13.4]] * 1000)
+    weights = jnp.asarray([1e-37] + [1.0] * 1000)
+    points = jnp.asarray([[0.0]])
+    actual = _true_log_density(entry, points, samples, jnp.ones(1), 64, weights)
+    expected = np.log(
+        (1e-37 + 1000 * np.exp(-0.5 * np.float32(13.4) ** 2)) / (1e-37 + 1000)
+    ) - 0.5 * np.log(2 * np.pi)
+    np.testing.assert_allclose(actual, [expected], rtol=1e-6)
+
+
+def test_tiled_density_matches_untiled_for_weights_near_float_max():
+    """Tiled sums of 1e38 weights neither overflow nor lose the density."""
+    samples = jnp.asarray([[0.0], [1.0], [2.0], [3.0]])
+    weights = jnp.full(4, 1e38)
+    points = jnp.asarray([[1.5], [40.0]])
+    model = KDEModel(std=1.0, block_size=1).fit(samples, weights)
+    tiled = clusterless_kde._predict_kde_log_density(model, points, 2, 1)
+    np.testing.assert_allclose(tiled, kde_log_density(model, points), rtol=1e-6)
+    assert np.isfinite(tiled).all()
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+def test_public_tiled_prediction_keeps_the_rate_for_weights_near_float_max(is_local):
+    """Encoding tiles give the untiled no-spike score with 1e38 weights."""
+    time = np.arange(4.0)
+    position = np.arange(4.0)[:, None]
+    env = Environment(place_bin_size=1.0, position_range=((0.0, 4.0),)).fit_place_grid(
+        position, infer_track_interior=False
+    )
+    scores = []
+    for encoding_block_size in (None, 2):
+        model = fit_clusterless_kde_encoding_model(
+            time,
+            position,
+            [time],
+            [np.zeros((4, 1))],
+            env,
+            weights=np.full(4, 1e38),
+            position_std=1.0,
+            waveform_std=1.0,
+            disable_progress_bar=True,
+            encoding_block_size=encoding_block_size,
+        )
+        scores.append(
+            predict_clusterless_kde_log_likelihood(
+                time,
+                position,
+                [np.empty(0)],
+                [np.empty((0, 1))],
+                time_edges=np.array([0.0, 1.0]),
+                is_local=is_local,
+                **model,
+            )
+        )
+    np.testing.assert_allclose(scores[0], -1.0, rtol=1e-5)
+    np.testing.assert_allclose(scores[1], scores[0], rtol=1e-5)
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+def test_true_log_density_keeps_nan_points_and_samples_visible(entry):
+    """A NaN coordinate yields NaN, as log-space evaluation does."""
+    std = jnp.ones(1)
+    samples = jnp.asarray([[0.0], [1.0], [2.0]])
+    points = jnp.asarray([[np.nan], [0.5]])
+    with_nan_point = _true_log_density(entry, points, samples, std, 64, jnp.ones(3))
+    assert np.isnan(with_nan_point[0])
+    np.testing.assert_allclose(
+        with_nan_point[1],
+        _log_space_kde_log_density(points, samples, std, 64, jnp.ones(3))[1],
+        rtol=1e-6,
+    )
+    with_nan_sample = _true_log_density(
+        entry,
+        jnp.asarray([[0.5], [5.0]]),
+        samples.at[1].set(np.nan),
+        std,
+        64,
+        jnp.ones(3),
+    )
+    assert np.isnan(with_nan_sample).all()
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+def test_true_log_density_keeps_empty_and_invalid_support(entry):
+    """Zero total weight is no support; a NaN weight stays visible."""
+    samples = jnp.zeros((3, 1))
+    points = jnp.asarray([[0.0], [50.0]])
+    std = jnp.ones(1)
+    empty = _true_log_density(entry, points, samples, std, 64, jnp.zeros(3))
+    invalid = _true_log_density(
+        entry, points, samples, std, 64, jnp.asarray([1.0, jnp.nan, 1.0])
+    )
+    assert np.isneginf(empty).all()
+    assert np.isnan(invalid).all()
+
+
+@pytest.mark.parametrize("n_dims", [1, 2])
+def test_batched_log_densities_match_each_model(n_dims):
+    """Grouped, padded evaluation gives each model's own true log density.
+
+    Sample counts 40 and 45 share a padded size, 300 does not; zero weights,
+    distant tails and a NaN sample are kept per model.
+    """
+    rng = np.random.default_rng(3)
+    models = []
+    for n_samples in (40, 45, 300, 45):
+        samples = rng.normal(0.0, 5.0, (n_samples, n_dims)).astype(np.float32)
+        weights = rng.uniform(0.0, 1.0, n_samples).astype(np.float32)
+        weights[:5] = 0.0
+        models.append(KDEModel(std=2.0, block_size=64).fit(samples, weights))
+    nan_samples = np.asarray(models[3].samples_).copy()
+    nan_samples[7] = np.nan
+    models[3] = KDEModel(std=2.0, block_size=64).fit(nan_samples, models[3].weights_)
+    points = jnp.asarray(
+        np.concatenate(
+            [rng.normal(0.0, 5.0, (30, n_dims)), np.full((2, n_dims), 150.0)]
+        ),
+        jnp.float32,
+    )
+    for batched, model in zip(_kde_log_densities(models, points), models, strict=True):
+        np.testing.assert_allclose(
+            batched, kde_log_density(model, points), rtol=1e-6, atol=2e-5
+        )
+
+
+@pytest.mark.parametrize(
+    "n_models, n_samples, block_size",
+    [(16, 65_536, 1_024), (40, 65_536, 1_024), (3, 4_096, 100), (16, 20_000_000, 64)],
+)
+def test_batched_kernels_share_one_model_workspace(n_models, n_samples, block_size):
+    """A batch of models together stays within one model's kernel budget."""
+    points = jax.ShapeDtypeStruct((1_024, 1), jnp.float32)
+    samples = jax.ShapeDtypeStruct((n_samples, 1), jnp.float32)
+    weights = jax.ShapeDtypeStruct((n_samples,), jnp.float32)
+    batch_size, rows = _batched_kde_rows(
+        block_size, n_models, points, samples, jnp.ones(1), weights
+    )
+    assert 1 <= batch_size <= min(16, n_models)
+    assert rows >= 1
+    if n_samples * 4 <= _KDE_BLOCK_KERNEL_BYTES:
+        assert batch_size * rows * n_samples * 4 <= _KDE_BLOCK_KERNEL_BYTES

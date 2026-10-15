@@ -22,6 +22,7 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     _log_kernel_matrix,
     _normalized_row_ids,
+    _relative_weights,
     as_std_array,
     deterministic_row_add,
     log_density_intensity,
@@ -191,6 +192,7 @@ def _sample_tiled_log_ratio(
     std,
     weights,
     log_occupancy,
+    log_scale=None,
     *,
     sample_tile_size,
     eval_tile_size,
@@ -200,25 +202,37 @@ def _sample_tiled_log_ratio(
 
     ``n_position_dims=0`` and a zero normalizer give an unfloored log density.
     Encoding support is unpadded; only evaluation queries are padded internally.
+    Weights enter as logs relative to the largest, so neither weights nor their
+    sum overflow and no positive weight is discarded. Without ``log_scale``,
+    each query tracks a running maximum of its weighted terms across sample
+    tiles. A ``log_scale`` of shape ``(n_points,)`` that bounds every kernel
+    term from above replaces it, so tiles add without a maximum pass; terms
+    below ``tiny`` relative to it are lost, and callers re-evaluate those
+    points without a scale. A NaN weight makes every result NaN.
     """
     n_points = points.shape[0]
     if n_points == 0:
         return jnp.zeros(0)
     if samples.shape[0] == 0:
         return jnp.full(n_points, -jnp.inf)
-    total = jnp.sum(weights)
+    _, log_weights, relative_total = _relative_weights(weights)
+    log_total = jnp.log(jnp.where(relative_total > 0, relative_total, 1.0))
 
     def supported(_):
         padding = (-n_points) % eval_tile_size
         queries = jnp.pad(points, ((0, padding), (0, 0)), mode="edge")
         normalizers = jnp.pad(log_occupancy, (0, padding), mode="edge")
+        scales = (
+            None if log_scale is None else jnp.pad(log_scale, (0, padding), mode="edge")
+        )
         full_samples, tail_samples = divmod(samples.shape[0], sample_tile_size)
 
-        def evaluate(query, log_occ):
+        def evaluate(query, log_occ, scale):
             safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
 
-            def add_samples(carry, sample, sample_weights):
+            def add_samples(carry, sample, sample_log_weights):
                 running_max, running_sum = carry
+                positive = jnp.isfinite(sample_log_weights)
 
                 def contribution(_):
                     position = (
@@ -235,20 +249,34 @@ def _sample_tiled_log_ratio(
                         std[n_position_dims:],
                     )
                     terms = position + marks
-                    terms = jnp.where(sample_weights[:, None] > 0.0, terms, -jnp.inf)
-                    chunk_max = jnp.max(terms, axis=0)
-                    maximum = jnp.maximum(running_max, chunk_max)
+                    if scale is None:
+                        weighted = jnp.where(
+                            positive[:, None],
+                            terms + sample_log_weights[:, None],
+                            -jnp.inf,
+                        )
+                        maximum = jnp.maximum(running_max, jnp.max(weighted, axis=0))
+                    else:
+                        maximum = running_max
                     safe_maximum = jnp.where(jnp.isneginf(maximum), 0.0, maximum)
                     total = running_sum * jnp.exp(running_max - safe_maximum)
+                    # Each kernel is taken relative to the offset before its
+                    # log weight is added, as in log_kde.
                     total = total + jnp.sum(
-                        sample_weights[:, None]
-                        * jnp.exp(terms - safe_maximum[None, :]),
+                        jnp.exp(
+                            jnp.where(
+                                positive[:, None],
+                                (terms - safe_maximum[None, :])
+                                + sample_log_weights[:, None],
+                                -jnp.inf,
+                            )
+                        ),
                         axis=0,
                     )
                     return maximum, total
 
                 return jax.lax.cond(
-                    jnp.sum(sample_weights) > 0.0, contribution, lambda _: carry, None
+                    jnp.any(positive), contribution, lambda _: carry, None
                 )
 
             def full_tile(tile, running):
@@ -256,23 +284,26 @@ def _sample_tiled_log_ratio(
                 return add_samples(
                     running,
                     jax.lax.dynamic_slice_in_dim(samples, first, sample_tile_size),
-                    jax.lax.dynamic_slice_in_dim(weights, first, sample_tile_size),
+                    jax.lax.dynamic_slice_in_dim(log_weights, first, sample_tile_size),
                 )
 
-            carry = (jnp.full(query.shape[0], -jnp.inf), jnp.zeros(query.shape[0]))
+            carry = (
+                jnp.full(query.shape[0], -jnp.inf) if scale is None else scale,
+                jnp.zeros(query.shape[0]),
+            )
             if full_samples:
                 carry = jax.lax.fori_loop(0, full_samples, full_tile, carry)
             if tail_samples:
                 first = full_samples * sample_tile_size
-                carry = add_samples(carry, samples[first:], weights[first:])
+                carry = add_samples(carry, samples[first:], log_weights[first:])
             maximum, numerator = carry
-            # Normalize the stabilized linear sum before adding its log to the
-            # kernel offset. Identical kernels then give exactly that kernel's
-            # log density even when its offset is enormous.
-            average = numerator / total
-            safe_average = jnp.where(average > 0.0, average, 1.0)
-            result = maximum + jnp.log(safe_average)
-            result = jnp.where((average == 0.0) & ~jnp.isnan(result), -jnp.inf, result)
+            # Normalize the stabilized sum before adding the offset. Identical
+            # kernels then give exactly that kernel's log density even when
+            # its offset is enormous. A NaN sum stays NaN; with a fixed scale,
+            # no maximum carries it.
+            defined = (numerator > 0.0) | jnp.isnan(numerator)
+            log_numerator = jnp.log(jnp.where(defined, numerator, 1.0))
+            result = jnp.where(defined, maximum + (log_numerator - log_total), -jnp.inf)
             return jnp.where(
                 jnp.isneginf(log_occ) & ~jnp.isnan(result), -jnp.inf, result
             )
@@ -281,8 +312,13 @@ def _sample_tiled_log_ratio(
             first = tile * eval_tile_size
             query = jax.lax.dynamic_slice_in_dim(queries, first, eval_tile_size)
             log_occ = jax.lax.dynamic_slice_in_dim(normalizers, first, eval_tile_size)
+            scale = (
+                None
+                if scales is None
+                else jax.lax.dynamic_slice_in_dim(scales, first, eval_tile_size)
+            )
             return jax.lax.dynamic_update_slice(
-                output, evaluate(query, log_occ), (first,)
+                output, evaluate(query, log_occ, scale), (first,)
             )
 
         return jax.lax.fori_loop(
@@ -292,9 +328,13 @@ def _sample_tiled_log_ratio(
             jnp.full(queries.shape[0], -jnp.inf),
         )[:n_points]
 
-    return jax.lax.cond(
-        total > 0.0, supported, lambda _: jnp.full(n_points, -jnp.inf), None
+    result = jax.lax.cond(
+        jnp.any(weights > 0.0),
+        supported,
+        lambda _: jnp.full(n_points, -jnp.inf),
+        None,
     )
+    return jnp.where(jnp.isnan(jnp.sum(weights)), jnp.nan, result)
 
 
 def _joint_inputs(

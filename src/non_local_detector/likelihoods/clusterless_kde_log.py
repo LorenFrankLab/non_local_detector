@@ -14,6 +14,7 @@ from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
     KDEModel,
+    _kde_log_densities,
     _pad_rows,
     _padded_occupancy_count,
     _padded_samples,
@@ -23,6 +24,7 @@ from non_local_detector.likelihoods.common import (
     _prepared_kde_nonlocal_points,
     _prepared_kde_position_log_kernel,
     _SpikeTimeOrder,
+    _true_kde_log_density,
     as_std_array,
     deterministic_row_sum,
     drop_zero_weight_samples,
@@ -1228,7 +1230,6 @@ def _add_electrode_log_mark_intensities(
     jax.jit,
     static_argnames=(
         "block_size",
-        "occupancy_block_size",
         "gpi_block_size",
         "indices_are_sorted",
     ),
@@ -1245,19 +1246,16 @@ def _add_electrode_local_terms(
     encoding_weights: jnp.ndarray,
     position_std: jnp.ndarray,
     waveform_stds: jnp.ndarray,
-    occupancy_samples: jnp.ndarray,
-    occupancy_weights: jnp.ndarray,
-    occupancy_std: jnp.ndarray,
+    log_occupancy_at_spikes: jnp.ndarray,
     gpi_samples: jnp.ndarray,
     gpi_weights: jnp.ndarray,
     gpi_std: jnp.ndarray,
     positions: jnp.ndarray,
-    occupancy: jnp.ndarray,
+    log_occupancy: jnp.ndarray,
     scaled_rate: float,
     mean_rate: float,
     *,
     block_size: int,
-    occupancy_block_size: int,
     gpi_block_size: int,
     indices_are_sorted: bool,
     log_gpi_density: jnp.ndarray | None = None,
@@ -1276,14 +1274,14 @@ def _add_electrode_local_terms(
     encoding_positions, encoding_features, encoding_weights
         Padded joint KDE samples and weights (zero for padding).
     position_std, waveform_stds : jnp.ndarray
-    occupancy_samples, occupancy_weights, occupancy_std
-        Fitted occupancy KDE leaves.
+    log_occupancy_at_spikes : jnp.ndarray, shape (n_padded_spikes,)
+        True log occupancy density at ``spike_positions``.
     gpi_samples, gpi_weights, gpi_std
         This electrode's padded ground-process KDE leaves.
     positions : jnp.ndarray, shape (n_rows, n_position_dims)
         Animal position at each row.
-    occupancy : jnp.ndarray, shape (n_rows,)
-        Occupancy density at ``positions``.
+    log_occupancy : jnp.ndarray, shape (n_rows,)
+        Log occupancy density at ``positions``.
     scaled_rate : float
         Mean rate times ``RATE_REFERENCE_SECONDS``.
     mean_rate : float
@@ -1293,13 +1291,6 @@ def _add_electrode_local_terms(
     -------
     log_likelihood, expected_counts : jnp.ndarray, shape (n_rows,)
     """
-    log_occupancy_at_spikes = traced_kde_log_density(
-        spike_positions,
-        occupancy_samples,
-        occupancy_std,
-        occupancy_block_size,
-        occupancy_weights,
-    )
     # See compute_local_log_likelihood for the per-spike combine and floor.
     log_ratio = local_kde_log_ratio(
         spike_positions,
@@ -1327,7 +1318,7 @@ def _add_electrode_local_terms(
             positions, gpi_samples, gpi_std, gpi_block_size, gpi_weights
         )
     expected_counts = expected_counts + jnp.exp(
-        log_density_intensity(mean_rate, log_gpi_density, occupancy)
+        log_density_intensity(mean_rate, log_gpi_density, log_occupancy)
     )
     return log_likelihood, expected_counts
 
@@ -1553,8 +1544,9 @@ def fit_clusterless_kde_encoding_model(
         occupancy_samples, weights=jnp.asarray(occupancy_weights)
     )
 
-    occupancy = occupancy_model.predict(interior_place_bin_centers)
     log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
+    # The probability density is the exponential of the true log density.
+    occupancy = jnp.exp(log_occupancy)
     encoding_positions = []
     encoding_weights = []
     mean_rates = []
@@ -1607,9 +1599,15 @@ def fit_clusterless_kde_encoding_model(
         )
         gpi_models.append(gpi_model)
 
-        log_gpi_density = kde_log_density(gpi_model, interior_place_bin_centers)
+    # One batched pass per group of similar sample counts, instead of a
+    # compiled kernel for every electrode's sample count.
+    for mean_rate, log_gpi_density in zip(
+        mean_rates,
+        _kde_log_densities(gpi_models, interior_place_bin_centers),
+        strict=True,
+    ):
         summed_ground_process_intensity += jnp.exp(
-            log_density_intensity(mean_rates[-1], log_gpi_density, log_occupancy)
+            log_density_intensity(mean_rate, log_gpi_density, log_occupancy)
         )
 
     # Clip the summed intensity once (not per electrode) so an empty bin gets a
@@ -2026,7 +2024,7 @@ def compute_local_log_likelihood(
     if encoding_weights is None:
         encoding_weights = [None] * len(encoding_positions)
 
-    interpolated_position, occupancy = _prepare_kde_local_inputs(
+    interpolated_position, log_occupancy = _prepare_kde_local_inputs(
         occupancy_model,
         position_time,
         position,
@@ -2114,10 +2112,13 @@ def compute_local_log_likelihood(
             occupancy_model.weights_,
             count=_padded_occupancy_count,
         )
+        padded_spike_positions = jnp.asarray(
+            _pad_rows(position_at_spike_time, n_padded)
+        )
         log_likelihood, summed_expected_counts = _add_electrode_local_terms(
             log_likelihood,
             summed_expected_counts,
-            jnp.asarray(_pad_rows(position_at_spike_time, n_padded)),
+            padded_spike_positions,
             jnp.asarray(
                 _pad_rows(electrode_decoding_spike_waveform_features, n_padded)
             ),
@@ -2127,18 +2128,23 @@ def compute_local_log_likelihood(
             padded_weights,
             position_std_array,
             as_std_array(waveform_std, n_waveform_features),
-            occupancy_samples,
-            occupancy_weights,
-            occupancy_std,
+            # Evaluated outside the kernel, which then compiles no density
+            # repair for it.
+            _true_kde_log_density(
+                padded_spike_positions,
+                occupancy_samples,
+                occupancy_std,
+                occupancy_model.block_size or n_padded,
+                occupancy_weights,
+            ),
             gpi_samples,
             gpi_weights,
             as_std_array(electrode_gpi_model.std, n_position_dims),
             positions,
-            occupancy,
+            log_occupancy,
             electrode_mean_rate * RATE_REFERENCE_SECONDS,
             electrode_mean_rate,
             block_size=min(block_size, n_padded),
-            occupancy_block_size=occupancy_model.block_size or n_padded,
             gpi_block_size=electrode_gpi_model.block_size or n_rows,
             indices_are_sorted=selection.indices_are_sorted,
             log_gpi_density=_prepared_kde_log_density(
