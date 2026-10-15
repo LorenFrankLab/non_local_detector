@@ -101,6 +101,7 @@ class GaussianMixtureConditionalCDF:
         if covariance.shape != expected:
             raise ValueError(f"covariances must be finite with shape {expected}")
         keep = weights > 0
+        self._kept_components = np.flatnonzero(keep)
         means, weights = means[keep], weights[keep]
         weights = weights / weights.max()
         weights = weights / weights.sum()
@@ -125,10 +126,13 @@ class GaussianMixtureConditionalCDF:
                 raise ValueError("Gaussian component variances must be positive")
             self.variances = covariance
         else:
-            if not np.allclose(
-                covariance, np.swapaxes(covariance, 1, 2), rtol=0, atol=0
-            ):
+            # Fitted covariances are symmetric only to rounding (scikit-learn's
+            # differ from their transposes by about 1e-14); symmetrize those.
+            transposed = np.swapaxes(covariance, 1, 2)
+            scale = np.abs(covariance).max(axis=(1, 2), keepdims=True)
+            if not np.all(np.abs(covariance - transposed) <= 1e-10 * scale):
                 raise ValueError("Gaussian component covariances must be symmetric")
+            covariance = 0.5 * (covariance + transposed)
             try:
                 np.linalg.cholesky(covariance)
             except np.linalg.LinAlgError as exc:
@@ -308,8 +312,31 @@ class GaussianMixtureConditionalCDF:
         *,
         feature_order: Sequence[int] | None = None,
         given_positions: ArrayLike | None = None,
+        component_log_weights: Callable[[int, int], np.ndarray] | None = None,
     ) -> np.ndarray:
-        """Evaluate sequential fitted CDFs in the requested conditioning order."""
+        """Evaluate sequential fitted CDFs in the requested conditioning order.
+
+        Parameters
+        ----------
+        observed_marks : array_like, shape (n_queries, n_features)
+        feature_order : sequence of int, optional
+            Conditioning order of the mark features; identity by default.
+        given_positions : array_like, shape (n_queries, n_position_dims), optional
+            Positions conditioning the mixture when it models position.
+        component_log_weights : callable, optional
+            ``component_log_weights(first, last)`` returns the log weight of
+            every fitted component, shape ``(last - first, n_components)``,
+            for query rows ``first:last``; it multiplies the fitted weights.
+            This conditions a mark-only mixture on something other than a
+            Gaussian position, such as a heat kernel. Columns follow the
+            components passed to the constructor, including zero-weight ones.
+
+        Returns
+        -------
+        cdf : np.ndarray, shape (n_queries, n_features)
+            Column ``l`` is the CDF of feature ``feature_order[l]`` given the
+            position and the features before it in that order.
+        """
         marks = np.asarray(observed_marks, dtype=float)
         if (
             marks.ndim != 2
@@ -340,6 +367,11 @@ class GaussianMixtureConditionalCDF:
             log_responsibility = np.log(self.weights)[
                 None
             ] + self._position_log_density(positions[first:last])
+            if component_log_weights is not None:
+                given = np.asarray(component_log_weights(first, last), dtype=float)
+                log_responsibility = (
+                    log_responsibility + given[:, self._kept_components]
+                )
             for feature, coordinate in enumerate(self.n_position_dims + order):
                 prefix, gain, std = recipes[feature]
                 if self.variances is not None:

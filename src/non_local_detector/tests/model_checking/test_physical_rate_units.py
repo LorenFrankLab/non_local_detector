@@ -28,8 +28,7 @@ def test_clusterless_hz_rescaling_is_independent_of_tracking_frequency(frequency
         spikes,
         np.zeros((4, 1)),
         rate,
-        np.ones((4, 1)),
-        conditional_mark_cdf=np.full((4, 1), 0.5),
+        lambda times, marks, order: np.full(marks.shape, 0.5),
     )
     np.testing.assert_allclose(uniform, -np.expm1(-1.0))
 
@@ -84,17 +83,6 @@ def test_hz_quadrature_promotes_rates_before_addition_or_subtraction(rate, check
             ),
             [0.0, -cell_mass, -(cell_mass + last)],
         )
-
-
-@pytest.mark.unit
-def test_clusterless_legacy_expected_counts_is_explicit():
-    time = np.arange(31) / 30
-    spikes = np.array([0.2, 0.4, 0.6])
-    counts = np.full(len(time), 5 / 30)
-    np.testing.assert_allclose(
-        _compute_rescaled_isi(counts, spikes, time, rate_units="expected_counts"),
-        1.0,
-    )
 
 
 @pytest.mark.unit
@@ -216,40 +204,6 @@ def test_clusterless_rejects_events_outside_or_invalid_for_sampled_support(bad_s
         _compute_rescaled_isi(
             np.ones(3), np.asarray(bad_spikes), np.array([0.0, 0.4, 1.0])
         )
-
-
-@pytest.mark.unit
-def test_clusterless_legacy_mode_preserves_index_integral_and_fitted_mark_cdf():
-    time = np.array([0.0, 0.1, 0.4, 1.0])
-    counts = np.array([0.2, 0.7, 0.3, 0.8])
-    spikes = np.array([0.05, 0.25, 0.85])
-    integrated = cumulative_trapezoid(counts, initial=0)
-    expected = np.diff(np.r_[0.0, np.interp(spikes, time, integrated)])
-    np.testing.assert_array_equal(
-        _compute_rescaled_isi(counts, spikes, time, rate_units="expected_counts"),
-        expected,
-    )
-    joint = np.array([[0.1], [0.2], [0.5]])
-    legacy, legacy_marks = interval_rescaling_transform(
-        time,
-        spikes,
-        np.zeros((3, 1)),
-        counts,
-        joint,
-        rate_units="expected_counts",
-        conditional_mark_cdf=np.full((3, 1), 0.5),
-    )
-    _, hz_marks = interval_rescaling_transform(
-        time,
-        spikes,
-        np.zeros((3, 1)),
-        counts * 30,
-        joint * 30,
-        rate_units="Hz",
-        conditional_mark_cdf=np.full((3, 1), 0.5),
-    )
-    np.testing.assert_array_equal(legacy, expon.cdf(expected))
-    np.testing.assert_array_equal(legacy_marks, hz_marks)
 
 
 @pytest.mark.integration

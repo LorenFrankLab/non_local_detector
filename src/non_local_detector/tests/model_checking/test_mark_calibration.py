@@ -9,17 +9,6 @@ from non_local_detector.model_checking.clusterless import interval_rescaling_tra
 
 
 @pytest.mark.unit
-def test_density_only_inputs_cannot_claim_mark_calibration():
-    time = np.linspace(0, 1, 20)
-    spikes = np.array([0.2, 0.4, 0.8])
-    marks = np.array([[-2.0], [0.0], [2.0]])
-    with pytest.raises(ValueError, match="conditional_mark_cdf"):
-        interval_rescaling_transform(
-            time, spikes, marks, np.ones(len(time)), np.array([[1.0], [20.0], [100.0]])
-        )
-
-
-@pytest.mark.unit
 def test_observed_marks_use_fixed_cdf_and_wrong_model_is_rejected():
     rng = np.random.default_rng(10)
     marks = rng.normal(size=(4000, 1))
@@ -27,17 +16,13 @@ def test_observed_marks_use_fixed_cdf_and_wrong_model_is_rejected():
     time = np.array([0.0, 1.0])
 
     def good(times, observed, order):
-        return norm.cdf(observed[:, order])
+        return norm.cdf(observed)
 
     def bad(times, observed, order):
-        return norm.cdf(observed[:, order] - 3)
+        return norm.cdf(observed - 3)
 
-    _, correct = interval_rescaling_transform(
-        time, spikes, marks, np.ones(2), conditional_mark_cdf=good
-    )
-    _, wrong = interval_rescaling_transform(
-        time, spikes, marks, np.ones(2), conditional_mark_cdf=bad
-    )
+    _, correct = interval_rescaling_transform(time, spikes, marks, np.ones(2), good)
+    _, wrong = interval_rescaling_transform(time, spikes, marks, np.ones(2), bad)
     assert kstest(correct[:, 0], "uniform").pvalue > 0.001
     assert kstest(wrong[:, 0], "uniform").pvalue < 1e-100
 
@@ -95,7 +80,7 @@ def test_position_conditioning_matches_known_gaussian():
 
 
 @pytest.mark.unit
-def test_mixture_responsibilities_condition_on_prior_features_and_order(monkeypatch):
+def test_mixture_responsibilities_condition_on_prior_features_and_order():
     from scipy.special import logsumexp
 
     from non_local_detector.model_checking.clusterless import (
@@ -118,14 +103,13 @@ def test_mixture_responsibilities_condition_on_prior_features_and_order(monkeypa
     assert_allclose(result[:, 1], expected_second, atol=1e-12)
     reversed_result = fitted.transform(marks, feature_order=[1, 0])
     assert not np.allclose(reversed_result, result[:, ::-1])
-    monkeypatch.setattr(np.random, "permutation", lambda count: np.array([1, 0]))
     _, callback_result = interval_rescaling_transform(
         np.array([0.0, 1.0]),
         np.array([0.1, 0.5, 0.9]),
         marks,
         np.ones(2),
-        conditional_mark_cdf=fitted,
-        permute_waveform_features=True,
+        fitted,
+        feature_order=[1, 0],
     )
     assert_allclose(callback_result, reversed_result, atol=1e-12)
 
@@ -216,33 +200,8 @@ def test_invalid_fitted_cdf_outputs_raise(cdf):
             np.array([0.2, 0.4, 0.8]),
             np.zeros((3, 1)),
             np.ones(2),
-            conditional_mark_cdf=cdf,
+            lambda times, marks, order: cdf,
         )
-
-
-@pytest.mark.unit
-def test_precomputed_cdf_cannot_be_reconditioned_by_permutation():
-    with pytest.raises(ValueError, match="permutation requires a callable"):
-        interval_rescaling_transform(
-            np.array([0.0, 1.0]),
-            np.array([0.2]),
-            np.zeros((1, 2)),
-            np.ones(2),
-            conditional_mark_cdf=np.full((1, 2), 0.5),
-            permute_waveform_features=True,
-        )
-
-
-@pytest.mark.unit
-def test_integer_empirical_ranks_remain_descriptive_fractions():
-    from non_local_detector.model_checking.clusterless import (
-        empirical_marginal_rank_transform,
-    )
-
-    assert_allclose(
-        empirical_marginal_rank_transform(np.array([[1], [2], [3], [4]])),
-        np.array([[0.25], [0.5], [0.75], [1.0]]),
-    )
 
 
 @pytest.mark.unit
@@ -293,3 +252,91 @@ def test_permutation_conditioning_cache_remains_bounded():
         transformed = fitted.transform(marks, feature_order=order)
         assert_allclose(transformed, norm.cdf(marks[:, order]), atol=1e-12)
         assert len(fitted._recipes) == 1
+
+
+@pytest.mark.unit
+def test_full_covariance_mixture_conditioned_on_position_matches_quadrature():
+    """Three correlated components given 2-D positions, against quadrature.
+
+    Every responsibility, conditional mean and conditional variance enters:
+    F(m1 | x) and F(m2 | x, m1) are integrals of the joint mixture density.
+    """
+    from scipy.integrate import quad
+    from scipy.stats import multivariate_normal
+
+    from non_local_detector.model_checking.clusterless import (
+        GaussianMixtureConditionalCDF,
+    )
+
+    rng = np.random.default_rng(5)
+    weights = np.array([0.2, 0.5, 0.3])
+    means = rng.normal(0.0, 1.5, (3, 4))
+    factors = rng.normal(size=(3, 4, 4))
+    covariances = factors @ factors.transpose(0, 2, 1) + 0.5 * np.eye(4)
+    fitted = GaussianMixtureConditionalCDF(
+        weights, means, covariances, n_position_dims=2
+    )
+    positions = rng.normal(0.0, 1.0, (4, 2))
+    marks = rng.normal(0.0, 1.5, (4, 2))
+    actual = fitted.transform(marks, given_positions=positions)
+
+    def density(indices, point):
+        return sum(
+            w * multivariate_normal.pdf(point, m[indices], c[np.ix_(indices, indices)])
+            for w, m, c in zip(weights, means, covariances, strict=True)
+        )
+
+    for row, (x, m) in enumerate(zip(positions, marks, strict=True)):
+        first = quad(lambda m1, x=x: density([0, 1, 2], [*x, m1]), -np.inf, m[0])[
+            0
+        ] / density([0, 1], x)
+        second = quad(
+            lambda m2, x=x, m=m: density([0, 1, 2, 3], [*x, m[0], m2]), -np.inf, m[1]
+        )[0] / density([0, 1, 2], [*x, m[0]])
+        assert_allclose(actual[row], [first, second], atol=1e-7)
+
+
+@pytest.mark.unit
+def test_component_log_weights_condition_a_mark_mixture():
+    """Per-query log weights reproduce the position-conditioned KDE mixture."""
+    from non_local_detector.model_checking.clusterless import (
+        GaussianMixtureConditionalCDF,
+    )
+
+    rng = np.random.default_rng(6)
+    marks = rng.normal(size=(30, 2))
+    positions = rng.uniform(0, 10, (30, 1))
+    weights = rng.uniform(0.0, 1.0, 30)
+    weights[:3] = 0.0
+    queries = rng.normal(size=(7, 2))
+    query_positions = rng.uniform(0, 10, (7, 1))
+    expected = GaussianMixtureConditionalCDF.from_kde(
+        marks,
+        0.8,
+        weights=weights,
+        encoding_positions=positions,
+        position_std=1.5,
+    ).transform(queries, given_positions=query_positions)
+    log_position = norm.logpdf(query_positions, positions.T, 1.5)
+    mark_mixture = GaussianMixtureConditionalCDF(
+        weights, marks, np.full(marks.shape, 0.8**2), "diag", batch_size=3
+    )
+    actual = mark_mixture.transform(
+        queries, component_log_weights=lambda first, last: log_position[first:last]
+    )
+    assert_allclose(actual, expected, atol=1e-12)
+
+
+@pytest.mark.unit
+def test_covariances_symmetric_to_rounding_are_accepted():
+    from non_local_detector.model_checking.clusterless import (
+        GaussianMixtureConditionalCDF,
+    )
+
+    covariance = np.array([[[2.0, 0.5], [0.5 + 1e-14, 1.0]]])
+    fitted = GaussianMixtureConditionalCDF([1.0], [[0.0, 0.0]], covariance)
+    assert_allclose(fitted.covariances[0, 0, 1], fitted.covariances[0, 1, 0])
+    with pytest.raises(ValueError, match="symmetric"):
+        GaussianMixtureConditionalCDF(
+            [1.0], [[0.0, 0.0]], np.array([[[2.0, 0.5], [0.6, 1.0]]])
+        )
