@@ -2,13 +2,15 @@
 Clusterless decoding using Gaussian Mixture Models (GMM)
 
 Spike log intensities are the raw ``log(rate) + log p(pos, mark) - log
-p(pos)`` and the ground process is ``exp(log(rate) + log p_gpi(pos) - log
-p(pos))``, both formed in log space.
+p_occ(pos)`` and the ground process is ``rate * p_joint(pos) / p_occ(pos)``,
+where ``p_joint(pos)`` is the analytical position marginal of the same joint
+GMM. Both are formed in log space.
 """
 
 from __future__ import annotations
 
 import warnings
+from dataclasses import replace
 from functools import partial
 
 import jax
@@ -45,6 +47,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _as_floating,
+    _compute_precision_cholesky,
     _effective_sample_count,
     _estimate_log_prob_resp,
 )
@@ -397,6 +400,47 @@ def _fit_gmm_density(
     return gmm
 
 
+def _position_marginal(
+    joint: GaussianMixtureModel, n_position_dims: int
+) -> GaussianMixtureModel:
+    """Derive a position-only GMM without fitting a second distribution.
+
+    Parameters
+    ----------
+    joint : GaussianMixtureModel
+        Fitted mixture over leading position coordinates followed by marks.
+    n_position_dims : int
+        Number of leading position coordinates to retain.
+
+    Returns
+    -------
+    marginal : GaussianMixtureModel
+        Same weights and component count, with the position mean and covariance
+        blocks. Precision factors are recomputed: a precision subblock would
+        instead describe a conditional Gaussian. Solver settings and convergence
+        metadata describe the source joint fit; no marginal EM fit is performed
+        and ``lower_bound_`` is None.
+    """
+    assert joint.means_ is not None and joint.covariances_ is not None
+    covariance = joint.covariances_
+    if joint.covariance_type == "full":
+        covariance = covariance[:, :n_position_dims, :n_position_dims]
+    elif joint.covariance_type == "tied":
+        covariance = covariance[:n_position_dims, :n_position_dims]
+    elif joint.covariance_type == "diag":
+        covariance = covariance[:, :n_position_dims]
+    marginal = replace(joint)
+    marginal.weights_ = joint.weights_
+    marginal.means_ = joint.means_[:, :n_position_dims]
+    marginal.covariances_ = covariance
+    marginal.precisions_chol_ = _compute_precision_cholesky(
+        covariance, joint.covariance_type
+    )
+    marginal.converged_ = joint.converged_
+    marginal.n_iter_ = joint.n_iter_
+    return marginal
+
+
 # ---------------------------------------------------------------------
 # Encoding (fit) — GMM
 # ---------------------------------------------------------------------
@@ -431,10 +475,10 @@ def fit_clusterless_gmm_encoding_model(
     weights: jnp.ndarray | None = None,
     *,
     gmm_components_occupancy: int = 32,
-    gmm_components_gpi: int = 32,
+    gmm_components_gpi: int | None = None,
     gmm_components_joint: int = 64,
     gmm_covariance_type_occupancy: str = "full",
-    gmm_covariance_type_gpi: str = "full",
+    gmm_covariance_type_gpi: str | None = None,
     gmm_covariance_type_joint: str = "full",
     gmm_random_state: int | None = 0,
     gmm_reg_covar: float = 1.0,
@@ -460,26 +504,28 @@ def fit_clusterless_gmm_encoding_model(
     environment : Environment
     weights : jnp.ndarray | None, shape (n_time_position,), default=None
         Per-sample weights (e.g. posterior state probabilities during EM). None means
-        uniform. Weights the occupancy, per-electrode GPI and joint (position+mark)
-        GMMs (via ``sample_weight``), and the mean firing rate.
+        uniform. Weights the occupancy and joint (position+mark) GMMs (via
+        ``sample_weight``), and the mean firing rate. GPI is the joint marginal.
     gmm_components_occupancy : int, default=32
         Number of mixture components for occupancy GMM.
-    gmm_components_gpi : int, default=32
-        Number of mixture components for GPI (position-only) GMM.
+    gmm_components_gpi : int or None, default=None
+        Deprecated and ignored with a FutureWarning. The GPI component count
+        is determined by ``gmm_components_joint``.
     gmm_components_joint : int, default=64
         Number of mixture components for joint (position+mark) GMM.
     gmm_covariance_type_occupancy : str, default="full"
         Covariance type for occupancy GMM. Options: "full", "tied", "diag", "spherical".
-    gmm_covariance_type_gpi : str, default="full"
-        Covariance type for GPI GMM. Options: "full", "tied", "diag", "spherical".
+    gmm_covariance_type_gpi : str or None, default=None
+        Deprecated and ignored with a FutureWarning. GPI uses the position
+        covariance block of ``gmm_covariance_type_joint``.
     gmm_covariance_type_joint : str, default="full"
         Covariance type for joint GMM. Options: "full", "tied", "diag", "spherical".
         Note: "diag" may offer speedups but currently has JIT compatibility issues.
     gmm_random_state : int | None, default=0
         Random state for reproducibility.
     gmm_reg_covar : float, default=1.0
-        Nonnegative covariance regularization used by every occupancy, GPI, and
-        joint GMM, added to each covariance diagonal in squared feature units
+        Nonnegative covariance regularization used by the occupancy and joint
+        GMMs, added to each covariance diagonal in squared feature units
         (cm^2 for positions, squared mark units for waveform features). It must
         exceed the float32 rounding of the covariances, about
         ``feature_magnitude**2 * 1e-7``: positions repeated during a pause 500 cm
@@ -510,7 +556,7 @@ def fit_clusterless_gmm_encoding_model(
         - occupancy_model
         - interior_place_bin_centers
         - log_occupancy
-        - gpi_models
+        - gpi_models (analytical position marginals of joint_models)
         - joint_models
         - mean_rates
         - summed_ground_process_intensity
@@ -519,6 +565,15 @@ def fit_clusterless_gmm_encoding_model(
         - gmm_effective_components
         - mark_dimensions
     """
+    if gmm_components_gpi is not None or gmm_covariance_type_gpi is not None:
+        warnings.warn(
+            "gmm_components_gpi and gmm_covariance_type_gpi are deprecated and "
+            "ignored; the ground process now uses the joint GMM's position "
+            "marginal. Configure gmm_components_joint and "
+            "gmm_covariance_type_joint instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -677,40 +732,18 @@ def fit_clusterless_gmm_encoding_model(
 
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         elect_sample_weight = None if weights_was_none else elect_weights
-        # Count per fitted array: the GPI and joint fits can differ in dtype
-        # (e.g. float32 positions with float64 marks), and with it the rows the
-        # GMM's zero-weight cutoff keeps.
-        n_gpi_spikes = _effective_sample_count(enc_pos, elect_sample_weight)
         n_joint_spikes = _effective_sample_count(joint_samples, elect_sample_weight)
-        n_gpi_components = min(gmm_components_gpi, n_gpi_spikes)
         n_joint_components = min(gmm_components_joint, n_joint_spikes)
-        effective_gpi_components.append(n_gpi_components)
+        effective_gpi_components.append(n_joint_components)
         effective_joint_components.append(n_joint_components)
-        if (
-            n_gpi_components < gmm_components_gpi
-            or n_joint_components < gmm_components_joint
-        ):
+        if n_joint_components < gmm_components_joint:
             warnings.warn(
-                f"Clusterless GMM: electrode {electrode} has {n_gpi_spikes} "
-                f"(GPI) / {n_joint_spikes} (joint) effective encoding spikes; reduced "
-                f"GPI components {gmm_components_gpi}->{n_gpi_components} and "
+                f"Clusterless GMM: electrode {electrode} has {n_joint_spikes} "
+                "effective encoding spikes; reduced "
                 f"joint components {gmm_components_joint}->{n_joint_components}.",
                 UserWarning,
                 stacklevel=2,
             )
-
-        # GPI GMM (position only)
-        gpi_gmm = _fit_gmm_density(
-            X=enc_pos,
-            weights=elect_sample_weight,
-            n_components=n_gpi_components,
-            random_state=gmm_random_state,
-            covariance_type=gmm_covariance_type_gpi,
-            reg_covar=gmm_reg_covar,
-            max_iter=gmm_max_iter,
-            tol=gmm_tol,
-        )
-        gpi_models.append(gpi_gmm)
 
         # Joint GMM over [position, waveform]
         joint_gmm = _fit_gmm_density(
@@ -724,6 +757,8 @@ def fit_clusterless_gmm_encoding_model(
             tol=gmm_tol,
         )
         joint_models.append(joint_gmm)
+        gpi_gmm = _position_marginal(joint_gmm, enc_pos.shape[1])
+        gpi_models.append(gpi_gmm)
 
         # Expected-counts term at bins: mean_rate * (gpi / occupancy), in log space
         summed_ground_process_intensity += _ground_process_intensity(
@@ -750,7 +785,7 @@ def fit_clusterless_gmm_encoding_model(
         "disable_progress_bar": disable_progress_bar,
         "gmm_requested_components": {
             "occupancy": gmm_components_occupancy,
-            "gpi": gmm_components_gpi,
+            "gpi": gmm_components_joint,
             "joint": gmm_components_joint,
         },
         "gmm_effective_components": {

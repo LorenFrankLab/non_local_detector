@@ -484,7 +484,7 @@ def test_gmm_empty_and_sparse_electrodes_are_supported(gmm_simulation_data):
 
     messages = [str(item.message) for item in record]
     assert any("no effective encoding spikes" in message for message in messages)
-    assert any("reduced GPI components 8->3" in message for message in messages)
+    assert any("reduced joint components 16->3" in message for message in messages)
     assert encoding["gpi_models"][0] is None
     assert encoding["joint_models"][0] is None
     assert float(encoding["mean_rates"][0]) == 0.0
@@ -516,7 +516,7 @@ def test_gmm_single_effective_spike_electrode(gmm_simulation_data):
     one_time = np.asarray(data["spike_times"][0][:1])
     one_feature = np.asarray(data["spike_features"][0][:1])
 
-    with pytest.warns(UserWarning, match=r"reduced GPI components \d+->1"):
+    with pytest.warns(UserWarning, match=r"reduced joint components \d+->1"):
         encoding = fit_clusterless_gmm_encoding_model(
             data["position_time"],
             data["position"],

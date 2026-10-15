@@ -352,13 +352,14 @@ def _full_covariances(model) -> np.ndarray:
 class _GMMElectrode:
     """Clusterless GMM: the ground-process mixture and the joint conditional.
 
-    The decoder integrates a ground intensity from a separately fitted
-    ground-process mixture, ``Lambda(x) = mu p_gpi(x) / p_occ(x)``, but scores
+    New fits store the joint mixture's position marginal as ``p_gpi``, so
+    ``Lambda(x) = mu p_gpi(x) / p_occ(x)`` integrates the event intensity.
+    Older saved fits use a separately fitted ground-process mixture but score
     spikes with ``mu p_joint(x, m) / p_occ(x)``, whose integral over marks is
     ``mu p_joint(x) / p_occ(x)``. The two disagree wherever the joint mixture's
     position marginal differs from ``p_gpi``, so no single marked point process
     has both. The transforms use the process that keeps the decoder's ground
-    intensity and its conditional mark density,
+    intensity and its conditional mark density (also valid for new fits),
     ``lambda(x, m) = Lambda(x) p_joint(x, m) / p_joint(x)``.
     """
 
