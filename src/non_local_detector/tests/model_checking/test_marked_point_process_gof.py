@@ -33,7 +33,10 @@ from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
 )
-from non_local_detector.model_checking._clusterless_models import _log_matmul_exp
+from non_local_detector.model_checking._clusterless_models import (
+    _gaussian_log_kernel,
+    _log_matmul_exp,
+)
 from non_local_detector.model_checking.clusterless import (
     ircm_transform,
     ks_uniformity_test,
@@ -41,6 +44,7 @@ from non_local_detector.model_checking.clusterless import (
     multivariate_ks_test,
     pearson_chi_squared_test,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
 
@@ -761,3 +765,74 @@ def test_diffusion_mdci_keeps_marks_far_from_every_reachable_spike():
     )
     np.testing.assert_allclose(u, spike_times, rtol=1e-12)
     np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
+
+
+def test_gaussian_log_kernel_subtracts_before_squaring():
+    """A common offset of 1e8 leaves log kernels unchanged.
+
+    Expanding the squared distance into products cancels about 1e-16 of the
+    squared coordinates, an error near 10 here.
+    """
+    rng = np.random.default_rng(3)
+    points, centers = rng.normal(size=(7, 3)), rng.normal(size=(5, 3))
+    std = np.array([0.5, 1.0, 2.0])
+    direct = -0.5 * np.sum(
+        ((points[:, None] - centers[None]) / std) ** 2, axis=2
+    ) - np.sum(np.log(np.sqrt(2 * np.pi) * std))
+    np.testing.assert_allclose(
+        _gaussian_log_kernel(points, centers, std), direct, rtol=1e-13
+    )
+    # Coordinates near 1e8 are rounded to 1.5e-8, which moves these log
+    # kernels by less than 1e-6.
+    np.testing.assert_allclose(
+        _gaussian_log_kernel(points + 1e8, centers + 1e8, std), direct, atol=1e-6
+    )
+
+
+@pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
+@pytest.mark.parametrize(
+    "algorithm, fit",
+    [
+        ("clusterless_kde", fit_clusterless_kde_encoding_model),
+        ("clusterless_kde_log", fit_clusterless_kde_log_encoding_model),
+    ],
+)
+def test_kde_transforms_are_invariant_to_a_common_mark_offset(
+    algorithm, fit, transform
+):
+    """Translating every mark by 1e8 does not change the model or the points.
+
+    Float64 keeps the translated marks exact; float32 would round them.
+    """
+    time = np.linspace(0.0, 10.0, 101)
+    position = np.linspace(0.0, 10.0, 101)[:, None]
+    environment = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=False
+    )
+    results = []
+    with precision_mode(True):
+        for offset in (0.0, 1e8):
+            model = fit(
+                time,
+                position,
+                [np.array([0.0, 10.0])],
+                [np.array([[0.0], [1.0]]) + offset],
+                environment,
+                position_std=1.0,
+                waveform_std=0.5,
+                disable_progress_bar=True,
+            )
+            results.append(
+                transform(
+                    model,
+                    algorithm,
+                    0,
+                    np.array([0.0, 1.0]),
+                    np.array([[0.5], [9.5]]),
+                    np.array([0.5]),
+                    np.array([[1.0]]) + offset,
+                )
+            )
+    (u, v), (shifted_u, shifted_v) = results
+    np.testing.assert_allclose(shifted_u, u, atol=1e-12)
+    np.testing.assert_allclose(shifted_v, v, atol=1e-12)

@@ -52,19 +52,36 @@ def electrode_model(encoding_model: dict, algorithm: str, electrode: int) -> Any
     )
 
 
-def _gaussian_log_kernel(points, centers, std):
+def _gaussian_log_kernel(points, centers, std, block_elements=2**18):
     """``log N(points_i; centers_j, diag(std**2))``, shape (n_points, n_centers).
 
-    The squared distance is expanded into products, so no (n_points,
-    n_centers, n_dims) temporary is formed; in float64 its cancellation error
-    is about 1e-16 times the squared standardized coordinates.
+    Each coordinate is subtracted before it is squared, so a large common
+    offset cannot cancel nearby differences. Rows are processed in blocks of
+    about ``block_elements`` entries, updated in place, so the work stays in
+    cache and no temporary is larger than a block.
     """
-    a = np.asarray(points, float) / std
-    b = np.asarray(centers, float) / std
-    squared = (
-        np.sum(a * a, axis=1)[:, None] + np.sum(b * b, axis=1)[None] - 2.0 * (a @ b.T)
-    )
-    return -0.5 * np.maximum(squared, 0.0) - np.sum(np.log(np.sqrt(2 * np.pi) * std))
+    points = np.asarray(points, float)
+    centers = np.asarray(centers, float)
+    std = np.broadcast_to(np.asarray(std, float), (points.shape[1],))
+    scale = -0.5 / std**2
+    result = np.empty((len(points), len(centers)))
+    step = max(1, block_elements // max(len(centers), 1))
+    work = np.empty((min(step, len(points)), len(centers)))
+    for first in range(0, len(points), step):
+        out = result[first : first + step]
+        block = work[: len(out)]
+        for dim in range(points.shape[1]):
+            np.subtract.outer(
+                points[first : first + step, dim], centers[:, dim], out=block
+            )
+            np.multiply(block, block, out=block)
+            if dim == 0:
+                np.multiply(block, scale[dim], out=out)
+            else:
+                block *= scale[dim]
+                out += block
+    result -= np.sum(np.log(np.sqrt(2 * np.pi) * std))
+    return result
 
 
 def _interior_bins(environment):
