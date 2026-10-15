@@ -277,11 +277,10 @@ class TestJitCompiledFunctions:
 
 
 class TestCompensatedLinearMarginal:
-    """Tests for the compensated-linear matmul fast path.
+    """Tests for the scaled-GEMM reduction behind ``_compensated_linear_marginal``.
 
-    Validates that _compensated_linear_marginal produces results matching
-    the logsumexp reference to within float32 precision for ≤ 8 waveform
-    feature dimensions.
+    Validates that it matches the logsumexp reference to within float32
+    precision for any number of waveform feature dimensions.
     """
 
     @staticmethod
@@ -289,7 +288,8 @@ class TestCompensatedLinearMarginal:
         """Pure logsumexp reference (ground-truth implementation).
 
         This is an independent reimplementation of the logsumexp marginal,
-        used as the correctness oracle for the compensated-linear fast path.
+        used as the correctness oracle for the GEMM reduction. Like every
+        joint-intensity estimate, it is floored at LOG_EPS.
         """
 
         def for_one_dec(wf_col):
@@ -298,11 +298,12 @@ class TestCompensatedLinearMarginal:
         log_marginal = jax.vmap(for_one_dec, in_axes=1)(logK_mark)
         log_mean_rate = safe_log(mean_rate, eps=EPS)
         log_occ = safe_log(occupancy, eps=EPS)
-        return jnp.where(
+        log_joint = jnp.where(
             occupancy[None, :] > 0.0,
             log_mean_rate + log_marginal - log_occ[None, :],
             jnp.log(0.0),
         )
+        return jnp.maximum(log_joint, LOG_EPS)
 
     @staticmethod
     def _make_test_data(rng, n_enc, n_dec, n_pos, n_wf):
@@ -375,15 +376,8 @@ class TestCompensatedLinearMarginal:
                 f"Seed {seed}: max abs diff {max_diff:.2e} exceeds 1e-4"
             )
 
-    def test_accuracy_degrades_above_threshold_9d(self):
-        """Document that 9D features can produce large errors (justifies threshold).
-
-        This test documents the empirical observation that the compensated-linear
-        approach degrades beyond _COMPENSATED_LINEAR_MAX_FEATURES=8 dimensions.
-        At 9D, mark kernel underflow (~23%) causes occasional large errors via
-        catastrophic cancellation in the sqrt(scale) decomposition.
-        """
-        # Use a seed known to trigger degraded accuracy at 9D
+    def test_matches_logsumexp_9d(self):
+        """Feature count does not select an approximation: 9D is exact too."""
         rng = np.random.default_rng(900)
         logK_mark, logK_pos, log_w, occupancy = self._make_test_data(
             rng, n_enc=1000, n_dec=100, n_pos=200, n_wf=9
@@ -392,13 +386,13 @@ class TestCompensatedLinearMarginal:
         result_comp = _compensated_linear_marginal(
             logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
         )
+        result_ref = self._logsumexp_reference(
+            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
+        )
 
-        # At 9D, either the error is still small (seed-dependent) or it
-        # exceeds the 1e-4 bound that the ≤8D tests enforce.  We just
-        # verify the result is not NaN and document that it *can* exceed
-        # the bound — this justifies the threshold.
-        # Note: max abs diff may be >> 1e-4 for some seeds (observed up to ~3.0)
-        assert jnp.all(jnp.isfinite(result_comp) | (result_comp == -jnp.inf))
+        assert jnp.allclose(result_comp, result_ref, atol=1e-4, rtol=1e-4), (
+            f"Max abs diff: {float(jnp.max(jnp.abs(result_comp - result_ref))):.2e}"
+        )
 
     def test_output_shape_and_finite_nonzero_occupancy(self):
         """Output has correct shape and all-finite values when occupancy > 0."""
@@ -505,27 +499,16 @@ class TestLogJointFromLogMarginal:
         finite = _log_joint_from_log_marginal(jnp.array([[2.0, -1.0]]), 2.5, occupancy)
         assert jnp.allclose(finite[0, 0], LOG_EPS)
 
-    def test_subeps_mean_rate_floors_like_safe_log(self):
-        """A positive mean rate below EPS floors its contribution to LOG_EPS (as the
-        pre-refactor ``safe_log(mean_rate)`` did), not the raw ``log`` of a tiny rate.
-
-        Guards against a de-weighted electrode with a tiny-but-nonzero EM-posterior
-        rate (``mean_rate = weighted_spikes / weight_sum`` can be ``<< EPS``) diverging
-        from the old output by many nats.
-        """
+    def test_subeps_mean_rate_preserves_its_true_positive_log(self):
+        """Positive rates retain their magnitude before the final event floor."""
         log_marginal = jnp.array([[2.0, -1.0]])
         occupancy = jnp.array([0.5, 0.5])
-        # Any positive rate < EPS gives the same (LOG_EPS-floored) rate contribution.
         out_tiny = _log_joint_from_log_marginal(log_marginal, 1e-20, occupancy)
         out_eps = _log_joint_from_log_marginal(log_marginal, EPS, occupancy)
-        assert jnp.allclose(out_tiny, out_eps)
-        # ... and it matches the explicit safe_log formula, not raw log(1e-20).
-        expected = (
-            safe_log(1e-20, eps=EPS)
-            + log_marginal
-            - safe_log(occupancy, eps=EPS)[None, :]
-        )
+        assert jnp.all(out_tiny < out_eps)
+        expected = jnp.log(1e-20) + log_marginal - jnp.log(occupancy)[None, :]
         assert jnp.allclose(out_tiny, expected)
+        assert jnp.allclose(out_eps - out_tiny, jnp.log(EPS / 1e-20))
 
     def test_zero_mean_rate_floors_to_log_eps(self):
         """A zero mean rate (fully de-weighted electrode) forces every bin to LOG_EPS

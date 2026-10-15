@@ -160,6 +160,11 @@ def reference(recording, is_local, row_slice):
                 )[0],
                 LOG_EPS,
             )
+            # No encoding mass means zero joint signal, irrespective of a
+            # manually supplied positive mean rate. LOG_EPS is the final
+            # intensity floor, rather than a positive KDE density substitute.
+            if enc_pos.shape[0] == 0 or (w is not None and np.sum(w) == 0.0):
+                contribution = jnp.full(selection.bin_ind.shape[0], LOG_EPS)
             total = total + sum_spikes_into_rows(contribution, selection)
             expected = expected + rate * jnp.where(
                 occupancy > 0,

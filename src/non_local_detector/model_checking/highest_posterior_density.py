@@ -29,6 +29,8 @@ def get_highest_posterior_threshold(
     threshold : np.ndarray, shape (n_time,)
         Threshold values for each time point. Posterior values at or above
         this threshold define the HPD region with the specified coverage.
+        Rows without any posterior mass have a NaN threshold. Missing bins
+        are ignored independently in each row.
 
     Notes
     -----
@@ -40,28 +42,35 @@ def get_highest_posterior_threshold(
     # Reshape non-time dimensions into a single dimension
     n_time = posterior.shape[0]
     posterior_array = np.asarray(posterior).reshape((n_time, -1))
-    # Remove NaN values from the posterior
-    posterior_array = posterior_array[:, ~np.any(np.isnan(posterior_array), axis=0)]
+    # Missing bins in one frame must not remove those bins from other frames.
+    posterior_array = np.where(np.isnan(posterior_array), 0.0, posterior_array)
+    threshold = np.full(n_time, np.nan)
+    const = np.sum(posterior_array, axis=1, keepdims=True)
+    has_mass = np.isfinite(const[:, 0]) & (const[:, 0] > 0.0)
+    if not np.any(has_mass):
+        return threshold
 
     # Sort the posterior values in descending order
-    const = np.sum(posterior_array, axis=1, keepdims=True)
-    sorted_norm_posterior = np.sort(posterior_array, axis=1)[:, ::-1] / const
+    sorted_norm_posterior = (
+        np.sort(posterior_array[has_mass], axis=1)[:, ::-1] / const[has_mass]
+    )
 
     # Find the threshold that corresponds to the coverage
     # by finding the first index where the cumulative sum is greater than the coverage
     posterior_less_than_coverage = np.cumsum(sorted_norm_posterior, axis=1) >= coverage
     crit_ind = np.argmax(posterior_less_than_coverage, axis=1)
 
-    # Handle case when there are no points in the posterior less than coverage
-    # Use the last valid index instead of accessing shape directly
-    crit_ind[posterior_less_than_coverage.sum(axis=1) == 0] = (
-        posterior_array.shape[1] - 1
-    )  # type: ignore[misc]
+    # Rounding can leave the full cumulative mass just below one. Fall back
+    # to the last positive bin, so missing/zero-mass bins stay outside the HPD.
+    no_cutoff = ~posterior_less_than_coverage.any(axis=1)
+    last_positive = np.count_nonzero(sorted_norm_posterior > 0.0, axis=1) - 1
+    crit_ind[no_cutoff] = last_positive[no_cutoff]
 
-    threshold_values = (
-        sorted_norm_posterior[np.arange(n_time), crit_ind] * const.squeeze()
+    threshold[has_mass] = (
+        sorted_norm_posterior[np.arange(np.count_nonzero(has_mass)), crit_ind]
+        * const[has_mass, 0]
     )
-    return np.asarray(threshold_values)
+    return threshold
 
 
 def get_HPD_spatial_coverage(
@@ -103,7 +112,7 @@ def get_HPD_spatial_coverage(
         Total spatial measure covered by the highest posterior density regions
         at each time point. Units depend on the spatial coordinate system and
         the dimensionality of the posterior (e.g., cm for 1D, cm² for 2D,
-        cm³ for 3D).
+        cm³ for 3D). A NaN threshold produces NaN coverage for that frame.
 
     Notes
     -----
@@ -149,7 +158,7 @@ def get_HPD_spatial_coverage(
         weight_shape = [1] * isin_hpd.ndim
         weight_shape[axis] = bin_width.shape[0]
         weighted = np.asarray(isin_hpd.values) * bin_width.reshape(weight_shape)
-        return np.asarray(weighted.sum(axis=axis))
+        return np.where(np.isnan(hpd_threshold), np.nan, weighted.sum(axis=axis))
 
     # Uniform spacing: bin measure is the product of per-dimension bin widths,
     # taken from the first difference of each (strictly increasing) coordinate.
@@ -171,4 +180,5 @@ def get_HPD_spatial_coverage(
                 "explicit bin_width for a 1D non-uniform grid."
             )
         bin_measure *= float(diffs[0])
-    return np.asarray((isin_hpd * bin_measure).sum(position_dims).values)
+    coverage = (isin_hpd * bin_measure).sum(position_dims).values
+    return np.where(np.isnan(hpd_threshold), np.nan, coverage)

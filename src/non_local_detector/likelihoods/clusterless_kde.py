@@ -9,31 +9,43 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    EPS,
     LOG_EPS,
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
     KDEModel,
+    _kde_log_densities,
+    _kde_log_scale,
     _log_kernel_matrix,
     _pad_rows,
+    _padded_index,
     _padded_occupancy_count,
     _padded_samples,
     _padded_spike_count,
+    _prepare_kde_local_inputs,
+    _prepared_kde_log_density,
+    _prepared_kde_nonlocal_points,
+    _prepared_kde_position_log_kernel,
+    _relative_weights,
+    _sorted_sample_keys,
     _SpikeTimeOrder,
     _traced_block_kde,
+    _true_kde_log_density,
     as_std_array,
-    decode_bin_centers,
     deterministic_row_sum,
     drop_zero_weight_samples,
     get_position_at_time,
     interpolate_weights_at_spike_times,
+    kde_log_density,
+    local_kde_log_ratio,
     log_bin_duration_evidence,
+    log_density_intensity,
     resolve_row_slice,
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
     spike_row_ids,
     sum_spikes_into_rows,
+    traced_kde_log_density,
     validate_bandwidth,
     validate_finite,
     validate_population_lengths,
@@ -42,6 +54,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.streamed_kde import (
     _sample_tiled_density,
+    _sample_tiled_log_ratio,
     _streamed_joint_mark_row_sums,
 )
 from non_local_detector.time_edges import (
@@ -75,27 +88,62 @@ def _tile_size(limit, size):
     return size if limit is None else min(limit, size)
 
 
-def _predict_kde_density(model, points, encoding_block_size, position_block_size):
-    """Use the original fitted leaves with optional sample/evaluation tiles."""
+def _predict_kde_log_density(model, points, encoding_block_size, position_block_size):
+    """Use true log densities while retaining an optional fitted tile policy.
+
+    Tiled evaluation scales each point by an upper bound on its largest log
+    kernel, so sample tiles add in one pass. Points whose scaled sum could
+    have lost mass to flushed terms are re-evaluated with a running maximum.
+    Runs outside jit.
+    """
     if encoding_block_size is None and position_block_size is None:
-        return model.predict(points)
-    if model.samples_ is None:
-        raise RuntimeError("This KDE instance is not fitted yet.")
+        return kde_log_density(model, points)
     points = jnp.asarray(points)
     if points.ndim == 1:
         points = points[:, None]
-    return _sample_tiled_density(
-        points,
-        model.samples_,
-        as_std_array(model.std, points.shape[1]),
-        model.weights_,
-        sample_tile_size=_tile_size(encoding_block_size, model.samples_.shape[0]),
-        eval_tile_size=_tile_size(
-            position_block_size
-            if position_block_size is not None
-            else model.block_size,
-            points.shape[0],
-        ),
+    std = as_std_array(model.std, points.shape[1])
+    n_samples = model.samples_.shape[0]
+    sample_tile_size = _tile_size(encoding_block_size, n_samples)
+    eval_block = (
+        position_block_size if position_block_size is not None else model.block_size
+    )
+
+    def tiled(points, log_scale):
+        return _sample_tiled_log_ratio(
+            points,
+            model.samples_,
+            std,
+            model.weights_,
+            jnp.zeros(points.shape[0]),
+            log_scale,
+            n_position_dims=0,
+            sample_tile_size=sample_tile_size,
+            eval_tile_size=_tile_size(eval_block, points.shape[0]),
+        )
+
+    log_scale = _kde_log_scale(
+        points, std, _sorted_sample_keys(points, model.samples_, model.weights_)
+    )
+    log_density = tiled(points, log_scale)
+    _, _, relative_total = _relative_weights(model.weights_)
+    relative_total = float(relative_total)
+    if not relative_total > 0.0:
+        return log_density
+    # Weights enter relative to the largest, so each flushed term is below
+    # tiny relative to the scale; the tiled sum is log_density - log_scale
+    # plus the log of the relative total.
+    dtype_info = jnp.finfo(log_density.dtype)
+    log_lost = np.log(
+        n_samples * dtype_info.tiny / (4 * dtype_info.eps * relative_total)
+    )
+    needs_running_max = np.asarray(
+        (log_density - log_scale < log_lost) & ~jnp.isnan(log_density)
+    )
+    if not needs_running_max.any():
+        return log_density
+    index = np.flatnonzero(needs_running_max)
+    return log_density.at[index].set(
+        tiled(points[_padded_index(index)], None)[: index.size]
     )
 
 
@@ -195,6 +243,8 @@ def _blocked_joint_mark_intensity(
     position_distance,
     encoding_weights,
     block_size,
+    log_position_distance=None,
+    log_occupancy=None,
 ):
     """Hoist the weighted kernel and update output inside one compiled loop."""
     weighted_position = encoding_weights[:, None] * position_distance
@@ -223,6 +273,31 @@ def _blocked_joint_mark_intensity(
                 0.0,
             )
         )
+        if log_occupancy is not None:
+            from non_local_detector.likelihoods.clusterless_kde_log import (
+                estimate_log_joint_mark_intensity as log_estimate,
+            )
+
+            tail = (log_occupancy < LOG_EPS) | jnp.isnan(log_occupancy)
+            intensity = jax.lax.cond(
+                jnp.any(tail),
+                lambda original: jnp.where(
+                    tail[None, :],
+                    log_estimate(
+                        features,
+                        encoding_features,
+                        waveform_stds,
+                        occupancy,
+                        mean_rate,
+                        log_position_distance,
+                        encoding_weights=encoding_weights,
+                        log_occupancy=log_occupancy,
+                    ),
+                    original,
+                ),
+                lambda original: original,
+                intensity,
+            )
         return jax.lax.dynamic_update_slice(output, intensity, (first, 0))
 
     output = jax.lax.fori_loop(
@@ -304,9 +379,11 @@ def _add_electrode_mark_intensities(
     place_bin_centers,
     occupancy,
     mean_rate,
+    log_occupancy,
     *,
     block_size,
     indices_are_sorted,
+    log_position_distance=None,
 ):
     """Add one electrode's non-local log marked intensities to their rows.
 
@@ -328,14 +405,22 @@ def _add_electrode_mark_intensities(
     occupancy : jnp.ndarray, shape (n_bins,)
     mean_rate : float
         Mean rate times ``RATE_REFERENCE_SECONDS``.
+    log_occupancy : jnp.ndarray, shape (n_bins,), or None
+        Log occupancy at the bins. Bins in its tail (below ``LOG_EPS`` or
+        NaN) take a log-space mark estimate; None skips that fallback.
+    log_position_distance : jnp.ndarray, shape (n_padded_samples, n_bins), optional
+        Log position kernel between encoding samples and bins; computed when
+        None.
 
     Returns
     -------
     total : jnp.ndarray, shape (n_rows, n_bins)
     """
-    position_distance = kde_distance(
-        place_bin_centers, encoding_positions, position_std
-    )
+    if log_position_distance is None:
+        log_position_distance = _log_kernel_matrix(
+            place_bin_centers, encoding_positions, position_std
+        )
+    position_distance = jnp.exp(log_position_distance)
     intensities = _blocked_joint_mark_intensity(
         decoding_features,
         encoding_features,
@@ -345,6 +430,8 @@ def _add_electrode_mark_intensities(
         position_distance,
         encoding_weights,
         block_size,
+        log_position_distance,
+        log_occupancy,
     )
     return total + deterministic_row_sum(
         intensities, row_ids, total.shape[0], indices_are_sorted=indices_are_sorted
@@ -355,9 +442,9 @@ def _add_electrode_mark_intensities(
     jax.jit,
     static_argnames=(
         "block_size",
-        "occupancy_block_size",
         "gpi_block_size",
         "indices_are_sorted",
+        "has_occupancy_tails",
     ),
     donate_argnums=(0, 1),
 )
@@ -372,21 +459,20 @@ def _add_electrode_local_terms(
     encoding_weights,
     position_std,
     waveform_stds,
-    occupancy_samples,
-    occupancy_weights,
-    occupancy_std,
+    log_occupancy_at_spikes,
     gpi_samples,
     gpi_weights,
     gpi_std,
     positions,
-    occupancy,
+    log_occupancy,
     scaled_rate,
     mean_rate,
     *,
     block_size,
-    occupancy_block_size,
     gpi_block_size,
     indices_are_sorted,
+    has_occupancy_tails,
+    log_gpi_density=None,
 ):
     """Add one electrode's local spike terms and expected count rate.
 
@@ -402,18 +488,22 @@ def _add_electrode_local_terms(
     encoding_positions, encoding_features, encoding_weights
         Padded joint KDE samples and weights (zero for padding).
     position_std, waveform_stds : jnp.ndarray
-    occupancy_samples, occupancy_weights, occupancy_std
-        Fitted occupancy KDE leaves.
+    log_occupancy_at_spikes : jnp.ndarray, shape (n_padded_spikes,)
+        True log occupancy density at ``spike_positions``.
     gpi_samples, gpi_weights, gpi_std
         This electrode's padded ground-process KDE leaves.
     positions : jnp.ndarray, shape (n_rows, n_position_dims)
         Animal position at each row.
-    occupancy : jnp.ndarray, shape (n_rows,)
-        Occupancy density at ``positions``.
+    log_occupancy : jnp.ndarray, shape (n_rows,)
+        Log occupancy density at ``positions``.
     scaled_rate : float
         Mean rate times ``RATE_REFERENCE_SECONDS``.
     mean_rate : float
         Mean rate in Hz.
+    has_occupancy_tails : bool
+        Whether some decoding spike's log occupancy is below ``LOG_EPS``.
+        Those spikes take the log-space joint ratio; without any, it is not
+        compiled.
 
     Returns
     -------
@@ -426,13 +516,7 @@ def _add_electrode_local_terms(
         block_size,
         encoding_weights,
     )
-    occupancy_at_spikes = _traced_block_kde(
-        spike_positions,
-        occupancy_samples,
-        occupancy_std,
-        occupancy_block_size,
-        occupancy_weights,
-    )
+    occupancy_at_spikes = jnp.exp(log_occupancy_at_spikes)
     spike_terms = safe_log(
         scaled_rate
         * jnp.where(
@@ -442,19 +526,47 @@ def _add_electrode_local_terms(
             0.0,
         )
     )
+    if has_occupancy_tails:
+        tail = log_occupancy_at_spikes < LOG_EPS
+        spike_terms = jax.lax.cond(
+            jnp.any(tail),
+            lambda original: jnp.where(
+                tail,
+                jnp.maximum(
+                    log_density_intensity(
+                        scaled_rate,
+                        local_kde_log_ratio(
+                            spike_positions,
+                            decoding_features,
+                            encoding_positions,
+                            encoding_features,
+                            position_std,
+                            waveform_stds,
+                            log_occupancy_at_spikes,
+                            encoding_weights,
+                            block_size,
+                        ),
+                        jnp.zeros_like(log_occupancy_at_spikes),
+                    ),
+                    LOG_EPS,
+                ),
+                original,
+            ),
+            lambda original: original,
+            spike_terms,
+        )
     log_likelihood = log_likelihood + deterministic_row_sum(
         spike_terms,
         row_ids,
         log_likelihood.shape[0],
         indices_are_sorted=indices_are_sorted,
     )
-    gpi_density = _traced_block_kde(
-        positions, gpi_samples, gpi_std, gpi_block_size, gpi_weights
-    )
-    expected_counts = expected_counts + mean_rate * jnp.where(
-        occupancy > 0.0,
-        gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-        0.0,
+    if log_gpi_density is None:
+        log_gpi_density = traced_kde_log_density(
+            positions, gpi_samples, gpi_std, gpi_block_size, gpi_weights
+        )
+    expected_counts = expected_counts + jnp.exp(
+        log_density_intensity(mean_rate, log_gpi_density, log_occupancy)
     )
     return log_likelihood, expected_counts
 
@@ -578,12 +690,14 @@ def fit_clusterless_kde_encoding_model(
         occupancy_samples, weights=jnp.asarray(occupancy_weights)
     )
 
-    occupancy = _predict_kde_density(
+    log_occupancy = _predict_kde_log_density(
         occupancy_model,
         interior_place_bin_centers,
         encoding_block_size,
         position_block_size,
     )
+    # The probability density is the exponential of the true log density.
+    occupancy = jnp.exp(log_occupancy)
     encoding_positions = []
     encoding_weights = []
     mean_rates = []
@@ -637,16 +751,23 @@ def fit_clusterless_kde_encoding_model(
         )
         gpi_models.append(gpi_model)
 
-        gpi_density = _predict_kde_density(
-            gpi_model,
-            interior_place_bin_centers,
-            encoding_block_size,
-            position_block_size,
-        )
-        summed_ground_process_intensity += mean_rates[-1] * jnp.where(
-            occupancy > 0.0,
-            gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-            EPS,
+    if encoding_block_size is None and position_block_size is None:
+        # One batched pass per group of similar sample counts, instead of a
+        # compiled kernel for every electrode's sample count.
+        log_gpi_densities = _kde_log_densities(gpi_models, interior_place_bin_centers)
+    else:
+        log_gpi_densities = [
+            _predict_kde_log_density(
+                gpi_model,
+                interior_place_bin_centers,
+                encoding_block_size,
+                position_block_size,
+            )
+            for gpi_model in gpi_models
+        ]
+    for mean_rate, log_gpi_density in zip(mean_rates, log_gpi_densities, strict=True):
+        summed_ground_process_intensity += jnp.exp(
+            log_density_intensity(mean_rate, log_gpi_density, log_occupancy)
         )
 
     # Clip the summed intensity once (not per electrode) so an empty bin gets a
@@ -657,6 +778,7 @@ def fit_clusterless_kde_encoding_model(
 
     encoding_model = {
         "occupancy": occupancy,
+        "log_occupancy": log_occupancy,
         "occupancy_model": occupancy_model,
         "gpi_models": gpi_models,
         "encoding_spike_waveform_features": bounded_spike_waveform_features,
@@ -705,6 +827,7 @@ def predict_clusterless_kde_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
+    log_occupancy: jnp.ndarray | None = None,
     encoding_block_size: int | None = None,
     position_block_size: int | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
@@ -829,12 +952,29 @@ def predict_clusterless_kde_log_likelihood(
     else:
         is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+        if log_occupancy is None:
+            log_occupancy = _predict_kde_log_density(
+                occupancy_model,
+                interior_place_bin_centers,
+                encoding_block_size,
+                position_block_size,
+            )
+        # Bins in occupancy tails take a log-space mark estimate; without any,
+        # passing None keeps that fallback out of every electrode's kernel.
+        host_log_occupancy = np.asarray(log_occupancy)
+        tail_log_occupancy = (
+            log_occupancy
+            if np.any((host_log_occupancy < LOG_EPS) | np.isnan(host_log_occupancy))
+            else None
+        )
 
         log_likelihood = (
             -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
             * summed_ground_process_intensity
         )
-        place_bin_centers = jnp.asarray(interior_place_bin_centers)
+        place_bin_centers = _prepared_kde_nonlocal_points(
+            environment, _spike_time_order
+        )
         position_std_array = jnp.asarray(position_std)
 
         for (
@@ -901,6 +1041,7 @@ def predict_clusterless_kde_log_likelihood(
                         position_block_size, interior_place_bin_centers.shape[0]
                     ),
                     decoding_tile_size=_tile_size(block_size, n_padded),
+                    log_occupancy=tail_log_occupancy,
                 )
                 continue
             n_spikes = electrode_decoding_spike_waveform_features.shape[0]
@@ -935,8 +1076,12 @@ def predict_clusterless_kde_log_likelihood(
                 place_bin_centers,
                 occupancy,
                 electrode_mean_rate * RATE_REFERENCE_SECONDS,
+                tail_log_occupancy,
                 block_size=min(block_size, n_padded),
                 indices_are_sorted=selection.indices_are_sorted,
+                log_position_distance=_prepared_kde_position_log_kernel(
+                    _spike_time_order, place_bin_centers, padded_positions, position_std
+                ),
             )
 
     return (
@@ -1038,18 +1183,23 @@ def compute_local_log_likelihood(
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
 
-    # Need to interpolate position at the requested rows only
-    interpolated_position = get_position_at_time(
+    density_policy = f"{encoding_block_size}:{position_block_size}"
+    predict_density = partial(
+        _predict_kde_log_density,
+        encoding_block_size=encoding_block_size,
+        position_block_size=position_block_size,
+    )
+    interpolated_position, log_occupancy = _prepare_kde_local_inputs(
+        occupancy_model,
         position_time,
         position,
-        decode_bin_centers(time_edges, row_start, row_stop),
         environment,
-    )
-    occupancy = _predict_kde_density(
-        occupancy_model,
-        interpolated_position,
-        encoding_block_size,
-        position_block_size,
+        _time_grid,
+        row_start,
+        row_stop,
+        _spike_time_order,
+        predict_log=predict_density,
+        policy=density_policy,
     )
 
     if encoding_weights is None:
@@ -1130,10 +1280,31 @@ def compute_local_log_likelihood(
                 occupancy_model.weights_,
                 count=_padded_occupancy_count,
             )
+            padded_spike_positions = jnp.asarray(
+                _pad_rows(position_at_spike_time, n_padded)
+            )
+            # Occupancy at the spikes is evaluated before the kernel, so the
+            # kernel compiles its tail fallback only when some spike needs it.
+            log_occupancy_at_spikes = _true_kde_log_density(
+                padded_spike_positions,
+                occupancy_samples,
+                occupancy_std,
+                occupancy_model.block_size or n_padded,
+                occupancy_weights,
+            )
+            # Padding rows are dropped from the row sums.
+            has_occupancy_tails = bool(
+                np.any(
+                    np.asarray(log_occupancy_at_spikes)[
+                        : position_at_spike_time.shape[0]
+                    ]
+                    < LOG_EPS
+                )
+            )
             log_likelihood, summed_expected_counts = _add_electrode_local_terms(
                 log_likelihood,
                 summed_expected_counts,
-                jnp.asarray(_pad_rows(position_at_spike_time, n_padded)),
+                padded_spike_positions,
                 jnp.asarray(
                     _pad_rows(electrode_decoding_spike_waveform_features, n_padded)
                 ),
@@ -1143,20 +1314,25 @@ def compute_local_log_likelihood(
                 padded_weights,
                 position_std_array,
                 electrode_waveform_std,
-                occupancy_samples,
-                occupancy_weights,
-                occupancy_std,
+                log_occupancy_at_spikes,
                 gpi_samples,
                 gpi_weights,
                 as_std_array(electrode_gpi_model.std, n_position_dims),
                 positions,
-                occupancy,
+                log_occupancy,
                 electrode_mean_rate * RATE_REFERENCE_SECONDS,
                 electrode_mean_rate,
                 block_size=min(block_size, n_padded),
-                occupancy_block_size=occupancy_model.block_size or n_padded,
                 gpi_block_size=electrode_gpi_model.block_size or n_rows,
                 indices_are_sorted=selection.indices_are_sorted,
+                has_occupancy_tails=has_occupancy_tails,
+                log_gpi_density=_prepared_kde_log_density(
+                    electrode_gpi_model,
+                    interpolated_position,
+                    _spike_time_order,
+                    predict_log=predict_density,
+                    policy=density_policy,
+                ),
             )
             continue
 
@@ -1185,38 +1361,83 @@ def compute_local_log_likelihood(
                 position_at_spike_time.shape[0],
             ),
         )
-        occupancy_at_spike_time = _predict_kde_density(
+        log_occ_at_spikes = _predict_kde_log_density(
             occupancy_model,
             position_at_spike_time,
             encoding_block_size,
             position_block_size,
         )
-
-        log_likelihood += sum_spikes_into_rows(
-            safe_log(
-                (electrode_mean_rate * RATE_REFERENCE_SECONDS)
-                * jnp.where(
-                    occupancy_at_spike_time > 0.0,
-                    marginal_density
-                    / jnp.where(
-                        occupancy_at_spike_time > 0.0, occupancy_at_spike_time, 1.0
-                    ),
-                    0.0,
-                )
-            ),
-            selection,
-        )
-
-        summed_expected_counts += electrode_mean_rate * jnp.where(
-            occupancy > 0.0,
-            _predict_kde_density(
-                electrode_gpi_model,
-                interpolated_position,
-                encoding_block_size,
-                position_block_size,
+        occupancy_at_spike_time = jnp.exp(log_occ_at_spikes)
+        spike_terms = safe_log(
+            (electrode_mean_rate * RATE_REFERENCE_SECONDS)
+            * jnp.where(
+                occupancy_at_spike_time > 0.0,
+                marginal_density
+                / jnp.where(
+                    occupancy_at_spike_time > 0.0, occupancy_at_spike_time, 1.0
+                ),
+                0.0,
             )
-            / jnp.where(occupancy > 0.0, occupancy, 1.0),
-            0.0,
+        )
+        # Only spikes in occupancy tails need the log-space joint ratio.
+        tail = np.asarray((log_occ_at_spikes < LOG_EPS) | jnp.isnan(log_occ_at_spikes))
+        if tail.any():
+            log_ratio = _sample_tiled_log_ratio(
+                jnp.concatenate(
+                    (
+                        position_at_spike_time,
+                        electrode_decoding_spike_waveform_features,
+                    ),
+                    axis=1,
+                )[tail],
+                jnp.concatenate(
+                    (
+                        electrode_encoding_positions,
+                        electrode_encoding_spike_waveform_features,
+                    ),
+                    axis=1,
+                ),
+                jnp.concatenate((position_std, electrode_waveform_std)),
+                jnp.ones(electrode_encoding_positions.shape[0])
+                if electrode_encoding_weights is None
+                else electrode_encoding_weights,
+                log_occ_at_spikes[tail],
+                n_position_dims=position_at_spike_time.shape[1],
+                sample_tile_size=_tile_size(
+                    encoding_block_size, electrode_encoding_positions.shape[0]
+                ),
+                eval_tile_size=_tile_size(
+                    position_block_size
+                    if position_block_size is not None
+                    else block_size,
+                    int(tail.sum()),
+                ),
+            )
+            spike_terms = spike_terms.at[np.flatnonzero(tail)].set(
+                jnp.maximum(
+                    log_density_intensity(
+                        electrode_mean_rate * RATE_REFERENCE_SECONDS,
+                        log_ratio,
+                        jnp.zeros_like(log_ratio),
+                    ),
+                    LOG_EPS,
+                )
+            )
+
+        log_likelihood += sum_spikes_into_rows(spike_terms, selection)
+
+        summed_expected_counts += jnp.exp(
+            log_density_intensity(
+                electrode_mean_rate,
+                _prepared_kde_log_density(
+                    electrode_gpi_model,
+                    interpolated_position,
+                    _spike_time_order,
+                    predict_log=predict_density,
+                    policy=density_policy,
+                ),
+                log_occupancy,
+            )
         )
 
     # Subtract the summed ground-process intensity once, floored at EPS to
