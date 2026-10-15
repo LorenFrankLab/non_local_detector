@@ -255,9 +255,9 @@ def test_fit_sorted_spikes_kde_raises_without_place_grid():
 def test_nan_marginal_density_warns(simple_1d_environment, monkeypatch):
     """A NaN in the KDE marginal density triggers a UserWarning, not silent zeroing.
 
-    NaN density is forced by monkeypatching ``KDEModel.predict`` to return a
-    NaN in the marginal model's output, isolating the warning path from
-    whatever naturally produces NaN.
+    NaN density is forced by monkeypatching the marginal models' log densities
+    to return a NaN in one bin, isolating the warning path from whatever
+    naturally produces NaN.
     """
     import non_local_detector.likelihoods.sorted_spikes_kde as ss_kde
 
@@ -267,19 +267,13 @@ def test_nan_marginal_density_warns(simple_1d_environment, monkeypatch):
     spikes = [jnp.array([2.0, 5.0, 5.1])]
     weights = jnp.ones_like(t)
 
-    real_predict = ss_kde.KDEModel.predict
-    call_state = {"n": 0}
+    real_densities = ss_kde._kde_log_densities
 
-    def predict_with_nan(self, eval_points):
-        out = real_predict(self, eval_points)
-        call_state["n"] += 1
-        # The first predict call is the occupancy model; subsequent calls
-        # are per-neuron marginal models. Inject a NaN into a marginal.
-        if call_state["n"] >= 2:
-            out = out.at[0].set(jnp.nan)
-        return out
+    def densities_with_nan(models, points):
+        first, *rest = real_densities(models, points)
+        return [first.at[0].set(jnp.nan), *rest]
 
-    monkeypatch.setattr(ss_kde.KDEModel, "predict", predict_with_nan)
+    monkeypatch.setattr(ss_kde, "_kde_log_densities", densities_with_nan)
 
     # Exactly one bin is forced to NaN, so the count in the message is 1.
     with pytest.warns(UserWarning, match=r"NaN at 1 \(neuron, bin\)"):
