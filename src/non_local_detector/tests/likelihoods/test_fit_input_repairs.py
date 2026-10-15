@@ -204,7 +204,6 @@ def test_clusterless_gmm_uses_every_bin_without_an_interior_mask():
         [rng.normal(0.0, 1.0, (200, 2))],
         env,
         gmm_components_occupancy=2,
-        gmm_components_gpi=2,
         gmm_components_joint=2,
         disable_progress_bar=True,
     )

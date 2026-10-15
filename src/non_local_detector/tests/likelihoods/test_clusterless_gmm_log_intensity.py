@@ -123,7 +123,6 @@ def _fit_far_from_most_bins(seed: int):
         spike_waveform_features=[marks],
         environment=env,
         gmm_components_occupancy=1,
-        gmm_components_gpi=1,
         gmm_components_joint=1,
         disable_progress_bar=True,
     )

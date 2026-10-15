@@ -94,7 +94,6 @@ def test_ground_process_intensity_calculation(convergence_test_data):
         spike_waveform_features=spike_features,
         environment=data["environment"],
         gmm_components_occupancy=32,
-        gmm_components_gpi=32,
         gmm_components_joint=32,
         disable_progress_bar=True,
     )
@@ -137,7 +136,6 @@ def test_gmm_nonlocal_likelihood_is_finite(convergence_test_data):
         spike_waveform_features=spike_features,
         environment=data["environment"],
         gmm_components_occupancy=16,
-        gmm_components_gpi=16,
         gmm_components_joint=16,
         disable_progress_bar=True,
     )
@@ -221,7 +219,6 @@ def test_visualize_convergence(convergence_test_data):
             spike_waveform_features=spike_features,
             environment=data["environment"],
             gmm_components_occupancy=n_comp,
-            gmm_components_gpi=n_comp,
             gmm_components_joint=n_comp,
             disable_progress_bar=True,
         )

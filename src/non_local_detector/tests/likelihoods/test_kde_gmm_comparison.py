@@ -233,10 +233,8 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
         environment=data["environment"],
         weights=None,
         gmm_components_occupancy=8,
-        gmm_components_gpi=8,
         gmm_components_joint=16,
         gmm_covariance_type_occupancy="full",
-        gmm_covariance_type_gpi="full",
         gmm_covariance_type_joint="full",
         gmm_random_state=0,
         disable_progress_bar=True,
@@ -327,7 +325,6 @@ def test_api_consistency_fit_functions(shared_simulation_data):
         **common_params,
         weights=None,
         gmm_components_occupancy=8,
-        gmm_components_gpi=8,
         gmm_components_joint=16,
         gmm_random_state=0,
     )
@@ -367,7 +364,6 @@ def test_api_consistency_predict_functions(shared_simulation_data):
     gmm_encoding = fit_clusterless_gmm_encoding_model(
         **common_fit_params,
         gmm_components_occupancy=8,
-        gmm_components_gpi=8,
         gmm_components_joint=16,
     )
 
@@ -447,7 +443,6 @@ def test_kde_gmm_output_shape_consistency(shared_simulation_data):
     gmm_enc = fit_clusterless_gmm_encoding_model(
         **common_params,
         gmm_components_occupancy=4,
-        gmm_components_gpi=4,
         gmm_components_joint=8,
     )
 
@@ -517,7 +512,6 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
     gmm_enc = fit_clusterless_gmm_encoding_model(
         **common_params,
         gmm_components_occupancy=4,
-        gmm_components_gpi=4,
         gmm_components_joint=8,
     )
 

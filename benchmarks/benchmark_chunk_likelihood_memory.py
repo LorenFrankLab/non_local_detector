@@ -131,7 +131,6 @@ DEFAULT_BACKENDS = [
 BACKEND_FIT_PARAMS: dict[str, dict] = {
     "clusterless_gmm": {
         "gmm_components_joint": 16,
-        "gmm_components_gpi": 8,
         "gmm_components_occupancy": 8,
         "gmm_reg_covar": 1e-4,
     }

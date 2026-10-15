@@ -55,16 +55,11 @@ at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
   on interior bins. At full rank this mixture is the model; at a truncated
   rank the decoder clips each diffused mark column, and the mixture
   approximates it.
-- `clusterless_gmm`: the joint mixture conditioned on `x`. The decoder
-  integrates `mean_rate * p_gpi(x) / p_occupancy(x)` over time but scores
-  spikes with `mean_rate * p_joint(x, m) / p_occupancy(x)`. Those two are fitted
-  separately, and the second integrates over marks to
-  `mean_rate * p_joint(x) / p_occupancy(x)` instead of the first. So no single
-  marked point process has both. The transforms keep the decoder's ground
-  intensity and its conditional mark density,
-  `lambda(x, m) = Lambda(x) p_joint(x, m) / p_joint(x)`. The position-dependent
-  factor `p_joint(x) / p_gpi(x)` that the decoder also applies to every spike
-  is not tested.
+- `clusterless_gmm`: the joint mixture conditioned on `x`. Fits derive
+  `p_gpi(x)` from that same joint mixture's position marginal, so the ground
+  intensity `mean_rate * p_gpi(x) / p_occupancy(x)` is the mark integral of
+  `mean_rate * p_joint(x, m) / p_occupancy(x)`. The transforms test that process.
+  Refit models trained before this correction to use a consistent process.
 
 All intensities and CDFs come from the stored encoding model, in float64
 NumPy and log space. Mixture weights stay in log space while the mixture is

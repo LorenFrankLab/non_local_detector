@@ -352,14 +352,10 @@ def _full_covariances(model) -> np.ndarray:
 class _GMMElectrode:
     """Clusterless GMM: the ground-process mixture and the joint conditional.
 
-    The decoder integrates a ground intensity from a separately fitted
-    ground-process mixture, ``Lambda(x) = mu p_gpi(x) / p_occ(x)``, but scores
-    spikes with ``mu p_joint(x, m) / p_occ(x)``, whose integral over marks is
-    ``mu p_joint(x) / p_occ(x)``. The two disagree wherever the joint mixture's
-    position marginal differs from ``p_gpi``, so no single marked point process
-    has both. The transforms use the process that keeps the decoder's ground
-    intensity and its conditional mark density,
-    ``lambda(x, m) = Lambda(x) p_joint(x, m) / p_joint(x)``.
+    Fits store the joint mixture's position marginal as ``p_gpi``, so
+    ``Lambda(x) = mu p_gpi(x) / p_occ(x)`` integrates the event intensity.
+    The transforms use ``lambda(x, m) = mu p_joint(x, m) / p_occ(x)`` and
+    the joint mixture's conditional mark density.
     """
 
     def __init__(self, model: dict, electrode: int) -> None:
@@ -391,8 +387,9 @@ class _GMMElectrode:
             - np.log(np.diagonal(chol, axis1=1, axis2=2)).sum(axis=1)[None]
             - 0.5 * p * np.log(2 * np.pi)
         )
-        self._log_joint_position_at_bins = logsumexp(self._log_position_at_bins, axis=1)
-        self._log_ground_at_bins = self._log_ground(self.bin_centers)
+        self._log_rate_over_occupancy_at_bins = np.log(self.mean_rate) - self._score(
+            self.occupancy, self.bin_centers
+        )
 
     @staticmethod
     def _score(model, points):
@@ -419,7 +416,7 @@ class _GMMElectrode:
         )
 
     def log_intensity_at_bins(self, marks):
-        """``log Lambda(b) + log p_joint(b, m_i) - log p_joint(b)``, (n_bins, n)."""
+        """``log mu + log p_joint(b, m_i) - log p_occ(b)``, (n_bins, n)."""
         result = np.empty((self.n_bins, len(marks)))
         for first in range(0, len(marks), _BATCH):
             block = marks[first : first + _BATCH]
@@ -433,8 +430,7 @@ class _GMMElectrode:
             result[:, first : first + len(block)] = self._score(
                 self.joint, points
             ).reshape(self.n_bins, len(block))
-        offset = self._log_ground_at_bins - self._log_joint_position_at_bins
-        return result + offset[:, None]
+        return result + self._log_rate_over_occupancy_at_bins[:, None]
 
     def time_integrated_mark_cdf(self, time_in_bins, marks, feature_order):
         """CDFs of the mixture over (bin, component) that ``Gamma(m)`` forms.
@@ -448,11 +444,9 @@ class _GMMElectrode:
         gain = gain.transpose(0, 2, 1)
         mark_cov = covariances[:, p:, p:] - gain @ covariances[:, :p, p:]
         with np.errstate(divide="ignore"):
-            log_weight = (
-                (np.log(time_in_bins) + self._log_ground_at_bins)[:, None]
-                + self._log_position_at_bins
-                - self._log_joint_position_at_bins[:, None]
-            )
+            log_weight = (np.log(time_in_bins) + self._log_rate_over_occupancy_at_bins)[
+                :, None
+            ] + self._log_position_at_bins
         bins, components = np.nonzero(~np.isneginf(log_weight))
         residual = self.bin_centers[bins] - self._means[components, :p]
         conditional_means = self._means[components, p:] + np.einsum(

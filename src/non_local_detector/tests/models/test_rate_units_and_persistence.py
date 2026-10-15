@@ -45,7 +45,6 @@ def _decoder(algorithm, *, calibration=False):
     if algorithm == "clusterless_gmm":
         params.update(
             gmm_components_occupancy=1,
-            gmm_components_gpi=1,
             gmm_components_joint=1,
         )
     if algorithm.startswith("sorted"):

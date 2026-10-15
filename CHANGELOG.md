@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Consistent clusterless GMM processes
+
+- **Breaking:** `clusterless_gmm` models derive the ground-process intensity from the joint position/mark GMM's analytical position marginal. Previously a separately fitted position GMM could disagree with the integral of the marked intensity. The joint and occupancy fits are unchanged, but the expected-count term and decoded results can change substantially. Removed `gmm_components_gpi` and `gmm_covariance_type_gpi`; configure the joint GMM instead and refit existing models. See [the mathematical contract and validation](docs/likelihood_process_normalization.md).
+
 ### Highlights: faster EM, and EM on large 2-D grids
 
 - **Changed default:** `estimate_parameters` now chooses dense or structured (bounded-memory) EM itself (`transition_representation="auto"`). Linearized tracks and coarse grids still run dense EM; large 2-D grids run structured EM, whose device memory does not grow with the recording. `results.attrs["em_transition_representation"]` says which ran. Pass `transition_representation="dense"` for the previous behavior.
