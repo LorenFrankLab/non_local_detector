@@ -44,6 +44,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
+    _as_floating,
     _effective_sample_count,
     _estimate_log_prob_resp,
 )
@@ -59,7 +60,7 @@ from non_local_detector.time_edges import (
 
 
 def _as_jnp(x) -> jnp.ndarray:
-    """Convert input to JAX array if not already.
+    """Input as a JAX array, with integer or boolean features as floats.
 
     Parameters
     ----------
@@ -69,12 +70,9 @@ def _as_jnp(x) -> jnp.ndarray:
     Returns
     -------
     jnp.ndarray
-        JAX array version of input.
+        JAX array version of input, in a floating dtype for integer input.
     """
-    result = x if isinstance(x, jnp.ndarray) else jnp.asarray(x)
-    if jnp.issubdtype(result.dtype, jnp.integer) or result.dtype == jnp.bool_:
-        result = result.astype(jnp.result_type(result.dtype, jnp.zeros(())))
-    return result
+    return _as_floating(x)
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:

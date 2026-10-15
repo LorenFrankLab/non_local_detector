@@ -41,6 +41,14 @@ def _fitted_parameters_finite(parameters: tuple[Array, ...]) -> Array:
     return jnp.all(jnp.stack([jnp.all(jnp.isfinite(value)) for value in parameters]))
 
 
+def _as_floating(x) -> Array:
+    """``x`` as a JAX array, with integer or boolean measurements as floats."""
+    x = jnp.asarray(x)
+    if jnp.issubdtype(x.dtype, jnp.integer) or x.dtype == jnp.bool_:
+        x = x.astype(jnp.result_type(x.dtype, jnp.zeros(())))
+    return x
+
+
 def _has_negative_or_nonfinite(arr: Array) -> bool:
     """True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
 
@@ -1198,9 +1206,7 @@ class GaussianMixtureModel:
         # subnormal weights to zero or narrow finite float64 weights to float32.
         # ``keep`` marks the rows EM will see; the count guards were applied to
         # exactly those rows, so the guards and the fitted data agree.
-        X = jnp.asarray(X)
-        if jnp.issubdtype(X.dtype, jnp.integer) or X.dtype == jnp.bool_:
-            X = X.astype(jnp.result_type(X.dtype, jnp.zeros(())))
+        X = _as_floating(X)
         host_weights = None if sample_weight is None else np.asarray(sample_weight)
         keep = self._validate_fit_inputs(X, host_weights)
 

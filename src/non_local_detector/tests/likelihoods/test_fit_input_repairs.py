@@ -7,6 +7,13 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import (
+    fit_clusterless_kde_encoding_model,
+    fit_clusterless_kde_log_encoding_model,
+)
+from non_local_detector.likelihoods.clusterless_gmm import (
+    fit_clusterless_gmm_encoding_model,
+)
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 from non_local_detector.likelihoods.sorted_spikes_glm import (
@@ -17,6 +24,7 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
 
@@ -112,9 +120,14 @@ def test_zero_no_spike_rate_has_the_empty_bin_exposure_gradient():
     "fit", [fit_sorted_spikes_kde_encoding_model, fit_sorted_spikes_glm_encoding_model]
 )
 def test_empty_sorted_population_has_empty_fields_and_zero_total_rate(fit):
-    time = np.arange(11.0)
+    """No neurons gives empty fields, not a failed stack.
+
+    The 0-100 track keeps default spline knots inside the data, so the GLM
+    case does not fail on the short-axis knot bug instead.
+    """
+    time = np.arange(101.0)
     position = time[:, None]
-    env = Environment(place_bin_size=1.0).fit_place_grid(
+    env = Environment(place_bin_size=5.0).fit_place_grid(
         position, infer_track_interior=False
     )
     kwargs = {}
@@ -128,3 +141,72 @@ def test_empty_sorted_population_has_empty_fields_and_zero_total_rate(fit):
     model = fit(time, position, [], env, disable_progress_bar=True, **kwargs)
     assert model["place_fields"].shape == (0, len(env.place_bin_centers_))
     np.testing.assert_array_equal(model["no_spike_part_log_likelihood"], 0.0)
+
+
+CLUSTERLESS_KDE_FITS = [
+    fit_clusterless_kde_encoding_model,
+    fit_clusterless_kde_log_encoding_model,
+]
+
+
+def _fit_clusterless_kde(fit, **bandwidths):
+    time = np.arange(5.0)
+    position = time[:, None]
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=False
+    )
+    return fit(
+        time,
+        position,
+        [time],
+        [np.zeros((5, 1))],
+        env,
+        disable_progress_bar=True,
+        **bandwidths,
+    )
+
+
+@pytest.mark.parametrize("fit", CLUSTERLESS_KDE_FITS)
+@pytest.mark.parametrize("name", ["position_std", "waveform_std"])
+@pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, [1.0, 1.0]])
+def test_clusterless_kde_rejects_invalid_bandwidths(fit, name, value):
+    """Non-positive, non-finite or wrongly shaped bandwidths raise at fit time.
+
+    Positions and marks are one-dimensional, so a two-element bandwidth has
+    the wrong shape.
+    """
+    with pytest.raises(ValidationError, match=name):
+        _fit_clusterless_kde(fit, **{name: value})
+
+
+@pytest.mark.parametrize("fit", CLUSTERLESS_KDE_FITS)
+@pytest.mark.parametrize("value", [1e39, 1e-46])
+def test_clusterless_kde_rejects_bandwidths_that_float32_cannot_hold(fit, value):
+    """A bandwidth that overflows or flushes to zero in float32 is rejected."""
+    with precision_mode(False), pytest.raises(ValidationError, match="representable"):
+        _fit_clusterless_kde(fit, position_std=value)
+
+
+def test_clusterless_gmm_uses_every_bin_without_an_interior_mask():
+    """A grid without an interior mask treats every bin as interior."""
+    rng = np.random.default_rng(0)
+    time = np.arange(0.0, 20.0, 0.05)
+    position = (5.0 + 4.0 * np.sin(time))[:, None]
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=False
+    )
+    env.is_track_interior_ = None
+    spike_times = np.sort(rng.uniform(0.0, 20.0, 200))
+    model = fit_clusterless_gmm_encoding_model(
+        time,
+        position,
+        [spike_times],
+        [rng.normal(0.0, 1.0, (200, 2))],
+        env,
+        gmm_components_occupancy=2,
+        gmm_components_gpi=2,
+        gmm_components_joint=2,
+        disable_progress_bar=True,
+    )
+    assert model["interior_place_bin_centers"].shape[0] == len(env.place_bin_centers_)
+    assert np.all(np.isfinite(model["log_occupancy"]))

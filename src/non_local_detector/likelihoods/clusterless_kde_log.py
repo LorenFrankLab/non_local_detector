@@ -1520,13 +1520,10 @@ def fit_clusterless_kde_encoding_model(
         if (environment.track_graph is not None and position.shape[1] > 1)
         else position.shape[1]
     )
+    # Validate bandwidths once, host-side, at fit time: a zero, negative or
+    # non-finite std would otherwise fit a degenerate kernel. waveform_std stays
+    # scalar or per-feature and is expanded per electrode at predict time.
     position_std = validate_bandwidth(position_std, n_std_dims, "position_std")
-    # Keep waveform_std as-is (scalar or array) - will be expanded per-electrode at predict time
-
-    # Validate bandwidths once, host-side, at fit time. A zero/negative std is a
-    # config error; catching it here (a clear ValueError, cannot break JIT) is
-    # better than the near-delta kernel the downstream EPS clamp would silently
-    # produce.
     for features in spike_waveform_features:
         validate_bandwidth(waveform_std, features.shape[1], "waveform_std")
 
