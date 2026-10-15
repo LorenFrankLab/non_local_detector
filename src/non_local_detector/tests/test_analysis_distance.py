@@ -13,7 +13,57 @@ from non_local_detector.analysis.distance2D import (
     get_speed,
     get_velocity,
     head_direction_simliarity,
+    make_2D_track_graph_from_environment,
 )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("boundary_interior", [False, True])
+def test_2d_track_graph_matches_grid_geometry_at_boundaries(boundary_interior):
+    """Graph construction keeps diagonal neighbors and clips grid boundaries."""
+    from non_local_detector.environment import Environment
+
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        np.array([[0.0, 0.0], [2.0, 2.0]]), infer_track_interior=False
+    )
+    assert env.is_track_interior_ is not None
+    assert env.place_bin_centers_ is not None
+    if not boundary_interior:
+        env.is_track_interior_[:] = False
+        env.is_track_interior_[1:3, 1:3] = True
+    graph = make_2D_track_graph_from_environment(env)
+    interior = env.is_track_interior_.ravel()
+    expected_edges = set()
+    for left in range(16):
+        for right in range(left + 1, 16):
+            x_coords, y_coords = np.unravel_index([left, right], (4, 4))
+            if (
+                interior[left]
+                and interior[right]
+                and abs(x_coords[0] - x_coords[1]) <= 1
+                and abs(y_coords[0] - y_coords[1]) <= 1
+            ):
+                expected_edges.add((left, right))
+
+    assert set(graph.nodes) == set(range(16))
+    assert set(graph.edges) == expected_edges
+    assert {data["edge_id"] for _, _, data in graph.edges(data=True)} == set(
+        range(len(expected_edges))
+    )
+    for node, data in graph.nodes(data=True):
+        assert data["pos"] == tuple(env.place_bin_centers_[node])
+        assert data["is_track_interior"] == interior[node]
+    for left, right, data in graph.edges(data=True):
+        assert data["distance"] == np.linalg.norm(
+            env.place_bin_centers_[left] - env.place_bin_centers_[right]
+        )
+    # The shortest path crosses two diagonal edges on the all-interior grid.
+    if boundary_interior:
+        expected_distance = 2 * np.sqrt(2)
+        assert (
+            nx.shortest_path_length(graph, 0, 10, weight="distance")
+            == expected_distance
+        )
 
 
 def _make_linear_track(

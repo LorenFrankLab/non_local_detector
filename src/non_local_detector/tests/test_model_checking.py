@@ -22,6 +22,75 @@ from non_local_detector.model_checking.posterior_consistency import (
 class TestGetHighestPosteriorThreshold:
     """Test HPD threshold computation."""
 
+    def test_missing_rows_do_not_discard_other_rows(self):
+        """Undefined frames preserve HPD thresholds in valid frames."""
+        posterior = xr.DataArray(
+            [[0.8, 0.2], [np.nan, np.nan], [0.2, 0.8]],
+            dims=["time", "position"],
+        )
+
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.75)
+
+        np.testing.assert_allclose(threshold, [0.8, np.nan, 0.8], equal_nan=True)
+
+    def test_partial_missing_bins_are_handled_per_row(self):
+        """A missing bin in one frame remains available in other frames."""
+        posterior = xr.DataArray(
+            [[0.8, np.nan, 0.2], [0.1, 0.8, 0.1]],
+            dims=["time", "position"],
+        )
+
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.75)
+
+        np.testing.assert_allclose(threshold, [0.8, 0.8])
+
+    def test_rows_without_mass_have_undefined_threshold(self):
+        """Zero-mass and entirely missing frames do not have an HPD region."""
+        posterior = xr.DataArray(
+            [[0.0, 0.0], [np.nan, np.nan]], dims=["time", "position"]
+        )
+
+        assert np.isnan(get_highest_posterior_threshold(posterior)).all()
+
+    @pytest.mark.parametrize("last_bin", [np.nan, 0.0])
+    def test_full_coverage_rounding_does_not_include_zero_mass(self, last_bin):
+        """A rounded cumulative sum below one retains a positive cutoff."""
+        probabilities = [
+            0.3950738518826126,
+            0.04824058611536486,
+            0.3945679905098466,
+            0.16211757149217604,
+            last_bin,
+        ]
+        posterior = xr.DataArray([probabilities], dims=["time", "position"])
+
+        threshold = get_highest_posterior_threshold(posterior, coverage=1.0)
+
+        np.testing.assert_allclose(threshold, [min(probabilities[:-1])])
+
+    @pytest.mark.integration
+    def test_default_detector_conditional_nonlocal_posterior(self):
+        """The default Local-only initial frame must not break later HPDs."""
+        from non_local_detector import Environment, NonLocalSortedSpikesDetector
+
+        time = np.linspace(0.0, 1.0, 11)
+        position = np.column_stack((10.0 * time, 5.0 * time))
+        spikes = [np.array([0.1, 0.3, 0.6, 0.8])]
+        detector = NonLocalSortedSpikesDetector(
+            environments=Environment(place_bin_size=2.0),
+            infer_track_interior=False,
+        ).fit(time, position, spikes)
+        results = detector.predict(
+            spikes, time_edges=time, position=position, position_time=time
+        )
+
+        posterior = detector.get_conditional_non_local_posterior(results)
+        threshold = get_highest_posterior_threshold(posterior)
+
+        assert np.isnan(threshold[0])
+        assert np.isfinite(threshold[1:]).all()
+        assert (threshold[1:] > 0.0).all()
+
     def test_delta_function_threshold(self):
         """Delta function: threshold should equal the peak value."""
         probs = np.zeros((1, 10))
@@ -74,6 +143,20 @@ class TestGetHighestPosteriorThreshold:
 @pytest.mark.unit
 class TestGetHPDSpatialCoverage:
     """Test HPD spatial coverage computation."""
+
+    @pytest.mark.parametrize("bin_width", [None, np.array([1.0, 2.0])])
+    def test_missing_threshold_preserves_undefined_coverage(self, bin_width):
+        """An undefined frame must not appear to have zero uncertainty."""
+        posterior = xr.DataArray(
+            [[0.8, 0.2], [np.nan, np.nan]],
+            dims=["time", "position"],
+            coords={"position": [0.0, 1.0]},
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.75)
+
+        coverage = get_HPD_spatial_coverage(posterior, threshold, bin_width)
+
+        np.testing.assert_allclose(coverage, [1.0, np.nan], equal_nan=True)
 
     def test_delta_function_one_bin(self):
         """Delta function: coverage should equal one bin width."""

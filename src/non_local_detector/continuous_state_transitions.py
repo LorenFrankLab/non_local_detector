@@ -523,14 +523,11 @@ class EmpiricalMovement:
             samples = np.concatenate((position[1:], position[:-1]), axis=1)
         else:
             samples = np.concatenate((position[:-1], position[1:]), axis=1)
-        if self.environment.position_range is None:
-            raise ValueError(
-                "Environment must have defined position_range for histogram computation"
-            )
+        # Fitted edges define the source and destination ranges, including
+        # environments whose ranges were inferred from their position data.
         state_transition, _ = np.histogramdd(
             samples,
             bins=self.environment.edges_ * 2,
-            range=self.environment.position_range,
         )
         original_shape = state_transition.shape
         n_position_dims = position.shape[1]

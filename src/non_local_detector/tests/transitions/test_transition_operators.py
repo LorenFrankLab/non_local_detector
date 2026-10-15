@@ -686,7 +686,7 @@ def test_subnormal_gaussian_normalization_is_explicitly_unsupported_or_budgeted(
 def test_fallback_receives_original_empirical_context_and_defaults():
     env = environment((5,), holes=False)
     env.edges_ = [np.arange(6.0) - 0.5]
-    env.position_range = ((-0.5, 4.5), (-0.5, 4.5))
+    env.position_range = ((-0.5, 4.5),)
     position = np.resize(np.arange(5.0), 30)[:, None]
     context = {
         "position": position,

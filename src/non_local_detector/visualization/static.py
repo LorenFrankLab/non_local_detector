@@ -58,7 +58,8 @@ def get_multiunit_firing_rate(
         Row timestamps, e.g. decode bin centers (``results.time``) or position
         sample times; at least two, increasing. Each row counts the spikes
         closer to it than to its neighbours, with half an interval beyond each
-        end.
+        end. Rates use each row's duration. Gaussian smoothing uses the median
+        sample interval, which approximates smoothing in time for irregular rows.
     smoothing_sigma : float, optional
         Standard deviation of the Gaussian smoothing, by default 0.015
 
@@ -101,7 +102,7 @@ def get_multiunit_firing_rate(
     sampling_frequency = 1 / np.nanmedian(np.diff(time))
 
     multiunit_firing_rate = _gaussian_smooth(
-        spike_indicator.sum(axis=1) * sampling_frequency,
+        spike_indicator.sum(axis=1) / np.diff(row_edges),
         smoothing_sigma,
         sampling_frequency,
     )
