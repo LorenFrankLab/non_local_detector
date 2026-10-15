@@ -337,3 +337,24 @@ def test_reduction_dtypes_stay_consistent_with_x64_enabled(dtype, use_streaming)
     out = np.asarray(out, np.float64)
     assert np.isfinite(out).all()
     np.testing.assert_allclose(out, np.maximum(reference, LOG_EPS), atol=1e-4, rtol=0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("enc_tile_size", [None, 1])
+def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
+    """float32 marks beside float64 position kernels share one exponent shift."""
+    std, gap, n_features = 0.001, 150.0, 16
+    encoded = np.zeros((2, n_features), dtype=np.float32)
+    encoded[1, 0] = np.sqrt(2 * gap) * std
+    expected = -gap - n_features * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
+    with _enable_x64():
+        out = estimate_log_joint_mark_intensity(
+            jnp.zeros((1, n_features), jnp.float32),
+            jnp.asarray(encoded),
+            jnp.full(n_features, std, jnp.float32),
+            jnp.asarray([1e-14], jnp.float64),
+            1.0,
+            jnp.asarray([[-gap], [0.0]], jnp.float64),
+            enc_tile_size=enc_tile_size,
+        )
+    np.testing.assert_allclose(np.asarray(out)[0, 0], expected, atol=1e-4, rtol=1e-5)

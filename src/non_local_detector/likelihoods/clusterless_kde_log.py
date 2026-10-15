@@ -156,6 +156,9 @@ def _gemm_log_kernel_product(
     """
     n_enc = log_mark.shape[0]
     dtype = jnp.result_type(log_mark, weighted_position)
+    # The shift depends on the dtype, so both factors must be exponentiated in it.
+    log_mark = log_mark.astype(dtype)
+    weighted_position = weighted_position.astype(dtype)
     shift = _scaled_gemm_shift(n_enc, dtype)
     mark_max = jnp.max(log_mark, axis=0)
     position_max = jnp.max(weighted_position, axis=0)
