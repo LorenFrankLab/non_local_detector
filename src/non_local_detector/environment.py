@@ -618,7 +618,24 @@ class Environment:
 
             self.infer_track_interior = infer_track_interior
 
-            if self.is_track_interior is None and self.infer_track_interior:
+            if self.is_track_interior is not None:
+                val.ensure_ndarray(self.is_track_interior, "is_track_interior")
+                if self.is_track_interior.dtype != np.bool_:
+                    raise ValidationError(
+                        "is_track_interior must have boolean dtype",
+                        expected="boolean array",
+                        got=f"dtype {self.is_track_interior.dtype}",
+                        hint="Provide a boolean mask of the Cartesian grid bins",
+                    )
+                if self.is_track_interior.shape != self.centers_shape_:
+                    raise ValidationError(
+                        "is_track_interior shape must match the fitted grid",
+                        expected=f"shape {self.centers_shape_}",
+                        got=f"shape {self.is_track_interior.shape}",
+                        hint="Include the grid's boundary bins in the mask",
+                    )
+                self.is_track_interior_ = self.is_track_interior.copy()
+            elif self.infer_track_interior:
                 self.is_track_interior_ = get_track_interior(
                     position,
                     self.edges_,
@@ -626,7 +643,7 @@ class Environment:
                     self.dilate,
                     self.bin_count_threshold,
                 )
-            elif self.is_track_interior is None and not self.infer_track_interior:
+            else:
                 self.is_track_interior_ = np.ones(self.centers_shape_, dtype=bool)
 
             if (

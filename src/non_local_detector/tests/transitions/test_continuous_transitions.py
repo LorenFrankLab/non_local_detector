@@ -131,8 +131,6 @@ def test_uniform_transition_between_envs(make_env_1d):
 def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
     # Create a simple path that marches right
     env = make_env_1d(n_bins=11)
-    # Ensure histogram range set for 2D (pre- and post- positions)
-    env.position_range = ((0.0, 10.0), (0.0, 10.0))
     envs = (env,)
     pos = np.linspace(0.0, 10.0, 51)[:, None]
     # Use empirical transition with provided positions
@@ -145,6 +143,40 @@ def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
     nearer = np.mean(np.diag(tm))
     farther = np.mean(tm[:, 0] + tm[:, -1])
     assert nearer >= farther
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n_dims", [1, 2])
+@pytest.mark.parametrize("explicit_range", [False, True])
+def test_empirical_movement_uses_fitted_edges(n_dims, explicit_range):
+    """Ordinary fitted environments define both source and destination bins."""
+    if n_dims == 1:
+        position = np.array([[0.5], [1.5], [2.5], [0.5]])
+    else:
+        position = np.array(
+            [[0.5, 0.5], [0.5, 2.5], [2.5, 2.5], [2.5, 0.5], [0.5, 0.5]]
+        )
+    env = Environment(
+        place_bin_size=1.0,
+        position_range=[(0.0, 3.0)] * n_dims if explicit_range else None,
+        infer_track_interior=False,
+    ).fit_place_grid(position, infer_track_interior=False)
+    assert env.place_bin_centers_ is not None
+    n_bins = len(env.place_bin_centers_)
+    # Visit every fitted bin once, staying away from edge ownership choices.
+    position = np.concatenate((env.place_bin_centers_, env.place_bin_centers_[:1]))
+    bins: np.ndarray = np.concatenate((np.arange(n_bins), np.array([0], dtype=int)))
+    expected = np.zeros((n_bins,) * 2)
+    np.add.at(expected, (bins[:-1], bins[1:]), 1)
+    row_mass = expected.sum(axis=1, keepdims=True)
+    expected /= np.where(row_mass > 0, row_mass, 1)
+
+    transition = EmpiricalMovement().make_state_transition((env,), position)
+
+    np.testing.assert_array_equal(transition, expected)
+    assert np.all(np.isfinite(transition))
+    assert np.all(transition >= 0)
+    np.testing.assert_array_equal(transition.sum(axis=1)[row_mass[:, 0] > 0], 1)
 
 
 def test_discrete_transition_is_ones():

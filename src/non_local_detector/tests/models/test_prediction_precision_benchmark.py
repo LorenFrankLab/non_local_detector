@@ -37,10 +37,29 @@ def test_float64_reference_matches_dense_and_reports_actual_precision(
     tmp_path: Path,
     family: str,
 ) -> None:
+    chunk_size = 13
     with precision_mode(False):
         model, fit, predict = checkpoint_recording(family)
         model.fit(**fit, transition_representation="structured")
-        likelihood = model.compute_log_likelihood(**predict)
+        # Float32 likelihood rounding can depend on the query batch shape.
+        # Use the same native likelihood chunks for both float64 HMM paths so
+        # this comparison isolates inference precision rather than comparing
+        # different rounded likelihood inputs.
+        n_rows = len(predict["time_edges"]) - 1
+        likelihood_chunks = []
+        for start in range(0, n_rows, chunk_size):
+            stop = min(start + chunk_size, n_rows)
+            # The checkpoint driver shifts a short final request backwards to
+            # keep a full query batch, then discards its overlapping prefix.
+            first = max(min(start, n_rows - chunk_size), 0)
+            values = np.asarray(
+                model.compute_log_likelihood(
+                    **predict,
+                    row_slice=slice(first, stop),
+                )
+            )
+            likelihood_chunks.append(values[start - first :])
+        likelihood = np.concatenate(likelihood_chunks)
     with precision_mode(True):
         interior = model.is_track_interior_state_bins_
         initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
@@ -61,7 +80,10 @@ def test_float64_reference_matches_dense_and_reports_actual_precision(
             ]
         )
         reference, dtypes = benchmark.reference64_prediction(
-            model, predict, chunk_size=13, checkpoint_dir=tmp_path / "checkpoints"
+            model,
+            predict,
+            chunk_size=chunk_size,
+            checkpoint_dir=tmp_path / "checkpoints",
         )
         import jax
 

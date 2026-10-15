@@ -3342,9 +3342,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
-            Re-fit the place fields in each M-step, weighted by the Local
-            state's posterior, by default False. Every state shares the
-            encoding model, so weighting it by the Local state alone is not
+            Re-fit the place fields in each M-step, weighted by the summed
+            posterior of observations with ``is_local=True``, independently
+            of their state names, by default False. Without local observations
+            this update is skipped. Every state shares the encoding model, so
+            weighting it by local observations alone is not
             an exact M-step: it can lower the penalized log-likelihood, which
             EM reports as a monotonicity violation and never counts as
             convergence. Off by default for that reason.
@@ -3650,16 +3652,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             logger.info("Maximization step...")
 
             if estimate_encoding_model:
-                try:
-                    local_state_index = self.state_names.index("Local")
-                except ValueError:
-                    local_state_index = None
+                local_state_indices = [
+                    index
+                    for index, observation in enumerate(self.observation_models)
+                    if observation.is_local
+                ]
 
-                if local_state_index is not None:
+                if local_state_indices:
                     logger.info("Estimating encoding model...")
                     local_state_weights = acausal_state_probabilities[
-                        :, local_state_index
-                    ]
+                        :, local_state_indices
+                    ].sum(axis=1)
                     # Weights live on the decode bins; the encoding model is
                     # fit on the position samples. Interpolate from the bin
                     # centers even when the counts match: equal lengths do not
