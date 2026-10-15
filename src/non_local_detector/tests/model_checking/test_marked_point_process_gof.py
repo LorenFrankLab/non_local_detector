@@ -667,6 +667,32 @@ def separated():
     return environment, models
 
 
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_mdci_in_one_bin_equals_the_conditional_at_that_bin(separated, algorithm):
+    """With all time in one bin, f(m) is f(m | bin) and u is the elapsed fraction.
+
+    The animal stays at the first encoding spike. The first observed mark
+    matches the second spike's, so that spike's component, weighted by about
+    exp(-780) at this position, dominates once the first mark is observed;
+    dropping it changes the second CDF. The intensity there, about exp(-1000),
+    underflows a product of separately shifted factors.
+    """
+    environment, models = separated
+    model = models[algorithm]
+    position_time = np.linspace(0.0, 1.0, 11)
+    position = np.full((11, 1), environment.place_bin_centers_[0, 0])
+    spike_times = np.array([0.25, 0.5, 0.9])
+    marks = np.array([[40.0, 20.0], [40.0, 39.0], [1.0, 1.0]])
+    u, v = mdci_transform(
+        model, algorithm, 0, position_time, position, spike_times, marks
+    )
+    _, expected_v = ircm_transform(
+        model, algorithm, 0, position_time, position, spike_times, marks
+    )
+    np.testing.assert_allclose(u, spike_times, rtol=1e-12)
+    np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
+
+
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_transforms_reject_missing_positions(separated, algorithm, transform):

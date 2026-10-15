@@ -98,14 +98,26 @@ class _MarkKernelMixture:
     waveform_std: np.ndarray
     n_bins: int
 
-    def _mark_cdf(self, mixture_weights=None):
-        weights = self.weights if mixture_weights is None else mixture_weights
+    def _mark_cdf(self):
         return GaussianMixtureConditionalCDF(
-            weights,
+            self.weights,
             self.marks,
             np.broadcast_to(self.waveform_std**2, self.marks.shape),
             "diag",
             batch_size=128,
+        )
+
+    def _time_integrated_cdf(self, log_mass, marks, feature_order):
+        """CDFs of the mark mixture with component weights ``w_j exp(log_mass_j)``."""
+        with np.errstate(divide="ignore"):
+            log_weights = np.log(self.weights) + log_mass
+        return _log_weighted_mixture_cdf(
+            log_weights,
+            self.marks,
+            np.broadcast_to(self.waveform_std**2, self.marks.shape),
+            "diag",
+            marks,
+            feature_order,
         )
 
     def _log_mark_kernel(self, marks):
@@ -194,8 +206,7 @@ class _KDEElectrode(_MarkKernelMixture):
             + self._log_position_kernel_at_bins(),
             axis=0,
         )
-        mixture = self.weights * np.exp(log_mass - log_mass.max())
-        return self._mark_cdf(mixture).transform(marks, feature_order=feature_order)
+        return self._time_integrated_cdf(log_mass, marks, feature_order)
 
 
 class _DiffusionElectrode(_MarkKernelMixture):
@@ -305,8 +316,7 @@ class _DiffusionElectrode(_MarkKernelMixture):
         log_mass = logsumexp(
             (log_time + self._log_bin_scale)[:, None] + self.log_heat, axis=0
         )[self.source_index]
-        mixture = self.weights * np.exp(log_mass - log_mass.max())
-        return self._mark_cdf(mixture).transform(marks, feature_order=feature_order)
+        return self._time_integrated_cdf(log_mass, marks, feature_order)
 
 
 def _full_covariances(model) -> np.ndarray:
@@ -426,18 +436,47 @@ class _GMMElectrode:
                 + self._log_position_at_bins
                 - self._log_joint_position_at_bins[:, None]
             )
-        # Components below exp(-40) of the largest add < 1e-17 to any CDF.
-        bins, components = np.nonzero(log_weight > log_weight.max() - 40.0)
+        bins, components = np.nonzero(~np.isneginf(log_weight))
         residual = self.bin_centers[bins] - self._means[components, :p]
         conditional_means = self._means[components, p:] + np.einsum(
             "nij,nj->ni", gain[components], residual
         )
-        return GaussianMixtureConditionalCDF(
-            np.exp(log_weight[bins, components] - log_weight.max()),
+        return _log_weighted_mixture_cdf(
+            log_weight[bins, components],
             conditional_means,
             mark_cov[components],
             "full",
-        ).transform(marks, feature_order=feature_order)
+            marks,
+            feature_order,
+        )
+
+
+def _log_weighted_mixture_cdf(
+    log_weights, means, covariances, covariance_type, marks, feature_order
+):
+    """Sequential CDFs of a mixture whose component weights are given as logs.
+
+    The weights stay in log space while the mixture is conditioned on each
+    mark. A component of tiny weight can dominate once the first marks are
+    observed, so only components of zero weight are dropped.
+    """
+    keep = ~np.isneginf(log_weights)
+    log_weights = log_weights[keep]
+    n_components = log_weights.size
+    mixture = GaussianMixtureConditionalCDF(
+        np.ones(n_components),
+        means[keep],
+        covariances[keep],
+        covariance_type,
+        batch_size=max(1, min(128, 2**20 // max(n_components, 1))),
+    )
+    return mixture.transform(
+        marks,
+        feature_order=feature_order,
+        component_log_weights=lambda first, last: np.broadcast_to(
+            log_weights, (last - first, n_components)
+        ),
+    )
 
 
 def _log_matmul_exp(log_a, log_b):
