@@ -57,6 +57,9 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+# Default covariance regularization, in squared feature units.
+DEFAULT_GMM_REG_COVAR = 1.0
+
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
@@ -479,7 +482,7 @@ def fit_clusterless_gmm_encoding_model(
     gmm_covariance_type_occupancy: str = "full",
     gmm_covariance_type_joint: str = "full",
     gmm_random_state: int | None = 0,
-    gmm_reg_covar: float = 1.0,
+    gmm_reg_covar: float = DEFAULT_GMM_REG_COVAR,
     gmm_max_iter: int = 200,
     gmm_tol: float = 0.001,
     disable_progress_bar: bool = False,

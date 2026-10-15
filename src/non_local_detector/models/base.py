@@ -61,6 +61,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     predict_no_spike_log_likelihood,
 )
+from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     decode_bin_centers,
@@ -68,6 +69,10 @@ from non_local_detector.likelihoods.common import (
     resolve_row_slice,
     validate_population_lengths,
     validate_spike_feature_population,
+)
+from non_local_detector.likelihoods.mark_reference import (
+    fit_mark_reference,
+    mark_reference_log_likelihood,
 )
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
 from non_local_detector.observation_models import ObservationModel
@@ -2649,6 +2654,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "Call fit(...) or estimate_parameters(..., time_edges=...) "
                     "with the original recording. No-Spike uses its constructor rate in Hz.",
                 )
+        if (
+            isinstance(self, ClusterlessDetector)
+            and any(obs.is_no_spike for obs in self.observation_models)
+            and not hasattr(self, "mark_reference_")
+        ):
+            raise ValidationError(
+                "Saved clusterless model has no No-Spike mark reference; refit before decoding.",
+                hint="No-Spike scores waveform marks with a reference density "
+                "fitted from training spikes. Call fit(...) with the original recording.",
+            )
 
     def _validate_decode_population(self, spike_times, spike_waveform_features=None):
         """Validate active fitted populations before missing-data shortcuts."""
@@ -3705,6 +3720,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         self.fit_encoding_model(
                             **self._encoding_model_data,
                             weights=local_state_weights,
+                            # Posterior weights update the encoding process,
+                            # not the training-fitted mark reference.
+                            **(
+                                {"_refit_mark_reference": False}
+                                if isinstance(self, ClusterlessDetector)
+                                else {}
+                            ),
                         )
 
                         # The encoding model changed, so the likelihood
@@ -4675,7 +4697,9 @@ class ClusterlessDetector(_DetectorBase):
         sampling_frequency : float, optional
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
-            No spike rate, by default 1e-10.
+            No-Spike firing rate per electrode in Hz, by default 1e-10. Its
+            spikes' marks are scored with the training-fitted reference
+            density ``mark_reference_``.
         discrete_transition_prior_weight : float or np.ndarray, optional
             Data-adaptive prior weight, by default 0.0. See
             ``_DetectorBase`` for details.
@@ -4724,6 +4748,56 @@ class ClusterlessDetector(_DetectorBase):
             return dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
         return dict(self.clusterless_algorithm_params)
 
+    def _fit_mark_reference(
+        self,
+        position_time: np.ndarray,
+        spike_times: list[np.ndarray],
+        spike_waveform_features: list[np.ndarray],
+        is_training: np.ndarray,
+        environment_labels: np.ndarray,
+        weights: np.ndarray | None,
+        support: EncodingSupport,
+        algorithm_params: dict,
+    ) -> list:
+        """Fit each electrode's mark reference from its training spikes.
+
+        Training weights span every encoding group of the requested
+        environments, are formed on the full tracking timeline, and are
+        interpolated to spike times within the encoding support, as for the
+        encoding models.
+        """
+        requested_environments = [
+            obs.environment_name for obs in self.observation_models
+        ]
+        training_weights = np.asarray(is_training, dtype=float) * np.isin(
+            environment_labels, requested_environments
+        )
+        if weights is not None:
+            training_weights = training_weights * np.asarray(weights)
+
+        # A coordinate with zero training variance falls back to the mark
+        # bandwidth, which carries the waveform units.
+        if self.clusterless_algorithm == "clusterless_gmm":
+            fallback_scale = np.sqrt(
+                algorithm_params.get("gmm_reg_covar", DEFAULT_GMM_REG_COVAR)
+            )
+        else:
+            fallback_scale = algorithm_params.get(
+                "waveform_std", _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS["waveform_std"]
+            )
+
+        mark_reference = []
+        for electrode, (times, features) in enumerate(
+            zip(spike_times, spike_waveform_features, strict=True)
+        ):
+            spike_weights = interpolate_weights_at_spike_times(
+                times, position_time, training_weights, encoding_support=support
+            )
+            mark_reference.append(
+                fit_mark_reference(features, spike_weights, fallback_scale, electrode)
+            )
+        return mark_reference
+
     def fit_encoding_model(
         self,
         position_time: np.ndarray,
@@ -4737,6 +4811,7 @@ class ClusterlessDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
+        _refit_mark_reference: bool = True,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -4776,6 +4851,12 @@ class ClusterlessDetector(_DetectorBase):
             Dictionary holding the fitted encoding models for each unique observation model
             configuration (environment, encoding group).
             The values depend on the chosen `clusterless_algorithm`.
+        mark_reference_ : list of MarkReference or None, length n_electrodes
+            Normalized diagonal-Gaussian waveform density of each electrode,
+            fitted from training spikes in the requested environments with
+            positive weight (all encoding groups). No-Spike scores its spikes'
+            marks with it. None marks an electrode without such spikes. It is
+            kept unchanged by posterior-weighted encoding updates.
         """
         logger.info("Fitting clusterless spikes...")
         # Validate before any state changes and before the collections are
@@ -4859,8 +4940,23 @@ class ClusterlessDetector(_DetectorBase):
                 **kwargs,
             )
 
+        if _refit_mark_reference or not hasattr(self, "mark_reference_"):
+            mark_reference = self._fit_mark_reference(
+                position_time,
+                spike_times,
+                spike_waveform_features,
+                is_training,
+                environment_labels,
+                weights,
+                support,
+                kwargs,
+            )
+        else:
+            mark_reference = self.mark_reference_
+
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
+        self.mark_reference_ = mark_reference
         self.time_contract_ = {
             "version": 1,
             "rate_units": "Hz",
@@ -5137,6 +5233,7 @@ class ClusterlessDetector(_DetectorBase):
             )
 
             if obs.is_no_spike:
+                # Marked No-Spike intensity: no_spike_rate * q(mark).
                 likelihood_results[state_id] = predict_no_spike_log_likelihood(
                     spike_times,
                     self.no_spike_rate,
@@ -5145,6 +5242,13 @@ class ClusterlessDetector(_DetectorBase):
                     _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
                     _time_grid=_time_grid,
+                ) + mark_reference_log_likelihood(
+                    self.mark_reference_,
+                    spike_times,
+                    spike_waveform_features,
+                    time_edges,
+                    row_slice=row_slice,
+                    _spike_time_order=_spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
