@@ -232,6 +232,12 @@ class _DiffusionElectrode(_MarkKernelMixture):
         )
         bins = np.asarray(model["encoding_bin_indices"][electrode])
         self.sources, self.source_index = np.unique(bins, return_inverse=True)
+        # Encoding spikes grouped by source bin, for per-source reductions.
+        self._by_source = np.argsort(self.source_index, kind="stable")
+        self._sorted_source_index = self.source_index[self._by_source]
+        self._source_starts = np.searchsorted(
+            self._sorted_source_index, np.arange(self.sources.size)
+        )
         position_std = float(np.asarray(model["position_std"]))
         eigvals, eigvecs, labels, n_components = get_device_basis(
             self.environment, int(model["resolved_rank"])
@@ -277,13 +283,18 @@ class _DiffusionElectrode(_MarkKernelMixture):
 
     def log_intensity_at_bins(self, marks):
         """``log lambda(b, m_i)``, shape (n_bins, n_marks)."""
-        mark = self._log_mark_kernel(marks)  # (n_encoding, n_marks)
-        shift = mark.max(axis=0)
-        safe_shift = np.where(np.isfinite(shift), shift, 0.0)
-        by_source = np.zeros((self.sources.size, mark.shape[1]))
-        np.add.at(by_source, self.source_index, np.exp(mark - safe_shift))
+        # log sum_{j in source} w_j K_m(m_i - m_j), shape (n_sources, n_marks),
+        # shifted per source so that no source's sum underflows.
+        mark = self._log_mark_kernel(marks)[self._by_source]
+        shift = np.maximum.reduceat(mark, self._source_starts, axis=0)
+        shift = np.where(np.isfinite(shift), shift, 0.0)
+        by_source = np.add.reduceat(
+            np.exp(mark - shift[self._sorted_source_index]),
+            self._source_starts,
+            axis=0,
+        )
         with np.errstate(divide="ignore"):
-            log_by_source = np.log(by_source) + safe_shift
+            log_by_source = np.log(by_source) + shift
         return (
             _log_matmul_exp(self.log_heat, log_by_source) + self._log_bin_scale[:, None]
         )
@@ -430,10 +441,13 @@ class _GMMElectrode:
 
 
 def _log_matmul_exp(log_a, log_b):
-    """``log(exp(log_a) @ exp(log_b))`` in float64, stable per row and column.
+    """``log(exp(log_a) @ exp(log_b))`` in float64.
 
-    Rows of ``log_a`` and columns of ``log_b`` are shifted by their maxima; a
-    term is lost only if it is below about exp(-745) relative to both.
+    Rows of ``log_a`` and columns of ``log_b`` are shifted by their maxima
+    for a matrix product. An entry whose terms are all small relative to
+    both shifts underflows there, so entries whose shifted product is below
+    1e-250 are recomputed with log-sum-exp. Above it, terms lost to
+    underflow are below 1e-58 of the entry.
     """
     row_shift = log_a.max(axis=1)
     row_shift = np.where(np.isfinite(row_shift), row_shift, 0.0)
@@ -441,4 +455,10 @@ def _log_matmul_exp(log_a, log_b):
     column_shift = np.where(np.isfinite(column_shift), column_shift, 0.0)
     product = np.exp(log_a - row_shift[:, None]) @ np.exp(log_b - column_shift[None])
     with np.errstate(divide="ignore"):
-        return np.log(product) + row_shift[:, None] + column_shift[None]
+        result = np.log(product) + row_shift[:, None] + column_shift[None]
+    rows, columns = np.nonzero(product < 1e-250)
+    block = max(1, 2**20 // max(log_a.shape[1], 1))
+    for first in range(0, rows.size, block):
+        row, column = rows[first : first + block], columns[first : first + block]
+        result[row, column] = logsumexp(log_a[row] + log_b[:, column].T, axis=1)
+    return result

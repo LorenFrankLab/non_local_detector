@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import stats
+from scipy.special import logsumexp
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
@@ -32,6 +33,7 @@ from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
 )
+from non_local_detector.model_checking._clusterless_models import _log_matmul_exp
 from non_local_detector.model_checking.clusterless import (
     ircm_transform,
     ks_uniformity_test,
@@ -683,3 +685,53 @@ def test_transforms_reject_missing_positions(separated, algorithm, transform):
             np.array([0.2, 0.5]),
             np.zeros((2, 2)),
         )
+
+
+def test_log_matmul_exp_keeps_products_of_separated_factors():
+    """Each factor's large entry meets the other's small one."""
+    log_a = np.array([[0.0, -1000.0], [0.0, -1.0]])
+    log_b = np.array([[-1000.0, 0.0], [0.0, -2.0]])
+    expected = logsumexp(log_a[:, :, None] + log_b[None], axis=1)
+    np.testing.assert_allclose(_log_matmul_exp(log_a, log_b), expected, rtol=1e-14)
+    np.testing.assert_allclose(expected[0, 0], -1000.0 + np.log(2.0), rtol=1e-14)
+
+
+def test_diffusion_mdci_keeps_marks_far_from_every_reachable_spike():
+    """Heat is exactly zero between the two segments of this track.
+
+    The only reachable encoding spike's marks are about exp(-1000) from the
+    observed mark, far below the unreachable spike's exp(-200), which used to
+    take that intensity to zero.
+    """
+    time = np.linspace(0.0, 10.0, 202)
+    position = np.concatenate(
+        (np.linspace(0.0, 10.0, 101), np.linspace(30.0, 40.0, 101))
+    )[:, None]
+    environment = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=True
+    )
+    model = fit_clusterless_diffusion_encoding_model(
+        time,
+        position,
+        [np.array([0.0, 10.0])],
+        [np.array([[0.0, 0.0], [40.0, 40.0]])],
+        environment,
+        position_std=1.0,
+        waveform_std=1.0,
+        disable_progress_bar=True,
+    )
+    position_time = np.linspace(0.0, 1.0, 11)
+    at_first_spike = environment.place_bin_centers_[
+        environment.get_bin_ind(np.zeros((1, 1)))
+    ]
+    position = np.repeat(at_first_spike, 11, axis=0)
+    spike_times = np.array([0.5])
+    marks = np.array([[40.0, 20.0]])
+    u, v = mdci_transform(
+        model, "clusterless_diffusion", 0, position_time, position, spike_times, marks
+    )
+    _, expected_v = ircm_transform(
+        model, "clusterless_diffusion", 0, position_time, position, spike_times, marks
+    )
+    np.testing.assert_allclose(u, spike_times, rtol=1e-12)
+    np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
