@@ -24,8 +24,12 @@ log kernel. This also avoids losing a small mark normalizer when joint and
 occupancy log densities are very large negative values. Local kernels keep the
 position and mark contributions separate. The linear clusterless implementation
 retains its ordinary probability-space event arithmetic and uses a log-space
-fallback for small or invalid occupancy densities. Tiled prediction keeps the
-existing encoding and evaluation workspace limits and row accumulation.
+fallback for small or invalid occupancy densities. Its non-local kernel compiles
+that fallback only when some bin's log occupancy is below `LOG_EPS` or NaN, and
+its local kernel, which receives the occupancy at each spike evaluated
+beforehand, only when some spike's log occupancy is below `LOG_EPS`. Tiled
+prediction keeps the existing encoding and evaluation workspace limits and row
+accumulation.
 
 Tiled log-density evaluation carries a kernel offset and stabilized weighted
 sum across encoding tiles. It normalizes that sum before adding its logarithm
@@ -33,6 +37,36 @@ to the offset, rather than subtracting two large log sums afterward. Identical
 kernels therefore retain their exact log kernel even in distant tails. Empty
 encoding support and zero-weight prefixes bypass the relevant reductions; the
 tests also check finite, analytically correct tail gradients.
+
+True log densities take one pass per block of evaluation points, as the
+probability-space KDE does. Each point's log kernels are shifted by an upper
+bound on its largest log kernel before they are exponentiated, and weights enter
+relative to the largest weight, so neither terms nor sums overflow. For 1D
+positions the bound is exact: `kde_log_density` sorts the positive-weight sample
+positions on the host and finds each point's nearest one by binary search, so
+distant tails stay in the single pass. Otherwise the bound is the kernel's peak,
+and the pass computes the probability-space KDE. A term is lost only if it
+underflows below float `tiny`; a point whose scaled sum is below `n_samples *
+tiny / (4 * eps)` could have lost more than `4 * eps` of it that way and is
+evaluated in log space instead: `kde_log_density` re-evaluates those points
+after its compiled pass. `traced_kde_log_density`, used inside compiled kernels,
+does so for each block under `lax.cond`; callers that map it in batches, where
+that branch would become a select, evaluate in log space throughout. Log space
+offsets each point by its largest weighted term, keeping each kernel relative to
+that offset before its log weight is added, so it recovers what either scale
+loses, including mass carried by weights whose ratio to the largest is below
+float `tiny`. Weights enter all three forms relative to the largest, so their
+sum cannot overflow.
+
+The exact 1D bound matters in practice. In a simulated 350,000-bin recording
+with five electrodes (position bandwidth 6 cm), scaling by the peak would have
+sent 25-47% of decode positions to log space for the ground-process densities of
+four electrodes, whose tails there reached 131-315 nats below the peak. The sort
+runs on the host because XLA's GPU sort took 0.7-1.6 s to compile for each array
+size between 4k and 20k elements (A100, JAX 0.9.0), and fitting compiles one
+density kernel per electrode. Occupancy at spike positions is scaled by the
+peak: in that recording the occupancy at all 350,000 decode positions stayed in
+the single pass.
 
 For five identical position and spike samples at `x=0`, with position bandwidth
 1 and mean rate 1 Hz, the true ground intensity is 1 Hz across a `0..200` track.
@@ -57,26 +91,37 @@ property and test-suite results are recorded with the PR.
 
 The compiled sorted local helper retains its existing probability-occupancy
 argument and ordinary arithmetic. Public prediction additionally supplies true
-log occupancy for the tail fallback and NaN diagnostics. This preserves legacy
-low-level vector-position and unsupported-position calls while keeping the
-public finite-tail correction. The local accumulation and tail suites passed
-113 tests after that compatibility check; all 57 property tests also passed.
+log occupancy for NaN diagnostics and, from the host, the rows whose log
+occupancy is below `log(EPS)`. Only those rows are evaluated in log space, so a
+request without them compiles and runs no log-space KDE; inside the helper's
+batched map over neurons an in-graph branch would have evaluated both forms for
+every row. This preserves legacy low-level vector-position and
+unsupported-position calls while keeping the public finite-tail correction. The
+local accumulation and tail suites passed 113 tests after that compatibility
+check; all 57 property tests also passed.
+
+Fitting evaluates every neuron's (and, for clusterless KDE, every electrode's)
+log density in batched passes over groups of similar sample counts, instead of
+compiling one kernel per sample count; each batch's kernels share one model's
+workspace budget. Fits and sorted local prediction take the probability
+occupancy as the exponential of the true log density rather than evaluating the
+KDE a second time.
 
 Independent weighted-tail review found that the common log-KDE helper also
-rounded log weights before their normalization could cancel. It now normalizes
-the weighted, stabilized mass before adding the kernel offset. Weight rescaling
-keeps its sum representable, and empty support bypasses undefined reductions.
-Fifteen additional regressions verify identical-source densities at positions
-200 through 1,457, global weight-scale invariance, analytical Gaussian gradients
-and zero gradients for empty/zero-weight support. These and the existing common,
-tail and four golden cases pass at their unchanged tolerances (101 cases).
+rounded log weights before their normalization could cancel. It now offsets each
+point by its largest weighted term and takes each kernel relative to that offset
+before adding its log weight, then normalizes the stabilized mass before adding
+the offset. Weight rescaling keeps its sum representable, and empty support
+bypasses undefined reductions. Fifteen additional regressions verify
+identical-source densities at positions 200 through 1,457, global weight-scale
+invariance, analytical Gaussian gradients and zero gradients for
+empty/zero-weight support. These and the existing common, tail and four golden
+cases pass at their unchanged tolerances (101 cases).
 
-The performance follow-up compiles standard fitted-model true log-density
-evaluation, total-weight checks, and empty/NaN selection into one graph. Custom
-`KDEModel` subclasses retain their own `predict_log` behavior. Local prediction
-shares row interpolation, occupancy, and ground-process log densities through
-the prediction's `_SpikeTimeOrder`; small nonlocal spatial log kernels and
-device bin centers use the same preparation. Linear KDE derives probability
+Custom `KDEModel` subclasses retain their own `predict_log` behavior. Local
+prediction shares row interpolation, occupancy, and ground-process log densities
+through the prediction's `_SpikeTimeOrder`; small nonlocal spatial log kernels
+and device bin centers use the same preparation. Linear KDE derives probability
 and log position kernels from one calculation. Large spatial kernels retain
 their existing compiled scorer instead of becoming persistent cache entries.
 
