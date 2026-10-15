@@ -37,6 +37,8 @@ multivariate_ks_test(points, rng=0).p_value
 
 Use data the model was not fitted to: a KDE scores its own encoding spikes
 too well, and the points then look more uniform than the model deserves.
+Positions must be finite at every sample, so split the period at tracking
+gaps; a missing position raises `ValueError`.
 
 ## The model being tested
 
@@ -65,8 +67,10 @@ at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
   is not tested.
 
 All intensities and CDFs come from the stored encoding model, in float64
-NumPy and log space. Positions are interpolated to the spike times and
-linearized for track graphs as during fitting.
+NumPy and log space. Mixture weights stay in log space while the mixture is
+conditioned on each mark, so a component that is unlikely at a position
+still counts when the observed marks favor it. Positions are interpolated to
+the spike times and linearized for track graphs as during fitting.
 
 ## Transforms
 
@@ -313,5 +317,6 @@ from each fitted model with an independent implementation of its intensity.
   uniform marginals.
 
 On an Apple M1 Max CPU, with 174,999 held-out position samples, 175 bins and
-4,515 spikes with 4 features against 4,458 encoding spikes
-(`clusterless_kde`), IRCM took 15.0 s and MDCI 3.4 s.
+4,515 spikes with 4 features, IRCM took 16.3 s and MDCI 3.6 s for
+`clusterless_kde` (4,458 encoding spikes), and 0.3 s and 9.7 s for
+`clusterless_gmm` (64 joint components).
