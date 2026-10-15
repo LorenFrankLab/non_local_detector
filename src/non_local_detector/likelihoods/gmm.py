@@ -31,6 +31,24 @@ Params = tuple[Array, Array, Array]  # (weights, means, covariances)
 CovType = Literal["full", "tied", "diag", "spherical"]
 
 
+@jax.jit
+def _fitted_parameters_finite(parameters: tuple[Array, ...]) -> Array:
+    """Reduce returned-parameter validation on device with one scalar transfer.
+
+    Keeping the four checks in one executable avoids materializing means,
+    covariances and precision factors on the host after every restart.
+    """
+    return jnp.all(jnp.stack([jnp.all(jnp.isfinite(value)) for value in parameters]))
+
+
+def _as_floating(x) -> Array:
+    """``x`` as a JAX array, with integer or boolean measurements as floats."""
+    x = jnp.asarray(x)
+    if jnp.issubdtype(x.dtype, jnp.integer) or x.dtype == jnp.bool_:
+        x = x.astype(jnp.result_type(x.dtype, jnp.zeros(())))
+    return x
+
+
 def _has_negative_or_nonfinite(arr: Array) -> bool:
     """True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
 
@@ -1188,6 +1206,7 @@ class GaussianMixtureModel:
         # subnormal weights to zero or narrow finite float64 weights to float32.
         # ``keep`` marks the rows EM will see; the count guards were applied to
         # exactly those rows, so the guards and the fitted data agree.
+        X = _as_floating(X)
         host_weights = None if sample_weight is None else np.asarray(sample_weight)
         keep = self._validate_fit_inputs(X, host_weights)
 
@@ -1244,16 +1263,20 @@ class GaussianMixtureModel:
             # A singular covariance makes the Cholesky (and hence the lower
             # bound) NaN; NaN never beats best_lower_bound, so such a restart is
             # discarded. Remember it to give an actionable error if all fail.
-            saw_nan = saw_nan or bool(np.isnan(final_lb))
+            final_precision = _compute_precision_cholesky(final_S, self.covariance_type)
+            valid_final = bool(np.isfinite(final_lb)) and bool(
+                _fitted_parameters_finite((final_w, final_m, final_S, final_precision))
+            )
+            saw_nan = saw_nan or not valid_final
+            if not valid_final:
+                continue
 
             if final_lb > best_lower_bound:
                 best_lower_bound = final_lb
                 self.weights_ = final_w
                 self.means_ = final_m
                 self.covariances_ = final_S
-                self.precisions_chol_ = _compute_precision_cholesky(
-                    self.covariances_, self.covariance_type
-                )
+                self.precisions_chol_ = final_precision
                 self.n_iter_ = n_iter
                 self.converged_ = bool(final_converged)
 

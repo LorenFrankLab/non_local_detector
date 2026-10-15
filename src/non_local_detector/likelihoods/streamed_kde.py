@@ -22,8 +22,10 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     _log_kernel_matrix,
     _normalized_row_ids,
+    _relative_weights,
     as_std_array,
     deterministic_row_add,
+    log_density_intensity,
     safe_log,
 )
 
@@ -181,6 +183,160 @@ def _sample_tiled_density(
     )
 
 
+@partial(
+    jax.jit, static_argnames=("sample_tile_size", "eval_tile_size", "n_position_dims")
+)
+def _sample_tiled_log_ratio(
+    points,
+    samples,
+    std,
+    weights,
+    log_occupancy,
+    log_scale=None,
+    *,
+    sample_tile_size,
+    eval_tile_size,
+    n_position_dims,
+):
+    """Bounded log KDE ratio, subtracting occupancy before adding mark kernels.
+
+    ``n_position_dims=0`` and a zero normalizer give an unfloored log density.
+    Encoding support is unpadded; only evaluation queries are padded internally.
+    Weights enter as logs relative to the largest, so neither weights nor their
+    sum overflow and no positive weight is discarded. Without ``log_scale``,
+    each query tracks a running maximum of its weighted terms across sample
+    tiles. A ``log_scale`` of shape ``(n_points,)`` that bounds every kernel
+    term from above replaces it, so tiles add without a maximum pass; terms
+    below ``tiny`` relative to it are lost, and callers re-evaluate those
+    points without a scale. A NaN weight makes every result NaN.
+    """
+    n_points = points.shape[0]
+    if n_points == 0:
+        return jnp.zeros(0)
+    if samples.shape[0] == 0:
+        return jnp.full(n_points, -jnp.inf)
+    _, log_weights, relative_total = _relative_weights(weights)
+    log_total = jnp.log(jnp.where(relative_total > 0, relative_total, 1.0))
+
+    def supported(_):
+        padding = (-n_points) % eval_tile_size
+        queries = jnp.pad(points, ((0, padding), (0, 0)), mode="edge")
+        normalizers = jnp.pad(log_occupancy, (0, padding), mode="edge")
+        scales = (
+            None if log_scale is None else jnp.pad(log_scale, (0, padding), mode="edge")
+        )
+        full_samples, tail_samples = divmod(samples.shape[0], sample_tile_size)
+
+        def evaluate(query, log_occ, scale):
+            safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
+
+            def add_samples(carry, sample, sample_log_weights):
+                running_max, running_sum = carry
+                positive = jnp.isfinite(sample_log_weights)
+
+                def contribution(_):
+                    position = (
+                        _log_kernel_matrix(
+                            query[:, :n_position_dims],
+                            sample[:, :n_position_dims],
+                            std[:n_position_dims],
+                        )
+                        - safe_occ[None, :]
+                    )
+                    marks = _log_kernel_matrix(
+                        query[:, n_position_dims:],
+                        sample[:, n_position_dims:],
+                        std[n_position_dims:],
+                    )
+                    terms = position + marks
+                    if scale is None:
+                        weighted = jnp.where(
+                            positive[:, None],
+                            terms + sample_log_weights[:, None],
+                            -jnp.inf,
+                        )
+                        maximum = jnp.maximum(running_max, jnp.max(weighted, axis=0))
+                    else:
+                        maximum = running_max
+                    safe_maximum = jnp.where(jnp.isneginf(maximum), 0.0, maximum)
+                    total = running_sum * jnp.exp(running_max - safe_maximum)
+                    # Each kernel is taken relative to the offset before its
+                    # log weight is added, as in log_kde.
+                    total = total + jnp.sum(
+                        jnp.exp(
+                            jnp.where(
+                                positive[:, None],
+                                (terms - safe_maximum[None, :])
+                                + sample_log_weights[:, None],
+                                -jnp.inf,
+                            )
+                        ),
+                        axis=0,
+                    )
+                    return maximum, total
+
+                return jax.lax.cond(
+                    jnp.any(positive), contribution, lambda _: carry, None
+                )
+
+            def full_tile(tile, running):
+                first = tile * sample_tile_size
+                return add_samples(
+                    running,
+                    jax.lax.dynamic_slice_in_dim(samples, first, sample_tile_size),
+                    jax.lax.dynamic_slice_in_dim(log_weights, first, sample_tile_size),
+                )
+
+            carry = (
+                jnp.full(query.shape[0], -jnp.inf) if scale is None else scale,
+                jnp.zeros(query.shape[0]),
+            )
+            if full_samples:
+                carry = jax.lax.fori_loop(0, full_samples, full_tile, carry)
+            if tail_samples:
+                first = full_samples * sample_tile_size
+                carry = add_samples(carry, samples[first:], log_weights[first:])
+            maximum, numerator = carry
+            # Normalize the stabilized sum before adding the offset. Identical
+            # kernels then give exactly that kernel's log density even when
+            # its offset is enormous. A NaN sum stays NaN; with a fixed scale,
+            # no maximum carries it.
+            defined = (numerator > 0.0) | jnp.isnan(numerator)
+            log_numerator = jnp.log(jnp.where(defined, numerator, 1.0))
+            result = jnp.where(defined, maximum + (log_numerator - log_total), -jnp.inf)
+            return jnp.where(
+                jnp.isneginf(log_occ) & ~jnp.isnan(result), -jnp.inf, result
+            )
+
+        def query_tile(tile, output):
+            first = tile * eval_tile_size
+            query = jax.lax.dynamic_slice_in_dim(queries, first, eval_tile_size)
+            log_occ = jax.lax.dynamic_slice_in_dim(normalizers, first, eval_tile_size)
+            scale = (
+                None
+                if scales is None
+                else jax.lax.dynamic_slice_in_dim(scales, first, eval_tile_size)
+            )
+            return jax.lax.dynamic_update_slice(
+                output, evaluate(query, log_occ, scale), (first,)
+            )
+
+        return jax.lax.fori_loop(
+            0,
+            queries.shape[0] // eval_tile_size,
+            query_tile,
+            jnp.full(queries.shape[0], -jnp.inf),
+        )[:n_points]
+
+    result = jax.lax.cond(
+        jnp.any(weights > 0.0),
+        supported,
+        lambda _: jnp.full(n_points, -jnp.inf),
+        None,
+    )
+    return jnp.where(jnp.isnan(jnp.sum(weights)), jnp.nan, result)
+
+
 def _joint_inputs(
     decoding_features,
     encoding_features,
@@ -332,6 +488,7 @@ def _joint_core(
     decoding_tile_size,
     row_indices=None,
     n_rows=0,
+    log_occupancy=None,
 ):
     n_decoded, n_positions = decoded.shape[0], centers.shape[0]
     dtype = jnp.result_type(
@@ -376,7 +533,43 @@ def _joint_core(
                     0.0,
                 )
             )
-            return jnp.clip(intensity, min=LOG_EPS, max=None)
+            intensity = jnp.clip(intensity, min=LOG_EPS, max=None)
+            if log_occupancy is not None:
+                log_occ = jax.lax.dynamic_slice_in_dim(
+                    log_occupancy, column_start, center_tile.shape[0]
+                )
+                tail = (log_occ < LOG_EPS) | jnp.isnan(log_occ)
+
+                def finish_tail(original):
+                    queries = jnp.concatenate(
+                        (
+                            jnp.tile(center_tile, (block.shape[0], 1)),
+                            jnp.repeat(block, center_tile.shape[0], axis=0),
+                        ),
+                        axis=1,
+                    )
+                    log_ratio = _sample_tiled_log_ratio(
+                        queries,
+                        jnp.concatenate((positions, encoded), axis=1),
+                        jnp.concatenate((position_std, waveform_std)),
+                        weights,
+                        jnp.tile(log_occ, block.shape[0]),
+                        sample_tile_size=encoding_tile_size,
+                        eval_tile_size=max(block.shape[0], center_tile.shape[0]),
+                        n_position_dims=center_tile.shape[1],
+                    ).reshape(block.shape[0], center_tile.shape[0])
+                    exact = jnp.maximum(
+                        log_density_intensity(
+                            mean_rate, log_ratio, jnp.zeros_like(log_ratio)
+                        ),
+                        LOG_EPS,
+                    )
+                    return jnp.where(tail[None, :], exact, original)
+
+                intensity = jax.lax.cond(
+                    jnp.any(tail), finish_tail, lambda original: original, intensity
+                )
+            return intensity
 
         full_decoded, decoded_tail = divmod(n_decoded, decoding_tile_size)
         if full_decoded:
@@ -444,6 +637,7 @@ def _streamed_joint_mark_log_intensity(
     encoding_tile_size,
     position_tile_size,
     decoding_tile_size,
+    log_occupancy=None,
 ):
     """Finished nonlocal linear mark intensity, shape (selected marks, positions).
 
@@ -468,6 +662,7 @@ def _streamed_joint_mark_log_intensity(
         _positive_tile(encoding_tile_size, "encoding_tile_size"),
         _positive_tile(position_tile_size, "position_tile_size"),
         _positive_tile(decoding_tile_size, "decoding_tile_size"),
+        log_occupancy=log_occupancy,
     )
 
 
@@ -487,6 +682,7 @@ def _streamed_joint_mark_row_sums(
     encoding_tile_size,
     position_tile_size,
     decoding_tile_size,
+    log_occupancy=None,
 ):
     """Return ordered event log totals per row, with no ground-process term.
 
@@ -519,4 +715,5 @@ def _streamed_joint_mark_row_sums(
         _positive_tile(decoding_tile_size, "decoding_tile_size"),
         jnp.asarray(normalized),
         n_rows,
+        log_occupancy=log_occupancy,
     )

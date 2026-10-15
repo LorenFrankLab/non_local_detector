@@ -44,6 +44,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
+    _as_floating,
     _effective_sample_count,
     _estimate_log_prob_resp,
 )
@@ -59,7 +60,7 @@ from non_local_detector.time_edges import (
 
 
 def _as_jnp(x) -> jnp.ndarray:
-    """Convert input to JAX array if not already.
+    """Input as a JAX array, with integer or boolean features as floats.
 
     Parameters
     ----------
@@ -69,9 +70,9 @@ def _as_jnp(x) -> jnp.ndarray:
     Returns
     -------
     jnp.ndarray
-        JAX array version of input.
+        JAX array version of input, in a floating dtype for integer input.
     """
-    return x if isinstance(x, jnp.ndarray) else jnp.asarray(x)
+    return _as_floating(x)
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
@@ -591,7 +592,6 @@ def fit_clusterless_gmm_encoding_model(
             stacklevel=2,
         )
 
-    is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     # Fit occupancy GMM and precompute per-bin terms
