@@ -8,8 +8,8 @@ where ``Lambda(x)`` is the ground intensity in Hz at position ``x`` and
 ``f(m | x)`` is a Gaussian mixture over marks:
 
 - clusterless KDE (linear and log space): one component per encoding spike,
-  centred on its mark, weighted by its EM weight times the Gaussian position
-  kernel at ``x``;
+  centred on its mark, weighted by its encoding weight times the Gaussian
+  position kernel at ``x``;
 - clusterless diffusion: the same components, weighted by the graph heat kernel
   from the spike's bin to the bin containing ``x``;
 - clusterless GMM: the joint mixture's components conditioned on ``x``.
