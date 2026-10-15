@@ -217,6 +217,11 @@ def _prepare_inputs(
     spike_positions = np.asarray(
         get_position_at_time(time, position, spike_times, environment), dtype=float
     )
+    if not (np.isfinite(positions).all() and np.isfinite(spike_positions).all()):
+        raise ValueError(
+            "position must be finite at every position_time sample; split the "
+            "period at tracking gaps"
+        )
     if positions.ndim == 1:
         positions, spike_positions = positions[:, None], spike_positions[:, None]
     return time, positions, spike_times, spike_positions, marks
@@ -272,8 +277,9 @@ def ircm_transform(
     position_time : np.ndarray, shape (n_time,)
         Strictly increasing sample times in seconds of the evaluated period.
     position : np.ndarray, shape (n_time,) or (n_time, n_position_dims)
-        The animal's position at ``position_time``. It is interpolated and
-        linearized for track graphs as during fitting.
+        The animal's position at ``position_time``, finite at every sample.
+        It is interpolated and linearized for track graphs as during fitting.
+        Split the period at tracking gaps.
     spike_times : np.ndarray, shape (n_spikes,)
         Ordered spike times of the electrode within ``position_time``.
     spike_waveform_features : np.ndarray, shape (n_spikes, n_features)

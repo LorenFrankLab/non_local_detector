@@ -28,6 +28,10 @@ from non_local_detector.likelihoods.diffusion import (
     get_device_basis,
     heat_kernel_apply,
 )
+from non_local_detector.likelihoods.gmm import (
+    GaussianMixtureModel,
+    _compute_precision_cholesky,
+)
 from non_local_detector.model_checking.clusterless import (
     ircm_transform,
     ks_uniformity_test,
@@ -606,3 +610,76 @@ def test_mdci_equals_a_direct_sum_over_bins(recording, fitted, algorithm):
         marks,
     )
     np.testing.assert_allclose(v, expected_v, rtol=rtol, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Separated clusters and missing data
+# ---------------------------------------------------------------------------
+
+
+def _hand_built_gmm(means):
+    """A GMM with equal weights and identity covariances at ``means``."""
+    means = np.asarray(means, float)
+    n_components, n_dims = means.shape
+    model = GaussianMixtureModel(n_components=n_components, covariance_type="full")
+    model.means_ = jnp.asarray(means)
+    model.weights_ = jnp.full(n_components, 1.0 / n_components)
+    model.covariances_ = jnp.repeat(jnp.eye(n_dims)[None], n_components, axis=0)
+    model.precisions_chol_ = _compute_precision_cholesky(model.covariances_, "full")
+    return model
+
+
+@pytest.fixture(scope="module")
+def separated():
+    """Two encoding spikes 40 bandwidths apart in position and in each mark."""
+    time = np.linspace(0.0, 10.0, 101)
+    position = np.linspace(0.0, 40.0, 101)[:, None]
+    environment = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=False
+    )
+    spike_times = np.array([0.0, 10.0])
+    marks = np.array([[0.0, 0.0], [40.0, 40.0]])
+    models = {}
+    for algorithm, fit in (
+        ("clusterless_kde", fit_clusterless_kde_encoding_model),
+        ("clusterless_kde_log", fit_clusterless_kde_log_encoding_model),
+        ("clusterless_diffusion", fit_clusterless_diffusion_encoding_model),
+    ):
+        models[algorithm] = fit(
+            time,
+            position,
+            [spike_times],
+            [marks],
+            environment,
+            position_std=1.0,
+            waveform_std=1.0,
+            disable_progress_bar=True,
+        )
+    models["clusterless_gmm"] = {
+        "environment": environment,
+        "mean_rates": [1.0],
+        "joint_models": [_hand_built_gmm([[0.0, 0.0, 0.0], [40.0, 40.0, 40.0]])],
+        "gpi_models": [_hand_built_gmm([[0.0]])],
+        "occupancy_model": _hand_built_gmm([[0.0]]),
+    }
+    return environment, models
+
+
+@pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_transforms_reject_missing_positions(separated, algorithm, transform):
+    """A tracking gap raises instead of being read as a position bin."""
+    environment, models = separated
+    position_time = np.linspace(0.0, 1.0, 11)
+    position = np.full((11, 1), 20.0)
+    position[4:7] = np.nan
+    with pytest.raises(ValueError, match="position must be finite"):
+        transform(
+            models[algorithm],
+            algorithm,
+            0,
+            position_time,
+            position,
+            np.array([0.2, 0.5]),
+            np.zeros((2, 2)),
+        )
