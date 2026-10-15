@@ -63,3 +63,15 @@ def test_log_kde_weighted_gaussian_density_and_query_gradient_match_oracle():
     expected_grad = (-difference * mass).sum(axis=1) / mass.sum(axis=1)
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(jax.grad(score)(query)[:, 0], expected_grad, rtol=1e-6)
+
+
+def test_log_kde_keeps_a_weight_whose_ratio_to_the_largest_underflows():
+    """Weights 1e-30 and 1e10: the light sample's kernel sets the density at it."""
+    actual = log_kde(
+        jnp.array([[0.0]]),
+        jnp.array([[0.0], [300.0]]),
+        jnp.ones(1),
+        jnp.array([1e-30, 1e10]),
+    )
+    expected = np.log(1e-30 / (1e-30 + 1e10)) - 0.5 * np.log(2 * np.pi)
+    np.testing.assert_allclose(actual, [expected], rtol=1e-6)

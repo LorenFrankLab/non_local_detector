@@ -1556,6 +1556,55 @@ _compiled_block_log_kde = jax.jit(
 )
 
 
+def _relative_weights(weights: jnp.ndarray):
+    """Weights relative to the largest, their logs, and their sum.
+
+    Parameters
+    ----------
+    weights : jnp.ndarray, shape (n_samples,)
+        Weights that are not positive (including NaN) carry no mass.
+
+    Returns
+    -------
+    relative_weights : jnp.ndarray, shape (n_samples,)
+        ``weights / max(weights)``; ratios below ``tiny`` flush to zero.
+    log_weights : jnp.ndarray, shape (n_samples,)
+        Their logs, ``-inf`` without mass. A ratio that would flush takes its
+        log from the weights themselves, so no positive weight is discarded.
+    total : jnp.ndarray, shape ()
+        ``sum(relative_weights)``, at least one with any mass. Flushed ratios
+        add less than ``n_samples * tiny`` to it.
+    """
+    positive = weights > 0
+    positive_weights = jnp.where(positive, weights, 0.0)
+    max_weight = jnp.max(positive_weights, initial=0.0)
+    safe_max_weight = jnp.where(max_weight > 0, max_weight, 1.0)
+    weight_scale = safe_max_weight
+    # XLA can lower this division to multiplication by a reciprocal. For
+    # weights near the dtype maximum that reciprocal is subnormal and may
+    # flush to zero. A power-of-two prescale keeps both operands representable
+    # without changing ordinary-weight arithmetic; the barrier prevents
+    # cancellation of this protective scale during compiler reassociation.
+    positive_weights, weight_scale = jax.lax.cond(
+        weight_scale > 1.0 / jnp.finfo(positive_weights.dtype).tiny,
+        lambda pair: jax.lax.optimization_barrier((pair[0] * 0.25, pair[1] * 0.25)),
+        lambda pair: pair,
+        (positive_weights, weight_scale),
+    )
+    relative_weights = positive_weights / weight_scale
+    representable = relative_weights >= jnp.finfo(relative_weights.dtype).tiny
+    log_weights = jnp.where(
+        representable,
+        jnp.log(jnp.where(representable, relative_weights, 1.0)),
+        jnp.log(jnp.where(positive, weights, 1.0)) - jnp.log(safe_max_weight),
+    )
+    return (
+        relative_weights,
+        jnp.where(positive, log_weights, -jnp.inf),
+        jnp.sum(relative_weights),
+    )
+
+
 @jax.jit
 def log_kde(
     eval_points: jnp.ndarray,
@@ -1582,48 +1631,45 @@ def log_kde(
     # log-kernel matrix K_log with shape (n_samp, n_eval)
     K_log = _log_kernel_matrix(eval_points, samples, std)
 
-    positive_weights = jnp.where(weights > 0, weights, 0.0)
-    weight_scale = jnp.max(positive_weights)
-    # XLA can lower this division to multiplication by a reciprocal. For
-    # weights near the dtype maximum that reciprocal is subnormal and may
-    # flush to zero. A power-of-two prescale keeps both operands representable
-    # without changing ordinary-weight arithmetic; the barrier prevents
-    # cancellation of this protective scale during compiler reassociation.
-    positive_weights, weight_scale = jax.lax.cond(
-        weight_scale > 1.0 / jnp.finfo(positive_weights.dtype).tiny,
-        lambda pair: jax.lax.optimization_barrier((pair[0] * 0.25, pair[1] * 0.25)),
-        lambda pair: pair,
-        (positive_weights, weight_scale),
-    )
-    positive_weights = positive_weights / jnp.where(weight_scale > 0, weight_scale, 1.0)
-    total = jnp.sum(positive_weights)
+    _, log_weights, total = _relative_weights(weights)
+    log_total = jnp.log(jnp.where(total > 0, total, 1.0))
+    positive = weights > 0
 
     def supported(_):
-        # Keep the kernel offset separate from weight normalization. Adding a
-        # log weight to a huge negative kernel rounds away small terms before
-        # they can cancel; identical sources must retain their single kernel.
-        terms = jnp.where(positive_weights[:, None] > 0, K_log, -jnp.inf)
-        maximum = jnp.max(terms, axis=0)
-        safe_maximum = jnp.where(jnp.isneginf(maximum), 0.0, maximum)
-        # A positive HIGHEST dot avoids shape-dependent reassociation of the
-        # multiply/sum across full and looped query batches. Its operand uses
-        # the same bounded kernel matrix already covered by KDE blocking.
-        average = (
-            jnp.matmul(
-                positive_weights,
-                jnp.exp(terms - safe_maximum[None, :]),
-                precision=jax.lax.Precision.HIGHEST,
+        # Offset each point by its largest weighted term, so weights of any
+        # representable ratio contribute. Each kernel is taken relative to the
+        # offset before its log weight is added: adding a log weight to a huge
+        # negative kernel first would round away small terms before they can
+        # cancel, and identical sources must retain their single kernel.
+        offset = jax.lax.stop_gradient(
+            jnp.max(
+                jnp.where(positive[:, None], K_log + log_weights[:, None], -jnp.inf),
+                axis=0,
             )
-            / total
         )
-        safe_average = jnp.where(average > 0, average, 1.0)
-        values = jnp.where(average == 0, -jnp.inf, maximum + jnp.log(safe_average))
+        safe_offset = jnp.where(jnp.isfinite(offset), offset, 0.0)
+        relative = jnp.where(
+            positive[:, None],
+            (K_log - safe_offset[None, :]) + log_weights[:, None],
+            -jnp.inf,
+        )
+        # A positive HIGHEST dot avoids shape-dependent reassociation of the
+        # sum across full and looped query batches. Its operand uses the same
+        # bounded kernel matrix already covered by KDE blocking.
+        mass = jnp.matmul(
+            jnp.ones(relative.shape[0], relative.dtype),
+            jnp.exp(relative),
+            precision=jax.lax.Precision.HIGHEST,
+        )
+        log_mass = jnp.log(jnp.where(mass > 0, mass, 1.0))
+        values = jnp.where(mass > 0, safe_offset + (log_mass - log_total), -jnp.inf)
+        values = jnp.where(jnp.isnan(mass), jnp.nan, values)
         # Invalid sources retain the established diagnostic even at zero mass.
         return jnp.where(jnp.any(jnp.isnan(K_log), axis=0), jnp.nan, values)
 
     # Bypass undefined empty reductions, including their derivatives.
     return jax.lax.cond(
-        total > 0,
+        jnp.any(positive),
         supported,
         lambda _: jnp.full(eval_points.shape[0], LOG_EPS),
         None,
