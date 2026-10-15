@@ -163,7 +163,6 @@ def main():
             if name == "clusterless_gmm":
                 fit_kwargs.update(
                     gmm_components_occupancy=4,
-                    gmm_components_gpi=4,
                     gmm_components_joint=8,
                     gmm_reg_covar=1e-3,
                 )

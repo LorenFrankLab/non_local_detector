@@ -155,9 +155,7 @@ def test_all_fitted_rates_are_hz_and_empty_bins_use_seconds(sampling_frequency):
         for name in ALGORITHMS
     }
     for name in ("clusterless_gmm",):
-        params[name].update(
-            gmm_components_occupancy=1, gmm_components_gpi=1, gmm_components_joint=1
-        )
+        params[name].update(gmm_components_occupancy=1, gmm_components_joint=1)
     edges = np.array([0.01, 0.012, 0.016])
     for name, predict, model, clusterless in fit_registered_backends(data, params):
         assert model["rate_units"] == "Hz", name
@@ -256,9 +254,7 @@ def test_all_backends_fit_the_same_declared_support(case):
     params = {
         name: {**support_params, "disable_progress_bar": True} for name in ALGORITHMS
     }
-    params["clusterless_gmm"].update(
-        gmm_components_occupancy=1, gmm_components_gpi=1, gmm_components_joint=1
-    )
+    params["clusterless_gmm"].update(gmm_components_occupancy=1, gmm_components_joint=1)
     for name, _, model, _ in fit_registered_backends(data, params):
         assert model["encoding_exposure_seconds"] == pytest.approx(expected_exposure), (
             name

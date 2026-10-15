@@ -55,15 +55,11 @@ at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
   on interior bins. At full rank this mixture is the model; at a truncated
   rank the decoder clips each diffused mark column, and the mixture
   approximates it.
-- `clusterless_gmm`: the joint mixture conditioned on `x`. New fits derive
+- `clusterless_gmm`: the joint mixture conditioned on `x`. Fits derive
   `p_gpi(x)` from that same joint mixture's position marginal, so the ground
   intensity `mean_rate * p_gpi(x) / p_occupancy(x)` is the mark integral of
   `mean_rate * p_joint(x, m) / p_occupancy(x)`. The transforms test that process.
-  Older saved fits retain a separately fitted GPI. For those, the transforms
-  keep the stored ground intensity and conditional mark density,
-  `lambda(x, m) = Lambda(x) p_joint(x, m) / p_joint(x)`; the extra
-  position-dependent factor `p_joint(x) / p_gpi(x)` in the decoder's event
-  terms is not tested. Refit to use a consistent process.
+  Refit models trained before this correction to use a consistent process.
 
 All intensities and CDFs come from the stored encoding model, in float64
 NumPy and log space. Mixture weights stay in log space while the mixture is

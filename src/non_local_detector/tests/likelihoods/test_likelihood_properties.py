@@ -191,7 +191,6 @@ def _fit_predict_clusterless_gmm(
         spike_waveform_features=spike_features,
         environment=env,
         gmm_components_occupancy=5,
-        gmm_components_gpi=3,
         gmm_components_joint=5,
         gmm_random_state=0,
         disable_progress_bar=True,

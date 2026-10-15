@@ -81,9 +81,7 @@ def test_all_backends_recover_declared_rate_with_nan_outside_segment():
     }
     params["sorted_spikes_glm"]["emission_knot_spacing"] = 1.0
     params["sorted_spikes_mrf"]["penalty"] = 1.0
-    params["clusterless_gmm"].update(
-        gmm_components_occupancy=1, gmm_components_gpi=1, gmm_components_joint=1
-    )
+    params["clusterless_gmm"].update(gmm_components_occupancy=1, gmm_components_joint=1)
     edges = np.array([0.01, 0.012, 0.016])
     center = np.flatnonzero(
         environment.place_bin_centers_[environment.is_track_interior_.ravel(), 0] == 0.0

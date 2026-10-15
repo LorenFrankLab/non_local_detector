@@ -37,21 +37,18 @@ The identity above describes electrodes with fitted joint models, before the
 summed ground intensity's `EPS` floor. It does not introduce a background-spike
 model for electrodes with no effective encoding spikes.
 
-## Configuration and saved models
+## Configuration
 
 - Set `gmm_components_joint` and `gmm_covariance_type_joint` to configure both
   the joint distribution and its marginal. Sparse electrodes reduce both to
   the same effective component count.
-- `gmm_components_gpi` and `gmm_covariance_type_gpi` remain accepted for source
-  compatibility, but explicit non-`None` values produce a `FutureWarning` and
-  have no effect. Their defaults are now `None`.
-- The encoding dictionary retains `gpi_models`, containing the derived
+- `gmm_components_gpi` and `gmm_covariance_type_gpi` have been removed. Use the
+  joint GMM settings instead; passing either removed setting raises `TypeError`.
+- The encoding dictionary stores `gpi_models`, containing the derived
   marginals. Its requested/effective GPI component counts describe those
   marginals. Their convergence metadata refers to the joint fit; their
   `lower_bound_` is `None` because no separate marginal optimization occurred.
-- Predictions from previously saved fits continue to use their stored GPI
-  models. Refit to obtain the consistent ground process. Other model-version
-  and time-contract compatibility checks still apply.
+- Refit existing models to obtain the consistent ground process.
 
 The event-intensity prediction kernels and occupancy fit are unchanged.
 Refitting changes the ground-rate term, so both local and non-local likelihoods
@@ -90,8 +87,7 @@ measured where that reference exceeds 1% of its peak. The fitted joint and
 occupancy weights, means, and covariances were bitwise identical before and
 after. Non-local log-likelihood changes matched the change in the
 expected-count term within 3.7e-5 absolute error. All evaluated likelihoods
-were finite. Loading the saved baseline models under the changed code
-reproduced both local and non-local baseline likelihoods bitwise on both slices.
+were finite.
 
 These short-training examples show that this correction is not merely
 rounding error. The argmax comparison is over spatial likelihoods, not an HMM

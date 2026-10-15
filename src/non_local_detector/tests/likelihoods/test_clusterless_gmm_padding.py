@@ -29,7 +29,6 @@ pytestmark = pytest.mark.unit
 
 GMM_COMPONENTS = {
     "gmm_components_occupancy": 4,
-    "gmm_components_gpi": 4,
     "gmm_components_joint": 8,
 }
 

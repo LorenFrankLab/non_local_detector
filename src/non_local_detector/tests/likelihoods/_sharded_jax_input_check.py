@@ -75,7 +75,6 @@ EXIT_ENVIRONMENT = 2
 FIT_PARAMS = {
     "clusterless_gmm": {
         "gmm_components_joint": 8,
-        "gmm_components_gpi": 4,
         "gmm_components_occupancy": 4,
     }
 }

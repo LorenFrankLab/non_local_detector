@@ -475,10 +475,8 @@ def fit_clusterless_gmm_encoding_model(
     weights: jnp.ndarray | None = None,
     *,
     gmm_components_occupancy: int = 32,
-    gmm_components_gpi: int | None = None,
     gmm_components_joint: int = 64,
     gmm_covariance_type_occupancy: str = "full",
-    gmm_covariance_type_gpi: str | None = None,
     gmm_covariance_type_joint: str = "full",
     gmm_random_state: int | None = 0,
     gmm_reg_covar: float = 1.0,
@@ -508,16 +506,10 @@ def fit_clusterless_gmm_encoding_model(
         ``sample_weight``), and the mean firing rate. GPI is the joint marginal.
     gmm_components_occupancy : int, default=32
         Number of mixture components for occupancy GMM.
-    gmm_components_gpi : int or None, default=None
-        Deprecated and ignored with a FutureWarning. The GPI component count
-        is determined by ``gmm_components_joint``.
     gmm_components_joint : int, default=64
         Number of mixture components for joint (position+mark) GMM.
     gmm_covariance_type_occupancy : str, default="full"
         Covariance type for occupancy GMM. Options: "full", "tied", "diag", "spherical".
-    gmm_covariance_type_gpi : str or None, default=None
-        Deprecated and ignored with a FutureWarning. GPI uses the position
-        covariance block of ``gmm_covariance_type_joint``.
     gmm_covariance_type_joint : str, default="full"
         Covariance type for joint GMM. Options: "full", "tied", "diag", "spherical".
         Note: "diag" may offer speedups but currently has JIT compatibility issues.
@@ -565,15 +557,12 @@ def fit_clusterless_gmm_encoding_model(
         - gmm_effective_components
         - mark_dimensions
     """
-    if gmm_components_gpi is not None or gmm_covariance_type_gpi is not None:
-        warnings.warn(
-            "gmm_components_gpi and gmm_covariance_type_gpi are deprecated and "
-            "ignored; the ground process now uses the joint GMM's position "
-            "marginal. Configure gmm_components_joint and "
-            "gmm_covariance_type_joint instead.",
-            FutureWarning,
-            stacklevel=2,
-        )
+    for parameter in ("gmm_components_gpi", "gmm_covariance_type_gpi"):
+        if parameter in kwargs:
+            raise TypeError(
+                f"{parameter} has been removed; configure the joint GMM with "
+                "gmm_components_joint and gmm_covariance_type_joint instead."
+            )
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,

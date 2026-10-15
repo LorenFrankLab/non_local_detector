@@ -85,7 +85,6 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         gmm_simulation_data["spike_features"],
         gmm_simulation_data["environment"],
         gmm_components_occupancy=8,
-        gmm_components_gpi=8,
         gmm_components_joint=16,
     )
 
@@ -144,7 +143,6 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         gmm_simulation_data["spike_features"],
         gmm_simulation_data["environment"],
         gmm_components_occupancy=8,
-        gmm_components_gpi=8,
         gmm_components_joint=16,
     )
 
@@ -205,7 +203,6 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         gmm_simulation_data["spike_features"],
         gmm_simulation_data["environment"],
         gmm_components_occupancy=8,
-        gmm_components_gpi=8,
         gmm_components_joint=16,
     )
 
@@ -282,7 +279,6 @@ def test_gmm_edge_cases(gmm_simulation_data):
         minimal_data["spike_features"],
         gmm_simulation_data["environment"],
         gmm_components_occupancy=2,
-        gmm_components_gpi=2,
         gmm_components_joint=4,
     )
 
@@ -380,7 +376,6 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         [jnp.asarray(sf) for sf in gmm_simulation_data["spike_features"]],  # JAX arrays
         gmm_simulation_data["environment"],
         gmm_components_occupancy=4,
-        gmm_components_gpi=4,
         gmm_components_joint=8,
         disable_progress_bar=True,
     )
@@ -393,7 +388,6 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         gmm_simulation_data["spike_features"],  # Numpy arrays
         gmm_simulation_data["environment"],
         gmm_components_occupancy=4,
-        gmm_components_gpi=4,
         gmm_components_joint=8,
         gmm_random_state=0,  # Same random state
         disable_progress_bar=True,
@@ -477,7 +471,6 @@ def test_gmm_empty_and_sparse_electrodes_are_supported(gmm_simulation_data):
             [np.zeros((0, sparse_features.shape[1])), sparse_features],
             gmm_simulation_data["environment"],
             gmm_components_occupancy=4,
-            gmm_components_gpi=8,
             gmm_components_joint=16,
             disable_progress_bar=True,
         )
@@ -523,7 +516,6 @@ def test_gmm_single_effective_spike_electrode(gmm_simulation_data):
             [one_time],
             [one_feature],
             data["environment"],
-            gmm_components_gpi=4,
             gmm_components_joint=4,
             disable_progress_bar=True,
         )
@@ -558,7 +550,6 @@ def test_gmm_occupancy_components_reduced_to_position_samples(gmm_simulation_dat
             data["spike_features"],
             data["environment"],
             gmm_components_occupancy=requested_occupancy,
-            gmm_components_gpi=2,
             gmm_components_joint=2,
             disable_progress_bar=True,
         )
@@ -591,7 +582,6 @@ def test_gmm_solver_controls_reach_all_density_models(gmm_simulation_data):
         gmm_simulation_data["spike_features"],
         gmm_simulation_data["environment"],
         gmm_components_occupancy=2,
-        gmm_components_gpi=2,
         gmm_components_joint=2,
         gmm_reg_covar=2e-4,
         gmm_max_iter=7,
@@ -678,7 +668,6 @@ def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
         data["spike_features"],
         data["environment"],
         gmm_components_occupancy=2,
-        gmm_components_gpi=2,
         gmm_components_joint=2,
         disable_progress_bar=True,
     )
@@ -794,7 +783,6 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
 
     fit_kwargs = {
         "gmm_components_occupancy": 8,
-        "gmm_components_gpi": 8,
         "gmm_components_joint": 16,
     }
 

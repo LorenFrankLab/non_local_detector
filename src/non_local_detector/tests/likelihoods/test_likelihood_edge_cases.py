@@ -181,7 +181,6 @@ def _fit_clusterless_gmm(env, spike_times, spike_features, n_time=101, n_compone
         spike_waveform_features=spike_features,
         environment=env,
         gmm_components_occupancy=n_components,
-        gmm_components_gpi=n_components,
         gmm_components_joint=n_components,
         gmm_random_state=0,
         disable_progress_bar=True,

@@ -1,7 +1,6 @@
 """A fitted joint GMM and its ground process describe the same spike rate."""
 
 import pickle
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,6 +20,10 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(scope="module", params=["full", "tied", "diag", "spherical"])
 def encoding(request):
+    return _fit_encoding(request.param)
+
+
+def _fit_encoding(covariance_type, **kwargs):
     rng = np.random.default_rng(76)
     time = np.arange(200) / 20.0
     position = np.linspace(-4.0, 4.0, len(time))[:, None]
@@ -37,11 +40,11 @@ def encoding(request):
         env,
         weights=np.linspace(0.2, 1.0, len(time)),
         gmm_components_occupancy=2,
-        gmm_components_gpi=1,
         gmm_components_joint=2,
-        gmm_covariance_type_joint=request.param,
+        gmm_covariance_type_joint=covariance_type,
         gmm_reg_covar=0.1,
         disable_progress_bar=True,
+        **kwargs,
     )
     return model
 
@@ -162,6 +165,14 @@ def test_fit_only_optimizes_occupancy_and_joint(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(clusterless_gmm, "_fit_gmm_density", record_fit)
-    with pytest.warns(FutureWarning, match="deprecated and ignored"):
-        encoding.__wrapped__(SimpleNamespace(param="full"))
+    _fit_encoding("full")
     assert fitted_dims == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [("gmm_components_gpi", 1), ("gmm_covariance_type_gpi", "full")],
+)
+def test_removed_gpi_settings_are_rejected(parameter, value):
+    with pytest.raises(TypeError, match=parameter):
+        _fit_encoding("full", **{parameter: value})

@@ -116,7 +116,6 @@ def fitted(recording):
         [marks],
         environment,
         gmm_components_occupancy=4,
-        gmm_components_gpi=4,
         gmm_components_joint=6,
         disable_progress_bar=True,
     )
@@ -665,7 +664,7 @@ def separated():
         "environment": environment,
         "mean_rates": [1.0],
         "joint_models": [_hand_built_gmm([[0.0, 0.0, 0.0], [40.0, 40.0, 40.0]])],
-        "gpi_models": [_hand_built_gmm([[0.0]])],
+        "gpi_models": [_hand_built_gmm([[0.0], [40.0]])],
         "occupancy_model": _hand_built_gmm([[0.0]]),
     }
     return environment, models

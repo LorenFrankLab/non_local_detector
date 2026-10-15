@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Consistent clusterless GMM processes
 
-- Newly fitted `clusterless_gmm` models derive the ground-process intensity from the joint position/mark GMM's analytical position marginal. Previously a separately fitted position GMM could disagree with the integral of the marked intensity. The joint and occupancy fits are unchanged, but the expected-count term and decoded results can change substantially. `gmm_components_gpi` and `gmm_covariance_type_gpi` are deprecated and ignored with a `FutureWarning`; configure the joint GMM instead. Existing saved fits retain their stored ground model until refitted. See [the mathematical contract and validation](docs/likelihood_process_normalization.md).
+- **Breaking:** `clusterless_gmm` models derive the ground-process intensity from the joint position/mark GMM's analytical position marginal. Previously a separately fitted position GMM could disagree with the integral of the marked intensity. The joint and occupancy fits are unchanged, but the expected-count term and decoded results can change substantially. Removed `gmm_components_gpi` and `gmm_covariance_type_gpi`; configure the joint GMM instead and refit existing models. See [the mathematical contract and validation](docs/likelihood_process_normalization.md).
 
 ### Highlights: faster EM, and EM on large 2-D grids
 

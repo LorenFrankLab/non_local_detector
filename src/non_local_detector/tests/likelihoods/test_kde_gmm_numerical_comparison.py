@@ -105,12 +105,12 @@ def comparison_data():
     }
 
 
-# Ordinary comparisons use a modest GMM. With 16/16/32 components on ~100
-# spikes per electrode the fitted occupancy density reaches log p ~ -364
+# Ordinary comparisons use a modest GMM. With 16 occupancy / 32 joint components
+# on ~100 spikes per electrode the fitted occupancy density reaches log p ~ -364
 # *inside* the track and the GPI/occupancy ratio overflows float32; that
 # configuration is kept as a stress regression below, not as the baseline.
-GMM_COMPONENTS = (4, 4, 8)
-GMM_COMPONENTS_STRESS = (16, 16, 32)
+GMM_COMPONENTS = (4, 8)
+GMM_COMPONENTS_STRESS = (16, 32)
 
 
 def fit_both_models(
@@ -131,7 +131,7 @@ def fit_both_models(
     kde_waveform_std : float
         Bandwidth for KDE waveform kernel
     gmm_components : tuple of int
-        Occupancy, GPI and joint GMM component counts
+        Occupancy and joint GMM component counts
     gmm_reg_covar : float
         GMM covariance regularization
 
@@ -171,8 +171,7 @@ def fit_both_models(
         spike_waveform_features=encoding_spike_features,
         environment=data["environment"],
         gmm_components_occupancy=gmm_components[0],
-        gmm_components_gpi=gmm_components[1],
-        gmm_components_joint=gmm_components[2],
+        gmm_components_joint=gmm_components[1],
         gmm_random_state=42,
         gmm_reg_covar=gmm_reg_covar,
         disable_progress_bar=True,
@@ -434,9 +433,9 @@ def test_parameter_sensitivity_kde(
 def test_overparameterized_gmm_overflow_locations(comparison_data):
     """Stress regression: an over-fitted GMM overflows only where predicted.
 
-    With 16/16/32 components on ~100 spikes per electrode the fitted ratio
-    ``rate * p_gpi / p_occ`` exceeds the float32 range at several bins (and
-    the float64 range at one). The reference is the complete
+    With 16 occupancy / 32 joint components on ~100 spikes per electrode the
+    fitted ratio ``rate * p_gpi / p_occ`` exceeds the float32 range at several
+    bins (and the float64 range at one). The reference is the complete
     summed intensity accumulated in float64 from the fitted models' own log
     densities (rate included, aggregated over electrodes): the log likelihood
     must be ``-inf`` exactly where that sum exceeds the working dtype's

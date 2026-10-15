@@ -208,7 +208,6 @@ def _fit_clusterless_gmm(env, data):
         spike_waveform_features=data["spike_waveform_features"],
         environment=env,
         gmm_components_occupancy=10,
-        gmm_components_gpi=5,
         gmm_components_joint=10,
         gmm_random_state=0,
         disable_progress_bar=True,
