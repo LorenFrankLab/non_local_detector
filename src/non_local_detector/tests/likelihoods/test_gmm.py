@@ -312,7 +312,9 @@ def test_tied_covariance_fractional_weights_divide_by_sum_w():
     resp = jnp.asarray(rng.random((n_samples, n_components)))
     resp = resp / resp.sum() * 0.5  # total weight sum_w == 0.5 (fractional)
     nk = resp.sum(axis=0)
-    means = (resp.T @ X) / nk[:, None]
+    # The centered-scatter identity needs actual weighted means. GPU default
+    # matmul precision can round these enough to invalidate the NumPy reference.
+    means = jnp.matmul(resp.T, X, precision=jax.lax.Precision.HIGHEST) / nk[:, None]
 
     cov = _estimate_gaussian_covariances_tied(resp, X, nk, means, reg_covar=0.0)
 

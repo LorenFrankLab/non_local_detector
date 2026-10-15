@@ -93,6 +93,61 @@ def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
     return jnp.asarray(std)
 
 
+def validate_bandwidth(std, n_dims: int, name: str) -> jnp.ndarray:
+    """Kernel bandwidths as a per-dimension array, rejecting unusable values.
+
+    A zero, negative or non-finite bandwidth would fit a degenerate kernel that
+    yields plausible-looking floor rates instead of an error.
+
+    Parameters
+    ----------
+    std : float or array-like, shape () or (n_dims,)
+        Python, NumPy or JAX scalar, or one bandwidth per dimension.
+    n_dims : int
+        Number of kernel dimensions.
+    name : str
+        Parameter name for error messages.
+
+    Returns
+    -------
+    std : jnp.ndarray, shape (n_dims,)
+        In JAX's default floating dtype.
+
+    Raises
+    ------
+    ValidationError
+        If a value is not finite and positive, the shape is neither scalar nor
+        ``(n_dims,)``, or a value overflows or underflows to zero in JAX's
+        default floating dtype.
+    """
+    values = np.asarray(std, dtype=float)
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValidationError(
+            f"{name} must contain only finite positive values",
+            expected="finite bandwidths greater than zero",
+            got=f"{name}={std!r}",
+            hint="Kernel bandwidths are standard deviations in the data's units.",
+        )
+    if values.ndim == 0:
+        values = np.full(n_dims, values.item())
+    if values.shape != (n_dims,):
+        raise ValidationError(
+            f"{name} has the wrong shape",
+            expected=f"a scalar or shape ({n_dims},)",
+            got=f"shape {values.shape}",
+        )
+    dtype = jax.dtypes.canonicalize_dtype(values.dtype)
+    with np.errstate(over="ignore", under="ignore"):
+        values = values.astype(dtype)
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValidationError(
+            f"{name} is not representable as finite positive {dtype} values",
+            got=f"{name}={std!r}",
+            hint="Rescale the data or enable JAX float64 (jax_enable_x64).",
+        )
+    return jnp.asarray(values)
+
+
 def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
     """Validate per-sample weights shared by the sorted-spikes and clusterless fits.
 

@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     common,
     no_spike,
@@ -51,6 +52,12 @@ def test_no_spike_matches_original_neuron_order(x64, population, rate):
     rows = slice(2, 17)
     events = spikes(population)
     with precision_mode(x64):
+        if not np.isfinite(rate) or rate < 0:
+            with pytest.raises(ValidationError, match="no_spike_rate"):
+                no_spike.predict_no_spike_log_likelihood(
+                    events, no_spike_rate=rate, time_edges=edges, row_slice=rows
+                )
+            return
         expected = no_spike_reference(events, edges, rate, rows)
         actual = no_spike.predict_no_spike_log_likelihood(
             events, no_spike_rate=rate, time_edges=edges, row_slice=rows

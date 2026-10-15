@@ -147,9 +147,9 @@ def make_spline_design_matrix(
         n_points = get_n_bins(edges, bin_size=knot_spacing)
         knots = np.linspace(edges.min(), edges.max(), n_points)[1:-1]
         knots = knots[(knots > pos.min()) & (knots < pos.max())]
+        if not len(knots):
+            knots = np.asarray([(pos.min() + pos.max()) / 2])
         inner_knots.append(knots)
-
-    inner_knots = np.meshgrid(*inner_knots, indexing="ij")
 
     data = {}
     formula = "1 + te("
@@ -674,7 +674,7 @@ def fit_sorted_spikes_glm_encoding_model(
     # Ensure weights is not None for type checking
     assert weights is not None
 
-    if len(support.indices):
+    if len(support.indices) and len(spike_times):
         event_counts = np.stack(
             [
                 np.asarray(support.event_counts(neuron_spike_times, weights))[

@@ -752,7 +752,11 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     # (n_neurons, n_interior_bins) matmul instead of N (n_time, n_interior_bins) terms.
     # The fit precomputes the interior log fields (in node_order == is_track_interior
     # order), so the non-local likelihood is a single count-matrix @ log-fields matmul.
-    log_interior_fields = jnp.asarray(interior_log_place_fields)
+    log_interior_fields = (
+        jnp.log(jnp.asarray(place_fields)[:, is_track_interior])
+        if interior_log_place_fields is None
+        else jnp.asarray(interior_log_place_fields)
+    )
     spike_counts = jnp.asarray(
         _spike_counts_matrix(
             spike_times,
