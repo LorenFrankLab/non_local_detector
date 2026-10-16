@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     kde_distance,
+    mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import EPS
@@ -26,6 +27,7 @@ from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 
 def _make_kde_matched_gmm(
@@ -232,6 +234,10 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
         waveform_std=waveform_std,
         disable_progress_bar=True,
     )
+    # One No-Spike mark reference for both models so the backgrounds match.
+    mark_reference = fit_mark_references(
+        spike_features_jnp, mark_reference_scale(waveform_std=waveform_std)
+    )
 
     ll_kde = predict_clusterless_kde_log_likelihood(
         time_edges=time_edges,
@@ -249,7 +255,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
         summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],
         position_std=kde_enc["position_std"],
         waveform_std=kde_enc["waveform_std"],
-        mark_reference=kde_enc["mark_reference"],
+        mark_reference=mark_reference,
         is_local=is_local,
         disable_progress_bar=True,
     )
@@ -304,8 +310,6 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
         "summed_ground_process_intensity": summed_gpi,
         "disable_progress_bar": True,
         "mark_dimensions": [int(spike_features_jnp[0].shape[1])],
-        # Same No-Spike mark reference as the KDE so the backgrounds match.
-        "mark_reference": kde_enc["mark_reference"],
     }
 
     ll_gmm = predict_clusterless_gmm_log_likelihood(
@@ -315,6 +319,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
         spike_times=spike_times_jnp,
         spike_waveform_features=spike_features_jnp,
         **gmm_encoding,
+        mark_reference=mark_reference,
         is_local=is_local,
     )
 

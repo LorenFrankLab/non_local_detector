@@ -38,6 +38,8 @@ from non_local_detector.likelihoods.clusterless_kde import (
 from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood as predict_log,
 )
+from non_local_detector.likelihoods.clusterless_kde import mark_reference_scale
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 try:
     from memory_profiler import profile as memory_profile
@@ -130,6 +132,11 @@ def profile_reference_implementation():
     # Decoding
     import jax.numpy as jnp
 
+    mark_reference = fit_mark_references(
+        data["encoding"]["spike_waveform_features"],
+        mark_reference_scale(waveform_std=encoding["waveform_std"]),
+    )
+
     log_likelihood = predict_reference(
         time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
@@ -146,7 +153,7 @@ def profile_reference_implementation():
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=jnp.asarray(encoding["waveform_std"]),
-        mark_reference=encoding["mark_reference"],
+        mark_reference=mark_reference,
         is_local=False,
         block_size=100,
         disable_progress_bar=True,
@@ -177,6 +184,11 @@ def profile_log_implementation():
     # Decoding
     import jax.numpy as jnp
 
+    mark_reference = fit_mark_references(
+        data["encoding"]["spike_waveform_features"],
+        mark_reference_scale(waveform_std=encoding["waveform_std"]),
+    )
+
     log_likelihood = predict_log(
         time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
@@ -193,7 +205,7 @@ def profile_log_implementation():
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=jnp.asarray(encoding["waveform_std"]),
-        mark_reference=encoding["mark_reference"],
+        mark_reference=mark_reference,
         is_local=False,
         block_size=100,
         disable_progress_bar=True,

@@ -15,9 +15,15 @@ import numpy as np
 import pytest
 
 from non_local_detector import Environment
-from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
+)
 from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
-from non_local_detector.likelihoods.mark_reference import MarkReference
+from non_local_detector.likelihoods.mark_reference import (
+    MarkReference,
+    fit_mark_references,
+)
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.time_edges import time_edges_from_centers
 
@@ -82,16 +88,32 @@ def _params(algorithm, scale=1.0):
     }
 
 
-def _fit(run_data, variant, marks=None, scale=1.0):
-    algorithm, _ = variant
+def _fit_with_reference(algorithm, time, position, spikes, marks, environment, params):
+    """Encoding model plus the mark reference fitted from the same training spikes.
+
+    Training spikes outside the position time range do not enter the fit, so
+    they get zero reference weight too.
+    """
     fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
-    return fit(
+    model = fit(time, position, spikes, marks, environment, **params)
+    reference = fit_mark_references(
+        marks,
+        _CLUSTERLESS_MARK_REFERENCE_SCALES[algorithm](**params),
+        [((t >= time[0]) & (t <= time[-1])).astype(float) for t in spikes],
+    )
+    return {**model, "mark_reference": reference}
+
+
+def _fit(run_data, variant, marks=None, scale=1.0, spikes=None):
+    algorithm, _ = variant
+    return _fit_with_reference(
+        algorithm,
         run_data["train_time"],
         run_data["train_position"],
-        run_data["train_spikes"],
+        run_data["train_spikes"] if spikes is None else spikes,
         run_data["train_marks"] if marks is None else marks,
         run_data["environment"],
-        **_params(algorithm, scale),
+        _params(algorithm, scale),
     )
 
 
@@ -225,15 +247,7 @@ def model_marks_center(run_data):
 def test_zero_rate_electrode_scores_background(run_data, algorithm, has_reference):
     train_spikes = [np.array([])] + run_data["train_spikes"][1:]
     train_marks = [np.zeros((0, 4))] + run_data["train_marks"][1:]
-    fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm[0]]
-    model = fit(
-        run_data["train_time"],
-        run_data["train_position"],
-        train_spikes,
-        train_marks,
-        run_data["environment"],
-        **_params(algorithm[0]),
-    )
+    model = _fit(run_data, algorithm, train_marks, spikes=train_spikes)
     assert model["mark_reference"][0] is None
     reference = MarkReference(
         np.array([0.0, 1.0, 2.0, 3.0]), np.array([5.0, 6.0, 7.0, 8.0])
@@ -268,17 +282,14 @@ def test_zero_rate_compensator_adds_background_rate_for_every_electrode(
     run_data, algorithm
 ):
     """With no encoding spikes anywhere, each silent bin scores -dt * n_e * beta."""
-    fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm[0]]
     n_electrodes = len(run_data["train_spikes"])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # empty-electrode warnings
-        model = fit(
-            run_data["train_time"],
-            run_data["train_position"],
-            [np.array([])] * n_electrodes,
+        model = _fit(
+            run_data,
+            algorithm,
             [np.zeros((0, 4))] * n_electrodes,
-            run_data["environment"],
-            **_params(algorithm[0]),
+            spikes=[np.array([])] * n_electrodes,
         )
     for is_local in (False, True):
         silent = _predict(
@@ -311,16 +322,15 @@ def test_diffusion_unvisited_bins_score_only_the_background():
     environment.fit_place_grid(position, infer_track_interior=False)
     spike_times = [np.sort(rng.uniform(0.0, 20.0, 400))]
     marks = [rng.normal(0.0, 30.0, (400, 4))]
-    fit, predict = _CLUSTERLESS_ALGORITHMS["clusterless_diffusion"]
-    model = fit(
+    _, predict = _CLUSTERLESS_ALGORITHMS["clusterless_diffusion"]
+    model = _fit_with_reference(
+        "clusterless_diffusion",
         time,
         position,
         spike_times,
         marks,
         environment,
-        position_std=1.5,
-        waveform_std=24.0,
-        disable_progress_bar=True,
+        {"position_std": 1.5, "waveform_std": 24.0, "disable_progress_bar": True},
     )
     decode_time = np.arange(0.0, 0.1, 0.002)
     edges = time_edges_from_centers(decode_time)

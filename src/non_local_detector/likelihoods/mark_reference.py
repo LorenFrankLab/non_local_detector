@@ -12,7 +12,9 @@ log Jacobian per spike and their odds are unchanged.
 ``q`` is a diagonal Gaussian whose location and scale are the weighted moments
 of the electrode's permitted training marks. It is a fixed reference measure,
 not a fitted model of firing, and stays frozen during posterior-weighted
-encoding updates.
+encoding updates. The encoding fits do not fit it: a detector fits it once
+(``mark_reference_``) and passes it to every state, and direct callers fit it
+with ``fit_mark_references``.
 """
 
 from dataclasses import dataclass
@@ -124,6 +126,49 @@ def fit_mark_reference(
             hint="A constant training waveform feature uses the mark bandwidth; check waveform_std or gmm_reg_covar.",
         )
     return MarkReference(location, scale)
+
+
+def fit_mark_references(
+    spike_waveform_features: list[np.ndarray],
+    fallback_scale: float | np.ndarray,
+    spike_weights: list[np.ndarray] | None = None,
+) -> list[MarkReference | None]:
+    """Fit every electrode's reference from its training spikes.
+
+    Pass the result as ``mark_reference`` to a clusterless predict function.
+    Every state decoded together must use the same references; a detector fits
+    them once, as ``mark_reference_``.
+
+    Parameters
+    ----------
+    spike_waveform_features : list of np.ndarray, each shape (n_spikes, n_features)
+        Training waveform features of each electrode.
+    fallback_scale : float or np.ndarray, shape (n_features,)
+        Scale of a feature without training variance: the fit's
+        ``mark_reference_scale`` (its mark bandwidth).
+    spike_weights : list of np.ndarray, each shape (n_spikes,), optional
+        Training weight of each spike; spikes with zero weight are ignored.
+        Uniform by default.
+
+    Returns
+    -------
+    mark_reference : list of MarkReference or None, length n_electrodes
+    """
+    if spike_weights is None:
+        spike_weights = [
+            np.ones(np.shape(features)[0]) for features in spike_waveform_features
+        ]
+    validate_population_lengths(
+        "electrode",
+        spike_waveform_features=spike_waveform_features,
+        spike_weights=spike_weights,
+    )
+    return [
+        fit_mark_reference(features, weights, fallback_scale, electrode)
+        for electrode, (features, weights) in enumerate(
+            zip(spike_waveform_features, spike_weights, strict=True)
+        )
+    ]
 
 
 def background_log_intensity(

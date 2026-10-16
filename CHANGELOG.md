@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A sparse KDE chunk no longer pads to the full `block_size`.
 - Non-local KDE scoring no longer caches small spatial kernels between chunks. Every electrode computes its kernel inside its compiled scorer, as larger kernels already did. On a 22-tetrode recording, 14 of 22 electrodes already took that path; dropping the cache removed 6 separate kernel compiles and left compile and warm times unchanged within noise.
 - `clusterless_diffusion` holds field values below `1e-6` of each spike's peak, below its heat kernel's resolution, at that level. Bins whose diffused occupancy is below `1e-6` of its maximum, which the animal never visited, get zero marked and ground intensity, so their spikes are explained by the background alone.
-- Fit functions return `mark_reference` and predict functions require it. `estimate_log_joint_mark_intensity` and the block estimators take `log_background`.
+- Clusterless predict functions require `mark_reference`, a list with one reference (or None) per electrode. Detectors pass their `mark_reference_`; direct callers fit it with `fit_mark_references(spike_waveform_features, fallback_scale, spike_weights=None)`. The fallback scale is each algorithm's `mark_reference_scale` of its fit parameters: `waveform_std` for KDE and diffusion, `sqrt(gmm_reg_covar)` for GMM. Encoding models do not carry the reference. `estimate_log_joint_mark_intensity` and the block estimators take `log_background`.
 - Decoded results change, and all saved clusterless models must be refit. See [the model and numerics](docs/likelihood_mark_background.md).
 
 ### Consistent clusterless GMM processes

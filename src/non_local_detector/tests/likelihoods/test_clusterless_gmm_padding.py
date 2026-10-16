@@ -9,6 +9,7 @@ from non_local_detector.likelihoods import clusterless_gmm
 from non_local_detector.likelihoods.clusterless_gmm import (
     _ground_process_intensity,
     fit_clusterless_gmm_encoding_model,
+    mark_reference_scale,
     predict_clusterless_gmm_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
@@ -23,7 +24,10 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
 )
-from non_local_detector.likelihoods.mark_reference import background_log_intensity
+from non_local_detector.likelihoods.mark_reference import (
+    background_log_intensity,
+    fit_mark_references,
+)
 from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
@@ -32,6 +36,15 @@ GMM_COMPONENTS = {
     "gmm_components_occupancy": 4,
     "gmm_components_joint": 8,
 }
+
+
+def fit_reference(position_time, times, marks):
+    """Mark references from the training spikes within the position time range."""
+    in_range = [
+        ((t >= position_time[0]) & (t <= position_time[-1])).astype(float)
+        for t in times
+    ]
+    return fit_mark_references(marks, mark_reference_scale(), in_range)
 
 
 def make_recording(x64):
@@ -67,7 +80,17 @@ def make_recording(x64):
             disable_progress_bar=True,
             **GMM_COMPONENTS,
         )
-    return env, position_time, position, encoding, decode_times, decode_marks, edges
+    mark_reference = fit_reference(position_time, encoding_times, encoding_marks)
+    return (
+        env,
+        position_time,
+        position,
+        encoding,
+        mark_reference,
+        decode_times,
+        decode_marks,
+        edges,
+    )
 
 
 @pytest.fixture(scope="module", params=[False, True], ids=["float32", "float64"])
@@ -76,7 +99,9 @@ def recording(request):
 
 
 def predict(recording, is_local, row_slice, **kwargs):
-    env, position_time, position, encoding, times, marks, edges = recording
+    env, position_time, position, encoding, mark_reference, times, marks, edges = (
+        recording
+    )
     return predict_clusterless_gmm_log_likelihood(
         position_time,
         position,
@@ -84,6 +109,7 @@ def predict(recording, is_local, row_slice, **kwargs):
         marks,
         time_edges=edges,
         **encoding,
+        mark_reference=mark_reference,
         is_local=is_local,
         row_slice=row_slice,
         **kwargs,
@@ -92,7 +118,9 @@ def predict(recording, is_local, row_slice, **kwargs):
 
 def reference(recording, is_local, row_slice):
     """Each spike scored eagerly with ``score_samples``, as the loop did before."""
-    env, position_time, position, encoding, times, marks, edges = recording
+    env, position_time, position, encoding, mark_reference, times, marks, edges = (
+        recording
+    )
     start, stop = row_slice.start, row_slice.stop
     durations = jnp.asarray(np.diff(edges)[start:stop])
     electrodes = zip(
@@ -101,7 +129,7 @@ def reference(recording, is_local, row_slice):
         encoding["joint_models"],
         encoding["gpi_models"],
         encoding["mean_rates"],
-        encoding["mark_reference"],
+        mark_reference,
         strict=True,
     )
 
@@ -239,13 +267,12 @@ def test_electrodes_with_nearby_spike_counts_share_compiled_kernels():
     )
     env = env.fit_place_grid(position, infer_track_interior=False)
     encoding_times = [np.sort(rng.uniform(0, 30, n)) for n in (200, 210)]
+    encoding_marks = [rng.normal(0, 30, (len(t), 4)) for t in encoding_times]
     encoding = fit_clusterless_gmm_encoding_model(
         position_time=position_time,
         position=position,
         spike_times=encoding_times,
-        spike_waveform_features=[
-            rng.normal(0, 30, (len(t), 4)) for t in encoding_times
-        ],
+        spike_waveform_features=encoding_marks,
         environment=env,
         disable_progress_bar=True,
         **GMM_COMPONENTS,
@@ -261,6 +288,7 @@ def test_electrodes_with_nearby_spike_counts_share_compiled_kernels():
         position_time,
         position,
         encoding,
+        fit_reference(position_time, encoding_times, encoding_marks),
         decode_times,
         [rng.normal(0, 30, (len(t), 4)) for t in decode_times],
         np.arange(0, 2.0 + 1e-9, 0.002),

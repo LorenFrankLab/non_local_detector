@@ -15,7 +15,9 @@ import pytest
 import non_local_detector.likelihoods.common as common
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
+    fit_mark_references,
 )
 from non_local_detector.likelihoods.common import LOG_EPS
 from non_local_detector.likelihoods.mark_reference import MarkReference
@@ -92,6 +94,8 @@ def fit_registered_backends(
     name : str
     predict_func : Callable
     encoding_model : dict
+        A clusterless model also carries ``mark_reference``, fitted from the
+        encoding features, so it can be unpacked into ``predict_func``.
     is_clusterless : bool
         Whether ``predict_func`` also takes waveform features.
     """
@@ -125,6 +129,10 @@ def fit_registered_backends(
             spike_waveform_features=data["encoding_features"],
             environment=environment,
             **fit_params.get(name, {}),
+        )
+        encoding_model["mark_reference"] = fit_mark_references(
+            data["encoding_features"],
+            _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_params.get(name, {})),
         )
         yield name, predict_func, encoding_model, True
 

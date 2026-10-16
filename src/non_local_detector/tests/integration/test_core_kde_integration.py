@@ -6,8 +6,10 @@ from non_local_detector.core import chunked_filter_smoother, smoother, viterbi
 from non_local_detector.core import filter as hmm_filter
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
+    mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
@@ -154,7 +156,9 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
         position_std=jnp.asarray(enc["position_std"]),
         waveform_std=jnp.asarray(enc["waveform_std"]),
-        mark_reference=enc["mark_reference"],
+        mark_reference=fit_mark_references(
+            enc_feats, mark_reference_scale(waveform_std=enc["waveform_std"])
+        ),
         is_local=False,
         block_size=8,
         disable_progress_bar=True,

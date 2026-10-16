@@ -22,6 +22,7 @@ from non_local_detector.likelihoods.common import (
     block_log_kde,
     safe_log,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 
@@ -144,7 +145,9 @@ def test_local_likelihood_log_space_prevents_underflow(
         mean_rates=jnp.array(enc_model["mean_rates"]),
         position_std=enc_model["position_std"],
         waveform_std=enc_model["waveform_std"],
-        mark_reference=enc_model["mark_reference"],
+        mark_reference=fit_mark_references(
+            data["spike_waveform_features"], fallback_scale=3.0
+        ),
         block_size=50,
         disable_progress_bar=True,
     )
@@ -227,7 +230,9 @@ def test_local_likelihood_log_space_moderate_features(
         mean_rates=jnp.array(enc_model["mean_rates"]),
         position_std=enc_model["position_std"],
         waveform_std=enc_model["waveform_std"],
-        mark_reference=enc_model["mark_reference"],
+        mark_reference=fit_mark_references(
+            moderate_spike_features, fallback_scale=10.0
+        ),
         block_size=50,
         disable_progress_bar=True,
     )

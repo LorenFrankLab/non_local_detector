@@ -6,9 +6,11 @@ from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
+    mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import get_position_at_time
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
@@ -139,7 +141,9 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=encoding["position_std"],
         waveform_std=encoding["waveform_std"],
-        mark_reference=encoding["mark_reference"],
+        mark_reference=fit_mark_references(
+            enc_feats, mark_reference_scale(waveform_std=encoding["waveform_std"])
+        ),
         is_local=False,
         block_size=8,
         disable_progress_bar=True,

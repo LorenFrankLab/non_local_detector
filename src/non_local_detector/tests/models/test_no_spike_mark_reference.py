@@ -18,10 +18,15 @@ from non_local_detector import (
     NonLocalClusterlessDetector,
 )
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
+)
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     fit_mark_reference,
+    fit_mark_references,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
@@ -137,8 +142,6 @@ def test_outlier_spike_favors_no_spike_by_rate_ratio(run_data, algorithm):
     # Broaden the shared reference so the background dominates 1000 µV away.
     broad = MarkReference(np.zeros(4), np.full(4, 3e4))
     detector.mark_reference_[electrode] = broad
-    for model in detector.encoding_model_.values():
-        model["mark_reference"] = detector.mark_reference_
     spike_time = run_data["test_time"][200]
     spikes = [np.array([])] * len(run_data["test_spikes"])
     marks = [np.zeros((0, 4))] * len(run_data["test_marks"])
@@ -396,26 +399,23 @@ def test_mark_term_is_identical_when_rows_are_requested_in_chunks(run_data):
     )
 
 
-@pytest.mark.integration
-def test_encoding_models_must_share_the_detector_mark_reference(run_data):
-    detector = NonLocalClusterlessDetector(
-        clusterless_algorithm_params={"disable_progress_bar": True},
-    ).fit(
-        run_data["train_time"],
-        run_data["train_position"],
-        run_data["train_spikes"],
-        run_data["train_marks"],
-    )
-    restored = pickle.loads(pickle.dumps(detector))
-    for model in restored.encoding_model_.values():
-        assert model["mark_reference"] is restored.mark_reference_
-    for model in detector.encoding_model_.values():
-        model["mark_reference"] = list(detector.mark_reference_)
-    with pytest.raises(ValidationError, match="share the detector's mark reference"):
-        detector.predict(
-            run_data["test_spikes"],
-            run_data["test_marks"],
-            time_edges=time_edges_from_centers(run_data["test_time"]),
-            position_time=run_data["test_time"],
-            position=run_data["test_position"],
-        )
+def test_fit_mark_references_weighs_spikes_uniformly_by_default():
+    rng = np.random.default_rng(5)
+    marks = [rng.normal(size=(30, 2)), np.zeros((0, 2))]
+    references = fit_mark_references(marks, 24.0)
+    expected = fit_mark_reference(marks[0], np.ones(30), 24.0)
+    np.testing.assert_array_equal(references[0].location, expected.location)
+    np.testing.assert_array_equal(references[0].scale, expected.scale)
+    assert references[1] is None
+
+    weights = [np.r_[np.zeros(10), np.ones(20)], np.zeros(0)]
+    weighted = fit_mark_references(marks, 24.0, weights)
+    np.testing.assert_allclose(weighted[0].location, marks[0][10:].mean(axis=0))
+
+
+def test_every_clusterless_algorithm_has_a_mark_reference_scale():
+    assert set(_CLUSTERLESS_MARK_REFERENCE_SCALES) == set(_CLUSTERLESS_ALGORITHMS)
+    scales = _CLUSTERLESS_MARK_REFERENCE_SCALES
+    assert scales["clusterless_kde"](waveform_std=7.0, position_std=3.0) == 7.0
+    assert scales["clusterless_diffusion"](waveform_std=7.0) == 7.0
+    assert scales["clusterless_gmm"](gmm_reg_covar=4.0, waveform_std=7.0) == 2.0

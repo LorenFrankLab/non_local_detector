@@ -9,6 +9,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import EPS
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
@@ -191,7 +192,7 @@ def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        mark_reference=enc["mark_reference"],
+        mark_reference=fit_mark_references(enc_feats, 0.2),
         environment=env,
         mean_rates=jnp.asarray(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -263,7 +264,7 @@ def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot(make_env_1d):
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        mark_reference=enc["mark_reference"],
+        mark_reference=fit_mark_references(enc_feats, 0.25),
         environment=env,
         mean_rates=jnp.asarray(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],

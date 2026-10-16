@@ -13,12 +13,14 @@ from scipy import stats
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
+    mark_reference_scale,
     predict_clusterless_gmm_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     predict_sorted_spikes_glm_log_likelihood,
@@ -173,6 +175,7 @@ def _fit_clusterless_kde(env, data):
         block_size=8,
         disable_progress_bar=True,
     )
+    enc["mark_reference"] = fit_mark_references(data["spike_waveform_features"], 1.0)
     return enc
 
 
@@ -212,6 +215,9 @@ def _fit_clusterless_gmm(env, data):
         gmm_components_joint=10,
         gmm_random_state=0,
         disable_progress_bar=True,
+    )
+    enc["mark_reference"] = fit_mark_references(
+        data["spike_waveform_features"], mark_reference_scale()
     )
     return enc
 

@@ -33,6 +33,8 @@ def backend(request):
     )
     predict = registry[name][1]
     encoding = next(iter(detector.encoding_model_.values()))
+    if name.startswith("clusterless"):
+        encoding = {**encoding, "mark_reference": detector.mark_reference_}
     return detector, time, position, args, predict, encoding
 
 

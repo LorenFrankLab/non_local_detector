@@ -359,6 +359,8 @@ def test_direct_predictors_validate_supplied_units_and_default_to_hz(algorithm):
         registry = _CLUSTERLESS_ALGORITHMS
     detector = _decoder(algorithm, calibration=True).fit(time, position, *args)
     (model,) = detector.encoding_model_.values()
+    if hasattr(detector, "mark_reference_"):
+        model = {**model, "mark_reference": detector.mark_reference_}
     predictor = registry[algorithm][1]
     edges = 0.09 + np.arange(21) * 0.002
     expected = predictor(time, position, *args, time_edges=edges, **model)
