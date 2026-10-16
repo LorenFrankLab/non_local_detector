@@ -54,7 +54,6 @@ from non_local_detector.likelihoods.gmm import (
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
-    fit_mark_reference,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -490,6 +489,23 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     return weights
 
 
+def mark_reference_scale(gmm_reg_covar=DEFAULT_GMM_REG_COVAR, **_fit_params):
+    """Mark-reference scale of a feature without training variance.
+
+    Parameters
+    ----------
+    gmm_reg_covar : float, optional
+        The fit's covariance regularization, a variance in squared feature
+        units; other fit parameters are ignored.
+
+    Returns
+    -------
+    scale : float
+        ``sqrt(gmm_reg_covar)``.
+    """
+    return float(np.sqrt(gmm_reg_covar))
+
+
 def fit_clusterless_gmm_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
@@ -681,7 +697,6 @@ def fit_clusterless_gmm_encoding_model(
     effective_gpi_components: list[int] = []
     effective_joint_components: list[int] = []
     mark_dimensions: list[int] = []
-    mark_reference: list[MarkReference | None] = []
 
     summed_ground_process_intensity = jnp.zeros_like(log_occupancy)
 
@@ -730,7 +745,6 @@ def fit_clusterless_gmm_encoding_model(
             mean_rates.append(0.0)  # zero rate, not the EPS floor below
             gpi_models.append(None)
             joint_models.append(None)
-            mark_reference.append(None)
             effective_gpi_components.append(0)
             effective_joint_components.append(0)
             continue
@@ -773,15 +787,6 @@ def fit_clusterless_gmm_encoding_model(
             tol=gmm_tol,
         )
         joint_models.append(joint_gmm)
-        # After the joint fit, whose input validation reports bad marks.
-        mark_reference.append(
-            fit_mark_reference(
-                np.asarray(elect_feats),
-                elect_weights,
-                np.sqrt(gmm_reg_covar),
-                electrode,
-            )
-        )
         gpi_gmm = _position_marginal(joint_gmm, enc_pos.shape[1])
         gpi_models.append(gpi_gmm)
 
@@ -818,7 +823,6 @@ def fit_clusterless_gmm_encoding_model(
             "joint": effective_joint_components,
         },
         "mark_dimensions": mark_dimensions,
-        "mark_reference": mark_reference,
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
@@ -853,7 +857,7 @@ def predict_clusterless_gmm_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     mark_dimensions: list[int],
-    mark_reference: list[MarkReference | None] | None = None,
+    mark_reference: list[MarkReference | None],
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **kwargs,
@@ -899,8 +903,9 @@ def predict_clusterless_gmm_log_likelihood(
         model. Predict rejects decode spikes whose feature dimension differs, so
         every electrode (including zero-rate ones) must have a recorded count.
     mark_reference : list of MarkReference or None, keyword-only
-        Normalized reference mark density per electrode, taken from the encoding
-        model. Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
+        Normalized reference mark density per electrode, from
+        ``fit_mark_references`` (a detector passes its ``mark_reference_``).
+        Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
@@ -919,11 +924,6 @@ def predict_clusterless_gmm_log_likelihood(
     if rate_units != "Hz":
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
-    if mark_reference is None:
-        raise ValidationError(
-            "Encoding model has no mark reference; refit before decoding.",
-            hint="Refit with fit_clusterless_gmm_encoding_model.",
         )
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges

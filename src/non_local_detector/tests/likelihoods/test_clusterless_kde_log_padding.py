@@ -11,6 +11,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
     log_kde_distance,
+    mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
@@ -30,10 +31,31 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
 )
-from non_local_detector.likelihoods.mark_reference import background_log_intensity
+from non_local_detector.likelihoods.mark_reference import (
+    background_log_intensity,
+    fit_mark_references,
+)
 from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
+
+
+def fit_encoding(position_time, spike_times, spike_waveform_features, **params):
+    """KDE encoding model plus the mark reference of its in-range training spikes."""
+    encoding = fit_clusterless_kde_encoding_model(
+        position_time=position_time,
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+        **params,
+    )
+    in_range = [
+        ((t >= position_time[0]) & (t <= position_time[-1])).astype(float)
+        for t in spike_times
+    ]
+    reference = fit_mark_references(
+        spike_waveform_features, mark_reference_scale(**params), in_range
+    )
+    return {**encoding, "mark_reference": reference}
 
 
 def make_recording(x64, waveform_dims=(2, 4, 4)):
@@ -58,7 +80,7 @@ def make_recording(x64, waveform_dims=(2, 4, 4)):
     ]
     edges = np.arange(0, 4.0 + 1e-9, 0.002)
     with precision_mode(x64):
-        encoding = fit_clusterless_kde_encoding_model(
+        encoding = fit_encoding(
             position_time=position_time,
             position=position,
             spike_times=encoding_times,
@@ -290,7 +312,7 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels():
     # 200 and 210 encoding spikes share one padded size; 40 and 50 decoding
     # spikes share another.
     encoding_times = [np.sort(rng.uniform(0, 20, n)) for n in (200, 210)]
-    encoding = fit_clusterless_kde_encoding_model(
+    encoding = fit_encoding(
         position_time=position_time,
         position=position,
         spike_times=encoding_times,
@@ -334,7 +356,7 @@ def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
     )
     env = env.fit_place_grid(position, infer_track_interior=False)
     encoding_times = [np.sort(rng.uniform(0, 20, 200))]
-    encoding = fit_clusterless_kde_encoding_model(
+    encoding = fit_encoding(
         position_time=position_time,
         position=position,
         spike_times=encoding_times,

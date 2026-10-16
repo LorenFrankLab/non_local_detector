@@ -65,6 +65,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import kde_distance
 from non_local_detector.likelihoods.common import (
+    DEFAULT_WAVEFORM_STD,
     EPS,
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
@@ -101,7 +102,6 @@ from non_local_detector.likelihoods.diffusion import (
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
-    fit_mark_reference,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
@@ -266,6 +266,21 @@ def _diffuse_field(
     return np.asarray(field_hat)[:, 0]
 
 
+def mark_reference_scale(waveform_std=DEFAULT_WAVEFORM_STD, **_fit_params):
+    """Mark-reference scale of a feature without training variance.
+
+    Parameters
+    ----------
+    waveform_std : float or array_like, shape (n_features,), optional
+        The fit's mark bandwidth; other fit parameters are ignored.
+
+    Returns
+    -------
+    scale : float or array_like
+    """
+    return waveform_std
+
+
 def fit_clusterless_diffusion_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -274,7 +289,7 @@ def fit_clusterless_diffusion_encoding_model(
     environment: Environment,
     *,
     position_std: float = float(np.sqrt(12.5)),
-    waveform_std: float = 24.0,
+    waveform_std: float = DEFAULT_WAVEFORM_STD,
     weights: np.ndarray | None = None,
     heat_kernel_rank: int | None = None,
     block_size: int = 10000,
@@ -420,7 +435,6 @@ def fit_clusterless_diffusion_encoding_model(
     encoding_weights: list[jnp.ndarray] = []
     weight_total: list[float] = []
     mean_rates: list[float] = []
-    mark_reference: list[MarkReference | None] = []
     summed_ground_process_intensity = np.zeros((n_interior,))
 
     for electrode, (electrode_spike_times, electrode_features) in enumerate(
@@ -467,9 +481,6 @@ def fit_clusterless_diffusion_encoding_model(
         encoding_weights.append(jnp.asarray(np.asarray(spike_weights)[order]))
         weight_total.append(w_total)
 
-        mark_reference.append(
-            fit_mark_reference(bounded_features, spike_weights, waveform_std, electrode)
-        )
         if w_total == 0:
             # Zero-rate electrode: no fitted density, no ground-process contribution.
             mean_rates.append(0.0)
@@ -515,7 +526,6 @@ def fit_clusterless_diffusion_encoding_model(
         "block_size": block_size,
         "memory_budget": memory_budget,
         "disable_progress_bar": disable_progress_bar,
-        "mark_reference": mark_reference,
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
@@ -825,6 +835,7 @@ def predict_clusterless_diffusion_log_likelihood(
     encoding_exposure_seconds: float | None = None,
     is_local: bool = False,
     row_slice: slice | None = None,
+    mark_reference: list[MarkReference | None],
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **encoding_model: object,
@@ -855,6 +866,13 @@ def predict_clusterless_diffusion_log_likelihood(
         against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
+    mark_reference : list of MarkReference or None, keyword-only
+        Normalized reference mark density per electrode, from
+        ``fit_mark_references`` (a detector passes its ``mark_reference_``).
+        Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
+        electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
+        states do not depend on the waveform units. None for an electrode means
+        no training marks; its background is the bare rate.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -890,12 +908,6 @@ def predict_clusterless_diffusion_log_likelihood(
     block_size = int(encoding_model["block_size"])  # type: ignore[call-overload]
     memory_budget = int(encoding_model["memory_budget"])  # type: ignore[call-overload]
     disable_progress_bar = bool(encoding_model.get("disable_progress_bar", False))
-    mark_reference = encoding_model.get("mark_reference")
-    if mark_reference is None:
-        raise ValidationError(
-            "Encoding model has no mark reference; refit before decoding.",
-            hint="Refit with fit_clusterless_diffusion_encoding_model.",
-        )
 
     validate_population_lengths(
         "electrode",

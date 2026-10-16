@@ -15,6 +15,7 @@ from non_local_detector.likelihoods.common import (
     _padded_sample_count,
     _padded_spike_count,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 pytestmark = pytest.mark.unit
 
@@ -28,11 +29,12 @@ def nearby_sizes_recording():
     env = Environment(place_bin_size=2.0, position_range=((0.0, 100.0),))
     env = env.fit_place_grid(position, infer_track_interior=False)
     encoding_times = [np.sort(rng.uniform(0, 20, n)) for n in (200, 210)]
+    encoding_features = [rng.normal(0, 30, (len(t), 4)) for t in encoding_times]
     encoding = fit_clusterless_diffusion_encoding_model(
         position_time,
         position,
         encoding_times,
-        [rng.normal(0, 30, (len(t), 4)) for t in encoding_times],
+        encoding_features,
         env,
         position_std=6.0,
         waveform_std=24.0,
@@ -42,13 +44,33 @@ def nearby_sizes_recording():
     decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (40, 45)]
     decode_features = [rng.normal(0, 30, (len(t), 4)) for t in decode_times]
     time_edges = time_edges_from_centers(np.arange(0, 2.0 + 1e-9, 0.02))
-    return position_time, position, encoding, decode_times, decode_features, time_edges
+    # As in the fit, training spikes after the last position sample are ignored.
+    mark_reference = fit_mark_references(
+        encoding_features,
+        24.0,
+        [(t <= position_time[-1]).astype(float) for t in encoding_times],
+    )
+    return (
+        position_time,
+        position,
+        encoding,
+        mark_reference,
+        decode_times,
+        decode_features,
+        time_edges,
+    )
 
 
 def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_recording):
-    position_time, position, encoding, decode_times, decode_features, time_edges = (
-        nearby_sizes_recording
-    )
+    (
+        position_time,
+        position,
+        encoding,
+        mark_reference,
+        decode_times,
+        decode_features,
+        time_edges,
+    ) = nearby_sizes_recording
     n_bins = encoding["occupancy"].shape[0]
     rank = encoding["resolved_rank"]
     # A budget at which the two electrodes' raw block sizes differ (20 and 19
@@ -80,6 +102,7 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
                     decode_features,
                     time_edges=time_edges,
                     is_local=is_local,
+                    mark_reference=mark_reference,
                     **{**encoding, "memory_budget": budget},
                 )
             )

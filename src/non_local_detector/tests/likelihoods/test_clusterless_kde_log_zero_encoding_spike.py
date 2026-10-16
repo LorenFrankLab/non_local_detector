@@ -21,6 +21,7 @@ from non_local_detector.likelihoods.common import (
     block_log_kde,
     log_kde,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 
 @pytest.mark.unit
@@ -113,6 +114,7 @@ def _fit_predict_local(s):
         [jnp.asarray(f) for f in s["dec_feats"]],
         time_edges=jnp.asarray(s["time"]),
         **encoding,
+        mark_reference=fit_mark_references(s["enc_feats"], fallback_scale=24.0),
         is_local=True,
     )
 

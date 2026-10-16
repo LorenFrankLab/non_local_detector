@@ -9,12 +9,17 @@ import pytest
 
 from non_local_detector import NonLocalClusterlessDetector
 from non_local_detector.likelihoods import clusterless_kde
-from non_local_detector.likelihoods.common import _KDE_BLOCK_KERNEL_BYTES
+from non_local_detector.likelihoods.common import (
+    _KDE_BLOCK_KERNEL_BYTES,
+    interpolate_weights_at_spike_times,
+)
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.tests.conftest import precision_mode
 from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING, tolerance
 
 pytestmark = pytest.mark.unit
 
+WAVEFORM_STD = 0.7
 TILING_DEFAULTS = {"enc_tile_size": None, "pos_tile_size": None, "use_streaming": False}
 STREAMED_TILING = {"enc_tile_size": 4, "pos_tile_size": 5, "use_streaming": True}
 # Tiled log-space reductions regroup float32 sums: measured differences reach
@@ -53,7 +58,18 @@ def data(dtype=np.float32, weight_kind="weighted", empty_encoding=False):
 
 
 def fit(environment, values, **policy):
-    return clusterless_kde.fit_clusterless_kde_encoding_model(
+    """Encoding model plus the mark reference of its weighted training spikes."""
+    weights = values["weights"]
+    if weights is None:
+        weights = np.ones(len(values["position_time"]))
+    spike_weights = [
+        interpolate_weights_at_spike_times(t, values["position_time"], weights)
+        for t in values["training_spikes"]
+    ]
+    reference = fit_mark_references(
+        values["training_marks"], WAVEFORM_STD, spike_weights
+    )
+    encoding = clusterless_kde.fit_clusterless_kde_encoding_model(
         position_time=values["position_time"],
         position=values["position"],
         spike_times=values["training_spikes"],
@@ -61,12 +77,13 @@ def fit(environment, values, **policy):
         weights=values["weights"],
         environment=environment,
         position_std=0.8,
-        waveform_std=0.7,
+        waveform_std=WAVEFORM_STD,
         block_size=4,
         disable_progress_bar=True,
         encoding_time_range=[0, 2],
         **policy,
     )
+    return {**encoding, "mark_reference": reference}
 
 
 def predict(encoding, values, is_local, row_slice=None, **policy):

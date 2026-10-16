@@ -15,6 +15,7 @@ from non_local_detector.likelihoods import (
 from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
     log_kde_distance,
+    mark_reference_scale,
 )
 from non_local_detector.likelihoods.common import (
     _KDE_BLOCK_KERNEL_BYTES,
@@ -25,13 +26,38 @@ from non_local_detector.likelihoods.common import (
     _kde_log_densities,
     _log_space_kde_log_density,
     _sorted_sample_keys,
+    interpolate_weights_at_spike_times,
     kde_log_density,
     log_density_intensity,
     traced_kde_log_density,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 pytestmark = pytest.mark.unit
+
+
+def fit_clusterless_kde(
+    position_time, position, spike_times, spike_waveform_features, env, **params
+):
+    """KDE encoding model plus the mark reference of its weighted training spikes."""
+    model = fit_clusterless_kde_encoding_model(
+        position_time, position, spike_times, spike_waveform_features, env, **params
+    )
+    weights = params.get("weights")
+    spike_weights = (
+        None
+        if weights is None
+        else [
+            interpolate_weights_at_spike_times(t, position_time, weights)
+            for t in spike_times
+        ]
+    )
+    reference = fit_mark_references(
+        spike_waveform_features, mark_reference_scale(**params), spike_weights
+    )
+    return {**model, "mark_reference": reference}
+
 
 MODELS = [
     (
@@ -39,7 +65,7 @@ MODELS = [
         predict_sorted_spikes_kde_log_likelihood,
         False,
     ),
-    (fit_clusterless_kde_encoding_model, predict_clusterless_kde_log_likelihood, True),
+    (fit_clusterless_kde, predict_clusterless_kde_log_likelihood, True),
 ]
 
 
@@ -116,7 +142,7 @@ def test_tiled_mark_ratios_match_the_gaussian_reference(
     env = Environment(
         place_bin_size=5.0, position_range=((0.0, 200.0),)
     ).fit_place_grid(position, infer_track_interior=False)
-    model = fit_clusterless_kde_encoding_model(
+    model = fit_clusterless_kde(
         time,
         position,
         [time],
@@ -348,7 +374,7 @@ def test_public_tiled_prediction_keeps_the_rate_for_weights_near_float_max(is_lo
     )
     scores = []
     for tiling in ({}, {"enc_tile_size": 2, "use_streaming": True}):
-        model = fit_clusterless_kde_encoding_model(
+        model = fit_clusterless_kde(
             time,
             position,
             [time],

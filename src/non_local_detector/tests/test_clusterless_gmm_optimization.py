@@ -16,8 +16,29 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import (
     _fit_gmm_density,
     fit_clusterless_gmm_encoding_model,
+    mark_reference_scale,
     predict_clusterless_gmm_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
+
+
+def _mark_reference(position_time, spike_times, spike_features, weights=None):
+    """Mark references from the training spikes, as a detector fits them.
+
+    Spikes outside the position time range carry zero weight, as in the fit.
+    """
+    position_time = np.asarray(position_time)
+    if weights is None:
+        weights = np.ones(position_time.shape[0])
+    spike_weights = [
+        np.interp(np.asarray(t), position_time, weights, left=0.0, right=0.0)
+        for t in spike_times
+    ]
+    return fit_mark_references(
+        [np.asarray(f) for f in spike_features],
+        mark_reference_scale(),
+        spike_weights,
+    )
 
 
 @pytest.fixture
@@ -87,6 +108,11 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         gmm_components_occupancy=8,
         gmm_components_joint=16,
     )
+    mark_reference = _mark_reference(
+        gmm_simulation_data["position_time"],
+        gmm_simulation_data["spike_times"],
+        gmm_simulation_data["spike_features"],
+    )
 
     # Convert to JAX arrays
     time = jnp.asarray(gmm_simulation_data["time"])
@@ -103,6 +129,7 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         spike_block_size=999999,
     )
@@ -115,6 +142,7 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         spike_block_size=10,
     )
@@ -145,6 +173,11 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         gmm_components_occupancy=8,
         gmm_components_joint=16,
     )
+    mark_reference = _mark_reference(
+        gmm_simulation_data["position_time"],
+        gmm_simulation_data["spike_times"],
+        gmm_simulation_data["spike_features"],
+    )
 
     # Convert to JAX arrays
     time = jnp.asarray(gmm_simulation_data["time"])
@@ -161,6 +194,7 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         bin_tile_size=None,
     )
@@ -175,6 +209,7 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         bin_tile_size=bin_tile_size,
     )
@@ -205,6 +240,11 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         gmm_components_occupancy=8,
         gmm_components_joint=16,
     )
+    mark_reference = _mark_reference(
+        gmm_simulation_data["position_time"],
+        gmm_simulation_data["spike_times"],
+        gmm_simulation_data["spike_features"],
+    )
 
     # Convert to JAX arrays
     time = jnp.asarray(gmm_simulation_data["time"])
@@ -221,6 +261,7 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         spike_block_size=999999,
         bin_tile_size=None,
@@ -236,6 +277,7 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         spike_block_size=10,
         bin_tile_size=bin_tile_size,
@@ -281,6 +323,11 @@ def test_gmm_edge_cases(gmm_simulation_data):
         gmm_components_occupancy=2,
         gmm_components_joint=4,
     )
+    mark_reference = _mark_reference(
+        minimal_data["position_time"],
+        minimal_data["spike_times"],
+        minimal_data["spike_features"],
+    )
 
     # Convert to JAX arrays
     time = jnp.asarray(minimal_data["time"])
@@ -297,6 +344,7 @@ def test_gmm_edge_cases(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         spike_block_size=1000,
     )
@@ -309,6 +357,7 @@ def test_gmm_edge_cases(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         bin_tile_size=10000,
     )
@@ -321,6 +370,7 @@ def test_gmm_edge_cases(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
         spike_block_size=1000,
         bin_tile_size=10000,
@@ -401,6 +451,12 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         err_msg="JAX array inputs produced different results than numpy arrays",
     )
 
+    mark_reference = _mark_reference(
+        gmm_simulation_data["position_time"],
+        gmm_simulation_data["spike_times"],
+        gmm_simulation_data["spike_features"],
+    )
+
     # Test prediction with JAX arrays
     time = jnp.asarray(gmm_simulation_data["time"])
     position_time = jnp.asarray(gmm_simulation_data["position_time"])
@@ -416,6 +472,7 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
     )
 
@@ -427,6 +484,7 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         spike_features,
         time_edges=time,
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=True,
     )
 
@@ -445,6 +503,7 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         [as_np32(sf) for sf in spike_features],
         time_edges=as_np32(time),
         **encoding_model,
+        mark_reference=mark_reference,
         is_local=False,
     )
     result_jax = np.asarray(result_jax)
@@ -492,6 +551,11 @@ def test_gmm_empty_and_sparse_electrodes_are_supported(gmm_simulation_data):
     # Decoding a mixed empty + non-empty population must stay finite: the empty
     # electrode contributes its zero-rate (None) sentinel, the sparse one its fit.
     n_features = sparse_features.shape[1]
+    mark_reference = _mark_reference(
+        gmm_simulation_data["position_time"],
+        [np.zeros((0,)), sparse_times],
+        [np.zeros((0, n_features)), sparse_features],
+    )
     log_likelihood = predict_clusterless_gmm_log_likelihood(
         gmm_simulation_data["position_time"],
         gmm_simulation_data["position"],
@@ -499,6 +563,7 @@ def test_gmm_empty_and_sparse_electrodes_are_supported(gmm_simulation_data):
         [np.zeros((0, n_features)), sparse_features],
         time_edges=gmm_simulation_data["time"],
         **encoding,
+        mark_reference=mark_reference,
     )
     assert np.all(np.isfinite(log_likelihood))
 
@@ -525,6 +590,7 @@ def test_gmm_single_effective_spike_electrode(gmm_simulation_data):
     assert encoding["gmm_effective_components"]["gpi"] == [1]
     assert encoding["gmm_effective_components"]["joint"] == [1]
 
+    mark_reference = _mark_reference(data["position_time"], [one_time], [one_feature])
     log_likelihood = predict_clusterless_gmm_log_likelihood(
         data["position_time"],
         data["position"],
@@ -532,6 +598,7 @@ def test_gmm_single_effective_spike_electrode(gmm_simulation_data):
         [one_feature],
         time_edges=data["time"],
         **encoding,
+        mark_reference=mark_reference,
     )
     assert np.all(np.isfinite(log_likelihood))
 
@@ -671,6 +738,9 @@ def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
         gmm_components_joint=2,
         disable_progress_bar=True,
     )
+    mark_reference = _mark_reference(
+        data["position_time"], data["spike_times"], data["spike_features"]
+    )
 
     with pytest.raises(ValidationError, match="population lengths do not match"):
         predict_clusterless_gmm_log_likelihood(
@@ -680,6 +750,7 @@ def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
             data["spike_features"][:-1],
             time_edges=data["time"],
             **encoding,
+            mark_reference=mark_reference,
         )
 
     wrong_dimension = list(data["spike_features"])
@@ -692,6 +763,7 @@ def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
             wrong_dimension,
             time_edges=data["time"],
             **encoding,
+            mark_reference=mark_reference,
         )
 
 
@@ -814,6 +886,13 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
         **fit_kwargs,
     )
 
+    reference_both = _mark_reference(
+        position_time, [e0_times, e1_times], [e0_feats, e1_feats], weights
+    )
+    reference_absent = _mark_reference(position_time, [e0_times], [e0_feats], weights)
+    # Electrode 1's training spikes all carry zero weight: no reference.
+    assert reference_both[1] is None
+
     # One decode bin centered on each timestamp.
     decode_time_edges = jnp.asarray(time_edges_from_centers(time))
     pt = jnp.asarray(position_time)
@@ -844,7 +923,9 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
     for is_local in (False, True):
         kind = "local" if is_local else "non-local"
 
-        def _predict(spike_times, spike_features, encoding, local=is_local):
+        def _predict(
+            spike_times, spike_features, encoding, mark_reference, local=is_local
+        ):
             return np.asarray(
                 predict_clusterless_gmm_log_likelihood(
                     pt,
@@ -853,15 +934,20 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
                     spike_features,
                     time_edges=decode_time_edges,
                     **encoding,
+                    mark_reference=mark_reference,
                     is_local=local,
                 )
             )
 
-        ll_absent = _predict(absent_times, absent_feats, encoding_absent)
+        ll_absent = _predict(
+            absent_times, absent_feats, encoding_absent, reference_absent
+        )
 
         # Observed decode spikes on the zero-rate electrode add LOG_EPS each,
         # uniformly across bins -- not skipped.
-        ll_penalized = _predict(penalized_times, penalized_feats, encoding_both)
+        ll_penalized = _predict(
+            penalized_times, penalized_feats, encoding_both, reference_both
+        )
         assert_allclose(
             ll_penalized - ll_absent,
             np.broadcast_to(expected_penalty, ll_absent.shape),
@@ -871,7 +957,7 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
         )
 
         # No decode spikes on the zero-rate electrode -> matches an absent one.
-        ll_empty = _predict(empty_times, empty_feats, encoding_both)
+        ll_empty = _predict(empty_times, empty_feats, encoding_both, reference_both)
         assert_allclose(
             ll_empty,
             ll_absent,

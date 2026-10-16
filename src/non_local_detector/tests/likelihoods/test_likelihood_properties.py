@@ -14,12 +14,14 @@ from hypothesis import strategies as st
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
+    mark_reference_scale,
     predict_clusterless_gmm_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     predict_sorted_spikes_glm_log_likelihood,
@@ -169,7 +171,7 @@ def _fit_predict_clusterless_kde(
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        mark_reference=enc["mark_reference"],
+        mark_reference=fit_mark_references(spike_features, 1.0),
         environment=env,
         mean_rates=jnp.asarray(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -212,7 +214,7 @@ def _fit_predict_clusterless_gmm(
         mean_rates=enc["mean_rates"],
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
         mark_dimensions=enc["mark_dimensions"],
-        mark_reference=enc["mark_reference"],
+        mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
         is_local=is_local,
         disable_progress_bar=True,
     )

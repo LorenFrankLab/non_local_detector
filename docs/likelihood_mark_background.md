@@ -29,8 +29,9 @@ Each electrode `e` has one normalized reference density `q_e(m)`, `mark_referenc
 - A constant training feature takes the mark bandwidth (`waveform_std`, or
   `sqrt(gmm_reg_covar)`) as its scale.
 - An electrode without training spikes has no reference.
-- Detectors share one reference across all states. Posterior-weighted encoding updates
-  in `estimate_parameters` keep it fixed.
+- Detectors fit it once and pass it to every state; encoding models do not carry it.
+  Direct callers of the predict functions fit it with `fit_mark_references`.
+- Posterior-weighted encoding updates in `estimate_parameters` keep it fixed.
 
 The marked intensities, with `β = RATE_EPS_HZ = 5e-13 Hz`, are:
 

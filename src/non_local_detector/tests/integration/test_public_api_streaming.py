@@ -11,8 +11,10 @@ import pytest
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
+    mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 
 @pytest.fixture
@@ -61,6 +63,10 @@ def sample_data():
         "spike_times": spike_times,
         "spike_waveform_features": spike_waveform_features,
         "environment": environment,
+        # Every fit below uses the default mark bandwidth.
+        "mark_reference": fit_mark_references(
+            spike_waveform_features, mark_reference_scale()
+        ),
     }
 
 
@@ -106,7 +112,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             block_size=50,
             disable_progress_bar=True,
@@ -134,7 +140,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             block_size=50,
             disable_progress_bar=True,
@@ -186,7 +192,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             block_size=50,
             disable_progress_bar=True,
@@ -215,7 +221,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             block_size=50,
             disable_progress_bar=True,
@@ -269,7 +275,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             disable_progress_bar=True,
         )
@@ -295,7 +301,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             disable_progress_bar=True,
             enc_tile_size=30,  # Tile encoding
@@ -341,7 +347,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             disable_progress_bar=True,
             enc_tile_size=30,
@@ -370,7 +376,7 @@ class TestPublicAPIStreaming:
             ],
             position_std=encoding_model["position_std"],
             waveform_std=encoding_model["waveform_std"],
-            mark_reference=encoding_model["mark_reference"],
+            mark_reference=sample_data["mark_reference"],
             is_local=False,
             disable_progress_bar=True,
             enc_tile_size=30,

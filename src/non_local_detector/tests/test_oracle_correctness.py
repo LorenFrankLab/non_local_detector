@@ -13,8 +13,10 @@ import pytest
 
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
+    mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 # Test configuration constants
@@ -127,19 +129,23 @@ def kde_decoding_setup() -> dict[str, Any]:
     n_encode = int(0.7 * len(sim.position_time))
 
     # Fit encoding model on training data
+    encoding_features = [
+        swf[sim.spike_times[i] < sim.position_time[n_encode]]
+        for i, swf in enumerate(sim.spike_waveform_features)
+    ]
     encoding_model = fit_clusterless_kde_encoding_model(
         position_time=sim.position_time[:n_encode],
         position=sim.position[:n_encode],
         spike_times=[st[st < sim.position_time[n_encode]] for st in sim.spike_times],
-        spike_waveform_features=[
-            swf[sim.spike_times[i] < sim.position_time[n_encode]]
-            for i, swf in enumerate(sim.spike_waveform_features)
-        ],
+        spike_waveform_features=encoding_features,
         environment=sim.environment,
         position_std=POSITION_STD,
         waveform_std=WAVEFORM_STD,
         block_size=100,
         disable_progress_bar=True,
+    )
+    mark_reference = fit_mark_references(
+        encoding_features, mark_reference_scale(waveform_std=WAVEFORM_STD)
     )
 
     # Decode on test data
@@ -174,7 +180,7 @@ def kde_decoding_setup() -> dict[str, Any]:
         ],
         position_std=encoding_model["position_std"],
         waveform_std=encoding_model["waveform_std"],
-        mark_reference=encoding_model["mark_reference"],
+        mark_reference=mark_reference,
         is_local=False,
         block_size=100,
         disable_progress_bar=True,
@@ -262,19 +268,23 @@ def test_delta_t_scaling_normalized() -> None:
     n_encode = int(0.7 * len(sim.position_time))
 
     # Fit encoding model once
+    encoding_features = [
+        swf[sim.spike_times[i] < sim.position_time[n_encode]]
+        for i, swf in enumerate(sim.spike_waveform_features)
+    ]
     encoding_model = fit_clusterless_kde_encoding_model(
         position_time=sim.position_time[:n_encode],
         position=sim.position[:n_encode],
         spike_times=[st[st < sim.position_time[n_encode]] for st in sim.spike_times],
-        spike_waveform_features=[
-            swf[sim.spike_times[i] < sim.position_time[n_encode]]
-            for i, swf in enumerate(sim.spike_waveform_features)
-        ],
+        spike_waveform_features=encoding_features,
         environment=sim.environment,
         position_std=6.0,
         waveform_std=24.0,
         block_size=100,
         disable_progress_bar=True,
+    )
+    mark_reference = fit_mark_references(
+        encoding_features, mark_reference_scale(waveform_std=24.0)
     )
 
     test_time = sim.position_time[n_encode:]
@@ -300,6 +310,7 @@ def test_delta_t_scaling_normalized() -> None:
             for k in encoding_model
             if k not in ["environment", "block_size", "disable_progress_bar"]
         },
+        mark_reference=mark_reference,
         environment=sim.environment,
         is_local=False,
         block_size=100,
@@ -327,6 +338,7 @@ def test_delta_t_scaling_normalized() -> None:
             for k in encoding_model
             if k not in ["environment", "block_size", "disable_progress_bar"]
         },
+        mark_reference=mark_reference,
         environment=sim.environment,
         is_local=False,
         block_size=100,

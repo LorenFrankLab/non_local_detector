@@ -18,11 +18,30 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
+    mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 
-def _predict_nonlocal(env, encoding, t_pos, pos, dec_spike_times, dec_feats, t_edges):
+def _mark_reference(encoding, t_pos, spike_times, feats, weights=None):
+    """Mark references from the training spikes, as a detector fits them."""
+    t_pos = np.asarray(t_pos)
+    if weights is None:
+        weights = np.ones(t_pos.shape[0])
+    return fit_mark_references(
+        [np.asarray(f) for f in feats],
+        mark_reference_scale(waveform_std=encoding["waveform_std"]),
+        [
+            np.interp(np.asarray(t), t_pos, weights, left=0.0, right=0.0)
+            for t in spike_times
+        ],
+    )
+
+
+def _predict_nonlocal(
+    env, encoding, mark_reference, t_pos, pos, dec_spike_times, dec_feats, t_edges
+):
     return np.asarray(
         predict_clusterless_kde_log_likelihood(
             time_edges=t_edges,
@@ -37,7 +56,7 @@ def _predict_nonlocal(env, encoding, t_pos, pos, dec_spike_times, dec_feats, t_e
                 "encoding_spike_waveform_features"
             ],
             encoding_positions=encoding["encoding_positions"],
-            mark_reference=encoding["mark_reference"],
+            mark_reference=mark_reference,
             encoding_weights=encoding["encoding_weights"],
             environment=env,
             mean_rates=jnp.asarray(encoding["mean_rates"]),
@@ -121,10 +140,26 @@ def test_binary_weights_match_subset_fit_clusterless_kde(simple_1d_environment):
     dec_feats = [jnp.array([[0.1, 0.05], [0.9, -0.8]], dtype=float)]
 
     ll_weighted = _predict_nonlocal(
-        env, weighted, t_pos, pos, dec_spike_times, dec_feats, t_edges
+        env,
+        weighted,
+        _mark_reference(weighted, t_pos, [all_spike_times], [all_feats], weights),
+        t_pos,
+        pos,
+        dec_spike_times,
+        dec_feats,
+        t_edges,
     )
     ll_subset = _predict_nonlocal(
-        env, subset, t_pos[block], pos[block], dec_spike_times, dec_feats, t_edges
+        env,
+        subset,
+        _mark_reference(
+            subset, t_pos[block], [all_spike_times[in_block]], [all_feats[in_block]]
+        ),
+        t_pos[block],
+        pos[block],
+        dec_spike_times,
+        dec_feats,
+        t_edges,
     )
 
     assert np.allclose(ll_weighted, ll_subset, rtol=1e-5, atol=1e-6), (
@@ -230,13 +265,9 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    enc = _fit(
-        env,
-        t_pos,
-        pos,
-        [jnp.array([2.0, 5.0, 7.5])],
-        [jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)],
-    )
+    spikes = [jnp.array([2.0, 5.0, 7.5])]
+    feats = [jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)]
+    enc = _fit(env, t_pos, pos, spikes, feats)
     t_edges = jnp.linspace(0.0, 10.0, 6)
     # Positional call through is_local (16th positional arg), as pre-change callers did.
     ll = predict_clusterless_kde_log_likelihood(
@@ -256,7 +287,7 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
         jnp.asarray(enc["waveform_std"]),
         True,
         time_edges=t_edges,
-        mark_reference=enc["mark_reference"],
+        mark_reference=_mark_reference(enc, t_pos, spikes, feats),
     )
     assert np.asarray(ll).shape == (t_edges.shape[0] - 1, 1)  # local -> (n_bins, 1)
 

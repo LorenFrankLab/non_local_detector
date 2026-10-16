@@ -16,13 +16,18 @@ import pytest
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
+    mark_reference_scale,
     predict_clusterless_gmm_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.clusterless_kde import (
+    mark_reference_scale as kde_mark_reference_scale,
+)
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 
 @pytest.fixture
@@ -148,6 +153,8 @@ def test_gmm_nonlocal_likelihood_is_finite(convergence_test_data):
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         **gmm_enc,
+        # Training spikes all lie within the position time range.
+        mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
         is_local=False,
     )
 
@@ -196,6 +203,10 @@ def test_visualize_convergence(convergence_test_data):
         summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],
         position_std=kde_enc["position_std"],
         waveform_std=kde_enc["waveform_std"],
+        mark_reference=fit_mark_references(
+            spike_features,
+            kde_mark_reference_scale(waveform_std=kde_enc["waveform_std"]),
+        ),
         is_local=False,
         disable_progress_bar=True,
     )
@@ -230,6 +241,7 @@ def test_visualize_convergence(convergence_test_data):
             spike_times=spike_times,
             spike_waveform_features=spike_features,
             **gmm_enc,
+            mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
             is_local=False,
         )
 

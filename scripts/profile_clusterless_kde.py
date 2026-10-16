@@ -41,6 +41,8 @@ from non_local_detector.likelihoods.clusterless_kde import (
 from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood as predict_log,
 )
+from non_local_detector.likelihoods.clusterless_kde import mark_reference_scale
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 
 @dataclass
@@ -301,6 +303,11 @@ def profile_decoding(
     else:
         predict_func = predict_log
 
+    mark_reference = fit_mark_references(
+        data["encoding"]["spike_waveform_features"],
+        mark_reference_scale(waveform_std=encoding["waveform_std"]),
+    )
+
     def predict_wrapper():
         return predict_func(
             time_edges=time_edges_from_centers(data["decoding"]["time"]),
@@ -320,7 +327,7 @@ def profile_decoding(
             summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
             position_std=jnp.asarray(encoding["position_std"]),
             waveform_std=jnp.asarray(encoding["waveform_std"]),
-            mark_reference=encoding["mark_reference"],
+            mark_reference=mark_reference,
             is_local=False,
             block_size=data["params"]["block_size"],
             disable_progress_bar=True,

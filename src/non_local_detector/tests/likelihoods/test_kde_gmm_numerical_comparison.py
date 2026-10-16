@@ -22,10 +22,17 @@ from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
+from non_local_detector.likelihoods.clusterless_gmm import (
+    mark_reference_scale as gmm_mark_reference_scale,
+)
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.clusterless_kde import (
+    mark_reference_scale as kde_mark_reference_scale,
+)
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 # All tests in this module fit both KDE and GMM encoding models and call
 # their predict functions. They are integration-scale by nature; marking
@@ -141,6 +148,9 @@ def fit_both_models(
         KDE encoding model
     gmm_encoding : dict
         GMM encoding model
+    mark_references : dict
+        Per-electrode mark references for each model, keyed ``"kde"`` and
+        ``"gmm"``, fit from the same training marks and bandwidths.
     """
     # Convert to JAX arrays
     position_time = jnp.asarray(data["position_time"])
@@ -177,10 +187,23 @@ def fit_both_models(
         disable_progress_bar=True,
     )
 
-    return kde_encoding, gmm_encoding
+    mark_references = {
+        "kde": fit_mark_references(
+            encoding_spike_features,
+            kde_mark_reference_scale(waveform_std=kde_waveform_std),
+        ),
+        "gmm": fit_mark_references(
+            encoding_spike_features,
+            gmm_mark_reference_scale(gmm_reg_covar=gmm_reg_covar),
+        ),
+    }
+
+    return kde_encoding, gmm_encoding, mark_references
 
 
-def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
+def predict_both_models(
+    data, kde_encoding, gmm_encoding, mark_references, is_local=False
+):
     """Predict likelihoods with both models.
 
     Parameters
@@ -191,6 +214,8 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
         KDE encoding model
     gmm_encoding : dict
         GMM encoding model
+    mark_references : dict
+        Mark references keyed ``"kde"`` and ``"gmm"`` (see ``fit_both_models``)
     is_local : bool
         Whether to compute local or non-local likelihood
 
@@ -221,7 +246,7 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
             "encoding_spike_waveform_features"
         ],
         encoding_positions=kde_encoding["encoding_positions"],
-        mark_reference=kde_encoding["mark_reference"],
+        mark_reference=mark_references["kde"],
         environment=data["environment"],
         mean_rates=kde_encoding["mean_rates"],
         summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
@@ -240,6 +265,7 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         **gmm_encoding,
+        mark_reference=mark_references["gmm"],
         is_local=is_local,
     )
 
@@ -263,8 +289,8 @@ def fitted_models(comparison_data):
 @pytest.fixture(scope="module")
 def likelihoods_nonlocal(comparison_data, fitted_models):
     """Non-local log-likelihoods for both models, computed once."""
-    kde_enc, gmm_enc = fitted_models
-    return predict_both_models(comparison_data, kde_enc, gmm_enc)
+    kde_enc, gmm_enc, mark_references = fitted_models
+    return predict_both_models(comparison_data, kde_enc, gmm_enc, mark_references)
 
 
 def test_likelihood_magnitude_comparison(likelihoods_nonlocal):
@@ -404,7 +430,7 @@ def test_parameter_sensitivity_kde(
     bandwidths = [0.5, 1.0, BASELINE_KDE_POSITION_STD, 4.0]
     correlations = []
 
-    _, gmm_enc = fitted_models
+    _, gmm_enc, _ = fitted_models
     ll_kde_baseline, ll_gmm = likelihoods_nonlocal
 
     print("\n=== KDE Bandwidth Sensitivity ===")
@@ -412,8 +438,12 @@ def test_parameter_sensitivity_kde(
         if bw == BASELINE_KDE_POSITION_STD:
             ll_kde = ll_kde_baseline  # reuse the module-level fit
         else:
-            kde_enc, _ = fit_both_models(comparison_data, kde_position_std=bw)
-            ll_kde, _ = predict_both_models(comparison_data, kde_enc, gmm_enc)
+            kde_enc, _, mark_references = fit_both_models(
+                comparison_data, kde_position_std=bw
+            )
+            ll_kde, _ = predict_both_models(
+                comparison_data, kde_enc, gmm_enc, mark_references
+            )
 
         # Compute correlation
         r_mean = []
@@ -445,7 +475,7 @@ def test_overparameterized_gmm_overflow_locations(comparison_data):
     """
     # Nearly unregularized, so the over-fitted components are sharp enough
     # to overflow.
-    _, gmm_enc = fit_both_models(
+    _, gmm_enc, mark_references = fit_both_models(
         comparison_data, gmm_components=GMM_COMPONENTS_STRESS, gmm_reg_covar=1e-6
     )
     bins = gmm_enc["interior_place_bin_centers"]
@@ -487,6 +517,7 @@ def test_overparameterized_gmm_overflow_locations(comparison_data):
                 jnp.asarray(sf) for sf in data["decoding_spike_features"]
             ],
             **gmm_enc,
+            mark_reference=mark_references["gmm"],
             is_local=False,
         )
     )
@@ -506,8 +537,10 @@ def test_visualize_comparison(comparison_data):
     This test is skipped by default but can be run manually to generate
     comparison plots.
     """
-    kde_enc, gmm_enc = fit_both_models(comparison_data)
-    ll_kde, ll_gmm = predict_both_models(comparison_data, kde_enc, gmm_enc)
+    kde_enc, gmm_enc, mark_references = fit_both_models(comparison_data)
+    ll_kde, ll_gmm = predict_both_models(
+        comparison_data, kde_enc, gmm_enc, mark_references
+    )
 
     # Convert to numpy
     ll_kde_np = np.asarray(ll_kde)

@@ -8,7 +8,11 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import select_spikes_in_rows
+from non_local_detector.likelihoods.common import (
+    DEFAULT_WAVEFORM_STD,
+    select_spikes_in_rows,
+)
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 
 def test_select_spikes_in_rows_right_edge_last_bin():
@@ -40,6 +44,7 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         block_size=8,
         disable_progress_bar=True,
     )
+    mark_reference = fit_mark_references([enc_feats], fallback_scale=1.0)
 
     for key in (
         "occupancy",
@@ -73,7 +78,7 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=jnp.asarray(encoding["waveform_std"]),
-        mark_reference=encoding["mark_reference"],
+        mark_reference=mark_reference,
         is_local=False,
         block_size=8,
         disable_progress_bar=True,
@@ -99,7 +104,7 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=jnp.asarray(encoding["waveform_std"]),
-        mark_reference=encoding["mark_reference"],
+        mark_reference=mark_reference,
         is_local=True,
         block_size=8,
         disable_progress_bar=True,
@@ -175,6 +180,9 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         block_size=8,
         disable_progress_bar=True,
     )
+    mark_reference = fit_mark_references(
+        [enc_feats_0, enc_feats_1, enc_feats_2], fallback_scale=24.0
+    )
 
     # Verify encoding succeeded
     assert len(encoding["encoding_spike_waveform_features"]) == 3
@@ -212,7 +220,7 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=encoding["waveform_std"],  # Still scalar from fit
-        mark_reference=encoding["mark_reference"],
+        mark_reference=mark_reference,
         is_local=False,
         block_size=8,
         disable_progress_bar=True,
@@ -239,7 +247,7 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=encoding["waveform_std"],
-        mark_reference=encoding["mark_reference"],
+        mark_reference=mark_reference,
         is_local=True,
         block_size=8,
         disable_progress_bar=True,
@@ -324,5 +332,11 @@ def test_invalid_tile_sizes_raise_at_fit_and_predict(name, value):
     model[name] = value
     with pytest.raises(ValidationError, match=name):
         predict_clusterless_kde_log_likelihood(
-            time, position, spikes, marks, time_edges=np.linspace(0, 1, 6), **model
+            time,
+            position,
+            spikes,
+            marks,
+            time_edges=np.linspace(0, 1, 6),
+            mark_reference=fit_mark_references(marks, DEFAULT_WAVEFORM_STD),
+            **model,
         )

@@ -58,11 +58,12 @@ from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
     predict_no_spike_log_likelihood,
 )
-from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
 from non_local_detector.likelihoods.common import (
+    DEFAULT_WAVEFORM_STD,
     _SpikeTimeOrder,
     decode_bin_centers,
     interpolate_weights_at_spike_times,
@@ -71,7 +72,7 @@ from non_local_detector.likelihoods.common import (
     validate_spike_feature_population,
 )
 from non_local_detector.likelihoods.mark_reference import (
-    fit_mark_reference,
+    fit_mark_references,
     mark_reference_log_likelihood,
 )
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
@@ -105,7 +106,7 @@ logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
 
 _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
-    "waveform_std": 24.0,
+    "waveform_std": DEFAULT_WAVEFORM_STD,
     "position_std": 6.0,
     "block_size": 10_000,
 }
@@ -2655,26 +2656,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "Call fit(...) or estimate_parameters(..., time_edges=...) "
                     "with the original recording. No-Spike uses its constructor rate in Hz.",
                 )
-        if isinstance(self, ClusterlessDetector):
-            if not hasattr(self, "mark_reference_") or any(
-                "mark_reference" not in self.encoding_model_[key]
-                for key in required_keys
-            ):
-                raise ValidationError(
-                    "Saved clusterless model has no mark reference; refit before decoding.",
-                    hint="Clusterless states score waveform marks against a reference "
-                    "density fitted from training spikes. Call fit(...) with the "
-                    "original recording.",
-                )
-            if any(
-                self.encoding_model_[key]["mark_reference"] is not self.mark_reference_
-                for key in required_keys
-            ):
-                raise ValidationError(
-                    "Encoding models do not share the detector's mark reference; refit before decoding.",
-                    hint="No-Spike and every spike state must score marks against the "
-                    "same reference density (mark_reference_).",
-                )
+        if isinstance(self, ClusterlessDetector) and not hasattr(
+            self, "mark_reference_"
+        ):
+            raise ValidationError(
+                "Saved clusterless model has no mark reference; refit before decoding.",
+                hint="Clusterless states score waveform marks against a reference "
+                "density fitted from training spikes. Call fit(...) with the "
+                "original recording.",
+            )
 
     def _validate_decode_population(self, spike_times, spike_waveform_features=None):
         """Validate active fitted populations before missing-data shortcuts."""
@@ -3228,6 +3218,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.__dict__.update(detector_state)
             raise
 
+    def _refit_encoding_model(self, weights: np.ndarray) -> None:
+        """EM M-step: refit the encoding model with posterior ``weights``.
+
+        Parameters
+        ----------
+        weights : np.ndarray, shape (n_time_position,)
+        """
+        self.fit_encoding_model(**self._encoding_model_data, weights=weights)
+
     def _invalidate_stored_log_likelihood(self) -> None:
         """Drop ``log_likelihood_``, which no longer describes this model.
 
@@ -3728,17 +3727,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         # expected complete-data log-likelihood and can break the
                         # EM monotonicity guarantee. The monotonicity-violation /
                         # final-E-step warnings now surface this when it occurs.
-                        self.fit_encoding_model(
-                            **self._encoding_model_data,
-                            weights=local_state_weights,
-                            # Posterior weights update the encoding process,
-                            # not the training-fitted mark reference.
-                            **(
-                                {"_refit_mark_reference": False}
-                                if isinstance(self, ClusterlessDetector)
-                                else {}
-                            ),
-                        )
+                        self._refit_encoding_model(local_state_weights)
 
                         # The encoding model changed, so the likelihood
                         # computed from the previous one is stale.
@@ -4746,6 +4735,20 @@ class ClusterlessDetector(_DetectorBase):
         # ``_resolve_clusterless_algorithm_params`` at fit time.
         self.clusterless_algorithm_params = clusterless_algorithm_params
 
+    def _refit_encoding_model(self, weights: np.ndarray) -> None:
+        """EM M-step: refit the encoding model with posterior ``weights``.
+
+        Posterior weights update the encoding process, not the
+        training-fitted ``mark_reference_``.
+
+        Parameters
+        ----------
+        weights : np.ndarray, shape (n_time_position,)
+        """
+        self.fit_encoding_model(
+            **self._encoding_model_data, weights=weights, _refit_mark_reference=False
+        )
+
     def _resolve_clusterless_algorithm_params(self) -> dict:
         """Return a fresh copy of the clusterless algorithm params.
 
@@ -4805,26 +4808,18 @@ class ClusterlessDetector(_DetectorBase):
 
         # A coordinate with zero training variance falls back to the mark
         # bandwidth, which carries the waveform units.
-        if self.clusterless_algorithm == "clusterless_gmm":
-            fallback_scale = np.sqrt(
-                algorithm_params.get("gmm_reg_covar", DEFAULT_GMM_REG_COVAR)
-            )
-        else:
-            fallback_scale = algorithm_params.get(
-                "waveform_std", _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS["waveform_std"]
-            )
-
-        mark_reference = []
-        for electrode, (times, features) in enumerate(
-            zip(spike_times, spike_waveform_features, strict=True)
-        ):
-            spike_weights = interpolate_weights_at_spike_times(
+        fallback_scale = _CLUSTERLESS_MARK_REFERENCE_SCALES[self.clusterless_algorithm](
+            **algorithm_params
+        )
+        spike_weights = [
+            interpolate_weights_at_spike_times(
                 times, position_time, training_weights, encoding_support=support
             )
-            mark_reference.append(
-                fit_mark_reference(features, spike_weights, fallback_scale, electrode)
-            )
-        return mark_reference
+            for times in spike_times
+        ]
+        return fit_mark_references(
+            spike_waveform_features, fallback_scale, spike_weights
+        )
 
     def fit_encoding_model(
         self,
@@ -4969,8 +4964,8 @@ class ClusterlessDetector(_DetectorBase):
                 **kwargs,
             )
 
-        if _refit_mark_reference or not hasattr(self, "mark_reference_"):
-            mark_reference = self._fit_mark_reference(
+        mark_reference = (
+            self._fit_mark_reference(
                 position_time,
                 spike_times,
                 spike_waveform_features,
@@ -4980,12 +4975,9 @@ class ClusterlessDetector(_DetectorBase):
                 support,
                 kwargs,
             )
-        else:
-            mark_reference = self.mark_reference_
-        # Every state shares one reference measure, so the background and the
-        # No-Spike mark density cancel consistently between states.
-        for model in encoding_model.values():
-            model["mark_reference"] = mark_reference
+            if _refit_mark_reference
+            else self.mark_reference_
+        )
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
@@ -5291,6 +5283,9 @@ class ClusterlessDetector(_DetectorBase):
                     spike_waveform_features,
                     time_edges=time_edges,
                     **self.encoding_model_[likelihood_name[:2]],
+                    # One reference for every state and No-Spike, so their
+                    # mark densities cancel consistently between states.
+                    mark_reference=self.mark_reference_,
                     is_local=effective_is_local,
                     row_slice=row_slice,
                     _spike_time_order=_spike_time_order,

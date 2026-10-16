@@ -103,6 +103,7 @@ def test_predict_rejects_electrode_count_mismatch(fitted_decoder, sim):
                 spike_times,
                 features,
                 **encoding_model,
+                mark_reference=fitted_decoder.mark_reference_,
                 is_local=False,
                 time_edges=jnp.asarray(time_edges),
             )

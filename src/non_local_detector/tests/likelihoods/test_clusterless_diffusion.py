@@ -55,6 +55,7 @@ from non_local_detector.likelihoods.diffusion import (
     heat_kernel_apply,
     n_connected_components,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
@@ -73,6 +74,23 @@ def _cpu_device():
     """
     with jax.default_device(jax.devices("cpu")[0]):
         yield
+
+
+def _mark_reference(position_time, enc_t, enc_f, waveform_std, weights=None):
+    """Mark references from the training spikes, as a detector fits them.
+
+    Spikes outside the position time range carry zero weight, as in the fit.
+    """
+    position_time = np.asarray(position_time)
+    if weights is None:
+        weights = np.ones(position_time.shape[0])
+    spike_weights = [
+        np.interp(np.asarray(t), position_time, weights, left=0.0, right=0.0)
+        for t in enc_t
+    ]
+    return fit_mark_references(
+        [np.asarray(f) for f in enc_f], waveform_std, spike_weights
+    )
 
 
 def _decode_bin(spike_times, time_edges):
@@ -172,9 +190,17 @@ def _fit(s, **overrides):
     )
 
 
-def _predict(s, enc, is_local=False, **overrides):
+def _predict(s, enc, is_local=False, mark_reference=None, **overrides):
     encoding = dict(enc)
     encoding.update(overrides)
+    if mark_reference is None:
+        mark_reference = _mark_reference(
+            s["position_time"],
+            s["enc_t"],
+            s["enc_f"],
+            encoding["waveform_std"],
+            s["weights"],
+        )
     return predict_clusterless_diffusion_log_likelihood(
         s["position_time"],
         s["position"],
@@ -182,6 +208,7 @@ def _predict(s, enc, is_local=False, **overrides):
         [jnp.asarray(f) for f in s["dec_f"]],
         time_edges=jnp.asarray(s["time_edges"]),
         is_local=is_local,
+        mark_reference=mark_reference,
         **encoding,
     )
 
@@ -363,6 +390,9 @@ def test_absolute_log_likelihood_small_fixture():
             [jnp.asarray(dec_marks)],
             time_edges=jnp.asarray(time_edges),
             is_local=False,
+            mark_reference=_mark_reference(
+                position_time, [enc_times], [enc_marks], WAVEFORM_STD, weights
+            ),
             **enc,
         )
     )
@@ -525,7 +555,7 @@ def test_binary_weights_match_hard_subset():
     dec_spike_times = [jnp.asarray(np.array([4.2, 5.6]))]
     dec_feats = [jnp.asarray(np.array([[0.1, 0.05], [0.9, -0.8]], dtype=np.float32))]
 
-    def predict(enc, pt, pos):
+    def predict(enc, pt, pos, mark_reference):
         return np.asarray(
             predict_clusterless_diffusion_log_likelihood(
                 pt,
@@ -534,12 +564,30 @@ def test_binary_weights_match_hard_subset():
                 dec_feats,
                 time_edges=np.asarray(time),
                 is_local=False,
+                mark_reference=mark_reference,
                 **enc,
             )
         )
 
-    ll_weighted = predict(weighted, position_time, position)
-    ll_subset = predict(subset, position_time[block], position[block])
+    ll_weighted = predict(
+        weighted,
+        position_time,
+        position,
+        _mark_reference(
+            position_time, [all_spike_times], [all_feats], WAVEFORM_STD, weights
+        ),
+    )
+    ll_subset = predict(
+        subset,
+        position_time[block],
+        position[block],
+        _mark_reference(
+            position_time[block],
+            [all_spike_times[in_block]],
+            [all_feats[in_block]],
+            WAVEFORM_STD,
+        ),
+    )
 
     assert np.allclose(ll_weighted, ll_subset, rtol=1e-5, atol=1e-6), (
         f"binary-weighted fit != subset fit; max|diff|="
@@ -593,6 +641,9 @@ def test_nonlocal_finite_and_zero_rate():
             [jnp.asarray(f) for f in dec_feats],
             time_edges=jnp.asarray(time_edges),
             is_local=False,
+            mark_reference=_mark_reference(
+                position_time, enc_times, enc_feats, WAVEFORM_STD, weights
+            ),
             **enc,
         )
     )
@@ -690,6 +741,9 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
             [jnp.asarray(f) for f in dec_feats],
             time_edges=jnp.asarray(time_edges),
             is_local=False,
+            mark_reference=_mark_reference(
+                position_time, enc_times, enc_feats, WAVEFORM_STD, weights
+            ),
             **enc,
         )
     )
@@ -776,6 +830,7 @@ def test_local_equals_nonlocal_per_spike():
     # Single decode spike, single electrode, inside the stationary window [2, 5].
     dec_times = [np.array([3.3])]
     dec_feats = [np.array([[0.3, -0.2]], dtype=np.float32)]
+    mark_reference = _mark_reference(position_time, enc_times, enc_feats, WAVEFORM_STD)
 
     ll_nonlocal = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
@@ -785,6 +840,7 @@ def test_local_equals_nonlocal_per_spike():
             [jnp.asarray(f) for f in dec_feats],
             time_edges=jnp.asarray(time_edges),
             is_local=False,
+            mark_reference=mark_reference,
             **enc,
         )
     )
@@ -796,6 +852,7 @@ def test_local_equals_nonlocal_per_spike():
             [jnp.asarray(f) for f in dec_feats],
             time_edges=jnp.asarray(time_edges),
             is_local=True,
+            mark_reference=mark_reference,
             **enc,
         )
     )
@@ -879,6 +936,9 @@ def test_local_finite_and_zero_rate():
             [jnp.asarray(f) for f in dec_feats],
             time_edges=jnp.asarray(time_edges),
             is_local=True,
+            mark_reference=_mark_reference(
+                position_time, enc_times, enc_feats, WAVEFORM_STD, weights
+            ),
             **enc,
         )
     )
@@ -1050,7 +1110,14 @@ def test_validation_predict():
 
     # Non-local decoding accepts position/position_time = None (the documented
     # positionless API, matching clusterless_kde): it must not raise or require them.
-    ll_positionless = _predict(dict(s, position=None, position_time=None), enc)
+    # The mark reference is fit from the training data, which keeps its times.
+    ll_positionless = _predict(
+        dict(s, position=None, position_time=None),
+        enc,
+        mark_reference=_mark_reference(
+            s["position_time"], s["enc_t"], s["enc_f"], WAVEFORM_STD
+        ),
+    )
     assert np.all(np.isfinite(np.asarray(ll_positionless)))
 
     # non-finite IN-window decode spike_waveform_features on a valid (non-zero-rate)
@@ -1170,6 +1237,9 @@ def test_validation_predict_zero_rate_precedence(is_local):
             [jnp.asarray(f) for f in dec_feats],
             time_edges=np.asarray(time),
             is_local=is_local,
+            mark_reference=_mark_reference(
+                position_time, enc_times, enc_feats, WAVEFORM_STD, weights
+            ),
             **enc,
         )
 
@@ -1221,7 +1291,9 @@ def _fit_kde(
     )
 
 
-def _predict_diffusion_nonlocal(time, position_time, position, dec_t, dec_f, enc):
+def _predict_diffusion_nonlocal(
+    time, position_time, position, dec_t, dec_f, enc, mark_reference
+):
     return np.asarray(
         predict_clusterless_diffusion_log_likelihood(
             jnp.asarray(position_time),
@@ -1230,12 +1302,15 @@ def _predict_diffusion_nonlocal(time, position_time, position, dec_t, dec_f, enc
             [jnp.asarray(f) for f in dec_f],
             time_edges=np.asarray(time),
             is_local=False,
+            mark_reference=mark_reference,
             **enc,
         )
     )
 
 
-def _predict_kde_nonlocal(time, position_time, position, dec_t, dec_f, enc):
+def _predict_kde_nonlocal(
+    time, position_time, position, dec_t, dec_f, enc, mark_reference
+):
     return np.asarray(
         clusterless_kde.predict_clusterless_kde_log_likelihood(
             jnp.asarray(position_time),
@@ -1244,6 +1319,7 @@ def _predict_kde_nonlocal(time, position_time, position, dec_t, dec_f, enc):
             [jnp.asarray(f) for f in dec_f],
             time_edges=np.asarray(time),
             is_local=False,
+            mark_reference=mark_reference,
             **enc,
         )
     )
@@ -1308,8 +1384,9 @@ def test_agreement_with_kde_simple_geometry():
     time, pt, et, ef, dt_, df = _clusterless_sim(pos_1d, seed=0)
     enc_d = _fit_diffusion(pt, pos_1d, et, ef, env_1d, position_std=3.0)
     enc_k = _fit_kde(pt, pos_1d, et, ef, env_1d, position_std=3.0)
-    ll_d = _predict_diffusion_nonlocal(time, pt, pos_1d, dt_, df, enc_d)
-    ll_k = _predict_kde_nonlocal(time, pt, pos_1d, dt_, df, enc_k)
+    ref = _mark_reference(pt, et, ef, GEOM_WAVEFORM_STD)
+    ll_d = _predict_diffusion_nonlocal(time, pt, pos_1d, dt_, df, enc_d, ref)
+    ll_k = _predict_kde_nonlocal(time, pt, pos_1d, dt_, df, enc_k, ref)
     assert ll_d.shape == ll_k.shape
     median_1d, n_1d = _median_per_timebin_spearman(ll_d, ll_k)
     print(
@@ -1336,8 +1413,9 @@ def test_agreement_with_kde_simple_geometry():
     time, pt, et, ef, dt_, df = _clusterless_sim(pos_2d, seed=2)
     enc_d = _fit_diffusion(pt, pos_2d, et, ef, env_2d, position_std=4.0)
     enc_k = _fit_kde(pt, pos_2d, et, ef, env_2d, position_std=4.0)
-    ll_d = _predict_diffusion_nonlocal(time, pt, pos_2d, dt_, df, enc_d)
-    ll_k = _predict_kde_nonlocal(time, pt, pos_2d, dt_, df, enc_k)
+    ref = _mark_reference(pt, et, ef, GEOM_WAVEFORM_STD)
+    ll_d = _predict_diffusion_nonlocal(time, pt, pos_2d, dt_, df, enc_d, ref)
+    ll_k = _predict_kde_nonlocal(time, pt, pos_2d, dt_, df, enc_k, ref)
     assert ll_d.shape == ll_k.shape
     median_2d, n_2d = _median_per_timebin_spearman(ll_d, ll_k)
     print(
@@ -1416,10 +1494,13 @@ def test_geometry_no_barrier_leak():
     decode_time_edges = np.array([decode_center - 0.001, decode_center + 0.001])
     dec_t = [np.array([time[position.shape[0] // 2]])]
     dec_f = [np.array([[0.0, 0.0]], dtype=np.float32)]
+    ref = _mark_reference(time, enc_t, enc_f, GEOM_WAVEFORM_STD)
     ll_d = _predict_diffusion_nonlocal(
-        decode_time_edges, time, position, dec_t, dec_f, enc_d
+        decode_time_edges, time, position, dec_t, dec_f, enc_d, ref
     )
-    ll_k = _predict_kde_nonlocal(decode_time_edges, time, position, dec_t, dec_f, enc_k)
+    ll_k = _predict_kde_nonlocal(
+        decode_time_edges, time, position, dec_t, dec_f, enc_k, ref
+    )
 
     interior = env.is_track_interior_.ravel()
     interior_centers = env.place_bin_centers_[interior]
@@ -1467,7 +1548,8 @@ def _decode_diffusion_posterior(env, position, position_std, seed=5):
         position, n_time=30, n_elec=3, n_enc=60, n_dec=25, seed=seed
     )
     enc = _fit_diffusion(pt, position, et, ef, env, position_std=position_std)
-    ll = _predict_diffusion_nonlocal(time, pt, position, dt_, df, enc)
+    ref = _mark_reference(pt, et, ef, GEOM_WAVEFORM_STD)
+    ll = _predict_diffusion_nonlocal(time, pt, position, dt_, df, enc, ref)
     interior = env.is_track_interior_.ravel()
     centers = env.place_bin_centers_[interior]
     post = np.exp(ll - ll.max(axis=1, keepdims=True))
