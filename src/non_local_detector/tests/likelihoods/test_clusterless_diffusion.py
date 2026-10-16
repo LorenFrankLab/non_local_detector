@@ -309,16 +309,18 @@ def test_mark_marginal_recovery():
 
 
 @pytest.mark.unit
-def test_diffused_field_keeps_each_spike_scale_in_any_units():
-    """Microvolts against millivolts, 7 bandwidths from every training mark.
+@pytest.mark.parametrize(("n_features", "offset"), [(4, 7.2), (16, 3.0)])
+def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
+    """Microvolts against millivolts, several bandwidths from every training mark.
 
-    There a 4-feature mark kernel exponentiated with its normalizer underflows
-    float32 in one unit system and not the other. Scaling each spike's kernels
-    by their own largest value keeps every spike's field, and the fields differ
-    by exactly the log Jacobian.
+    There a mark kernel exponentiated with its normalizer underflows float32 in
+    one unit system and not the other (the normalizer alone differs by
+    ``n_features * log(1e3)`` nats). Scaling each spike's kernels by their own
+    largest value keeps every spike's field, and the fields differ by exactly
+    the log Jacobian.
     """
-    s = _sim(seed=4, n_features=4)
-    far = s["dec_f"][0] + 7.2 * WAVEFORM_STD
+    s = _sim(seed=4, n_features=n_features)
+    far = s["dec_f"][0] + offset * WAVEFORM_STD
     fields = []
     for factor in (1.0, 1e-3):
         enc = _fit(
@@ -330,7 +332,7 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units():
             jnp.asarray(enc["encoding_bin_indices"][0]),
             jnp.asarray(enc["encoding_marks"][0]),
             jnp.asarray(enc["encoding_weights"][0]),
-            jnp.full(4, WAVEFORM_STD * factor),
+            jnp.full(n_features, WAVEFORM_STD * factor),
             _spatial_kernel(s["env"], enc["resolved_rank"], enc["position_std"]),
         )
         with np.errstate(divide="ignore"):
@@ -341,7 +343,10 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units():
     assert np.mean(finite == np.isfinite(millivolts)) > 0.999
     both = finite & np.isfinite(millivolts)
     np.testing.assert_allclose(
-        millivolts[both] + 4 * np.log(1e-3), original[both], rtol=1e-5, atol=1e-3
+        millivolts[both] + n_features * np.log(1e-3),
+        original[both],
+        rtol=1e-5,
+        atol=1e-3,
     )
 
 

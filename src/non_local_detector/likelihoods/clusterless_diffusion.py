@@ -27,12 +27,13 @@ This is purely additive: the default clusterless likelihood remains
 For electrode ``e`` the joint mark density on interior bins is
 
     D_e[:, j]   = sum_i w_i * K_mark(m_j, m_i) * onehot(bin(x_i))
-    p_e(x, m_j) = (H_t D_e)[x, j] / ( (sum_i w_i) * dV(x) )
+    p_e(x, m_j) = (H D_e)[x, j] / ( (sum_i w_i) * dV(x) )
 
 where ``w_i`` are the per-encoding-spike EM weights, ``K_mark`` is the Gaussian
 mark kernel with its normalizer (each spike's kernels are diffused relative to
-the spike's largest one and the offset is restored in log space), ``H_t`` is the
-mass-conserving heat kernel (:func:`heat_kernel_apply`), ``sum_i w_i`` the weighted
+the spike's largest one and the offset is restored in log space), ``H`` is the
+fixed, column-normalized heat kernel (:func:`_spatial_kernel`) that also diffuses
+occupancy and the ground process, ``sum_i w_i`` the weighted
 encoding count, and ``dV(x) = bin_sizes`` the per-bin measure. Dividing by
 ``(sum_i w_i) * dV(x)`` -- rather than normalizing each diffused column to unit
 integral -- makes ``p_e`` a proper joint density whose spatial integral recovers
