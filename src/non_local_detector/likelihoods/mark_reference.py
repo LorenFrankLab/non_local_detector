@@ -27,6 +27,7 @@ from non_local_detector.likelihoods.common import (
     select_spike_rows,
     select_spikes_in_rows,
     sum_spikes_into_rows,
+    validate_finite,
     validate_population_lengths,
 )
 
@@ -106,10 +107,7 @@ def fit_mark_reference(
     if not np.any(keep):
         return None
     marks, weights = marks[keep], weights[keep]
-    if not np.all(np.isfinite(marks)):
-        raise ValidationError(
-            f"Training waveform features of electrode {electrode} must be finite"
-        )
+    validate_finite(marks, f"Training waveform features of electrode {electrode}")
     weights = weights / weights.sum()
     location = weights @ marks
     variance = weights @ (marks - location) ** 2
