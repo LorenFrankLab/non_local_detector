@@ -9,10 +9,14 @@ normalized reference density ``q(m)``, so each of its spikes scores
 waveform units, with mark bandwidths transformed alike, every state then gains
 the same log Jacobian per spike and their odds are unchanged.
 
-``q`` is a diagonal Gaussian whose location and scale are the weighted moments
-of the electrode's permitted training marks. It is a fixed reference measure,
-not a fitted model of firing, and stays frozen during posterior-weighted
-encoding updates. The encoding fits do not fit it: a detector fits it once
+``q`` is a product of per-feature Student-t densities centred on the weighted
+mean of the electrode's permitted training marks, with scale
+``sqrt(training variance + kernel_scale**2)``: the spread of the marks after
+the model's mark kernel. Its polynomial tails exceed any Gaussian kernel or
+mixture far from the training marks, so a spike no state explains is scored by
+the background ``RATE_EPS_HZ * q(mark)`` and favours No-Spike. It is a fixed
+reference measure, not a fitted model of firing, and stays frozen during
+posterior-weighted encoding updates. The encoding fits do not fit it: a detector fits it once
 (``mark_reference_``) and passes it to every state, and direct callers fit it
 with ``fit_mark_references``.
 """
@@ -21,6 +25,7 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 import numpy as np
+from scipy.special import gammaln
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -33,21 +38,26 @@ from non_local_detector.likelihoods.common import (
     validate_population_lengths,
 )
 
+# Degrees of freedom of each feature's Student-t: tails fall as |z|**-4.
+REFERENCE_DEGREES_OF_FREEDOM = 3.0
+
 
 @dataclass(frozen=True, eq=False)
 class MarkReference:
-    """Normalized diagonal Gaussian over one electrode's waveform features.
+    """Normalized product of Student-t densities over one electrode's features.
 
     Attributes
     ----------
     location : np.ndarray, shape (n_features,)
-        Mean in waveform units.
+        Centre in waveform units.
     scale : np.ndarray, shape (n_features,)
-        Positive standard deviation in waveform units.
+        Positive Student-t scale in waveform units.
+    degrees_of_freedom : float
     """
 
     location: np.ndarray
     scale: np.ndarray
+    degrees_of_freedom: float = REFERENCE_DEGREES_OF_FREEDOM
 
     def log_density(self, marks: np.ndarray) -> np.ndarray:
         """Log reference density at each mark.
@@ -69,17 +79,21 @@ class MarkReference:
         # Standardize on the host in float64 so large waveform offsets do not
         # lose digits to float32 subtraction.
         z = (marks - self.location) / self.scale
+        nu = self.degrees_of_freedom
+        log_normalizer = (
+            gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(nu * np.pi)
+        )
         return (
-            -0.5 * np.sum(z * z, axis=1)
+            z.shape[1] * log_normalizer
             - np.sum(np.log(self.scale))
-            - 0.5 * z.shape[1] * np.log(2.0 * np.pi)
+            - 0.5 * (nu + 1.0) * np.sum(np.log1p(z * z / nu), axis=1)
         )
 
 
 def fit_mark_reference(
     marks: np.ndarray,
     weights: np.ndarray,
-    fallback_scale: float | np.ndarray,
+    kernel_scale: float | np.ndarray,
     electrode: int | None = None,
 ) -> MarkReference | None:
     """Fit one electrode's reference from its weighted training marks.
@@ -91,9 +105,10 @@ def fit_mark_reference(
     weights : np.ndarray, shape (n_spikes,)
         Non-negative training weight of each spike. Spikes with zero weight
         (held out, masked or outside encoding support) are ignored.
-    fallback_scale : float or np.ndarray, shape (n_features,)
-        Scale, in waveform units, for a coordinate with zero empirical
-        variance, such as the configured mark-kernel bandwidth.
+    kernel_scale : float or np.ndarray, shape (n_features,)
+        Width of the model's mark kernel in waveform units (its bandwidth),
+        added in quadrature to the training spread. It also sets the scale of
+        a feature without training variance.
     electrode : int, optional
         Electrode index, used in error messages.
 
@@ -113,24 +128,20 @@ def fit_mark_reference(
     weights = weights / weights.sum()
     location = weights @ marks
     variance = weights @ (marks - location) ** 2
-    fallback = np.broadcast_to(
-        np.asarray(fallback_scale, dtype=np.float64), location.shape
-    )
-    # Decide constancy exactly: the weighted mean of a constant that is not
-    # representable can differ from it by an ulp, leaving a roundoff variance.
-    is_constant = np.ptp(marks, axis=0) == 0
-    scale = np.where(is_constant, fallback, np.sqrt(variance))
+    kernel = np.broadcast_to(np.asarray(kernel_scale, dtype=np.float64), location.shape)
+    # The marks' spread after the model's mark kernel.
+    scale = np.sqrt(variance + kernel**2)
     if not np.all(np.isfinite(scale) & (scale > 0)):
         raise ValidationError(
             "Mark reference scales must be finite and positive",
-            hint="A constant training waveform feature uses the mark bandwidth; check waveform_std or gmm_reg_covar.",
+            hint="The scale adds the mark bandwidth to the training spread; check waveform_std or gmm_reg_covar.",
         )
     return MarkReference(location, scale)
 
 
 def fit_mark_references(
     spike_waveform_features: list[np.ndarray],
-    fallback_scale: float | np.ndarray,
+    kernel_scale: float | np.ndarray,
     spike_weights: list[np.ndarray] | None = None,
 ) -> list[MarkReference | None]:
     """Fit every electrode's reference from its training spikes.
@@ -143,9 +154,9 @@ def fit_mark_references(
     ----------
     spike_waveform_features : list of np.ndarray, each shape (n_spikes, n_features)
         Training waveform features of each electrode.
-    fallback_scale : float or np.ndarray, shape (n_features,)
-        Scale of a feature without training variance: the fit's
-        ``mark_reference_scale`` (its mark bandwidth).
+    kernel_scale : float or np.ndarray, shape (n_features,)
+        The fit's ``mark_reference_scale``: its mark-kernel width, added in
+        quadrature to each feature's training spread.
     spike_weights : list of np.ndarray, each shape (n_spikes,), optional
         Training weight of each spike; spikes with zero weight are ignored.
         Uniform by default.
@@ -165,7 +176,7 @@ def fit_mark_references(
         spike_weights=spike_weights,
     )
     return [
-        fit_mark_reference(features, weights, fallback_scale, electrode)
+        fit_mark_reference(features, weights, kernel_scale, electrode)
         for electrode, (features, weights) in enumerate(
             zip(spike_waveform_features, spike_weights, strict=True)
         )

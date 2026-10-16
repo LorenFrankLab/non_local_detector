@@ -138,7 +138,7 @@ def test_public_local_kde_paths_share_prediction_geometry(
         options["waveform_std"] = 1.0
     model = fit(*args, **options)
     if clusterless:
-        model["mark_reference"] = fit_mark_references(args[3], fallback_scale=1.0)
+        model["mark_reference"] = fit_mark_references(args[3], kernel_scale=1.0)
     grid = _DecodeTimeGrid(np.arange(5.0))
     order = common._SpikeTimeOrder()
     interpolations = []

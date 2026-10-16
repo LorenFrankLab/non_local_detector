@@ -4806,9 +4806,9 @@ class ClusterlessDetector(_DetectorBase):
         if weights is not None:
             training_weights = training_weights * np.asarray(weights)
 
-        # A coordinate with zero training variance falls back to the mark
-        # bandwidth, which carries the waveform units.
-        fallback_scale = _CLUSTERLESS_MARK_REFERENCE_SCALES[self.clusterless_algorithm](
+        # The reference adds the mark bandwidth, in waveform units, to each
+        # feature's training spread.
+        kernel_scale = _CLUSTERLESS_MARK_REFERENCE_SCALES[self.clusterless_algorithm](
             **algorithm_params
         )
         spike_weights = [
@@ -4817,9 +4817,7 @@ class ClusterlessDetector(_DetectorBase):
             )
             for times in spike_times
         ]
-        return fit_mark_references(
-            spike_waveform_features, fallback_scale, spike_weights
-        )
+        return fit_mark_references(spike_waveform_features, kernel_scale, spike_weights)
 
     def fit_encoding_model(
         self,
