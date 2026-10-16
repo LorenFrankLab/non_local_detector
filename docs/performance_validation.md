@@ -569,10 +569,11 @@ Records: [scaling runs](performance_artifacts/scaling/a100-scaling-runs.json),
 
 ### Compiled GMM and log-space KDE likelihoods
 
-`clusterless_gmm` and `clusterless_kde_log` now evaluate each electrode's
-terms in compiled calls per chunk, as the default clusterless KDE does, with
-decoding spikes padded to a few sizes. Log-space KDE also pads encoding
-samples with zero weights. Before, the GMM score recompiled for each
+`clusterless_gmm` and the log-space KDE (then registered as
+`clusterless_kde_log`; now the only `clusterless_kde`) now evaluate each
+electrode's terms in compiled calls per chunk, as the then-default linear
+clusterless KDE did, with decoding spikes padded to a few sizes. Log-space KDE
+also pads encoding samples with zero weights. Before, the GMM score recompiled for each
 spike-block shape, and the log-space KDE dispatched separately compiled
 operations whose shapes changed with every electrode's spike count. A100,
 30 s at 2 cm, 8 electrodes at 20 Hz (GMM with 120 s of encoding, because its
@@ -582,8 +583,8 @@ fit is singular with 10 s; log-space KDE with 10 s):
 | --- | ---: | ---: | ---: |
 | `clusterless_gmm` | 114 to 33 s | 521 to 92 | 4.42-4.45 to 4.02-4.21 s |
 | `clusterless_gmm`, autotuning off | 78 to 23 s | 521 to 92 | 4.49-4.55 to 4.21-4.25 s |
-| `clusterless_kde_log` | 77 to 28 s | 857 to 83 | 4.34-4.47 to 3.23-3.27 s |
-| `clusterless_kde_log`, autotuning off | 62 to 21 s | 857 to 83 | 4.44-4.56 to 3.21-3.25 s |
+| log-space KDE | 77 to 28 s | 857 to 83 | 4.34-4.47 to 3.23-3.27 s |
+| log-space KDE, autotuning off | 62 to 21 s | 857 to 83 | 4.44-4.56 to 3.21-3.25 s |
 
 GMM non-local spikes are scored at every bin, so their padding sets the extra
 work. Padding them to powers of two, as the KDE paths do, left the A100 warm

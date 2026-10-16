@@ -51,6 +51,11 @@ from non_local_detector.likelihoods.gmm import (
     _effective_sample_count,
     _estimate_log_prob_resp,
 )
+from non_local_detector.likelihoods.mark_reference import (
+    MarkReference,
+    background_log_intensity,
+    fit_mark_reference,
+)
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
@@ -125,13 +130,17 @@ def _accumulate_log_likelihood_block(
     bin_ids: jnp.ndarray,
     log_rate: jnp.ndarray,
     log_occupancy: jnp.ndarray,
+    log_background: jnp.ndarray,
 ) -> jnp.ndarray:
     """Scatter one spike block into its observed time rows and spatial columns.
 
     The density difference is formed first: adding ``log_rate`` to a huge log
-    density before subtracting the other would round the rate term away.
+    density before subtracting the other would round the rate term away. Each
+    spike's intensity then gains its background ``log_background``.
     """
-    log_contribution = log_rate + (joint_logp - log_occupancy)
+    log_contribution = jnp.logaddexp(
+        log_rate + (joint_logp - log_occupancy), log_background[:, None]
+    )
     if not bin_ids.shape[0]:
         return log_likelihood
     # Callers provide contiguous, unique spatial tile columns. Keep the initial
@@ -175,6 +184,7 @@ def _add_electrode_gmm_intensities(
     parameters: tuple[jnp.ndarray, ...],
     log_rate: jnp.ndarray,
     log_occupancy: jnp.ndarray,
+    log_background: jnp.ndarray,
     *,
     covariance_type: str,
     block_size: int,
@@ -195,6 +205,8 @@ def _add_electrode_gmm_intensities(
         The joint GMM's fitted means, Cholesky precisions and weights.
     log_rate : jnp.ndarray, scalar
     log_occupancy : jnp.ndarray, shape (n_bins,)
+    log_background : jnp.ndarray, shape (n_padded_spikes,)
+        Log background intensity of each spike, in Hz.
 
     Returns
     -------
@@ -207,6 +219,7 @@ def _add_electrode_gmm_intensities(
         first = number * block_size
         block = jax.lax.dynamic_slice_in_dim(features, first, block_size)
         rows = jax.lax.dynamic_slice_in_dim(row_ids, first, block_size)
+        background = jax.lax.dynamic_slice_in_dim(log_background, first, block_size)
         points = jnp.concatenate(
             [tiled_bins, jnp.repeat(block, n_bins, axis=0)], axis=1
         )
@@ -216,7 +229,9 @@ def _add_electrode_gmm_intensities(
         # Density difference first (see _accumulate_log_likelihood_block).
         return deterministic_row_add(
             log_likelihood,
-            log_rate + (log_density - log_occupancy),
+            jnp.logaddexp(
+                log_rate + (log_density - log_occupancy), background[:, None]
+            ),
             rows,
             indices_are_sorted=indices_are_sorted,
         )
@@ -239,6 +254,7 @@ def _add_electrode_gmm_spike_terms(
     joint: tuple[jnp.ndarray, ...],
     occupancy: tuple[jnp.ndarray, ...],
     mean_rate: jnp.ndarray,
+    log_background: jnp.ndarray,
     *,
     joint_type: str,
     occupancy_type: str,
@@ -258,6 +274,8 @@ def _add_electrode_gmm_spike_terms(
     joint, occupancy : tuple of jnp.ndarray
         Fitted means, Cholesky precisions and weights of each GMM.
     mean_rate : jnp.ndarray, scalar
+    log_background : jnp.ndarray, shape (n_padded_spikes,)
+        Log background intensity of each spike, in Hz.
 
     Returns
     -------
@@ -268,7 +286,10 @@ def _add_electrode_gmm_spike_terms(
     )
     occupancy_logp = _gmm_score(spike_positions, occupancy, occupancy_type)
     # Density difference first (see _accumulate_log_likelihood_block).
-    terms = safe_log(mean_rate, eps=RATE_EPS_HZ) + (joint_logp - occupancy_logp)
+    terms = jnp.logaddexp(
+        safe_log(mean_rate, eps=RATE_EPS_HZ) + (joint_logp - occupancy_logp),
+        log_background,
+    )
     return log_likelihood + deterministic_row_sum(
         terms,
         row_ids,
@@ -660,6 +681,7 @@ def fit_clusterless_gmm_encoding_model(
     effective_gpi_components: list[int] = []
     effective_joint_components: list[int] = []
     mark_dimensions: list[int] = []
+    mark_reference: list[MarkReference | None] = []
 
     summed_ground_process_intensity = jnp.zeros_like(log_occupancy)
 
@@ -690,16 +712,17 @@ def fit_clusterless_gmm_encoding_model(
         # de-weighted case, leak the excluded spatial pattern into decoding via
         # the joint density. Mark it zero-rate (mean rate 0, None GPI/joint
         # sentinels) and add no ground-process intensity (the rate is zero).
-        # Predict floors each of its observed decode spikes to LOG_EPS -- the
-        # marked-point-process likelihood of a spike under a zero-rate model --
-        # rather than skipping the electrode (which would drop that negative
-        # evidence), matching the KDE path. An electrode that has spikes and no
-        # supplied weights still takes the normal unweighted fit below.
+        # Predict explains each of its observed decode spikes by the background
+        # alone -- the marked-point-process likelihood of a spike under a
+        # zero-rate model -- rather than skipping the electrode (which would drop
+        # that negative evidence), matching the KDE path. An electrode that has
+        # spikes and no supplied weights still takes the normal unweighted fit
+        # below.
         if not np.any(elect_weights > 0.0):
             warnings.warn(
                 f"Clusterless GMM: electrode {electrode} has no effective encoding "
                 "spikes (empty or zero total weight); it is treated as "
-                "zero-rate -- its observed decode spikes use the rate floor in Hz "
+                "zero-rate -- its observed decode spikes are explained by the background rate "
                 "rather than fit on the de-weighted spikes.",
                 UserWarning,
                 stacklevel=2,
@@ -707,6 +730,7 @@ def fit_clusterless_gmm_encoding_model(
             mean_rates.append(0.0)  # zero rate, not the EPS floor below
             gpi_models.append(None)
             joint_models.append(None)
+            mark_reference.append(None)
             effective_gpi_components.append(0)
             effective_joint_components.append(0)
             continue
@@ -749,6 +773,15 @@ def fit_clusterless_gmm_encoding_model(
             tol=gmm_tol,
         )
         joint_models.append(joint_gmm)
+        # After the joint fit, whose input validation reports bad marks.
+        mark_reference.append(
+            fit_mark_reference(
+                np.asarray(elect_feats),
+                elect_weights,
+                np.sqrt(gmm_reg_covar),
+                electrode,
+            )
+        )
         gpi_gmm = _position_marginal(joint_gmm, enc_pos.shape[1])
         gpi_models.append(gpi_gmm)
 
@@ -759,10 +792,9 @@ def fit_clusterless_gmm_encoding_model(
             log_occupancy,
         )
 
-    # Clip the summed intensity once (not per electrode) so an empty bin gets a
-    # single EPS floor rather than accumulating n_electrodes * EPS.
-    summed_ground_process_intensity = jnp.clip(
-        summed_ground_process_intensity, min=RATE_EPS_HZ, max=None
+    # Every electrode, including zero-rate ones, adds its background rate.
+    summed_ground_process_intensity = (
+        summed_ground_process_intensity + len(spike_times) * RATE_EPS_HZ
     )
 
     return {
@@ -786,6 +818,7 @@ def fit_clusterless_gmm_encoding_model(
             "joint": effective_joint_components,
         },
         "mark_dimensions": mark_dimensions,
+        "mark_reference": mark_reference,
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
@@ -820,6 +853,7 @@ def predict_clusterless_gmm_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     mark_dimensions: list[int],
+    mark_reference: list[MarkReference | None] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **kwargs,
@@ -864,6 +898,12 @@ def predict_clusterless_gmm_log_likelihood(
         Fitted waveform-feature count per electrode, taken from the encoding
         model. Predict rejects decode spikes whose feature dimension differs, so
         every electrode (including zero-rate ones) must have a recorded count.
+    mark_reference : list of MarkReference or None, keyword-only
+        Normalized reference mark density per electrode, taken from the encoding
+        model. Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
+        electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
+        states do not depend on the waveform units. None for an electrode means
+        no training marks; its background is the bare rate.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -880,6 +920,11 @@ def predict_clusterless_gmm_log_likelihood(
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
         )
+    if mark_reference is None:
+        raise ValidationError(
+            "Encoding model has no mark reference; refit before decoding.",
+            hint="Refit with fit_clusterless_gmm_encoding_model.",
+        )
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
@@ -892,6 +937,7 @@ def predict_clusterless_gmm_log_likelihood(
         joint_models=joint_models,
         mean_rates=mean_rates,
         mark_dimensions=mark_dimensions,
+        mark_reference=mark_reference,
     )
 
     for electrode, (elect_times, elect_feats, expected_mark_dims) in enumerate(
@@ -922,6 +968,7 @@ def predict_clusterless_gmm_log_likelihood(
             gpi_models=gpi_models,
             joint_models=joint_models,
             mean_rates=mean_rates,
+            mark_reference=mark_reference,
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
             _spike_time_order=_spike_time_order,
@@ -952,24 +999,25 @@ def predict_clusterless_gmm_log_likelihood(
     )
 
     # Per-electrode contributions in log-space
-    for elect_feats, elect_times, joint_gmm, mean_rate in tqdm(
+    for elect_feats, elect_times, joint_gmm, mean_rate, reference in tqdm(
         zip(
-            spike_waveform_features, spike_times, joint_models, mean_rates, strict=True
+            spike_waveform_features,
+            spike_times,
+            joint_models,
+            mean_rates,
+            mark_reference,
+            strict=True,
         ),
         desc="Non-Local Likelihood (GMM, log-space)",
         unit="electrode",
         disable=disable_progress_bar,
     ):
         # A None model marks a zero-rate electrode: it has no effective encoding
-        # spikes, so no density was fit. The fitted rate is zero, so its
-        # ground-process (integral) term is zero (already omitted at fit) and
-        # every observed decoding spike is near-impossible under this model.
-        # Floor each such spike's log-intensity to LOG_RATE_EPS_HZ, added uniformly
-        # across position bins -- matching the KDE path and the marked-point-
-        # process likelihood. This is *not* the same as skipping the electrode:
-        # skipping would drop the negative evidence an observed spike carries
-        # (e.g. against a state whose encoding de-weighted this electrode). With
-        # no in-window spikes the row sums contribute zero.
+        # spikes, so no density was fit and each observed spike is explained by
+        # the background alone, uniformly across position bins. This is *not*
+        # the same as skipping the electrode: skipping would drop the negative
+        # evidence an observed spike carries (e.g. against a state whose
+        # encoding de-weighted this electrode).
         selection = select_spikes_in_rows(
             elect_times,
             row_start,
@@ -977,17 +1025,21 @@ def predict_clusterless_gmm_log_likelihood(
             time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
-        if joint_gmm is None:
-            spikes_per_bin = sum_spikes_into_rows(
-                jnp.ones(selection.bin_ind.shape[0]), selection
-            )  # (n_rows,)
-            log_likelihood = log_likelihood + LOG_RATE_EPS_HZ * spikes_per_bin[:, None]
-            continue
-
-        log_mean_rate = safe_log(mean_rate, eps=RATE_EPS_HZ)
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes == 0:
             continue
+        selected_feats = np.asarray(select_spike_rows(elect_feats, selection))
+        log_background = background_log_intensity(
+            reference, selected_feats, LOG_RATE_EPS_HZ
+        )
+        if joint_gmm is None:
+            log_likelihood = (
+                log_likelihood
+                + sum_spikes_into_rows(jnp.asarray(log_background), selection)[:, None]
+            )
+            continue
+
+        log_mean_rate = safe_log(mean_rate, eps=RATE_EPS_HZ)
 
         if bin_tile_size is None or bin_tile_size >= n_bins:
             # Spikes padded to a few counts (padding rows are dropped from the
@@ -996,14 +1048,13 @@ def predict_clusterless_gmm_log_likelihood(
             n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
             log_likelihood = _add_electrode_gmm_intensities(
                 log_likelihood,
-                jnp.asarray(
-                    _pad_rows(select_spike_rows(elect_feats, selection), n_padded)
-                ),
+                jnp.asarray(_pad_rows(selected_feats, n_padded)),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 interior_place_bin_centers,
                 _gmm_parameters(joint_gmm),
                 log_mean_rate,
                 log_occupancy,
+                jnp.asarray(_pad_rows(log_background, n_padded)),
                 covariance_type=joint_gmm.covariance_type,
                 block_size=min(spike_block_size, n_padded),
                 indices_are_sorted=selection.indices_are_sorted,
@@ -1014,7 +1065,8 @@ def predict_clusterless_gmm_log_likelihood(
         # Memory: O(spike_block_size × tile_size), with no full block×bins array.
         # Select FIRST, then convert: converting the whole array would
         # device-copy every decoding spike in the recording on every chunk call.
-        elect_feats = jnp.asarray(select_spike_rows(elect_feats, selection))
+        elect_feats = jnp.asarray(selected_feats)
+        log_background = jnp.asarray(log_background)
         for spike_start in range(0, n_spikes, spike_block_size):
             spike_end = min(spike_start + spike_block_size, n_spikes)
             block_feats = elect_feats[spike_start:spike_end]
@@ -1048,6 +1100,7 @@ def predict_clusterless_gmm_log_likelihood(
                     jnp.arange(bin_start, bin_end),
                     log_mean_rate,
                     log_occupancy[bin_start:bin_end],
+                    log_background[spike_start:spike_end],
                 )
 
     return (
@@ -1072,6 +1125,7 @@ def compute_local_log_likelihood(
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
     *,
+    mark_reference: list[MarkReference | None],
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -1099,6 +1153,9 @@ def compute_local_log_likelihood(
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` stay the FULL decoding edges (see
+        ``predict_clusterless_gmm_log_likelihood``).
+    mark_reference : list of MarkReference or None
+        Reference mark density per electrode for the background intensity (see
         ``predict_clusterless_gmm_log_likelihood``).
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
@@ -1144,24 +1201,23 @@ def compute_local_log_likelihood(
     log_likelihood = jnp.zeros((n_rows,), dtype=working_dtype)
     summed_expected_counts = jnp.zeros((n_rows,), dtype=working_dtype)
 
-    for elect_feats, elect_times, joint_gmm, gpi_gmm, mean_rate in tqdm(
+    for elect_feats, elect_times, joint_gmm, gpi_gmm, mean_rate, reference in tqdm(
         zip(
             spike_waveform_features,
             spike_times,
             joint_models,
             gpi_models,
             mean_rates,
+            mark_reference,
             strict=True,
         ),
         desc="Local Likelihood (GMM, log-space)",
         unit="electrode",
         disable=disable_progress_bar,
     ):
-        # None marks a zero-rate electrode with no effective encoding spikes, so
-        # floor each observed decoding spike's
-        # log-intensity to LOG_RATE_EPS_HZ (added to its time bin), matching the KDE path
-        # and the marked-point-process likelihood. The integral term is zero. Do
-        # not skip -- an observed spike is negative evidence, not "no data".
+        # None marks a zero-rate electrode with no effective encoding spikes: each
+        # observed spike is explained by the background alone. Do not skip -- an
+        # observed spike is negative evidence, not "no data".
         selection = select_spikes_in_rows(
             elect_times,
             row_start,
@@ -1169,17 +1225,19 @@ def compute_local_log_likelihood(
             time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
+        n_spikes = selection.bin_ind.shape[0]
+        if n_spikes:
+            selected_feats = np.asarray(select_spike_rows(elect_feats, selection))
+            log_background = background_log_intensity(
+                reference, selected_feats, LOG_RATE_EPS_HZ
+            )
         if joint_gmm is None:
-            # Skip the device reduction when the chunk owns none of its spikes:
-            # the row sums would be all zero.
-            if selection.bin_ind.shape[0] > 0:
-                spikes_per_bin = sum_spikes_into_rows(
-                    jnp.ones(selection.bin_ind.shape[0]), selection
-                )  # (n_rows,)
-                log_likelihood = log_likelihood + LOG_RATE_EPS_HZ * spikes_per_bin
+            if n_spikes:
+                log_likelihood = log_likelihood + sum_spikes_into_rows(
+                    jnp.asarray(log_background, dtype=working_dtype), selection
+                )
             continue
 
-        n_spikes = selection.bin_ind.shape[0]
         if n_spikes:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
@@ -1193,13 +1251,12 @@ def compute_local_log_likelihood(
             log_likelihood = _add_electrode_gmm_spike_terms(
                 log_likelihood,
                 jnp.asarray(_pad_rows(spike_positions, n_padded), dtype=working_dtype),
-                jnp.asarray(
-                    _pad_rows(select_spike_rows(elect_feats, selection), n_padded)
-                ),
+                jnp.asarray(_pad_rows(selected_feats, n_padded)),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 _gmm_parameters(joint_gmm),
                 _gmm_parameters(occupancy_model),
                 mean_rate,
+                jnp.asarray(_pad_rows(log_background, n_padded), dtype=working_dtype),
                 joint_type=joint_gmm.covariance_type,
                 occupancy_type=occupancy_model.covariance_type,
                 indices_are_sorted=selection.indices_are_sorted,
@@ -1213,11 +1270,10 @@ def compute_local_log_likelihood(
             gpi_type=gpi_gmm.covariance_type,
         )
 
-    # Subtract the summed ground-process intensity once, floored at EPS to
-    # mirror fit_clusterless_gmm_encoding_model's summed_ground_process_intensity
-    # (a single EPS floor, not n_electrodes * EPS).
+    # Every electrode, including zero-rate ones, adds its background rate, as
+    # in fit_clusterless_gmm_encoding_model's summed_ground_process_intensity.
     log_likelihood = log_likelihood - jnp.asarray(
         _time_grid.durations(row_start, row_stop)
-    ) * jnp.clip(summed_expected_counts, min=RATE_EPS_HZ)
+    ) * (summed_expected_counts + len(spike_times) * RATE_EPS_HZ)
 
     return log_likelihood[:, None]

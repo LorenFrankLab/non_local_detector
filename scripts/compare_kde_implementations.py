@@ -1,8 +1,8 @@
-"""Compare performance between clusterless_kde.py and clusterless_kde_log.py implementations.
+"""Compare performance between clusterless_kde.py and clusterless_kde.py implementations.
 
 This script measures the speed differences between:
 1. clusterless_kde.py (original, no optimizations)
-2. clusterless_kde_log.py (optimized with vectorization + JIT)
+2. clusterless_kde.py (optimized with vectorization + JIT)
 """
 
 import sys
@@ -16,7 +16,7 @@ sys.path.insert(0, "src")
 from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance as kde_distance_original,
 )
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance as kde_distance_optimized,
 )
 
@@ -47,7 +47,7 @@ def main():
     print()
     print("Comparing:")
     print("  1. clusterless_kde.py (original, Python for-loop)")
-    print("  2. clusterless_kde_log.py (optimized, vectorized + JIT)")
+    print("  2. clusterless_kde.py (optimized, vectorized + JIT)")
     print()
 
     # Test configuration
@@ -80,7 +80,7 @@ def main():
             kde_distance_original, eval_points, samples, std, n_runs=n_runs
         )
 
-        # Time optimized (clusterless_kde_log.py with vectorization + JIT)
+        # Time optimized (clusterless_kde.py with vectorization + JIT)
         time_opt, std_opt = time_function(
             kde_distance_optimized, eval_points, samples, std, n_runs=n_runs
         )
@@ -100,7 +100,7 @@ def main():
 
         print(f"{n_dims}D features:")
         print(f"  Original (clusterless_kde.py):     {time_orig*1000:.2f}ms ± {std_orig*1000:.2f}ms")
-        print(f"  Optimized (clusterless_kde_log.py): {time_opt*1000:.2f}ms ± {std_opt*1000:.2f}ms")
+        print(f"  Optimized (clusterless_kde.py): {time_opt*1000:.2f}ms ± {std_opt*1000:.2f}ms")
         print(f"  Speedup: {speedup:.2f}x")
         print()
 
@@ -157,7 +157,7 @@ def main():
     print()
 
     if avg_speedup > 5:
-        print(f"✅ The optimized version (clusterless_kde_log.py) is **{avg_speedup:.1f}x faster**")
+        print(f"✅ The optimized version (clusterless_kde.py) is **{avg_speedup:.1f}x faster**")
         print("   on average than the original (clusterless_kde.py).")
         print()
         print("   This demonstrates the benefit of:")
@@ -185,7 +185,7 @@ def main():
     print()
 
     if avg_speedup > 5:
-        print("**Use clusterless_kde_log.py for production workloads**")
+        print("**Use clusterless_kde.py for production workloads**")
         print()
         print("The ~10x speedup makes it significantly more efficient for:")
         print("- Large datasets (millions of time points)")

@@ -8,10 +8,8 @@ from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     common,
     fit_clusterless_kde_encoding_model,
-    fit_clusterless_kde_log_encoding_model,
     fit_sorted_spikes_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
-    predict_clusterless_kde_log_log_likelihood,
     predict_sorted_spikes_kde_log_likelihood,
 )
 from non_local_detector.time_edges import _DecodeTimeGrid
@@ -139,11 +137,6 @@ def test_kde_true_density_keeps_custom_prediction_and_unfitted_errors():
         (
             fit_clusterless_kde_encoding_model,
             predict_clusterless_kde_log_likelihood,
-            True,
-        ),
-        (
-            fit_clusterless_kde_log_encoding_model,
-            predict_clusterless_kde_log_log_likelihood,
             True,
         ),
     ],

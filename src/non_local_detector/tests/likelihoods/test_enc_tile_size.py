@@ -8,10 +8,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
     log_kde_distance,
 )
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 
 @pytest.mark.unit
@@ -41,6 +42,7 @@ def test_enc_tile_size_equivalence(enc_tile_size):
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
+    log_background = realistic_log_background(dec_features)
 
     # No tiling (baseline)
     result_no_tiling = estimate_log_joint_mark_intensity(
@@ -53,6 +55,7 @@ def test_enc_tile_size_equivalence(enc_tile_size):
         use_gemm=True,
         pos_tile_size=None,
         enc_tile_size=None,
+        log_background=log_background,
     )
 
     # With encoding tiling
@@ -66,6 +69,7 @@ def test_enc_tile_size_equivalence(enc_tile_size):
         use_gemm=True,
         pos_tile_size=None,
         enc_tile_size=enc_tile_size,
+        log_background=log_background,
     )
 
     # Should be numerically equivalent
@@ -119,6 +123,7 @@ def test_enc_tile_size_with_pos_tile_size(enc_tile_size, pos_tile_size):
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
+    log_background = realistic_log_background(dec_features)
 
     # No tiling
     result_baseline = estimate_log_joint_mark_intensity(
@@ -131,6 +136,7 @@ def test_enc_tile_size_with_pos_tile_size(enc_tile_size, pos_tile_size):
         use_gemm=True,
         pos_tile_size=None,
         enc_tile_size=None,
+        log_background=log_background,
     )
 
     # Both enc and pos tiling
@@ -144,6 +150,7 @@ def test_enc_tile_size_with_pos_tile_size(enc_tile_size, pos_tile_size):
         use_gemm=True,
         pos_tile_size=pos_tile_size,
         enc_tile_size=enc_tile_size,
+        log_background=log_background,
     )
 
     # Should match
@@ -172,6 +179,7 @@ def test_enc_tile_size_edge_cases():
     interior_bins = jnp.array(np.linspace(0, 50, n_pos_bins))[:, None]
     position_std = jnp.array([3.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
+    log_background = realistic_log_background(dec_features)
 
     # Baseline
     result_baseline = estimate_log_joint_mark_intensity(
@@ -183,6 +191,7 @@ def test_enc_tile_size_edge_cases():
         log_position_distance,
         use_gemm=True,
         enc_tile_size=None,
+        log_background=log_background,
     )
 
     # Test: enc_tile_size = 1 (smallest possible)
@@ -195,6 +204,7 @@ def test_enc_tile_size_edge_cases():
         log_position_distance,
         use_gemm=True,
         enc_tile_size=1,
+        log_background=log_background,
     )
     assert np.allclose(result_baseline, result_tile1, rtol=1e-5, atol=1e-7)
 
@@ -208,5 +218,6 @@ def test_enc_tile_size_edge_cases():
         log_position_distance,
         use_gemm=True,
         enc_tile_size=n_enc_spikes,
+        log_background=log_background,
     )
     assert np.allclose(result_baseline, result_tile_full, rtol=1e-5, atol=1e-7)

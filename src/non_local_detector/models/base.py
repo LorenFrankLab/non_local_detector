@@ -944,8 +944,9 @@ def _group_weights(
         warnings.warn(
             f"Encoding group {encoding_group!r} in environment "
             f"{environment_name!r} has no training samples with positive weight, "
-            "so its encoding model is fit with zero exposure. Existing rate "
-            "floors still determine its likelihood. Check is_training, encoding_group_labels, and "
+            "so its encoding model is fit with zero exposure. Its likelihood is "
+            "then set by the rate floor (sorted spikes) or the background rate "
+            "(clusterless). Check is_training, encoding_group_labels, and "
             "environment_labels.",
             UserWarning,
             stacklevel=3,
@@ -2654,15 +2655,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "Call fit(...) or estimate_parameters(..., time_edges=...) "
                     "with the original recording. No-Spike uses its constructor rate in Hz.",
                 )
-        if (
-            isinstance(self, ClusterlessDetector)
-            and any(obs.is_no_spike for obs in self.observation_models)
-            and not hasattr(self, "mark_reference_")
+        if isinstance(self, ClusterlessDetector) and (
+            not hasattr(self, "mark_reference_")
+            or any(
+                "mark_reference" not in self.encoding_model_[key]
+                for key in required_keys
+            )
         ):
             raise ValidationError(
-                "Saved clusterless model has no No-Spike mark reference; refit before decoding.",
-                hint="No-Spike scores waveform marks with a reference density "
-                "fitted from training spikes. Call fit(...) with the original recording.",
+                "Saved clusterless model has no mark reference; refit before decoding.",
+                hint="Clusterless states score waveform marks against a reference "
+                "density fitted from training spikes. Call fit(...) with the original "
+                "recording.",
+            )
+        if isinstance(self, ClusterlessDetector) and any(
+            self.encoding_model_[key]["mark_reference"] is not self.mark_reference_
+            for key in required_keys
+        ):
+            raise ValidationError(
+                "Encoding models do not share the detector's mark reference; refit before decoding.",
+                hint="No-Spike and every spike state must score marks against the same "
+                "reference density (mark_reference_).",
             )
 
     def _validate_decode_population(self, spike_times, spike_waveform_features=None):
@@ -4748,6 +4761,23 @@ class ClusterlessDetector(_DetectorBase):
             return dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
         return dict(self.clusterless_algorithm_params)
 
+    def _clusterless_algorithm_functions(self) -> tuple:
+        """The registered (fit, predict) pair of ``clusterless_algorithm``."""
+        try:
+            return _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
+        except KeyError:
+            hint = (
+                'Use "clusterless_kde": it is the same log-space KDE estimator.'
+                if self.clusterless_algorithm == "clusterless_kde_log"
+                else None
+            )
+            raise ValidationError(
+                f"Unknown clusterless_algorithm {self.clusterless_algorithm!r}",
+                expected=f"one of {sorted(_CLUSTERLESS_ALGORITHMS)}",
+                got=repr(self.clusterless_algorithm),
+                hint=hint,
+            ) from None
+
     def _fit_mark_reference(
         self,
         position_time: np.ndarray,
@@ -4855,8 +4885,9 @@ class ClusterlessDetector(_DetectorBase):
             Normalized diagonal-Gaussian waveform density of each electrode,
             fitted from training spikes in the requested environments with
             positive weight (all encoding groups). No-Spike scores its spikes'
-            marks with it. None marks an electrode without such spikes. It is
-            kept unchanged by posterior-weighted encoding updates.
+            marks with it, and every active state adds a background intensity
+            ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
+            spikes. It is kept unchanged by posterior-weighted encoding updates.
         """
         logger.info("Fitting clusterless spikes...")
         # Validate before any state changes and before the collections are
@@ -4909,7 +4940,7 @@ class ClusterlessDetector(_DetectorBase):
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
 
-            encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
+            encoding_algorithm, _ = self._clusterless_algorithm_functions()
             is_group = is_training & is_encoding & is_environment
             # The mask is this model's exposure on the full timeline, as for
             # sorted spikes: a subset timeline would let spike-weight
@@ -4953,6 +4984,10 @@ class ClusterlessDetector(_DetectorBase):
             )
         else:
             mark_reference = self.mark_reference_
+        # Every state shares one reference measure, so the background and the
+        # No-Spike mark density cancel consistently between states.
+        for model in encoding_model.values():
+            model["mark_reference"] = mark_reference
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
@@ -5206,7 +5241,7 @@ class ClusterlessDetector(_DetectorBase):
             return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
         position = _position_context.position
 
-        _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
+        _, likelihood_func = self._clusterless_algorithm_functions()
 
         # Pre-compute state bins mask for all states (avoid recomputation in loop)
         interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]

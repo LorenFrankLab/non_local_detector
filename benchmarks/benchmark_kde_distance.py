@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 from compare_prediction_modes import provenance
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance,
     log_kde_distance,
 )

@@ -46,7 +46,6 @@ SORTED = (
 )
 CLUSTERLESS = (
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 )

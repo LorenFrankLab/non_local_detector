@@ -32,7 +32,6 @@ from non_local_detector.model_checking.conditional_marks import (
 
 SUPPORTED_ALGORITHMS = (
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 )
@@ -41,7 +40,7 @@ _BATCH = 512
 
 def electrode_model(encoding_model: dict, algorithm: str, electrode: int) -> Any:
     """The fitted intensity of one electrode, for a supported algorithm."""
-    if algorithm in ("clusterless_kde", "clusterless_kde_log"):
+    if algorithm == "clusterless_kde":
         return _KDEElectrode(encoding_model, electrode)
     if algorithm == "clusterless_gmm":
         return _GMMElectrode(encoding_model, electrode)

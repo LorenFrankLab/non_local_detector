@@ -154,6 +154,7 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
         position_std=jnp.asarray(enc["position_std"]),
         waveform_std=jnp.asarray(enc["waveform_std"]),
+        mark_reference=enc["mark_reference"],
         is_local=False,
         block_size=8,
         disable_progress_bar=True,

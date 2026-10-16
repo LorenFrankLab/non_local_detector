@@ -18,9 +18,9 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
-    kde_distance,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.clusterless_kde import kde_distance
 from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
@@ -249,6 +249,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
         summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],
         position_std=kde_enc["position_std"],
         waveform_std=kde_enc["waveform_std"],
+        mark_reference=kde_enc["mark_reference"],
         is_local=is_local,
         disable_progress_bar=True,
     )
@@ -303,6 +304,8 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
         "summed_ground_process_intensity": summed_gpi,
         "disable_progress_bar": True,
         "mark_dimensions": [int(spike_features_jnp[0].shape[1])],
+        # Same No-Spike mark reference as the KDE so the backgrounds match.
+        "mark_reference": kde_enc["mark_reference"],
     }
 
     ll_gmm = predict_clusterless_gmm_log_likelihood(

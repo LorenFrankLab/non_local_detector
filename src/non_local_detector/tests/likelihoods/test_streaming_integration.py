@@ -9,12 +9,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
     log_kde_distance,
 )
-from non_local_detector.likelihoods.common import LOG_EPS
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 
 class TestStreamingIntegrationBasic:
@@ -32,6 +32,8 @@ class TestStreamingIntegrationBasic:
         n_pos_dims = 2
 
         dec_features = jnp.array(rng.standard_normal((n_dec, n_features)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, n_features)))
         waveform_stds = jnp.array([1.0] * n_features)
         occupancy = jnp.array(rng.random(n_pos) * 0.8 + 0.1)
@@ -59,6 +61,7 @@ class TestStreamingIntegrationBasic:
             enc_tile_size=25,
             pos_tile_size=None,
             use_streaming=False,
+            log_background=log_background,
         )
 
         # Streaming mode
@@ -76,6 +79,7 @@ class TestStreamingIntegrationBasic:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         # Verify equivalence
@@ -93,6 +97,8 @@ class TestStreamingIntegrationBasic:
         n_pos_dims = 2
 
         dec_features = jnp.array(rng.standard_normal((n_dec, n_features)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, n_features)))
         waveform_stds = jnp.array([1.5, 1.0, 2.0])
         occupancy = jnp.array(rng.random(n_pos) * 0.7 + 0.2)
@@ -118,6 +124,7 @@ class TestStreamingIntegrationBasic:
             enc_tile_size=20,
             pos_tile_size=15,
             use_streaming=False,
+            log_background=log_background,
         )
 
         # Streaming with position tiling
@@ -135,6 +142,7 @@ class TestStreamingIntegrationBasic:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         assert jnp.allclose(result_streaming, result_precomputed, rtol=1e-5, atol=1e-8)
@@ -151,6 +159,8 @@ class TestStreamingIntegrationBasic:
         n_pos_dims = 1
 
         dec_features = jnp.array(rng.standard_normal((n_dec, n_features)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, n_features)))
         waveform_stds = jnp.array([1.0, 1.0])
         occupancy = jnp.array(rng.random(n_pos) * 0.5 + 0.3)
@@ -174,6 +184,7 @@ class TestStreamingIntegrationBasic:
             use_gemm=True,
             enc_tile_size=enc_tile_size,
             use_streaming=False,
+            log_background=log_background,
         )
 
         result_streaming = estimate_log_joint_mark_intensity(
@@ -189,6 +200,7 @@ class TestStreamingIntegrationBasic:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         assert jnp.allclose(result_streaming, result_precomputed, rtol=1e-5, atol=1e-8)
@@ -202,6 +214,8 @@ class TestStreamingIntegrationEdgeCases:
         rng = np.random.default_rng(42)
 
         dec_features = jnp.array(rng.standard_normal((5, 2)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((10, 2)))
         waveform_stds = jnp.array([1.0, 1.0])
         occupancy = jnp.array(rng.random(8))
@@ -226,6 +240,7 @@ class TestStreamingIntegrationEdgeCases:
                 encoding_positions=enc_positions,
                 position_eval_points=pos_eval_points,
                 position_std=position_std,
+                log_background=log_background,
             )
 
     def test_streaming_requires_position_params(self):
@@ -233,6 +248,8 @@ class TestStreamingIntegrationEdgeCases:
         rng = np.random.default_rng(123)
 
         dec_features = jnp.array(rng.standard_normal((5, 2)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((10, 2)))
         waveform_stds = jnp.array([1.0, 1.0])
         occupancy = jnp.array(rng.random(8))
@@ -252,7 +269,8 @@ class TestStreamingIntegrationEdgeCases:
                 use_gemm=True,
                 enc_tile_size=5,
                 use_streaming=True,
-                # Missing position parameters!
+                # Missing position parameters!,
+                log_background=log_background,
             )
 
     def test_streaming_enc_tile_size_ge_n_enc_falls_back(self):
@@ -268,6 +286,7 @@ class TestStreamingIntegrationEdgeCases:
 
         n_enc = 30
         dec_features = jnp.array(rng.standard_normal((8, 3)))
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, 3)))
         waveform_stds = jnp.array([1.0, 1.5, 0.8])
         occupancy = jnp.array(rng.random(12) * 0.6 + 0.2)
@@ -289,6 +308,7 @@ class TestStreamingIntegrationEdgeCases:
             log_position_distance,
             use_gemm=True,
             use_streaming=False,
+            log_background=log_background,
         )
 
         # enc_tile_size == n_enc (no chunking possible): must not raise.
@@ -305,6 +325,7 @@ class TestStreamingIntegrationEdgeCases:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         assert jnp.all(jnp.isfinite(result_streaming))
@@ -320,6 +341,8 @@ class TestStreamingIntegrationEdgeCases:
         rng = np.random.default_rng(2024)
 
         dec_features = jnp.array(rng.standard_normal((5, 2)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((10, 2)))
         waveform_stds = jnp.array([1.0, 1.0])
         occupancy = jnp.array(rng.random(8) * 0.6 + 0.2)
@@ -342,6 +365,7 @@ class TestStreamingIntegrationEdgeCases:
                 encoding_positions=enc_positions,
                 position_eval_points=pos_eval_points,
                 position_std=position_std,
+                log_background=log_background,
             )
 
     def test_streaming_enc_tile_size_one(self):
@@ -350,6 +374,7 @@ class TestStreamingIntegrationEdgeCases:
 
         n_enc = 10
         dec_features = jnp.array(rng.standard_normal((3, 2)))
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, 2)))
         waveform_stds = jnp.array([1.0, 1.0])
         occupancy = jnp.array(rng.random(5) * 0.5 + 0.3)
@@ -373,6 +398,7 @@ class TestStreamingIntegrationEdgeCases:
             use_gemm=True,
             enc_tile_size=1,
             use_streaming=False,
+            log_background=log_background,
         )
 
         result_streaming = estimate_log_joint_mark_intensity(
@@ -388,6 +414,7 @@ class TestStreamingIntegrationEdgeCases:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         assert jnp.allclose(result_streaming, result_precomputed, rtol=1e-5, atol=1e-8)
@@ -408,6 +435,8 @@ class TestStreamingBlockEstimate:
         block_size = 15
 
         dec_features = jnp.array(rng.standard_normal((n_dec, n_features)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, n_features)))
         waveform_stds = jnp.array([1.0] * n_features)
         occupancy = jnp.array(rng.random(n_pos) * 0.8 + 0.1)
@@ -434,6 +463,7 @@ class TestStreamingBlockEstimate:
             enc_tile_size=20,
             pos_tile_size=None,
             use_streaming=False,
+            log_background=log_background,
         )
 
         # Streaming mode
@@ -452,6 +482,7 @@ class TestStreamingBlockEstimate:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         assert result_streaming.shape == result_precomputed.shape
@@ -469,6 +500,8 @@ class TestStreamingBlockEstimate:
         block_size = 20
 
         dec_features = jnp.array(rng.standard_normal((n_dec, n_features)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, n_features)))
         waveform_stds = jnp.array([1.2, 0.9, 1.5])
         occupancy = jnp.array(rng.random(n_pos) * 0.7 + 0.2)
@@ -494,6 +527,7 @@ class TestStreamingBlockEstimate:
             enc_tile_size=25,
             pos_tile_size=15,
             use_streaming=False,
+            log_background=log_background,
         )
 
         result_streaming = block_estimate_log_joint_mark_intensity(
@@ -511,6 +545,7 @@ class TestStreamingBlockEstimate:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         assert jnp.allclose(result_streaming, result_precomputed, rtol=1e-5, atol=1e-8)
@@ -531,6 +566,7 @@ class TestStreamingNumericalStability:
 
         # Create extreme feature distances
         dec_features = jnp.array(rng.standard_normal((n_dec, n_features)) * 10.0)
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, n_features)) * 10.0)
         waveform_stds = jnp.array([0.5] * n_features)  # Small std → large distances
         occupancy = jnp.array(rng.random(n_pos) * 0.5 + 0.3)
@@ -553,6 +589,7 @@ class TestStreamingNumericalStability:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
         # Verify all values are finite
@@ -570,6 +607,8 @@ class TestStreamingNumericalStability:
         n_pos_dims = 1
 
         dec_features = jnp.array(rng.standard_normal((n_dec, n_features)))
+
+        log_background = realistic_log_background(dec_features)
         enc_features = jnp.array(rng.standard_normal((n_enc, n_features)))
         waveform_stds = jnp.array([1.0, 1.0])
 
@@ -595,6 +634,7 @@ class TestStreamingNumericalStability:
             use_gemm=True,
             enc_tile_size=8,
             use_streaming=False,
+            log_background=log_background,
         )
 
         result_streaming = estimate_log_joint_mark_intensity(
@@ -610,15 +650,18 @@ class TestStreamingNumericalStability:
             encoding_positions=enc_positions,
             position_eval_points=pos_eval_points,
             position_std=position_std,
+            log_background=log_background,
         )
 
-        # Both floor zero-occupancy positions to LOG_EPS (unified contract),
-        # not -inf, and consistently across the precomputed and streaming paths.
+        # Zero-occupancy positions have zero intensity, so both paths score
+        # each spike's background there (finite, not -inf).
         zero_occ_mask = occupancy == 0.0
         assert jnp.all(jnp.isfinite(result_precomputed))
         assert jnp.all(jnp.isfinite(result_streaming))
-        assert jnp.allclose(result_precomputed[:, zero_occ_mask], LOG_EPS)
-        assert jnp.allclose(result_streaming[:, zero_occ_mask], LOG_EPS)
+        assert jnp.allclose(
+            result_precomputed[:, zero_occ_mask], log_background[:, None]
+        )
+        assert jnp.allclose(result_streaming[:, zero_occ_mask], log_background[:, None])
 
         # Non-zero positions should match
         non_zero_mask = ~zero_occ_mask

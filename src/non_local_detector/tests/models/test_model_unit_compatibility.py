@@ -339,7 +339,6 @@ def test_missing_encoding_container_cannot_bypass_concrete_model_guard(
         "sorted_spikes_diffusion",
         "sorted_spikes_mrf",
         "clusterless_kde",
-        "clusterless_kde_log",
         "clusterless_gmm",
         "clusterless_diffusion",
     ],

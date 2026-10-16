@@ -62,7 +62,7 @@ from non_local_detector.tests.likelihoods.conftest import (
 #
 #   sorted_spikes_mrf 69.5 | sorted_spikes_diffusion 111.8 | sorted_spikes_kde 113.7
 #   sorted_spikes_glm 116.8 | clusterless_diffusion 136.6 | clusterless_kde 138.4
-#   clusterless_kde_log 138.4 | clusterless_gmm 763.7
+#   clusterless_gmm 763.7
 #
 # ``clusterless_gmm`` reaches 1.1e8 with its DEFAULT mixture sizes on this
 # fixture's 40 encoding spikes (64 joint components over 40 samples is a

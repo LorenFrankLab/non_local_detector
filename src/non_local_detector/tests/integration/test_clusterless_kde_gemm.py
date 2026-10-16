@@ -4,11 +4,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
     estimate_log_joint_mark_intensity,
     log_gaussian_pdf,
 )
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 
 @pytest.fixture
@@ -82,6 +83,9 @@ def test_gemm_vs_loop_mark_kernel(synthetic_waveform_data):
 @pytest.mark.integration
 def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
     """Test that estimate_log_joint_mark_intensity produces same results with GEMM vs loop."""
+    log_background = realistic_log_background(
+        synthetic_waveform_data["decoding_features"]
+    )
     # Compute with GEMM (default)
     log_joint_gemm = estimate_log_joint_mark_intensity(
         synthetic_waveform_data["decoding_features"],
@@ -91,6 +95,7 @@ def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
         synthetic_waveform_data["mean_rate"],
         synthetic_waveform_data["log_position_distance"],
         use_gemm=True,
+        log_background=log_background,
     )
 
     # Compute with loop
@@ -102,6 +107,7 @@ def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
         synthetic_waveform_data["mean_rate"],
         synthetic_waveform_data["log_position_distance"],
         use_gemm=False,
+        log_background=log_background,
     )
 
     # Should produce identical results

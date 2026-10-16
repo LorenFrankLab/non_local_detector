@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Unit-independent clusterless No-Spike odds
+### Unit-consistent clusterless mark evidence
 
-- **Breaking:** the clusterless No-Spike state now scores the waveform marks of its spikes. Active states score each spike with a marked intensity, a density over waveform features whose value depends on the feature units, while No-Spike scored only the spike count. Its odds against the active states therefore changed with the units: rescaling the four amplitude features by 10 (and `waveform_std` to match) shifted them by `4 log 10` per spike and changed the winning state in 203 of 2,000 bins of a simulated run. No-Spike now treats marks as drawn from a reference density `q(m)` fitted per electrode at `fit`, a diagonal Gaussian with the weighted mean and variance of the training marks from every encoding group of the modelled environments (`mark_reference_`), so each of its spikes adds `log q(m)`. Odds between No-Spike and Local no longer depend on the units when the mark bandwidths are rescaled with the marks (`clusterless_gmm`'s `gmm_reg_covar` is an absolute variance, so it must be rescaled too). An electrode without training spikes contributes no mark term; a constant training feature takes the mark bandwidth (`waveform_std`, or `sqrt(gmm_reg_covar)` for `clusterless_gmm`) as its scale. Posterior-weighted encoding updates in `estimate_parameters` keep the reference fixed. Decoded No-Spike probabilities change; saved clusterless models with a No-Spike state must be refit. The fixed lower bounds on active-state marked intensities still carry units and are unchanged here.
+- **Breaking:** clusterless likelihoods no longer depend on the units or number of waveform features. A marked intensity is a density over features, but No-Spike scored only spike counts and active states floored each spike at a fixed constant (`LOG_EPS`). The odds between states therefore depended on the feature units and dimension. On a 22-tetrode recording, expressing amplitudes in 10× units moved the mean No-Spike probability over 60 s from 0.097 to 0.9998. With 8 or more µV features, every spike sat on the floor at every position and carried no position information.
+- Each electrode now has a normalized reference density `q(m)` (`mark_reference_`): a diagonal Gaussian of its training marks from every encoding group. Electrodes without training spikes have none, and `estimate_parameters` keeps it fixed.
+- No-Spike scores each spike `log(no_spike_rate · dt) + log q(m)`.
+- Active states score `logaddexp(log λ, log(RATE_EPS_HZ · dt) + log q(m))` and add `RATE_EPS_HZ` per electrode to the expected count, replacing every `LOG_EPS` / `LOG_RATE_EPS_HZ` floor and the compensator clip.
+- A spike no state explains now favours No-Spike by `log(no_spike_rate / RATE_EPS_HZ)` instead of a units-dependent amount.
+- Unit invariance holds when mark bandwidths are rescaled with the marks; `clusterless_gmm`'s `gmm_reg_covar` is an absolute variance and must be rescaled too.
+- **Breaking:** there is now one clusterless KDE, `clusterless_kde`, and it uses the log-space estimator.
+  - Under the background term, the intensities that matter lie far below what float32 probability space can represent: on a real recording, every electrode needed the log-space path.
+  - The two implementations already agreed to 8e-6 in state probability on that recording.
+  - The `"clusterless_kde_log"` algorithm name is removed; passing it raises a `ValidationError` that points to `"clusterless_kde"`.
+  - The probability-space kernels and `likelihoods/streamed_kde.py` are deleted.
+  - Use `enc_tile_size` (with `use_streaming=True`) and `pos_tile_size` to tile workspaces. The unreleased `encoding_block_size` / `position_block_size` options are gone.
+- A sparse KDE chunk no longer pads to the full `block_size`.
+- `clusterless_diffusion` holds field values below `1e-6` of each spike's peak, below its heat kernel's resolution, at that level. Bins whose diffused occupancy is below `1e-6` of its maximum, which the animal never visited, get zero marked and ground intensity, so their spikes are explained by the background alone.
+- Fit functions return `mark_reference` and predict functions require it. `estimate_log_joint_mark_intensity` and the block estimators take `log_background`.
+- Decoded results change, and all saved clusterless models must be refit. See [the model and numerics](docs/likelihood_mark_background.md).
 
 ### Consistent clusterless GMM processes
 

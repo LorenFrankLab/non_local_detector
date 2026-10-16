@@ -37,6 +37,7 @@ def _predict_nonlocal(env, encoding, t_pos, pos, dec_spike_times, dec_feats, t_e
                 "encoding_spike_waveform_features"
             ],
             encoding_positions=encoding["encoding_positions"],
+            mark_reference=encoding["mark_reference"],
             encoding_weights=encoding["encoding_weights"],
             environment=env,
             mean_rates=jnp.asarray(encoding["mean_rates"]),
@@ -255,6 +256,7 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
         jnp.asarray(enc["waveform_std"]),
         True,
         time_edges=t_edges,
+        mark_reference=enc["mark_reference"],
     )
     assert np.asarray(ll).shape == (t_edges.shape[0] - 1, 1)  # local -> (n_bins, 1)
 

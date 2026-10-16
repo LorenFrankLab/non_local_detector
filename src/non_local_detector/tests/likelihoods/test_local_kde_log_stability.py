@@ -11,7 +11,11 @@ import pytest
 
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
+    _estimate_with_enc_chunking,
+    _log_joint_from_log_marginal,
+    _log_marginal_floor,
+    _stabilized_log_kernel_product,
     compute_local_log_likelihood,
     fit_clusterless_kde_encoding_model,
 )
@@ -21,6 +25,7 @@ from non_local_detector.likelihoods.common import (
     block_log_kde,
     safe_log,
 )
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 
 @pytest.fixture
@@ -142,6 +147,7 @@ def test_local_likelihood_log_space_prevents_underflow(
         mean_rates=jnp.array(enc_model["mean_rates"]),
         position_std=enc_model["position_std"],
         waveform_std=enc_model["waveform_std"],
+        mark_reference=enc_model["mark_reference"],
         block_size=50,
         disable_progress_bar=True,
     )
@@ -224,6 +230,7 @@ def test_local_likelihood_log_space_moderate_features(
         mean_rates=jnp.array(enc_model["mean_rates"]),
         position_std=enc_model["position_std"],
         waveform_std=enc_model["waveform_std"],
+        mark_reference=enc_model["mark_reference"],
         block_size=50,
         disable_progress_bar=True,
     )
@@ -296,91 +303,105 @@ def test_block_log_kde_vs_log_block_kde():
     )
 
 
-def test_compensated_linear_marginal_propagates_nan():
-    """A NaN marginal on the compensated-linear fast path propagates, not floored.
+def test_scaled_gemm_marginal_propagates_nan():
+    """A NaN marginal on the scaled-GEMM fast path propagates, not hidden.
 
     The <=8-feature fast path used ``jnp.where(marginal > 0, ..., -inf)``; since
     ``NaN > 0`` is ``False`` a NaN marginal (from non-finite inputs) was laundered
-    to ``-inf`` and then ``LOG_EPS`` by the combiner, contradicting the module's
-    propagate-NaN contract (and the logsumexp path). It must now surface as NaN.
+    to ``-inf`` (zero intensity), contradicting the module's propagate-NaN
+    contract (and the logsumexp path). It must surface as NaN, also after the
+    background is added.
     """
-    from non_local_detector.likelihoods.clusterless_kde_log import (
-        _compensated_linear_marginal,
-    )
-
     logK_mark = jnp.array([[0.0], [jnp.nan]])  # (n_enc=2, n_dec=1); a NaN row
     log_position_distance = jnp.array([[-0.1, -0.2], [-0.3, -0.4]])  # (2, n_pos=2)
     log_w = jnp.log(jnp.array([0.5, 0.5]))  # (2,)
     occupancy = jnp.array([1.0, 1.0])  # (n_pos=2,)
+    log_background = realistic_log_background(jnp.zeros((1, 1)))
 
-    out = _compensated_linear_marginal(
-        logK_mark, log_position_distance, log_w, occupancy, 1.0
+    log_marginal = _stabilized_log_kernel_product(
+        logK_mark,
+        log_position_distance,
+        log_w,
+        _log_marginal_floor(
+            1.0, occupancy, log_background + np.log(np.finfo(np.float32).eps)
+        ),
+    )
+    out = jnp.logaddexp(
+        _log_joint_from_log_marginal(log_marginal, 1.0, occupancy),
+        log_background[:, None],
     )
     assert bool(jnp.any(jnp.isnan(out))), (
         "A NaN marginal must propagate to core.py's diagnostics, not be "
-        "silently laundered to LOG_EPS."
+        "silently replaced by the background."
     )
 
 
-def test_compensated_linear_marginal_all_zero_weights_floors_not_nan():
-    """All-zero encoding weights are a zero marginal (LOG_EPS), never NaN.
+def test_scaled_gemm_all_zero_weights_score_the_background_not_nan():
+    """All-zero encoding weights are a zero intensity, never NaN.
 
-    When every encoding spike is de-weighted (``log_w == -inf``) the compensation
-    computes ``-inf - -inf`` and produces NaN. That is a genuine "no effective
-    encoding data" case, not a broken input: the logsumexp reference path folds
-    the ``-inf`` weights into the kernel and returns the finite ``LOG_EPS`` floor.
-    Both compensated fast paths (untiled and chunked) must match it rather than
-    propagating NaN (which the NaN-propagation branch would otherwise do).
+    When every encoding spike is de-weighted (``log_w == -inf``) a compensation
+    computing ``-inf - -inf`` would produce NaN. That is a genuine "no effective
+    encoding data" case, not a broken input: the intensity is zero (``-inf``)
+    and each spike's term is its background. Both fast paths (untiled and
+    encoding-tiled) must give that rather than propagating NaN.
     """
-    from non_local_detector.likelihoods.clusterless_kde_log import (
-        _compensated_linear_marginal,
-        _compensated_linear_marginal_chunked,
-    )
-    from non_local_detector.likelihoods.common import LOG_EPS
-
     n_enc, n_dec, n_features, n_pos = 4, 2, 2, 3
     rng = np.random.default_rng(0)
     log_position_distance = jnp.asarray(-np.abs(rng.standard_normal((n_enc, n_pos))))
     log_w = jnp.full((n_enc,), -jnp.inf)  # every encoding spike de-weighted
     occupancy = jnp.ones((n_pos,))
     mean_rate = 1.0
+    dec_feats = jnp.asarray(rng.standard_normal((n_dec, n_features)))
+    enc_feats = jnp.asarray(rng.standard_normal((n_enc, n_features)))
+    log_background = realistic_log_background(dec_feats)
+    expected = np.broadcast_to(np.asarray(log_background)[:, None], (n_dec, n_pos))
 
     # Untiled fast path.
     logK_mark = jnp.asarray(-np.abs(rng.standard_normal((n_enc, n_dec))))
-    out_untiled = np.asarray(
-        _compensated_linear_marginal(
-            logK_mark, log_position_distance, log_w, occupancy, mean_rate
-        )
+    log_marginal = _stabilized_log_kernel_product(
+        logK_mark,
+        log_position_distance,
+        log_w,
+        _log_marginal_floor(
+            mean_rate, occupancy, log_background + np.log(np.finfo(np.float32).eps)
+        ),
     )
-    assert np.all(np.isfinite(out_untiled)), (
-        "All-zero weights must floor to LOG_EPS, not NaN (untiled path)."
+    log_joint = np.asarray(
+        _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
     )
-    assert np.allclose(out_untiled, LOG_EPS)
+    assert np.all(np.isneginf(log_joint)), (
+        "All-zero weights must give zero intensity, not NaN (untiled path)."
+    )
+    np.testing.assert_array_equal(
+        np.logaddexp(log_joint, np.asarray(log_background)[:, None]), expected
+    )
 
-    # Chunked fast path (online max rescaling).
-    dec_feats = jnp.asarray(rng.standard_normal((n_dec, n_features)))
-    enc_feats = jnp.asarray(rng.standard_normal((n_enc, n_features)))
-    waveform_stds = jnp.ones((n_features,))
-    out_chunked = np.asarray(
-        _compensated_linear_marginal_chunked(
+    # Encoding-tiled fast path (online max rescaling).
+    log_joint_chunked = np.asarray(
+        _estimate_with_enc_chunking(
             dec_feats,
             enc_feats,
-            waveform_stds,
+            jnp.ones((n_features,)),
             occupancy,
             mean_rate,
             log_position_distance,
             log_w,
-            enc_tile_size=2,
+            2,
+            None,
+            log_background,
         )
     )
-    assert np.all(np.isfinite(out_chunked)), (
-        "All-zero weights must floor to LOG_EPS, not NaN (chunked path)."
+    assert np.all(np.isneginf(log_joint_chunked)), (
+        "All-zero weights must give zero intensity, not NaN (chunked path)."
     )
-    assert np.allclose(out_chunked, LOG_EPS)
+    np.testing.assert_array_equal(
+        np.logaddexp(log_joint_chunked, np.asarray(log_background)[:, None]),
+        expected,
+    )
 
 
 def test_log_fit_validates_features_after_windowing(simple_1d_environment):
-    """clusterless_kde_log fit: finiteness is checked on in-window spikes only.
+    """clusterless_kde fit: finiteness is checked on in-window spikes only.
 
     A NaN feature on a spike outside the encoding interval is clipped out before
     the fit, so it must not abort fitting; a NaN on an in-window spike still

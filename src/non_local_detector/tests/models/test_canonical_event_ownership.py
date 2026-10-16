@@ -226,7 +226,6 @@ def test_complementary_groups_partition_every_event(monkeypatch, family):
 
 CLUSTERLESS_ALGORITHMS = [
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 ]

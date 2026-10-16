@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from scipy.special import logsumexp
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
     _gemm_log_kernel_product,
     _stabilized_log_kernel_product,
@@ -14,6 +14,10 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
     log_kde_distance,
 )
 from non_local_detector.likelihoods.common import LOG_EPS
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
+
+# Below ``log_background + log(eps)`` an intensity cannot change a float32 term.
+LOG_FLOAT32_EPS = np.log(np.finfo(np.float32).eps)
 
 
 def _place_field_tile(seed=3, n_enc=400, n_dec=60, waveform_std=8.0):
@@ -72,6 +76,9 @@ def test_tail_intensity_is_independent_of_other_decoding_spikes(enc_tile_size):
     remote = np.zeros((1, 8), dtype=np.float32)
     remote[0, 0] = np.sqrt(180.0) * std
     encoded = jnp.zeros((2, 8))
+    together_marks = np.concatenate([np.zeros_like(remote), remote])
+    # One fixed background per spike, shared by both batches.
+    log_background = realistic_log_background(together_marks)
     kwargs = {
         "encoding_spike_waveform_features": encoded,
         "waveform_stds": jnp.full(8, std),
@@ -80,11 +87,14 @@ def test_tail_intensity_is_independent_of_other_decoding_spikes(enc_tile_size):
         "log_position_distance": jnp.zeros((2, 1)),
         "enc_tile_size": enc_tile_size,
     }
-    alone = estimate_log_joint_mark_intensity(jnp.asarray(remote), **kwargs)
-    together = estimate_log_joint_mark_intensity(
-        jnp.asarray(np.concatenate([np.zeros_like(remote), remote])), **kwargs
+    alone = estimate_log_joint_mark_intensity(
+        jnp.asarray(remote), **kwargs, log_background=log_background[1:]
     )
-    expected = -90.0 - 8 * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
+    together = estimate_log_joint_mark_intensity(
+        jnp.asarray(together_marks), **kwargs, log_background=log_background
+    )
+    log_intensity = -90.0 - 8 * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
+    expected = np.logaddexp(log_intensity, float(log_background[1]))
     np.testing.assert_allclose(alone[0, 0], expected, atol=3e-5, rtol=1e-5)
     np.testing.assert_allclose(together[1], alone[0], atol=3e-5, rtol=1e-5)
 
@@ -106,11 +116,12 @@ def test_opposing_mark_and_position_support_preserves_joint_density(
     One sample matches the mark but is ``gap`` nats away in position; the other
     matches the position but is ``gap`` nats away in mark. Every product term
     is ``gap`` nats below the product of the factor maxima, yet the joint
-    intensity is above the LOG_EPS floor and must be exact.
+    intensity is far above the spike's background and must be exact.
     """
     std = 0.001
     encoded = np.zeros((2, n_features), dtype=np.float32)
     encoded[1, 0] = np.sqrt(2 * gap) * std
+    log_background = realistic_log_background(np.zeros((1, n_features)))
     out = estimate_log_joint_mark_intensity(
         jnp.zeros((1, n_features)),
         jnp.asarray(encoded),
@@ -119,22 +130,25 @@ def test_opposing_mark_and_position_support_preserves_joint_density(
         1.0,
         jnp.asarray([[-gap], [0.0]]),
         enc_tile_size=enc_tile_size,
+        log_background=log_background,
     )
-    expected = -gap - n_features * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
-    assert expected > LOG_EPS
+    log_intensity = -gap - n_features * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
+    assert log_intensity > float(log_background[0]) - LOG_FLOAT32_EPS
+    expected = np.logaddexp(log_intensity, float(log_background[0]))
     np.testing.assert_allclose(out[0, 0], expected, atol=1e-4, rtol=1e-5)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("enc_tile_size", [None, 64])
-def test_estimates_are_floored_at_log_eps_and_exact_above_it(enc_tile_size):
-    """Callers floor the log joint at LOG_EPS; the estimate is exact above it.
+def test_estimates_are_exact_wherever_they_change_the_background_term(enc_tile_size):
+    """Each term is ``logaddexp(log joint, log background)``, exact to float32.
 
     The fixture has spatial and mark tails hundreds of nats deep, so many
-    entries are far below the floor while the rest must match a float64
-    brute-force reduction.
+    intensities are far below the spike's background (where they need not be
+    exact) while the rest must match a float64 brute-force reduction.
     """
     decoding, encoding, stds, occupancy, log_position = _place_field_tile()
+    log_background = realistic_log_background(decoding)
     out = np.asarray(
         estimate_log_joint_mark_intensity(
             decoding,
@@ -144,14 +158,18 @@ def test_estimates_are_floored_at_log_eps_and_exact_above_it(enc_tile_size):
             1.0,
             log_position,
             enc_tile_size=enc_tile_size,
+            log_background=log_background,
         )
     )
     reference = _reference_log_joint(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
-    assert (reference < LOG_EPS - 100).any() and (reference > LOG_EPS).any()
-    assert np.all(out >= np.float32(LOG_EPS))
-    np.testing.assert_allclose(out, np.maximum(reference, LOG_EPS), atol=1e-4, rtol=0)
+    background = np.asarray(log_background, np.float64)[:, None]
+    assert (reference < background - 100).any() and (reference > background).any()
+    assert np.all(out >= np.asarray(log_background)[:, None])
+    np.testing.assert_allclose(
+        out, np.logaddexp(reference, background), atol=1e-4, rtol=0
+    )
 
 
 @pytest.mark.unit
@@ -165,10 +183,14 @@ def test_entries_below_the_floor_skip_the_exact_reduction():
     decoding, encoding, stds, occupancy, log_position = _place_field_tile()
     log_mark = _compute_log_mark_kernel_gemm(decoding, encoding, stds)
     weighted_position = log_position - np.log(encoding.shape[0])
-    log_floor = LOG_EPS + jnp.log(occupancy)  # mean_rate = 1
+    # Separable floor LOG_EPS + log(occupancy) (mean_rate = 1).
+    n_queries = decoding.shape[0]
+    log_floor = (jnp.full(n_queries, LOG_EPS), jnp.log(occupancy))
 
     _, unfloored = _gemm_log_kernel_product(
-        log_mark, weighted_position, jnp.full_like(log_floor, -jnp.inf)
+        log_mark,
+        weighted_position,
+        (jnp.full(n_queries, -jnp.inf), jnp.zeros_like(occupancy)),
     )
     value, floored = _gemm_log_kernel_product(log_mark, weighted_position, log_floor)
     assert bool(jnp.any(unfloored))
@@ -203,6 +225,7 @@ def test_zero_weight_support_has_a_finite_zero_weight_gradient():
             1.0,
             jnp.zeros((2, 1)),
             encoding_weights=weights,
+            log_background=realistic_log_background(np.zeros((1, 2))),
         ).sum()
 
     gradient = jax.grad(score)(jnp.zeros(2))
@@ -211,6 +234,8 @@ def test_zero_weight_support_has_a_finite_zero_weight_gradient():
 
 @pytest.mark.unit
 def test_zero_weight_prefix_tiles_do_not_poison_feature_gradients():
+    log_background = realistic_log_background(np.asarray([[2.5]]))
+
     def score(features):
         return estimate_log_joint_mark_intensity(
             jnp.asarray([[2.5]]),
@@ -221,11 +246,16 @@ def test_zero_weight_prefix_tiles_do_not_poison_feature_gradients():
             jnp.zeros((4, 1)),
             encoding_weights=jnp.asarray([0.0, 0.0, 1.0, 1.0]),
             enc_tile_size=2,
+            log_background=log_background,
         ).sum()
 
     gradient = jax.grad(score)(jnp.arange(4.0)[:, None])
+    # Intensity: mean of two unit kernels at distance 0.5 (rate, occupancy and
+    # position kernel are 1). d logaddexp(log I, b) = I / (I + B) * d log I.
+    log_intensity = -0.125 - 0.5 * np.log(2 * np.pi)
+    share = np.exp(log_intensity - np.logaddexp(log_intensity, log_background[0]))
     np.testing.assert_allclose(
-        gradient[:, 0], [0.0, 0.0, 0.25, -0.25], rtol=1e-6, atol=1e-6
+        gradient[:, 0], share * np.array([0.0, 0.0, 0.25, -0.25]), rtol=1e-6, atol=1e-6
     )
 
 
@@ -249,6 +279,7 @@ def test_large_encoding_sets_keep_compiled_kernel_workspace_bounded(encoding_cou
         jax.ShapeDtypeStruct((512,), jnp.float32),
         1.0,
         jax.ShapeDtypeStruct((encoding_count, 512), jnp.float32),
+        log_background=jax.ShapeDtypeStruct((512,), jnp.float32),
     ).compile()
     workspace = compiled.memory_analysis().temp_size_in_bytes
     assert workspace <= 32 * 2**20, f"{workspace / 2**20:.1f} MiB"
@@ -262,7 +293,7 @@ def test_query_outputs_do_not_depend_on_other_queries_in_a_tile():
     positions = rng.uniform(-3.0, 0.0, (64, 3)).astype(np.float32)
     positions[:32, 2] = -100.0
     positions[32:, 2] = 0.0
-    no_floor = jnp.full(3, -jnp.inf)
+    no_floor = (jnp.full(2, -jnp.inf), jnp.zeros(3))  # (queries,), (positions,)
     ordinary = jax.jit(_stabilized_log_kernel_product)(
         jnp.asarray(marks), jnp.asarray(positions), jnp.zeros(64), no_floor
     )
@@ -283,7 +314,7 @@ def test_exact_reduction_recovers_mass_beyond_the_scaled_window():
     marks = jnp.asarray([[0.0], [-200.0], [-200.0]])
     positions = jnp.asarray([[-300.0], [0.0], [0.0]])
     actual = jax.jit(_stabilized_log_kernel_product)(
-        marks, positions, jnp.zeros(3), jnp.full(1, -jnp.inf)
+        marks, positions, jnp.zeros(3), (jnp.full(1, -jnp.inf), jnp.zeros(1))
     )
     expected = np.logaddexp(-300.0, -200.0 + np.log(2.0))
     np.testing.assert_allclose(actual[0, 0], expected, rtol=1e-6, atol=1e-5)
@@ -316,6 +347,7 @@ def test_reduction_dtypes_stay_consistent_with_x64_enabled(dtype, use_streaming)
     reference = _reference_log_joint(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
+    log_background = np.asarray(realistic_log_background(decoding))
 
     with _enable_x64():
         streaming = {
@@ -333,10 +365,12 @@ def test_reduction_dtypes_stay_consistent_with_x64_enabled(dtype, use_streaming)
             None if use_streaming else jnp.asarray(log_position, dtype),
             enc_tile_size=128,
             **(streaming if use_streaming else {}),
+            log_background=jnp.asarray(log_background, dtype),
         )
     out = np.asarray(out, np.float64)
     assert np.isfinite(out).all()
-    np.testing.assert_allclose(out, np.maximum(reference, LOG_EPS), atol=1e-4, rtol=0)
+    expected = np.logaddexp(reference, log_background.astype(np.float64)[:, None])
+    np.testing.assert_allclose(out, expected, atol=1e-4, rtol=0)
 
 
 @pytest.mark.unit
@@ -346,7 +380,9 @@ def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
     std, gap, n_features = 0.001, 150.0, 16
     encoded = np.zeros((2, n_features), dtype=np.float32)
     encoded[1, 0] = np.sqrt(2 * gap) * std
-    expected = -gap - n_features * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
+    log_intensity = -gap - n_features * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
+    log_background = np.asarray(realistic_log_background(np.zeros((1, n_features))))
+    expected = np.logaddexp(log_intensity, float(log_background[0]))
     with _enable_x64():
         out = estimate_log_joint_mark_intensity(
             jnp.zeros((1, n_features), jnp.float32),
@@ -356,5 +392,6 @@ def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
             1.0,
             jnp.asarray([[-gap], [0.0]], jnp.float64),
             enc_tile_size=enc_tile_size,
+            log_background=jnp.asarray(log_background, jnp.float64),
         )
     np.testing.assert_allclose(np.asarray(out)[0, 0], expected, atol=1e-4, rtol=1e-5)

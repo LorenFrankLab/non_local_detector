@@ -139,6 +139,7 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=encoding["position_std"],
         waveform_std=encoding["waveform_std"],
+        mark_reference=encoding["mark_reference"],
         is_local=False,
         block_size=8,
         disable_progress_bar=True,

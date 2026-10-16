@@ -1,7 +1,7 @@
 """Profile performance improvements for log KDE optimizations.
 
 This script measures the speedup achieved by vectorizing kde_distance and
-log_kde_distance functions in clusterless_kde_log.py.
+log_kde_distance functions in clusterless_kde.py.
 """
 
 import sys
@@ -13,7 +13,7 @@ import numpy as np
 # Add src to path
 sys.path.insert(0, "src")
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance,
     kde_distance_vectorized,
     log_kde_distance,

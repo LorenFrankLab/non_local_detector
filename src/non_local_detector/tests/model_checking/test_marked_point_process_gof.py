@@ -15,10 +15,7 @@ from scipy import stats
 from scipy.special import logsumexp
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods import (
-    fit_clusterless_kde_encoding_model,
-    fit_clusterless_kde_log_encoding_model,
-)
+from non_local_detector.likelihoods import fit_clusterless_kde_encoding_model
 from non_local_detector.likelihoods.clusterless_diffusion import (
     fit_clusterless_diffusion_encoding_model,
 )
@@ -50,7 +47,6 @@ pytestmark = pytest.mark.unit
 
 ALGORITHMS = [
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 ]
@@ -95,20 +91,16 @@ def recording():
 def fitted(recording):
     environment, time, position, spike_times, marks = recording
     models = {}
-    for algorithm, fit in (
-        ("clusterless_kde", fit_clusterless_kde_encoding_model),
-        ("clusterless_kde_log", fit_clusterless_kde_log_encoding_model),
-    ):
-        models[algorithm] = fit(
-            time,
-            position,
-            [spike_times],
-            [marks],
-            environment,
-            position_std=POSITION_STD,
-            waveform_std=WAVEFORM_STD,
-            disable_progress_bar=True,
-        )
+    models["clusterless_kde"] = fit_clusterless_kde_encoding_model(
+        time,
+        position,
+        [spike_times],
+        [marks],
+        environment,
+        position_std=POSITION_STD,
+        waveform_std=WAVEFORM_STD,
+        disable_progress_bar=True,
+    )
     models["clusterless_gmm"] = fit_clusterless_gmm_encoding_model(
         time,
         position,
@@ -600,7 +592,7 @@ def test_mdci_equals_a_direct_sum_over_bins(recording, fitted, algorithm):
     )
     # KDE occupancy is the decoder's float32 KDE over 40,000 samples, within
     # 3e-5 relative of the float64 sum computed here; the others are float64.
-    rtol = 5e-5 if algorithm in ("clusterless_kde", "clusterless_kde_log") else 1e-6
+    rtol = 5e-5 if algorithm == "clusterless_kde" else 1e-6
     np.testing.assert_allclose(u, expected_u, rtol=rtol, atol=1e-9)
 
     time_weight = np.zeros(len(position_time))
@@ -647,7 +639,6 @@ def separated():
     models = {}
     for algorithm, fit in (
         ("clusterless_kde", fit_clusterless_kde_encoding_model),
-        ("clusterless_kde_log", fit_clusterless_kde_log_encoding_model),
         ("clusterless_diffusion", fit_clusterless_diffusion_encoding_model),
     ):
         models[algorithm] = fit(
@@ -789,16 +780,7 @@ def test_gaussian_log_kernel_subtracts_before_squaring():
 
 
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
-@pytest.mark.parametrize(
-    "algorithm, fit",
-    [
-        ("clusterless_kde", fit_clusterless_kde_encoding_model),
-        ("clusterless_kde_log", fit_clusterless_kde_log_encoding_model),
-    ],
-)
-def test_kde_transforms_are_invariant_to_a_common_mark_offset(
-    algorithm, fit, transform
-):
+def test_kde_transforms_are_invariant_to_a_common_mark_offset(transform):
     """Translating every mark by 1e8 does not change the model or the points.
 
     Float64 keeps the translated marks exact; float32 would round them.
@@ -811,7 +793,7 @@ def test_kde_transforms_are_invariant_to_a_common_mark_offset(
     results = []
     with precision_mode(True):
         for offset in (0.0, 1e8):
-            model = fit(
+            model = fit_clusterless_kde_encoding_model(
                 time,
                 position,
                 [np.array([0.0, 10.0])],
@@ -824,7 +806,7 @@ def test_kde_transforms_are_invariant_to_a_common_mark_offset(
             results.append(
                 transform(
                     model,
-                    algorithm,
+                    "clusterless_kde",
                     0,
                     np.array([0.0, 1.0]),
                     np.array([[0.5], [9.5]]),

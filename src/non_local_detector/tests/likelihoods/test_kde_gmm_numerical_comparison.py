@@ -221,6 +221,7 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
             "encoding_spike_waveform_features"
         ],
         encoding_positions=kde_encoding["encoding_positions"],
+        mark_reference=kde_encoding["mark_reference"],
         environment=data["environment"],
         mean_rates=kde_encoding["mean_rates"],
         summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],

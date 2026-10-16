@@ -53,14 +53,14 @@ if its values change between passes. Keep fitted parameters and callback inputs 
 throughout prediction.
 
 Chunking bounds forward/backward arrays and likelihood output rows. Likelihood
-workspaces need a separate budget: the default linear clusterless KDE still
-constructs an encoding-event × spatial-bin position kernel and a weighted
-kernel. Reducing `chunk_size` does not remove them. Include encoding data,
-these kernels and compiled executables in host/device preflight; large encoding
-populations do not inherit the HMM memory guarantee.
+workspaces need a separate budget: by default, non-local `clusterless_kde`
+prediction constructs an encoding-event × spatial-bin position kernel.
+Reducing `chunk_size` does not remove it. Include encoding data, this kernel
+and compiled executables in host/device preflight; large encoding populations
+do not inherit the HMM memory guarantee.
 
-For longer training sets, the linear `clusterless_kde` backend can also tile
-encoding samples and position queries during fit and prediction:
+For longer training sets, `clusterless_kde` can also tile encoding samples and
+position queries during non-local prediction:
 
 `clusterless_algorithm_params` replaces the detector's default parameter
 dictionary. When adding tile limits, retain your existing bandwidths and block
@@ -73,16 +73,20 @@ detector = NonLocalClusterlessDetector(
         "position_std": 6.0,
         "waveform_std": 24.0,
         "block_size": 10_000,
-        "encoding_block_size": 1024,
-        "position_block_size": 8192,
+        "enc_tile_size": 1024,
+        "pos_tile_size": 8192,
+        "use_streaming": True,
     },
 )
 ```
 
-The fitted model carries these optional limits into both local and nonlocal
-prediction. Samples and weights remain unchanged; normalization and intensity
-floors apply after all encoding tiles contribute. Defaults retain the original
-untiled kernels. These limits bound kernel tiles; resident inputs, returned
+The fitted model carries these optional limits into prediction.
+`use_streaming=True` computes the position kernel for one encoding tile at a
+time instead of the full encoding × position kernel; it requires
+`enc_tile_size`. Samples and weights remain unchanged; normalization and the
+background floor apply after all encoding tiles contribute. Defaults build the
+full position kernel. Local prediction bounds its kernel workspace without
+these options. These limits bound kernel tiles; resident inputs, returned
 arrays and differentiation storage still need budgets. Smaller tiles can
 increase execution time. Use checkpointed row chunks alongside these limits
 for long recordings. Other likelihood backends retain their own workspaces.

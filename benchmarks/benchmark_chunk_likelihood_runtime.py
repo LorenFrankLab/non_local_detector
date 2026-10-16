@@ -43,7 +43,7 @@ from compare_prediction_modes import provenance  # noqa: E402
 
 BACKENDS = (
     "sorted_spikes_kde",
-    "clusterless_kde_log",
+    "clusterless_kde",
     "clusterless_gmm",
     "clusterless_diffusion",
     "no_spike",

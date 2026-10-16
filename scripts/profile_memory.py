@@ -32,10 +32,10 @@ from non_local_detector.likelihoods.clusterless_kde import (
 from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood as predict_reference,
 )
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model as fit_log,
 )
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood as predict_log,
 )
 
@@ -146,6 +146,7 @@ def profile_reference_implementation():
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=jnp.asarray(encoding["waveform_std"]),
+        mark_reference=encoding["mark_reference"],
         is_local=False,
         block_size=100,
         disable_progress_bar=True,
@@ -192,6 +193,7 @@ def profile_log_implementation():
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(encoding["position_std"]),
         waveform_std=jnp.asarray(encoding["waveform_std"]),
+        mark_reference=encoding["mark_reference"],
         is_local=False,
         block_size=100,
         disable_progress_bar=True,

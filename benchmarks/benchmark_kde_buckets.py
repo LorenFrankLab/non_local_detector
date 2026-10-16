@@ -68,7 +68,9 @@ def main():
                 "weights": rng.uniform(0, 2, samples).astype(dtype),
                 "encoding_marks": rng.normal(size=(samples, 4)).astype(dtype),
                 "decoding_marks": rng.normal(size=(marks, 4)).astype(dtype),
-                "position_kernel": rng.uniform(0, 0.4, (samples, 1024)).astype(dtype),
+                "log_position_kernel": np.log(
+                    rng.uniform(0, 0.4, (samples, 1024))
+                ).astype(dtype),
                 "occupancy": rng.uniform(0.02, 0.5, 1024).astype(dtype),
             }
         )
@@ -89,7 +91,7 @@ def main():
                 padded(f["weights"], ns),
                 padded(f["encoding_marks"], ns),
                 padded(f["decoding_marks"], nm),
-                padded(f["position_kernel"], ns),
+                padded(f["log_position_kernel"], ns),
                 jnp.asarray(f["occupancy"]),
             )
             input_bytes[policy] += sum(x.nbytes for x in [s, e, w, em, dm, pk, occ])
@@ -109,6 +111,9 @@ def main():
                             pk,
                             block_size=10000,
                             encoding_weights=w,
+                            log_background=jnp.full(
+                                len(dm), common.LOG_EPS, dtype=dtype
+                            ),
                         )[:n]
                     ),
                 ]
@@ -121,7 +126,9 @@ def main():
         report[policy] = {
             "compile_plus_first_seconds": time.perf_counter() - start,
             "kde_executable_shapes": common.kde._cache_size(),
-            "marked_executable_shapes": clusterless_kde._blocked_joint_mark_intensity._cache_size(),
+            "marked_executable_shapes": (
+                clusterless_kde.estimate_log_joint_mark_intensity._cache_size()
+            ),
             "shapes": shapes[policy],
             "resident_input_bytes": input_bytes[policy],
             "warm_seconds": [],

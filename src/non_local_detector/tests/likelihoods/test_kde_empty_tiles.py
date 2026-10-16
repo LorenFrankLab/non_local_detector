@@ -5,10 +5,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
 )
-from non_local_detector.likelihoods.common import LOG_EPS
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 pytestmark = pytest.mark.unit
 
@@ -32,6 +32,7 @@ def test_empty_encoding_tiles_match_independent_density_and_gradient(
         weights[4 * empty_tile : 4 * (empty_tile + 1)] = 0.0
     weights = jnp.asarray(weights)
     log_pos = -0.5 * (pos - bins.T) ** 2 - 0.5 * jnp.log(2 * jnp.pi)
+    log_background = realistic_log_background(dec)
 
     def evaluate(marks):
         return estimate_log_joint_mark_intensity(
@@ -47,6 +48,7 @@ def test_empty_encoding_tiles_match_independent_density_and_gradient(
             position_eval_points=bins,
             position_std=jnp.ones(1),
             encoding_weights=weights,
+            log_background=log_background,
         )
 
     def reference(marks):
@@ -61,11 +63,12 @@ def test_empty_encoding_tiles_match_independent_density_and_gradient(
             axis=0,
         ) / jnp.where(total > 0, total, 1.0)
         positive = density > 0
-        return jnp.where(
+        log_intensity = jnp.where(
             positive,
             jnp.log(jnp.where(positive, density, 1.0) * 0.7 / occ),
-            LOG_EPS,
+            -jnp.inf,
         )
+        return jnp.logaddexp(log_intensity, log_background[:, None])
 
     expected = reference(dec)
     expected_grad = jax.grad(lambda marks: reference(marks).sum())(dec)
@@ -91,6 +94,7 @@ def test_invalid_mark_is_not_hidden_by_empty_weights(tile_size, all_zero):
         jnp.zeros((9, 3)),
         enc_tile_size=tile_size,
         encoding_weights=weights,
+        log_background=realistic_log_background(jnp.zeros((2, 1))),
     )
     assert np.isnan(actual).all()
 
@@ -98,6 +102,7 @@ def test_invalid_mark_is_not_hidden_by_empty_weights(tile_size, all_zero):
 @pytest.mark.parametrize("tile_size", [None, 4])
 def test_zero_mass_position_rows_do_not_poison_remaining_rows(tile_size):
     log_pos = jnp.zeros((9, 3)).at[:4].set(-jnp.inf)
+    log_background = realistic_log_background(jnp.zeros((2, 1)))
     actual = estimate_log_joint_mark_intensity(
         jnp.zeros((2, 1)),
         jnp.zeros((9, 1)),
@@ -106,6 +111,10 @@ def test_zero_mass_position_rows_do_not_poison_remaining_rows(tile_size):
         1.0,
         log_pos,
         enc_tile_size=tile_size,
+        log_background=log_background,
     )
-    expected = np.log(5 / 9 / np.sqrt(2 * np.pi))
+    expected = np.logaddexp(
+        np.log(5 / 9 / np.sqrt(2 * np.pi)),
+        np.broadcast_to(np.asarray(log_background)[:, None], (2, 3)),
+    )
     np.testing.assert_allclose(actual, expected, rtol=1e-4)

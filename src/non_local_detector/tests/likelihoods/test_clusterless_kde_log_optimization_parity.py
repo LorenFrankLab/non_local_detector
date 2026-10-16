@@ -5,12 +5,13 @@ import numpy as np
 import pytest
 
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
     log_kde_distance,
 )
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 
 def _synthetic_block_inputs(n_dec, seed=7):
@@ -23,19 +24,33 @@ def _synthetic_block_inputs(n_dec, seed=7):
     enc_pos = jnp.asarray(rng.standard_normal((n_enc, 2)))
     pos_eval = jnp.asarray(rng.standard_normal((n_pos, 2)))
     log_pos = log_kde_distance(pos_eval, enc_pos, jnp.array([1.0, 1.0]))
-    return dec, enc, wf_std, occ, log_pos
+    return dec, enc, wf_std, occ, log_pos, realistic_log_background(dec)
 
 
 def test_final_block_padding_is_inert():
     """A single block with an edge-padded tail (block_size > n_dec) must give
     bit-identical results to a single unpadded block (block_size == n_dec).
     Guards the pad/slice logic: padded rows must not leak into the kept rows."""
-    dec, enc, wf_std, occ, log_pos = _synthetic_block_inputs(n_dec=10)
+    dec, enc, wf_std, occ, log_pos, log_background = _synthetic_block_inputs(n_dec=10)
     unpadded = block_estimate_log_joint_mark_intensity(
-        dec, enc, wf_std, occ, 2.5, log_pos, block_size=10
+        dec,
+        enc,
+        wf_std,
+        occ,
+        2.5,
+        log_pos,
+        block_size=10,
+        log_background=log_background,
     )
     padded = block_estimate_log_joint_mark_intensity(
-        dec, enc, wf_std, occ, 2.5, log_pos, block_size=16
+        dec,
+        enc,
+        wf_std,
+        occ,
+        2.5,
+        log_pos,
+        block_size=16,
+        log_background=log_background,
     )
     assert padded.shape == (10, occ.shape[0])
     assert jnp.allclose(unpadded, padded, rtol=1e-6, atol=1e-7)
@@ -47,12 +62,26 @@ def test_multi_block_matches_single_block():
     forces blocks of 4+4+2 (padded tail); the tolerance still catches a
     scrambled concat order or a wrong [:actual_len] slice (order-1 errors),
     while allowing the inherent per-block float32 stabilization noise."""
-    dec, enc, wf_std, occ, log_pos = _synthetic_block_inputs(n_dec=10)
+    dec, enc, wf_std, occ, log_pos, log_background = _synthetic_block_inputs(n_dec=10)
     single = block_estimate_log_joint_mark_intensity(
-        dec, enc, wf_std, occ, 2.5, log_pos, block_size=100
+        dec,
+        enc,
+        wf_std,
+        occ,
+        2.5,
+        log_pos,
+        block_size=100,
+        log_background=log_background,
     )
     multi = block_estimate_log_joint_mark_intensity(
-        dec, enc, wf_std, occ, 2.5, log_pos, block_size=4
+        dec,
+        enc,
+        wf_std,
+        occ,
+        2.5,
+        log_pos,
+        block_size=4,
+        log_background=log_background,
     )
     assert single.shape == (10, occ.shape[0]) and multi.shape == (10, occ.shape[0])
     assert jnp.allclose(single, multi, rtol=1e-4, atol=1e-4)
@@ -109,7 +138,7 @@ def test_encoding_weights_consistent_across_paths(n_features):
     """
     rng = np.random.default_rng(11)
     n_enc, n_pos, n_pos_dims = 30, 25, 2
-    # Keep the mark kernel well above the LOG_EPS floor even at 10 features: draw
+    # Keep the intensity well above each spike's background even at 10 features: draw
     # encoding marks at unit scale and make the decoding marks near-coincident with
     # the first few, with a bandwidth wide enough that 10-D products do not underflow.
     enc = jnp.asarray(rng.standard_normal((n_enc, n_features)))
@@ -121,6 +150,7 @@ def test_encoding_weights_consistent_across_paths(n_features):
     position_std = jnp.array([1.0, 1.0])
     log_pos = log_kde_distance(pos_eval, enc_pos, position_std)
     mean_rate = 2.5
+    log_background = realistic_log_background(dec)
 
     # Non-uniform weights with a zero (spike index 3 drops out entirely).
     w = jnp.asarray(rng.random(n_enc) * 2.0 + 0.5).at[3].set(0.0)
@@ -134,6 +164,7 @@ def test_encoding_weights_consistent_across_paths(n_features):
         log_pos,
         use_gemm=False,
         encoding_weights=w,
+        log_background=log_background,
     )
     unweighted = estimate_log_joint_mark_intensity(
         dec,
@@ -143,6 +174,7 @@ def test_encoding_weights_consistent_across_paths(n_features):
         mean_rate,
         log_pos,
         use_gemm=False,
+        log_background=log_background,
     )
     # The weights must actually change the result (else they are ignored).
     assert not np.allclose(np.asarray(reference), np.asarray(unweighted))
@@ -156,6 +188,7 @@ def test_encoding_weights_consistent_across_paths(n_features):
         log_pos,
         use_gemm=True,
         encoding_weights=w,
+        log_background=log_background,
     )
     chunked = estimate_log_joint_mark_intensity(
         dec,
@@ -167,6 +200,7 @@ def test_encoding_weights_consistent_across_paths(n_features):
         use_gemm=True,
         enc_tile_size=8,
         encoding_weights=w,
+        log_background=log_background,
     )
     streaming = estimate_log_joint_mark_intensity(
         dec,
@@ -182,6 +216,7 @@ def test_encoding_weights_consistent_across_paths(n_features):
         position_eval_points=pos_eval,
         position_std=position_std,
         encoding_weights=w,
+        log_background=log_background,
     )
 
     ref = np.asarray(reference)
@@ -220,11 +255,12 @@ def test_pos_tiling_matches_no_tiling(simple_1d_environment, pos_tile_size):
     )
 
     dec_feats = np.array([[0.1, 0.05], [1.1, -0.9]], dtype=float)
+    log_background = realistic_log_background(dec_feats)
 
     is_track_interior = env.is_track_interior_.ravel()
     interior_place_bin_centers = env.place_bin_centers_[is_track_interior]
 
-    from non_local_detector.likelihoods.clusterless_kde_log import kde_distance
+    from non_local_detector.likelihoods.clusterless_kde import kde_distance
 
     electrode_encoding_positions = encoding["encoding_positions"][0]
     electrode_encoding_features = encoding["encoding_spike_waveform_features"][0]
@@ -246,6 +282,7 @@ def test_pos_tiling_matches_no_tiling(simple_1d_environment, pos_tile_size):
         block_size=8,
         use_gemm=True,
         pos_tile_size=None,
+        log_background=log_background,
     )
 
     # With tiling
@@ -259,6 +296,7 @@ def test_pos_tiling_matches_no_tiling(simple_1d_environment, pos_tile_size):
         block_size=8,
         use_gemm=True,
         pos_tile_size=pos_tile_size,
+        log_background=log_background,
     )
 
     # Should match exactly
