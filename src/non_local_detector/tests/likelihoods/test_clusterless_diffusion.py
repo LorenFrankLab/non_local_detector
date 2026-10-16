@@ -36,7 +36,7 @@ from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_diffusion import (
     _diffused_mark_field,
-    _log_resolved_field,
+    _spatial_kernel,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
@@ -325,20 +325,16 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units():
             {**s, "enc_f": [f * factor for f in s["enc_f"]]},
             waveform_std=WAVEFORM_STD * factor,
         )
-        Lam, Q, labels, n_components = get_device_basis(s["env"], enc["resolved_rank"])
         field, log_scale = _diffused_mark_field(
             jnp.asarray(far * factor),
             jnp.asarray(enc["encoding_bin_indices"][0]),
             jnp.asarray(enc["encoding_marks"][0]),
             jnp.asarray(enc["encoding_weights"][0]),
             jnp.full(4, WAVEFORM_STD * factor),
-            Lam,
-            Q,
-            labels,
-            enc["position_std"],
-            n_components,
+            _spatial_kernel(s["env"], enc["resolved_rank"], enc["position_std"]),
         )
-        fields.append(np.asarray(_log_resolved_field(field, log_scale)))
+        with np.errstate(divide="ignore"):
+            fields.append(np.log(np.asarray(field)) + np.asarray(log_scale))
     original, millivolts = fields
     assert np.all(np.isfinite(original.max(axis=0)))  # no spike underflows
     finite = np.isfinite(original)
@@ -346,6 +342,51 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units():
     both = finite & np.isfinite(millivolts)
     np.testing.assert_allclose(
         millivolts[both] + 4 * np.log(1e-3), original[both], rtol=1e-5, atol=1e-3
+    )
+
+
+@pytest.mark.integration
+def test_predicted_intensity_integrates_over_marks_to_the_expected_count():
+    """The spike term and the compensator describe one marked process.
+
+    One electrode with one waveform feature: decoding one spike per bin on a
+    fine mark grid gives each bin's marked intensity ``lambda(x, m) + beta q``.
+    Integrated over the marks it must equal the fitted expected count
+    ``Lambda(x) + beta`` at every position. (The local path reads the same
+    intensity at the animal's bin; see test_local_equals_nonlocal_per_spike.)
+    """
+    s = _sim(seed=3, n_elec=1, n_features=1)
+    enc = _fit(s)
+    reference = training_mark_references(
+        s["position_time"], s["enc_t"], s["enc_f"], WAVEFORM_STD
+    )
+    marks = np.arange(-12 * WAVEFORM_STD, 12 * WAVEFORM_STD, WAVEFORM_STD / 40)
+    dt = 0.002
+    edges = np.arange(marks.size + 1) * dt + s["position_time"][0]
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    def predict(spike_times, spike_marks):
+        return np.asarray(
+            predict_clusterless_diffusion_log_likelihood(
+                s["position_time"],
+                s["position"],
+                spike_times,
+                spike_marks,
+                time_edges=edges,
+                **enc,
+                mark_reference=reference,
+                is_local=False,
+            ),
+            dtype=float,
+        )
+
+    with_spike = predict([centers], [marks[:, None].astype(np.float32)])
+    silent = predict([np.array([])], [np.zeros((0, 1), np.float32)])
+    intensity = np.exp(with_spike - silent - np.log(dt))  # (n_marks, n_bins)
+    np.testing.assert_allclose(
+        np.trapezoid(intensity, marks, axis=0),
+        np.asarray(enc["summed_ground_process_intensity"]),
+        rtol=1e-4,
     )
 
 
