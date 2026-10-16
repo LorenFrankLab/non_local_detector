@@ -120,10 +120,10 @@ cases pass at their unchanged tolerances (101 cases).
 
 Custom `KDEModel` subclasses retain their own `predict_log` behavior. Local
 prediction shares row interpolation, occupancy, and ground-process log densities
-through the prediction's `_SpikeTimeOrder`; small nonlocal spatial log kernels
-and device bin centers use the same preparation. Linear KDE derives probability
-and log position kernels from one calculation. Large spatial kernels retain
-their existing compiled scorer instead of becoming persistent cache entries.
+through the prediction's `_SpikeTimeOrder`. Non-local scoring computes each
+electrode's spatial log kernel inside its compiled scorer rather than caching
+it. Linear KDE derives probability and log position kernels from one
+calculation.
 
 Preparation stays within one immutable prediction, with a 32 MiB and 256-entry
 LRU limit. Its byte accounting conservatively counts strong source-array
