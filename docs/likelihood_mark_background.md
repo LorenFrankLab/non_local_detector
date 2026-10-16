@@ -95,18 +95,30 @@ recording, `b` lies about 19 nats below the old `LOG_EPS` floor (median −53.2 
 - It was 0.15 or more below 1e-8, and values there are often exactly 0.
 - Each spike would need a median of 66 nats of range, beyond even float64's ~36.
 
+Diffusion therefore uses one fixed spatial kernel `H` (`_spatial_kernel`): column
+`s` is the heat kernel applied to a unit mass at bin `s`, clipped to be
+non-negative, zero outside `s`'s connected component, cut below
+`_FIELD_RESOLUTION · max(column)` (where `_FIELD_RESOLUTION = max(float32 eps,
+heat-kernel rank tolerance) = 1e-6`) and normalized to unit mass. Occupancy, the
+ground process and every spike's marked field are this one linear map of their
+sources:
+
+`λ(x, m) = c(x) Σᵢ wᵢ H[x, bᵢ] K(m; mᵢ)` and `Λ(x) = c(x) Σᵢ wᵢ H[x, bᵢ]`,
+
+with `c(x) = r / (Σᵢ wᵢ · dV(x) · occupancy(x))`. Because each mark kernel
+integrates to one, `∫ λ dm = Λ` exactly, and a disconnected component stays exactly
+zero. Clipping or flooring each spike's diffused mark column instead does not
+commute with integrating over marks: such a floor had added intensity that `Λ`
+never counted (0.5 Hz in a graph-disconnected component where `Λ` is only `β`).
+Model checking uses the same kernel, so its mixture is the model's.
+
 Each spike's mark kernels are computed in log space and exponentiated relative to
-that spike's largest weighted kernel before diffusion, and the offset is added back
-in log space. The kernel normalizer, which carries the mark units, therefore cannot
-underflow a spike's field. Field values below `_FIELD_RESOLUTION · max(column)`,
-where `_FIELD_RESOLUTION = max(float32 eps, heat-kernel rank tolerance) = 1e-6`, are
-not resolved, so the spike's marked intensity there is zero and its background
-explains it. The cut is relative to each spike's own peak, so it does not depend on
-the units. Cutting rather than raising those values keeps the marked intensity
-within the process whose expected count `Λ` the fit computes: raising them to the
-cut had added intensity that `Λ` never counted, such as 0.5 Hz in a
-graph-disconnected component where `Λ` is only `β`. The cost is that a spike can
-rule out tail positions more strongly than the unresolved exact value would.
+that spike's largest weighted kernel before `H` is applied; the offset is added
+back in log space, so the kernel normalizer, which carries the mark units, cannot
+underflow a spike's field. A source more than about 87 nats below the spike's
+strongest one underflows. On a real recording, none of 75,458 held-out spikes had
+such a source that could have reached its background. Integrating the predicted
+intensity over a fine mark grid recovers `Λ + β` to float32 rounding (8e-7).
 
 Occupancy is a diffused field too. Bins whose occupancy is below the same
 `1e-6` of its maximum are unvisited, so the heat kernel does not resolve them.
@@ -129,9 +141,11 @@ spurious evidence.
   - the outlier odds `log(β/r₀)` for KDE, GMM and diffusion with the fitted
     reference and mark kernels wider than the training spread;
   - the No-Spike formula, the EM-frozen reference, chunk parity and saved-model refit.
-- `tests/likelihoods/test_clusterless_diffusion.py` covers a spike's term in a
-  graph-disconnected room (the background, in every bin) and a diffused field
-  that differs between microvolts and millivolts by exactly the Jacobian.
+- `tests/likelihoods/test_clusterless_diffusion.py` covers the predicted
+  intensity integrated over marks (the expected count), a spike's term in a
+  graph-disconnected room (the background, in every bin), and diffused fields
+  with 4 and 16 features that differ between microvolts and millivolts by exactly
+  the Jacobian.
 - `TestScaledGemmJointIntensity` compares the KDE reduction with a logsumexp
   oracle within 1e-4. At 8 and 9 mark dimensions, 100% of the compared terms
   lie below the old `LOG_EPS` floor yet above the background.
