@@ -193,10 +193,8 @@ def test_unit_change_shifts_every_spike_term_by_the_jacobian(
     assert counts.sum() > 20
     jacobian = np.log(np.prod(np.abs(SCALE)))
     if algorithm[0] == "clusterless_diffusion":
-        # The float32 heat kernel resolves its field to about 1e-6 of each
-        # spike's peak, and values just above that floor carry up to ~1e-2
-        # relative error (measured against a float64 full-rank heat kernel), so
-        # a refit in other units reproduces those few entries only approximately.
+        # A spike's field is cut at 1e-6 of its peak; float32 rounding differs
+        # between unit systems, so an entry at the cut can fall on either side.
         error = np.abs(transformed + counts[:, None] * jacobian - original)
         assert np.mean(error <= 1e-3 + 1e-5 * np.abs(original)) >= 0.99
         assert np.max(error) < 0.1
@@ -210,11 +208,10 @@ def test_unit_change_shifts_every_spike_term_by_the_jacobian(
 @pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
 def test_outlier_mark_scores_the_background_at_every_position(run_data, algorithm):
     """A mark the encoding model cannot explain is scored by the background."""
+    # The fitted reference: its tails exceed every mark kernel far from the
+    # training marks, so 1000 µV away the background dominates everywhere.
     model = _fit(run_data, algorithm)
-    # A reference much broader than the 24 µV mark kernel, so 1000 µV away the
-    # marked intensity is ~3400 nats below the background at every position.
-    reference = MarkReference(np.zeros(4), np.full(4, 3e4))
-    model = dict(model, mark_reference=[reference] + model["mark_reference"][1:])
+    reference = model["mark_reference"][0]
     spike_time = run_data["test_time"][200]
     outlier = model_marks_center(run_data) + 1e3
     spikes = [np.array([spike_time])] + [np.array([])] * 4
@@ -233,6 +230,36 @@ def test_outlier_mark_scores_the_background_at_every_position(run_data, algorith
             + np.log(np.diff(edges)[row])
         )
         np.testing.assert_allclose(with_spike[row] - without[row], expected, rtol=1e-5)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("is_local", [False, True])
+def test_diffusion_far_marks_keep_unit_invariance(run_data, is_local):
+    """Marks many bandwidths from training: microvolts against millivolts.
+
+    The diffusion field must keep each spike's scale in log space; a mark
+    kernel exponentiated with its unit-dependent normalizer underflows at a
+    different distance in each unit system.
+    """
+    variant = ("clusterless_diffusion", {})
+    # About 7 bandwidths per feature: in float32 a 4-feature kernel with its
+    # normalizer underflows there in microvolts (24^-4) but not in millivolts.
+    far = [m + 7.2 * 24.0 for m in run_data["test_marks"]]
+    original = _predict(run_data, variant, _fit(run_data, variant), far, is_local)
+    millivolts = _fit(
+        run_data, variant, marks=[m * 1e-3 for m in run_data["train_marks"]], scale=1e-3
+    )
+    transformed = _predict(
+        run_data, variant, millivolts, [m * 1e-3 for m in far], is_local
+    )
+    counts = np.histogram(
+        np.concatenate(run_data["test_spikes"]),
+        time_edges_from_centers(run_data["test_time"]),
+    )[0]
+    jacobian = 4 * np.log(1e-3)
+    np.testing.assert_allclose(
+        transformed + counts[:, None] * jacobian, original, rtol=1e-5, atol=1e-3
+    )
 
 
 def model_marks_center(run_data):

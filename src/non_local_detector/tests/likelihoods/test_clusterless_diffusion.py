@@ -35,6 +35,8 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_diffusion import (
+    _diffused_mark_field,
+    _log_resolved_field,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
@@ -303,6 +305,47 @@ def test_mark_marginal_recovery():
 
     assert np.allclose(lhs, rhs, rtol=1e-3, atol=1e-6), (
         f"mark-marginal mismatch: max|diff|={np.abs(lhs - rhs).max():.3e}"
+    )
+
+
+@pytest.mark.unit
+def test_diffused_field_keeps_each_spike_scale_in_any_units():
+    """Microvolts against millivolts, 7 bandwidths from every training mark.
+
+    There a 4-feature mark kernel exponentiated with its normalizer underflows
+    float32 in one unit system and not the other. Scaling each spike's kernels
+    by their own largest value keeps every spike's field, and the fields differ
+    by exactly the log Jacobian.
+    """
+    s = _sim(seed=4, n_features=4)
+    far = s["dec_f"][0] + 7.2 * WAVEFORM_STD
+    fields = []
+    for factor in (1.0, 1e-3):
+        enc = _fit(
+            {**s, "enc_f": [f * factor for f in s["enc_f"]]},
+            waveform_std=WAVEFORM_STD * factor,
+        )
+        Lam, Q, labels, n_components = get_device_basis(s["env"], enc["resolved_rank"])
+        field, log_scale = _diffused_mark_field(
+            jnp.asarray(far * factor),
+            jnp.asarray(enc["encoding_bin_indices"][0]),
+            jnp.asarray(enc["encoding_marks"][0]),
+            jnp.asarray(enc["encoding_weights"][0]),
+            jnp.full(4, WAVEFORM_STD * factor),
+            Lam,
+            Q,
+            labels,
+            enc["position_std"],
+            n_components,
+        )
+        fields.append(np.asarray(_log_resolved_field(field, log_scale)))
+    original, millivolts = fields
+    assert np.all(np.isfinite(original.max(axis=0)))  # no spike underflows
+    finite = np.isfinite(original)
+    assert np.mean(finite == np.isfinite(millivolts)) > 0.999
+    both = finite & np.isfinite(millivolts)
+    np.testing.assert_allclose(
+        millivolts[both] + 4 * np.log(1e-3), original[both], rtol=1e-5, atol=1e-3
     )
 
 
@@ -1540,6 +1583,51 @@ def _decode_diffusion_posterior(env, position, position_std, seed=5):
     post = np.exp(ll - ll.max(axis=1, keepdims=True))
     post /= post.sum(axis=1, keepdims=True)
     return post, centers
+
+
+@pytest.mark.integration
+def test_spike_term_is_the_background_where_the_exact_intensity_is_zero():
+    """The marked intensity is the process the expected count describes.
+
+    With every encoding spike in the left room, the right room is a separate
+    graph component: its exact marked intensity is zero and its expected count
+    is the background alone. A spike's term there must then be the background,
+    the same in every right-room bin, not a fraction of the spike's left-room
+    peak scaled by each bin's occupancy.
+    """
+    env, position = _make_two_room_env()
+    sampling_frequency = 100
+    time = np.arange(position.shape[0]) / sampling_frequency
+    center = np.array([14.0, 20.0])
+    rng = np.random.default_rng(2)
+    rate = 50.0 * np.exp(-((position - center) ** 2).sum(axis=1) / (2 * 4.0**2))
+    rate[position[:, 0] > 16.0] = 0.0
+    spike_mask = rng.random(position.shape[0]) < rate / sampling_frequency
+    enc_t = [time[spike_mask]]
+    enc_f = [rng.normal(0.0, 1.0, size=(int(spike_mask.sum()), 2)).astype(np.float32)]
+    enc = _fit_diffusion(time, position, enc_t, enc_f, env, 8.0, sampling_frequency)
+    ref = training_mark_references(time, enc_t, enc_f, GEOM_WAVEFORM_STD)
+
+    decode_center = time[position.shape[0] // 2]
+    edges = np.array([decode_center - 0.001, decode_center + 0.001])
+    with_spike = _predict_diffusion_nonlocal(
+        edges,
+        time,
+        position,
+        [np.array([decode_center])],
+        [np.array([[0.0, 0.0]], dtype=np.float32)],
+        enc,
+        ref,
+    )[0]
+    silent = _predict_diffusion_nonlocal(
+        edges, time, position, [np.array([])], [np.zeros((0, 2), np.float32)], enc, ref
+    )[0]
+    interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
+    right_room = interior_centers[:, 0] > 20.0
+    term = with_spike - silent
+    assert right_room.sum() > 10
+    np.testing.assert_array_equal(term[right_room], term[right_room][0])
+    assert term[~right_room].max() > term[right_room][0] + 10.0
 
 
 def test_grid_independence():

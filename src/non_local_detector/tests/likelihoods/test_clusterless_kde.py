@@ -44,7 +44,7 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         block_size=8,
         disable_progress_bar=True,
     )
-    mark_reference = fit_mark_references([enc_feats], fallback_scale=1.0)
+    mark_reference = fit_mark_references([enc_feats], kernel_scale=1.0)
 
     for key in (
         "occupancy",
@@ -181,7 +181,7 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         disable_progress_bar=True,
     )
     mark_reference = fit_mark_references(
-        [enc_feats_0, enc_feats_1, enc_feats_2], fallback_scale=24.0
+        [enc_feats_0, enc_feats_1, enc_feats_2], kernel_scale=24.0
     )
 
     # Verify encoding succeeded

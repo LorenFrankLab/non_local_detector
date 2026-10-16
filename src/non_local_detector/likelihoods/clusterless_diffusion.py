@@ -6,7 +6,7 @@ An opt-in clusterless likelihood, selected via
 estimates the same mark intensity as :mod:`clusterless_kde` but replaces the Gaussian
 *position* kernel with the environment's graph heat kernel ``exp(-t L)`` (``t =
 position_std**2 / 2``). The *mark* kernel stays a Gaussian over waveform features
-(via ``kde_distance``): ``position_std`` is the physical heat-kernel bandwidth (in
+(computed in log space): ``position_std`` is the physical heat-kernel bandwidth (in
 coordinate units) and ``waveform_std`` is the mark bandwidth, exactly as in
 ``clusterless_kde``. This is the clusterless analog of :mod:`sorted_spikes_diffusion`.
 
@@ -30,7 +30,8 @@ For electrode ``e`` the joint mark density on interior bins is
     p_e(x, m_j) = (H_t D_e)[x, j] / ( (sum_i w_i) * dV(x) )
 
 where ``w_i`` are the per-encoding-spike EM weights, ``K_mark`` is the Gaussian
-mark kernel (its normalizer already included by ``kde_distance``), ``H_t`` is the
+mark kernel with its normalizer (each spike's kernels are diffused relative to
+the spike's largest one and the offset is restored in log space), ``H_t`` is the
 mass-conserving heat kernel (:func:`heat_kernel_apply`), ``sum_i w_i`` the weighted
 encoding count, and ``dV(x) = bin_sizes`` the per-bin measure. Dividing by
 ``(sum_i w_i) * dV(x)`` -- rather than normalizing each diffused column to unit
@@ -63,7 +64,9 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.clusterless_kde import kde_distance
+from non_local_detector.likelihoods.clusterless_kde import (
+    _compute_log_mark_kernel_gemm,
+)
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
@@ -79,6 +82,7 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
+    log_density_intensity,
     log_nonnegative,
     resolve_row_slice,
     select_spike_rows,
@@ -269,7 +273,7 @@ def _diffuse_field(
 def mark_reference_scale(
     waveform_std: float | np.ndarray = DEFAULT_WAVEFORM_STD, **_fit_params: object
 ) -> float | np.ndarray:
-    """Mark-reference scale of a feature without training variance.
+    """Mark-kernel width the reference adds to each feature's training spread.
 
     Parameters
     ----------
@@ -569,14 +573,32 @@ def _padded_encoding(bins, marks, weights, n_bins: int):
 _FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
 
-def _resolved_field(P):
-    """Raise each column's unresolved values to its resolution floor.
+def _log_resolved_field(field, log_scale):
+    """Log of each spike's diffused field, zero where the heat kernel cannot resolve it.
 
-    Values below ``_FIELD_RESOLUTION * max(column)`` are numerical noise of the
-    heat kernel; holding them at that level keeps each spike's evidence
-    relative to its own peak, independent of the mark units.
+    Values below ``_FIELD_RESOLUTION`` of a spike's own peak are numerical
+    noise of the heat kernel, so that spike's marked intensity there is zero
+    and its background explains it. The intensity then never exceeds the
+    process whose expected count the fit computed, and, being relative to each
+    spike's own peak, the cut does not depend on the mark units. NaN
+    propagates.
+
+    Parameters
+    ----------
+    field : jnp.ndarray, shape (n_bins, n_spikes)
+        Each spike's diffused field divided by ``exp(log_scale)``.
+    log_scale : jnp.ndarray, shape (n_spikes,)
+
+    Returns
+    -------
+    log_field : jnp.ndarray, shape (n_bins, n_spikes)
     """
-    return jnp.maximum(P, _FIELD_RESOLUTION * jnp.max(P, axis=0, keepdims=True))
+    resolved = field >= _FIELD_RESOLUTION * jnp.max(field, axis=0, keepdims=True)
+    return jnp.where(
+        resolved | jnp.isnan(field),
+        log_nonnegative(field) + log_scale[None, :],
+        -jnp.inf,
+    )
 
 
 def _resolved_occupancy(occupancy):
@@ -611,21 +633,37 @@ def _diffused_mark_field(
     position_std: float,
     n_components: int,
 ):
-    """``H_t D_e`` for one block of decoding spikes, shape (n_bins, n_block).
+    """``H_t D_e`` for one block of decoding spikes, in each spike's own scale.
 
-    ``D_e[:, j] = sum_i w_i K_mark(m_j, m_i) onehot(bin(x_i))``; the mark
-    kernel's Gaussian normalizer is already in ``kde_distance``.
+    ``D_e[:, j] = sum_i w_i K_mark(m_j, m_i) onehot(bin(x_i))``, with the mark
+    kernel's Gaussian normalizer. Each spike's kernels are exponentiated
+    relative to its largest weighted log kernel, so the diffused field keeps
+    every spike's resolution whatever the mark units; the returned scale holds
+    the rest.
+
+    Returns
+    -------
+    field : jnp.ndarray, shape (n_bins, n_block)
+        ``H_t D_e`` divided by ``exp(log_scale)``.
+    log_scale : jnp.ndarray, shape (n_block,)
+        Each spike's largest weighted log mark kernel; ``-inf`` without
+        positively weighted encoding spikes.
     """
-    mark_kernel = kde_distance(decode_features, encoding_marks, waveform_std)
+    weighted = (
+        _compute_log_mark_kernel_gemm(decode_features, encoding_marks, waveform_std)
+        + log_nonnegative(encoding_weights)[:, None]
+    )
+    log_scale = jnp.max(weighted, axis=0)
     D = deterministic_row_sum(
-        encoding_weights[:, None] * mark_kernel,
+        jnp.exp(weighted - jnp.where(jnp.isneginf(log_scale), 0.0, log_scale)),
         encoding_bins,
         eigvecs.shape[0],
         indices_are_sorted=True,
     )
-    return heat_kernel_apply(
+    field = heat_kernel_apply(
         eigvals, eigvecs, position_std, D, labels, n_components=n_components
     )
+    return field, log_scale
 
 
 @partial(
@@ -692,28 +730,30 @@ def _add_electrode_diffusion_intensities(
 
     def add_block(block, total):
         start = block * block_size
-        P = _diffused_mark_field(
-            jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
-            encoding_bins,
-            encoding_marks,
-            encoding_weights,
-            waveform_std,
-            eigvals,
-            eigvecs,
-            labels,
-            position_std,
-            n_components,
+        log_field = _log_resolved_field(
+            *_diffused_mark_field(
+                jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
+                encoding_bins,
+                encoding_marks,
+                encoding_weights,
+                waveform_std,
+                eigvals,
+                eigvecs,
+                labels,
+                position_std,
+                n_components,
+            )
         )
         # bin_sizes (dV) makes p_e a proper joint density (recovers the mark
         # marginal, guarded by test_mark_marginal_recovery). It cancels in the
         # p_e / occupancy ratio below wherever occupancy carries the same dV
         # factor; bins with unresolved occupancy have zero intensity.
-        p_e = _resolved_field(P) / (weight_total * bin_sizes[:, None])
+        log_p_e = log_field - jnp.log(weight_total * bin_sizes)[:, None]
         background = jax.lax.dynamic_slice_in_dim(log_background, start, block_size)
         log_intensity = jnp.logaddexp(
             jnp.where(
                 _resolved_occupancy(occupancy)[:, None],
-                log_nonnegative(mean_rate * p_e / occupancy[:, None]),
+                log_density_intensity(mean_rate, log_p_e, jnp.log(occupancy)[:, None]),
                 -jnp.inf,
             ),
             background[None, :],
@@ -791,26 +831,30 @@ def _add_electrode_local_diffusion_terms(
     def add_block(block, total):
         start = block * block_size
         bins = jax.lax.dynamic_slice_in_dim(spike_bins, start, block_size)
-        P = _diffused_mark_field(
-            jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
-            encoding_bins,
-            encoding_marks,
-            encoding_weights,
-            waveform_std,
-            eigvals,
-            eigvecs,
-            labels,
-            position_std,
-            n_components,
+        log_field = _log_resolved_field(
+            *_diffused_mark_field(
+                jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
+                encoding_bins,
+                encoding_marks,
+                encoding_weights,
+                waveform_std,
+                eigvals,
+                eigvecs,
+                labels,
+                position_std,
+                n_components,
+            )
         )
-        p_e_at_animal = _resolved_field(P)[bins, jnp.arange(block_size)] / (
+        log_p_e_at_animal = log_field[bins, jnp.arange(block_size)] - jnp.log(
             weight_total * bin_sizes[bins]
         )
         background = jax.lax.dynamic_slice_in_dim(log_background, start, block_size)
         log_intensity = jnp.logaddexp(
             jnp.where(
                 _resolved_occupancy(occupancy)[bins],
-                log_nonnegative(mean_rate * p_e_at_animal / occupancy[bins]),
+                log_density_intensity(
+                    mean_rate, log_p_e_at_animal, jnp.log(occupancy[bins])
+                ),
                 -jnp.inf,
             ),
             background,

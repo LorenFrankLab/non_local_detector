@@ -1521,7 +1521,7 @@ def block_estimate_log_joint_mark_intensity(
 def mark_reference_scale(
     waveform_std: float | np.ndarray = DEFAULT_WAVEFORM_STD, **_fit_params: object
 ) -> float | np.ndarray:
-    """Mark-reference scale of a feature without training variance.
+    """Mark-kernel width the reference adds to each feature's training spread.
 
     Parameters
     ----------

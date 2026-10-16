@@ -81,7 +81,7 @@ def training_mark_references(
     position_time,
     spike_times,
     spike_waveform_features,
-    fallback_scale,
+    kernel_scale,
     weights=None,
     position=None,
     *,
@@ -100,7 +100,7 @@ def training_mark_references(
     position_time : array_like, shape (n_time_position,)
     spike_times : list of array_like, each shape (n_spikes,)
     spike_waveform_features : list of array_like, each shape (n_spikes, n_features)
-    fallback_scale : float or array_like, shape (n_features,)
+    kernel_scale : float or array_like, shape (n_features,)
         The backend's ``mark_reference_scale`` of its fit parameters.
     weights : array_like, shape (n_time_position,), optional
     position : array_like, shape (n_time_position, n_position_dims), optional
@@ -129,7 +129,7 @@ def training_mark_references(
     ]
     return fit_mark_references(
         [np.asarray(features) for features in spike_waveform_features],
-        fallback_scale,
+        kernel_scale,
         spike_weights,
     )
 

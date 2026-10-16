@@ -9,7 +9,7 @@ import pickle
 
 import numpy as np
 import pytest
-from scipy.stats import norm
+from scipy.stats import t as student_t
 
 from non_local_detector import (
     ClusterlessDecoder,
@@ -24,7 +24,7 @@ from non_local_detector.likelihoods import (
 )
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
-    MarkReference,
+    REFERENCE_DEGREES_OF_FREEDOM,
     fit_mark_reference,
     fit_mark_references,
 )
@@ -108,8 +108,8 @@ def test_state_odds_do_not_depend_on_waveform_units(run_data, algorithm):
     original_odds = original - original[:, no_spike]
     rescaled_odds = rescaled - rescaled[:, no_spike]
     if algorithm == "clusterless_diffusion":
-        # The heat kernel resolves its field to about 1e-6 of each spike's peak;
-        # entries near that floor are reproduced only approximately by a refit.
+        # A spike's field is cut at 1e-6 of its peak; float32 rounding differs
+        # between unit systems, so an entry at the cut can fall on either side.
         error = np.abs(rescaled_odds - original_odds)
         assert np.mean(error <= 1e-3 + 1e-5 * np.abs(original_odds)) >= 0.99
         assert np.max(error) < 0.1
@@ -118,14 +118,21 @@ def test_state_odds_do_not_depend_on_waveform_units(run_data, algorithm):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("algorithm", ["clusterless_kde", "clusterless_gmm"])
+@pytest.mark.parametrize(
+    "algorithm", ["clusterless_kde", "clusterless_gmm", "clusterless_diffusion"]
+)
 def test_outlier_spike_favors_no_spike_by_rate_ratio(run_data, algorithm):
-    """A spike no state can explain is scored by the shared background, so it
-    favors No-Spike over every active state by log(no_spike_rate / RATE_EPS_HZ)."""
+    """A spike far from every training mark is scored by the shared background,
+    so it favors No-Spike over every active state by log(no_spike_rate /
+    RATE_EPS_HZ) -- with the fitted reference, even when the mark kernels are
+    wider than the training spread (their tails then exceed a Gaussian fitted
+    to the marks alone)."""
+    electrode = int(np.argmax([len(m) for m in run_data["train_marks"]]))
+    spread = run_data["train_marks"][electrode].std(axis=0).min()
     params = (
         {"gmm_components_joint": 8, "gmm_components_occupancy": 4}
         if algorithm == "clusterless_gmm"
-        else {"position_std": 6.0, "waveform_std": 24.0}
+        else {"position_std": 6.0, "waveform_std": 4.0 * spread}
     )
     detector = NonLocalClusterlessDetector(
         clusterless_algorithm=algorithm,
@@ -136,17 +143,13 @@ def test_outlier_spike_favors_no_spike_by_rate_ratio(run_data, algorithm):
         run_data["train_spikes"],
         run_data["train_marks"],
     )
-    electrode = next(
-        e for e, ref in enumerate(detector.mark_reference_) if ref is not None
-    )
-    # Broaden the shared reference so the background dominates 1000 µV away.
-    broad = MarkReference(np.zeros(4), np.full(4, 3e4))
-    detector.mark_reference_[electrode] = broad
     spike_time = run_data["test_time"][200]
     spikes = [np.array([])] * len(run_data["test_spikes"])
     marks = [np.zeros((0, 4))] * len(run_data["test_marks"])
     spikes[electrode] = np.array([spike_time])
-    marks[electrode] = (run_data["train_marks"][electrode].mean(axis=0) + 1e3)[None]
+    marks[electrode] = (run_data["train_marks"][electrode].mean(axis=0) + 1e3 * spread)[
+        None
+    ]
     edges = time_edges_from_centers(run_data["test_time"])
     with_spike = np.asarray(
         detector.compute_log_likelihood(
@@ -203,13 +206,16 @@ def test_no_spike_adds_training_reference_log_density_per_spike():
     )
 
     location = np.array([2.0, 50.0 / 3.0])
-    scale = np.sqrt(np.array([8.0 / 3.0, 800.0 / 9.0]))
+    # Training spread plus the default mark bandwidth (24), in quadrature.
+    scale = np.sqrt(np.array([8.0 / 3.0, 800.0 / 9.0]) + 24.0**2)
     widths = np.diff(edges)
     expected = -5.0 * widths
     for t, mark in zip(decode_times[0], decode_marks[0], strict=True):
         row = np.searchsorted(edges, t, side="right") - 1
         expected[row] += np.log(5.0 * widths[row])
-        expected[row] += norm.logpdf(mark, loc=location, scale=scale).sum()
+        expected[row] += student_t.logpdf(
+            mark, df=REFERENCE_DEGREES_OF_FREEDOM, loc=location, scale=scale
+        ).sum()
     np.testing.assert_allclose(
         result.log_likelihood.to_numpy()[:, 0], expected, rtol=1e-5
     )
@@ -365,15 +371,18 @@ def test_decode_marks_must_match_fitted_reference(spike_times, marks, message):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(("n_spikes", "value"), [(3, 3.1), (5, 0.1), (7, -87.3)])
-def test_inexact_constant_feature_uses_fallback_scale(n_spikes, value):
-    # The weighted mean of a constant that is not exactly representable can
-    # differ from it by an ulp, leaving a roundoff variance instead of zero.
+def test_reference_scale_adds_kernel_scale_to_training_spread(n_spikes, value):
+    # A constant feature (whose weighted mean may miss it by an ulp) takes the
+    # kernel scale; a varying one adds its spread in quadrature.
     marks = np.column_stack(
         [np.full(n_spikes, value), np.arange(n_spikes, dtype=float)]
     )
-    reference = fit_mark_reference(marks, np.linspace(1.0, 2.0, n_spikes), 24.0)
-    assert reference.scale[0] == 24.0
-    assert reference.scale[1] > 0.5
+    weights = np.linspace(1.0, 2.0, n_spikes)
+    reference = fit_mark_reference(marks, weights, 24.0)
+    np.testing.assert_allclose(reference.scale[0], 24.0, rtol=1e-12)
+    p = weights / weights.sum()
+    spread = p @ (marks[:, 1] - p @ marks[:, 1]) ** 2
+    np.testing.assert_allclose(reference.scale[1], np.sqrt(spread + 24.0**2))
 
 
 @pytest.mark.integration

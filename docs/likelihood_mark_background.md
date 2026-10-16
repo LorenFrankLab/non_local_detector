@@ -24,10 +24,14 @@ As a result, the odds between states depended on how the marks were expressed:
 
 Each electrode `e` has one normalized reference density `q_e(m)`, `mark_reference_`:
 
-- It is a diagonal Gaussian with the weighted mean and variance of the training marks,
-  taken from every encoding group of the modelled environments.
-- A constant training feature takes the mark bandwidth (`waveform_std`, or
-  `sqrt(gmm_reg_covar)`) as its scale.
+- It is a product of per-feature Student-t densities with 3 degrees of freedom,
+  centred on the weighted mean of the training marks from every encoding group of
+  the modelled environments.
+- Each feature's scale is `sqrt(training variance + h²)`, the spread of the marks
+  after the model's mark kernel, with `h` the mark bandwidth (`waveform_std`, or
+  `sqrt(gmm_reg_covar)`). A constant feature therefore has scale `h`.
+- Its tails fall polynomially, so far from the training marks `q` exceeds every
+  Gaussian mark kernel and every GMM component, whatever their widths.
 - An electrode without training spikes has no reference.
 - Detectors fit it once and pass it to every state; encoding models do not carry it.
   Direct callers of the predict functions fit it with `fit_mark_references`.
@@ -49,10 +53,16 @@ unchanged. A transform that mixes features does not qualify: KDE bandwidths and
 Without a reference, both the active background and No-Spike omit `q`, so the electrode
 remains consistent.
 
-`β` is a unit-consistent numerical floor, not a fitted background rate. Because
-`β < r₀` (default `r₀ = 1e-10 Hz`), a spike no state can explain favours No-Spike over
-every active state by `log(r₀/β)` (+5.3 nats). An artifact spike therefore does not
-break a stretch of population silence, which is what the No-Spike state models.
+`β` is a unit-consistent numerical floor, not a fitted background rate. A spike
+far enough from every training mark has `λ ≪ β q` at every position, because
+`q`'s polynomial tails outlast the Gaussian kernels. Then, because `β < r₀`
+(default `r₀ = 1e-10 Hz`), it favours No-Spike over every active state by
+`log(r₀/β)` (+5.3 nats). An artifact spike therefore does not break a stretch of
+population silence, which is what the No-Spike state models. A Gaussian `q` with
+the training variance alone did not guarantee this: a feature whose training
+spread is narrower than `h` gives `q` thinner tails than the kernels. On a real
+recording, artifact spikes in injected silences then held No-Spike at 0.66–0.78
+for KDE and 0.60–0.68 for GMM, instead of 0.999.
 
 ## Numerics
 
@@ -85,34 +95,43 @@ recording, `b` lies about 19 nats below the old `LOG_EPS` floor (median −53.2 
 - It was 0.15 or more below 1e-8, and values there are often exactly 0.
 - Each spike would need a median of 66 nats of range, beyond even float64's ~36.
 
-Field values below `_FIELD_RESOLUTION · max(column)`, where
-`_FIELD_RESOLUTION = max(float32 eps, heat-kernel rank tolerance) = 1e-6`, are
-therefore held at that level. This is unit-consistent, because the floor scales with
-each spike's own peak. It keeps about 14 nats of peak-versus-tail contrast per spike
-and only overestimates evidence in deep tails.
+Each spike's mark kernels are computed in log space and exponentiated relative to
+that spike's largest weighted kernel before diffusion, and the offset is added back
+in log space. The kernel normalizer, which carries the mark units, therefore cannot
+underflow a spike's field. Field values below `_FIELD_RESOLUTION · max(column)`,
+where `_FIELD_RESOLUTION = max(float32 eps, heat-kernel rank tolerance) = 1e-6`, are
+not resolved, so the spike's marked intensity there is zero and its background
+explains it. The cut is relative to each spike's own peak, so it does not depend on
+the units. Cutting rather than raising those values keeps the marked intensity
+within the process whose expected count `Λ` the fit computes: raising them to the
+cut had added intensity that `Λ` never counted, such as 0.5 Hz in a
+graph-disconnected component where `Λ` is only `β`. The cost is that a spike can
+rule out tail positions more strongly than the unresolved exact value would.
 
 Occupancy is a diffused field too. Bins whose occupancy is below the same
 `1e-6` of its maximum are unvisited, so the heat kernel does not resolve them.
 They get zero marked and ground intensity, and their spikes are explained by the
-background alone, as for KDE's zero-occupancy bins. Without this rule, a floored
-mark field divided by near-zero occupancy gave unvisited bins up to ~100 nats of
+background alone, as for KDE's zero-occupancy bins. Without this rule, a mark
+field divided by near-zero occupancy gave unvisited bins up to ~100 nats of
 spurious evidence.
-
-The floor also bounds how strongly a single spike can exclude a graph-disconnected
-component, to about 14 nats; the exact intensity there is zero.
 
 ## Validation
 
 - `tests/likelihoods/test_clusterless_mark_background.py` covers:
   - the Jacobian identity `LL' + n_spikes · log|det A| = LL` for every algorithm and its
     tiled or streamed path;
-  - outlier marks scoring exactly `b`;
+  - outlier marks scoring exactly `b` with the fitted reference;
+  - diffusion marks 7 bandwidths from training in microvolts and millivolts;
   - zero-rate electrodes;
   - the `n_e β` compensator.
 - `tests/models/test_no_spike_mark_reference.py` covers:
   - state odds that do not depend on the units;
-  - the outlier odds `log(β/r₀)`;
+  - the outlier odds `log(β/r₀)` for KDE, GMM and diffusion with the fitted
+    reference and mark kernels wider than the training spread;
   - the No-Spike formula, the EM-frozen reference, chunk parity and saved-model refit.
+- `tests/likelihoods/test_clusterless_diffusion.py` covers a spike's term in a
+  graph-disconnected room (the background, in every bin) and a diffused field
+  that differs between microvolts and millivolts by exactly the Jacobian.
 - `TestScaledGemmJointIntensity` compares the KDE reduction with a logsumexp
   oracle within 1e-4. At 8 and 9 mark dimensions, 100% of the compared terms
   lie below the old `LOG_EPS` floor yet above the background.

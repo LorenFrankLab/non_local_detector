@@ -114,7 +114,7 @@ def _fit_predict_local(s):
         [jnp.asarray(f) for f in s["dec_feats"]],
         time_edges=jnp.asarray(s["time"]),
         **encoding,
-        mark_reference=fit_mark_references(s["enc_feats"], fallback_scale=24.0),
+        mark_reference=fit_mark_references(s["enc_feats"], kernel_scale=24.0),
         is_local=True,
     )
 
