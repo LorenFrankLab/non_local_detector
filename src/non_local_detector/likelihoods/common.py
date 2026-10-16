@@ -2393,44 +2393,6 @@ def _prepare_kde_local_inputs(
     )
 
 
-_compiled_position_log_kernel = jax.jit(_log_kernel_matrix)
-
-
-def _prepared_kde_nonlocal_points(environment, spike_time_order):
-    """Device spatial centers shared by states and chunks of this prediction."""
-    return spike_time_order.memo_kde(
-        "kde_nonlocal_points",
-        (environment.place_bin_centers_, environment.is_track_interior_),
-        lambda: jnp.asarray(
-            environment.place_bin_centers_[environment.is_track_interior_.ravel()]
-        ),
-    )
-
-
-def _prepared_kde_position_log_kernel(spike_time_order, points, samples, std):
-    """Reuse small spatial kernels; larger ones stay inside the bounded scorer.
-
-    One kernel may occupy at most one quarter of the prediction's preparation
-    budget so multiple electrodes do not evict all local geometry/densities.
-    Returning None retains the scorer's original compiled computation.
-    """
-    accumulator = jax.dtypes.canonicalize_dtype(jnp.float64)
-    std_dtype = getattr(std, "dtype", None)
-    if std_dtype is None:
-        std_dtype = np.asarray(std).dtype
-    itemsize = jnp.result_type(points, samples, std_dtype, accumulator).itemsize
-    size = int(points.shape[0]) * int(samples.shape[0]) * itemsize
-    if size > _KDE_PREPARATION_BYTES // 4:
-        return None
-    return spike_time_order.memo_kde(
-        "kde_position_log_kernel",
-        (points, samples, std),
-        lambda: _compiled_position_log_kernel(
-            points, samples, as_std_array(std, points.shape[1])
-        ),
-    )
-
-
 def log_density_intensity(mean_rate, log_density, log_occupancy):
     """Log(rate * density / occupancy), with density ratios formed before rates.
 

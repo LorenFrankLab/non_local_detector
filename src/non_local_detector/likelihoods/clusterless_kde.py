@@ -32,8 +32,6 @@ from non_local_detector.likelihoods.common import (
     _padded_spike_count,
     _prepare_kde_local_inputs,
     _prepared_kde_log_density,
-    _prepared_kde_nonlocal_points,
-    _prepared_kde_position_log_kernel,
     _SpikeTimeOrder,
     _true_kde_log_density,
     as_std_array,
@@ -1225,7 +1223,6 @@ def _add_electrode_log_mark_intensities(
     block_size: int,
     pos_tile_size: int | None,
     indices_are_sorted: bool,
-    log_position_distance: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Add one electrode's non-local log marked intensities to their rows.
 
@@ -1255,11 +1252,9 @@ def _add_electrode_log_mark_intensities(
     -------
     total : jnp.ndarray, shape (n_rows, n_bins)
     """
-    if log_position_distance is None:
-        # Too large to prepare and cache on the host side.
-        log_position_distance = log_kde_distance(
-            place_bin_centers, encoding_positions, std=position_std
-        )
+    log_position_distance = log_kde_distance(
+        place_bin_centers, encoding_positions, std=position_std
+    )
     # Everything that depends on no decoding spike is prepared once for the
     # electrode, not once per block of spikes.
     normalizer, occupancy = _occupancy_normalizer(log_occupancy)
@@ -1924,9 +1919,6 @@ def predict_clusterless_kde_log_likelihood(
     else:
         is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
-        prepared_place_bin_centers = _prepared_kde_nonlocal_points(
-            environment, _spike_time_order
-        )
         if log_occupancy is None:
             log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
@@ -2014,12 +2006,6 @@ def predict_clusterless_kde_log_likelihood(
                     block_size=min(block_size, n_padded),
                     pos_tile_size=pos_tile_size,
                     indices_are_sorted=selection.indices_are_sorted,
-                    log_position_distance=_prepared_kde_position_log_kernel(
-                        _spike_time_order,
-                        prepared_place_bin_centers,
-                        padded_positions,
-                        position_std,
-                    ),
                 )
                 continue
 

@@ -96,23 +96,6 @@ def test_true_density_with_no_evaluation_points_is_empty(block_size):
     assert common.kde_log_density(model, jnp.zeros((0, 1))).shape == (0,)
 
 
-def test_position_log_kernel_reuses_immutable_leaves_and_declines_large_cache(
-    monkeypatch,
-):
-    order = common._SpikeTimeOrder()
-    points = jnp.ones((3, 1))
-    samples = jnp.zeros((4, 1))
-    std = jnp.ones(1)
-    first = common._prepared_kde_position_log_kernel(order, points, samples, std)
-    assert first is common._prepared_kde_position_log_kernel(
-        order, points, samples, std
-    )
-    changed = common._prepared_kde_position_log_kernel(order, points, samples, std * 2)
-    assert not np.allclose(first, changed)
-    monkeypatch.setattr(common, "_KDE_PREPARATION_BYTES", 16)
-    assert common._prepared_kde_position_log_kernel(order, points, samples, std) is None
-
-
 def test_kde_true_density_keeps_custom_prediction_and_unfitted_errors():
     class Custom(common.KDEModel):
         def predict_log(self, points):
