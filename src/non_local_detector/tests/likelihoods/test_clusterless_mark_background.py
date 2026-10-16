@@ -193,13 +193,6 @@ def test_unit_change_shifts_every_spike_term_by_the_jacobian(
     )[0]
     assert counts.sum() > 20
     jacobian = np.log(np.prod(np.abs(SCALE)))
-    if algorithm[0] == "clusterless_diffusion":
-        # A spike's field is cut at 1e-6 of its peak; float32 rounding differs
-        # between unit systems, so an entry at the cut can fall on either side.
-        error = np.abs(transformed + counts[:, None] * jacobian - original)
-        assert np.mean(error <= 1e-3 + 1e-5 * np.abs(original)) >= 0.99
-        assert np.max(error) < 0.1
-        return
     np.testing.assert_allclose(
         transformed + counts[:, None] * jacobian, original, rtol=1e-5, atol=1e-3
     )

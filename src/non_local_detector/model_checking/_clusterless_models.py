@@ -7,11 +7,12 @@ Every supported model has a joint mark intensity of the form
 where ``Lambda(x)`` is the ground intensity in Hz at position ``x`` and
 ``f(m | x)`` is a Gaussian mixture over marks:
 
-- clusterless KDE (linear and log space): one component per encoding spike,
-  centred on its mark, weighted by its encoding weight times the Gaussian
-  position kernel at ``x``;
-- clusterless diffusion: the same components, weighted by the graph heat kernel
-  from the spike's bin to the bin containing ``x``;
+- clusterless KDE: one component per encoding spike, centred on its mark,
+  weighted by its encoding weight times the Gaussian position kernel at ``x``;
+- clusterless diffusion: the same components, weighted by the decoder's
+  spatial kernel ``H[x, b_i]`` from the spike's bin (clipped, cut and
+  normalized heat-kernel columns) and zero where the decoder treats the
+  occupancy as unresolved;
 - clusterless GMM: the joint mixture's components conditioned on ``x``.
 
 The goodness-of-fit transforms only need the operations below, evaluated with
