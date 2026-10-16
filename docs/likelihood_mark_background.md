@@ -40,9 +40,12 @@ The marked intensities, with `β = RATE_EPS_HZ = 5e-13 Hz`, are:
 | No-Spike | `r₀ q_e(m)` | `r₀` per electrode |
 | Active state | `λ_e(x, m) + β q_e(m)` | `Λ_e(x) + β` per electrode |
 
-Under `m' = A m + c`, with bandwidths or covariances transformed alike, every density
-gains the same factor `1/|det A|`. Every spike's term therefore shifts by
-`-log|det A|` in every state at every position, and the posterior is unchanged.
+Under `m' = A m + c` with `A` diagonal (a per-feature change of units, offset,
+sign or order), and with bandwidths or covariances transformed alike, every
+density gains the same factor `1/|det A|`. Every spike's term therefore shifts
+by `-log|det A|` in every state at every position, and the posterior is
+unchanged. A transform that mixes features does not qualify: KDE bandwidths and
+`q` are diagonal, so they cannot follow it.
 Without a reference, both the active background and No-Spike omit `q`, so the electrode
 remains consistent.
 
@@ -61,8 +64,10 @@ backend's units:
 
 A zero intensity (zero rate, no occupancy, zero mass) gives `b`. NaN propagates.
 
-**Exactness.** In float32, `logaddexp(x, b) == b` whenever `x < b + log(eps)`, which is
-about `b − 15.9`. So `λ` must be exact only above that per-spike threshold. On a real
+**Exactness.** In float32, `logaddexp(x, b)` differs from `b` by less than `eps`
+whenever `x < b + log(eps)`, which is about `b − 15.9`. For `|b| ≥ 2` that is
+below one rounding step of `b`, so the term rounds to exactly `b`. So `λ` must be
+exact only above that per-spike threshold. On a real
 recording, `b` lies about 19 nats below the old `LOG_EPS` floor (median −53.2 against
 −34.5), so values that the floor used to hide must now be computed.
 
