@@ -32,6 +32,10 @@ from non_local_detector.likelihoods.common import (
     log_density_intensity,
     log_kde,
 )
+from non_local_detector.likelihoods.mark_reference import (
+    background_log_intensity,
+    fit_mark_reference,
+)
 
 ENCODING_TILE = 1024
 POSITION_TILE = 2
@@ -106,13 +110,11 @@ def oracle_log_density(points, samples, std, weights):
 
 
 def oracle_log_background(marks, encoding_marks, waveform_std):
-    """Floor plus a Gaussian mark reference fitted to the encoding marks.
-
-    Its scale adds the mark bandwidth, as for a KDE-smoothed reference.
-    """
-    marks, encoding_marks = (np.asarray(x, np.float64) for x in (marks, encoding_marks))
-    scale = np.sqrt(encoding_marks.var(axis=0) + np.asarray(waveform_std) ** 2)
-    return LOG_EPS + norm.logpdf(marks, encoding_marks.mean(axis=0), scale).sum(axis=1)
+    """Background rate times the mark reference a detector fits to these marks."""
+    reference = fit_mark_reference(
+        encoding_marks, np.ones(len(encoding_marks)), waveform_std
+    )
+    return background_log_intensity(reference, np.asarray(marks, np.float64), LOG_EPS)
 
 
 def tiled_log_density(points, samples, std, weights):

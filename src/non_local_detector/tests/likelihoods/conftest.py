@@ -21,7 +21,10 @@ from non_local_detector.likelihoods import (
     fit_mark_references,
 )
 from non_local_detector.likelihoods.common import LOG_EPS
-from non_local_detector.likelihoods.mark_reference import MarkReference
+from non_local_detector.likelihoods.mark_reference import (
+    MarkReference,
+    background_log_intensity,
+)
 
 ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 
@@ -208,8 +211,8 @@ def realistic_log_background(
 ) -> jnp.ndarray:
     """Deterministic per-spike No-Spike background for reduction parity tests.
 
-    A diagonal-Gaussian mark reference centred on the decoding marks' mean,
-    with scale ``std + 1`` so constant features stay finite, gives each spike a
+    A mark reference centred on the decoding marks' mean, with scale
+    ``std + 1`` so constant features stay finite, gives each spike a
     background of the size a fitted reference would. Parity tests pass the
     same background to every path they compare.
 
@@ -228,4 +231,4 @@ def realistic_log_background(
     if features.shape[0] == 0:
         return jnp.zeros(0)
     reference = MarkReference(features.mean(axis=0), features.std(axis=0) + 1.0)
-    return jnp.asarray(log_rate + reference.log_density(features))
+    return jnp.asarray(background_log_intensity(reference, features, log_rate))

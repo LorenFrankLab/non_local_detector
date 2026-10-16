@@ -89,12 +89,8 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
     assert [layout[4] for layout in layouts] == [layouts[0][4]] * 2
     assert _padded_spike_count(40, 16) == _padded_spike_count(45, 16)
 
-    kernels = (
-        clusterless_diffusion._add_electrode_diffusion_intensities,
-        clusterless_diffusion._add_electrode_local_diffusion_terms,
-    )
-    for kernel in kernels:
-        kernel.clear_cache()
+    scorer = clusterless_diffusion._add_electrode_diffusion_terms
+    scorer.clear_cache()
     for is_local in (False, True):
         predict_clusterless_diffusion_log_likelihood(
             position_time,
@@ -106,7 +102,8 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
             mark_reference=mark_reference,
             **encoding,
         )
-    assert [kernel._cache_size() for kernel in kernels] == [1, 1]
+    # One executable each for the non-local and local intensities.
+    assert scorer._cache_size() == 2
 
 
 @pytest.mark.parametrize("is_local", [False, True])

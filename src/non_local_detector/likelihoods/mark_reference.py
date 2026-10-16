@@ -293,5 +293,5 @@ def mark_reference_log_likelihood(
             _spike_time_order=_spike_time_order,
         )
         log_density = reference.log_density(select_spike_rows(features, selection))
-        total = total + sum_spikes_into_rows(jnp.asarray(log_density), selection)
+        total = total + sum_spikes_into_rows(log_density, selection)
     return total[:, None]

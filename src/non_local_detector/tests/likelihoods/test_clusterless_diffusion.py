@@ -21,6 +21,7 @@ the absolute-value and mark-marginal tests below pin them.
 """
 
 import warnings
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -36,12 +37,14 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_diffusion import (
-    _add_electrode_diffusion_intensities,
+    _add_electrode_diffusion_terms,
     _dense_kernel_fits,
     _electrode_layout,
+    _kernel_bounds,
     _log_marked_field,
     _log_source_marks,
     _source_tile_size,
+    _tile_columns,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
     spatial_kernel_columns,
@@ -356,16 +359,20 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
             np.asarray(
                 _log_marked_field(
                     log_source,
-                    jnp.arange(n_bins),
-                    (eigvals, eigvecs, labels),
-                    sources,
                     None,
+                    partial(
+                        _tile_columns,
+                        (eigvals, eigvecs, labels),
+                        sources,
+                        None,
+                        position_std=enc["position_std"],
+                        n_components=n_components,
+                        tile=tile,
+                    ),
+                    sources.shape[0] // tile,
+                    tile,
                     (jnp.zeros(sources.shape[0]), jnp.zeros(sources.shape[0])),
                     jnp.full(far.shape[0], -jnp.inf),
-                    local=False,
-                    position_std=enc["position_std"],
-                    n_components=n_components,
-                    tile=tile,
                 )
             )
         )
@@ -1914,8 +1921,8 @@ def test_exact_repair_scores_flagged_spikes_among_others(n_flagged, streamed, is
 
 @pytest.mark.unit
 def test_dense_scorer_stays_within_its_memory_budget():
-    """The dense kernel is an input; per-source bounds and the exact repair
-    reduce it in tiles, so the scorer's own workspace fits the budget."""
+    """The dense kernel is an input; the exact repair reduces it in tiles, so
+    the scorer's own workspace fits the budget."""
     n_bins, rank, n_samples, block = 4096, 64, 4096, 16
     budget = 128 * 2**20
     assert _dense_kernel_fits(n_bins, budget)
@@ -1930,10 +1937,11 @@ def test_dense_scorer_stays_within_its_memory_budget():
     )
     n_sources = sources.shape[0]
     f32, i32 = jnp.float32, jnp.int32
-    compiled = _add_electrode_diffusion_intensities.lower(
+    compiled = _add_electrode_diffusion_terms.lower(
         jax.ShapeDtypeStruct((8, n_bins), f32),
         jax.ShapeDtypeStruct((block, 4), f32),
         jax.ShapeDtypeStruct((block,), i32),
+        None,
         jax.ShapeDtypeStruct((n_samples, 4), f32),
         jax.ShapeDtypeStruct((n_samples,), f32),
         jax.ShapeDtypeStruct((n_samples,), i32),
@@ -1944,6 +1952,7 @@ def test_dense_scorer_stays_within_its_memory_budget():
         jax.ShapeDtypeStruct((n_bins,), i32),
         jax.ShapeDtypeStruct((n_bins, n_sources), f32),
         jax.ShapeDtypeStruct((n_bins,), f32),
+        (jax.ShapeDtypeStruct((n_sources,), f32),) * 2,
         jax.ShapeDtypeStruct((block,), f32),
         position_std=1.0,
         n_components=1,
@@ -1967,10 +1976,11 @@ def test_scorer_workspace_does_not_grow_with_the_square_of_the_bins():
     tile = min(_source_tile_size(budget, n_bins, rank), n_sources)
     assert not _dense_kernel_fits(n_bins, budget)
     f32, i32 = jnp.float32, jnp.int32
-    compiled = _add_electrode_diffusion_intensities.lower(
+    compiled = _add_electrode_diffusion_terms.lower(
         jax.ShapeDtypeStruct((8, n_bins), f32),
         jax.ShapeDtypeStruct((block, 4), f32),
         jax.ShapeDtypeStruct((block,), i32),
+        None,
         jax.ShapeDtypeStruct((n_samples, 4), f32),
         jax.ShapeDtypeStruct((n_samples,), f32),
         jax.ShapeDtypeStruct((n_samples,), i32),
@@ -1981,12 +1991,31 @@ def test_scorer_workspace_does_not_grow_with_the_square_of_the_bins():
         jax.ShapeDtypeStruct((n_bins,), i32),
         None,
         jax.ShapeDtypeStruct((n_bins,), f32),
+        (jax.ShapeDtypeStruct((n_sources,), f32),) * 2,
         jax.ShapeDtypeStruct((block,), f32),
         position_std=1.0,
         n_components=1,
         tile=tile,
         block_size=block,
         indices_are_sorted=True,
+    ).compile()
+    workspace = compiled.memory_analysis().temp_size_in_bytes
+    assert workspace < 256 * 2**20, f"{workspace / 2**20:.0f} MiB"
+
+    # The repair-gate bounds of every bin, once per prediction, also go tile
+    # by tile.
+    bounds_tile = _source_tile_size(budget, n_bins, rank)
+    n_padded = -(-n_bins // bounds_tile) * bounds_tile
+    compiled = _kernel_bounds.lower(
+        jax.ShapeDtypeStruct((rank,), f32),
+        jax.ShapeDtypeStruct((n_bins, rank), f32),
+        jax.ShapeDtypeStruct((n_bins,), i32),
+        None,
+        jax.ShapeDtypeStruct((n_padded,), i32),
+        jax.ShapeDtypeStruct((n_bins,), f32),
+        tile=bounds_tile,
+        position_std=1.0,
+        n_components=1,
     ).compile()
     workspace = compiled.memory_analysis().temp_size_in_bytes
     assert workspace < 256 * 2**20, f"{workspace / 2**20:.0f} MiB"
