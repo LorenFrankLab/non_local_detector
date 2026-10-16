@@ -419,3 +419,43 @@ def test_every_clusterless_algorithm_has_a_mark_reference_scale():
     assert scales["clusterless_kde"](waveform_std=7.0, position_std=3.0) == 7.0
     assert scales["clusterless_diffusion"](waveform_std=7.0) == 7.0
     assert scales["clusterless_gmm"](gmm_reg_covar=4.0, waveform_std=7.0) == 2.0
+
+
+def test_detector_alone_holds_the_mark_reference(run_data):
+    """Encoding models carry no reference; a saved detector keeps its own."""
+    detector = NonLocalClusterlessDetector(
+        clusterless_algorithm_params={"disable_progress_bar": True},
+    ).fit(
+        run_data["train_time"],
+        run_data["train_position"],
+        run_data["train_spikes"],
+        run_data["train_marks"],
+    )
+    assert all(
+        "mark_reference" not in model for model in detector.encoding_model_.values()
+    )
+    restored = pickle.loads(pickle.dumps(detector))
+    for original, copy in zip(
+        detector.mark_reference_, restored.mark_reference_, strict=True
+    ):
+        assert (original is None) == (copy is None)
+        if original is not None:
+            np.testing.assert_array_equal(copy.location, original.location)
+            np.testing.assert_array_equal(copy.scale, original.scale)
+    edges = time_edges_from_centers(run_data["test_time"])
+    np.testing.assert_array_equal(
+        restored.compute_log_likelihood(
+            run_data["test_time"],
+            run_data["test_position"],
+            run_data["test_spikes"],
+            run_data["test_marks"],
+            time_edges=edges,
+        ),
+        detector.compute_log_likelihood(
+            run_data["test_time"],
+            run_data["test_position"],
+            run_data["test_spikes"],
+            run_data["test_marks"],
+            time_edges=edges,
+        ),
+    )

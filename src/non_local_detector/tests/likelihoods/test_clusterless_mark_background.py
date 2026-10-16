@@ -22,9 +22,9 @@ from non_local_detector.likelihoods import (
 from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
-    fit_mark_references,
 )
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 from non_local_detector.time_edges import time_edges_from_centers
 
 # Each algorithm, plus the tiled / streamed prediction paths that score spikes
@@ -89,17 +89,16 @@ def _params(algorithm, scale=1.0):
 
 
 def _fit_with_reference(algorithm, time, position, spikes, marks, environment, params):
-    """Encoding model plus the mark reference fitted from the same training spikes.
-
-    Training spikes outside the position time range do not enter the fit, so
-    they get zero reference weight too.
-    """
+    """Encoding model plus the mark reference fitted from the same training spikes."""
     fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
     model = fit(time, position, spikes, marks, environment, **params)
-    reference = fit_mark_references(
+    reference = training_mark_references(
+        time,
+        spikes,
         marks,
         _CLUSTERLESS_MARK_REFERENCE_SCALES[algorithm](**params),
-        [((t >= time[0]) & (t <= time[-1])).astype(float) for t in spikes],
+        params.get("weights"),
+        position,
     )
     return {**model, "mark_reference": reference}
 

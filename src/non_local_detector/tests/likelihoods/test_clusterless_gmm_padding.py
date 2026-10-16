@@ -26,9 +26,9 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.mark_reference import (
     background_log_intensity,
-    fit_mark_references,
 )
 from non_local_detector.tests.conftest import precision_mode
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
 pytestmark = pytest.mark.unit
 
@@ -39,12 +39,8 @@ GMM_COMPONENTS = {
 
 
 def fit_reference(position_time, times, marks):
-    """Mark references from the training spikes within the position time range."""
-    in_range = [
-        ((t >= position_time[0]) & (t <= position_time[-1])).astype(float)
-        for t in times
-    ]
-    return fit_mark_references(marks, mark_reference_scale(), in_range)
+    """Mark references from the training spikes, as a detector fits them."""
+    return training_mark_references(position_time, times, marks, mark_reference_scale())
 
 
 def make_recording(x64):

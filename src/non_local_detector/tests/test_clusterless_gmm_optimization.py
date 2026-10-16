@@ -19,25 +19,13 @@ from non_local_detector.likelihoods.clusterless_gmm import (
     mark_reference_scale,
     predict_clusterless_gmm_log_likelihood,
 )
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
 
 def _mark_reference(position_time, spike_times, spike_features, weights=None):
-    """Mark references from the training spikes, as a detector fits them.
-
-    Spikes outside the position time range carry zero weight, as in the fit.
-    """
-    position_time = np.asarray(position_time)
-    if weights is None:
-        weights = np.ones(position_time.shape[0])
-    spike_weights = [
-        np.interp(np.asarray(t), position_time, weights, left=0.0, right=0.0)
-        for t in spike_times
-    ]
-    return fit_mark_references(
-        [np.asarray(f) for f in spike_features],
-        mark_reference_scale(),
-        spike_weights,
+    """Mark references from the training spikes, as a detector fits them."""
+    return training_mark_references(
+        position_time, spike_times, spike_features, mark_reference_scale(), weights
     )
 
 

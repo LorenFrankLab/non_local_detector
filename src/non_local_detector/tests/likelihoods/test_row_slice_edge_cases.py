@@ -38,7 +38,6 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
     common,
-    fit_mark_references,
 )
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
@@ -54,6 +53,7 @@ from non_local_detector.tests.likelihoods.conftest import (
     EXACT,
     fit_registered_backends,
     parity_kwargs,
+    training_mark_references,
 )
 
 # A relative tolerance is only a meaningful guard if the values it is applied to
@@ -515,11 +515,14 @@ def fitted_backends(edge_case_data):
     }
 
 
-def fit_backend_mark_reference(name, encoding_features):
-    """Fit a clusterless backend's mark reference on its training features."""
-    return fit_mark_references(
-        encoding_features,
+def fit_backend_mark_reference(name, data):
+    """Fit a clusterless backend's mark reference on its training spikes."""
+    return training_mark_references(
+        data["position_time"],
+        data["encoding_spike_times"],
+        data["encoding_features"],
         _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**BACKEND_FIT_PARAMS.get(name, {})),
+        position=data["position"],
     )
 
 
@@ -980,9 +983,7 @@ def allocation_backends(allocation_data):
                     environment=allocation_data["environment"],
                     **BACKEND_FIT_PARAMS.get(name, {}),
                 ),
-                "mark_reference": fit_backend_mark_reference(
-                    name, allocation_data["encoding_features"]
-                ),
+                "mark_reference": fit_backend_mark_reference(name, allocation_data),
             },
         )
     return fitted
