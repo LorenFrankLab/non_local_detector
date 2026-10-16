@@ -17,8 +17,8 @@ from scipy.special import logsumexp
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import fit_clusterless_kde_encoding_model
 from non_local_detector.likelihoods.clusterless_diffusion import (
-    _spatial_kernel,
     fit_clusterless_diffusion_encoding_model,
+    spatial_kernel_columns,
 )
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
@@ -211,10 +211,13 @@ def _diffusion_components(model, environment, positions):
     """Spatial-kernel component probabilities of f(m | x) and mark centres."""
     sources = np.asarray(model["encoding_bin_indices"][0])
     heat = np.asarray(
-        _spatial_kernel(environment, int(model["resolved_rank"]), POSITION_STD), float
+        spatial_kernel_columns(
+            environment, int(model["resolved_rank"]), POSITION_STD, sources
+        ),
+        float,
     )
     bins = _diffusion_bins(model, environment, positions)
-    kernel = heat[bins][:, sources] * np.asarray(model["encoding_weights"][0], float)
+    kernel = heat[bins] * np.asarray(model["encoding_weights"][0], float)
     centers = np.asarray(model["encoding_marks"][0], float)
     return kernel / kernel.sum(axis=1, keepdims=True), centers
 

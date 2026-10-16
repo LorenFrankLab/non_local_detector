@@ -235,7 +235,8 @@ class _DiffusionElectrode(_MarkKernelMixture):
     def __init__(self, model: dict, electrode: int) -> None:
         from non_local_detector.likelihoods.clusterless_diffusion import (
             _diffuse_field,
-            _spatial_kernel,
+            _log_intensity_scale,
+            spatial_kernel_columns,
         )
 
         self.environment = model["environment"]
@@ -260,24 +261,36 @@ class _DiffusionElectrode(_MarkKernelMixture):
         self._source_starts = np.searchsorted(
             self._sorted_source_index, np.arange(self.sources.size)
         )
-        kernel = _spatial_kernel(
-            self.environment,
-            int(model["resolved_rank"]),
-            float(np.asarray(model["position_std"])),
-        )
+        rank = int(model["resolved_rank"])
+        position_std = float(np.asarray(model["position_std"]))
         with np.errstate(divide="ignore"):
             # (n_bins, n_sources)
-            self.log_heat = np.log(np.asarray(kernel, float)[:, self.sources])
-        bin_sizes = np.asarray(model["bin_sizes"], float)
-        occupancy = np.asarray(model["occupancy"], float)
+            self.log_heat = np.log(
+                np.asarray(
+                    spatial_kernel_columns(
+                        self.environment, rank, position_std, self.sources
+                    ),
+                    float,
+                )
+            )
+        # log of mean_rate / (sum w * dV(b) * occupancy(b)) per bin, -inf where
+        # the decoder treats the occupancy as unresolved.
+        self._log_bin_scale = np.asarray(
+            _log_intensity_scale(
+                np.asarray(model["occupancy"], float),
+                np.asarray(model["bin_sizes"], float),
+                self.mean_rate,
+                self.weight_total,
+            ),
+            float,
+        )
         spike_field = np.bincount(bins, weights=self.weights, minlength=self.n_bins)
-        p_gpi = _diffuse_field(spike_field, kernel) / (self.weight_total * bin_sizes)
-        self._ground_at_bins = self.mean_rate * p_gpi / occupancy
-        # log of mean_rate / (sum w * dV(b) * occupancy(b)), per bin.
-        self._log_bin_scale = (
-            np.log(self.mean_rate)
-            - np.log(self.weight_total)
-            - np.log(bin_sizes * occupancy)
+        self._ground_at_bins = np.exp(self._log_bin_scale) * _diffuse_field(
+            spike_field,
+            self.environment,
+            rank,
+            position_std,
+            int(model["memory_budget"]),
         )
 
     def bin_indices(self, positions):

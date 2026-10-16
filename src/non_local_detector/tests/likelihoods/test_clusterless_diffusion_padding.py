@@ -7,12 +7,13 @@ from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import clusterless_diffusion
 from non_local_detector.likelihoods.clusterless_diffusion import (
-    _effective_block,
+    _dense_kernel_fits,
+    _electrode_layout,
+    _source_tile_size,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
-    _padded_sample_count,
     _padded_spike_count,
 )
 from non_local_detector.tests.likelihoods.conftest import training_mark_references
@@ -69,18 +70,23 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
         time_edges,
     ) = nearby_sizes_recording
     n_bins = encoding["occupancy"].shape[0]
-    rank = encoding["resolved_rank"]
-    # A budget at which the two electrodes' raw block sizes differ (20 and 19
-    # decoding spikes) but round down to the same power of two.
-    memory_budget = 2 * 20 * 4 * (200 + rank + 4 * n_bins)
-    assert [
-        memory_budget // (2 * 4 * (n_enc + rank + 4 * n_bins)) for n_enc in (200, 210)
-    ] == [20, 19]
-    assert [
-        _effective_block(memory_budget, n_enc, rank, n_bins, 10_000)
-        for n_enc in (200, 210)
-    ] == [16, 16]
-    assert _padded_sample_count(200) == _padded_sample_count(210)
+    tile_budget = _source_tile_size(
+        encoding["memory_budget"], n_bins, encoding["resolved_rank"]
+    )
+    dense = _dense_kernel_fits(n_bins, encoding["memory_budget"])
+    layouts = [
+        _electrode_layout(bins, marks, weights, n_bins, tile_budget, dense)
+        for bins, marks, weights in zip(
+            encoding["encoding_bin_indices"],
+            encoding["encoding_marks"],
+            encoding["encoding_weights"],
+            strict=True,
+        )
+    ]
+    # Different encoding and source counts, padded to the same shapes.
+    assert [layout[0].shape for layout in layouts] == [layouts[0][0].shape] * 2
+    assert [layout[2].shape for layout in layouts] == [layouts[0][2].shape] * 2
+    assert [layout[4] for layout in layouts] == [layouts[0][4]] * 2
     assert _padded_spike_count(40, 16) == _padded_spike_count(45, 16)
 
     kernels = (
@@ -90,24 +96,53 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
     for kernel in kernels:
         kernel.clear_cache()
     for is_local in (False, True):
-        default, small = (
-            np.asarray(
-                predict_clusterless_diffusion_log_likelihood(
-                    position_time,
-                    position,
-                    decode_times,
-                    decode_features,
-                    time_edges=time_edges,
-                    is_local=is_local,
-                    mark_reference=mark_reference,
-                    **{**encoding, "memory_budget": budget},
-                )
-            )
-            for budget in (encoding["memory_budget"], memory_budget)
+        predict_clusterless_diffusion_log_likelihood(
+            position_time,
+            position,
+            decode_times,
+            decode_features,
+            time_edges=time_edges,
+            is_local=is_local,
+            mark_reference=mark_reference,
+            **encoding,
         )
-        # The same 16-spike blocks, so the same arithmetic.
-        np.testing.assert_array_equal(small, default)
-        assert np.all(np.isfinite(default))
-    # One executable per kernel: the default budget's 16-spike blocks (the
-    # model's block_size) and the small budget's rounded blocks coincide.
     assert [kernel._cache_size() for kernel in kernels] == [1, 1]
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+def test_a_smaller_memory_budget_only_changes_the_tiling(
+    nearby_sizes_recording, is_local
+):
+    """Streamed kernel tiles and smaller spike blocks give the same likelihood
+    as the default budget's dense kernel."""
+    (
+        position_time,
+        position,
+        encoding,
+        mark_reference,
+        decode_times,
+        decode_features,
+        time_edges,
+    ) = nearby_sizes_recording
+    n_bins = encoding["occupancy"].shape[0]
+    small_budget = 2 * 4 * 4 * (3 * n_bins + encoding["resolved_rank"])
+    assert _source_tile_size(small_budget, n_bins, encoding["resolved_rank"]) == 4
+    assert _dense_kernel_fits(n_bins, encoding["memory_budget"])
+    assert not _dense_kernel_fits(n_bins, small_budget)
+    default, small = (
+        np.asarray(
+            predict_clusterless_diffusion_log_likelihood(
+                position_time,
+                position,
+                decode_times,
+                decode_features,
+                time_edges=time_edges,
+                is_local=is_local,
+                mark_reference=mark_reference,
+                **{**encoding, "memory_budget": budget},
+            )
+        )
+        for budget in (encoding["memory_budget"], small_budget)
+    )
+    assert np.all(np.isfinite(default))
+    np.testing.assert_allclose(small, default, rtol=1e-5, atol=1e-4)
