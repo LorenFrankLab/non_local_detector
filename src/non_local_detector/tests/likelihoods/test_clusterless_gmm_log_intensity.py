@@ -79,9 +79,10 @@ def _log_gaussian(x, mean, var: float) -> np.ndarray:
     return -0.5 * dim * np.log(2.0 * np.pi * var) - 0.5 * sq / var
 
 
-# A mark reference far from every test mark: its background is ~1e11 nats
-# below the marked intensity, so event terms isolate the intensity numerics.
-NEGLIGIBLE_BACKGROUND = MarkReference(np.array([1e3]), np.array([1e-3]))
+# A mark reference far from every test mark. Its Student-t tails fall only as
+# |z|**-4, so it sits 1e33 scales away: the background is then ~300 nats below
+# the marked intensity, and event terms isolate the intensity numerics.
+NEGLIGIBLE_BACKGROUND = MarkReference(np.array([1e30]), np.array([1e-3]))
 
 
 def _predict_kwargs(env, occupancy, joint, rate, spike_times, marks, **extra):

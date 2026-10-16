@@ -5,7 +5,7 @@ import copy
 import numpy as np
 import pytest
 import xarray as xr
-from scipy.stats import norm
+from scipy.stats import t as student_t
 
 from non_local_detector import (
     ClusterlessDecoder,
@@ -15,6 +15,7 @@ from non_local_detector import (
     Uniform,
 )
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods.mark_reference import REFERENCE_DEGREES_OF_FREEDOM
 from non_local_detector.models.cont_frag_model import (
     ContFragClusterlessClassifier,
     ContFragSortedSpikesClassifier,
@@ -206,9 +207,11 @@ def test_no_spike_state_uses_constructor_hz_rate_without_encoding_entry(
     expected = -5.0 * np.diff(edges)
     expected[10] += np.log(5.0 * np.diff(edges)[10])
     if family == "clusterless":
-        # The single training mark has zero variance, so the mark reference
-        # takes the default 24.0 mark bandwidth as its scale.
-        expected[10] += norm.logpdf(0.1, loc=0.1, scale=24.0)
+        # The single training mark has zero variance, so the mark reference's
+        # Student-t takes the default 24.0 mark bandwidth as its scale.
+        expected[10] += student_t.logpdf(
+            0.1, df=REFERENCE_DEGREES_OF_FREEDOM, loc=0.1, scale=24.0
+        )
     np.testing.assert_allclose(
         result.log_likelihood.to_numpy()[:, 0], expected, rtol=1e-5
     )
