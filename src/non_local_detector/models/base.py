@@ -2655,28 +2655,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "Call fit(...) or estimate_parameters(..., time_edges=...) "
                     "with the original recording. No-Spike uses its constructor rate in Hz.",
                 )
-        if isinstance(self, ClusterlessDetector) and (
-            not hasattr(self, "mark_reference_")
-            or any(
+        if isinstance(self, ClusterlessDetector):
+            if not hasattr(self, "mark_reference_") or any(
                 "mark_reference" not in self.encoding_model_[key]
                 for key in required_keys
-            )
-        ):
-            raise ValidationError(
-                "Saved clusterless model has no mark reference; refit before decoding.",
-                hint="Clusterless states score waveform marks against a reference "
-                "density fitted from training spikes. Call fit(...) with the original "
-                "recording.",
-            )
-        if isinstance(self, ClusterlessDetector) and any(
-            self.encoding_model_[key]["mark_reference"] is not self.mark_reference_
-            for key in required_keys
-        ):
-            raise ValidationError(
-                "Encoding models do not share the detector's mark reference; refit before decoding.",
-                hint="No-Spike and every spike state must score marks against the same "
-                "reference density (mark_reference_).",
-            )
+            ):
+                raise ValidationError(
+                    "Saved clusterless model has no mark reference; refit before decoding.",
+                    hint="Clusterless states score waveform marks against a reference "
+                    "density fitted from training spikes. Call fit(...) with the "
+                    "original recording.",
+                )
+            if any(
+                self.encoding_model_[key]["mark_reference"] is not self.mark_reference_
+                for key in required_keys
+            ):
+                raise ValidationError(
+                    "Encoding models do not share the detector's mark reference; refit before decoding.",
+                    hint="No-Spike and every spike state must score marks against the "
+                    "same reference density (mark_reference_).",
+                )
 
     def _validate_decode_population(self, spike_times, spike_waveform_features=None):
         """Validate active fitted populations before missing-data shortcuts."""
