@@ -264,7 +264,9 @@ def test_zero_rate_electrode_scores_background(run_data, algorithm, has_referenc
 
 @pytest.mark.integration
 @pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
-def test_zero_rate_compensator_adds_background_rate_for_every_electrode(run_data, algorithm):
+def test_zero_rate_compensator_adds_background_rate_for_every_electrode(
+    run_data, algorithm
+):
     """With no encoding spikes anywhere, each silent bin scores -dt * n_e * beta."""
     fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm[0]]
     n_electrodes = len(run_data["train_spikes"])

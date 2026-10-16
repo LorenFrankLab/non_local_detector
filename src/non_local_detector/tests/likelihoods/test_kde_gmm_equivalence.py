@@ -18,9 +18,9 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
+    kde_distance,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.clusterless_kde import kde_distance
 from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
