@@ -15,7 +15,7 @@ from non_local_detector.likelihoods.common import (
     _padded_sample_count,
     _padded_spike_count,
 )
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
 pytestmark = pytest.mark.unit
 
@@ -44,11 +44,8 @@ def nearby_sizes_recording():
     decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (40, 45)]
     decode_features = [rng.normal(0, 30, (len(t), 4)) for t in decode_times]
     time_edges = time_edges_from_centers(np.arange(0, 2.0 + 1e-9, 0.02))
-    # As in the fit, training spikes after the last position sample are ignored.
-    mark_reference = fit_mark_references(
-        encoding_features,
-        24.0,
-        [(t <= position_time[-1]).astype(float) for t in encoding_times],
+    mark_reference = training_mark_references(
+        position_time, encoding_times, encoding_features, 24.0, position=position
     )
     return (
         position_time,

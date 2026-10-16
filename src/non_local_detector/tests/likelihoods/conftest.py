@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import non_local_detector.likelihoods.common as common
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
@@ -76,6 +77,63 @@ def parity_kwargs(algorithm: str, *, is_local: bool = False) -> dict[str, float]
     return FLOAT32_ROUNDING
 
 
+def training_mark_references(
+    position_time,
+    spike_times,
+    spike_waveform_features,
+    fallback_scale,
+    weights=None,
+    position=None,
+    *,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+):
+    """Mark references of an encoding fit's training spikes, as a detector fits them.
+
+    Each spike is weighted by ``weights`` (per position sample; uniform by
+    default) interpolated at its time over the fit's encoding support, so
+    spikes outside the support carry zero weight. Without ``position`` the
+    support is that of ``position_time`` with every position finite.
+
+    Parameters
+    ----------
+    position_time : array_like, shape (n_time_position,)
+    spike_times : list of array_like, each shape (n_spikes,)
+    spike_waveform_features : list of array_like, each shape (n_spikes, n_features)
+    fallback_scale : float or array_like, shape (n_features,)
+        The backend's ``mark_reference_scale`` of its fit parameters.
+    weights : array_like, shape (n_time_position,), optional
+    position : array_like, shape (n_time_position, n_position_dims), optional
+    encoding_time_range, valid_position_intervals : optional
+        The fit's encoding-support arguments.
+
+    Returns
+    -------
+    mark_reference : list of MarkReference or None
+    """
+    position_time = np.asarray(position_time)
+    if position is None:
+        position = np.zeros((position_time.shape[0], 1))
+    support, sample_weights, _, _ = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+    )
+    spike_weights = [
+        common.interpolate_weights_at_spike_times(
+            np.asarray(times), position_time, sample_weights, encoding_support=support
+        )
+        for times in spike_times
+    ]
+    return fit_mark_references(
+        [np.asarray(features) for features in spike_waveform_features],
+        fallback_scale,
+        spike_weights,
+    )
+
+
 def fit_registered_backends(
     data: dict, fit_params: dict[str, dict] | None = None
 ) -> Iterator[tuple[str, Callable, dict, bool]]:
@@ -130,9 +188,17 @@ def fit_registered_backends(
             environment=environment,
             **fit_params.get(name, {}),
         )
-        encoding_model["mark_reference"] = fit_mark_references(
+        encoding_model["mark_reference"] = training_mark_references(
+            data["position_time"],
+            data["encoding_spike_times"],
             data["encoding_features"],
             _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_params.get(name, {})),
+            fit_params.get(name, {}).get("weights"),
+            data["position"],
+            encoding_time_range=fit_params.get(name, {}).get("encoding_time_range"),
+            valid_position_intervals=fit_params.get(name, {}).get(
+                "valid_position_intervals"
+            ),
         )
         yield name, predict_func, encoding_model, True
 

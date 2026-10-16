@@ -11,11 +11,13 @@ from non_local_detector import NonLocalClusterlessDetector
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.common import (
     _KDE_BLOCK_KERNEL_BYTES,
-    interpolate_weights_at_spike_times,
 )
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.tests.conftest import precision_mode
-from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING, tolerance
+from non_local_detector.tests.likelihoods.conftest import (
+    FLOAT32_ROUNDING,
+    tolerance,
+    training_mark_references,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -59,15 +61,14 @@ def data(dtype=np.float32, weight_kind="weighted", empty_encoding=False):
 
 def fit(environment, values, **policy):
     """Encoding model plus the mark reference of its weighted training spikes."""
-    weights = values["weights"]
-    if weights is None:
-        weights = np.ones(len(values["position_time"]))
-    spike_weights = [
-        interpolate_weights_at_spike_times(t, values["position_time"], weights)
-        for t in values["training_spikes"]
-    ]
-    reference = fit_mark_references(
-        values["training_marks"], WAVEFORM_STD, spike_weights
+    reference = training_mark_references(
+        values["position_time"],
+        values["training_spikes"],
+        values["training_marks"],
+        WAVEFORM_STD,
+        values["weights"],
+        values["position"],
+        encoding_time_range=[0, 2],
     )
     encoding = clusterless_kde.fit_clusterless_kde_encoding_model(
         position_time=values["position_time"],

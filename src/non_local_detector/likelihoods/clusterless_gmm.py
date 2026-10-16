@@ -489,7 +489,9 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     return weights
 
 
-def mark_reference_scale(gmm_reg_covar=DEFAULT_GMM_REG_COVAR, **_fit_params):
+def mark_reference_scale(
+    gmm_reg_covar: float = DEFAULT_GMM_REG_COVAR, **_fit_params: object
+) -> float:
     """Mark-reference scale of a feature without training variance.
 
     Parameters
