@@ -96,6 +96,51 @@ def _zero_if_neginf(log_max: jnp.ndarray) -> jnp.ndarray:
     return jnp.where(jnp.isneginf(log_max), 0.0, log_max)
 
 
+def _repair_flagged(values, needs_exact: jnp.ndarray, repaired):
+    """Apply ``repaired(values, index, flag)`` at each flagged index.
+
+    At most ``_EXACT_REPAIR_SLOTS`` flagged indices visit only those; more visit
+    every index. Static loop bounds keep the repair differentiable.
+
+    Parameters
+    ----------
+    values : jnp.ndarray
+        Estimates, updated in place by ``repaired``.
+    needs_exact : jnp.ndarray of bool, shape (n,)
+    repaired : callable
+        ``repaired(values, index, flag) -> values``; leaves ``values`` unchanged
+        when ``flag`` is False.
+
+    Returns
+    -------
+    values : jnp.ndarray
+    """
+    n = needs_exact.shape[0]
+    n_flagged = jnp.sum(needs_exact)
+    flagged = jnp.nonzero(needs_exact, size=n, fill_value=0)[0]
+    n_slots = min(n, _EXACT_REPAIR_SLOTS)
+
+    def repair(n_visits, current):
+        return jax.lax.fori_loop(
+            0,
+            n_visits,
+            lambda slot, current: repaired(current, flagged[slot], slot < n_flagged),
+            current,
+        )
+
+    return jax.lax.cond(
+        n_flagged == 0,
+        lambda current: current,
+        lambda current: jax.lax.cond(
+            n_flagged <= n_slots,
+            partial(repair, n_slots),
+            partial(repair, n),
+            current,
+        ),
+        values,
+    )
+
+
 def _log_marginal_floor(mean_rate: float, occupancy: jnp.ndarray) -> jnp.ndarray:
     """Per-bin part of the smallest log marginal that can change a spike's term.
 
@@ -496,7 +541,7 @@ def _occupancy_normalizer(log_occupancy):
         Occupancy left after the division: 1 where supported, 0 where it is
         zero, NaN where it is NaN.
     """
-    normalizer = jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)
+    normalizer = _zero_if_neginf(log_occupancy)
     occupancy = jnp.where(
         jnp.isneginf(log_occupancy),
         0.0,
@@ -833,32 +878,7 @@ def _estimate_with_enc_chunking(
         )
         return jax.lax.dynamic_update_slice_in_dim(marginal, values, row, 0)
 
-    n_flagged = jnp.sum(needs_exact_row)
-    flagged_rows = jnp.nonzero(needs_exact_row, size=n_dec, fill_value=0)[0]
-    n_slots = min(n_dec, _EXACT_REPAIR_SLOTS)
-
-    def repair(n_visits, marginal):
-        # Visit the flagged rows; static bounds keep the loop differentiable.
-        return jax.lax.fori_loop(
-            0,
-            n_visits,
-            lambda slot, current: repaired(
-                current, flagged_rows[slot], slot < n_flagged
-            ),
-            marginal,
-        )
-
-    marginal = jax.lax.cond(
-        n_flagged == 0,
-        lambda current: current,
-        lambda current: jax.lax.cond(
-            n_flagged <= n_slots,
-            partial(repair, n_slots),
-            partial(repair, n_dec),
-            current,
-        ),
-        reduce_linearly(),
-    )
+    marginal = _repair_flagged(reduce_linearly(), needs_exact_row, repaired)
     return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
 
 

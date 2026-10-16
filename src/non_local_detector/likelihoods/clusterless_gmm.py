@@ -1039,7 +1039,7 @@ def predict_clusterless_gmm_log_likelihood(
         if joint_gmm is None:
             log_likelihood = (
                 log_likelihood
-                + sum_spikes_into_rows(jnp.asarray(log_background), selection)[:, None]
+                + sum_spikes_into_rows(log_background, selection)[:, None]
             )
             continue
 
@@ -1238,7 +1238,7 @@ def compute_local_log_likelihood(
         if joint_gmm is None:
             if n_spikes:
                 log_likelihood = log_likelihood + sum_spikes_into_rows(
-                    jnp.asarray(log_background, dtype=working_dtype), selection
+                    np.asarray(log_background, dtype=working_dtype), selection
                 )
             continue
 

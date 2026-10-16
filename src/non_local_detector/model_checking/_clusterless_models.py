@@ -235,7 +235,6 @@ class _DiffusionElectrode(_MarkKernelMixture):
 
     def __init__(self, model: dict, electrode: int) -> None:
         from non_local_detector.likelihoods.clusterless_diffusion import (
-            _diffuse_field,
             _log_intensity_scale,
             spatial_kernel_columns,
         )
@@ -286,12 +285,8 @@ class _DiffusionElectrode(_MarkKernelMixture):
             float,
         )
         spike_field = np.bincount(bins, weights=self.weights, minlength=self.n_bins)
-        self._ground_at_bins = np.exp(self._log_bin_scale) * _diffuse_field(
-            spike_field,
-            self.environment,
-            rank,
-            position_std,
-            int(model["memory_budget"]),
+        self._ground_at_bins = np.exp(self._log_bin_scale) * (
+            np.exp(self.log_heat) @ spike_field[self.sources]
         )
 
     def bin_indices(self, positions):

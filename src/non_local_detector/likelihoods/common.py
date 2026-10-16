@@ -1139,13 +1139,17 @@ def deterministic_row_add(
     return jax.lax.dynamic_update_slice(output, current + tile, start)
 
 
-def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.ndarray:
+def sum_spikes_into_rows(
+    values: np.ndarray | jnp.ndarray, selection: SpikeSelection
+) -> jnp.ndarray:
     """Sum one value per selected spike into the local row that owns it.
 
     Parameters
     ----------
-    values : jnp.ndarray, shape (n_selected, ...)
-        One entry per spike in ``selection``, in selection order.
+    values : np.ndarray or jnp.ndarray, shape (n_selected, ...)
+        One entry per spike in ``selection``, in selection order. Host values
+        are padded to a few sizes first, so chunks with nearby spike counts
+        share one compiled reduction.
     selection : SpikeSelection
         The selection from ``select_spikes_in_rows``; supplies the local row of
         each spike, the row count, and the verified sorted-index hint.
@@ -1162,8 +1166,9 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
     fixed reduction tree, so repeated evaluations are bitwise identical.
     Invalid row indices are dropped.
     """
-    values = jnp.asarray(values)
-    if values.dtype == jnp.bool_:
+    on_host = isinstance(values, np.ndarray)
+    values = values if on_host else jnp.asarray(values)
+    if values.dtype == np.bool_:
         raise TypeError(
             "Spike row sums require numeric values; Boolean sums are unsupported"
         )
@@ -1172,9 +1177,11 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
         raise ValueError("Spike row indices must be a one-dimensional integer array")
     if values.ndim == 0 or values.shape[0] != len(indices):
         raise ValueError("Values must contain one entry per selected spike")
+    # Padding rows are dropped from the sum.
+    n_padded = _padded_sample_count(len(indices)) if on_host else None
     return deterministic_row_sum(
-        values,
-        spike_row_ids(selection),
+        jnp.asarray(_pad_rows(values, n_padded)) if on_host else values,
+        spike_row_ids(selection, n_padded),
         selection.n_rows,
         indices_are_sorted=selection.indices_are_sorted,
     )
