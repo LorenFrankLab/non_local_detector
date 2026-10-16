@@ -72,8 +72,9 @@ _CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
         predict_clusterless_diffusion_log_likelihood,
     ),
 }
-# Each clusterless algorithm's mark-reference scale for a feature without
-# training variance, from its fit parameters (see ``fit_mark_references``).
+# Each clusterless algorithm's mark-kernel width, from its fit parameters, which
+# the mark reference adds in quadrature to each feature's training spread (see
+# ``fit_mark_references``).
 _CLUSTERLESS_MARK_REFERENCE_SCALES: dict[str, Callable[..., object]] = {
     "clusterless_kde": clusterless_kde.mark_reference_scale,
     "clusterless_gmm": clusterless_gmm.mark_reference_scale,

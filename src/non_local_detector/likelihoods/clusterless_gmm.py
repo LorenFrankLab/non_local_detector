@@ -492,13 +492,15 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
 def mark_reference_scale(
     gmm_reg_covar: float = DEFAULT_GMM_REG_COVAR, **_fit_params: object
 ) -> float:
-    """Mark-kernel width the reference adds to each feature's training spread.
+    """Mark-kernel width the reference adds in quadrature to each feature's spread.
 
     Parameters
     ----------
     gmm_reg_covar : float, optional
         The fit's covariance regularization, a variance in squared feature
-        units; other fit parameters are ignored.
+        units.
+    **_fit_params
+        Other fit parameters, ignored.
 
     Returns
     -------
