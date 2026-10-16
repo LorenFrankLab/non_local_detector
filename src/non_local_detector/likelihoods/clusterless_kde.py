@@ -670,26 +670,43 @@ def _estimate_with_enc_chunking(
         if position_log_normalizer is not None:
             position_peak = position_peak - position_log_normalizer.astype(dtype)
     else:
-        position_peak = jnp.max(log_position_distance + log_w[:, None], axis=0)
+        # Reduced over encoding tiles, so no encoding x position temporary is
+        # formed. The overlapping final tile only repeats rows, which a max
+        # ignores.
+        def tile_peak(enc_idx, peak):
+            enc_start = jnp.minimum(enc_idx * enc_tile_size, n_enc - enc_tile_size)
+            tile = (
+                jax.lax.dynamic_slice_in_dim(
+                    log_position_distance, enc_start, enc_tile_size
+                )
+                + jax.lax.dynamic_slice_in_dim(log_w, enc_start, enc_tile_size)[:, None]
+            )
+            return jnp.maximum(peak, jnp.max(tile, axis=0))
+
+        position_peak = jax.lax.fori_loop(
+            0, n_enc_chunks, tile_peak, jnp.full((n_pos,), -jnp.inf, dtype)
+        )
     query_floor, position_floor = log_floor
-    # Any entry above its floor: compare each position with the lowest query floor.
-    needs_exact_tails = jnp.any(
-        mark_peak
-        + position_peak
-        - _scaled_gemm_window(n_enc, jnp.float32)
-        - position_floor
-        > jnp.min(query_floor)
+    # A spike's linear estimate is exact above its floor when every kernel peak
+    # lies within the scaled GEMM's window of that floor; other spikes are
+    # recomputed exactly, one at a time.
+    needs_exact_row = (
+        jnp.max(
+            mark_peak
+            + position_peak
+            - _scaled_gemm_window(n_enc, jnp.float32)
+            - position_floor
+        )
+        > query_floor
     )
 
-    def encoding_tile(enc_idx):
+    def encoding_tile(enc_idx, queries):
         requested_enc_start = enc_idx * enc_tile_size
         enc_start = jnp.minimum(requested_enc_start, n_enc - enc_tile_size)
         marks = jax.lax.dynamic_slice_in_dim(
             encoding_spike_waveform_features, enc_start, enc_tile_size
         )
-        log_mark = _compute_log_mark_kernel_gemm(
-            decoding_spike_waveform_features, marks, waveform_stds
-        )
+        log_mark = _compute_log_mark_kernel_gemm(queries, marks, waveform_stds)
         weights = jax.lax.dynamic_slice_in_dim(log_w, enc_start, enc_tile_size)
         # Slice an overlapping final tile and mask its prefix, avoiding a
         # padded copy of the potentially very large precomputed matrix.
@@ -743,7 +760,9 @@ def _estimate_with_enc_chunking(
         safe_position_peak = jnp.broadcast_to(_zero_if_neginf(position_peak), (n_pos,))
 
         def process_enc_chunk(enc_idx, numerator):
-            enc_start, log_mark, weights, positions = encoding_tile(enc_idx)
+            enc_start, log_mark, weights, positions = encoding_tile(
+                enc_idx, decoding_spike_waveform_features
+            )
             # Zero-weight rows have zero position factors; NaN marks propagate.
             mark_factor = jnp.exp(log_mark - _zero_if_neginf(mark_peak) + shift)
 
@@ -784,13 +803,13 @@ def _estimate_with_enc_chunking(
             - 2.0 * shift
         )
 
-    def reduce_with_exact_tails():
+    def reduce_with_exact_tails(queries, queries_floor):
         # Splitting the floor across encoding tiles keeps their summed
         # omissions within twice one tile's tolerance at the floor.
-        tile_query_floor = query_floor - np.log(n_enc_chunks)
+        tile_query_floor = queries_floor - np.log(n_enc_chunks)
 
         def process_enc_chunk(enc_idx, marginal):
-            enc_start, log_mark, weights, positions = encoding_tile(enc_idx)
+            enc_start, log_mark, weights, positions = encoding_tile(enc_idx, queries)
 
             def process_position_chunk(pos_idx, marginal):
                 pos_start, log_position, is_new = position_tile(
@@ -821,10 +840,34 @@ def _estimate_with_enc_chunking(
             0,
             n_enc_chunks,
             process_enc_chunk,
-            jnp.full((n_dec, n_pos), -jnp.inf, dtype),
+            jnp.full((queries.shape[0], n_pos), -jnp.inf, dtype),
         )
 
-    marginal = jax.lax.cond(needs_exact_tails, reduce_with_exact_tails, reduce_linearly)
+    def repair_rows(marginal):
+        def repair_row(row, marginal):
+            def exact_row():
+                return reduce_with_exact_tails(
+                    jax.lax.dynamic_slice_in_dim(
+                        decoding_spike_waveform_features, row, 1
+                    ),
+                    jax.lax.dynamic_slice_in_dim(query_floor, row, 1),
+                )
+
+            # A scalar cond on one row: only flagged spikes pay for the exact
+            # reduction, and the full estimate is updated in place.
+            values = jax.lax.cond(
+                needs_exact_row[row],
+                exact_row,
+                lambda: jax.lax.dynamic_slice_in_dim(marginal, row, 1),
+            )
+            return jax.lax.dynamic_update_slice_in_dim(marginal, values, row, 0)
+
+        return jax.lax.fori_loop(0, n_dec, repair_row, marginal)
+
+    marginal = reduce_linearly()
+    marginal = jax.lax.cond(
+        jnp.any(needs_exact_row), repair_rows, lambda current: current, marginal
+    )
     return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
 
 

@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The `"clusterless_kde_log"` algorithm name is removed; passing it raises a `ValidationError` that points to `"clusterless_kde"`.
   - The probability-space kernels and `likelihoods/streamed_kde.py` are deleted.
   - Use `enc_tile_size` (with `use_streaming=True`) and `pos_tile_size` to tile workspaces. The unreleased `encoding_block_size` / `position_block_size` options are gone.
+- Log-space KDE scoring decides per spike whether the fast scaled GEMM is exact enough, and recomputes only those spikes with an exact logsumexp.
+  - Previously one spike far into the tails sent its whole block to the slow path.
+  - The kernel peak used for scaling is reduced over encoding tiles, so the compiled workspace no longer grows with the encoding count: 12.1 MiB instead of 31.3 MiB for 16,000 encoding samples × 512 bins.
 - A sparse KDE chunk no longer pads to the full `block_size`.
 - `clusterless_diffusion` holds field values below `1e-6` of each spike's peak, below its heat kernel's resolution, at that level. Bins whose diffused occupancy is below `1e-6` of its maximum, which the animal never visited, get zero marked and ground intensity, so their spikes are explained by the background alone.
 - Fit functions return `mark_reference` and predict functions require it. `estimate_log_joint_mark_intensity` and the block estimators take `log_background`.
