@@ -360,7 +360,7 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
                     (eigvals, eigvecs, labels),
                     sources,
                     None,
-                    jnp.zeros(sources.shape[0]),
+                    (jnp.zeros(sources.shape[0]), jnp.zeros(sources.shape[0])),
                     jnp.full(far.shape[0], -jnp.inf),
                     local=False,
                     position_std=enc["position_std"],
@@ -444,9 +444,9 @@ def test_absolute_log_likelihood_small_fixture():
         p_e[:, j]   = P[:, j] / (w_total * dV)
         p_gpi       = Shat / (w_total * dV)
         mean_rate   = w_total / sum_w_pos
-      intensity and ground process:
-        lc[:, j]    = log(clip(mean_rate * p_e[:, j] / pi, EPS))
-        summed_gpi  = clip(mean_rate * p_gpi / pi, EPS)
+      intensity and ground process, with the background beta * q(m):
+        lc[:, j]    = logaddexp(log(mean_rate * p_e[:, j] / pi), log(beta q(m_j)))
+        summed_gpi  = mean_rate * p_gpi / pi + beta
         ll[t, x]    = -summed_gpi[x] + sum_{j in bin t} lc[x, j]
 
     This pins every constant Z: the single mark normalizer, /w_total (not /n_enc,
@@ -486,6 +486,9 @@ def test_absolute_log_likelihood_small_fixture():
         heat_kernel_rank=n_bins,  # force full basis for exact hand math
         disable_progress_bar=True,
     )
+    reference = training_mark_references(
+        position_time, [enc_times], [enc_marks], WAVEFORM_STD, weights
+    )
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
             position_time,
@@ -494,9 +497,7 @@ def test_absolute_log_likelihood_small_fixture():
             [jnp.asarray(dec_marks)],
             time_edges=jnp.asarray(time_edges),
             is_local=False,
-            mark_reference=training_mark_references(
-                position_time, [enc_times], [enc_marks], WAVEFORM_STD, weights
-            ),
+            mark_reference=reference,
             **enc,
         )
     )
@@ -542,10 +543,11 @@ def test_absolute_log_likelihood_small_fixture():
     pi = np.clip(Ohat[:, 0] / (sum_w_pos * dV), EPS, None)
     p_e = P / (w_total * dV[:, None])
     p_gpi = Shat[:, 0] / (w_total * dV)
-    lc = np.log(
-        np.clip(mean_rate * p_e / pi[:, None], RATE_EPS_HZ, None)
+    background = LOG_RATE_EPS_HZ + reference[0].log_density(dec_marks)  # (n_dec,)
+    lc = np.logaddexp(
+        np.log(mean_rate * p_e / pi[:, None]), background[None, :]
     )  # (n_bins, n_dec)
-    summed_gpi = np.clip(mean_rate * p_gpi / pi, RATE_EPS_HZ, None)
+    summed_gpi = mean_rate * p_gpi / pi + RATE_EPS_HZ
 
     n_time_bins = len(time_edges) - 1
     expected = -np.diff(time_edges)[:, None] * summed_gpi[None, :]
@@ -1712,56 +1714,20 @@ def test_spike_term_is_the_background_where_the_exact_intensity_is_zero():
 def test_a_far_weak_source_alone_in_its_component_is_not_lost():
     """Per-spike scaling must not erase the only source reaching a component.
 
-    Two disconnected rooms, 16 features with a unit mark bandwidth. Left-room
-    marks are the decoding mark or lie 1000 away in 15 features (which makes
-    the reference broad); right-room marks lie 15 bandwidths away in one
-    feature, 112.5 nats weaker than the left-room match, which float32 cannot
-    represent next to it. In the right room that source alone sets the
-    intensity, well above the background, so the spike's term there must
-    follow it.
+    Right-room marks are 112.5 nats weaker than the left-room match, which
+    float32 cannot represent next to it. In the right room that source alone
+    sets the intensity, well above the background, so the spike's term there
+    must follow it.
     """
-    env, position = _make_two_room_env()
-    sampling_frequency = 100
-    time = np.arange(position.shape[0]) / sampling_frequency
-    rng = np.random.default_rng(5)
-    in_left = position[:, 0] < 16.0
-    in_right = position[:, 0] > 24.0
-    picks = np.sort(
-        np.r_[
-            rng.choice(np.flatnonzero(in_left), 80, replace=False),
-            rng.choice(np.flatnonzero(in_right), 40, replace=False),
-        ]
+    env, position, time, enc, reference = _two_room_weak_source_model(
+        112.5, position_std=8.0
     )
-    enc_t = [time[picks]]
-    marks = np.zeros((picks.size, 16))
-    marks[in_right[picks], 0] = 15.0
-    left = np.flatnonzero(~in_right[picks])
-    marks[left[::2], 1:] = 1000.0
-    enc_f = [marks.astype(np.float32)]
-    enc = fit_clusterless_diffusion_encoding_model(
-        jnp.asarray(time),
-        jnp.asarray(position),
-        [jnp.asarray(t) for t in enc_t],
-        [jnp.asarray(f) for f in enc_f],
-        env,
-        position_std=8.0,
-        waveform_std=1.0,
-        disable_progress_bar=True,
-    )
-    reference = training_mark_references(time, enc_t, enc_f, 1.0)
-
-    decode_center = time[position.shape[0] // 2]
+    center = time[position.shape[0] // 2]
     dt = 0.002
-    edges = np.array([decode_center - dt / 2, decode_center + dt / 2])
+    edges = np.array([center - dt / 2, center + dt / 2])
     decode_mark = np.zeros((1, 16), np.float32)
     with_spike = _predict_diffusion_nonlocal(
-        edges,
-        time,
-        position,
-        [np.array([decode_center])],
-        [decode_mark],
-        enc,
-        reference,
+        edges, time, position, [np.array([center])], [decode_mark], enc, reference
     )[0]
     silent = _predict_diffusion_nonlocal(
         edges,
@@ -1773,34 +1739,220 @@ def test_a_far_weak_source_alone_in_its_component_is_not_lost():
         reference,
     )[0]
     term = with_spike - silent - np.log(dt)
+    oracle = _oracle_terms(env, enc, reference, decode_mark, 8.0)[0]
+    background = LOG_RATE_EPS_HZ + reference[0].log_density(decode_mark)[0]
+    right_room = env.place_bin_centers_[env.is_track_interior_.ravel()][:, 0] > 20.0
+    assert np.all(oracle[right_room] > background + 5.0)
+    np.testing.assert_allclose(
+        term[right_room], oracle[right_room], rtol=1e-5, atol=1e-3
+    )
 
-    # Float64 oracle from the model's own pieces.
+
+def _two_room_weak_source_model(weak_nats, position_std, corner_only=False):
+    """Two disconnected rooms, 16 features, unit mark bandwidth.
+
+    Left-room marks are 0, or 1000 in 15 features (which broadens the
+    reference); right-room marks lie ``sqrt(2 * weak_nats)`` away in one
+    feature, so for a zero query they are ``weak_nats`` weaker than the
+    left-room match.
+    """
+    env, position = _make_two_room_env()
+    time = np.arange(position.shape[0]) / 100
+    rng = np.random.default_rng(5)
+    in_left = position[:, 0] < 16.0
+    in_right = position[:, 0] > 24.0
+    right = (
+        np.flatnonzero(in_right & (position[:, 0] > 36) & (position[:, 1] > 36))[:1]
+        if corner_only
+        else rng.choice(np.flatnonzero(in_right), 40, replace=False)
+    )
+    picks = np.sort(
+        np.r_[rng.choice(np.flatnonzero(in_left), 80, replace=False), right]
+    )
+    marks = np.zeros((picks.size, 16))
+    marks[in_right[picks], 0] = np.sqrt(2 * weak_nats)
+    left = np.flatnonzero(~in_right[picks])
+    marks[left[::2], 1:] = 1000.0
+    enc_t = [time[picks]]
+    enc_f = [marks.astype(np.float32)]
+    enc = fit_clusterless_diffusion_encoding_model(
+        jnp.asarray(time),
+        jnp.asarray(position),
+        [jnp.asarray(t) for t in enc_t],
+        [jnp.asarray(f) for f in enc_f],
+        env,
+        position_std=position_std,
+        waveform_std=1.0,
+        disable_progress_bar=True,
+    )
+    reference = training_mark_references(time, enc_t, enc_f, 1.0)
+    return env, position, time, enc, reference
+
+
+def _oracle_terms(env, enc, reference, decode_marks, position_std):
+    """Float64 ``logaddexp(log lambda, log background)``, shape (n_spikes, n_bins)."""
     sources = np.asarray(enc["encoding_bin_indices"][0])
     columns = np.asarray(
-        spatial_kernel_columns(env, enc["resolved_rank"], 8.0, sources), float
+        spatial_kernel_columns(env, enc["resolved_rank"], position_std, sources), float
     )
     marks = np.asarray(enc["encoding_marks"][0], float)
-    log_kernel = -0.5 * np.sum(marks**2, axis=1) - 8 * np.log(2 * np.pi)
     weights = np.asarray(enc["encoding_weights"][0], float)
-    with np.errstate(divide="ignore"):
-        log_field = logsumexp(
-            np.log(columns) + (np.log(weights) + log_kernel)[None, :], axis=1
-        )
     occupancy = np.asarray(enc["occupancy"], float)
     log_scale = np.log(enc["mean_rates"][0]) - np.log(
         enc["weight_total"][0] * np.asarray(enc["bin_sizes"]) * occupancy
     )
-    background = LOG_RATE_EPS_HZ + reference[0].log_density(decode_mark)[0]
-    interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
-    right_room = interior_centers[:, 0] > 20.0
-    log_intensity = log_scale + log_field
-    assert np.all(log_intensity[right_room] > background + 5.0)
-    np.testing.assert_allclose(
-        term[right_room],
-        np.logaddexp(log_intensity, background)[right_room],
-        rtol=1e-5,
-        atol=1e-3,
+    terms = []
+    for mark in np.asarray(decode_marks, float):
+        log_kernel = -0.5 * np.sum((marks - mark) ** 2, axis=1) - 8 * np.log(2 * np.pi)
+        with np.errstate(divide="ignore"):
+            log_field = logsumexp(
+                np.log(columns) + (np.log(weights) + log_kernel)[None, :], axis=1
+            )
+        background = LOG_RATE_EPS_HZ + reference[0].log_density(mark[None])[0]
+        terms.append(np.logaddexp(log_scale + log_field, background))
+    return np.asarray(terms)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("weak_nats", [72.0, 76.0, 79.0])
+def test_a_weak_source_whose_kernel_tail_underflows_is_not_lost(weak_nats):
+    """A source within the scaled product's range can still underflow there.
+
+    Scaled by the spike's strongest source, a source ``weak_nats`` weaker
+    times a kernel entry down to 1e-6 of its column's peak falls below
+    float32's smallest normal number. Bins reached only by that tail must
+    still get its intensity where it exceeds the background.
+    """
+    env, position, time, enc, reference = _two_room_weak_source_model(
+        weak_nats, position_std=4.0, corner_only=True
     )
+    center = time[position.shape[0] // 2]
+    dt = 0.002
+    edges = np.array([center - dt / 2, center + dt / 2])
+    decode_mark = np.zeros((1, 16), np.float32)
+    with_spike = _predict_diffusion_nonlocal(
+        edges, time, position, [np.array([center])], [decode_mark], enc, reference
+    )[0]
+    silent = _predict_diffusion_nonlocal(
+        edges,
+        time,
+        position,
+        [np.array([])],
+        [np.zeros((0, 16), np.float32)],
+        enc,
+        reference,
+    )[0]
+    term = with_spike - silent - np.log(dt)
+    oracle = _oracle_terms(env, enc, reference, decode_mark, 4.0)[0]
+    background = LOG_RATE_EPS_HZ + reference[0].log_density(decode_mark)[0]
+    right_room = env.place_bin_centers_[env.is_track_interior_.ravel()][:, 0] > 20.0
+    assert np.sum(right_room & (oracle > background + 1.0)) > 0
+    np.testing.assert_allclose(
+        term[right_room], oracle[right_room], atol=1e-3, rtol=1e-5
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("n_flagged", [3, 40])
+@pytest.mark.parametrize("streamed", [False, True], ids=["dense", "streamed"])
+@pytest.mark.parametrize("is_local", [False, True])
+def test_exact_repair_scores_flagged_spikes_among_others(n_flagged, streamed, is_local):
+    """Flagged and unflagged spikes in one block, each against a float64 oracle.
+
+    Zero marks need the exact repair (their right-room sources underflow in
+    the scaled product); marks at 1000 in 15 features match a left-room
+    group and do not. 40 flagged spikes exceed the block's repair slots, so
+    every spike is visited; with a small ``memory_budget`` the kernel
+    columns stream in tiles.
+    """
+    env, position, time, enc, reference = _two_room_weak_source_model(
+        112.5, position_std=8.0
+    )
+    rng = np.random.default_rng(9)
+    n_spikes = 48
+    flagged = np.zeros(n_spikes, bool)
+    flagged[rng.choice(n_spikes, n_flagged, replace=False)] = True
+    decode_marks = np.zeros((n_spikes, 16), np.float32)
+    decode_marks[~flagged, 1:] = 1000.0
+    dt = 0.002
+    edges = time[1000] + np.arange(n_spikes + 1) * dt
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    n_bins = len(enc["bin_sizes"])
+    if streamed:
+        enc = {**enc, "memory_budget": 2 * 4 * 8 * (3 * n_bins + enc["resolved_rank"])}
+        assert not _dense_kernel_fits(n_bins, enc["memory_budget"])
+
+    def predict(spike_times, spike_marks):
+        return np.asarray(
+            predict_clusterless_diffusion_log_likelihood(
+                jnp.asarray(time),
+                jnp.asarray(position),
+                spike_times,
+                spike_marks,
+                time_edges=edges,
+                is_local=is_local,
+                mark_reference=reference,
+                **enc,
+            ),
+            dtype=float,
+        )
+
+    with_spikes = predict([centers], [decode_marks])
+    silent = predict([np.array([])], [np.zeros((0, 16), np.float32)])
+    terms = with_spikes - silent - np.log(dt)
+    oracle = _oracle_terms(env, enc, reference, decode_marks, 8.0)
+    if is_local:
+        interior = np.flatnonzero(env.is_track_interior_.ravel())
+        full_to_local = np.full(env.is_track_interior_.size, -1)
+        full_to_local[interior] = np.arange(interior.size)
+        bins = full_to_local[
+            env.get_bin_ind(get_position_at_time(time, position, centers, env))
+        ]
+        oracle = oracle[np.arange(n_spikes), bins][:, None]
+    np.testing.assert_allclose(terms, oracle, atol=1e-3, rtol=1e-5)
+
+
+@pytest.mark.unit
+def test_dense_scorer_stays_within_its_memory_budget():
+    """The dense kernel is an input; per-source bounds and the exact repair
+    reduce it in tiles, so the scorer's own workspace fits the budget."""
+    n_bins, rank, n_samples, block = 4096, 64, 4096, 16
+    budget = 128 * 2**20
+    assert _dense_kernel_fits(n_bins, budget)
+    # The layout production uses for a dense kernel.
+    _, _, sources, _, tile = _electrode_layout(
+        np.arange(n_samples) % n_bins,
+        np.zeros((n_samples, 4)),
+        np.ones(n_samples),
+        n_bins,
+        _source_tile_size(budget, n_bins, rank),
+        dense=True,
+    )
+    n_sources = sources.shape[0]
+    f32, i32 = jnp.float32, jnp.int32
+    compiled = _add_electrode_diffusion_intensities.lower(
+        jax.ShapeDtypeStruct((8, n_bins), f32),
+        jax.ShapeDtypeStruct((block, 4), f32),
+        jax.ShapeDtypeStruct((block,), i32),
+        jax.ShapeDtypeStruct((n_samples, 4), f32),
+        jax.ShapeDtypeStruct((n_samples,), f32),
+        jax.ShapeDtypeStruct((n_samples,), i32),
+        jax.ShapeDtypeStruct((n_sources,), i32),
+        jax.ShapeDtypeStruct((4,), f32),
+        jax.ShapeDtypeStruct((rank,), f32),
+        jax.ShapeDtypeStruct((n_bins, rank), f32),
+        jax.ShapeDtypeStruct((n_bins,), i32),
+        jax.ShapeDtypeStruct((n_bins, n_sources), f32),
+        jax.ShapeDtypeStruct((n_bins,), f32),
+        jax.ShapeDtypeStruct((block,), f32),
+        position_std=1.0,
+        n_components=1,
+        tile=tile,
+        block_size=block,
+        indices_are_sorted=True,
+    ).compile()
+    workspace = compiled.memory_analysis().temp_size_in_bytes
+    assert workspace <= budget, f"{workspace / 2**20:.0f} MiB"
 
 
 @pytest.mark.unit
