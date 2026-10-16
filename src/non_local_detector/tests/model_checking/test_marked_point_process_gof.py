@@ -17,14 +17,11 @@ from scipy.special import logsumexp
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import fit_clusterless_kde_encoding_model
 from non_local_detector.likelihoods.clusterless_diffusion import (
+    _spatial_kernel,
     fit_clusterless_diffusion_encoding_model,
 )
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
-)
-from non_local_detector.likelihoods.diffusion import (
-    get_device_basis,
-    heat_kernel_apply,
 )
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
@@ -211,25 +208,13 @@ def _diffusion_ground(model, environment, positions):
 
 
 def _diffusion_components(model, environment, positions):
-    """Heat-kernel component probabilities of f(m | x) and mark centres."""
-    node_order = np.asarray(model["node_order"])
-    eigvals, eigvecs, labels, n_components = get_device_basis(
-        environment, int(model["resolved_rank"])
-    )
+    """Spatial-kernel component probabilities of f(m | x) and mark centres."""
     sources = np.asarray(model["encoding_bin_indices"][0])
-    unique_sources, source_index = np.unique(sources, return_inverse=True)
-    onehot = np.zeros((node_order.size, unique_sources.size), dtype=np.float32)
-    onehot[unique_sources, np.arange(unique_sources.size)] = 1.0
     heat = np.asarray(
-        heat_kernel_apply(
-            eigvals, eigvecs, POSITION_STD, jnp.asarray(onehot), labels, n_components
-        ),
-        float,
+        _spatial_kernel(environment, int(model["resolved_rank"]), POSITION_STD), float
     )
     bins = _diffusion_bins(model, environment, positions)
-    kernel = heat[bins][:, source_index] * np.asarray(
-        model["encoding_weights"][0], float
-    )
+    kernel = heat[bins][:, sources] * np.asarray(model["encoding_weights"][0], float)
     centers = np.asarray(model["encoding_marks"][0], float)
     return kernel / kernel.sum(axis=1, keepdims=True), centers
 

@@ -21,7 +21,6 @@ environment's interior place bins, as the non-local likelihood does.
 
 from typing import Any
 
-import jax.numpy as jnp
 import numpy as np
 from scipy.special import logsumexp  # type: ignore[import-untyped]
 
@@ -228,19 +227,15 @@ class _KDEElectrode(_MarkKernelMixture):
 class _DiffusionElectrode(_MarkKernelMixture):
     """Clusterless diffusion: heat-kernel position weights on encoding spikes.
 
-    The model diffuses each mark column with a clipped, mass-rescaled low-rank
-    heat kernel. At full rank the clip never acts and the intensity is the
-    mixture used here exactly; at a truncated rank the clip makes the model
-    slightly nonlinear in the mark column and the mixture approximates it.
+    The model diffuses every source bin with one fixed, normalized spatial
+    kernel, so its intensity is exactly this mixture of encoding-spike mark
+    kernels weighted by the kernel's columns.
     """
 
     def __init__(self, model: dict, electrode: int) -> None:
         from non_local_detector.likelihoods.clusterless_diffusion import (
             _diffuse_field,
-        )
-        from non_local_detector.likelihoods.diffusion import (
-            get_device_basis,
-            heat_kernel_apply,
+            _spatial_kernel,
         )
 
         self.environment = model["environment"]
@@ -265,23 +260,18 @@ class _DiffusionElectrode(_MarkKernelMixture):
         self._source_starts = np.searchsorted(
             self._sorted_source_index, np.arange(self.sources.size)
         )
-        position_std = float(np.asarray(model["position_std"]))
-        eigvals, eigvecs, labels, n_components = get_device_basis(
-            self.environment, int(model["resolved_rank"])
-        )
-        onehot = np.zeros((self.n_bins, self.sources.size), dtype=np.float32)
-        onehot[self.sources, np.arange(self.sources.size)] = 1.0
-        heat = heat_kernel_apply(
-            eigvals, eigvecs, position_std, jnp.asarray(onehot), labels, n_components
+        kernel = _spatial_kernel(
+            self.environment,
+            int(model["resolved_rank"]),
+            float(np.asarray(model["position_std"])),
         )
         with np.errstate(divide="ignore"):
-            self.log_heat = np.log(np.asarray(heat, float))  # (n_bins, n_sources)
+            # (n_bins, n_sources)
+            self.log_heat = np.log(np.asarray(kernel, float)[:, self.sources])
         bin_sizes = np.asarray(model["bin_sizes"], float)
         occupancy = np.asarray(model["occupancy"], float)
         spike_field = np.bincount(bins, weights=self.weights, minlength=self.n_bins)
-        p_gpi = _diffuse_field(
-            spike_field, eigvals, eigvecs, position_std, labels, n_components
-        ) / (self.weight_total * bin_sizes)
+        p_gpi = _diffuse_field(spike_field, kernel) / (self.weight_total * bin_sizes)
         self._ground_at_bins = self.mean_rate * p_gpi / occupancy
         # log of mean_rate / (sum w * dV(b) * occupancy(b)), per bin.
         self._log_bin_scale = (
