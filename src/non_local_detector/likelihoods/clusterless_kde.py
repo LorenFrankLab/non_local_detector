@@ -73,6 +73,9 @@ from non_local_detector.time_edges import (
 # Encoding rows per reduction tile. Each tile is one GEMM over the whole query
 # block, so temporaries scale with the tile rather than the encoding count.
 _LOG_REDUCTION_ENCODING_ROWS = 2048
+# Flagged spikes per block whose exact reduction visits only those rows; a block
+# with more flagged spikes visits every row.
+_EXACT_REPAIR_SLOTS = 32
 
 
 def _masked_logsumexp(values: jnp.ndarray) -> jnp.ndarray:
@@ -568,6 +571,120 @@ def _compute_log_mark_kernel_gemm(
     return logK_mark
 
 
+def _encoding_log_weights(encoding_weights, n_encoding_spikes: int) -> jnp.ndarray:
+    """Per-encoding-spike log weight ``log(w_e / sum w)``.
+
+    A zero weight gives ``-inf``, dropping the spike out of every maximum and
+    product; a negative or NaN weight gives NaN. ``None`` weights uniformly.
+
+    Parameters
+    ----------
+    encoding_weights : jnp.ndarray, shape (n_encoding_spikes,), or None
+    n_encoding_spikes : int
+
+    Returns
+    -------
+    log_w : jnp.ndarray, shape (n_encoding_spikes,)
+    """
+    if encoding_weights is None:
+        # Use max(n, 1) to avoid log(0); when n=0 the result is unused.
+        safe_n = jnp.where(n_encoding_spikes > 0, float(n_encoding_spikes), 1.0)
+        return jnp.full((n_encoding_spikes,), -jnp.log(safe_n))
+    weight_total = jnp.sum(encoding_weights)
+    safe_weight_total = jnp.where(weight_total > 0, weight_total, 1.0)
+    safe_weights = jnp.where(encoding_weights > 0, encoding_weights, 1.0)
+    log_w = jnp.where(
+        encoding_weights == 0,
+        -jnp.inf,
+        jnp.log(safe_weights) - jnp.log(safe_weight_total),
+    )
+    return jnp.where(
+        (encoding_weights < 0) | jnp.isnan(encoding_weights), jnp.nan, log_w
+    )
+
+
+def _occupancy_normalized(log_position_distance, log_occupancy):
+    """Divide position kernels by occupancy before mark log densities are added.
+
+    This preserves small conditional mark terms even in very distant tails.
+
+    Parameters
+    ----------
+    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+    log_occupancy : jnp.ndarray, shape (n_position_bins,)
+
+    Returns
+    -------
+    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+        Position kernels divided by occupancy.
+    occupancy : jnp.ndarray, shape (n_position_bins,)
+        1 where occupancy is supported, 0 where it is zero, NaN where it is NaN.
+    """
+    normalizer = jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)
+    occupancy = jnp.where(
+        jnp.isneginf(log_occupancy),
+        0.0,
+        jnp.where(jnp.isnan(log_occupancy), jnp.nan, 1.0),
+    )
+    return log_position_distance - normalizer[None, :], occupancy
+
+
+def _tiled_position_peak(log_position_distance, log_w, enc_tile_size, dtype):
+    """Largest weighted position kernel per bin, reduced over encoding tiles.
+
+    No encoding x position temporary is formed. The overlapping final tile only
+    repeats rows, which a max ignores.
+    """
+    n_enc, n_pos = log_position_distance.shape
+
+    def tile_peak(enc_idx, peak):
+        enc_start = jnp.minimum(enc_idx * enc_tile_size, n_enc - enc_tile_size)
+        tile = (
+            jax.lax.dynamic_slice_in_dim(
+                log_position_distance, enc_start, enc_tile_size
+            )
+            + jax.lax.dynamic_slice_in_dim(log_w, enc_start, enc_tile_size)[:, None]
+        )
+        return jnp.maximum(peak, jnp.max(tile, axis=0))
+
+    n_chunks = (n_enc + enc_tile_size - 1) // enc_tile_size
+    return jax.lax.fori_loop(
+        0, n_chunks, tile_peak, jnp.full((n_pos,), -jnp.inf, dtype)
+    )
+
+
+def _position_scale_terms(log_position_distance, log_w, dtype):
+    """Position peak and scaled position factor of the linear reduction.
+
+    They depend on no decoding spike, so a caller scoring many blocks of spikes
+    against one encoding model computes them once (see
+    ``_estimate_with_enc_chunking``'s ``position_terms``).
+
+    Returns
+    -------
+    position_peak : jnp.ndarray, shape (n_position_bins,)
+    position_factor : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+        ``exp(log_position + log_w - peak + shift)``, as the linear reduction
+        evaluates it.
+    """
+    n_enc = log_position_distance.shape[0]
+    log_w = jnp.asarray(log_w, dtype)
+    position_peak = _tiled_position_peak(
+        log_position_distance,
+        log_w,
+        min(n_enc, _LOG_REDUCTION_ENCODING_ROWS),
+        dtype,
+    )
+    shift = _scaled_gemm_shift(n_enc, jnp.float32)
+    factor = jnp.exp(
+        log_position_distance
+        + log_w[:, None]
+        - _zero_if_neginf(position_peak)[None, :]
+        + shift
+    )
+    return position_peak, factor
+
+
 def _estimate_with_enc_chunking(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
@@ -584,6 +701,7 @@ def _estimate_with_enc_chunking(
     position_std: jnp.ndarray | None = None,
     use_streaming: bool = False,
     position_log_normalizer: jnp.ndarray | None = None,
+    position_terms: tuple[jnp.ndarray, jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
     """Log joint mark intensity, reduced over bounded encoding tiles.
 
@@ -669,22 +787,12 @@ def _estimate_with_enc_chunking(
         )[0, 0].astype(dtype) + jnp.max(log_w)
         if position_log_normalizer is not None:
             position_peak = position_peak - position_log_normalizer.astype(dtype)
+    elif position_terms is not None:
+        # Precomputed once per encoding model by the caller.
+        position_peak = position_terms[0]
     else:
-        # Reduced over encoding tiles, so no encoding x position temporary is
-        # formed. The overlapping final tile only repeats rows, which a max
-        # ignores.
-        def tile_peak(enc_idx, peak):
-            enc_start = jnp.minimum(enc_idx * enc_tile_size, n_enc - enc_tile_size)
-            tile = (
-                jax.lax.dynamic_slice_in_dim(
-                    log_position_distance, enc_start, enc_tile_size
-                )
-                + jax.lax.dynamic_slice_in_dim(log_w, enc_start, enc_tile_size)[:, None]
-            )
-            return jnp.maximum(peak, jnp.max(tile, axis=0))
-
-        position_peak = jax.lax.fori_loop(
-            0, n_enc_chunks, tile_peak, jnp.full((n_pos,), -jnp.inf, dtype)
+        position_peak = _tiled_position_peak(
+            log_position_distance, log_w, enc_tile_size, dtype
         )
     query_floor, position_floor = log_floor
     # A spike's linear estimate is exact above its floor when every kernel peak
@@ -770,12 +878,28 @@ def _estimate_with_enc_chunking(
                 pos_start, log_position, is_new = position_tile(
                     pos_idx, enc_start, positions
                 )
-                peak = jax.lax.dynamic_slice_in_dim(
-                    safe_position_peak, pos_start, pos_tile_size
-                )
+                if position_terms is None:
+                    peak = jax.lax.dynamic_slice_in_dim(
+                        safe_position_peak, pos_start, pos_tile_size
+                    )
+                    position_factor = jnp.exp(
+                        log_position + weights[:, None] - peak + shift
+                    )
+                else:
+                    # The same factor, evaluated once per encoding model; rows
+                    # outside this tile (weight -inf) contribute nothing.
+                    position_factor = jnp.where(
+                        jnp.isneginf(weights)[:, None],
+                        0.0,
+                        jax.lax.dynamic_slice(
+                            position_terms[1],
+                            (enc_start, pos_start),
+                            (enc_tile_size, pos_tile_size),
+                        ),
+                    )
                 product = jnp.matmul(
                     mark_factor.T,
-                    jnp.exp(log_position + weights[:, None] - peak + shift),
+                    position_factor,
                     precision=jax.lax.Precision.HIGHEST,
                 )
                 current = jax.lax.dynamic_slice_in_dim(
@@ -843,30 +967,51 @@ def _estimate_with_enc_chunking(
             jnp.full((queries.shape[0], n_pos), -jnp.inf, dtype),
         )
 
-    def repair_rows(marginal):
-        def repair_row(row, marginal):
-            def exact_row():
-                return reduce_with_exact_tails(
-                    jax.lax.dynamic_slice_in_dim(
-                        decoding_spike_waveform_features, row, 1
-                    ),
-                    jax.lax.dynamic_slice_in_dim(query_floor, row, 1),
-                )
+    def exact_row(row):
+        return reduce_with_exact_tails(
+            jax.lax.dynamic_slice_in_dim(decoding_spike_waveform_features, row, 1),
+            jax.lax.dynamic_slice_in_dim(query_floor, row, 1),
+        )
 
-            # A scalar cond on one row: only flagged spikes pay for the exact
-            # reduction, and the full estimate is updated in place.
-            values = jax.lax.cond(
-                needs_exact_row[row],
-                exact_row,
-                lambda: jax.lax.dynamic_slice_in_dim(marginal, row, 1),
-            )
-            return jax.lax.dynamic_update_slice_in_dim(marginal, values, row, 0)
+    def repaired(marginal, row, needs_exact):
+        # A scalar cond on one row; the full estimate is updated in place.
+        values = jax.lax.cond(
+            needs_exact,
+            lambda: exact_row(row),
+            lambda: jax.lax.dynamic_slice_in_dim(marginal, row, 1),
+        )
+        return jax.lax.dynamic_update_slice_in_dim(marginal, values, row, 0)
 
-        return jax.lax.fori_loop(0, n_dec, repair_row, marginal)
+    n_flagged = jnp.sum(needs_exact_row)
+    flagged_rows = jnp.nonzero(needs_exact_row, size=n_dec, fill_value=0)[0]
+    n_slots = min(n_dec, _EXACT_REPAIR_SLOTS)
 
-    marginal = reduce_linearly()
+    def repair_flagged(marginal):
+        # Visit only the flagged rows; static bounds keep the loop differentiable.
+        return jax.lax.fori_loop(
+            0,
+            n_slots,
+            lambda slot, current: repaired(
+                current, flagged_rows[slot], slot < n_flagged
+            ),
+            marginal,
+        )
+
+    def repair_every_row(marginal):
+        return jax.lax.fori_loop(
+            0,
+            n_dec,
+            lambda row, current: repaired(current, row, needs_exact_row[row]),
+            marginal,
+        )
+
     marginal = jax.lax.cond(
-        jnp.any(needs_exact_row), repair_rows, lambda current: current, marginal
+        n_flagged == 0,
+        lambda current: current,
+        lambda current: jax.lax.cond(
+            n_flagged <= n_slots, repair_flagged, repair_every_row, current
+        ),
+        reduce_linearly(),
     )
     return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
 
@@ -1071,18 +1216,19 @@ def estimate_log_joint_mark_intensity(
     n_dec = decoding_spike_waveform_features.shape[0]
 
     if log_occupancy is not None:
-        # Divide position kernels by occupancy before adding mark log densities.
-        # This preserves small conditional mark terms even in very distant tails.
-        normalizer = jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)
         if use_streaming:
-            position_log_normalizer = normalizer
+            position_log_normalizer = jnp.where(
+                jnp.isneginf(log_occupancy), 0.0, log_occupancy
+            )
+            occupancy = jnp.where(
+                jnp.isneginf(log_occupancy),
+                0.0,
+                jnp.where(jnp.isnan(log_occupancy), jnp.nan, 1.0),
+            )
         else:
-            log_position_distance = log_position_distance - normalizer[None, :]
-        occupancy = jnp.where(
-            jnp.isneginf(log_occupancy),
-            0.0,
-            jnp.where(jnp.isnan(log_occupancy), jnp.nan, 1.0),
-        )
+            log_position_distance, occupancy = _occupancy_normalized(
+                log_position_distance, log_occupancy
+            )
 
     if n_encoding_spikes == 0 or n_dec == 0 or n_pos == 0:
         return jnp.logaddexp(
@@ -1093,26 +1239,8 @@ def estimate_log_joint_mark_intensity(
         )
 
     # Per-encoding-spike log weight, added to the position kernel (not folded into the
-    # mark kernel). A zero weight (log_w = -inf) marks the row inactive, so it drops out
-    # of every maximum and product instead of producing NaN from -inf - (-inf).
-    if encoding_weights is None:
-        # Uniform weights: log(1/n) for each encoding spike.
-        # Use max(n, 1) to avoid log(0); when n=0 the result is unused.
-        safe_n = jnp.where(n_encoding_spikes > 0, float(n_encoding_spikes), 1.0)
-        log_w = jnp.full((n_encoding_spikes,), -jnp.log(safe_n))
-    else:
-        # log(w_e / sum_w); a zero weight -> -inf drops the spike out of the sum.
-        weight_total = jnp.sum(encoding_weights)
-        safe_weight_total = jnp.where(weight_total > 0, weight_total, 1.0)
-        safe_weights = jnp.where(encoding_weights > 0, encoding_weights, 1.0)
-        log_w = jnp.where(
-            encoding_weights == 0,
-            -jnp.inf,
-            jnp.log(safe_weights) - jnp.log(safe_weight_total),
-        )
-        log_w = jnp.where(
-            (encoding_weights < 0) | jnp.isnan(encoding_weights), jnp.nan, log_w
-        )
+    # mark kernel).
+    log_w = _encoding_log_weights(encoding_weights, n_encoding_spikes)
 
     # The encoding tile is capped inside the reduction; positions are split only
     # when the caller asks.
@@ -1249,25 +1377,63 @@ def _add_electrode_log_mark_intensities(
         log_position_distance = log_kde_distance(
             place_bin_centers, encoding_positions, std=position_std
         )
+    # Everything that depends on no decoding spike is prepared once for the
+    # electrode, not once per block of spikes.
+    if log_occupancy is not None:
+        log_position_distance, occupancy = _occupancy_normalized(
+            log_position_distance, log_occupancy
+        )
+    n_encoding = encoding_features.shape[0]
+    n_bins = occupancy.shape[0]
+    log_w = _encoding_log_weights(encoding_weights, n_encoding)
+    dtype = jnp.result_type(
+        jnp.float32,
+        decoding_features,
+        encoding_features,
+        waveform_stds,
+        log_w,
+        log_position_distance,
+    )
+    position_terms = _position_scale_terms(log_position_distance, log_w, dtype)
+    supported = (
+        jnp.any(jnp.isfinite(log_w))
+        | jnp.any(jnp.isnan(log_w))
+        | jnp.any(jnp.isnan(encoding_features))
+        | jnp.any(jnp.isnan(waveform_stds))
+        | jnp.any(jnp.isnan(log_position_distance))
+    )
+
+    def score_block(block):
+        features, background = block
+        log_joint = jax.lax.cond(
+            supported | jnp.any(jnp.isnan(features)),
+            lambda: _estimate_with_enc_chunking(
+                features,
+                encoding_features,
+                waveform_stds,
+                occupancy,
+                mean_rate,
+                log_position_distance,
+                log_w,
+                max(n_encoding, 1),
+                pos_tile_size,
+                background,
+                position_terms=position_terms,
+            ),
+            lambda: _log_joint_from_log_marginal(
+                jnp.full((block_size, n_bins), -jnp.inf), mean_rate, occupancy
+            ),
+        )
+        return jnp.logaddexp(log_joint, background[:, None])
+
     n_blocks = decoding_features.shape[0] // block_size
     intensities = jax.lax.map(
-        lambda block: estimate_log_joint_mark_intensity(
-            block[0],
-            encoding_features,
-            waveform_stds,
-            occupancy,
-            mean_rate,
-            log_position_distance,
-            pos_tile_size=pos_tile_size,
-            encoding_weights=encoding_weights,
-            log_occupancy=log_occupancy,
-            log_background=block[1],
-        ),
+        score_block,
         (
             decoding_features.reshape(n_blocks, block_size, -1),
             log_background.reshape(n_blocks, block_size),
         ),
-    ).reshape(-1, occupancy.shape[0])
+    ).reshape(-1, n_bins)
     return total + deterministic_row_sum(
         intensities,
         row_ids,

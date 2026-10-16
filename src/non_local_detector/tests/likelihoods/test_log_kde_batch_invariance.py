@@ -395,3 +395,34 @@ def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
             log_background=jnp.asarray(log_background, jnp.float64),
         )
     np.testing.assert_allclose(np.asarray(out)[0, 0], expected, atol=1e-4, rtol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n_dec", [8, 100], ids=["flagged-rows-only", "every-row"])
+def test_every_spike_flagged_for_exact_repair_matches_reference(n_dec):
+    """A background far below the kernels flags every spike for exact repair.
+
+    Eight spikes are repaired individually; a hundred exceed the bounded slots
+    and take the every-row pass. Both must match the float64 reference.
+    """
+    decoding, encoding, stds, occupancy, log_position = _place_field_tile(
+        n_dec=n_dec, waveform_std=1.0
+    )
+    log_background = jnp.full(n_dec, -1e4, jnp.float32)
+    out = np.asarray(
+        estimate_log_joint_mark_intensity(
+            decoding,
+            encoding,
+            stds,
+            occupancy,
+            1.0,
+            log_position,
+            log_background=log_background,
+        )
+    )
+    reference = _reference_log_joint(
+        decoding, encoding, stds, occupancy, 1.0, log_position
+    )
+    expected = np.logaddexp(reference, -1e4)
+    assert (reference > -1e4).mean() > 0.5  # most terms are intensity-dominated
+    np.testing.assert_allclose(out, expected, atol=1e-3, rtol=1e-5)
