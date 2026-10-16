@@ -8,12 +8,9 @@ from scipy.special import logsumexp
 
 from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
-    _gemm_log_kernel_product,
-    _stabilized_log_kernel_product,
     estimate_log_joint_mark_intensity,
     log_kde_distance,
 )
-from non_local_detector.likelihoods.common import LOG_EPS
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 # Below ``log_background + log(eps)`` an intensity cannot change a float32 term.
@@ -173,38 +170,6 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(enc_tile_s
 
 
 @pytest.mark.unit
-def test_entries_below_the_floor_skip_the_exact_reduction():
-    """Only entries whose omitted mass could matter above the floor are repaired.
-
-    With no floor, the fixture's deep tails make the GEMM estimate inexact for
-    some entries. With the caller's floor, none of those entries can reach it,
-    and every unflagged entry above the floor is already exact.
-    """
-    decoding, encoding, stds, occupancy, log_position = _place_field_tile()
-    log_mark = _compute_log_mark_kernel_gemm(decoding, encoding, stds)
-    weighted_position = log_position - np.log(encoding.shape[0])
-    # Separable floor LOG_EPS + log(occupancy) (mean_rate = 1).
-    n_queries = decoding.shape[0]
-    log_floor = (jnp.full(n_queries, LOG_EPS), jnp.log(occupancy))
-
-    _, unfloored = _gemm_log_kernel_product(
-        log_mark,
-        weighted_position,
-        (jnp.full(n_queries, -jnp.inf), jnp.zeros_like(occupancy)),
-    )
-    value, floored = _gemm_log_kernel_product(log_mark, weighted_position, log_floor)
-    assert bool(jnp.any(unfloored))
-    assert not bool(jnp.any(floored))
-
-    reference = _reference_log_joint(
-        decoding, encoding, stds, occupancy, 1.0, log_position
-    )
-    joint = np.asarray(value) - np.log(np.asarray(occupancy))[None]
-    above = reference > LOG_EPS
-    np.testing.assert_allclose(joint[above], reference[above], atol=1e-4, rtol=0)
-
-
-@pytest.mark.unit
 def test_mark_kernel_preserves_distances_after_large_translation():
     decoded = jnp.asarray([[1.0]])
     encoded = jnp.asarray([[0.0]])
@@ -283,41 +248,6 @@ def test_large_encoding_sets_keep_compiled_kernel_workspace_bounded(encoding_cou
     ).compile()
     workspace = compiled.memory_analysis().temp_size_in_bytes
     assert workspace <= 32 * 2**20, f"{workspace / 2**20:.1f} MiB"
-
-
-@pytest.mark.unit
-def test_query_outputs_do_not_depend_on_other_queries_in_a_tile():
-    """Adding a query with nonoverlapping tails leaves other queries unchanged."""
-    rng = np.random.default_rng(901)
-    marks = rng.uniform(-3.0, 0.0, (64, 2)).astype(np.float32)
-    positions = rng.uniform(-3.0, 0.0, (64, 3)).astype(np.float32)
-    positions[:32, 2] = -100.0
-    positions[32:, 2] = 0.0
-    no_floor = (jnp.full(2, -jnp.inf), jnp.zeros(3))  # (queries,), (positions,)
-    ordinary = jax.jit(_stabilized_log_kernel_product)(
-        jnp.asarray(marks), jnp.asarray(positions), jnp.zeros(64), no_floor
-    )
-    marks[:32, 1] = 0.0
-    marks[32:, 1] = -100.0
-    changed = jax.jit(_stabilized_log_kernel_product)(
-        jnp.asarray(marks), jnp.asarray(positions), jnp.zeros(64), no_floor
-    )
-    np.testing.assert_array_equal(changed[0], ordinary[0])
-    np.testing.assert_allclose(
-        changed[1, 2], -100.0 + np.log(64.0), rtol=1e-6, atol=1e-5
-    )
-
-
-@pytest.mark.unit
-def test_exact_reduction_recovers_mass_beyond_the_scaled_window():
-    """Terms flushed by the scaled GEMM are recovered when the floor needs them."""
-    marks = jnp.asarray([[0.0], [-200.0], [-200.0]])
-    positions = jnp.asarray([[-300.0], [0.0], [0.0]])
-    actual = jax.jit(_stabilized_log_kernel_product)(
-        marks, positions, jnp.zeros(3), (jnp.full(1, -jnp.inf), jnp.zeros(1))
-    )
-    expected = np.logaddexp(-300.0, -200.0 + np.log(2.0))
-    np.testing.assert_allclose(actual[0, 0], expected, rtol=1e-6, atol=1e-5)
 
 
 def _enable_x64():

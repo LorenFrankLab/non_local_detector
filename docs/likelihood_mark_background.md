@@ -67,7 +67,7 @@ recording, `b` lies about 19 nats below the old `LOG_EPS` floor (median −53.2 
 
 | Backend | How it meets the threshold |
 | --- | --- |
-| **KDE exactness test** | `_log_marginal_floor` is separable into a per-spike and a per-bin part and compares against each spike's threshold instead of `LOG_EPS`. Entries that may have lost mass above it receive an exact logsumexp. |
+| **KDE exactness test** | `_log_marginal_floor` is separable into a per-spike and a per-bin part and compares against each spike's threshold instead of `LOG_EPS`. Spikes that may have lost mass above it are recomputed with a direct logsumexp. |
 | **KDE** | One log-space estimator (`clusterless_kde`). A probability-space sum loses up to `n·tiny/W` per entry, and on a real recording every electrode's threshold lay 5–146 nats below what float32 could resolve, so the probability-space implementation was removed. The scaled-GEMM gate decides per spike, and only flagged spikes get the exact logsumexp: 6 of 16,094 real spikes. |
 | **GMM** | Log-space throughout; no change. |
 | **Diffusion** | See below. |
@@ -107,6 +107,6 @@ component, to about 14 nats; the exact intensity there is zero.
   - state odds that do not depend on the units;
   - the outlier odds `log(β/r₀)`;
   - the No-Spike formula, the EM-frozen reference, chunk parity and saved-model refit.
-- `TestScaledGemmJointIntensity` compares the KDE reduction with a float64
-  logsumexp oracle within 1e-4. At 8 and 9 mark dimensions, 100% of the compared terms
+- `TestScaledGemmJointIntensity` compares the KDE reduction with a logsumexp
+  oracle within 1e-4. At 8 and 9 mark dimensions, 100% of the compared terms
   lie below the old `LOG_EPS` floor yet above the background.

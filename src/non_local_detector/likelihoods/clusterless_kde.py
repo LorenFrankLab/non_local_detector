@@ -141,8 +141,9 @@ def _scaled_gemm_shift(n_rows: int, dtype) -> float:
 def _scaled_gemm_window(n_rows: int, dtype) -> float:
     """Nats below its factor maxima within which a scaled-GEMM entry is exact.
 
-    ``_gemm_log_kernel_product`` loses at most ``n_rows * tiny * exp(shift)``
-    per entry in scaled units. An entry whose ``mark_max + position_max``
+    A sum of ``n_rows`` factors, each scaled by its maximum and shifted up by
+    ``_scaled_gemm_shift``, loses at most ``n_rows * tiny * exp(shift)`` per
+    entry in scaled units. An entry whose ``mark_max + position_max``
     exceeds its floor by no more than this window therefore omits less than
     four dtype epsilons of any value at or above the floor: about 104.7 nats
     for 2048 float32 rows.
@@ -153,126 +154,6 @@ def _scaled_gemm_window(n_rows: int, dtype) -> float:
         - np.log(n_rows * dtype_info.tiny)
         + _scaled_gemm_shift(n_rows, dtype)
     )
-
-
-def _gemm_log_kernel_product(
-    log_mark: jnp.ndarray,
-    weighted_position: jnp.ndarray,
-    log_floor: tuple[jnp.ndarray, jnp.ndarray],
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """One scaled GEMM for ``log sum_e exp(log_mark[e, q] + weighted_position[e, p])``.
-
-    Each query and position is scaled by its own maximum over encoding rows,
-    so no query's estimate depends on another query. Both factors are then
-    shifted up by ``_scaled_gemm_shift``: a factor is at most ``exp(shift)``
-    and the ``n``-term sum at most ``1 / (2 tiny)``, so neither the sum nor
-    its reciprocal leaves the normal range, while terms
-    ``_scaled_gemm_window`` nats below the product of maxima stay
-    representable. A term is lost only when a factor or their product flushes
-    below ``tiny``.
-
-    An entry needs an exact reduction only if its possible losses could exceed
-    four dtype epsilons of both its estimate and ``exp(log_floor)``. Entries
-    that can only fall below the floor are never flagged: there they cannot
-    change the caller's result. ``NaN`` inputs propagate to the affected rows
-    and columns.
-
-    Parameters
-    ----------
-    log_mark : jnp.ndarray, shape (n_encoding_spikes, n_queries)
-        Log mark kernel; inactive encoding rows are ``-inf``.
-    weighted_position : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
-        Log position kernel plus each encoding row's log weight.
-    log_floor : tuple of jnp.ndarray, shapes (n_queries,) and (n_position_bins,)
-        Separable floor ``query_floor[q] + position_floor[p]`` (see
-        ``_log_marginal_floor``); values below it need not be exact.
-
-    Returns
-    -------
-    log_value : jnp.ndarray, shape (n_queries, n_position_bins)
-        Log sum missing only flushed terms; accurate to float roundoff
-        wherever ``needs_exact`` is False and the sum reaches ``log_floor``.
-    needs_exact : jnp.ndarray of bool, shape (n_queries, n_position_bins)
-    """
-    n_enc = log_mark.shape[0]
-    dtype = jnp.result_type(log_mark, weighted_position)
-    # The shift depends on the dtype, so both factors must be exponentiated in it.
-    log_mark = log_mark.astype(dtype)
-    weighted_position = weighted_position.astype(dtype)
-    shift = _scaled_gemm_shift(n_enc, dtype)
-    mark_max = jnp.max(log_mark, axis=0)
-    position_max = jnp.max(weighted_position, axis=0)
-    # An empty query or position has exactly zero mass and omits nothing.
-    empty = jnp.isneginf(mark_max)[:, None] | jnp.isneginf(position_max)[None, :]
-    mark_max = _zero_if_neginf(mark_max)
-    position_max = _zero_if_neginf(position_max)
-    numerator = jnp.matmul(
-        jnp.exp(log_mark - mark_max + shift).T,
-        jnp.exp(weighted_position - position_max + shift),
-        precision=jax.lax.Precision.HIGHEST,
-    )
-    positive = numerator > 0
-    log_peak = mark_max[:, None] + position_max[None, :]
-    # A NaN numerator implies a NaN maximum, so log_peak carries the NaN.
-    log_value = (
-        jnp.where(positive, jnp.log(jnp.where(positive, numerator, 1.0)), -jnp.inf)
-        + log_peak
-        - 2.0 * shift
-    )
-    rounding = n_enc * jnp.finfo(dtype).eps
-    gamma = rounding / (1.0 - rounding) if rounding < 1.0 else np.inf
-    query_floor, position_floor = log_floor
-    needs_exact = ~empty & (
-        log_peak - _scaled_gemm_window(n_enc, dtype)
-        > jnp.maximum(
-            log_value - np.log1p(gamma),
-            query_floor[:, None] + position_floor[None, :],
-        )
-    )
-    return log_value, needs_exact
-
-
-def _stabilized_log_kernel_product(
-    log_mark: jnp.ndarray,
-    log_position: jnp.ndarray,
-    log_weights: jnp.ndarray,
-    log_floor: tuple[jnp.ndarray, jnp.ndarray],
-) -> jnp.ndarray:
-    """Weighted log kernel product, exact wherever it can reach ``log_floor``.
-
-    Inputs have shapes ``(encoding, query)``, ``(encoding, position)``,
-    ``(encoding,)`` and a separable floor of ``(query,)`` and ``(position,)``
-    parts; the output is ``(query, position)``.
-    The scaled GEMM of ``_gemm_log_kernel_product`` has no encoding x query x
-    position temporary. Entries it flags receive a direct logsumexp one query
-    row at a time; ordinary entries keep their GEMM value.
-    """
-    log_weights = jnp.broadcast_to(log_weights, (log_mark.shape[0],))
-    if log_mark.shape[0] == 0:
-        return jnp.full((log_mark.shape[1], log_position.shape[1]), -jnp.inf)
-    # Zero-weight rows leave every maximum and product; NaN stays visible.
-    active = ~jnp.isneginf(log_weights)
-    log_mark = jnp.where(active[:, None] | jnp.isnan(log_mark), log_mark, -jnp.inf)
-    weighted_position = log_position + log_weights[:, None]
-    result, needs_exact = _gemm_log_kernel_product(
-        log_mark, weighted_position, log_floor
-    )
-
-    def repair_rows(values):
-        def repair_row(row, values):
-            mask = needs_exact[row]
-
-            def exact_row(current):
-                exact = _masked_logsumexp(log_mark[:, row, None] + weighted_position)
-                return current.at[row].set(jnp.where(mask, exact, current[row]))
-
-            # A scalar cond in a sequential loop is deliberate: vmap(cond)
-            # executes both branches, recreating the large direct reduction.
-            return jax.lax.cond(jnp.any(mask), exact_row, lambda x: x, values)
-
-        return jax.lax.fori_loop(0, log_mark.shape[1], repair_row, values)
-
-    return jax.lax.cond(jnp.any(needs_exact), repair_rows, lambda x: x, result)
 
 
 def _log_joint_from_log_marginal(
@@ -711,14 +592,13 @@ def _estimate_with_enc_chunking(
     position tile rather than a full spatial kernel.
 
     Only entries that can change ``logaddexp(log_joint, log_background)`` must
-    be exact: those above each spike's floor ``log_background + log(eps)``. A
-    kernel-free bound decides the reduction once per call. Ordinarily every
-    entry above the floor lies within the scaled GEMM's window of the kernel
-    peaks, so every tile is scaled by those fixed peaks and their products add
-    linearly. Otherwise (extreme mark or position normalizations, or a spike
-    whose background is far below the kernel peaks) tiles are accumulated in
-    log space and entries that may have lost mass above the floor receive an
-    exact logsumexp.
+    be exact: those above each spike's floor ``log_background + log(eps)``.
+    Every tile is scaled by fixed, kernel-free peaks, so their products add
+    linearly. A kernel-free bound flags each spike whose floor may lie below
+    the scaled GEMM's window of those peaks (extreme mark or position
+    normalizations, or a background far below the kernel peaks). A flagged
+    spike is recomputed with a direct logsumexp over each encoding x position
+    tile.
 
     Returns
     -------
@@ -927,50 +807,35 @@ def _estimate_with_enc_chunking(
             - 2.0 * shift
         )
 
-    def reduce_with_exact_tails(queries, queries_floor):
-        # Splitting the floor across encoding tiles keeps their summed
-        # omissions within twice one tile's tolerance at the floor.
-        tile_query_floor = queries_floor - np.log(n_enc_chunks)
+    def exact_row(row):
+        # One spike's tile is only encoding x position, so it is reduced by a
+        # direct logsumexp, with no scaling to validate.
+        query = jax.lax.dynamic_slice_in_dim(decoding_spike_waveform_features, row, 1)
 
         def process_enc_chunk(enc_idx, marginal):
-            enc_start, log_mark, weights, positions = encoding_tile(enc_idx, queries)
+            enc_start, log_mark, weights, positions = encoding_tile(enc_idx, query)
 
             def process_position_chunk(pos_idx, marginal):
                 pos_start, log_position, is_new = position_tile(
                     pos_idx, enc_start, positions
                 )
-                contribution = _stabilized_log_kernel_product(
-                    log_mark,
-                    log_position,
-                    weights,
-                    (
-                        tile_query_floor,
-                        jax.lax.dynamic_slice_in_dim(
-                            position_floor, pos_start, pos_tile_size
-                        ),
-                    ),
+                contribution = _masked_logsumexp(
+                    log_mark + log_position + weights[:, None]
                 )
                 current = jax.lax.dynamic_slice_in_dim(
                     marginal, pos_start, pos_tile_size, axis=1
                 )
                 combined = jnp.where(
-                    is_new[None, :], _masked_logaddexp(current, contribution), current
+                    is_new[None, :],
+                    _masked_logaddexp(current, contribution[None, :]),
+                    current,
                 )
                 return jax.lax.dynamic_update_slice(marginal, combined, (0, pos_start))
 
             return jax.lax.fori_loop(0, n_pos_chunks, process_position_chunk, marginal)
 
         return jax.lax.fori_loop(
-            0,
-            n_enc_chunks,
-            process_enc_chunk,
-            jnp.full((queries.shape[0], n_pos), -jnp.inf, dtype),
-        )
-
-    def exact_row(row):
-        return reduce_with_exact_tails(
-            jax.lax.dynamic_slice_in_dim(decoding_spike_waveform_features, row, 1),
-            jax.lax.dynamic_slice_in_dim(query_floor, row, 1),
+            0, n_enc_chunks, process_enc_chunk, jnp.full((1, n_pos), -jnp.inf, dtype)
         )
 
     def repaired(marginal, row, needs_exact):
