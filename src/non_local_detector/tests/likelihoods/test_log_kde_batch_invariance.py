@@ -17,8 +17,14 @@ from non_local_detector.tests.likelihoods.conftest import realistic_log_backgrou
 LOG_FLOAT32_EPS = np.log(np.finfo(np.float32).eps)
 
 
-def _place_field_tile(seed=3, n_enc=400, n_dec=60, waveform_std=8.0):
-    """Units with separated 4D uV marks and place fields on a 300 cm track."""
+def _place_field_tile(
+    seed=3, n_enc=400, n_dec=60, waveform_std=8.0, return_positions=False
+):
+    """Units with separated 4D uV marks and place fields on a 300 cm track.
+
+    With ``return_positions``, also returns the encoding positions and bin
+    centers (for the streaming path).
+    """
     rng = np.random.default_rng(seed)
     n_units = 12
     field_centers = rng.uniform(0, 300, n_units)
@@ -36,13 +42,20 @@ def _place_field_tile(seed=3, n_enc=400, n_dec=60, waveform_std=8.0):
         jnp.asarray(encoding_positions[:, None], jnp.float32),
         jnp.asarray([6.0], jnp.float32),
     )
-    return (
+    tile = (
         jnp.asarray(decoding, jnp.float32),
         jnp.asarray(encoding, jnp.float32),
         jnp.full(4, waveform_std, jnp.float32),
         jnp.full(bins.shape[0], 1.0 / 300, jnp.float32),
         log_position,
     )
+    if return_positions:
+        return (
+            *tile,
+            jnp.asarray(encoding_positions[:, None], jnp.float32),
+            jnp.asarray(bins, jnp.float32),
+        )
+    return tile
 
 
 def _reference_log_joint(decoding, encoding, stds, occupancy, mean_rate, log_position):
@@ -277,7 +290,7 @@ def test_reduction_dtypes_stay_consistent_with_x64_enabled(dtype, use_streaming)
     reference = _reference_log_joint(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
-    log_background = np.asarray(realistic_log_background(decoding))
+    log_background = np.array(realistic_log_background(decoding))
 
     with _enable_x64():
         streaming = {
@@ -355,4 +368,63 @@ def test_every_spike_flagged_for_exact_repair_matches_reference(n_dec):
     )
     expected = np.logaddexp(reference, -1e4)
     assert (reference > -1e4).mean() > 0.5  # most terms are intensity-dominated
+    np.testing.assert_allclose(out, expected, atol=1e-3, rtol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n_flagged", [3, 40])
+@pytest.mark.parametrize(
+    "tiling",
+    [
+        {},
+        {"enc_tile_size": 64},
+        {"pos_tile_size": 37},
+        {"enc_tile_size": 64, "use_streaming": True},
+    ],
+    ids=["untiled", "encoding-tiled", "position-tiled", "streamed"],
+)
+def test_only_flagged_spikes_take_the_exact_repair(n_flagged, tiling):
+    """Some spikes in a block need the exact repair and the rest do not.
+
+    Scattered spikes get a background far below the kernels, which flags them;
+    the rest keep a realistic background. Three flagged spikes use the bounded
+    repair slots and forty exceed them. Every row must match the float64
+    reference: repairing the wrong rows would leave flagged rows inexact.
+    """
+    n_dec = 100
+    decoding, encoding, stds, occupancy, log_position, positions, bins = (
+        _place_field_tile(n_dec=n_dec, waveform_std=1.0, return_positions=True)
+    )
+    rng = np.random.default_rng(4)
+    flagged = rng.choice(n_dec, n_flagged, replace=False)
+    log_background = np.array(realistic_log_background(decoding))
+    log_background[flagged] = -1e4
+    streaming = (
+        {
+            "encoding_positions": positions,
+            "position_eval_points": bins,
+            "position_std": jnp.asarray([6.0], jnp.float32),
+        }
+        if tiling.get("use_streaming")
+        else {}
+    )
+    out = np.asarray(
+        estimate_log_joint_mark_intensity(
+            decoding,
+            encoding,
+            stds,
+            occupancy,
+            1.0,
+            log_position,
+            log_background=jnp.asarray(log_background),
+            **tiling,
+            **streaming,
+        )
+    )
+    reference = _reference_log_joint(
+        decoding, encoding, stds, occupancy, 1.0, log_position
+    )
+    expected = np.logaddexp(reference, log_background[:, None])
+    # The flagged rows are intensity-dominated, so a missed repair shows.
+    assert (reference[flagged] > -1e4).mean() > 0.5
     np.testing.assert_allclose(out, expected, atol=1e-3, rtol=1e-5)

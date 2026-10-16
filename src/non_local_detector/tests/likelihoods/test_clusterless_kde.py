@@ -340,3 +340,61 @@ def test_invalid_tile_sizes_raise_at_fit_and_predict(name, value):
             mark_reference=fit_mark_references(marks, DEFAULT_WAVEFORM_STD),
             **model,
         )
+
+
+@pytest.fixture(scope="module")
+def one_feature_kde():
+    """A 1-D track with one electrode and one waveform feature."""
+    rng = np.random.default_rng(31)
+    position_time = np.arange(0.0, 100.0, 0.02)
+    position = (5.0 + 4.0 * np.sin(position_time / 3.0))[:, None]
+    environment = Environment(place_bin_size=0.5, position_range=((0.0, 10.0),))
+    environment.fit_place_grid(position, infer_track_interior=False)
+    spike_times = [np.sort(rng.uniform(0.0, 100.0, 300))]
+    spike_marks = [rng.normal(0.0, 2.0, (300, 1))]
+    encoding = fit_clusterless_kde_encoding_model(
+        position_time,
+        position,
+        spike_times,
+        spike_marks,
+        environment,
+        position_std=1.0,
+        waveform_std=1.0,
+        disable_progress_bar=True,
+    )
+    return encoding, fit_mark_references(spike_marks, 1.0)
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize(
+    "tiling",
+    [{}, {"pos_tile_size": 7}, {"enc_tile_size": 64, "use_streaming": True}],
+    ids=["untiled", "position-tiled", "streamed"],
+)
+def test_kde_event_intensity_integrates_to_compensator(
+    one_feature_kde, is_local, tiling
+):
+    """Integrated over marks, the scored intensity is the expected count."""
+    encoding, mark_reference = one_feature_kde
+    marks = np.linspace(-20.0, 20.0, 801)
+    edges = np.arange(len(marks) + 1) * 0.01
+    kwargs = dict(
+        position_time=np.array([edges[0], edges[-1]]),
+        position=np.full((2, 1), 5.0),
+        time_edges=edges,
+        is_local=is_local,
+        mark_reference=mark_reference,
+        **{**encoding, **tiling},
+    )
+    empty = predict_clusterless_kde_log_likelihood(
+        spike_times=[np.empty(0)], spike_waveform_features=[np.empty((0, 1))], **kwargs
+    )
+    events = predict_clusterless_kde_log_likelihood(
+        spike_times=[edges[:-1] + 0.005],
+        spike_waveform_features=[marks[:, None]],
+        **kwargs,
+    )
+    intensity = np.exp(np.asarray(events) - np.asarray(empty)) / np.diff(edges)[:, None]
+    integrated = np.trapezoid(intensity, marks, axis=0)
+    ground = -np.asarray(empty)[0] / np.diff(edges)[0]
+    np.testing.assert_allclose(integrated, ground, rtol=1e-4, atol=1e-6)
