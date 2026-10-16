@@ -17,9 +17,9 @@ Two properties motivate it over KDE:
   distance, so it does not leak across walls, holes, or junctions the way a Gaussian
   KDE smoothed in coordinate space can.
 - **Speed.** Occupancy and each electrode's ground-process field are diffused once
-  at fit; predict applies one cached low-rank heat-kernel matmul per decode-spike
-  block instead of KDE's pairwise ``O(n_bins * n_enc * n_decode)`` position kernel.
-  The speedup grows with the encoding-spike count (relative to the heat-kernel rank).
+  at fit; predict combines each block's marks per source bin and applies the
+  spatial kernel's columns in bounded tiles (``O(n_bins * n_sources * n_decode)``
+  instead of KDE's pairwise ``O(n_bins * n_enc * n_decode)`` position kernel).
 
 This is purely additive: the default clusterless likelihood remains
 ``clusterless_kde``.
@@ -32,7 +32,7 @@ For electrode ``e`` the joint mark density on interior bins is
 where ``w_i`` are the per-encoding-spike EM weights, ``K_mark`` is the Gaussian
 mark kernel with its normalizer (each spike's kernels are diffused relative to
 the spike's largest one and the offset is restored in log space), ``H`` is the
-fixed, column-normalized heat kernel (:func:`_spatial_kernel`) that also diffuses
+fixed, column-normalized heat kernel (:func:`_kernel_columns`) that also diffuses
 occupancy and the ground process, ``sum_i w_i`` the weighted
 encoding count, and ``dV(x) = bin_sizes`` the per-bin measure. Dividing by
 ``(sum_i w_i) * dV(x)`` -- rather than normalizing each diffused column to unit
@@ -67,6 +67,8 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
+    _masked_logaddexp,
+    _masked_logsumexp,
 )
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
@@ -228,31 +230,23 @@ def _validate_waveform_std_shape(waveform_std, n_features: int, electrode: int) 
 def _effective_block(
     memory_budget: int,
     n_enc: int,
-    rank: int,
+    n_sources: int,
     n_bins: int,
     block_size: int,
 ) -> int:
     """Decode-spike block size that fits the per-block live set in ``memory_budget``.
 
-    Per decode-spike column the live set is dominated by ``K`` (``n_enc``), the
-    spectral projection (``rank``), and ~4 ``n_bins``-scaled arrays (``D``, ``P``,
-    ``lc`` and the clip/rescale temporaries), all in the float32 working dtype. A
-    safety factor of 2 leaves headroom for XLA workspace. The fitting size is
-    rounded down to a power of two so electrodes with nearby encoding counts
-    share compiled kernels.
+    Per decode-spike column the live set is dominated by the weighted log mark
+    kernels (``n_enc``), the per-source log and scaled mark densities
+    (``2 n_sources``) and ~3 ``n_bins``-scaled arrays (the field, its log and the
+    log intensity), all in the float32 working dtype; kernel tiles are sized
+    separately (:func:`_source_tile_size`). A safety factor of 2 leaves headroom
+    for XLA workspace. The fitting size is rounded down to a power of two so
+    electrodes with nearby encoding counts share compiled kernels.
     """
-    bytes_per_col = _WORKING_ITEMSIZE * (n_enc + rank + 4 * n_bins)
+    bytes_per_col = _WORKING_ITEMSIZE * (n_enc + 2 * n_sources + 3 * n_bins)
     raw = max(memory_budget // (bytes_per_col * 2), 1)
     return min(1 << (raw.bit_length() - 1), block_size)
-
-
-def _diffuse_field(field: np.ndarray, kernel: jnp.ndarray) -> np.ndarray:
-    """Diffuse a ``(n_interior,)`` count field with the model's kernel, on host.
-
-    Shared by the occupancy and per-electrode ground-process fields at fit
-    time, so they are the same linear map as every spike's marked field.
-    """
-    return np.asarray(kernel, dtype=np.float64) @ np.asarray(field, dtype=np.float64)
 
 
 def mark_reference_scale(
@@ -390,8 +384,6 @@ def fit_clusterless_diffusion_encoding_model(
         _, eigvecs = cached_eigenbasis(environment, heat_kernel_rank)
     resolved_rank = int(eigvecs.shape[1])
 
-    kernel = _spatial_kernel(environment, resolved_rank, position_std)
-
     weight_sum = float(exposure_weights.sum())  # weighted occupancy seconds
 
     # ---- occupancy pi = H O / (sum w_pos * dV), floored at EPS ----
@@ -408,7 +400,9 @@ def fit_clusterless_diffusion_encoding_model(
         )
     else:
         occupancy_field = np.zeros(n_interior)
-    occupancy_hat = _diffuse_field(occupancy_field, kernel)
+    occupancy_hat = _diffuse_field(
+        occupancy_field, environment, resolved_rank, position_std, memory_budget
+    )
     safe_weight_sum = weight_sum if weight_sum > 0 else 1.0
     occupancy = np.clip(occupancy_hat / (safe_weight_sum * bin_sizes), EPS, None)
     if weight_sum == 0:
@@ -486,10 +480,11 @@ def fit_clusterless_diffusion_encoding_model(
         mean_rate = weighted_mean_rate(spike_weights, weight_sum)
         mean_rates.append(mean_rate)
         spike_field = np.bincount(bins, weights=spike_weights, minlength=n_interior)
-        spike_field_hat = _diffuse_field(spike_field, kernel)
-        p_gpi = spike_field_hat / (w_total * bin_sizes)
-        summed_ground_process_intensity += np.where(
-            _resolved_occupancy(occupancy), mean_rate * p_gpi / occupancy, 0.0
+        spike_field_hat = _diffuse_field(
+            spike_field, environment, resolved_rank, position_std, memory_budget
+        )
+        summed_ground_process_intensity += spike_field_hat * np.exp(
+            np.asarray(_log_intensity_scale(occupancy, bin_sizes, mean_rate, w_total))
         )
 
     # Every electrode, including zero-rate ones, adds its background rate.
@@ -554,41 +549,49 @@ def _padded_encoding(bins, marks, weights, n_bins: int):
 _FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
 
-def _spatial_kernel(environment, resolved_rank, position_std):
-    """Diffusion of a unit mass from each interior bin, shape (n_bins, n_bins).
+# A source whose scaled mark density is below exp(-_SCALED_RANGE) of a spike's
+# strongest source may underflow float32 in the scaled spatial product.
+_SCALED_RANGE = 80.0
+# Flagged spikes per block whose exact spatial reduction visits only those
+# spikes; a block with more visits every spike.
+_EXACT_REPAIR_SLOTS = 32
 
-    Column ``s`` is the heat kernel applied to bin ``s``: clipped to be
-    non-negative, zero outside ``s``'s connected component, cut below
-    ``_FIELD_RESOLUTION`` of its peak (heat-kernel noise) and normalized to
-    unit mass. Occupancy, the ground process and every spike's marked field are
-    this one linear map of their sources, so the marked intensity integrates
-    over marks to exactly the expected count, and disconnected components
-    stay exactly zero.
+
+@partial(jax.jit, static_argnames=("position_std", "n_components"))
+def _kernel_columns(eigvals, eigvecs, labels, sources, *, position_std, n_components):
+    """Diffusion of a unit mass from each source bin, shape (n_bins, n_sources).
+
+    Column ``k`` is the heat kernel applied to bin ``sources[k]``: clipped to be
+    non-negative, zero outside that bin's connected component, cut below
+    ``_FIELD_RESOLUTION`` of its peak (heat-kernel noise) and normalized to unit
+    mass. Every column depends only on its own source, so the model's one
+    spatial kernel ``H`` can be built in tiles of sources. Occupancy, the ground
+    process and every spike's marked field are the same linear map ``H`` of
+    their sources, so the marked intensity integrates over marks to exactly the
+    expected count, and disconnected components stay exactly zero.
 
     Parameters
     ----------
-    environment : Environment
-    resolved_rank : int
-        Rank of the heat-kernel eigenbasis.
+    eigvals, eigvecs, labels : jnp.ndarray
+        Device heat-kernel basis and component labels (``get_device_basis``).
+    sources : jnp.ndarray, shape (n_sources,)
+        Interior bin indices.
     position_std : float
         Heat-kernel bandwidth in position units.
+    n_components : int
 
     Returns
     -------
-    kernel : jnp.ndarray, shape (n_bins, n_bins)
-        ``kernel[x, s]`` is the mass at bin ``x`` diffused from bin ``s``.
+    columns : jnp.ndarray, shape (n_bins, n_sources)
     """
-    eigvals, eigvecs, labels, n_components = get_device_basis(
-        environment, resolved_rank
-    )
     n_bins = eigvecs.shape[0]
+    onehot = (
+        jnp.zeros((n_bins, sources.shape[0]), eigvecs.dtype)
+        .at[sources, jnp.arange(sources.shape[0])]
+        .set(1.0)
+    )
     columns = heat_kernel_apply(
-        eigvals,
-        eigvecs,
-        position_std,
-        jnp.eye(n_bins, dtype=jnp.float32),
-        labels,
-        n_components=n_components,
+        eigvals, eigvecs, position_std, onehot, labels, n_components=n_components
     )
     columns = jnp.where(
         columns >= _FIELD_RESOLUTION * jnp.max(columns, axis=0, keepdims=True),
@@ -596,6 +599,127 @@ def _spatial_kernel(environment, resolved_rank, position_std):
         0.0,
     )
     return columns / jnp.sum(columns, axis=0, keepdims=True)
+
+
+def spatial_kernel_columns(environment, resolved_rank, position_std, sources):
+    """The model's spatial kernel ``H[:, sources]``, for a fitted environment.
+
+    Parameters
+    ----------
+    environment : Environment
+    resolved_rank : int
+        The fitted model's ``resolved_rank``.
+    position_std : float
+    sources : array_like of int, shape (n_sources,)
+        Interior bin indices.
+
+    Returns
+    -------
+    columns : jnp.ndarray, shape (n_bins, n_sources)
+        See :func:`_kernel_columns`.
+    """
+    eigvals, eigvecs, labels, n_components = get_device_basis(
+        environment, resolved_rank
+    )
+    return _kernel_columns(
+        eigvals,
+        eigvecs,
+        labels,
+        jnp.asarray(sources, dtype=jnp.int32),
+        position_std=float(position_std),
+        n_components=n_components,
+    )
+
+
+def _dense_kernel_fits(n_bins: int, memory_budget: int) -> bool:
+    """Whether the whole ``(n_bins, n_bins)`` kernel fits half of ``memory_budget``."""
+    return 2 * _WORKING_ITEMSIZE * n_bins * n_bins <= memory_budget
+
+
+def _dense_kernel(basis, n_bins: int, tile_budget: int, *, position_std, n_components):
+    """The whole spatial kernel ``H``, shape (n_bins, n_bins), built in tiles."""
+    tile = min(tile_budget, n_bins)
+    n_padded = -(-n_bins // tile) * tile
+    sources = jnp.minimum(jnp.arange(n_padded, dtype=jnp.int32), n_bins - 1)
+    return _all_columns(
+        basis, sources, position_std=position_std, n_components=n_components, tile=tile
+    )[:, :n_bins]
+
+
+def _source_tile_size(memory_budget: int, n_bins: int, rank: int) -> int:
+    """Kernel columns per tile, so a tile and its spectral temporaries fit half
+    of ``memory_budget`` (a power of two, for shared compiled kernels)."""
+    raw = max(memory_budget // (2 * _WORKING_ITEMSIZE * (3 * n_bins + rank)), 1)
+    return 1 << (raw.bit_length() - 1)
+
+
+def _diffuse_field(
+    field: np.ndarray,
+    environment,
+    resolved_rank: int,
+    position_std: float,
+    memory_budget: int,
+) -> np.ndarray:
+    """``H @ field`` for one ``(n_interior,)`` count field, on host.
+
+    Shared by the occupancy and per-electrode ground-process fields at fit
+    time, so they are the same linear map as every spike's marked field. Only
+    the bins with mass contribute, in tiles of kernel columns.
+    """
+    eigvals, eigvecs, labels, n_components = get_device_basis(
+        environment, resolved_rank
+    )
+    field = np.asarray(field, dtype=np.float64)
+    sources = np.flatnonzero(field)
+    out = np.zeros(field.shape[0])
+    tile = _source_tile_size(memory_budget, field.shape[0], int(eigvecs.shape[1]))
+    for start in range(0, sources.size, tile):
+        chunk = sources[start : start + tile]
+        padded = np.concatenate([chunk, np.repeat(chunk[:1], tile - chunk.size)])
+        columns = np.asarray(
+            _kernel_columns(
+                eigvals,
+                eigvecs,
+                labels,
+                jnp.asarray(padded),
+                position_std=float(position_std),
+                n_components=n_components,
+            ),
+            dtype=np.float64,
+        )[:, : chunk.size]
+        out += columns @ field[chunk]
+    return out
+
+
+def _log_intensity_scale(occupancy, bin_sizes, mean_rate, weight_total):
+    """Per-bin log of ``mean_rate / (sum_i w_i * dV(x) * occupancy(x))``.
+
+    Multiplying a diffused source field by this gives the intensity. Bins
+    whose occupancy the heat kernel does not resolve (see
+    :func:`_resolved_occupancy`) carry no encoding information: their scale is
+    ``-inf``, so their marked and ground intensities are zero and their spikes
+    are explained by the background alone. Shared by decoding and model
+    checking.
+
+    Parameters
+    ----------
+    occupancy, bin_sizes : array, shape (n_bins,)
+    mean_rate, weight_total : float
+
+    Returns
+    -------
+    log_scale : array, shape (n_bins,)
+    """
+    occupancy = jnp.asarray(occupancy)
+    return jnp.where(
+        _resolved_occupancy(occupancy),
+        log_density_intensity(
+            mean_rate,
+            -jnp.log(weight_total * jnp.asarray(bin_sizes)),
+            jnp.log(occupancy),
+        ),
+        -jnp.inf,
+    )
 
 
 def _resolved_occupancy(occupancy):
@@ -618,66 +742,317 @@ def _resolved_occupancy(occupancy):
     return occupancy >= _FIELD_RESOLUTION * occupancy.max()
 
 
-def _diffused_mark_field(
-    decode_features,
-    encoding_bins,
-    encoding_marks,
-    encoding_weights,
-    waveform_std,
-    kernel,
-):
-    """``H D_e`` for one block of decoding spikes, in each spike's own scale.
+def _source_layout(bins: np.ndarray, n_bins: int, tile_budget: int):
+    """Source bins of padded, bin-sorted encoding samples, padded to few sizes.
 
-    ``D_e[:, j] = sum_i w_i K_mark(m_j, m_i) onehot(bin(x_i))``, with the mark
-    kernel's Gaussian normalizer. Each spike's kernels are exponentiated
-    relative to its largest weighted log kernel, so the diffused field keeps
-    every spike's resolution whatever the mark units; the returned scale holds
-    the rest.
+    Parameters
+    ----------
+    bins : np.ndarray, shape (n_padded_samples,)
+        Bin of each encoding sample; padding samples use ``n_bins``.
+    n_bins : int
+    tile_budget : int
+        Largest kernel tile (see :func:`_source_tile_size`).
 
     Returns
     -------
-    field : jnp.ndarray, shape (n_bins, n_block)
-        ``H D_e`` divided by ``exp(log_scale)``, with ``H`` from
-        :func:`_spatial_kernel`.
-    log_scale : jnp.ndarray, shape (n_block,)
-        Each spike's largest weighted log mark kernel; ``-inf`` without
-        positively weighted encoding spikes.
+    sources : jnp.ndarray, shape (n_padded_sources,)
+        Distinct bins holding encoding samples, then repeats of the first; a
+        multiple of ``tile`` long.
+    source_index : jnp.ndarray, shape (n_padded_samples,)
+        Each sample's position in ``sources``, ascending; padding samples use
+        the last slot (their weight is zero).
+    tile : int
+        Kernel columns per tile.
+    """
+    bins = np.asarray(bins)
+    real = bins < n_bins
+    distinct, inverse = np.unique(bins[real], return_inverse=True)
+    n_padded = _padded_sample_count(max(distinct.size, 1))
+    tile = min(tile_budget, n_padded)
+    n_padded = -(-n_padded // tile) * tile
+    sources = np.full(n_padded, distinct[0] if distinct.size else 0, dtype=np.int32)
+    sources[: distinct.size] = distinct
+    source_index = np.full(bins.size, n_padded - 1, dtype=np.int32)
+    source_index[real] = inverse
+    return jnp.asarray(sources), jnp.asarray(source_index), tile
+
+
+def _electrode_layout(
+    bins, marks, weights, n_bins: int, tile_budget: int, dense: bool = False
+):
+    """Padded encoding samples with their source layout, for one electrode.
+
+    With a ``dense`` kernel (one shared ``(n_bins, n_bins)`` array, see
+    :func:`_dense_kernel`) every bin is a source, so all electrodes share one
+    layout shape; otherwise sources are the bins holding encoding samples.
+    """
+    padded_bins, padded_marks, padded_weights = _padded_encoding(
+        bins, marks, weights, n_bins
+    )
+    if dense:
+        padded_bins = np.asarray(padded_bins)
+        source_index = np.where(padded_bins < n_bins, padded_bins, n_bins - 1)
+        return (
+            padded_marks,
+            padded_weights,
+            jnp.arange(n_bins, dtype=jnp.int32),
+            jnp.asarray(source_index, dtype=jnp.int32),
+            n_bins,
+        )
+    sources, source_index, tile = _source_layout(
+        np.asarray(padded_bins), n_bins, tile_budget
+    )
+    return padded_marks, padded_weights, sources, source_index, tile
+
+
+def _log_source_marks(
+    decode_features,
+    encoding_marks,
+    encoding_weights,
+    source_index,
+    waveform_std,
+    n_sources,
+):
+    """Log of ``sum_i w_i K_mark(m_j, m_i)`` over each source bin's samples.
+
+    Reduced in log space within each source, so no source is lost however far
+    its marks lie from another's.
+
+    Returns
+    -------
+    log_source : jnp.ndarray, shape (n_sources, n_block)
+        ``-inf`` for a source without positively weighted samples.
     """
     weighted = (
         _compute_log_mark_kernel_gemm(decode_features, encoding_marks, waveform_std)
         + log_nonnegative(encoding_weights)[:, None]
+    )  # (n_samples, n_block)
+    peak = jax.ops.segment_max(
+        weighted, source_index, num_segments=n_sources, indices_are_sorted=True
     )
-    log_scale = jnp.max(weighted, axis=0)
-    D = deterministic_row_sum(
-        jnp.exp(weighted - jnp.where(jnp.isneginf(log_scale), 0.0, log_scale)),
-        encoding_bins,
-        kernel.shape[1],
+    safe_peak = jnp.where(jnp.isneginf(peak), 0.0, peak)
+    total = deterministic_row_sum(
+        jnp.exp(weighted - safe_peak[source_index]),
+        source_index,
+        n_sources,
         indices_are_sorted=True,
     )
-    field = jnp.matmul(kernel, D, precision=jax.lax.Precision.HIGHEST)
-    return field, log_scale
+    return jnp.where(jnp.isneginf(peak), -jnp.inf, log_nonnegative(total) + peak)
+
+
+def _tile_columns(basis, sources, cached, start, *, position_std, n_components, tile):
+    """Kernel columns of ``sources[start:start + tile]``, shape (n_bins, tile).
+
+    Sliced from ``cached`` (columns aligned with ``sources``) when given, else
+    built from the heat-kernel basis.
+    """
+    if cached is not None:
+        return jax.lax.dynamic_slice_in_dim(cached, start, tile, axis=1)
+    eigvals, eigvecs, labels = basis
+    return _kernel_columns(
+        eigvals,
+        eigvecs,
+        labels,
+        jax.lax.dynamic_slice_in_dim(sources, start, tile),
+        position_std=position_std,
+        n_components=n_components,
+    )
+
+
+def _all_columns(basis, sources, *, position_std, n_components, tile):
+    """Every source's kernel column, built tile by tile, shape (n_bins, n_sources)."""
+    starts = jnp.arange(sources.shape[0] // tile) * tile
+    tiles = jax.lax.map(
+        lambda start: _tile_columns(
+            basis,
+            sources,
+            None,
+            start,
+            position_std=position_std,
+            n_components=n_components,
+            tile=tile,
+        ),
+        starts,
+    )  # (n_tiles, n_bins, tile)
+    return jnp.moveaxis(tiles, 0, 1).reshape(tiles.shape[1], -1)
+
+
+def _source_gain(basis, sources, cached, log_scale, **tiling):
+    """Largest ``log_scale(x) + log H[x, s]`` over bins, for each source ``s``.
+
+    Bounds how much a source can add to any bin's log intensity per unit of its
+    mark density.
+    """
+    tile = tiling["tile"]
+
+    def tile_gain(start):
+        columns = _tile_columns(basis, sources, cached, start, **tiling)
+        return jnp.max(log_scale[:, None] + log_nonnegative(columns), axis=0)
+
+    starts = jnp.arange(sources.shape[0] // tile) * tile
+    return jax.lax.map(tile_gain, starts).reshape(-1)
+
+
+def _log_marked_field(
+    log_source,
+    rows,
+    basis,
+    sources,
+    cached,
+    gain,
+    log_background,
+    *,
+    local,
+    position_std,
+    n_components,
+    tile,
+):
+    """``log(H D)`` for one block of spikes, read at ``rows`` of each spike.
+
+    The scaled product ``H exp(log_source - peak)`` is applied in tiles of
+    kernel columns, so no ``(n_bins, n_bins)`` kernel is formed. A source more
+    than ``_SCALED_RANGE`` below a spike's strongest may underflow there; if
+    such a source could reach the spike's background floor at any bin, that
+    spike is recomputed by an exact log-space reduction over the sources.
+
+    Parameters
+    ----------
+    log_source : jnp.ndarray, shape (n_sources, n_block)
+    rows : jnp.ndarray, shape (n_rows,) or (n_block,)
+        Bins to read: every bin (non-local) or, when ``local``, each spike's
+        own bin.
+    basis : tuple of jnp.ndarray
+        ``(eigvals, eigvecs, labels)``.
+    sources : jnp.ndarray, shape (n_sources,)
+    cached : jnp.ndarray, shape (n_bins, n_sources), or None
+        The kernel columns of ``sources`` when already built (the dense
+        kernel, whose sources are every bin); otherwise each tile is built
+        when used.
+    gain : jnp.ndarray, shape (n_sources,)
+        From :func:`_source_gain`.
+    log_background : jnp.ndarray, shape (n_block,)
+    local : bool
+        Read one bin per spike instead of every bin for every spike.
+
+    Returns
+    -------
+    log_field : jnp.ndarray, shape (n_rows, n_block), or (n_block,) when local
+    """
+    n_block = log_source.shape[1]
+    peak = jnp.max(log_source, axis=0)
+    safe_peak = jnp.where(jnp.isneginf(peak), 0.0, peak)
+    scaled = jnp.exp(log_source - safe_peak[None, :])
+    n_tiles = sources.shape[0] // tile
+
+    def columns_of(start):
+        return _tile_columns(
+            basis,
+            sources,
+            cached,
+            start,
+            position_std=position_std,
+            n_components=n_components,
+            tile=tile,
+        )
+
+    def add_tile(index, field):
+        start = index * tile
+        columns = columns_of(start)[rows]  # (n_rows, tile)
+        part = jax.lax.dynamic_slice_in_dim(scaled, start, tile, axis=0)
+        if local:
+            return field + jnp.sum(columns * part.T, axis=1)
+        return field + jnp.matmul(columns, part, precision=jax.lax.Precision.HIGHEST)
+
+    shape = (n_block,) if local else (rows.shape[0], n_block)
+    field = jax.lax.fori_loop(0, n_tiles, add_tile, jnp.zeros(shape, scaled.dtype))
+    log_field = log_nonnegative(field) + (peak if local else peak[None, :])
+
+    # Sources the scaled product may have lost, and whether any could matter.
+    dropped = log_source < (safe_peak - _SCALED_RANGE)[None, :]
+    lost_bound = jnp.max(
+        jnp.where(dropped, log_source + gain[:, None], -jnp.inf), axis=0
+    )
+    needs_exact = lost_bound > log_background + np.log(np.finfo(np.float32).eps)
+
+    def exact(j, read):
+        # log sum_s H[read, s] exp(log_source[s, j]), reduced in log space.
+        def add_exact_tile(index, value):
+            start = index * tile
+            log_columns = log_nonnegative(columns_of(start)[read])  # (n_read, tile)
+            part = jax.lax.dynamic_slice_in_dim(log_source[:, j], start, tile)
+            terms = jnp.where(
+                jnp.isneginf(part)[None, :], -jnp.inf, log_columns + part[None, :]
+            )
+            return _masked_logaddexp(value, _masked_logsumexp(terms.T))
+
+        return jax.lax.fori_loop(
+            0, n_tiles, add_exact_tile, jnp.full((read.shape[0],), -jnp.inf)
+        )
+
+    def repaired(values, j, flag):
+        if local:
+            fixed = jax.lax.cond(
+                flag, lambda: exact(j, rows[j][None])[0], lambda: values[j]
+            )
+            return values.at[j].set(fixed)
+        fixed = jax.lax.cond(flag, lambda: exact(j, rows), lambda: values[:, j])
+        return values.at[:, j].set(fixed)
+
+    n_flagged = jnp.sum(needs_exact)
+    flagged = jnp.nonzero(needs_exact, size=n_block, fill_value=0)[0]
+    n_slots = min(n_block, _EXACT_REPAIR_SLOTS)
+
+    def repair(n_visits, values):
+        return jax.lax.fori_loop(
+            0,
+            n_visits,
+            lambda slot, current: repaired(current, flagged[slot], slot < n_flagged),
+            values,
+        )
+
+    return jax.lax.cond(
+        n_flagged == 0,
+        lambda values: values,
+        lambda values: jax.lax.cond(
+            n_flagged <= n_slots,
+            partial(repair, n_slots),
+            partial(repair, n_block),
+            values,
+        ),
+        log_field,
+    )
 
 
 @partial(
     jax.jit,
-    static_argnames=("block_size", "indices_are_sorted"),
+    static_argnames=(
+        "position_std",
+        "n_components",
+        "tile",
+        "block_size",
+        "indices_are_sorted",
+    ),
     donate_argnums=0,
 )
 def _add_electrode_diffusion_intensities(
     total,
     decode_features,
     row_ids,
-    encoding_bins,
     encoding_marks,
     encoding_weights,
+    source_index,
+    sources,
     waveform_std,
+    eigvals,
+    eigvecs,
+    labels,
     kernel,
-    occupancy,
-    bin_sizes,
-    mean_rate,
-    weight_total,
+    log_scale,
     log_background,
     *,
+    position_std,
+    n_components,
+    tile,
     block_size,
     indices_are_sorted,
 ):
@@ -691,48 +1066,62 @@ def _add_electrode_diffusion_intensities(
         A multiple of ``block_size`` rows; padding rows are zero.
     row_ids : jnp.ndarray, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    encoding_bins, encoding_marks, encoding_weights : jnp.ndarray
+    encoding_marks, encoding_weights : jnp.ndarray
         Padded encoding samples from :func:`_padded_encoding`.
+    source_index, sources : jnp.ndarray
+        From :func:`_source_layout`.
     waveform_std : jnp.ndarray, shape (n_features,)
-    kernel : jnp.ndarray, shape (n_bins, n_bins)
-        From :func:`_spatial_kernel`.
-    occupancy, bin_sizes : jnp.ndarray, shape (n_bins,)
-    mean_rate, weight_total : float
+    eigvals, eigvecs, labels : jnp.ndarray
+        Device heat-kernel basis and component labels.
+    kernel : jnp.ndarray, shape (n_bins, n_bins), or None
+        The whole spatial kernel when it fits the memory budget
+        (:func:`_dense_kernel`); then ``sources`` are every bin. Otherwise
+        kernel columns are built from the basis, tile by tile.
+    log_scale : jnp.ndarray, shape (n_bins,)
+        From :func:`_log_intensity_scale`.
     log_background : jnp.ndarray, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    position_std : float
+    n_components : int
+    tile : int
+        Kernel columns per tile (divides ``sources``' length).
     block_size : int
-        Decoding spikes per diffused block.
+        Decoding spikes per block.
     indices_are_sorted : bool
 
     Returns
     -------
     total : jnp.ndarray, shape (n_rows, n_bins)
     """
+    basis = (eigvals, eigvecs, labels)
+    static = {"position_std": position_std, "n_components": n_components, "tile": tile}
+    cached = kernel
+    gain = _source_gain(basis, sources, cached, log_scale, **static)
+    every_bin = jnp.arange(eigvecs.shape[0])
 
     def add_block(block, total):
         start = block * block_size
-        field, log_scale = _diffused_mark_field(
-            jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
-            encoding_bins,
-            encoding_marks,
-            encoding_weights,
-            waveform_std,
-            kernel,
-        )
-        log_field = log_nonnegative(field) + log_scale[None, :]
-        # bin_sizes (dV) makes p_e a proper joint density (recovers the mark
-        # marginal, guarded by test_mark_marginal_recovery). It cancels in the
-        # p_e / occupancy ratio below wherever occupancy carries the same dV
-        # factor; bins with unresolved occupancy have zero intensity.
-        log_p_e = log_field - jnp.log(weight_total * bin_sizes)[:, None]
         background = jax.lax.dynamic_slice_in_dim(log_background, start, block_size)
-        log_intensity = jnp.logaddexp(
-            jnp.where(
-                _resolved_occupancy(occupancy)[:, None],
-                log_density_intensity(mean_rate, log_p_e, jnp.log(occupancy)[:, None]),
-                -jnp.inf,
+        log_field = _log_marked_field(
+            _log_source_marks(
+                jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
+                encoding_marks,
+                encoding_weights,
+                source_index,
+                waveform_std,
+                sources.shape[0],
             ),
-            background[None, :],
+            every_bin,
+            basis,
+            sources,
+            cached,
+            gain,
+            background,
+            local=False,
+            **static,
+        )
+        log_intensity = jnp.logaddexp(
+            log_scale[:, None] + log_field, background[None, :]
         )  # (n_bins, n_block)
         return total + deterministic_row_sum(
             log_intensity.T,
@@ -747,7 +1136,13 @@ def _add_electrode_diffusion_intensities(
 
 @partial(
     jax.jit,
-    static_argnames=("block_size", "indices_are_sorted"),
+    static_argnames=(
+        "position_std",
+        "n_components",
+        "tile",
+        "block_size",
+        "indices_are_sorted",
+    ),
     donate_argnums=0,
 )
 def _add_electrode_local_diffusion_terms(
@@ -755,25 +1150,28 @@ def _add_electrode_local_diffusion_terms(
     decode_features,
     row_ids,
     spike_bins,
-    encoding_bins,
     encoding_marks,
     encoding_weights,
+    source_index,
+    sources,
     waveform_std,
+    eigvals,
+    eigvecs,
+    labels,
     kernel,
-    occupancy,
-    bin_sizes,
-    mean_rate,
-    weight_total,
+    log_scale,
     log_background,
     *,
+    position_std,
+    n_components,
+    tile,
     block_size,
     indices_are_sorted,
 ):
     """Add one electrode's local log mark intensities to their rows.
 
-    The clip and mass rescale in the heat kernel act per column, so the local
-    value is read from the same diffused column as the non-local one, at the
-    animal's interior bin.
+    The intensity is read from the same kernel columns as the non-local one,
+    at the animal's interior bin.
 
     Parameters
     ----------
@@ -785,42 +1183,43 @@ def _add_electrode_local_diffusion_terms(
         Local rows; padding uses ``n_rows``, which the row sum drops.
     spike_bins : jnp.ndarray, shape (n_padded_spikes,)
         Animal's interior bin at each decoding spike; padding rows are zero.
-    encoding_bins, encoding_marks, encoding_weights, waveform_std, kernel,
-    occupancy, bin_sizes, mean_rate, weight_total, log_background, block_size,
-    indices_are_sorted
+    encoding_marks, encoding_weights, source_index, sources, waveform_std,
+    eigvals, eigvecs, labels, kernel, log_scale, log_background, position_std,
+    n_components, tile, block_size, indices_are_sorted
         As in :func:`_add_electrode_diffusion_intensities`.
 
     Returns
     -------
     total : jnp.ndarray, shape (n_rows,)
     """
+    basis = (eigvals, eigvecs, labels)
+    static = {"position_std": position_std, "n_components": n_components, "tile": tile}
+    cached = kernel
+    gain = _source_gain(basis, sources, cached, log_scale, **static)
 
     def add_block(block, total):
         start = block * block_size
         bins = jax.lax.dynamic_slice_in_dim(spike_bins, start, block_size)
-        field, log_scale = _diffused_mark_field(
-            jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
-            encoding_bins,
-            encoding_marks,
-            encoding_weights,
-            waveform_std,
-            kernel,
-        )
-        log_field = log_nonnegative(field) + log_scale[None, :]
-        log_p_e_at_animal = log_field[bins, jnp.arange(block_size)] - jnp.log(
-            weight_total * bin_sizes[bins]
-        )
         background = jax.lax.dynamic_slice_in_dim(log_background, start, block_size)
-        log_intensity = jnp.logaddexp(
-            jnp.where(
-                _resolved_occupancy(occupancy)[bins],
-                log_density_intensity(
-                    mean_rate, log_p_e_at_animal, jnp.log(occupancy[bins])
-                ),
-                -jnp.inf,
+        log_field = _log_marked_field(
+            _log_source_marks(
+                jax.lax.dynamic_slice_in_dim(decode_features, start, block_size),
+                encoding_marks,
+                encoding_weights,
+                source_index,
+                waveform_std,
+                sources.shape[0],
             ),
+            bins,
+            basis,
+            sources,
+            cached,
+            gain,
             background,
-        )  # (n_block,)
+            local=True,
+            **static,
+        )
+        log_intensity = jnp.logaddexp(log_scale[bins] + log_field, background)
         return total + deterministic_row_sum(
             log_intensity,
             jax.lax.dynamic_slice_in_dim(row_ids, start, block_size),
@@ -958,7 +1357,28 @@ def predict_clusterless_diffusion_log_likelihood(
             "against the refit environment before predicting.",
         )
 
-    kernel = _spatial_kernel(environment, resolved_rank, position_std)
+    eigvals, eigvecs, labels, n_components = get_device_basis(
+        environment, resolved_rank
+    )
+    tile_budget = _source_tile_size(memory_budget, n_bins, resolved_rank)
+    dense = _dense_kernel_fits(n_bins, memory_budget)
+    # One kernel per prediction, shared by every electrode, state and chunk.
+    kernel = (
+        _spike_time_order.memo(
+            f"diffusion_kernel:{float(position_std)!r}:{tile_budget}",
+            (eigvecs, labels),
+            partial(
+                _dense_kernel,
+                (eigvals, eigvecs, labels),
+                n_bins,
+                tile_budget,
+                position_std=float(position_std),
+                n_components=n_components,
+            ),
+        )
+        if dense
+        else None
+    )
 
     if is_local:
         # The local path reads the animal's position; non-local ignores it and the
@@ -991,7 +1411,7 @@ def predict_clusterless_diffusion_log_likelihood(
         )
         # Kernel outputs are committed to the basis's device; committing the
         # starting sum too lets every electrode reuse one executable.
-        log_likelihood = jax.device_put(log_likelihood, kernel.sharding)
+        log_likelihood = jax.device_put(log_likelihood, eigvecs.sharding)
 
         for (
             electrode_bins,
@@ -1051,16 +1471,20 @@ def predict_clusterless_diffusion_log_likelihood(
                 )
                 continue
 
-            enc_bins, enc_marks, enc_weights = _spike_time_order.memo(
-                "padded_diffusion_encoding",
-                (electrode_bins, electrode_marks, electrode_weights),
-                partial(
-                    _padded_encoding,
-                    electrode_bins,
-                    electrode_marks,
-                    electrode_weights,
-                    n_bins,
-                ),
+            enc_marks, enc_weights, sources, source_index, tile = (
+                _spike_time_order.memo(
+                    "diffusion_electrode_layout",
+                    (electrode_bins, electrode_marks, electrode_weights),
+                    partial(
+                        _electrode_layout,
+                        electrode_bins,
+                        electrode_marks,
+                        electrode_weights,
+                        n_bins,
+                        tile_budget,
+                        dense,
+                    ),
+                )
             )
             safe_weight_total = (
                 electrode_weight_total if electrode_weight_total > 0 else 1.0
@@ -1076,7 +1500,11 @@ def predict_clusterless_diffusion_log_likelihood(
             )
 
             effective_block = _effective_block(
-                memory_budget, enc_marks.shape[0], resolved_rank, n_bins, block_size
+                memory_budget,
+                enc_marks.shape[0],
+                sources.shape[0],
+                n_bins,
+                block_size,
             )
             # Padded spikes (dropped from the row sums) let chunks with nearby
             # spike counts share one compiled kernel.
@@ -1086,16 +1514,22 @@ def predict_clusterless_diffusion_log_likelihood(
                 jnp.asarray(_pad_rows(decode_features, n_padded)),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 jnp.asarray(_pad_rows(spike_bins, n_padded)),
-                enc_bins,
                 enc_marks,
                 enc_weights,
+                source_index,
+                sources,
                 as_std_array(waveform_std, enc_marks.shape[1]),
+                eigvals,
+                eigvecs,
+                labels,
                 kernel,
-                occupancy,
-                bin_sizes,
-                electrode_mean_rate,
-                safe_weight_total,
+                _log_intensity_scale(
+                    occupancy, bin_sizes, electrode_mean_rate, safe_weight_total
+                ),
                 jnp.asarray(_pad_rows(log_background, n_padded)),
+                position_std=float(position_std),
+                n_components=n_components,
+                tile=tile,
                 block_size=min(effective_block, n_padded),
                 indices_are_sorted=selection.indices_are_sorted,
             )
@@ -1116,7 +1550,7 @@ def predict_clusterless_diffusion_log_likelihood(
         * summed_ground_process_intensity[None, :]
     )
     # Committed like the kernel outputs (see the local branch above).
-    log_likelihood = jax.device_put(log_likelihood, kernel.sharding)
+    log_likelihood = jax.device_put(log_likelihood, eigvecs.sharding)
 
     for (
         electrode_bins,
@@ -1176,15 +1610,17 @@ def predict_clusterless_diffusion_log_likelihood(
             )[:, None]
             continue
 
-        enc_bins, enc_marks, enc_weights = _spike_time_order.memo(
-            "padded_diffusion_encoding",
+        enc_marks, enc_weights, sources, source_index, tile = _spike_time_order.memo(
+            "diffusion_electrode_layout",
             (electrode_bins, electrode_marks, electrode_weights),
             partial(
-                _padded_encoding,
+                _electrode_layout,
                 electrode_bins,
                 electrode_marks,
                 electrode_weights,
                 n_bins,
+                tile_budget,
+                dense,
             ),
         )
         # weight_total_e > 0 here; belt-and-suspenders safe denominator.
@@ -1193,17 +1629,18 @@ def predict_clusterless_diffusion_log_likelihood(
         )
 
         effective_block = _effective_block(
-            memory_budget, enc_marks.shape[0], resolved_rank, n_bins, block_size
+            memory_budget, enc_marks.shape[0], sources.shape[0], n_bins, block_size
         )
         logger.debug(
             "clusterless_diffusion predict: effective_block=%d "
-            "(requested block_size=%d, memory_budget=%d bytes, n_enc=%d, rank=%d, "
-            "n_bins=%d)",
+            "(requested block_size=%d, memory_budget=%d bytes, n_enc=%d, "
+            "n_sources=%d, tile=%d, n_bins=%d)",
             effective_block,
             block_size,
             memory_budget,
             enc_marks.shape[0],
-            resolved_rank,
+            sources.shape[0],
+            tile,
             n_bins,
         )
         # Padded spikes (dropped from the row sums) let chunks with nearby
@@ -1213,16 +1650,22 @@ def predict_clusterless_diffusion_log_likelihood(
             log_likelihood,
             jnp.asarray(_pad_rows(decode_features, n_padded)),
             jnp.asarray(spike_row_ids(selection, n_padded)),
-            enc_bins,
             enc_marks,
             enc_weights,
+            source_index,
+            sources,
             as_std_array(waveform_std, enc_marks.shape[1]),
+            eigvals,
+            eigvecs,
+            labels,
             kernel,
-            occupancy,
-            bin_sizes,
-            electrode_mean_rate,
-            safe_weight_total,
+            _log_intensity_scale(
+                occupancy, bin_sizes, electrode_mean_rate, safe_weight_total
+            ),
             jnp.asarray(_pad_rows(log_background, n_padded)),
+            position_std=float(position_std),
+            n_components=n_components,
+            tile=tile,
             block_size=min(effective_block, n_padded),
             indices_are_sorted=selection.indices_are_sorted,
         )

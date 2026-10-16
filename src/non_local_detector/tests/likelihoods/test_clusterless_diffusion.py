@@ -29,16 +29,22 @@ import numpy as np
 import pytest
 from scipy import stats
 from scipy.spatial import cKDTree
+from scipy.special import logsumexp
 
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_diffusion import (
-    _diffused_mark_field,
-    _spatial_kernel,
+    _add_electrode_diffusion_intensities,
+    _dense_kernel_fits,
+    _electrode_layout,
+    _log_marked_field,
+    _log_source_marks,
+    _source_tile_size,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
+    spatial_kernel_columns,
 )
 from non_local_detector.likelihoods.clusterless_kde import kde_distance
 from non_local_detector.likelihoods.common import (
@@ -327,16 +333,42 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
             {**s, "enc_f": [f * factor for f in s["enc_f"]]},
             waveform_std=WAVEFORM_STD * factor,
         )
-        field, log_scale = _diffused_mark_field(
-            jnp.asarray(far * factor),
-            jnp.asarray(enc["encoding_bin_indices"][0]),
-            jnp.asarray(enc["encoding_marks"][0]),
-            jnp.asarray(enc["encoding_weights"][0]),
-            jnp.full(n_features, WAVEFORM_STD * factor),
-            _spatial_kernel(s["env"], enc["resolved_rank"], enc["position_std"]),
+        n_bins = len(enc["bin_sizes"])
+        marks, weights, sources, source_index, tile = _electrode_layout(
+            enc["encoding_bin_indices"][0],
+            enc["encoding_marks"][0],
+            enc["encoding_weights"][0],
+            n_bins,
+            8,
         )
-        with np.errstate(divide="ignore"):
-            fields.append(np.log(np.asarray(field)) + np.asarray(log_scale))
+        eigvals, eigvecs, labels, n_components = get_device_basis(
+            s["env"], enc["resolved_rank"]
+        )
+        log_source = _log_source_marks(
+            jnp.asarray(far * factor),
+            marks,
+            weights,
+            source_index,
+            jnp.full(n_features, WAVEFORM_STD * factor),
+            sources.shape[0],
+        )
+        fields.append(
+            np.asarray(
+                _log_marked_field(
+                    log_source,
+                    jnp.arange(n_bins),
+                    (eigvals, eigvecs, labels),
+                    sources,
+                    None,
+                    jnp.zeros(sources.shape[0]),
+                    jnp.full(far.shape[0], -jnp.inf),
+                    local=False,
+                    position_std=enc["position_std"],
+                    n_components=n_components,
+                    tile=tile,
+                )
+            )
+        )
     original, millivolts = fields
     assert np.all(np.isfinite(original.max(axis=0)))  # no spike underflows
     finite = np.isfinite(original)
@@ -1674,6 +1706,138 @@ def test_spike_term_is_the_background_where_the_exact_intensity_is_zero():
     assert right_room.sum() > 10
     np.testing.assert_array_equal(term[right_room], term[right_room][0])
     assert term[~right_room].max() > term[right_room][0] + 10.0
+
+
+@pytest.mark.integration
+def test_a_far_weak_source_alone_in_its_component_is_not_lost():
+    """Per-spike scaling must not erase the only source reaching a component.
+
+    Two disconnected rooms, 16 features with a unit mark bandwidth. Left-room
+    marks are the decoding mark or lie 1000 away in 15 features (which makes
+    the reference broad); right-room marks lie 15 bandwidths away in one
+    feature, 112.5 nats weaker than the left-room match, which float32 cannot
+    represent next to it. In the right room that source alone sets the
+    intensity, well above the background, so the spike's term there must
+    follow it.
+    """
+    env, position = _make_two_room_env()
+    sampling_frequency = 100
+    time = np.arange(position.shape[0]) / sampling_frequency
+    rng = np.random.default_rng(5)
+    in_left = position[:, 0] < 16.0
+    in_right = position[:, 0] > 24.0
+    picks = np.sort(
+        np.r_[
+            rng.choice(np.flatnonzero(in_left), 80, replace=False),
+            rng.choice(np.flatnonzero(in_right), 40, replace=False),
+        ]
+    )
+    enc_t = [time[picks]]
+    marks = np.zeros((picks.size, 16))
+    marks[in_right[picks], 0] = 15.0
+    left = np.flatnonzero(~in_right[picks])
+    marks[left[::2], 1:] = 1000.0
+    enc_f = [marks.astype(np.float32)]
+    enc = fit_clusterless_diffusion_encoding_model(
+        jnp.asarray(time),
+        jnp.asarray(position),
+        [jnp.asarray(t) for t in enc_t],
+        [jnp.asarray(f) for f in enc_f],
+        env,
+        position_std=8.0,
+        waveform_std=1.0,
+        disable_progress_bar=True,
+    )
+    reference = training_mark_references(time, enc_t, enc_f, 1.0)
+
+    decode_center = time[position.shape[0] // 2]
+    dt = 0.002
+    edges = np.array([decode_center - dt / 2, decode_center + dt / 2])
+    decode_mark = np.zeros((1, 16), np.float32)
+    with_spike = _predict_diffusion_nonlocal(
+        edges,
+        time,
+        position,
+        [np.array([decode_center])],
+        [decode_mark],
+        enc,
+        reference,
+    )[0]
+    silent = _predict_diffusion_nonlocal(
+        edges,
+        time,
+        position,
+        [np.array([])],
+        [np.zeros((0, 16), np.float32)],
+        enc,
+        reference,
+    )[0]
+    term = with_spike - silent - np.log(dt)
+
+    # Float64 oracle from the model's own pieces.
+    sources = np.asarray(enc["encoding_bin_indices"][0])
+    columns = np.asarray(
+        spatial_kernel_columns(env, enc["resolved_rank"], 8.0, sources), float
+    )
+    marks = np.asarray(enc["encoding_marks"][0], float)
+    log_kernel = -0.5 * np.sum(marks**2, axis=1) - 8 * np.log(2 * np.pi)
+    weights = np.asarray(enc["encoding_weights"][0], float)
+    with np.errstate(divide="ignore"):
+        log_field = logsumexp(
+            np.log(columns) + (np.log(weights) + log_kernel)[None, :], axis=1
+        )
+    occupancy = np.asarray(enc["occupancy"], float)
+    log_scale = np.log(enc["mean_rates"][0]) - np.log(
+        enc["weight_total"][0] * np.asarray(enc["bin_sizes"]) * occupancy
+    )
+    background = LOG_RATE_EPS_HZ + reference[0].log_density(decode_mark)[0]
+    interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
+    right_room = interior_centers[:, 0] > 20.0
+    log_intensity = log_scale + log_field
+    assert np.all(log_intensity[right_room] > background + 5.0)
+    np.testing.assert_allclose(
+        term[right_room],
+        np.logaddexp(log_intensity, background)[right_room],
+        rtol=1e-5,
+        atol=1e-3,
+    )
+
+
+@pytest.mark.unit
+def test_scorer_workspace_does_not_grow_with_the_square_of_the_bins():
+    """A 20,000-bin grid compiles within a bounded workspace.
+
+    A dense spatial kernel alone would take 1.6 GB here; kernel columns are
+    built in tiles sized from ``memory_budget``.
+    """
+    n_bins, rank, n_samples, n_sources, block = 20_000, 64, 4096, 2048, 16
+    budget = 64 * 2**20
+    tile = min(_source_tile_size(budget, n_bins, rank), n_sources)
+    assert not _dense_kernel_fits(n_bins, budget)
+    f32, i32 = jnp.float32, jnp.int32
+    compiled = _add_electrode_diffusion_intensities.lower(
+        jax.ShapeDtypeStruct((8, n_bins), f32),
+        jax.ShapeDtypeStruct((block, 4), f32),
+        jax.ShapeDtypeStruct((block,), i32),
+        jax.ShapeDtypeStruct((n_samples, 4), f32),
+        jax.ShapeDtypeStruct((n_samples,), f32),
+        jax.ShapeDtypeStruct((n_samples,), i32),
+        jax.ShapeDtypeStruct((n_sources,), i32),
+        jax.ShapeDtypeStruct((4,), f32),
+        jax.ShapeDtypeStruct((rank,), f32),
+        jax.ShapeDtypeStruct((n_bins, rank), f32),
+        jax.ShapeDtypeStruct((n_bins,), i32),
+        None,
+        jax.ShapeDtypeStruct((n_bins,), f32),
+        jax.ShapeDtypeStruct((block,), f32),
+        position_std=1.0,
+        n_components=1,
+        tile=tile,
+        block_size=block,
+        indices_are_sorted=True,
+    ).compile()
+    workspace = compiled.memory_analysis().temp_size_in_bytes
+    assert workspace < 256 * 2**20, f"{workspace / 2**20:.0f} MiB"
 
 
 def test_grid_independence():

@@ -23,6 +23,7 @@ from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
 )
+from non_local_detector.model_checking._clusterless_models import electrode_model
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.tests.likelihoods.conftest import training_mark_references
 from non_local_detector.time_edges import time_edges_from_centers
@@ -380,3 +381,47 @@ def test_diffusion_unvisited_bins_score_only_the_background():
     ).sum()
     np.testing.assert_allclose(evidence[unvisited], background, rtol=1e-5)
     assert evidence[unvisited].max() < evidence[~unvisited].max()
+
+
+@pytest.mark.integration
+def test_diffusion_model_checking_follows_the_decoder_in_unresolved_bins():
+    """Where the decoder gives a bin zero intensity, so does model checking.
+
+    Tiny training weights on part of the track (as EM can assign) leave its
+    occupancy below the heat kernel's resolution while its encoding spikes
+    still reach it. The decoder explains spikes there by the background
+    alone; the goodness-of-fit adapter must not give those bins intensity.
+    """
+    rng = np.random.default_rng(1)
+    time = np.arange(0.0, 20.0, 0.002)
+    position = np.where(
+        time < 10.0, 10.0 + 3.0 * np.sin(time), 50.0 + 8.0 * np.sin(time)
+    )
+    environment = Environment(place_bin_size=2.0, position_range=((0.0, 70.0),))
+    environment.fit_place_grid(position[:, None], infer_track_interior=False)
+    weights = np.where(time < 10.0, 1.0, 1e-9)
+    spike_times = [np.sort(rng.uniform(0.0, 20.0, 400))]
+    marks = [rng.normal(0.0, 30.0, (400, 4))]
+    model = _fit_with_reference(
+        "clusterless_diffusion",
+        time,
+        position[:, None],
+        spike_times,
+        marks,
+        environment,
+        {
+            "position_std": 1.5,
+            "waveform_std": 24.0,
+            "weights": weights,
+            "disable_progress_bar": True,
+        },
+    )
+    occupancy = np.asarray(model["occupancy"])
+    unresolved = occupancy < 1e-6 * occupancy.max()
+    centers = environment.place_bin_centers_[environment.is_track_interior_.ravel()]
+    reached = unresolved & (np.abs(centers[:, 0] - 50.0) < 8.0)
+    assert reached.sum() > 3
+
+    electrode = electrode_model(model, "clusterless_diffusion", 0)
+    np.testing.assert_array_equal(electrode.ground_intensity(centers[reached]), 0.0)
+    assert np.all(electrode.ground_intensity(centers[~unresolved]) >= 0.0)

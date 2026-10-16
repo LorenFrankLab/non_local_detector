@@ -110,15 +110,30 @@ integrates to one, `∫ λ dm = Λ` exactly, and a disconnected component stays 
 zero. Clipping or flooring each spike's diffused mark column instead does not
 commute with integrating over marks: such a floor had added intensity that `Λ`
 never counted (0.5 Hz in a graph-disconnected component where `Λ` is only `β`).
-Model checking uses the same kernel, so its mixture is the model's.
+Model checking uses the same kernel columns and the same unresolved-occupancy
+mask, so its intensity is the decoder's.
 
-Each spike's mark kernels are computed in log space and exponentiated relative to
-that spike's largest weighted kernel before `H` is applied; the offset is added
-back in log space, so the kernel normalizer, which carries the mark units, cannot
-underflow a spike's field. A source more than about 87 nats below the spike's
-strongest one underflows. On a real recording, none of 75,458 held-out spikes had
-such a source that could have reached its background. Integrating the predicted
-intensity over a fine mark grid recovers `Λ + β` to float32 rounding (8e-7).
+Each spike's mark kernels are combined per source bin in log space (a log-sum-exp
+over that bin's encoding samples), so no source is lost however far its marks lie
+from another's. The spatial product is then applied in each spike's own scale:
+relative to its strongest source, with the offset added back in log space, so the
+kernel normalizer, which carries the mark units, cannot underflow a spike's field.
+A source more than 80 nats below the strongest may still underflow in that
+product. Each source's largest possible contribution to any bin is known (its log
+mark density plus `max_x log(c(x) H[x, s])`), so a spike is recomputed by an exact
+log-space reduction over its sources whenever such a source could reach its
+background floor. This keeps, for example, the only source reaching a
+graph-disconnected component even when another component has a much stronger
+source. On a real recording no held-out spike needed it (0 of 75,458).
+
+When the whole `(n_bins, n_bins)` kernel fits half of `memory_budget` (5,053 bins
+at 1 cm on a real recording still does), it is built once per prediction and
+shared by every electrode, state and chunk. Otherwise columns are built from the
+low-rank heat-kernel basis in tiles sized from `memory_budget`, for just the
+source bins that hold encoding samples, so memory grows with `n_bins × tile`
+rather than `n_bins²`: a 20,000-bin grid compiles within a 256 MiB workspace,
+where the whole kernel alone would take 1.6 GB. Integrating the predicted intensity over a fine mark grid recovers `Λ + β`
+to float32 rounding (8e-7).
 
 Occupancy is a diffused field too. Bins whose occupancy is below the same
 `1e-6` of its maximum are unvisited, so the heat kernel does not resolve them.
