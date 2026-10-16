@@ -13,9 +13,6 @@ from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     _estimate_with_enc_chunking,
-    _log_joint_from_log_marginal,
-    _log_marginal_floor,
-    _stabilized_log_kernel_product,
     compute_local_log_likelihood,
     fit_clusterless_kde_encoding_model,
 )
@@ -304,99 +301,76 @@ def test_block_log_kde_vs_log_block_kde():
 
 
 def test_scaled_gemm_marginal_propagates_nan():
-    """A NaN marginal on the scaled-GEMM fast path propagates, not hidden.
+    """A NaN marginal on the scaled-GEMM path propagates, not hidden.
 
-    The <=8-feature fast path used ``jnp.where(marginal > 0, ..., -inf)``; since
-    ``NaN > 0`` is ``False`` a NaN marginal (from non-finite inputs) was laundered
-    to ``-inf`` (zero intensity), contradicting the module's propagate-NaN
-    contract (and the logsumexp path). It must surface as NaN, also after the
-    background is added.
+    ``jnp.where(marginal > 0, ..., -inf)`` would launder a NaN marginal (from
+    non-finite inputs) to ``-inf`` (zero intensity), since ``NaN > 0`` is
+    ``False``, contradicting the module's propagate-NaN contract. It must
+    surface as NaN, also after the background is added.
     """
-    logK_mark = jnp.array([[0.0], [jnp.nan]])  # (n_enc=2, n_dec=1); a NaN row
+    encoding_features = jnp.array([[0.0], [jnp.nan]])  # (n_enc=2, 1); a NaN mark
     log_position_distance = jnp.array([[-0.1, -0.2], [-0.3, -0.4]])  # (2, n_pos=2)
     log_w = jnp.log(jnp.array([0.5, 0.5]))  # (2,)
     occupancy = jnp.array([1.0, 1.0])  # (n_pos=2,)
     log_background = realistic_log_background(jnp.zeros((1, 1)))
 
-    log_marginal = _stabilized_log_kernel_product(
-        logK_mark,
+    log_joint = _estimate_with_enc_chunking(
+        jnp.zeros((1, 1)),
+        encoding_features,
+        jnp.ones(1),
+        occupancy,
+        1.0,
         log_position_distance,
         log_w,
-        _log_marginal_floor(
-            1.0, occupancy, log_background + np.log(np.finfo(np.float32).eps)
-        ),
+        2,
+        None,
+        log_background,
     )
-    out = jnp.logaddexp(
-        _log_joint_from_log_marginal(log_marginal, 1.0, occupancy),
-        log_background[:, None],
-    )
+    out = jnp.logaddexp(log_joint, log_background[:, None])
     assert bool(jnp.any(jnp.isnan(out))), (
         "A NaN marginal must propagate to core.py's diagnostics, not be "
         "silently replaced by the background."
     )
 
 
-def test_scaled_gemm_all_zero_weights_score_the_background_not_nan():
+@pytest.mark.parametrize("enc_tile_size", [2, 4])
+def test_scaled_gemm_all_zero_weights_score_the_background_not_nan(enc_tile_size):
     """All-zero encoding weights are a zero intensity, never NaN.
 
     When every encoding spike is de-weighted (``log_w == -inf``) a compensation
     computing ``-inf - -inf`` would produce NaN. That is a genuine "no effective
     encoding data" case, not a broken input: the intensity is zero (``-inf``)
-    and each spike's term is its background. Both fast paths (untiled and
-    encoding-tiled) must give that rather than propagating NaN.
+    and each spike's term is its background, with one encoding tile or several.
     """
     n_enc, n_dec, n_features, n_pos = 4, 2, 2, 3
     rng = np.random.default_rng(0)
     log_position_distance = jnp.asarray(-np.abs(rng.standard_normal((n_enc, n_pos))))
     log_w = jnp.full((n_enc,), -jnp.inf)  # every encoding spike de-weighted
     occupancy = jnp.ones((n_pos,))
-    mean_rate = 1.0
     dec_feats = jnp.asarray(rng.standard_normal((n_dec, n_features)))
     enc_feats = jnp.asarray(rng.standard_normal((n_enc, n_features)))
     log_background = realistic_log_background(dec_feats)
     expected = np.broadcast_to(np.asarray(log_background)[:, None], (n_dec, n_pos))
 
-    # Untiled fast path.
-    logK_mark = jnp.asarray(-np.abs(rng.standard_normal((n_enc, n_dec))))
-    log_marginal = _stabilized_log_kernel_product(
-        logK_mark,
-        log_position_distance,
-        log_w,
-        _log_marginal_floor(
-            mean_rate, occupancy, log_background + np.log(np.finfo(np.float32).eps)
-        ),
-    )
     log_joint = np.asarray(
-        _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
-    )
-    assert np.all(np.isneginf(log_joint)), (
-        "All-zero weights must give zero intensity, not NaN (untiled path)."
-    )
-    np.testing.assert_array_equal(
-        np.logaddexp(log_joint, np.asarray(log_background)[:, None]), expected
-    )
-
-    # Encoding-tiled fast path (online max rescaling).
-    log_joint_chunked = np.asarray(
         _estimate_with_enc_chunking(
             dec_feats,
             enc_feats,
             jnp.ones((n_features,)),
             occupancy,
-            mean_rate,
+            1.0,
             log_position_distance,
             log_w,
-            2,
+            enc_tile_size,
             None,
             log_background,
         )
     )
-    assert np.all(np.isneginf(log_joint_chunked)), (
-        "All-zero weights must give zero intensity, not NaN (chunked path)."
+    assert np.all(np.isneginf(log_joint)), (
+        "All-zero weights must give zero intensity, not NaN."
     )
     np.testing.assert_array_equal(
-        np.logaddexp(log_joint_chunked, np.asarray(log_background)[:, None]),
-        expected,
+        np.logaddexp(log_joint, np.asarray(log_background)[:, None]), expected
     )
 
 

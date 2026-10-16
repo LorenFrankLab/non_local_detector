@@ -10,9 +10,8 @@ import numpy as np
 
 from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
+    _estimate_with_enc_chunking,
     _log_joint_from_log_marginal,
-    _log_marginal_floor,
-    _stabilized_log_kernel_product,
     kde_distance,
     log_kde_distance,
 )
@@ -294,26 +293,30 @@ class TestScaledGemmJointIntensity:
         return jnp.asarray(LOG_EPS + reference.log_density(np.asarray(dec_wf)))
 
     @staticmethod
-    def _gemm_terms(logK_mark, logK_pos, log_w, occupancy, mean_rate, background):
-        log_w = jnp.broadcast_to(log_w, (logK_mark.shape[0],))
-        log_marginal = _stabilized_log_kernel_product(
-            logK_mark,
+    def _gemm_terms(
+        dec_wf, enc_wf, wf_std, logK_pos, log_w, occupancy, mean_rate, background
+    ):
+        n_enc = enc_wf.shape[0]
+        log_joint = _estimate_with_enc_chunking(
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occupancy,
+            mean_rate,
             logK_pos,
-            log_w,
-            _log_marginal_floor(
-                mean_rate, occupancy, background + np.log(np.finfo(np.float32).eps)
-            ),
+            jnp.broadcast_to(log_w, (n_enc,)),
+            n_enc,
+            None,
+            background,
         )
-        return jnp.logaddexp(
-            _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy),
-            background[:, None],
-        )
+        return jnp.logaddexp(log_joint, background[:, None])
 
     @staticmethod
     def _logsumexp_reference(
-        logK_mark, logK_pos, log_w, occupancy, mean_rate, background
+        dec_wf, enc_wf, wf_std, logK_pos, log_w, occupancy, mean_rate, background
     ):
         """Independent logsumexp oracle for the per-spike terms."""
+        logK_mark = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, wf_std)
 
         def for_one_dec(wf_col):
             return jax.nn.logsumexp(log_w + logK_pos + wf_col[:, None], axis=0)
@@ -336,16 +339,15 @@ class TestScaledGemmJointIntensity:
         eval_pos = jnp.linspace(0, 200, n_pos)[:, None]
 
         logK_pos = log_kde_distance(eval_pos, enc_pos, jnp.array([3.5]))
-        logK_mark = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, wf_std)
         log_w = -jnp.log(float(n_enc))
         occupancy = jnp.ones(n_pos) * 0.01
         background = TestScaledGemmJointIntensity._background(dec_wf)
-        return logK_mark, logK_pos, log_w, occupancy, background
+        return dec_wf, enc_wf, wf_std, logK_pos, log_w, occupancy, background
 
     def _assert_matches(self, rng, n_enc, n_dec, n_pos, n_wf):
         data = self._make_test_data(rng, n_enc, n_dec, n_pos, n_wf)
-        result = self._gemm_terms(*data[:4], 5.0, data[4])
-        reference = self._logsumexp_reference(*data[:4], 5.0, data[4])
+        result = self._gemm_terms(*data[:6], 5.0, data[6])
+        reference = self._logsumexp_reference(*data[:6], 5.0, data[6])
         max_diff = float(jnp.max(jnp.abs(result - reference)))
         assert max_diff < 1e-4, f"max abs diff {max_diff:.2e}"
 
@@ -367,7 +369,7 @@ class TestScaledGemmJointIntensity:
     def test_output_shape_and_finite(self):
         rng = np.random.default_rng(42)
         data = self._make_test_data(rng, n_enc=200, n_dec=30, n_pos=50, n_wf=4)
-        result = self._gemm_terms(*data[:4], 5.0, data[4])
+        result = self._gemm_terms(*data[:6], 5.0, data[6])
         assert result.shape == (30, 50)
         assert jnp.all(jnp.isfinite(result))
 
@@ -377,12 +379,13 @@ class TestScaledGemmJointIntensity:
         n_enc, n_dec, n_pos, n_wf = 100, 10, 20, 4
         enc_wf = jnp.array(rng.standard_normal((n_enc, n_wf)) * 50)
         dec_wf = jnp.array(rng.standard_normal((n_dec, n_wf)) * 50)
-        logK_mark = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, jnp.full(n_wf, 24.0))
         occupancy = jnp.ones(n_pos).at[5].set(0.0).at[15].set(0.0) * 0.01
         background = self._background(dec_wf)
 
         result = self._gemm_terms(
-            logK_mark,
+            dec_wf,
+            enc_wf,
+            jnp.full(n_wf, 24.0),
             jnp.zeros((n_enc, n_pos)),
             -jnp.log(float(n_enc)),
             occupancy,
