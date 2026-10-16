@@ -4873,10 +4873,13 @@ class ClusterlessDetector(_DetectorBase):
             configuration (environment, encoding group).
             The values depend on the chosen `clusterless_algorithm`.
         mark_reference_ : list of MarkReference or None, length n_electrodes
-            Normalized diagonal-Gaussian waveform density of each electrode,
-            fitted from training spikes in the requested environments with
-            positive weight (all encoding groups). No-Spike scores its spikes'
-            marks with it, and every active state adds a background intensity
+            Normalized waveform density of each electrode: a product of
+            per-feature Student-t densities (3 degrees of freedom) centred on
+            the weighted mean of its training spikes in the requested
+            environments (all encoding groups), with scale
+            ``sqrt(training variance + h**2)`` for mark bandwidth ``h``.
+            No-Spike scores its spikes' marks with it, and every active state
+            adds a background intensity
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
         """

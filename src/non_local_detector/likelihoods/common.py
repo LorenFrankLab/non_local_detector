@@ -35,7 +35,7 @@ RATE_REFERENCE_SECONDS = 0.002
 LOG_RATE_EPS_HZ = np.log(EPS / RATE_REFERENCE_SECONDS)
 RATE_EPS_HZ = (
     EPS / RATE_REFERENCE_SECONDS
-)  # Historical safeguard at the 2 ms reference, now Hz.
+)  # The background rate beta of every active clusterless state, in Hz.
 # Default clusterless mark bandwidth, in waveform-feature units.
 DEFAULT_WAVEFORM_STD = 24.0
 
@@ -2400,7 +2400,7 @@ def log_density_intensity(mean_rate, log_density, log_occupancy):
 
     An unsupported occupancy or numerator gives zero signal, rather than NaN
     from subtracting two negative infinities. Finite tails and NaN diagnostics
-    remain visible. Callers apply their final intensity floor after this ratio.
+    remain visible. Clusterless callers combine the result with their background.
     """
     safe_occupancy = jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)
     safe_rate = jnp.where(mean_rate == 0.0, 1.0, mean_rate)

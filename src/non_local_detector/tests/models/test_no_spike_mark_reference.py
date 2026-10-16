@@ -17,14 +17,19 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
 )
+from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
 )
-from non_local_detector.likelihoods.common import RATE_EPS_HZ
+from non_local_detector.likelihoods.common import (
+    RATE_EPS_HZ,
+    interpolate_weights_at_spike_times,
+)
 from non_local_detector.likelihoods.mark_reference import (
     REFERENCE_DEGREES_OF_FREEDOM,
+    MarkReference,
     fit_mark_reference,
     fit_mark_references,
 )
@@ -107,14 +112,7 @@ def test_state_odds_do_not_depend_on_waveform_units(run_data, algorithm):
 
     original_odds = original - original[:, no_spike]
     rescaled_odds = rescaled - rescaled[:, no_spike]
-    if algorithm == "clusterless_diffusion":
-        # A spike's field is cut at 1e-6 of its peak; float32 rounding differs
-        # between unit systems, so an entry at the cut can fall on either side.
-        error = np.abs(rescaled_odds - original_odds)
-        assert np.mean(error <= 1e-3 + 1e-5 * np.abs(original_odds)) >= 0.99
-        assert np.max(error) < 0.1
-    else:
-        np.testing.assert_allclose(rescaled_odds, original_odds, atol=1e-3, rtol=1e-5)
+    np.testing.assert_allclose(rescaled_odds, original_odds, atol=1e-3, rtol=1e-5)
 
 
 @pytest.mark.integration
@@ -297,6 +295,10 @@ def test_encoding_refit_keeps_training_reference(run_data):
         run_data["train_marks"],
     )
     before = pickle.loads(pickle.dumps(detector.mark_reference_))
+    fitted_rates = [
+        np.asarray(model["mean_rates"]).copy()
+        for model in detector.encoding_model_.values()
+    ]
     detector.estimate_parameters(
         time,
         run_data["train_position"],
@@ -307,6 +309,13 @@ def test_encoding_refit_keeps_training_reference(run_data):
         max_iter=2,
     )
     after = detector.mark_reference_
+    # The posterior-weighted M-step did refit the encoding models.
+    assert any(
+        not np.allclose(np.asarray(model["mean_rates"]), rates)
+        for model, rates in zip(
+            detector.encoding_model_.values(), fitted_rates, strict=True
+        )
+    )
     assert sum(reference is not None for reference in before) >= 3
     for old, new in zip(before, after, strict=True):
         if old is None:
@@ -468,3 +477,79 @@ def test_detector_alone_holds_the_mark_reference(run_data):
             time_edges=edges,
         ),
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("location", "scale", "dof", "message"),
+    [
+        ([0.0, 1.0], [1.0], 3.0, "one scale per feature"),
+        ([0.0, np.nan], [1.0, 1.0], 3.0, "finite"),
+        ([0.0, 1.0], [1.0, 0.0], 3.0, "positive"),
+        ([0.0, 1.0], [1.0, np.inf], 3.0, "positive"),
+        ([0.0, 1.0], [1.0, 1.0], 0.0, "degrees of freedom"),
+    ],
+)
+def test_mark_reference_rejects_invalid_parameters(location, scale, dof, message):
+    with pytest.raises(ValidationError, match=message):
+        MarkReference(np.asarray(location), np.asarray(scale), dof)
+
+
+@pytest.mark.unit
+def test_mark_reference_parameters_are_read_only():
+    reference = MarkReference(np.zeros(2), np.ones(2))
+    with pytest.raises(ValueError, match="read-only"):
+        reference.location[0] = 1.0
+    with pytest.raises(ValueError, match="read-only"):
+        reference.scale[0] = 2.0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [np.nan, -1.0, np.inf])
+def test_fit_mark_reference_rejects_invalid_weights(bad):
+    marks = np.arange(6.0).reshape(3, 2)
+    with pytest.raises(ValidationError, match="weights"):
+        fit_mark_reference(marks, np.array([bad, 1.0, 1.0]), 24.0)
+
+
+@pytest.mark.integration
+def test_reference_uses_requested_environments_every_group_and_the_weights():
+    """The reference spans every encoding group of the modelled environments,
+    weighted by the fit's weights, and ignores environments no state models."""
+    sim = make_simulated_run_data(n_runs=1, seed=3)
+    time, position = sim.position_time, sim.position
+    detector = ClusterlessDecoder(
+        clusterless_algorithm_params={"disable_progress_bar": True}
+    ).fit(time, position, sim.spike_times, sim.spike_waveform_features)
+    detector.observation_models = [
+        ObservationModel(encoding_group=0),
+        ObservationModel(encoding_group=1),
+    ]
+    n = time.shape[0]
+    groups = np.where(np.arange(n) < n // 2, 0, 1)
+    environments = np.where(np.arange(n) < n // 4, "unmodelled", "")
+    weights = np.linspace(0.2, 1.0, n)
+    detector.fit_encoding_model(
+        time,
+        position,
+        sim.spike_times,
+        sim.spike_waveform_features,
+        encoding_group_labels=groups,
+        environment_labels=environments,
+        weights=weights,
+    )
+    support = EncodingSupport(time, position)
+    sample_weights = weights * (environments == "")
+    for times, marks, reference in zip(
+        sim.spike_times,
+        sim.spike_waveform_features,
+        detector.mark_reference_,
+        strict=True,
+    ):
+        spike_weights = interpolate_weights_at_spike_times(
+            times, time, sample_weights, encoding_support=support
+        )
+        expected = spike_weights @ marks / spike_weights.sum()
+        np.testing.assert_allclose(reference.location, expected, rtol=1e-10)
+        # The masked environment and the weights both move the centre.
+        assert not np.allclose(reference.location, marks.mean(axis=0), rtol=1e-3)

@@ -38,7 +38,9 @@ from non_local_detector.likelihoods.common import (
     validate_population_lengths,
 )
 
-# Degrees of freedom of each feature's Student-t: tails fall as |z|**-4.
+# Degrees of freedom of each feature's Student-t: tails fall as |z|**-4, so
+# far from the training marks they outlast any Gaussian kernel, while the
+# variance stays finite.
 REFERENCE_DEGREES_OF_FREEDOM = 3.0
 
 
@@ -49,15 +51,50 @@ class MarkReference:
     Attributes
     ----------
     location : np.ndarray, shape (n_features,)
-        Centre in waveform units.
+        Finite centre in waveform units; read-only.
     scale : np.ndarray, shape (n_features,)
-        Positive Student-t scale in waveform units.
+        Finite, positive Student-t scale in waveform units; read-only.
     degrees_of_freedom : float
+        Finite, positive Student-t degrees of freedom of each feature, by
+        default ``REFERENCE_DEGREES_OF_FREEDOM``.
+
+    Raises
+    ------
+    ValidationError
+        If the parameters break these constraints.
     """
 
     location: np.ndarray
     scale: np.ndarray
     degrees_of_freedom: float = REFERENCE_DEGREES_OF_FREEDOM
+
+    def __post_init__(self) -> None:
+        location = np.array(self.location, dtype=np.float64)
+        scale = np.array(self.scale, dtype=np.float64)
+        if location.ndim != 1 or scale.shape != location.shape:
+            raise ValidationError(
+                "A mark reference needs one scale per feature",
+                got=f"location shape {location.shape}, scale shape {scale.shape}",
+            )
+        if not np.all(np.isfinite(location)):
+            raise ValidationError("Mark reference locations must be finite")
+        if not np.all(np.isfinite(scale) & (scale > 0)):
+            raise ValidationError(
+                "Mark reference scales must be finite and positive",
+                hint="The scale adds the mark bandwidth to the training spread; "
+                "check waveform_std or gmm_reg_covar.",
+            )
+        dof = float(self.degrees_of_freedom)
+        if not (np.isfinite(dof) and dof > 0):
+            raise ValidationError(
+                "Mark reference degrees of freedom must be finite and positive",
+                got=repr(self.degrees_of_freedom),
+            )
+        location.setflags(write=False)
+        scale.setflags(write=False)
+        object.__setattr__(self, "location", location)
+        object.__setattr__(self, "scale", scale)
+        object.__setattr__(self, "degrees_of_freedom", dof)
 
     def log_density(self, marks: np.ndarray) -> np.ndarray:
         """Log reference density at each mark.
@@ -103,8 +140,8 @@ def fit_mark_reference(
     marks : np.ndarray, shape (n_spikes, n_features)
         Training waveform features.
     weights : np.ndarray, shape (n_spikes,)
-        Non-negative training weight of each spike. Spikes with zero weight
-        (held out, masked or outside encoding support) are ignored.
+        Finite, non-negative training weight of each spike. Spikes with zero
+        weight (held out, masked or outside encoding support) are ignored.
     kernel_scale : float or np.ndarray, shape (n_features,)
         Width of the model's mark kernel in waveform units (its bandwidth),
         added in quadrature to the training spread. It also sets the scale of
@@ -120,6 +157,10 @@ def fit_mark_reference(
     """
     marks = np.asarray(marks, dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)
+    if not np.all(np.isfinite(weights) & (weights >= 0)):
+        raise ValidationError(
+            f"Training weights of electrode {electrode} must be finite and non-negative"
+        )
     keep = weights > 0
     if not np.any(keep):
         return None
@@ -130,13 +171,7 @@ def fit_mark_reference(
     variance = weights @ (marks - location) ** 2
     kernel = np.broadcast_to(np.asarray(kernel_scale, dtype=np.float64), location.shape)
     # The marks' spread after the model's mark kernel.
-    scale = np.sqrt(variance + kernel**2)
-    if not np.all(np.isfinite(scale) & (scale > 0)):
-        raise ValidationError(
-            "Mark reference scales must be finite and positive",
-            hint="The scale adds the mark bandwidth to the training spread; check waveform_std or gmm_reg_covar.",
-        )
-    return MarkReference(location, scale)
+    return MarkReference(location, np.sqrt(variance + kernel**2))
 
 
 def fit_mark_references(
@@ -148,15 +183,19 @@ def fit_mark_references(
 
     Pass the result as ``mark_reference`` to a clusterless predict function.
     Every state decoded together must use the same references; a detector fits
-    them once, as ``mark_reference_``.
+    them once, as ``mark_reference_``, from the training spikes of every
+    encoding group in the modelled environments. Direct callers should likewise
+    pass training spikes only.
 
     Parameters
     ----------
     spike_waveform_features : list of np.ndarray, each shape (n_spikes, n_features)
         Training waveform features of each electrode.
     kernel_scale : float or np.ndarray, shape (n_features,)
-        The fit's ``mark_reference_scale``: its mark-kernel width, added in
-        quadrature to each feature's training spread.
+        The mark-kernel width, added in quadrature to each feature's training
+        spread: ``<backend>.mark_reference_scale(**fit_params)``, which is
+        ``waveform_std`` for KDE and diffusion and ``sqrt(gmm_reg_covar)`` for
+        GMM.
     spike_weights : list of np.ndarray, each shape (n_spikes,), optional
         Training weight of each spike; spikes with zero weight are ignored.
         Uniform by default.
