@@ -82,6 +82,7 @@ def test_direct_non_local_predict_without_position(fitted_decoder, clusterless_s
                 sim.spike_waveform_features,
                 time_edges=time_edges,
                 **encoding_model,
+                mark_reference=fitted_decoder.mark_reference_,
                 is_local=False,
             )
         )

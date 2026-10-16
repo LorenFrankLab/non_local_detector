@@ -18,8 +18,10 @@ from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.clusterless_diffusion import (
     _effective_block,
     fit_clusterless_diffusion_encoding_model,
+    mark_reference_scale,
     predict_clusterless_diffusion_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.models.decoder import ClusterlessDecoder
 from non_local_detector.models.non_local_model import NonLocalClusterlessDetector
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
@@ -202,6 +204,9 @@ def test_refit_requires_encoding_refit() -> None:
         spike_times,
         spike_waveform_features,
         time_edges=decode_time,
+        mark_reference=fit_mark_references(
+            spike_waveform_features, mark_reference_scale()
+        ),
         **encoding_model,
     )
     assert np.all(np.isfinite(np.asarray(log_likelihood)))
@@ -240,6 +245,9 @@ def test_refit_requires_encoding_refit() -> None:
             new_spike_times,
             new_spike_waveform_features,
             time_edges=time_edges_from_centers(new_decode_time),
+            mark_reference=fit_mark_references(
+                new_spike_waveform_features, mark_reference_scale()
+            ),
             **new_encoding_model,
         )
     )
@@ -304,6 +312,9 @@ def test_stale_encoding_model_after_refit_raises() -> None:
             [np.array([0.4, 0.7])],
             [np.array([[0.1, 0.0], [0.2, -0.5]], dtype=np.float32)],
             time_edges=decode_time,
+            mark_reference=fit_mark_references(
+                spike_waveform_features, mark_reference_scale()
+            ),
             **encoding_model,
         )
 

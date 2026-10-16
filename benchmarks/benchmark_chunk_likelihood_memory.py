@@ -105,11 +105,15 @@ import psutil  # noqa: E402
 from non_local_detector.environment import Environment  # noqa: E402
 from non_local_detector.likelihoods import (  # noqa: E402
     _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.likelihoods.common import (  # noqa: E402
     resolve_row_slice,
     select_spikes_in_rows,
+)
+from non_local_detector.likelihoods.mark_reference import (  # noqa: E402
+    fit_mark_references,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -493,17 +497,21 @@ class FittedBackend:
     environment: Environment
     encoding_bytes: int = 0
     n_position_bins: int = 0
+    mark_reference: list | None = None  # clusterless only
 
     def call(
         self, recording: Recording, row_slice: slice | None, is_local: bool = False
     ):
         args = [recording.position_time, recording.position, recording.spike_times]
+        clusterless_kwargs = {}
         if self.is_clusterless:
             args.append(recording.spike_waveform_features)
+            clusterless_kwargs["mark_reference"] = self.mark_reference
         return self.predict_func(
             recording.time,
             *args,
             **self.encoding_model,
+            **clusterless_kwargs,
             is_local=is_local,
             row_slice=row_slice,
         )
@@ -532,15 +540,20 @@ def fit_backend(name: str, encoding) -> FittedBackend:
             **BACKEND_FIT_PARAMS.get(name, {}),
         )
         is_clusterless = False
+        mark_reference = None
     elif name in _CLUSTERLESS_ALGORITHMS:
         fit_func, predict_func = _CLUSTERLESS_ALGORITHMS[name]
+        fit_params = BACKEND_FIT_PARAMS.get(name, {})
         encoding_model = fit_func(
             position_time=position_time,
             position=position,
             spike_times=spike_times,
             spike_waveform_features=features,
             environment=environment,
-            **BACKEND_FIT_PARAMS.get(name, {}),
+            **fit_params,
+        )
+        mark_reference = fit_mark_references(
+            features, _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_params)
         )
         is_clusterless = True
     else:
@@ -554,6 +567,7 @@ def fit_backend(name: str, encoding) -> FittedBackend:
         environment=environment,
         encoding_bytes=array_bytes(encoding_model),
         n_position_bins=int(environment.is_track_interior_.sum()),
+        mark_reference=mark_reference,
     )
 
 

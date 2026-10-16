@@ -34,7 +34,12 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS, common
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
+    common,
+    fit_mark_references,
+)
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     get_spikecount_per_time_bin,
@@ -510,6 +515,14 @@ def fitted_backends(edge_case_data):
     }
 
 
+def fit_backend_mark_reference(name, encoding_features):
+    """Fit a clusterless backend's mark reference on its training features."""
+    return fit_mark_references(
+        encoding_features,
+        _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**BACKEND_FIT_PARAMS.get(name, {})),
+    )
+
+
 def call_backend(fitted_backends, edge_case_data, algorithm, case, time=None, **kwargs):
     """Evaluate one backend on one decoding-spike case.
 
@@ -958,14 +971,19 @@ def allocation_backends(allocation_data):
         fit_func, predict_func = _CLUSTERLESS_ALGORITHMS[name]
         fitted[name] = (
             predict_func,
-            fit_func(
-                position_time=allocation_data["position_time"],
-                position=allocation_data["position"],
-                spike_times=allocation_data["encoding_spike_times"],
-                spike_waveform_features=allocation_data["encoding_features"],
-                environment=allocation_data["environment"],
-                **BACKEND_FIT_PARAMS.get(name, {}),
-            ),
+            {
+                **fit_func(
+                    position_time=allocation_data["position_time"],
+                    position=allocation_data["position"],
+                    spike_times=allocation_data["encoding_spike_times"],
+                    spike_waveform_features=allocation_data["encoding_features"],
+                    environment=allocation_data["environment"],
+                    **BACKEND_FIT_PARAMS.get(name, {}),
+                ),
+                "mark_reference": fit_backend_mark_reference(
+                    name, allocation_data["encoding_features"]
+                ),
+            },
         )
     return fitted
 

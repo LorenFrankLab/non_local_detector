@@ -20,6 +20,7 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
+    DEFAULT_WAVEFORM_STD,
     EPS,
     LOG_EPS,
     RATE_EPS_HZ,
@@ -60,7 +61,6 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
-    fit_mark_reference,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -1518,6 +1518,21 @@ def block_estimate_log_joint_mark_intensity(
     return jnp.concatenate(block_results, axis=0)
 
 
+def mark_reference_scale(waveform_std=DEFAULT_WAVEFORM_STD, **_fit_params):
+    """Mark-reference scale of a feature without training variance.
+
+    Parameters
+    ----------
+    waveform_std : float or array_like, shape (n_features,), optional
+        The fit's mark bandwidth; other fit parameters are ignored.
+
+    Returns
+    -------
+    scale : float or array_like
+    """
+    return waveform_std
+
+
 def fit_clusterless_kde_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
@@ -1526,7 +1541,7 @@ def fit_clusterless_kde_encoding_model(
     environment: Environment,
     weights: jnp.ndarray | None = None,
     position_std: float = np.sqrt(12.5),
-    waveform_std: float = 24.0,
+    waveform_std: float = DEFAULT_WAVEFORM_STD,
     block_size: int = 100,
     enc_tile_size: int | None = None,
     pos_tile_size: int | None = None,
@@ -1644,22 +1659,16 @@ def fit_clusterless_kde_encoding_model(
     gpi_models = []
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
     bounded_spike_waveform_features = []
-    mark_reference: list[MarkReference | None] = []
 
-    for electrode, (
-        electrode_spike_waveform_features,
-        electrode_spike_times,
-    ) in enumerate(
-        zip(
-            tqdm(
-                spike_waveform_features,
-                desc="Encoding models",
-                unit="electrode",
-                disable=disable_progress_bar,
-            ),
-            spike_times,
-            strict=True,
-        )
+    for electrode_spike_waveform_features, electrode_spike_times in zip(
+        tqdm(
+            spike_waveform_features,
+            desc="Encoding models",
+            unit="electrode",
+            disable=disable_progress_bar,
+        ),
+        spike_times,
+        strict=True,
     ):
         is_in_bounds = support.contains(electrode_spike_times)
         electrode_spike_times = electrode_spike_times[is_in_bounds]
@@ -1681,14 +1690,6 @@ def fit_clusterless_kde_encoding_model(
         # Weighted mean rate: weighted spike count / weighted occupancy time. Sum on the
         # host array (as the GMM fit does) to avoid a device->host sync per electrode.
         mean_rates.append(weighted_mean_rate(electrode_weights_host, weight_sum))
-        mark_reference.append(
-            fit_mark_reference(
-                np.asarray(bounded_features),
-                electrode_weights_host,
-                waveform_std,
-                electrode,
-            )
-        )
         encoding_positions.append(
             get_position_at_time(
                 position_time,
@@ -1738,7 +1739,6 @@ def fit_clusterless_kde_encoding_model(
         "enc_tile_size": enc_tile_size,
         "pos_tile_size": pos_tile_size,
         "use_streaming": use_streaming,
-        "mark_reference": mark_reference,
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
@@ -1773,7 +1773,7 @@ def predict_clusterless_kde_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     log_occupancy: jnp.ndarray | None = None,
-    mark_reference: list[MarkReference | None] | None = None,
+    mark_reference: list[MarkReference | None],
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -1847,8 +1847,9 @@ def predict_clusterless_kde_log_likelihood(
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
     mark_reference : list of MarkReference or None, keyword-only
-        Normalized reference mark density per electrode, taken from the encoding
-        model. Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
+        Normalized reference mark density per electrode, from
+        ``fit_mark_references`` (a detector passes its ``mark_reference_``).
+        Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
@@ -1864,11 +1865,6 @@ def predict_clusterless_kde_log_likelihood(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
         )
     _validate_tile_sizes(enc_tile_size, pos_tile_size)
-    if mark_reference is None:
-        raise ValidationError(
-            "Encoding model has no mark reference; refit before decoding.",
-            hint="Refit with fit_clusterless_kde_encoding_model.",
-        )
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:

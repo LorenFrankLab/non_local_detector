@@ -36,6 +36,8 @@ LOG_RATE_EPS_HZ = np.log(EPS / RATE_REFERENCE_SECONDS)
 RATE_EPS_HZ = (
     EPS / RATE_REFERENCE_SECONDS
 )  # Historical safeguard at the 2 ms reference, now Hz.
+# Default clusterless mark bandwidth, in waveform-feature units.
+DEFAULT_WAVEFORM_STD = 24.0
 
 
 def log_bin_duration_evidence(

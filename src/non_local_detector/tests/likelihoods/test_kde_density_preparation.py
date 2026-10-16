@@ -12,6 +12,7 @@ from non_local_detector.likelihoods import (
     predict_clusterless_kde_log_likelihood,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.time_edges import _DecodeTimeGrid
 
 pytestmark = pytest.mark.unit
@@ -136,6 +137,8 @@ def test_public_local_kde_paths_share_prediction_geometry(
         args.insert(3, [np.zeros((5, 1))])
         options["waveform_std"] = 1.0
     model = fit(*args, **options)
+    if clusterless:
+        model["mark_reference"] = fit_mark_references(args[3], fallback_scale=1.0)
     grid = _DecodeTimeGrid(np.arange(5.0))
     order = common._SpikeTimeOrder()
     interpolations = []

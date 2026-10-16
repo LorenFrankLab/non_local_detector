@@ -54,7 +54,11 @@ from jax.sharding import PartitionSpec as P  # noqa: E402
 warnings.simplefilter("ignore")
 
 from non_local_detector.environment import Environment  # noqa: E402
-from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS  # noqa: E402
+from non_local_detector.likelihoods import (  # noqa: E402
+    _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
+    fit_mark_references,
+)
 
 N_TIME = 200
 ROWS = slice(0, 5)
@@ -158,6 +162,10 @@ def run(mesh) -> int:
             spike_waveform_features=encoding_features,
             environment=environment,
             **FIT_PARAMS.get(name, {}),
+        )
+        encoding_model["mark_reference"] = fit_mark_references(
+            encoding_features,
+            _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**FIT_PARAMS.get(name, {})),
         )
         for is_local in (False, True):
             peaks = []

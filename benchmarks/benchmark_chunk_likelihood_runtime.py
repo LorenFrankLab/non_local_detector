@@ -33,9 +33,11 @@ import numpy as np
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
     common,
 )
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -167,6 +169,11 @@ def main():
                     gmm_reg_covar=1e-3,
                 )
             encoding = fit(**fit_kwargs)
+            if clusterless:
+                mark_reference = fit_mark_references(
+                    encoding_features,
+                    _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_kwargs),
+                )
         parameters = inspect.signature(predict).parameters
         for duration, (timeline, spikes, features, pt, pos) in recordings.items():
             extra = {"row_slice": slice(0, 500), "time_edges": timeline}
@@ -189,10 +196,17 @@ def main():
                     callback = partial(predict, spikes, **extra)
                 else:
                     args = (pt, pos, spikes)
+                    clusterless_kwargs = {}
                     if clusterless:
                         args = (*args, features)
+                        clusterless_kwargs["mark_reference"] = mark_reference
                     callback = partial(
-                        predict, *args, **encoding, is_local=local, **extra
+                        predict,
+                        *args,
+                        **encoding,
+                        **clusterless_kwargs,
+                        is_local=local,
+                        **extra,
                     )
                 if options.compare_ordering and "_spike_time_order" in extra:
                     result, timing = measure_ordering_pair(callback)

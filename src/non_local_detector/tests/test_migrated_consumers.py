@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 from non_local_detector import Environment, time_edges_from_centers
 from non_local_detector.analysis import distance1D
 from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
+from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
@@ -286,9 +287,13 @@ def test_profiler_fit_and_prediction_calls_execute(filename, fit_name, predict_n
         "time_edges_from_centers": time_edges_from_centers,
         fit_name: clusterless_kde.fit_clusterless_kde_encoding_model,
         predict_name: clusterless_kde.predict_clusterless_kde_log_likelihood,
+        "fit_mark_references": fit_mark_references,
+        "mark_reference_scale": clusterless_kde.mark_reference_scale,
     }
     fit_call = next(_calls(ROOT / "scripts" / filename, {fit_name}))
     namespace["encoding"] = _evaluate_call(fit_call, namespace)
+    reference_call = next(_calls(ROOT / "scripts" / filename, {"fit_mark_references"}))
+    namespace["mark_reference"] = _evaluate_call(reference_call, namespace)
     predict_call = next(_calls(ROOT / "scripts" / filename, {predict_name}))
     output = _evaluate_call(predict_call, namespace)
     assert output.shape == (len(time), 5)
