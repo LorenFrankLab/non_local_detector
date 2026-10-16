@@ -33,9 +33,9 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.mark_reference import (
     background_log_intensity,
-    fit_mark_references,
 )
 from non_local_detector.tests.conftest import precision_mode
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
 pytestmark = pytest.mark.unit
 
@@ -48,12 +48,13 @@ def fit_encoding(position_time, spike_times, spike_waveform_features, **params):
         spike_waveform_features=spike_waveform_features,
         **params,
     )
-    in_range = [
-        ((t >= position_time[0]) & (t <= position_time[-1])).astype(float)
-        for t in spike_times
-    ]
-    reference = fit_mark_references(
-        spike_waveform_features, mark_reference_scale(**params), in_range
+    reference = training_mark_references(
+        position_time,
+        spike_times,
+        spike_waveform_features,
+        mark_reference_scale(**params),
+        params.get("weights"),
+        params.get("position"),
     )
     return {**encoding, "mark_reference": reference}
 

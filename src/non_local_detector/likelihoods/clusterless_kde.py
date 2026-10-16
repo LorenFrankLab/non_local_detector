@@ -1518,7 +1518,9 @@ def block_estimate_log_joint_mark_intensity(
     return jnp.concatenate(block_results, axis=0)
 
 
-def mark_reference_scale(waveform_std=DEFAULT_WAVEFORM_STD, **_fit_params):
+def mark_reference_scale(
+    waveform_std: float | np.ndarray = DEFAULT_WAVEFORM_STD, **_fit_params: object
+) -> float | np.ndarray:
     """Mark-reference scale of a feature without training variance.
 
     Parameters
@@ -1529,6 +1531,7 @@ def mark_reference_scale(waveform_std=DEFAULT_WAVEFORM_STD, **_fit_params):
     Returns
     -------
     scale : float or array_like
+        ``waveform_std``.
     """
     return waveform_std
 

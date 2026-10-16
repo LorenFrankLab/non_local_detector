@@ -153,6 +153,7 @@ def fit_mark_references(
     Returns
     -------
     mark_reference : list of MarkReference or None, length n_electrodes
+        None for an electrode without a positively weighted training spike.
     """
     if spike_weights is None:
         spike_weights = [

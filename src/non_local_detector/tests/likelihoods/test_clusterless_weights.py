@@ -21,21 +21,17 @@ from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
 
 def _mark_reference(encoding, t_pos, spike_times, feats, weights=None):
     """Mark references from the training spikes, as a detector fits them."""
-    t_pos = np.asarray(t_pos)
-    if weights is None:
-        weights = np.ones(t_pos.shape[0])
-    return fit_mark_references(
-        [np.asarray(f) for f in feats],
+    return training_mark_references(
+        t_pos,
+        spike_times,
+        feats,
         mark_reference_scale(waveform_std=encoding["waveform_std"]),
-        [
-            np.interp(np.asarray(t), t_pos, weights, left=0.0, right=0.0)
-            for t in spike_times
-        ],
+        weights,
     )
 
 

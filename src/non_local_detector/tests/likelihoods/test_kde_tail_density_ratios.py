@@ -26,13 +26,14 @@ from non_local_detector.likelihoods.common import (
     _kde_log_densities,
     _log_space_kde_log_density,
     _sorted_sample_keys,
-    interpolate_weights_at_spike_times,
     kde_log_density,
     log_density_intensity,
     traced_kde_log_density,
 )
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
-from non_local_detector.tests.likelihoods.conftest import realistic_log_background
+from non_local_detector.tests.likelihoods.conftest import (
+    realistic_log_background,
+    training_mark_references,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -44,17 +45,13 @@ def fit_clusterless_kde(
     model = fit_clusterless_kde_encoding_model(
         position_time, position, spike_times, spike_waveform_features, env, **params
     )
-    weights = params.get("weights")
-    spike_weights = (
-        None
-        if weights is None
-        else [
-            interpolate_weights_at_spike_times(t, position_time, weights)
-            for t in spike_times
-        ]
-    )
-    reference = fit_mark_references(
-        spike_waveform_features, mark_reference_scale(**params), spike_weights
+    reference = training_mark_references(
+        position_time,
+        spike_times,
+        spike_waveform_features,
+        mark_reference_scale(**params),
+        params.get("weights"),
+        position,
     )
     return {**model, "mark_reference": reference}
 
