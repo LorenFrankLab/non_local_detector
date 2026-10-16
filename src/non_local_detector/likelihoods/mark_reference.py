@@ -5,9 +5,9 @@ Active clusterless states score each spike with a marked intensity
 the inverse volume of the waveform units. The No-Spike state models a
 population firing at ``no_spike_rate`` with marks distributed as a
 normalized reference density ``q(m)``, so each of its spikes scores
-``log(no_spike_rate * dt) + log q(m)``. Under an affine change of waveform
-units, with mark bandwidths transformed alike, every state then gains the same
-log Jacobian per spike and their odds are unchanged.
+``log(no_spike_rate * dt) + log q(m)``. Under a per-feature affine change of
+waveform units, with mark bandwidths transformed alike, every state then gains
+the same log Jacobian per spike and their odds are unchanged.
 
 ``q`` is a diagonal Gaussian whose location and scale are the weighted moments
 of the electrode's permitted training marks. It is a fixed reference measure,
