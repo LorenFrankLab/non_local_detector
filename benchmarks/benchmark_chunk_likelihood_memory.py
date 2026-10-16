@@ -119,7 +119,6 @@ DEFAULT_BACKENDS = [
     "sorted_spikes_kde",
     "sorted_spikes_glm",
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 ]
@@ -695,9 +694,10 @@ def xla_memory_analysis(n_decoding_spikes_list, n_encoding_spikes, n_position_bi
     the number of decoding spikes the row request SELECTED, so its temp/argument
     sizes are the device-side statement of the same scaling claim.
     """
-    from non_local_detector.likelihoods.clusterless_kde_log import (
+    from non_local_detector.likelihoods.clusterless_kde import (
         estimate_log_joint_mark_intensity,
     )
+    from non_local_detector.likelihoods.common import LOG_EPS
 
     rng = np.random.default_rng(5)
     encoding_features = jnp.asarray(
@@ -721,6 +721,7 @@ def xla_memory_analysis(n_decoding_spikes_list, n_encoding_spikes, n_position_bi
             occupancy,
             1.0,
             log_position_distance,
+            log_background=jnp.full((n_decoding_spikes,), LOG_EPS, jnp.float32),
         ).compile()
         analysis = compiled.memory_analysis()
         rows.append(

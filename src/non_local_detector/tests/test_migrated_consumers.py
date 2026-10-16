@@ -241,13 +241,16 @@ def test_shipped_notebook_likelihood_calls_execute(name):
 
 
 @pytest.mark.parametrize(
-    "filename", ["profile_memory.py", "profile_clusterless_kde.py"]
+    "filename, fit_name, predict_name",
+    [
+        ("profile_memory.py", "fit_reference", "predict_reference"),
+        ("profile_memory.py", "fit_log", "predict_log"),
+        ("profile_clusterless_kde.py", "fit_func", "predict_func"),
+    ],
 )
-@pytest.mark.parametrize("implementation", ["reference", "log"])
-def test_profiler_fit_and_prediction_calls_execute(filename, implementation):
-    from non_local_detector.likelihoods import clusterless_kde, clusterless_kde_log
+def test_profiler_fit_and_prediction_calls_execute(filename, fit_name, predict_name):
+    from non_local_detector.likelihoods import clusterless_kde
 
-    backend = clusterless_kde if implementation == "reference" else clusterless_kde_log
     time = np.arange(100) * 0.002
     position = (5 + np.sin(np.arange(100) * 0.1))[:, None]
     spikes = [np.array([0.019, 0.057, 0.111, 0.153])]
@@ -276,23 +279,13 @@ def test_profiler_fit_and_prediction_calls_execute(filename, implementation):
             "block_size": 100,
         },
     }
-    fit_name = (
-        "fit_func"
-        if filename == "profile_clusterless_kde.py"
-        else f"fit_{implementation}"
-    )
-    predict_name = (
-        "predict_func"
-        if filename == "profile_clusterless_kde.py"
-        else f"predict_{implementation}"
-    )
     namespace = {
         "data": data,
         "np": np,
         "jnp": jnp,
         "time_edges_from_centers": time_edges_from_centers,
-        fit_name: backend.fit_clusterless_kde_encoding_model,
-        predict_name: backend.predict_clusterless_kde_log_likelihood,
+        fit_name: clusterless_kde.fit_clusterless_kde_encoding_model,
+        predict_name: clusterless_kde.predict_clusterless_kde_log_likelihood,
     }
     fit_call = next(_calls(ROOT / "scripts" / filename, {fit_name}))
     namespace["encoding"] = _evaluate_call(fit_call, namespace)

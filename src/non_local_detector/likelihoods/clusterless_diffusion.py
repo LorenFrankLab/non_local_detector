@@ -45,8 +45,10 @@ The likelihood follows the shared marked-point-process contract::
 
 Occupancy and the mark-marginalized ground-process field are diffused once at fit;
 the only per-decode-spike work is building ``D_e`` (weighted mark kernel + scatter)
-and one low-rank diffusion. Prob-space throughout, with ``safe_log`` flooring to
-``LOG_EPS``.
+and one low-rank diffusion. Prob-space throughout. Each spike's intensity gains
+the background ``RATE_EPS_HZ * q(mark)`` of the electrode's mark reference, and
+field values below ``_FIELD_RESOLUTION`` of a spike's peak, which the heat kernel
+does not resolve, are held at that level.
 """
 
 import logging
@@ -76,8 +78,8 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
+    log_nonnegative,
     resolve_row_slice,
-    safe_log,
     select_spike_rows,
     select_spikes_in_rows,
     spike_row_ids,
@@ -88,12 +90,18 @@ from non_local_detector.likelihoods.common import (
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
+    _HEAT_KERNEL_RANK_TOL,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
     environment_graph,
     get_device_basis,
     heat_kernel_apply,
+)
+from non_local_detector.likelihoods.mark_reference import (
+    MarkReference,
+    background_log_intensity,
+    fit_mark_reference,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
@@ -412,6 +420,7 @@ def fit_clusterless_diffusion_encoding_model(
     encoding_weights: list[jnp.ndarray] = []
     weight_total: list[float] = []
     mean_rates: list[float] = []
+    mark_reference: list[MarkReference | None] = []
     summed_ground_process_intensity = np.zeros((n_interior,))
 
     for electrode, (electrode_spike_times, electrode_features) in enumerate(
@@ -458,13 +467,16 @@ def fit_clusterless_diffusion_encoding_model(
         encoding_weights.append(jnp.asarray(np.asarray(spike_weights)[order]))
         weight_total.append(w_total)
 
+        mark_reference.append(
+            fit_mark_reference(bounded_features, spike_weights, waveform_std, electrode)
+        )
         if w_total == 0:
             # Zero-rate electrode: no fitted density, no ground-process contribution.
             mean_rates.append(0.0)
             warnings.warn(
                 f"electrode {electrode} has zero total encoding weight (zero-rate): "
                 "no effective encoding spikes. It contributes no ground-process "
-                "intensity and its decode spikes use the rate floor in Hz.",
+                "intensity and its decode spikes are explained by the background rate.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -477,10 +489,13 @@ def fit_clusterless_diffusion_encoding_model(
             spike_field, Lam, Q, position_std, labels, n_components
         )
         p_gpi = spike_field_hat / (w_total * bin_sizes)
-        summed_ground_process_intensity += mean_rate * p_gpi / occupancy
+        summed_ground_process_intensity += np.where(
+            _resolved_occupancy(occupancy), mean_rate * p_gpi / occupancy, 0.0
+        )
 
-    summed_ground_process_intensity = np.clip(
-        summed_ground_process_intensity, RATE_EPS_HZ, None
+    # Every electrode, including zero-rate ones, adds its background rate.
+    summed_ground_process_intensity = (
+        summed_ground_process_intensity + len(spike_times) * RATE_EPS_HZ
     )
 
     return {
@@ -500,6 +515,7 @@ def fit_clusterless_diffusion_encoding_model(
         "block_size": block_size,
         "memory_budget": memory_budget,
         "disable_progress_bar": disable_progress_bar,
+        "mark_reference": mark_reference,
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
@@ -532,6 +548,42 @@ def _padded_encoding(bins, marks, weights, n_bins: int):
         jnp.asarray(_pad_rows(marks, n_padded)),
         jnp.asarray(_pad_rows(weights, n_padded)),
     )
+
+
+# Diffused-field values below this fraction of their column's maximum are not
+# resolved: the float32 spectral product and the heat-kernel rank truncation
+# (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
+_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
+
+
+def _resolved_field(P):
+    """Raise each column's unresolved values to its resolution floor.
+
+    Values below ``_FIELD_RESOLUTION * max(column)`` are numerical noise of the
+    heat kernel; holding them at that level keeps each spike's evidence
+    relative to its own peak, independent of the mark units.
+    """
+    return jnp.maximum(P, _FIELD_RESOLUTION * jnp.max(P, axis=0, keepdims=True))
+
+
+def _resolved_occupancy(occupancy):
+    """Bins whose diffused occupancy the heat kernel resolves.
+
+    Occupancy is itself a diffused field, so in unvisited bins it is numerical
+    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
+    encoding information: their marked and ground intensities are zero, and
+    spikes there are explained by the background alone, as for the KDE's
+    zero-occupancy bins.
+
+    Parameters
+    ----------
+    occupancy : array, shape (n_bins,)
+
+    Returns
+    -------
+    resolved : array of bool, shape (n_bins,)
+    """
+    return occupancy >= _FIELD_RESOLUTION * occupancy.max()
 
 
 def _diffused_mark_field(
@@ -588,6 +640,7 @@ def _add_electrode_diffusion_intensities(
     bin_sizes,
     mean_rate,
     weight_total,
+    log_background,
     *,
     position_std,
     n_components,
@@ -611,6 +664,8 @@ def _add_electrode_diffusion_intensities(
         Device heat-kernel basis and component labels.
     occupancy, bin_sizes : jnp.ndarray, shape (n_bins,)
     mean_rate, weight_total : float
+    log_background : jnp.ndarray, shape (n_padded_spikes,)
+        Log background intensity of each spike, in Hz.
     position_std : float
     n_components : int
     block_size : int
@@ -639,11 +694,16 @@ def _add_electrode_diffusion_intensities(
         # bin_sizes (dV) makes p_e a proper joint density (recovers the mark
         # marginal, guarded by test_mark_marginal_recovery). It cancels in the
         # p_e / occupancy ratio below wherever occupancy carries the same dV
-        # factor -- i.e. every bin except those where occupancy hit its EPS floor,
-        # which carry unreliable near-zero evidence anyway.
-        p_e = P / (weight_total * bin_sizes[:, None])
-        log_intensity = safe_log(
-            mean_rate * p_e / occupancy[:, None], eps=RATE_EPS_HZ
+        # factor; bins with unresolved occupancy have zero intensity.
+        p_e = _resolved_field(P) / (weight_total * bin_sizes[:, None])
+        background = jax.lax.dynamic_slice_in_dim(log_background, start, block_size)
+        log_intensity = jnp.logaddexp(
+            jnp.where(
+                _resolved_occupancy(occupancy)[:, None],
+                log_nonnegative(mean_rate * p_e / occupancy[:, None]),
+                -jnp.inf,
+            ),
+            background[None, :],
         )  # (n_bins, n_block)
         return total + deterministic_row_sum(
             log_intensity.T,
@@ -682,6 +742,7 @@ def _add_electrode_local_diffusion_terms(
     bin_sizes,
     mean_rate,
     weight_total,
+    log_background,
     *,
     position_std,
     n_components,
@@ -706,7 +767,7 @@ def _add_electrode_local_diffusion_terms(
         Animal's interior bin at each decoding spike; padding rows are zero.
     encoding_bins, encoding_marks, encoding_weights, waveform_std, eigvals,
     eigvecs, labels, occupancy, bin_sizes, mean_rate, weight_total,
-    position_std, n_components, block_size, indices_are_sorted
+    log_background, position_std, n_components, block_size, indices_are_sorted
         As in :func:`_add_electrode_diffusion_intensities`.
 
     Returns
@@ -729,11 +790,17 @@ def _add_electrode_local_diffusion_terms(
             position_std,
             n_components,
         )
-        p_e_at_animal = P[bins, jnp.arange(block_size)] / (
+        p_e_at_animal = _resolved_field(P)[bins, jnp.arange(block_size)] / (
             weight_total * bin_sizes[bins]
         )
-        log_intensity = safe_log(
-            mean_rate * p_e_at_animal / occupancy[bins], eps=RATE_EPS_HZ
+        background = jax.lax.dynamic_slice_in_dim(log_background, start, block_size)
+        log_intensity = jnp.logaddexp(
+            jnp.where(
+                _resolved_occupancy(occupancy)[bins],
+                log_nonnegative(mean_rate * p_e_at_animal / occupancy[bins]),
+                -jnp.inf,
+            ),
+            background,
         )  # (n_block,)
         return total + deterministic_row_sum(
             log_intensity,
@@ -823,6 +890,12 @@ def predict_clusterless_diffusion_log_likelihood(
     block_size = int(encoding_model["block_size"])  # type: ignore[call-overload]
     memory_budget = int(encoding_model["memory_budget"])  # type: ignore[call-overload]
     disable_progress_bar = bool(encoding_model.get("disable_progress_bar", False))
+    mark_reference = encoding_model.get("mark_reference")
+    if mark_reference is None:
+        raise ValidationError(
+            "Encoding model has no mark reference; refit before decoding.",
+            hint="Refit with fit_clusterless_diffusion_encoding_model.",
+        )
 
     validate_population_lengths(
         "electrode",
@@ -833,6 +906,7 @@ def predict_clusterless_diffusion_log_likelihood(
         encoding_weights=encoding_weights,  # type: ignore[arg-type]
         weight_total=weight_total,  # type: ignore[arg-type]
         mean_rates=mean_rates,  # type: ignore[arg-type]
+        mark_reference=mark_reference,  # type: ignore[arg-type]
     )
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
@@ -906,6 +980,7 @@ def predict_clusterless_diffusion_log_likelihood(
             electrode_mean_rate,
             electrode_decode_features,
             electrode_spike_times,
+            electrode_mark_reference,
         ) in zip(
             tqdm(
                 encoding_bin_indices,
@@ -919,6 +994,7 @@ def predict_clusterless_diffusion_log_likelihood(
             mean_rates,
             spike_waveform_features,
             spike_times,
+            mark_reference,
             strict=True,
         ):
             selection = select_spikes_in_rows(
@@ -942,12 +1018,15 @@ def predict_clusterless_diffusion_log_likelihood(
             n_decode = electrode_spike_times.shape[0]
             if n_decode == 0:
                 continue
+            log_background = background_log_intensity(
+                electrode_mark_reference, np.asarray(decode_features), LOG_RATE_EPS_HZ
+            )
 
-            # Zero-rate electrode: floor every observed decode spike to LOG_RATE_EPS_HZ,
+            # Zero-rate electrode: the background explains every observed spike,
             # identical contract to the non-local zero-rate guard.
             if electrode_weight_total == 0:
                 log_likelihood += sum_spikes_into_rows(
-                    jnp.full((n_decode,), LOG_RATE_EPS_HZ), selection
+                    jnp.asarray(log_background), selection
                 )
                 continue
 
@@ -997,6 +1076,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 bin_sizes,
                 electrode_mean_rate,
                 safe_weight_total,
+                jnp.asarray(_pad_rows(log_background, n_padded)),
                 position_std=position_std,
                 n_components=n_components,
                 block_size=min(effective_block, n_padded),
@@ -1029,6 +1109,7 @@ def predict_clusterless_diffusion_log_likelihood(
         electrode_mean_rate,
         electrode_decode_features,
         electrode_spike_times,
+        electrode_mark_reference,
     ) in zip(
         tqdm(
             encoding_bin_indices,
@@ -1042,6 +1123,7 @@ def predict_clusterless_diffusion_log_likelihood(
         mean_rates,
         spike_waveform_features,
         spike_times,
+        mark_reference,
         strict=True,
     ):
         selection = select_spikes_in_rows(
@@ -1062,17 +1144,19 @@ def predict_clusterless_diffusion_log_likelihood(
         n_decode = decode_features.shape[0]
         if n_decode == 0:
             continue
+        log_background = background_log_intensity(
+            electrode_mark_reference, np.asarray(decode_features), LOG_RATE_EPS_HZ
+        )
 
-        # Zero-rate electrode: floor every observed decode spike to LOG_RATE_EPS_HZ BEFORE any
-        # division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped. Each
-        # time bin's contribution is (spikes in that bin) * LOG_RATE_EPS_HZ, identical across
-        # bins -- accumulate it from per-time-bin counts rather than materializing an
-        # (n_decode, n_bins) array (which would be gigabytes at millions of spikes).
+        # Zero-rate electrode: the background explains every observed spike, BEFORE
+        # any division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped. Its
+        # contribution is identical across bins -- accumulate it per time bin
+        # rather than materializing an (n_decode, n_bins) array (which would be
+        # gigabytes at millions of spikes).
         if electrode_weight_total == 0:
-            spike_counts = sum_spikes_into_rows(
-                jnp.ones(n_decode), selection
-            )  # (n_rows,)
-            log_likelihood += spike_counts[:, None] * LOG_RATE_EPS_HZ
+            log_likelihood += sum_spikes_into_rows(
+                jnp.asarray(log_background), selection
+            )[:, None]
             continue
 
         enc_bins, enc_marks, enc_weights = _spike_time_order.memo(
@@ -1123,6 +1207,7 @@ def predict_clusterless_diffusion_log_likelihood(
             bin_sizes,
             electrode_mean_rate,
             safe_weight_total,
+            jnp.asarray(_pad_rows(log_background, n_padded)),
             position_std=position_std,
             n_components=n_components,
             block_size=min(effective_block, n_padded),

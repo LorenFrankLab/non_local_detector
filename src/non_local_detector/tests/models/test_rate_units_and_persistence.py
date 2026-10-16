@@ -20,7 +20,6 @@ ALGORITHMS = [
     "sorted_spikes_diffusion",
     "sorted_spikes_mrf",
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 ]

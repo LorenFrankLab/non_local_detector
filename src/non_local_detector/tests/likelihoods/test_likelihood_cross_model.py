@@ -189,6 +189,7 @@ def _predict_clusterless_kde(enc, env, data, is_local=False):
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
+        mark_reference=enc["mark_reference"],
         environment=env,
         mean_rates=jnp.asarray(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -232,6 +233,7 @@ def _predict_clusterless_gmm(enc, env, data, is_local=False):
         mean_rates=enc["mean_rates"],
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
         mark_dimensions=enc["mark_dimensions"],
+        mark_reference=enc["mark_reference"],
         is_local=is_local,
         disable_progress_bar=True,
     )

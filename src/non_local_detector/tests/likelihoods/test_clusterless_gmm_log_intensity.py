@@ -41,6 +41,7 @@ from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
 )
+from non_local_detector.likelihoods.mark_reference import MarkReference
 
 pytestmark = pytest.mark.unit
 
@@ -78,6 +79,11 @@ def _log_gaussian(x, mean, var: float) -> np.ndarray:
     return -0.5 * dim * np.log(2.0 * np.pi * var) - 0.5 * sq / var
 
 
+# A mark reference far from every test mark: its background is ~1e11 nats
+# below the marked intensity, so event terms isolate the intensity numerics.
+NEGLIGIBLE_BACKGROUND = MarkReference(np.array([1e3]), np.array([1e-3]))
+
+
 def _predict_kwargs(env, occupancy, joint, rate, spike_times, marks, **extra):
     n_bins = env.place_bin_centers_[env.is_track_interior_.ravel()].shape[0]
     bins = env.place_bin_centers_[env.is_track_interior_.ravel()]
@@ -98,7 +104,7 @@ def _predict_kwargs(env, occupancy, joint, rate, spike_times, marks, **extra):
         summed_ground_process_intensity=jnp.zeros(n_bins),
         disable_progress_bar=True,
         mark_dimensions=[1],
-        **extra,
+        **{"mark_reference": [NEGLIGIBLE_BACKGROUND], **extra},
     )
 
 
@@ -143,6 +149,7 @@ class TestAccumulateBlock:
             jnp.arange(2),
             jnp.asarray(0.0),
             log_occ,
+            jnp.full((1,), -jnp.inf),
         )
 
         np.testing.assert_allclose(np.asarray(out)[1], [-52.0, -2.0], rtol=RTOL)
@@ -233,6 +240,7 @@ class TestTailSpikeIntensity:
             "gpi_models",
             "joint_models",
             "mean_rates",
+            "mark_reference",
             "disable_progress_bar",
         )
         local_kwargs = {k: kwargs[k] for k in local_keys}
@@ -254,7 +262,9 @@ class TestDeepTailRateTerm:
     ``log_rate + (joint - occ)`` returns ``log(1e-15) = -34.5388``. Joint and
     occupancy are the *same* model evaluated on the same points (zero mark
     dimensions), so their log densities are bit-identical and the expected
-    event term is exactly ``log(rate)`` at every bin.
+    intensity term is exactly ``log(rate)`` at every bin. Without a mark reference
+    the background is the bare rate ``RATE_EPS_HZ == rate``, so the event term is
+    ``log(2 * rate)``.
     """
 
     RATE = RATE_EPS_HZ
@@ -274,6 +284,7 @@ class TestDeepTailRateTerm:
             jnp.arange(2),
             jnp.asarray(np.log(self.RATE), dtype=jnp.float32),
             log_occ,
+            jnp.full((1,), -jnp.inf),
         )
 
         np.testing.assert_allclose(np.asarray(out)[1], np.log(self.RATE), rtol=1e-6)
@@ -288,7 +299,10 @@ class TestDeepTailRateTerm:
         kwargs = _predict_kwargs(
             env, model, model, self.RATE, jnp.asarray([1.5]), jnp.zeros((1, 0))
         )
-        kwargs.update(mark_dimensions=[0], bin_tile_size=bin_tile_size)
+        # No mark reference: the background is the bare rate RATE_EPS_HZ == RATE.
+        kwargs.update(
+            mark_dimensions=[0], bin_tile_size=bin_tile_size, mark_reference=[None]
+        )
         with_spike = predict_clusterless_gmm_log_likelihood(**kwargs)
         kwargs.update(
             spike_times=[jnp.zeros(0)], spike_waveform_features=[jnp.zeros((0, 0))]
@@ -296,7 +310,7 @@ class TestDeepTailRateTerm:
         baseline = predict_clusterless_gmm_log_likelihood(**kwargs)
         event_term = np.asarray(with_spike - baseline)
 
-        np.testing.assert_allclose(event_term[1], np.log(self.RATE), rtol=1e-6)
+        np.testing.assert_allclose(event_term[1], np.log(2 * self.RATE), rtol=1e-6)
         assert np.all(event_term[[0, 2, 3]] == 0.0)
 
     def test_local_event_term_is_log_rate(self):
@@ -317,6 +331,7 @@ class TestDeepTailRateTerm:
             "gpi_models": [model],
             "joint_models": [model],
             "mean_rates": jnp.asarray([self.RATE]),
+            "mark_reference": [None],
             "disable_progress_bar": True,
         }
         with_spike = compute_local_log_likelihood(**local_kwargs)
@@ -326,7 +341,8 @@ class TestDeepTailRateTerm:
         baseline = compute_local_log_likelihood(**local_kwargs)
         event_term = np.asarray(with_spike - baseline).ravel()
 
-        assert event_term[1] == pytest.approx(np.log(self.RATE), rel=1e-6)
+        # The bare-rate background equals RATE: the event term is log(2 RATE).
+        assert event_term[1] == pytest.approx(np.log(2 * self.RATE), rel=1e-6)
         assert np.all(event_term[[0, 2, 3]] == 0.0)
 
 
@@ -364,6 +380,7 @@ class TestGroundProcessRange:
             gpi_models=[gpi],
             joint_models=[gpi],
             mean_rates=jnp.asarray([rate]),
+            mark_reference=[None],
             disable_progress_bar=True,
         )
 
@@ -457,6 +474,7 @@ class TestGroundProcessRange:
             gpi_models=[model],
             joint_models=[model],
             mean_rates=jnp.asarray([2.0]),
+            mark_reference=[None],
             disable_progress_bar=True,
         )
 
@@ -479,6 +497,7 @@ class TestGroundProcessRange:
             gpi_models=[model],
             joint_models=[model],
             mean_rates=jnp.asarray([2.0]),
+            mark_reference=[None],
             disable_progress_bar=True,
         )
 
@@ -504,6 +523,7 @@ class TestGroundProcessRange:
             gpi_models=model["gpi_models"],
             joint_models=model["joint_models"],
             mean_rates=model["mean_rates"],
+            mark_reference=[None],
             disable_progress_bar=True,
         )
 

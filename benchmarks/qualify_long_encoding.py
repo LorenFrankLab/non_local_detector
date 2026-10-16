@@ -1,4 +1,10 @@
-"""Bounded long-encoding comparison against independent float64 linear KDEs."""
+"""Bounded long-encoding comparison against independent float64 linear KDEs.
+
+The tiled log-space paths (row-blocked KDE log densities, the local log
+ratio, and the streamed encoding x position tiled joint mark intensity) are
+compared with float64 oracles and with the untiled log-space evaluation, in
+float32 and float64.
+"""
 
 import argparse
 import hashlib
@@ -13,12 +19,24 @@ import scipy
 from scipy.stats import norm
 
 import non_local_detector
-import non_local_detector.likelihoods.streamed_kde as streamed
 from non_local_detector.likelihoods.clusterless_kde import (
+    block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
-    kde_distance,
+    log_kde_distance,
 )
-from non_local_detector.likelihoods.common import EPS, LOG_EPS, kde, safe_log
+from non_local_detector.likelihoods.common import (
+    LOG_EPS,
+    KDEModel,
+    kde_log_density,
+    local_kde_log_ratio,
+    log_density_intensity,
+    log_kde,
+)
+
+ENCODING_TILE = 1024
+POSITION_TILE = 2
+DECODING_TILE = 3
+DENSITY_ROWS = 2
 
 
 def sha(array):
@@ -83,7 +101,38 @@ def oracle_density(points, samples, std, weights):
     return weights @ oracle_kernel(points, samples, std) / weights.sum()
 
 
-def comparison(actual, reference, baseline=None):
+def oracle_log_density(points, samples, std, weights):
+    return np.log(oracle_density(points, samples, std, weights))
+
+
+def oracle_log_background(marks, encoding_marks, waveform_std):
+    """Floor plus a Gaussian mark reference fitted to the encoding marks.
+
+    Its scale adds the mark bandwidth, as for a KDE-smoothed reference.
+    """
+    marks, encoding_marks = (np.asarray(x, np.float64) for x in (marks, encoding_marks))
+    scale = np.sqrt(encoding_marks.var(axis=0) + np.asarray(waveform_std) ** 2)
+    return LOG_EPS + norm.logpdf(marks, encoding_marks.mean(axis=0), scale).sum(axis=1)
+
+
+def tiled_log_density(points, samples, std, weights):
+    """True log density in row blocks bounded by the shared kernel budget."""
+    model = KDEModel(std=jnp.asarray(std), block_size=DENSITY_ROWS).fit(
+        jnp.asarray(samples), jnp.asarray(weights)
+    )
+    return kde_log_density(model, jnp.asarray(points))
+
+
+def untiled_log_density(points, samples, std, weights):
+    return log_kde(
+        jnp.asarray(points),
+        jnp.asarray(samples),
+        jnp.asarray(std),
+        jnp.asarray(weights),
+    )
+
+
+def comparison(actual, reference, baseline):
     actual = np.asarray(actual)
     np.testing.assert_allclose(actual, reference, rtol=1e-6, atol=1e-5)
     nonzero = reference != 0
@@ -93,7 +142,9 @@ def comparison(actual, reference, baseline=None):
     diagnostic_pass = bool(
         np.allclose(actual[nonzero] / reference[nonzero], 1.0, rtol=1e-6, atol=1e-5)
     )
-    result = {
+    baseline = np.asarray(baseline)
+    np.testing.assert_allclose(actual, baseline, rtol=1e-6, atol=1e-5)
+    return {
         "shape": list(actual.shape),
         "dtype": str(actual.dtype),
         "max_absolute_error": float(np.max(abs(actual - reference))),
@@ -104,27 +155,10 @@ def comparison(actual, reference, baseline=None):
         "reference_sha256": sha(reference),
         "applicable_controls": {"rtol": 1e-6, "atol": 1e-5},
         "ratio_diagnostic_same_controls_pass": diagnostic_pass,
+        "baseline_max_absolute_error": float(np.max(abs(baseline - reference))),
+        "tiled_vs_baseline_max_absolute_error": float(np.max(abs(actual - baseline))),
+        "baseline_sha256": sha(baseline),
     }
-    if baseline is not None:
-        baseline = np.asarray(baseline)
-        np.testing.assert_allclose(actual, baseline, rtol=1e-6, atol=1e-5)
-        result.update(
-            {
-                "baseline_max_absolute_error": float(np.max(abs(baseline - reference))),
-                "baseline_max_relative_error": float(
-                    np.max(abs(baseline[nonzero] / reference[nonzero] - 1))
-                ),
-                "streamed_vs_baseline_max_absolute_error": float(
-                    np.max(abs(actual - baseline))
-                ),
-                "baseline_sha256": sha(baseline),
-            }
-        )
-        if np.all(actual > 0) and np.all(baseline > 0):
-            result["streamed_vs_baseline_log_density_max_absolute_error"] = float(
-                np.max(abs(np.log(actual) - np.log(baseline)))
-            )
-    return result
 
 
 def main():
@@ -172,8 +206,13 @@ def main():
             "centers": 3,
             "decoded_marks": 7,
         },
-        "tiles": {"encoding": 1024, "position": 2, "decoding": 3},
-        "encoding_tile_counts": {"tracking": 106, "events": 71},
+        "tiles": {
+            "encoding": ENCODING_TILE,
+            "position": POSITION_TILE,
+            "decoding": DECODING_TILE,
+            "density_rows": DENSITY_ROWS,
+        },
+        "encoding_tile_counts": {"events": -(-72_000 // ENCODING_TILE)},
         "largest_oracle_matrix_bytes": 108_001 * 7 * 8,
         "modes": {},
     }
@@ -189,116 +228,93 @@ def main():
                     name: sha(array) for name, array in values.items()
                 },
             }
-            occupancy_reference = oracle_density(
-                values["centers"],
-                values["tracking_position"],
-                values["position_std"],
-                values["tracking_weights"],
-            )
-            occupancy = streamed._sample_tiled_density(
-                values["centers"],
-                values["tracking_position"],
-                values["position_std"],
-                values["tracking_weights"],
-                sample_tile_size=1024,
-                eval_tile_size=2,
-            )
-            occupancy_baseline = kde(
-                jnp.asarray(values["centers"]),
-                jnp.asarray(values["tracking_position"]),
-                jnp.asarray(values["position_std"]),
-                jnp.asarray(values["tracking_weights"]),
-            )
-            mode["occupancy_density"] = comparison(
-                occupancy, occupancy_reference, occupancy_baseline
-            )
-            plain_reference = oracle_density(
-                values["centers"],
-                values["encoding_position"],
-                values["position_std"],
-                values["encoding_weights"],
-            )
-            plain = streamed._sample_tiled_density(
-                values["centers"],
-                values["encoding_position"],
-                values["position_std"],
-                values["encoding_weights"],
-                sample_tile_size=1024,
-                eval_tile_size=2,
-            )
-            plain_baseline = kde(
-                jnp.asarray(values["centers"]),
-                jnp.asarray(values["encoding_position"]),
-                jnp.asarray(values["position_std"]),
-                jnp.asarray(values["encoding_weights"]),
-            )
-            mode["encoding_position_density"] = comparison(
-                plain, plain_reference, plain_baseline
-            )
-            samples = np.concatenate(
-                (values["encoding_position"], values["encoding_marks"]), axis=1
-            )
-            points = np.concatenate(
-                (values["local_position"], values["decoded_marks"]), axis=1
-            )
-            std = np.concatenate((values["position_std"], values["waveform_std"]))
-            local_reference = oracle_density(
-                points, samples, std, values["encoding_weights"]
-            )
-            local = streamed._sample_tiled_density(
-                points,
-                samples,
-                std,
-                values["encoding_weights"],
-                sample_tile_size=1024,
-                eval_tile_size=2,
-            )
-            local_baseline = kde(
-                jnp.asarray(points),
-                jnp.asarray(samples),
-                jnp.asarray(std),
-                jnp.asarray(values["encoding_weights"]),
-            )
-            mode["local_combined_density"] = comparison(
-                local, local_reference, local_baseline
-            )
-            local_occupancy_reference = oracle_density(
-                values["local_position"],
-                values["tracking_position"],
-                values["position_std"],
-                values["tracking_weights"],
-            )
-            local_occupancy = streamed._sample_tiled_density(
-                values["local_position"],
-                values["tracking_position"],
-                values["position_std"],
-                values["tracking_weights"],
-                sample_tile_size=1024,
-                eval_tile_size=2,
-            )
-            local_occupancy_baseline = kde(
-                jnp.asarray(values["local_position"]),
-                jnp.asarray(values["tracking_position"]),
-                jnp.asarray(values["position_std"]),
-                jnp.asarray(values["tracking_weights"]),
-            )
+            density_args = {
+                "occupancy": (
+                    values["centers"],
+                    values["tracking_position"],
+                    values["position_std"],
+                    values["tracking_weights"],
+                ),
+                "encoding_position": (
+                    values["centers"],
+                    values["encoding_position"],
+                    values["position_std"],
+                    values["encoding_weights"],
+                ),
+                "local_combined": (
+                    np.concatenate(
+                        (values["local_position"], values["decoded_marks"]), axis=1
+                    ),
+                    np.concatenate(
+                        (values["encoding_position"], values["encoding_marks"]), axis=1
+                    ),
+                    np.concatenate((values["position_std"], values["waveform_std"])),
+                    values["encoding_weights"],
+                ),
+                "local_occupancy": (
+                    values["local_position"],
+                    values["tracking_position"],
+                    values["position_std"],
+                    values["tracking_weights"],
+                ),
+            }
+            outputs = {}
+            # Densities are compared linearly, as plain KDE values.
+            for name in ["occupancy", "encoding_position", "local_combined"]:
+                arguments = density_args[name]
+                reference = oracle_density(*arguments)
+                actual = np.exp(tiled_log_density(*arguments))
+                baseline = np.exp(untiled_log_density(*arguments))
+                mode[f"{name}_density"] = comparison(actual, reference, baseline)
+                outputs[name] = actual
+                outputs[f"{name}_reference"] = reference
+                outputs[f"{name}_baseline"] = baseline
+
             scale = np.asarray(0.04, dtype=dtype)
-            local_log_reference = np.log(
-                np.maximum(
-                    scale.item() * local_reference / local_occupancy_reference, EPS
-                )
+            log_background64 = oracle_log_background(
+                values["decoded_marks"],
+                values["encoding_marks"],
+                values["waveform_std"],
             )
-            local_log = safe_log(scale * local / local_occupancy)
-            local_log_baseline = safe_log(
-                scale * local_baseline / local_occupancy_baseline
+            log_background = jnp.asarray(log_background64.astype(dtype))
+
+            # Local: the joint KDE over the occupancy at the animal's position.
+            local_log_reference = np.logaddexp(
+                np.log(scale.item())
+                + oracle_log_density(*density_args["local_combined"])
+                - oracle_log_density(*density_args["local_occupancy"]),
+                log_background64,
+            )
+            local_ratio = jax.jit(local_kde_log_ratio, static_argnums=8)(
+                jnp.asarray(values["local_position"]),
+                jnp.asarray(values["decoded_marks"]),
+                jnp.asarray(values["encoding_position"]),
+                jnp.asarray(values["encoding_marks"]),
+                jnp.asarray(values["position_std"]),
+                jnp.asarray(values["waveform_std"]),
+                tiled_log_density(*density_args["local_occupancy"]),
+                jnp.asarray(values["encoding_weights"]),
+                DENSITY_ROWS,
+            )
+            local_log = jnp.logaddexp(
+                log_density_intensity(scale, local_ratio, jnp.zeros_like(local_ratio)),
+                log_background,
+            )
+            local_log_baseline = jnp.logaddexp(
+                jnp.log(scale)
+                + untiled_log_density(*density_args["local_combined"])
+                - untiled_log_density(*density_args["local_occupancy"]),
+                log_background,
             )
             mode["finished_local_log_intensity"] = comparison(
                 local_log, local_log_reference, local_log_baseline
             )
 
             # Use the same rounded occupancy inputs for both implementations;
-            # the zero column independently exercises the final intensity floor.
-            intensity_occupancy = occupancy_reference.astype(dtype)
+            # the zero column independently exercises the background floor.
+            intensity_occupancy = np.exp(
+                oracle_log_density(*density_args["occupancy"])
+            ).astype(dtype)
             intensity_occupancy[1] = 0.0
             position_kernel = oracle_kernel(
                 values["centers"], values["encoding_position"], values["position_std"]
@@ -319,58 +335,53 @@ def main():
                 out=intensity,
                 where=intensity_occupancy > 0,
             )
-            intensity *= np.asarray(0.04, dtype=dtype).item()
-            reference = np.log(np.maximum(intensity, EPS))
-            joint = streamed._streamed_joint_mark_log_intensity(
-                values["decoded_marks"],
-                values["encoding_marks"],
-                values["encoding_position"],
-                values["centers"],
-                values["waveform_std"],
-                values["position_std"],
-                intensity_occupancy,
-                np.asarray(0.04, dtype=dtype),
-                values["encoding_weights"],
-                encoding_tile_size=1024,
-                position_tile_size=2,
-                decoding_tile_size=3,
+            intensity *= scale.item()
+            with np.errstate(divide="ignore"):
+                joint_reference = np.logaddexp(
+                    np.log(intensity), log_background64[:, None]
+                )
+            joint = block_estimate_log_joint_mark_intensity(
+                jnp.asarray(values["decoded_marks"]),
+                jnp.asarray(values["encoding_marks"]),
+                jnp.asarray(values["waveform_std"]),
+                jnp.asarray(intensity_occupancy),
+                scale,
+                block_size=DECODING_TILE,
+                enc_tile_size=ENCODING_TILE,
+                pos_tile_size=POSITION_TILE,
+                use_streaming=True,
+                encoding_positions=jnp.asarray(values["encoding_position"]),
+                position_eval_points=jnp.asarray(values["centers"]),
+                position_std=jnp.asarray(values["position_std"]),
+                encoding_weights=jnp.asarray(values["encoding_weights"]),
+                log_background=log_background,
             )
-            joint_baseline = jnp.clip(
-                estimate_log_joint_mark_intensity(
-                    jnp.asarray(values["decoded_marks"]),
-                    jnp.asarray(values["encoding_marks"]),
-                    jnp.asarray(values["waveform_std"]),
-                    jnp.asarray(intensity_occupancy),
-                    scale,
-                    kde_distance(
-                        jnp.asarray(values["centers"]),
-                        jnp.asarray(values["encoding_position"]),
-                        jnp.asarray(values["position_std"]),
-                    ),
-                    jnp.asarray(values["encoding_weights"]),
+            joint_baseline = estimate_log_joint_mark_intensity(
+                jnp.asarray(values["decoded_marks"]),
+                jnp.asarray(values["encoding_marks"]),
+                jnp.asarray(values["waveform_std"]),
+                jnp.asarray(intensity_occupancy),
+                scale,
+                log_kde_distance(
+                    jnp.asarray(values["centers"]),
+                    jnp.asarray(values["encoding_position"]),
+                    jnp.asarray(values["position_std"]),
                 ),
-                min=LOG_EPS,
+                encoding_weights=jnp.asarray(values["encoding_weights"]),
+                log_background=log_background,
             )
             mode["finished_joint_log_intensity"] = comparison(
-                joint, reference, joint_baseline
+                joint, joint_reference, joint_baseline
             )
             np.savez(
                 args.output_dir / f"outputs-{np.dtype(dtype)}.npz",
-                occupancy=np.asarray(occupancy),
-                occupancy_reference=occupancy_reference,
-                plain=np.asarray(plain),
-                plain_reference=plain_reference,
-                local=np.asarray(local),
-                local_reference=local_reference,
-                joint=np.asarray(joint),
-                joint_reference=reference,
-                occupancy_baseline=np.asarray(occupancy_baseline),
-                plain_baseline=np.asarray(plain_baseline),
-                local_baseline=np.asarray(local_baseline),
-                joint_baseline=np.asarray(joint_baseline),
+                **outputs,
                 local_log=np.asarray(local_log),
                 local_log_reference=local_log_reference,
                 local_log_baseline=np.asarray(local_log_baseline),
+                joint=np.asarray(joint),
+                joint_reference=joint_reference,
+                joint_baseline=np.asarray(joint_baseline),
             )
             report["modes"][str(np.dtype(dtype))] = mode
     finally:

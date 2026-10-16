@@ -57,9 +57,15 @@ class MarkReference:
         -------
         log_density : np.ndarray, shape (n_spikes,)
         """
+        marks = np.asarray(marks, dtype=np.float64)
+        if marks.ndim != 2 or marks.shape[1] != self.location.shape[0]:
+            raise ValidationError(
+                f"Marks with {marks.shape[1:]} waveform features do not match a mark "
+                f"reference fitted with {self.location.shape[0]}"
+            )
         # Standardize on the host in float64 so large waveform offsets do not
         # lose digits to float32 subtraction.
-        z = (np.asarray(marks, dtype=np.float64) - self.location) / self.scale
+        z = (marks - self.location) / self.scale
         return (
             -0.5 * np.sum(z * z, axis=1)
             - np.sum(np.log(self.scale))
@@ -122,6 +128,30 @@ def fit_mark_reference(
     return MarkReference(location, scale)
 
 
+def background_log_intensity(
+    reference: MarkReference | None, marks: np.ndarray, log_rate: float
+) -> np.ndarray:
+    """Per-spike log background intensity ``log_rate + log q(m)``.
+
+    Without a reference the electrode has no training marks; No-Spike then adds
+    no mark term either, so the background is the bare rate.
+
+    Parameters
+    ----------
+    reference : MarkReference or None
+    marks : np.ndarray, shape (n_spikes, n_features)
+    log_rate : float
+        Log background rate in the caller's intensity units.
+
+    Returns
+    -------
+    log_background : np.ndarray, shape (n_spikes,)
+    """
+    if reference is None:
+        return np.full(np.shape(marks)[0], log_rate)
+    return log_rate + reference.log_density(marks)
+
+
 def mark_reference_log_likelihood(
     references: list[MarkReference | None],
     spike_times: list[np.ndarray],
@@ -156,17 +186,11 @@ def mark_reference_log_likelihood(
     )
     row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     total = jnp.zeros((row_stop - row_start,))
-    for electrode, (reference, times, features) in enumerate(
-        zip(references, spike_times, spike_waveform_features, strict=True)
+    for reference, times, features in zip(
+        references, spike_times, spike_waveform_features, strict=True
     ):
         if reference is None:
             continue
-        if np.shape(features)[1] != reference.location.shape[0]:
-            raise ValidationError(
-                f"Electrode {electrode} has {np.shape(features)[1]} waveform "
-                f"features but its mark reference was fitted with "
-                f"{reference.location.shape[0]}"
-            )
         selection = select_spikes_in_rows(
             times,
             row_start,

@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods import clusterless_kde_log
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods import clusterless_kde
+from non_local_detector.likelihoods.clusterless_kde import (
     _log_joint_from_log_marginal,
     block_estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
@@ -30,6 +30,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
 )
+from non_local_detector.likelihoods.mark_reference import background_log_intensity
 from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
@@ -104,14 +105,33 @@ def reference(recording, is_local, row_slice):
         weights,
         encoding["mean_rates"],
         encoding["gpi_models"],
+        encoding["mark_reference"],
         marks,
         times,
         strict=True,
     )
+
+    def background(reference, dec_marks, selection):
+        # log(RATE_EPS_HZ * RATE_REFERENCE_SECONDS) + log q(mark) per spike.
+        return jnp.asarray(
+            background_log_intensity(
+                reference, np.asarray(select_spike_rows(dec_marks, selection)), LOG_EPS
+            )
+        )
+
     if not is_local:
         bins = env.place_bin_centers_[env.is_track_interior_.ravel()]
         total = -durations[:, None] * encoding["summed_ground_process_intensity"]
-        for enc_marks, enc_pos, w, rate, _, dec_marks, dec_times in electrodes:
+        for (
+            enc_marks,
+            enc_pos,
+            w,
+            rate,
+            _,
+            reference,
+            dec_marks,
+            dec_times,
+        ) in electrodes:
             selection = select_spikes_in_rows(dec_times, start, stop, time_edges=edges)
             total = total + sum_spikes_into_rows(
                 block_estimate_log_joint_mark_intensity(
@@ -123,6 +143,7 @@ def reference(recording, is_local, row_slice):
                     log_kde_distance(bins, enc_pos, std=position_std),
                     block_size=block_size,
                     encoding_weights=w,
+                    log_background=background(reference, dec_marks, selection),
                 ),
                 selection,
             )
@@ -133,8 +154,18 @@ def reference(recording, is_local, row_slice):
         )
         occupancy = occupancy_model.predict(positions)
         total, expected = jnp.zeros(stop - start), jnp.zeros(stop - start)
-        for enc_marks, enc_pos, w, rate, gpi, dec_marks, dec_times in electrodes:
+        for (
+            enc_marks,
+            enc_pos,
+            w,
+            rate,
+            gpi,
+            reference,
+            dec_marks,
+            dec_times,
+        ) in electrodes:
             selection = select_spikes_in_rows(dec_times, start, stop, time_edges=edges)
+            log_background = background(reference, dec_marks, selection)
             spike_positions = get_position_at_time(
                 position_time, position, select_spike_rows(dec_times, selection), env
             )
@@ -152,26 +183,27 @@ def reference(recording, is_local, row_slice):
                 block_size,
                 w,
             )
-            contribution = jnp.maximum(
+            contribution = jnp.logaddexp(
                 _log_joint_from_log_marginal(
                     log_marginal[None, :],
                     rate * RATE_REFERENCE_SECONDS,
                     occupancy_model.predict(spike_positions),
                 )[0],
-                LOG_EPS,
+                log_background,
             )
-            # No encoding mass means zero joint signal, irrespective of a
-            # manually supplied positive mean rate. LOG_EPS is the final
-            # intensity floor, rather than a positive KDE density substitute.
+            # No encoding mass means zero intensity, irrespective of a manually
+            # supplied positive mean rate: the background explains the spike.
             if enc_pos.shape[0] == 0 or (w is not None and np.sum(w) == 0.0):
-                contribution = jnp.full(selection.bin_ind.shape[0], LOG_EPS)
+                contribution = log_background
             total = total + sum_spikes_into_rows(contribution, selection)
             expected = expected + rate * jnp.where(
                 occupancy > 0,
                 gpi.predict(positions) / jnp.where(occupancy > 0, occupancy, 1),
                 0,
             )
-        total = (total - durations * jnp.clip(expected, min=RATE_EPS_HZ))[:, None]
+        # Every electrode adds its background rate to the expected count.
+        n_electrodes = len(encoding["mean_rates"])
+        total = (total - durations * (expected + n_electrodes * RATE_EPS_HZ))[:, None]
     return (
         total
         + log_bin_duration_evidence(
@@ -281,8 +313,8 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels():
         np.arange(0, 2.0 + 1e-9, 0.002),
     )
     kernels = (
-        clusterless_kde_log._add_electrode_log_mark_intensities,
-        clusterless_kde_log._add_electrode_local_terms,
+        clusterless_kde._add_electrode_log_mark_intensities,
+        clusterless_kde._add_electrode_local_terms,
     )
     for kernel in kernels:
         kernel.clear_cache()
@@ -326,7 +358,7 @@ def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
     refit = KDEModel(
         std=occupancy_model.std, block_size=occupancy_model.block_size
     ).fit(occupancy_model.samples_[:-1], weights=occupancy_model.weights_[:-1])
-    kernel = clusterless_kde_log._add_electrode_local_terms
+    kernel = clusterless_kde._add_electrode_local_terms
     kernel.clear_cache()
     first = predict(recording, True, None)
     second = predict(

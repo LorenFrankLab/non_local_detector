@@ -23,6 +23,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
 )
+from non_local_detector.likelihoods.mark_reference import background_log_intensity
 from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
@@ -100,21 +101,32 @@ def reference(recording, is_local, row_slice):
         encoding["joint_models"],
         encoding["gpi_models"],
         encoding["mean_rates"],
+        encoding["mark_reference"],
         strict=True,
     )
+
+    def background(features, selection, reference):
+        return jnp.asarray(
+            background_log_intensity(
+                reference,
+                np.asarray(select_spike_rows(features, selection)),
+                LOG_RATE_EPS_HZ,
+            )
+        )
+
     if not is_local:
         bins = jnp.asarray(encoding["interior_place_bin_centers"])
         total = -durations[:, None] * encoding["summed_ground_process_intensity"]
-        for spike_times, features, joint, _, rate in electrodes:
+        for spike_times, features, joint, _, rate, reference in electrodes:
             selection = select_spikes_in_rows(
                 spike_times, start, stop, time_edges=edges
             )
             n_spikes = selection.bin_ind.shape[0]
-            if joint is None:
-                counts = sum_spikes_into_rows(jnp.ones(n_spikes), selection)
-                total = total + LOG_RATE_EPS_HZ * counts[:, None]
-                continue
             if n_spikes == 0:
+                continue
+            log_background = background(features, selection, reference)
+            if joint is None:
+                total = total + sum_spikes_into_rows(log_background, selection)[:, None]
                 continue
             log_density = jnp.stack(
                 [
@@ -128,8 +140,11 @@ def reference(recording, is_local, row_slice):
                 ]
             )
             total = total + sum_spikes_into_rows(
-                safe_log(rate, eps=RATE_EPS_HZ)
-                + (log_density - encoding["log_occupancy"]),
+                jnp.logaddexp(
+                    safe_log(rate, eps=RATE_EPS_HZ)
+                    + (log_density - encoding["log_occupancy"]),
+                    log_background[:, None],
+                ),
                 selection,
             )
     else:
@@ -139,14 +154,16 @@ def reference(recording, is_local, row_slice):
         )
         log_occupancy = occupancy_model.score_samples(positions)
         total, expected = jnp.zeros(stop - start), jnp.zeros(stop - start)
-        for spike_times, features, joint, gpi, rate in electrodes:
+        for spike_times, features, joint, gpi, rate, reference in electrodes:
             selection = select_spikes_in_rows(
                 spike_times, start, stop, time_edges=edges
             )
             n_spikes = selection.bin_ind.shape[0]
             if joint is None:
-                counts = sum_spikes_into_rows(jnp.ones(n_spikes), selection)
-                total = total + LOG_RATE_EPS_HZ * counts
+                if n_spikes:
+                    total = total + sum_spikes_into_rows(
+                        background(features, selection, reference), selection
+                    )
                 continue
             if n_spikes:
                 spike_positions = get_position_at_time(
@@ -155,23 +172,28 @@ def reference(recording, is_local, row_slice):
                     select_spike_rows(spike_times, selection),
                     env,
                 )
-                terms = safe_log(rate, eps=RATE_EPS_HZ) + (
-                    joint.score_samples(
-                        jnp.concatenate(
-                            [
-                                spike_positions,
-                                jnp.asarray(select_spike_rows(features, selection)),
-                            ],
-                            axis=1,
+                terms = jnp.logaddexp(
+                    safe_log(rate, eps=RATE_EPS_HZ)
+                    + (
+                        joint.score_samples(
+                            jnp.concatenate(
+                                [
+                                    spike_positions,
+                                    jnp.asarray(select_spike_rows(features, selection)),
+                                ],
+                                axis=1,
+                            )
                         )
-                    )
-                    - occupancy_model.score_samples(spike_positions)
+                        - occupancy_model.score_samples(spike_positions)
+                    ),
+                    background(features, selection, reference),
                 )
                 total = total + sum_spikes_into_rows(terms, selection)
             expected = expected + _ground_process_intensity(
                 rate, gpi.score_samples(positions), log_occupancy
             )
-        total = (total - durations * jnp.clip(expected, min=RATE_EPS_HZ))[:, None]
+        n_electrodes = len(encoding["mean_rates"])
+        total = (total - durations * (expected + n_electrodes * RATE_EPS_HZ))[:, None]
     return total + log_bin_duration_evidence(times, edges, row_slice, None)[:, None]
 
 

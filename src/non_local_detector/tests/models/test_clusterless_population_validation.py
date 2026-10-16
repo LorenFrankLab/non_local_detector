@@ -23,7 +23,6 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 
 ALGORITHMS = [
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 ]
@@ -62,6 +61,20 @@ def test_fit_rejects_electrode_count_mismatch(sim, algorithm, detector_cls):
         with pytest.raises(ValidationError, match="electrode population lengths"):
             detector.fit(sim.position_time, sim.position, spike_times, features)
         assert not hasattr(detector, "encoding_model_")
+
+
+@pytest.mark.unit
+def test_fit_rejects_removed_log_kde_name_with_a_hint(sim):
+    """The removed ``clusterless_kde_log`` name points to ``clusterless_kde``."""
+    detector = ClusterlessDecoder(clusterless_algorithm="clusterless_kde_log")
+    with pytest.raises(ValidationError, match='Use "clusterless_kde"'):
+        detector.fit(
+            sim.position_time,
+            sim.position,
+            sim.spike_times,
+            sim.spike_waveform_features,
+        )
+    assert not hasattr(detector, "encoding_model_")
 
 
 @pytest.mark.unit

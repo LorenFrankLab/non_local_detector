@@ -216,7 +216,6 @@ def test_clusterless_rejects_events_outside_or_invalid_for_sampled_support(bad_s
         "sorted_spikes_diffusion",
         "sorted_spikes_mrf",
         "clusterless_kde",
-        "clusterless_kde_log",
         "clusterless_gmm",
         "clusterless_diffusion",
     ],

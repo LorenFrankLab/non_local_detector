@@ -5,11 +5,9 @@ import numpy as np
 import pytest
 
 from non_local_detector.likelihoods.clusterless_kde import (
-    estimate_log_joint_mark_intensity as estimate_orig,
-)
-from non_local_detector.likelihoods.clusterless_kde_log import (
     estimate_log_joint_mark_intensity as estimate_log,
 )
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 
 @pytest.fixture
@@ -34,12 +32,6 @@ def tiling_test_data():
     occupancy = jnp.ones(n_position, dtype=jnp.float32)
     mean_rate = 5.0
 
-    # Position distance (for original)
-    position_distance = jnp.array(
-        rng.random((n_encoding, n_position)).astype(np.float32)
-    )
-
-    # Log position distance (for log-space)
     log_position_distance = jnp.array(
         rng.standard_normal((n_encoding, n_position)).astype(np.float32)
     )
@@ -50,7 +42,6 @@ def tiling_test_data():
         "waveform_stds": waveform_stds,
         "occupancy": occupancy,
         "mean_rate": mean_rate,
-        "position_distance": position_distance,
         "log_position_distance": log_position_distance,
     }
 
@@ -68,6 +59,7 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
         tiling_test_data["log_position_distance"],
         use_gemm=True,
         pos_tile_size=None,
+        log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
 
     # With tiling (tile_size=100)
@@ -80,6 +72,7 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
         tiling_test_data["log_position_distance"],
         use_gemm=True,
         pos_tile_size=100,
+        log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
 
     assert result_no_tile.shape == result_tiled.shape
@@ -87,25 +80,6 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
         f"Tiled and non-tiled results differ: "
         f"max diff = {np.abs(result_no_tile - result_tiled).max()}"
     )
-
-
-@pytest.mark.integration
-def test_original_basic_call(tiling_test_data):
-    """Test that original (non-log) estimate_log_joint_mark_intensity works."""
-    result = estimate_orig(
-        tiling_test_data["decoding_features"],
-        tiling_test_data["encoding_features"],
-        tiling_test_data["waveform_stds"],
-        tiling_test_data["occupancy"],
-        tiling_test_data["mean_rate"],
-        tiling_test_data["position_distance"],
-    )
-
-    assert result.shape == (
-        tiling_test_data["decoding_features"].shape[0],
-        tiling_test_data["position_distance"].shape[1],
-    )
-    assert jnp.all(jnp.isfinite(result))
 
 
 @pytest.mark.integration
@@ -121,6 +95,7 @@ def test_various_tile_sizes(tiling_test_data):
         tiling_test_data["log_position_distance"],
         use_gemm=True,
         pos_tile_size=None,
+        log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
 
     # Test various tile sizes
@@ -134,6 +109,9 @@ def test_various_tile_sizes(tiling_test_data):
             tiling_test_data["log_position_distance"],
             use_gemm=True,
             pos_tile_size=tile_size,
+            log_background=realistic_log_background(
+                tiling_test_data["decoding_features"]
+            ),
         )
 
         assert np.allclose(reference, result_tiled, rtol=1e-5, atol=1e-6), (
@@ -175,6 +153,7 @@ def test_tiling_edge_cases():
         log_position_distance,
         use_gemm=True,
         pos_tile_size=None,
+        log_background=realistic_log_background(decoding_features),
     )
 
     # Tile size = 1 (extreme case)
@@ -187,6 +166,7 @@ def test_tiling_edge_cases():
         log_position_distance,
         use_gemm=True,
         pos_tile_size=1,
+        log_background=realistic_log_background(decoding_features),
     )
 
     # Tile size = 3 (doesn't divide evenly into 11)
@@ -199,6 +179,7 @@ def test_tiling_edge_cases():
         log_position_distance,
         use_gemm=True,
         pos_tile_size=3,
+        log_background=realistic_log_background(decoding_features),
     )
 
     assert np.allclose(reference, result_tile_1, rtol=1e-5, atol=1e-6)
@@ -218,6 +199,7 @@ def test_tiling_gemm_vs_loop(tiling_test_data):
         tiling_test_data["log_position_distance"],
         use_gemm=True,
         pos_tile_size=100,
+        log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
 
     # Loop with tiling
@@ -230,6 +212,7 @@ def test_tiling_gemm_vs_loop(tiling_test_data):
         tiling_test_data["log_position_distance"],
         use_gemm=False,
         pos_tile_size=100,
+        log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
 
     # Should produce same result (both methods are equivalent)
@@ -271,6 +254,7 @@ def test_tiling_very_large_grid():
         log_position_distance,
         use_gemm=True,
         pos_tile_size=500,  # Process 500 positions at a time
+        log_background=realistic_log_background(decoding_features),
     )
 
     assert result.shape == (n_dec, n_pos)

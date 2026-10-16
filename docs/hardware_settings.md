@@ -94,9 +94,9 @@ electrodes at equal rates, a 30 s first prediction took 29 s on the A100
 code across processes, but only when array shapes repeat exactly, for example
 when decoding the same recording again.
 
-**Long encoding with the linear clusterless KDE.** Its kernels grow with the
-number of encoding spikes. If they don't fit, set `encoding_block_size` and
-`position_block_size` (see
+**Long encoding with the clusterless KDE.** Its non-local position kernel grows
+with the number of encoding spikes. If it doesn't fit, set `enc_tile_size` with
+`use_streaming=True`, and `pos_tile_size` (see
 [performance_prediction.md](performance_prediction.md)).
 
 ## Parameter estimation (EM)

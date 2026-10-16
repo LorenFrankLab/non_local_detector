@@ -225,6 +225,7 @@ def test_gmm_tile_updates_keep_initial_term_without_cancellation_loss(
         jnp.asarray(columns),
         jnp.array(0.0),
         jnp.zeros(2),
+        jnp.full(3, -jnp.inf),  # no background: isolates the accumulation
     )
     np.testing.assert_array_equal(actual, expected)
 
@@ -296,7 +297,6 @@ def clusterless_log_likelihood(algorithm):
     "algorithm",
     [
         "clusterless_kde",
-        "clusterless_kde_log",
         "clusterless_gmm",
         "clusterless_diffusion",
     ],

@@ -10,13 +10,15 @@ from scipy.special import logsumexp  # type: ignore[import-untyped]
 
 from non_local_detector import ClusterlessDecoder
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
     estimate_log_joint_mark_intensity,
 )
-from non_local_detector.likelihoods.common import LOG_EPS
 from non_local_detector.tests.conftest import precision_mode
-from non_local_detector.tests.likelihoods.conftest import tolerance
+from non_local_detector.tests.likelihoods.conftest import (
+    realistic_log_background,
+    tolerance,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -136,10 +138,12 @@ def test_mark_offsets_match_weighted_gaussian_reference_on_every_path(n_features
     log_weights[weights > 0] = np.log(
         weights[weights > 0].astype(float) / weights.sum()
     )
-    # Keep every value above the LOG_EPS floor, where the estimate must be exact.
+    # Keep every intensity above log_background + log(eps), the range where it
+    # changes the spike's term and the estimate must be exact.
     occupancy = np.full(len(evaluation_position), 1e-6, dtype=np.float32)
     mean_rate = 5.0
-    expected = (
+    log_background = np.asarray(realistic_log_background(decoding), dtype=np.float64)
+    log_intensity = (
         np.log(mean_rate)
         + logsumexp(
             _gaussian_log_kernel(decoding, encoding, std)[:, :, None]
@@ -149,7 +153,10 @@ def test_mark_offsets_match_weighted_gaussian_reference_on_every_path(n_features
         )
         - np.log(occupancy.astype(float))
     )
-    assert (expected > LOG_EPS).all()
+    assert (
+        log_intensity > log_background[:, None] + np.log(np.finfo(np.float32).eps)
+    ).all()
+    expected = np.logaddexp(log_intensity, log_background[:, None])
     policy: dict[str, Any] = {}
     if path != "full":
         policy["enc_tile_size"] = 4
@@ -168,6 +175,7 @@ def test_mark_offsets_match_weighted_gaussian_reference_on_every_path(n_features
         mean_rate,
         None if path == "streaming" else jnp.asarray(log_position),
         encoding_weights=jnp.asarray(weights),
+        log_background=jnp.asarray(log_background, dtype=jnp.float32),
         **policy,
     )
     assert np.isfinite(actual).all()
@@ -190,7 +198,7 @@ def test_public_decoder_posterior_is_invariant_to_waveform_translation(path):
         decoder = ClusterlessDecoder(
             environments=[environment],
             infer_track_interior=False,
-            clusterless_algorithm="clusterless_kde_log",
+            clusterless_algorithm="clusterless_kde",
             clusterless_algorithm_params={
                 "position_std": 1.0,
                 "waveform_std": 24.0,

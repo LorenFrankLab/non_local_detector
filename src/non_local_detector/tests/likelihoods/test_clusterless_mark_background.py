@@ -1,0 +1,344 @@
+"""Clusterless marked intensities carry a unit-consistent background component.
+
+Each active state's marked intensity is ``lambda(x, m) + beta q(m)`` with
+compensator ``Lambda(x) + beta`` per electrode, where ``q`` is the electrode's
+normalized mark reference and ``beta = RATE_EPS_HZ``. Under an affine change of
+mark units ``m' = A m + c`` with the model transformed alike, every spike's
+term then shifts by ``-log|det A|`` at every position, for every state.
+"""
+
+import copy
+import warnings
+
+import jax.numpy as jnp
+import numpy as np
+import pytest
+
+from non_local_detector import Environment
+from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
+from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
+from non_local_detector.likelihoods.mark_reference import MarkReference
+from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from non_local_detector.time_edges import time_edges_from_centers
+
+# Each algorithm, plus the tiled / streamed prediction paths that score spikes
+# with separate kernels.
+VARIANTS = [
+    ("clusterless_gmm", {}),
+    ("clusterless_gmm", {"bin_tile_size": 7}),
+    ("clusterless_kde", {}),
+    ("clusterless_kde", {"enc_tile_size": 64, "use_streaming": True}),
+    ("clusterless_kde", {"pos_tile_size": 9}),
+    ("clusterless_diffusion", {}),
+]
+VARIANT_IDS = [
+    name + ("-" + "-".join(overrides) if overrides else "")
+    for name, overrides in VARIANTS
+]
+SCALE = np.array([10.0, 0.5, 3.0, 1.0])
+OFFSET = np.array([5.0, -2.0, 0.0, 100.0])
+N_TRAIN = 8_000
+N_TEST = 400
+
+
+@pytest.fixture(scope="module")
+def run_data():
+    sim = make_simulated_run_data(n_runs=1, seed=0)
+    time, position = sim.position_time, sim.position
+    cut, stop = time[N_TRAIN], time[N_TRAIN + N_TEST]
+    environment = Environment(place_bin_size=5.0)
+    environment.fit_place_grid(position)
+    return {
+        "environment": environment,
+        "train_time": time[:N_TRAIN],
+        "train_position": position[:N_TRAIN],
+        "test_time": time[N_TRAIN : N_TRAIN + N_TEST],
+        "test_position": position[N_TRAIN : N_TRAIN + N_TEST],
+        "train_spikes": [t[t < cut] for t in sim.spike_times],
+        "train_marks": [
+            f[t < cut]
+            for t, f in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
+        ],
+        "test_spikes": [t[(t >= cut) & (t < stop)] for t in sim.spike_times],
+        "test_marks": [
+            f[(t >= cut) & (t < stop)]
+            for t, f in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
+        ],
+    }
+
+
+def _params(algorithm, scale=1.0):
+    scale = np.asarray(scale, dtype=float)
+    if algorithm == "clusterless_gmm":
+        return {
+            "gmm_components_joint": 8,
+            "gmm_components_occupancy": 4,
+            "disable_progress_bar": True,
+        }
+    return {
+        "position_std": 6.0,
+        "waveform_std": 24.0 * scale,
+        "disable_progress_bar": True,
+    }
+
+
+def _fit(run_data, variant, marks=None, scale=1.0):
+    algorithm, _ = variant
+    fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
+    return fit(
+        run_data["train_time"],
+        run_data["train_position"],
+        run_data["train_spikes"],
+        run_data["train_marks"] if marks is None else marks,
+        run_data["environment"],
+        **_params(algorithm, scale),
+    )
+
+
+def _predict(run_data, variant, model, marks, is_local, spikes=None):
+    algorithm, overrides = variant
+    _, predict = _CLUSTERLESS_ALGORITHMS[algorithm]
+    model = {**model, **overrides}
+    return np.asarray(
+        predict(
+            run_data["test_time"],
+            run_data["test_position"],
+            run_data["test_spikes"] if spikes is None else spikes,
+            marks,
+            time_edges=time_edges_from_centers(run_data["test_time"]),
+            **model,
+            is_local=is_local,
+        )
+    )
+
+
+def _transform_reference(reference):
+    if reference is None:
+        return None
+    return MarkReference(
+        reference.location * SCALE + OFFSET, reference.scale * np.abs(SCALE)
+    )
+
+
+def _transform_gmm(gmm, n_position_dims):
+    """The same fitted joint mixture expressed in transformed mark units."""
+    if gmm is None:
+        return None
+    assert gmm.covariance_type == "full"
+    s = jnp.concatenate([jnp.ones(n_position_dims), jnp.asarray(SCALE)])
+    c = jnp.concatenate([jnp.zeros(n_position_dims), jnp.asarray(OFFSET)])
+    transformed = copy.deepcopy(gmm)
+    transformed.means_ = gmm.means_ * s + c
+    transformed.covariances_ = gmm.covariances_ * s[:, None] * s[None, :]
+    # Scores use y = (x - mu) @ P_chol, so x' = x * s + c needs P_chol' = P_chol / s.
+    transformed.precisions_chol_ = gmm.precisions_chol_ / s[None, :, None]
+    return transformed
+
+
+def _transformed_model(run_data, variant, model):
+    marks = [m * SCALE + OFFSET for m in run_data["train_marks"]]
+    if variant[0] != "clusterless_gmm":
+        return _fit(run_data, variant, marks, SCALE)
+    transformed = dict(model)
+    n_position_dims = run_data["train_position"].reshape(N_TRAIN, -1).shape[1]
+    transformed["joint_models"] = [
+        _transform_gmm(g, n_position_dims) for g in model["joint_models"]
+    ]
+    transformed["mark_reference"] = [
+        _transform_reference(r) for r in model["mark_reference"]
+    ]
+    return transformed
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
+def test_unit_change_shifts_every_spike_term_by_the_jacobian(
+    run_data, algorithm, is_local
+):
+    model = _fit(run_data, algorithm)
+    original = _predict(run_data, algorithm, model, run_data["test_marks"], is_local)
+    transformed = _predict(
+        run_data,
+        algorithm,
+        _transformed_model(run_data, algorithm, model),
+        [m * SCALE + OFFSET for m in run_data["test_marks"]],
+        is_local,
+    )
+    counts = np.histogram(
+        np.concatenate(run_data["test_spikes"]),
+        time_edges_from_centers(run_data["test_time"]),
+    )[0]
+    assert counts.sum() > 20
+    jacobian = np.log(np.prod(np.abs(SCALE)))
+    if algorithm[0] == "clusterless_diffusion":
+        # The float32 heat kernel resolves its field to about 1e-6 of each
+        # spike's peak, and values just above that floor carry up to ~1e-2
+        # relative error (measured against a float64 full-rank heat kernel), so
+        # a refit in other units reproduces those few entries only approximately.
+        error = np.abs(transformed + counts[:, None] * jacobian - original)
+        assert np.mean(error <= 1e-3 + 1e-5 * np.abs(original)) >= 0.99
+        assert np.max(error) < 0.1
+        return
+    np.testing.assert_allclose(
+        transformed + counts[:, None] * jacobian, original, rtol=1e-5, atol=1e-3
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
+def test_outlier_mark_scores_the_background_at_every_position(run_data, algorithm):
+    """A mark the encoding model cannot explain is scored by the background."""
+    model = _fit(run_data, algorithm)
+    # A reference much broader than the 24 µV mark kernel, so 1000 µV away the
+    # marked intensity is ~3400 nats below the background at every position.
+    reference = MarkReference(np.zeros(4), np.full(4, 3e4))
+    model = dict(model, mark_reference=[reference] + model["mark_reference"][1:])
+    spike_time = run_data["test_time"][200]
+    outlier = model_marks_center(run_data) + 1e3
+    spikes = [np.array([spike_time])] + [np.array([])] * 4
+    marks = [outlier[None, :]] + [np.zeros((0, 4))] * 4
+    silent = [np.array([])] * 5
+    edges = time_edges_from_centers(run_data["test_time"])
+    row = np.searchsorted(edges, spike_time, "right") - 1
+    for is_local in (False, True):
+        with_spike = _predict(run_data, algorithm, model, marks, is_local, spikes)
+        without = _predict(
+            run_data, algorithm, model, [np.zeros((0, 4))] * 5, is_local, silent
+        )
+        expected = (
+            LOG_RATE_EPS_HZ
+            + reference.log_density(outlier[None, :])[0]
+            + np.log(np.diff(edges)[row])
+        )
+        np.testing.assert_allclose(with_spike[row] - without[row], expected, rtol=1e-5)
+
+
+def model_marks_center(run_data):
+    """Mean training mark of the first electrode."""
+    return run_data["train_marks"][0].mean(axis=0)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
+@pytest.mark.parametrize("has_reference", [True, False])
+def test_zero_rate_electrode_scores_background(run_data, algorithm, has_reference):
+    train_spikes = [np.array([])] + run_data["train_spikes"][1:]
+    train_marks = [np.zeros((0, 4))] + run_data["train_marks"][1:]
+    fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm[0]]
+    model = fit(
+        run_data["train_time"],
+        run_data["train_position"],
+        train_spikes,
+        train_marks,
+        run_data["environment"],
+        **_params(algorithm[0]),
+    )
+    assert model["mark_reference"][0] is None
+    reference = MarkReference(
+        np.array([0.0, 1.0, 2.0, 3.0]), np.array([5.0, 6.0, 7.0, 8.0])
+    )
+    if has_reference:
+        model = dict(model, mark_reference=[reference] + model["mark_reference"][1:])
+    spike_time = run_data["test_time"][100]
+    mark = np.array([[1.0, 2.0, 3.0, 4.0]])
+    spikes = [np.array([spike_time])] + [np.array([])] * 4
+    marks = [mark] + [np.zeros((0, 4))] * 4
+    for is_local in (False, True):
+        with_spike = _predict(run_data, algorithm, model, marks, is_local, spikes)
+        without = _predict(
+            run_data,
+            algorithm,
+            model,
+            [np.zeros((0, 4))] * 5,
+            is_local,
+            [np.array([])] * 5,
+        )
+        edges = time_edges_from_centers(run_data["test_time"])
+        row = np.searchsorted(edges, spike_time, "right") - 1
+        expected = LOG_RATE_EPS_HZ + np.log(np.diff(edges)[row])
+        if has_reference:
+            expected += reference.log_density(mark)[0]
+        np.testing.assert_allclose(with_spike[row] - without[row], expected, rtol=1e-6)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
+def test_zero_rate_compensator_adds_background_rate_for_every_electrode(run_data, algorithm):
+    """With no encoding spikes anywhere, each silent bin scores -dt * n_e * beta."""
+    fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm[0]]
+    n_electrodes = len(run_data["train_spikes"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # empty-electrode warnings
+        model = fit(
+            run_data["train_time"],
+            run_data["train_position"],
+            [np.array([])] * n_electrodes,
+            [np.zeros((0, 4))] * n_electrodes,
+            run_data["environment"],
+            **_params(algorithm[0]),
+        )
+    for is_local in (False, True):
+        silent = _predict(
+            run_data,
+            algorithm,
+            model,
+            [np.zeros((0, 4))] * n_electrodes,
+            is_local,
+            [np.array([])] * n_electrodes,
+        )
+        dt = np.diff(time_edges_from_centers(run_data["test_time"]))
+        np.testing.assert_allclose(
+            silent,
+            np.broadcast_to(-dt[:, None] * n_electrodes * RATE_EPS_HZ, silent.shape),
+            rtol=1e-6,
+        )
+
+
+@pytest.mark.integration
+def test_diffusion_unvisited_bins_score_only_the_background():
+    """Bins the animal never visited carry no encoding evidence.
+
+    Their diffused occupancy is below the heat kernel's resolution, so a spike
+    there is explained by the background alone and cannot outscore visited bins.
+    """
+    rng = np.random.default_rng(0)
+    time = np.arange(0.0, 20.0, 0.002)
+    position = (30.0 + 25.0 * np.sin(time))[:, None]  # visits 5-55 of 0-120
+    environment = Environment(place_bin_size=2.0, position_range=((0.0, 120.0),))
+    environment.fit_place_grid(position, infer_track_interior=False)
+    spike_times = [np.sort(rng.uniform(0.0, 20.0, 400))]
+    marks = [rng.normal(0.0, 30.0, (400, 4))]
+    fit, predict = _CLUSTERLESS_ALGORITHMS["clusterless_diffusion"]
+    model = fit(
+        time,
+        position,
+        spike_times,
+        marks,
+        environment,
+        position_std=1.5,
+        waveform_std=24.0,
+        disable_progress_bar=True,
+    )
+    decode_time = np.arange(0.0, 0.1, 0.002)
+    edges = time_edges_from_centers(decode_time)
+    spikes = [np.array([0.05, 0.0501])]
+    decode_marks = [marks[0][:2]]
+    kwargs = dict(time_edges=edges, **model, is_local=False)
+    pos = (30.0 + 25.0 * np.sin(decode_time))[:, None]
+    with_spikes = np.asarray(predict(decode_time, pos, spikes, decode_marks, **kwargs))
+    silent = np.asarray(
+        predict(decode_time, pos, [np.array([])], [np.zeros((0, 4))], **kwargs)
+    )
+    row = np.searchsorted(edges, 0.05, "right") - 1
+    evidence = with_spikes[row] - silent[row]
+    occupancy = np.asarray(model["occupancy"])
+    unvisited = occupancy < 1e-6 * occupancy.max()
+    assert unvisited.sum() > 10 and (~unvisited).sum() > 10
+    background = (
+        LOG_RATE_EPS_HZ
+        + model["mark_reference"][0].log_density(decode_marks[0])
+        + np.log(np.diff(edges)[row])
+    ).sum()
+    np.testing.assert_allclose(evidence[unvisited], background, rtol=1e-5)
+    assert evidence[unvisited].max() < evidence[~unvisited].max()

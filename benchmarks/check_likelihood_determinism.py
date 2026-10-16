@@ -32,7 +32,6 @@ from compare_prediction_modes import provenance  # noqa: E402
 
 ALGORITHMS = (
     "clusterless_kde",
-    "clusterless_kde_log",
     "clusterless_gmm",
     "clusterless_diffusion",
 )

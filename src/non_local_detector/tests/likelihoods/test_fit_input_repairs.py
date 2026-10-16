@@ -7,10 +7,7 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import (
-    fit_clusterless_kde_encoding_model,
-    fit_clusterless_kde_log_encoding_model,
-)
+from non_local_detector.likelihoods import fit_clusterless_kde_encoding_model
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
 )
@@ -143,19 +140,13 @@ def test_empty_sorted_population_has_empty_fields_and_zero_total_rate(fit):
     np.testing.assert_array_equal(model["no_spike_part_log_likelihood"], 0.0)
 
 
-CLUSTERLESS_KDE_FITS = [
-    fit_clusterless_kde_encoding_model,
-    fit_clusterless_kde_log_encoding_model,
-]
-
-
-def _fit_clusterless_kde(fit, **bandwidths):
+def _fit_clusterless_kde(**bandwidths):
     time = np.arange(5.0)
     position = time[:, None]
     env = Environment(place_bin_size=1.0).fit_place_grid(
         position, infer_track_interior=False
     )
-    return fit(
+    return fit_clusterless_kde_encoding_model(
         time,
         position,
         [time],
@@ -166,25 +157,23 @@ def _fit_clusterless_kde(fit, **bandwidths):
     )
 
 
-@pytest.mark.parametrize("fit", CLUSTERLESS_KDE_FITS)
 @pytest.mark.parametrize("name", ["position_std", "waveform_std"])
 @pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, [1.0, 1.0]])
-def test_clusterless_kde_rejects_invalid_bandwidths(fit, name, value):
+def test_clusterless_kde_rejects_invalid_bandwidths(name, value):
     """Non-positive, non-finite or wrongly shaped bandwidths raise at fit time.
 
     Positions and marks are one-dimensional, so a two-element bandwidth has
     the wrong shape.
     """
     with pytest.raises(ValidationError, match=name):
-        _fit_clusterless_kde(fit, **{name: value})
+        _fit_clusterless_kde(**{name: value})
 
 
-@pytest.mark.parametrize("fit", CLUSTERLESS_KDE_FITS)
 @pytest.mark.parametrize("value", [1e39, 1e-46])
-def test_clusterless_kde_rejects_bandwidths_that_float32_cannot_hold(fit, value):
+def test_clusterless_kde_rejects_bandwidths_that_float32_cannot_hold(value):
     """A bandwidth that overflows or flushes to zero in float32 is rejected."""
     with precision_mode(False), pytest.raises(ValidationError, match="representable"):
-        _fit_clusterless_kde(fit, position_std=value)
+        _fit_clusterless_kde(position_std=value)
 
 
 def test_clusterless_gmm_uses_every_bin_without_an_interior_mask():

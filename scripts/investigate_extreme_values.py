@@ -1,6 +1,6 @@
 """Investigate behavior with extreme feature values.
 
-This script explores how both clusterless_kde.py and clusterless_kde_log.py
+This script explores how both clusterless_kde.py and clusterless_kde.py
 handle extreme feature distances that can cause numerical underflow.
 """
 
@@ -15,10 +15,10 @@ from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity as estimate_original,
 )
 from non_local_detector.likelihoods.clusterless_kde import kde_distance
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity as estimate_log,
 )
-from non_local_detector.likelihoods.clusterless_kde_log import log_kde_distance
+from non_local_detector.likelihoods.clusterless_kde import log_kde_distance
 
 
 def analyze_extreme_features():

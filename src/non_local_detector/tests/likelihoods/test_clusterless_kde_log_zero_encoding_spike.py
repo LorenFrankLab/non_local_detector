@@ -4,9 +4,8 @@ A zero-encoding-spike electrode (a unit that never fired during training) has an
 empty mark-density KDE. When it fires during *decoding*, the log-space
 ``is_local=True`` path evaluated ``log(density)`` over an empty sample set:
 ``logsumexp(empty) - logsumexp(empty) = -inf - -inf = NaN``, which the HMM filter
-then propagated into the Local-state posterior. The probability-space path is
-NaN-free (``mean_rate = 0`` floors the whole term to ``LOG_EPS``). Both paths must
-agree.
+then propagated into the Local-state posterior. Each of that electrode's decode
+spikes must instead contribute the ``LOG_EPS`` background floor.
 """
 
 import jax.numpy as jnp
@@ -15,8 +14,13 @@ import pytest
 from numpy.testing import assert_allclose
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods import clusterless_kde, clusterless_kde_log
-from non_local_detector.likelihoods.common import LOG_EPS, block_log_kde, log_kde
+from non_local_detector.likelihoods import clusterless_kde
+from non_local_detector.likelihoods.common import (
+    LOG_EPS,
+    RATE_REFERENCE_SECONDS,
+    block_log_kde,
+    log_kde,
+)
 
 
 @pytest.mark.unit
@@ -89,9 +93,9 @@ def _zero_encoding_spike_scenario():
     }
 
 
-def _fit_predict_local(module, s):
-    """Fit ``module``'s encoding model and run its is_local=True prediction."""
-    encoding = module.fit_clusterless_kde_encoding_model(
+def _fit_predict_local(s):
+    """Fit the KDE encoding model and run its is_local=True prediction."""
+    encoding = clusterless_kde.fit_clusterless_kde_encoding_model(
         position_time=jnp.asarray(s["position_time"]),
         position=jnp.asarray(s["position"]),
         spike_times=[jnp.asarray(t) for t in s["enc_spike_times"]],
@@ -102,7 +106,7 @@ def _fit_predict_local(module, s):
         block_size=100,
         disable_progress_bar=True,
     )
-    return module.predict_clusterless_kde_log_likelihood(
+    return clusterless_kde.predict_clusterless_kde_log_likelihood(
         jnp.asarray(s["position_time"]),
         jnp.asarray(s["position"]),
         [jnp.asarray(t) for t in s["dec_spike_times"]],
@@ -114,25 +118,32 @@ def _fit_predict_local(module, s):
 
 
 @pytest.mark.unit
-def test_kde_log_zero_encoding_spike_local_is_finite_and_matches_prob():
-    """Zero-encoding-spike electrode must not NaN the log-space local path (#32).
+def test_kde_zero_encoding_spike_local_is_finite_and_adds_the_floor():
+    """Zero-encoding-spike electrode must not NaN the local path (#32).
 
-    The empty mark KDE must contribute the ``LOG_EPS`` floor per decode spike
-    (matching the probability-space path), not ``NaN``.
+    The empty mark KDE has no intensity, so each of its decode spikes adds the
+    ``LOG_EPS`` background floor plus the bin-duration evidence
+    ``log(dt / RATE_REFERENCE_SECONDS)``; bins without its spikes are unchanged.
     """
     s = _zero_encoding_spike_scenario()
-
-    ll_log = np.asarray(_fit_predict_local(clusterless_kde_log, s))
-    ll_prob = np.asarray(_fit_predict_local(clusterless_kde, s))
-
-    assert np.all(np.isfinite(ll_log)), (
-        "zero-encoding-spike electrode produced NaN/Inf in the log-space "
-        "is_local=True likelihood"
+    ll = np.asarray(_fit_predict_local(s))
+    assert np.all(np.isfinite(ll)), (
+        "zero-encoding-spike electrode produced NaN/Inf in the is_local=True likelihood"
     )
+
+    silent = dict(
+        s,
+        dec_spike_times=[s["dec_spike_times"][0], np.zeros((0,))],
+        dec_feats=[s["dec_feats"][0], np.zeros((0, 2), dtype=np.float32)],
+    )
+    ll_without = np.asarray(_fit_predict_local(silent))
+    counts = np.histogram(s["dec_spike_times"][1], bins=s["time"])[0]
+    assert counts.sum() > 0
+    dt = np.diff(s["time"])
+    per_spike = LOG_EPS + np.log(dt / RATE_REFERENCE_SECONDS)
     assert_allclose(
-        ll_log,
-        ll_prob,
-        rtol=1e-3,
-        atol=1e-3,
-        err_msg="log-space local likelihood diverged from the probability-space path",
+        ll - ll_without,
+        (counts * per_spike)[:, None],
+        rtol=1e-5,
+        atol=1e-4,
     )

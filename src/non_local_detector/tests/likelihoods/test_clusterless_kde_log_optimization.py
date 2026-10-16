@@ -1,17 +1,18 @@
 """Tests for optimized clusterless KDE log-space functions.
 
 This module tests the vectorized implementations of kde_distance and log_kde_distance
-in clusterless_kde_log.py to ensure numerical equivalence and stability.
+in clusterless_kde.py to ensure numerical equivalence and stability.
 """
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
-    _compensated_linear_marginal,
+from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
     _log_joint_from_log_marginal,
+    _log_marginal_floor,
+    _stabilized_log_kernel_product,
     kde_distance,
     log_kde_distance,
 )
@@ -22,6 +23,7 @@ from non_local_detector.likelihoods.common import (
     log_gaussian_pdf,
     safe_log,
 )
+from non_local_detector.likelihoods.mark_reference import MarkReference
 
 
 class TestKdeDistanceVectorized:
@@ -276,34 +278,53 @@ class TestJitCompiledFunctions:
             )
 
 
-class TestCompensatedLinearMarginal:
-    """Tests for the scaled-GEMM reduction behind ``_compensated_linear_marginal``.
+class TestScaledGemmJointIntensity:
+    """The scaled-GEMM reduction matches a logsumexp oracle for any mark dimension.
 
-    Validates that it matches the logsumexp reference to within float32
-    precision for any number of waveform feature dimensions.
+    Each spike's term is ``logaddexp(log joint intensity, log background)``; the
+    reduction must be exact wherever the intensity can change that term.
     """
 
     @staticmethod
-    def _logsumexp_reference(logK_mark, logK_pos, log_w, occupancy, mean_rate):
-        """Pure logsumexp reference (ground-truth implementation).
+    def _background(dec_wf):
+        """Realistic per-spike background: rate floor times a broad mark density."""
+        reference = MarkReference(
+            np.zeros(dec_wf.shape[1]), np.full(dec_wf.shape[1], 50.0)
+        )
+        return jnp.asarray(LOG_EPS + reference.log_density(np.asarray(dec_wf)))
 
-        This is an independent reimplementation of the logsumexp marginal,
-        used as the correctness oracle for the GEMM reduction. Like every
-        joint-intensity estimate, it is floored at LOG_EPS.
-        """
+    @staticmethod
+    def _gemm_terms(logK_mark, logK_pos, log_w, occupancy, mean_rate, background):
+        log_w = jnp.broadcast_to(log_w, (logK_mark.shape[0],))
+        log_marginal = _stabilized_log_kernel_product(
+            logK_mark,
+            logK_pos,
+            log_w,
+            _log_marginal_floor(
+                mean_rate, occupancy, background + np.log(np.finfo(np.float32).eps)
+            ),
+        )
+        return jnp.logaddexp(
+            _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy),
+            background[:, None],
+        )
+
+    @staticmethod
+    def _logsumexp_reference(
+        logK_mark, logK_pos, log_w, occupancy, mean_rate, background
+    ):
+        """Independent logsumexp oracle for the per-spike terms."""
 
         def for_one_dec(wf_col):
             return jax.nn.logsumexp(log_w + logK_pos + wf_col[:, None], axis=0)
 
         log_marginal = jax.vmap(for_one_dec, in_axes=1)(logK_mark)
-        log_mean_rate = safe_log(mean_rate, eps=EPS)
-        log_occ = safe_log(occupancy, eps=EPS)
         log_joint = jnp.where(
             occupancy[None, :] > 0.0,
-            log_mean_rate + log_marginal - log_occ[None, :],
-            jnp.log(0.0),
+            jnp.log(mean_rate) + log_marginal - jnp.log(occupancy)[None, :],
+            -jnp.inf,
         )
-        return jnp.maximum(log_joint, LOG_EPS)
+        return jnp.logaddexp(log_joint, background[:, None])
 
     @staticmethod
     def _make_test_data(rng, n_enc, n_dec, n_pos, n_wf):
@@ -318,139 +339,66 @@ class TestCompensatedLinearMarginal:
         logK_mark = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, wf_std)
         log_w = -jnp.log(float(n_enc))
         occupancy = jnp.ones(n_pos) * 0.01
-        return logK_mark, logK_pos, log_w, occupancy
+        background = TestScaledGemmJointIntensity._background(dec_wf)
+        return logK_mark, logK_pos, log_w, occupancy, background
+
+    def _assert_matches(self, rng, n_enc, n_dec, n_pos, n_wf):
+        data = self._make_test_data(rng, n_enc, n_dec, n_pos, n_wf)
+        result = self._gemm_terms(*data[:4], 5.0, data[4])
+        reference = self._logsumexp_reference(*data[:4], 5.0, data[4])
+        max_diff = float(jnp.max(jnp.abs(result - reference)))
+        assert max_diff < 1e-4, f"max abs diff {max_diff:.2e}"
 
     def test_matches_logsumexp_4d(self):
-        """Compensated linear matches logsumexp for 4D waveform features."""
-        rng = np.random.default_rng(42)
-        logK_mark, logK_pos, log_w, occupancy = self._make_test_data(
-            rng, n_enc=500, n_dec=50, n_pos=100, n_wf=4
-        )
-
-        result_comp = _compensated_linear_marginal(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-        )
-        result_ref = self._logsumexp_reference(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-        )
-
-        assert jnp.allclose(result_comp, result_ref, atol=1e-4, rtol=1e-4), (
-            f"Max abs diff: {float(jnp.max(jnp.abs(result_comp - result_ref))):.2e}"
-        )
+        self._assert_matches(np.random.default_rng(42), 500, 50, 100, 4)
 
     def test_matches_logsumexp_8d(self):
-        """Compensated linear matches logsumexp for 8D waveform features."""
-        rng = np.random.default_rng(42)
-        logK_mark, logK_pos, log_w, occupancy = self._make_test_data(
-            rng, n_enc=500, n_dec=50, n_pos=100, n_wf=8
-        )
-
-        result_comp = _compensated_linear_marginal(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-        )
-        result_ref = self._logsumexp_reference(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-        )
-
-        assert jnp.allclose(result_comp, result_ref, atol=1e-4, rtol=1e-4), (
-            f"Max abs diff: {float(jnp.max(jnp.abs(result_comp - result_ref))):.2e}"
-        )
+        """At 8 features many intensities sit far below LOG_EPS; they still count."""
+        self._assert_matches(np.random.default_rng(42), 500, 50, 100, 8)
 
     def test_matches_across_multiple_seeds(self):
-        """Accuracy holds across 5 random seeds for 4D features at larger scale."""
         for seed in range(5):
-            rng = np.random.default_rng(seed * 100)
-            logK_mark, logK_pos, log_w, occupancy = self._make_test_data(
-                rng, n_enc=1000, n_dec=100, n_pos=200, n_wf=4
-            )
-
-            result_comp = _compensated_linear_marginal(
-                logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-            )
-            result_ref = self._logsumexp_reference(
-                logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-            )
-
-            max_diff = float(jnp.max(jnp.abs(result_comp - result_ref)))
-            assert max_diff < 1e-4, (
-                f"Seed {seed}: max abs diff {max_diff:.2e} exceeds 1e-4"
-            )
+            self._assert_matches(np.random.default_rng(seed * 100), 1000, 100, 200, 4)
 
     def test_matches_logsumexp_9d(self):
         """Feature count does not select an approximation: 9D is exact too."""
-        rng = np.random.default_rng(900)
-        logK_mark, logK_pos, log_w, occupancy = self._make_test_data(
-            rng, n_enc=1000, n_dec=100, n_pos=200, n_wf=9
-        )
+        self._assert_matches(np.random.default_rng(900), 1000, 100, 200, 9)
 
-        result_comp = _compensated_linear_marginal(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-        )
-        result_ref = self._logsumexp_reference(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-        )
-
-        assert jnp.allclose(result_comp, result_ref, atol=1e-4, rtol=1e-4), (
-            f"Max abs diff: {float(jnp.max(jnp.abs(result_comp - result_ref))):.2e}"
-        )
-
-    def test_output_shape_and_finite_nonzero_occupancy(self):
-        """Output has correct shape and all-finite values when occupancy > 0."""
+    def test_output_shape_and_finite(self):
         rng = np.random.default_rng(42)
-        n_dec, n_pos = 30, 50
-        logK_mark, logK_pos, log_w, occupancy = self._make_test_data(
-            rng, n_enc=200, n_dec=n_dec, n_pos=n_pos, n_wf=4
-        )
-
-        result = _compensated_linear_marginal(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
-        )
-
-        assert result.shape == (n_dec, n_pos)
-        # All occupancy is non-zero, so all outputs should be finite (no -inf mask)
+        data = self._make_test_data(rng, n_enc=200, n_dec=30, n_pos=50, n_wf=4)
+        result = self._gemm_terms(*data[:4], 5.0, data[4])
+        assert result.shape == (30, 50)
         assert jnp.all(jnp.isfinite(result))
 
-    def test_zero_occupancy_produces_log_eps_floor(self):
-        """Zero-occupancy bins collapse to the LOG_EPS floor, not -inf.
-
-        Every joint-intensity path funnels through _log_joint_from_log_marginal,
-        which maps degenerate bins (zero occupancy or fully underflowed
-        marginal) to the finite LOG_EPS floor. This is the unified contract: a
-        finite floor cannot poison the HMM posterior the way -inf would, and it
-        matches what block_estimate_log_joint_mark_intensity has always clipped
-        the output to.
-        """
+    def test_zero_occupancy_bins_score_the_background(self):
+        """A bin without support has zero intensity: the background explains it."""
         rng = np.random.default_rng(42)
         n_enc, n_dec, n_pos, n_wf = 100, 10, 20, 4
-
         enc_wf = jnp.array(rng.standard_normal((n_enc, n_wf)) * 50)
         dec_wf = jnp.array(rng.standard_normal((n_dec, n_wf)) * 50)
-        wf_std = jnp.full(n_wf, 24.0)
+        logK_mark = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, jnp.full(n_wf, 24.0))
+        occupancy = jnp.ones(n_pos).at[5].set(0.0).at[15].set(0.0) * 0.01
+        background = self._background(dec_wf)
 
-        logK_pos = jnp.zeros((n_enc, n_pos))
-        logK_mark = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, wf_std)
-        log_w = -jnp.log(float(n_enc))
-
-        # Set some occupancy bins to zero
-        occupancy = jnp.ones(n_pos) * 0.01
-        occupancy = occupancy.at[5].set(0.0)
-        occupancy = occupancy.at[15].set(0.0)
-
-        result = _compensated_linear_marginal(
-            logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
+        result = self._gemm_terms(
+            logK_mark,
+            jnp.zeros((n_enc, n_pos)),
+            -jnp.log(float(n_enc)),
+            occupancy,
+            5.0,
+            background,
         )
 
-        # Zero-occupancy bins are floored to LOG_EPS (finite), not -inf.
-        assert jnp.all(jnp.isfinite(result))
-        assert jnp.allclose(result[:, 5], LOG_EPS)
-        assert jnp.allclose(result[:, 15], LOG_EPS)
-        # Non-zero occupancy bins should be finite
-        assert jnp.all(jnp.isfinite(result[:, 0]))
+        np.testing.assert_array_equal(result[:, 5], background)
+        np.testing.assert_array_equal(result[:, 15], background)
+        assert jnp.all(result[:, 0] > background)
 
 
 class TestLogJointFromLogMarginal:
-    """The shared degeneracy combiner: floor -inf / zero-occupancy to LOG_EPS,
-    but let NaN (a broken computation) propagate."""
+    """The shared degeneracy combiner: zero support is ``-inf`` (the caller's
+    background then explains the spike), and NaN (a broken computation)
+    propagates."""
 
     def test_finite_marginal_matches_formula(self):
         """A supported bin returns log(mean_rate) + log_marginal - log(occ)."""
@@ -460,27 +408,22 @@ class TestLogJointFromLogMarginal:
         expected = safe_log(2.5, eps=EPS) + (-2.0) - safe_log(0.5, eps=EPS)
         assert jnp.allclose(out[0, 0], expected)
 
-    def test_neg_inf_marginal_at_occupied_bin_floors_to_log_eps(self):
-        """A fully underflowed marginal (-inf, true zero mass) at an occupied
-        bin floors to LOG_EPS -- this is what makes the compensated and
-        logsumexp paths agree at degenerate bins."""
+    def test_neg_inf_marginal_at_occupied_bin_is_zero_intensity(self):
         log_marginal = jnp.array([[-2.0, -jnp.inf]])
         occupancy = jnp.array([0.5, 0.5])
         out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
         assert jnp.isfinite(out[0, 0])
-        assert jnp.allclose(out[0, 1], LOG_EPS)
+        assert jnp.isneginf(out[0, 1])
 
-    def test_zero_occupancy_floors_to_log_eps(self):
-        """Zero-occupancy bins have no support and floor to LOG_EPS."""
+    def test_zero_occupancy_is_zero_intensity(self):
         log_marginal = jnp.array([[-2.0, -1.0]])
         occupancy = jnp.array([0.5, 0.0])
         out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
-        assert jnp.allclose(out[0, 1], LOG_EPS)
+        assert jnp.isneginf(out[0, 1])
 
     def test_nan_marginal_propagates(self):
-        """A NaN marginal signals a broken computation (e.g. bad spike-waveform
-        data or underflow with x64 disabled) and must NOT be laundered into a
-        finite LOG_EPS floor -- it has to reach the HMM's NaN diagnostics."""
+        """A NaN marginal signals a broken computation and must reach the HMM's
+        NaN diagnostics rather than becoming a finite value."""
         log_marginal = jnp.array([[-2.0, jnp.nan]])
         occupancy = jnp.array([0.5, 0.5])
         out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
@@ -488,19 +431,17 @@ class TestLogJointFromLogMarginal:
         assert jnp.isnan(out[0, 1])
 
     def test_nan_marginal_at_zero_occupancy_still_propagates(self):
-        """A NaN must survive even at a zero-occupancy bin: the zero-occupancy floor
-        must not launder a broken computation into a finite LOG_EPS. Occupancy can
-        underflow to exactly 0 in float32, so a NaN could co-occur with it."""
+        """Occupancy can underflow to exactly 0 in float32, so a NaN could
+        co-occur with it; the zero-support rule must not hide it."""
         log_marginal = jnp.array([[jnp.nan, -1.0]])
-        occupancy = jnp.array([0.0, 0.5])  # bin 0: zero occupancy AND NaN marginal
+        occupancy = jnp.array([0.0, 0.5])
         out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
         assert jnp.isnan(out[0, 0])
-        # A finite value at a zero-occupancy bin still floors.
         finite = _log_joint_from_log_marginal(jnp.array([[2.0, -1.0]]), 2.5, occupancy)
-        assert jnp.allclose(finite[0, 0], LOG_EPS)
+        assert jnp.isneginf(finite[0, 0])
 
     def test_subeps_mean_rate_preserves_its_true_positive_log(self):
-        """Positive rates retain their magnitude before the final event floor."""
+        """Positive rates retain their magnitude; nothing floors them."""
         log_marginal = jnp.array([[2.0, -1.0]])
         occupancy = jnp.array([0.5, 0.5])
         out_tiny = _log_joint_from_log_marginal(log_marginal, 1e-20, occupancy)
@@ -510,11 +451,10 @@ class TestLogJointFromLogMarginal:
         assert jnp.allclose(out_tiny, expected)
         assert jnp.allclose(out_eps - out_tiny, jnp.log(EPS / 1e-20))
 
-    def test_zero_mean_rate_floors_to_log_eps(self):
-        """A zero mean rate (fully de-weighted electrode) forces every bin to LOG_EPS
-        via the -inf branch, even with a finite marginal -- this is what makes the
-        local path floor a de-weighted electrode to match the linear path."""
+    def test_zero_mean_rate_is_zero_intensity(self):
+        """A zero mean rate (fully de-weighted electrode) has zero intensity at
+        every bin, even with a finite marginal."""
         log_marginal = jnp.array([[2.0, -1.0]])
         occupancy = jnp.array([0.5, 0.5])
         out = _log_joint_from_log_marginal(log_marginal, 0.0, occupancy)
-        assert jnp.allclose(out, LOG_EPS)
+        assert jnp.all(jnp.isneginf(out))

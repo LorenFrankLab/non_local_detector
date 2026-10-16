@@ -46,8 +46,8 @@ def main():
     parser.add_argument("--population", type=int, default=2)
     parser.add_argument("--spike-rate", type=float, default=5)
     parser.add_argument("--mark-dimensions", type=int, default=2)
-    parser.add_argument("--encoding-block-size", type=int)
-    parser.add_argument("--position-block-size", type=int)
+    parser.add_argument("--enc-tile-size", type=int)
+    parser.add_argument("--pos-tile-size", type=int)
     parser.add_argument("--warm-duration", type=float)
     parser.add_argument("--selected-intervals", type=json.loads)
     parser.add_argument("--cleanup-spatial", action="store_true")
@@ -85,12 +85,10 @@ def main():
         )
     ):
         parser.error("invalid duration, population, chunk size, or resource budget")
-    if (args.encoding_block_size is None) != (args.position_block_size is None):
-        parser.error("provide both encoding and position block sizes")
-    if args.encoding_block_size is not None and (
-        args.family != "clusterless"
-        or args.encoding_block_size < 1
-        or args.position_block_size < 1
+    if (args.enc_tile_size is None) != (args.pos_tile_size is None):
+        parser.error("provide both encoding and position tile sizes")
+    if args.enc_tile_size is not None and (
+        args.family != "clusterless" or args.enc_tile_size < 1 or args.pos_tile_size < 1
     ):
         parser.error("positive encoding/position tile sizes apply to clusterless KDE")
     # Initialize the requested backend after parsing. Budgeted benchmarking
@@ -143,11 +141,11 @@ def main():
         # remain the qualification. Sorted KDE has no E x P decode kernel.
         encoding_count = max(1, int(args.encoding_duration * args.spike_rate))
         tracking_count = int(args.encoding_duration * 30) + 1
-        if args.encoding_block_size is not None:
+        if args.enc_tile_size is not None:
             encoding_workspace = (
                 8
-                * min(args.encoding_block_size, max(encoding_count, tracking_count))
-                * min(args.position_block_size, upper_hidden)
+                * min(args.enc_tile_size, max(encoding_count, tracking_count))
+                * min(args.pos_tile_size, upper_hidden)
                 * 4
             )
         elif args.family == "clusterless":
@@ -203,13 +201,14 @@ def main():
     if args.family == "sorted":
         model = NonLocalSortedSpikesDetector(**parameters)
     else:
-        if args.encoding_block_size is not None:
+        if args.enc_tile_size is not None:
             parameters["clusterless_algorithm_params"] = {
                 "position_std": 6.0,
                 "waveform_std": 24.0,
                 "block_size": 10_000,
-                "encoding_block_size": args.encoding_block_size,
-                "position_block_size": args.position_block_size,
+                "enc_tile_size": args.enc_tile_size,
+                "pos_tile_size": args.pos_tile_size,
+                "use_streaming": True,
             }
         model = NonLocalClusterlessDetector(**parameters)
     if args.mode != "dense":

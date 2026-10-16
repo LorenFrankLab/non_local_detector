@@ -154,6 +154,7 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
             "encoding_spike_waveform_features"
         ],
         encoding_positions=kde_encoding["encoding_positions"],
+        mark_reference=kde_encoding["mark_reference"],
         environment=data["environment"],
         mean_rates=jnp.asarray(kde_encoding["mean_rates"]),
         summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
@@ -184,6 +185,7 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
             "encoding_spike_waveform_features"
         ],
         encoding_positions=kde_encoding["encoding_positions"],
+        mark_reference=kde_encoding["mark_reference"],
         environment=data["environment"],
         mean_rates=jnp.asarray(kde_encoding["mean_rates"]),
         summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
@@ -388,6 +390,7 @@ def test_api_consistency_predict_functions(shared_simulation_data):
             "encoding_spike_waveform_features"
         ],
         encoding_positions=kde_encoding["encoding_positions"],
+        mark_reference=kde_encoding["mark_reference"],
         environment=data["environment"],
         mean_rates=kde_encoding["mean_rates"],
         summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
@@ -462,6 +465,7 @@ def test_kde_gmm_output_shape_consistency(shared_simulation_data):
         gpi_models=kde_enc["gpi_models"],
         encoding_spike_waveform_features=kde_enc["encoding_spike_waveform_features"],
         encoding_positions=kde_enc["encoding_positions"],
+        mark_reference=kde_enc["mark_reference"],
         environment=data["environment"],
         mean_rates=kde_enc["mean_rates"],
         summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],
@@ -531,6 +535,7 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
         gpi_models=kde_enc["gpi_models"],
         encoding_spike_waveform_features=kde_enc["encoding_spike_waveform_features"],
         encoding_positions=kde_enc["encoding_positions"],
+        mark_reference=kde_enc["mark_reference"],
         environment=data["environment"],
         mean_rates=kde_enc["mean_rates"],
         summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],
@@ -551,6 +556,7 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
         gpi_models=kde_enc["gpi_models"],
         encoding_spike_waveform_features=kde_enc["encoding_spike_waveform_features"],
         encoding_positions=kde_enc["encoding_positions"],
+        mark_reference=kde_enc["mark_reference"],
         environment=data["environment"],
         mean_rates=kde_enc["mean_rates"],
         summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],

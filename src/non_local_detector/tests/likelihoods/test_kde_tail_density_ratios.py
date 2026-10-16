@@ -7,13 +7,14 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
-    clusterless_kde,
     fit_clusterless_kde_encoding_model,
-    fit_clusterless_kde_log_encoding_model,
     fit_sorted_spikes_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
-    predict_clusterless_kde_log_log_likelihood,
     predict_sorted_spikes_kde_log_likelihood,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
+    estimate_log_joint_mark_intensity,
+    log_kde_distance,
 )
 from non_local_detector.likelihoods.common import (
     _KDE_BLOCK_KERNEL_BYTES,
@@ -28,9 +29,7 @@ from non_local_detector.likelihoods.common import (
     log_density_intensity,
     traced_kde_log_density,
 )
-from non_local_detector.likelihoods.streamed_kde import (
-    _streamed_joint_mark_log_intensity,
-)
+from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 pytestmark = pytest.mark.unit
 
@@ -41,11 +40,6 @@ MODELS = [
         False,
     ),
     (fit_clusterless_kde_encoding_model, predict_clusterless_kde_log_likelihood, True),
-    (
-        fit_clusterless_kde_log_encoding_model,
-        predict_clusterless_kde_log_log_likelihood,
-        True,
-    ),
 ]
 
 
@@ -111,67 +105,18 @@ def test_mark_event_term_survives_small_position_densities(
     )
 
 
-@pytest.mark.parametrize("has_tails", [False, True])
-def test_non_local_kernel_gets_log_occupancy_only_with_occupancy_tails(
-    monkeypatch, has_tails
-):
-    """Without occupancy tails the log-space mark fallback stays out of the kernel."""
-    time = np.arange(50.0)
-    position = (np.zeros(50) if has_tails else np.linspace(0.0, 200.0, 50))[:, None]
-    env = Environment(
-        place_bin_size=5.0, position_range=((0.0, 200.0),)
-    ).fit_place_grid(position, infer_track_interior=False)
-    model = fit_clusterless_kde_encoding_model(
-        time,
-        position,
-        [time],
-        [np.zeros((50, 1))],
-        env,
-        position_std=1.0 if has_tails else 5.0,
-        waveform_std=1.0,
-        disable_progress_bar=True,
-    )
-    received = []
-    original = clusterless_kde._add_electrode_mark_intensities
-
-    def spy(*args, **kwargs):
-        received.append(args[11])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(clusterless_kde, "_add_electrode_mark_intensities", spy)
-    predict_clusterless_kde_log_likelihood(
-        time,
-        position,
-        [np.array([0.5])],
-        [np.zeros((1, 1))],
-        time_edges=np.array([0.0, 1.0]),
-        is_local=False,
-        **model,
-    )
-    assert len(received) == 1
-    assert (received[0] is not None) == has_tails
-
-
 @pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("n_features", [1, 9])
-@pytest.mark.parametrize("mode", ["linear_tiled", "log_chunked", "log_streaming"])
-def test_tiled_mark_ratios_match_the_gaussian_reference(mode, n_features, is_local):
+@pytest.mark.parametrize("use_streaming", [False, True])
+def test_tiled_mark_ratios_match_the_gaussian_reference(
+    use_streaming, n_features, is_local
+):
     time = np.arange(5.0)
     position = np.zeros((5, 1))
     env = Environment(
         place_bin_size=5.0, position_range=((0.0, 200.0),)
     ).fit_place_grid(position, infer_track_interior=False)
-    fit, predict, _ = MODELS[1 if mode == "linear_tiled" else 2]
-    options = (
-        {"encoding_block_size": 2, "position_block_size": 7}
-        if mode == "linear_tiled"
-        else {
-            "enc_tile_size": 2,
-            "pos_tile_size": 7,
-            "use_streaming": mode == "log_streaming",
-        }
-    )
-    model = fit(
+    model = fit_clusterless_kde_encoding_model(
         time,
         position,
         [time],
@@ -180,18 +125,20 @@ def test_tiled_mark_ratios_match_the_gaussian_reference(mode, n_features, is_loc
         position_std=1.0,
         waveform_std=1.0,
         block_size=2,
+        enc_tile_size=2,
+        pos_tile_size=7,
+        use_streaming=use_streaming,
         disable_progress_bar=True,
-        **options,
     )
     common = dict(time_edges=np.array([0.0, 1.0]), is_local=is_local, **model)
-    baseline = predict(
+    baseline = predict_clusterless_kde_log_likelihood(
         time,
         np.full_like(position, 200.0),
         [np.empty(0)],
         [np.empty((0, n_features))],
         **common,
     )
-    with_spike = predict(
+    with_spike = predict_clusterless_kde_log_likelihood(
         time,
         np.full_like(position, 200.0),
         [np.array([0.5])],
@@ -213,29 +160,51 @@ def test_log_ratio_keeps_tiny_rate_and_reports_invalid_densities():
     assert np.isnan(log_density_intensity(1.0, jnp.asarray(0.0), jnp.asarray(np.nan)))
 
 
-def test_tiled_tail_ratio_has_finite_correct_gradient_with_zero_weight_prefix():
+@pytest.mark.parametrize("use_streaming", [False, True])
+def test_tiled_tail_ratio_has_finite_correct_gradient_with_zero_weight_prefix(
+    use_streaming,
+):
+    log_background = realistic_log_background(jnp.array([[0.2]]))
+    log_occupancy = jnp.asarray([-200.0 - 0.5 * np.log(2 * np.pi)])
+    encoding_positions = jnp.array([[100.0], [100.0], [0.0]])
+    bin_centers = jnp.array([[20.0]])
+    position = (
+        {
+            "encoding_positions": encoding_positions,
+            "position_eval_points": bin_centers,
+            "position_std": jnp.ones(1),
+        }
+        if use_streaming
+        else {
+            "log_position_distance": log_kde_distance(
+                bin_centers, encoding_positions, jnp.ones(1)
+            )
+        }
+    )
+
     def score(mark):
-        return _streamed_joint_mark_log_intensity(
+        return estimate_log_joint_mark_intensity(
             mark.reshape(1, 1),
             jnp.array([[4.0], [4.0], [0.0]]),
-            jnp.array([[100.0], [100.0], [0.0]]),
-            jnp.array([[20.0]]),
             jnp.ones(1),
-            jnp.ones(1),
-            jnp.zeros(1),
+            jnp.exp(log_occupancy),
             1.0,
-            jnp.array([0.0, 0.0, 1.0]),
-            encoding_tile_size=2,
-            position_tile_size=1,
-            decoding_tile_size=1,
-            log_occupancy=jnp.asarray([-200.0 - 0.5 * np.log(2 * np.pi)]),
+            enc_tile_size=2,
+            pos_tile_size=1,
+            use_streaming=use_streaming,
+            encoding_weights=jnp.array([0.0, 0.0, 1.0]),
+            log_occupancy=log_occupancy,
+            log_background=log_background,
+            **position,
         )[0, 0]
 
     value, gradient = jax.value_and_grad(score)(jnp.asarray(0.2))
-    np.testing.assert_allclose(
-        value, -0.02 - 0.5 * np.log(2 * np.pi), rtol=1e-5, atol=2e-5
-    )
-    np.testing.assert_allclose(gradient, -0.2, rtol=1e-5, atol=1e-6)
+    log_intensity = -0.02 - 0.5 * np.log(2 * np.pi)
+    expected = np.logaddexp(log_intensity, float(log_background[0]))
+    np.testing.assert_allclose(value, expected, rtol=1e-5, atol=2e-5)
+    # The background is fixed, so only the intensity's share carries d/dmark.
+    share = np.exp(log_intensity - expected)
+    np.testing.assert_allclose(gradient, -0.2 * share, rtol=1e-5, atol=1e-6)
 
 
 def test_sorted_public_local_path_preserves_nan_position_diagnostic():
@@ -260,16 +229,14 @@ def test_sorted_public_local_path_preserves_nan_position_diagnostic():
     assert np.isnan(np.asarray(result)[0, 0])
 
 
-ENTRIES = ["traced", "host", "tiled"]
+ENTRIES = ["traced", "host"]
 
 
 def _true_log_density(entry, points, samples, std, block_size, weights):
-    """True log density through the traced kernel, the host entry or sample tiles."""
+    """True log density through the traced kernel or the host entry."""
     if entry == "traced":
         return traced_kde_log_density(points, samples, std, block_size, weights)
     model = KDEModel(std=std, block_size=block_size).fit(samples, weights)
-    if entry == "tiled":
-        return clusterless_kde._predict_kde_log_density(model, points, 128, block_size)
     return kde_log_density(model, points)
 
 
@@ -294,8 +261,8 @@ def test_true_log_density_matches_log_space_evaluation_in_and_beyond_tails(
 
     Points near the samples are ordinary; the last three lie far in the tail,
     where the traced kernel repairs their blocks in log space, and the host
-    entry point and sample tiles either scale them exactly (1D) or repair them
-    afterwards (in log space or with a running maximum).
+    entry point either scales them exactly (1D) or repairs them afterwards in
+    log space.
     """
     points, samples, std, weights = _tail_case(n_dims)
     actual = _true_log_density(entry, points, samples, std, block_size, weights)
@@ -371,17 +338,6 @@ def test_true_log_density_recovers_mass_carried_by_terms_below_tiny(entry):
     np.testing.assert_allclose(actual, [expected], rtol=1e-6)
 
 
-def test_tiled_density_matches_untiled_for_weights_near_float_max():
-    """Tiled sums of 1e38 weights neither overflow nor lose the density."""
-    samples = jnp.asarray([[0.0], [1.0], [2.0], [3.0]])
-    weights = jnp.full(4, 1e38)
-    points = jnp.asarray([[1.5], [40.0]])
-    model = KDEModel(std=1.0, block_size=1).fit(samples, weights)
-    tiled = clusterless_kde._predict_kde_log_density(model, points, 2, 1)
-    np.testing.assert_allclose(tiled, kde_log_density(model, points), rtol=1e-6)
-    assert np.isfinite(tiled).all()
-
-
 @pytest.mark.parametrize("is_local", [False, True])
 def test_public_tiled_prediction_keeps_the_rate_for_weights_near_float_max(is_local):
     """Encoding tiles give the untiled no-spike score with 1e38 weights."""
@@ -391,7 +347,7 @@ def test_public_tiled_prediction_keeps_the_rate_for_weights_near_float_max(is_lo
         position, infer_track_interior=False
     )
     scores = []
-    for encoding_block_size in (None, 2):
+    for tiling in ({}, {"enc_tile_size": 2, "use_streaming": True}):
         model = fit_clusterless_kde_encoding_model(
             time,
             position,
@@ -402,7 +358,7 @@ def test_public_tiled_prediction_keeps_the_rate_for_weights_near_float_max(is_lo
             position_std=1.0,
             waveform_std=1.0,
             disable_progress_bar=True,
-            encoding_block_size=encoding_block_size,
+            **tiling,
         )
         scores.append(
             predict_clusterless_kde_log_likelihood(

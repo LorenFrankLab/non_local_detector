@@ -2732,6 +2732,31 @@ def safe_divide(numerator, denominator, eps=EPS, condition=None):
     return jnp.where(condition, eps, numerator / safe_denominator)
 
 
+def log_nonnegative(x: jnp.ndarray) -> jnp.ndarray:
+    """Log of a non-negative array: ``-inf`` at zero, ``NaN`` kept.
+
+    Unlike ``safe_log`` it applies no floor, so a zero intensity stays an
+    impossible event for the caller to combine (for example with a background
+    by ``logaddexp``). The gradient is zero at zero instead of ``NaN``.
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Non-negative values.
+
+    Returns
+    -------
+    log_x : jnp.ndarray
+        Same shape as ``x``.
+    """
+    positive = x > 0
+    return jnp.where(
+        positive,
+        jnp.log(jnp.where(positive, x, 1.0)),
+        jnp.where(jnp.isnan(x), jnp.nan, -jnp.inf),
+    )
+
+
 def safe_log(x, eps=EPS, condition=None):
     """Safely compute the logarithm of an array, avoiding log(0).
 

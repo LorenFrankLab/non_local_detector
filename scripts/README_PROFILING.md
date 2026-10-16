@@ -1,6 +1,6 @@
 # Profiling Clusterless KDE Implementations
 
-This directory contains profiling scripts to analyze and compare the performance of `clusterless_kde.py` (reference) and `clusterless_kde_log.py` (optimized) implementations.
+This directory contains profiling scripts for the clusterless KDE likelihood (`clusterless_kde.py`). Some were written to compare the former probability-space and log-space implementations, which are now one log-space implementation.
 
 ## Quick Start
 

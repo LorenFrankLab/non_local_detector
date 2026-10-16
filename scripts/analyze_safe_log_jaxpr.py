@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
 )
 from non_local_detector.likelihoods.common import EPS, safe_log

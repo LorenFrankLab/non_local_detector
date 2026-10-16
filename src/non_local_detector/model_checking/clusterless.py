@@ -270,8 +270,7 @@ def ircm_transform(
         ``encoding_model_``.
     algorithm : str
         The algorithm that fitted it: ``"clusterless_kde"``,
-        ``"clusterless_kde_log"``, ``"clusterless_gmm"`` or
-        ``"clusterless_diffusion"``.
+        ``"clusterless_gmm"`` or ``"clusterless_diffusion"``.
     electrode : int
         Index of the electrode in the encoding model.
     position_time : np.ndarray, shape (n_time,)

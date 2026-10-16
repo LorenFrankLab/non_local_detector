@@ -8,6 +8,8 @@ Import the helpers explicitly, as the root ``conftest`` is imported elsewhere:
 from collections.abc import Callable, Iterator
 
 import jax
+import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import non_local_detector.likelihoods.common as common
@@ -15,6 +17,8 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.likelihoods.common import LOG_EPS
+from non_local_detector.likelihoods.mark_reference import MarkReference
 
 ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 
@@ -32,13 +36,12 @@ ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 # the output rows (``jax.ops.segment_sum`` / ``.at[].add``). A row range hands
 # XLA a different number of input rows and a different ``num_segments``, so it
 # may group that reduction differently; the same happens when the decoding
-# spikes arrive in a different order. ``clusterless_kde_log`` additionally
+# spikes arrive in a different order. ``clusterless_kde`` additionally
 # re-blocks its stabilized log-sum over the decoding spikes. Those regroupings
 # are float32 rounding, not a different answer: measured at one to two spikes
-# per row, ``clusterless_kde`` moves by 1.5e-5 abs, ``clusterless_gmm`` by 2.0
-# abs on values of order 2e7, ``clusterless_diffusion`` by 3.8e-6 abs and
-# ``clusterless_kde_log`` by 7.6e-6 abs -- at most 1.2e-7 RELATIVE in every
-# case. The tolerance therefore follows the reduction kind rather than any one
+# per row, ``clusterless_kde`` moves by 7.6e-6 abs, ``clusterless_gmm`` by 2.0
+# abs on values of order 2e7 and ``clusterless_diffusion`` by 3.8e-6 abs -- at
+# most 1.2e-7 RELATIVE in every case. The tolerance therefore follows the reduction kind rather than any one
 # fixture's spike density; a real regression (a lost or double-counted spike)
 # moves a log likelihood by O(1) and is caught either way.
 EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
@@ -124,3 +127,31 @@ def fit_registered_backends(
             **fit_params.get(name, {}),
         )
         yield name, predict_func, encoding_model, True
+
+
+def realistic_log_background(
+    decoding_features: np.ndarray | jnp.ndarray, log_rate: float = LOG_EPS
+) -> jnp.ndarray:
+    """Deterministic per-spike No-Spike background for reduction parity tests.
+
+    A diagonal-Gaussian mark reference centred on the decoding marks' mean,
+    with scale ``std + 1`` so constant features stay finite, gives each spike a
+    background of the size a fitted reference would. Parity tests pass the
+    same background to every path they compare.
+
+    Parameters
+    ----------
+    decoding_features : np.ndarray or jnp.ndarray, shape (n_decoding_spikes, n_features)
+    log_rate : float, optional
+        Log background rate in the caller's intensity units: ``LOG_EPS`` for
+        the KDE backends, ``LOG_RATE_EPS_HZ`` for GMM.
+
+    Returns
+    -------
+    log_background : jnp.ndarray, shape (n_decoding_spikes,)
+    """
+    features = np.asarray(decoding_features, dtype=np.float64)
+    if features.shape[0] == 0:
+        return jnp.zeros(0)
+    reference = MarkReference(features.mean(axis=0), features.std(axis=0) + 1.0)
+    return jnp.asarray(log_rate + reference.log_density(features))

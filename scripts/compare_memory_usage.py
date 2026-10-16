@@ -1,8 +1,8 @@
-"""Compare memory utilization between clusterless_kde.py and clusterless_kde_log.py implementations.
+"""Compare memory utilization between clusterless_kde.py and clusterless_kde.py implementations.
 
 This script measures memory usage differences between:
 1. clusterless_kde.py (original, no optimizations)
-2. clusterless_kde_log.py (optimized with vectorization + JIT)
+2. clusterless_kde.py (optimized with vectorization + JIT)
 """
 
 import gc
@@ -18,7 +18,7 @@ sys.path.insert(0, "src")
 from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance as kde_distance_original,
 )
-from non_local_detector.likelihoods.clusterless_kde_log import (
+from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance as kde_distance_optimized,
 )
 
@@ -123,7 +123,7 @@ def analyze_array_allocations(n_eval, n_samples, n_dims):
     print()
 
     # Optimized implementation (vmap)
-    print("Optimized implementation (clusterless_kde_log.py with vmap):")
+    print("Optimized implementation (clusterless_kde.py with vmap):")
     print(f"  Vmap over {n_dims} dimensions (parallel)")
     print(f"  Per-dimension output: {n_samples} × {n_eval} × 8 bytes = {output_size/1024:.2f} KB")
     vmap_intermediates = n_dims * n_samples * n_eval * 8  # All dimensions at once
@@ -158,7 +158,7 @@ def main():
     print()
     print("Comparing:")
     print("  1. clusterless_kde.py (original, Python for-loop)")
-    print("  2. clusterless_kde_log.py (optimized, vectorized + JIT)")
+    print("  2. clusterless_kde.py (optimized, vectorized + JIT)")
     print()
 
     configurations = [
@@ -309,7 +309,7 @@ def main():
     if valid_ratios and np.mean(valid_ratios) > 1.5:
         print("**Memory-Speed Trade-off**")
         print()
-        print("The optimized version (clusterless_kde_log.py):")
+        print("The optimized version (clusterless_kde.py):")
         print("  ✅ Speed: 10.8x faster")
         print(f"  ⚠️  Memory: ~{avg_ratio:.1f}x more usage")
         print()
@@ -325,7 +325,7 @@ def main():
     else:
         print("**Best of Both Worlds**")
         print()
-        print("The optimized version (clusterless_kde_log.py):")
+        print("The optimized version (clusterless_kde.py):")
         print("  ✅ Speed: 10.8x faster")
         print("  ✅ Memory: Similar usage")
         print()

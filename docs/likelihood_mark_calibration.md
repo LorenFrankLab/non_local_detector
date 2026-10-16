@@ -46,9 +46,9 @@ Every supported likelihood defines a joint mark intensity
 `lambda(x, m) = Lambda(x) f(m | x)`. `Lambda(x)` is the ground intensity in Hz
 at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
 
-- `clusterless_kde` and `clusterless_kde_log`: one component per encoding
-  spike, centred on its marks with bandwidth `waveform_std`, weighted by its
-  encoding weight times the Gaussian position kernel at `x`.
+- `clusterless_kde`: one component per encoding spike, centred on its marks
+  with bandwidth `waveform_std`, weighted by its encoding weight times the
+  Gaussian position kernel at `x`.
   `Lambda(x) = mean_rate * p_gpi(x) / p_occupancy(x)`.
 - `clusterless_diffusion`: the same components, weighted by the graph heat
   kernel from the spike's bin to the bin containing `x`. The model is defined

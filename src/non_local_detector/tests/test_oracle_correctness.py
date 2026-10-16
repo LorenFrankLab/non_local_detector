@@ -174,6 +174,7 @@ def kde_decoding_setup() -> dict[str, Any]:
         ],
         position_std=encoding_model["position_std"],
         waveform_std=encoding_model["waveform_std"],
+        mark_reference=encoding_model["mark_reference"],
         is_local=False,
         block_size=100,
         disable_progress_bar=True,
