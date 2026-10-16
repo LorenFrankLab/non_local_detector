@@ -1521,12 +1521,14 @@ def block_estimate_log_joint_mark_intensity(
 def mark_reference_scale(
     waveform_std: float | np.ndarray = DEFAULT_WAVEFORM_STD, **_fit_params: object
 ) -> float | np.ndarray:
-    """Mark-kernel width the reference adds to each feature's training spread.
+    """Mark-kernel width the reference adds in quadrature to each feature's spread.
 
     Parameters
     ----------
     waveform_std : float or array_like, shape (n_features,), optional
-        The fit's mark bandwidth; other fit parameters are ignored.
+        The fit's mark bandwidth.
+    **_fit_params
+        Other fit parameters, ignored.
 
     Returns
     -------
@@ -1580,6 +1582,16 @@ def fit_clusterless_kde_encoding_model(
         Gaussian smoothing standard deviation for waveform, by default 24.0
     block_size : int, optional
         Divide computation into blocks, by default 100
+    enc_tile_size : int, optional
+        Encoding samples per reduction tile at predict time (capped at 2048),
+        bounding the workspace by the tile rather than the encoding count. By
+        default None (one tile of up to 2048 samples).
+    pos_tile_size : int, optional
+        Position bins per tile at predict time. By default None (all bins).
+    use_streaming : bool, optional
+        Compute each encoding tile's position kernel when it is used instead of
+        the full ``(n_encoding, n_position_bins)`` kernel; requires
+        ``enc_tile_size``. By default False.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
 
