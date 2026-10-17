@@ -13,6 +13,7 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     get_spikecount_per_time_bin,
     kde,
+    kde_log_density,
     log_gaussian_pdf,
     log_kde,
     safe_divide,
@@ -186,11 +187,58 @@ def test_kde_and_log_kde_raise_on_dimension_mismatch():
 def test_kde_model_predict_raises_on_dimension_mismatch():
     """KDEModel fit on 2-D samples then predicting 3-D eval points must raise
     rather than silently truncating to the shared dimensions."""
-    model = KDEModel(std=jnp.array([1.0, 1.0, 1.0])).fit(jnp.zeros((10, 2)))
+    model = KDEModel(std=1.0).fit(jnp.zeros((10, 2)))
     with pytest.raises(ValueError):
         model.predict(jnp.zeros((5, 3)))
     with pytest.raises(ValueError):
         model.predict_log(jnp.zeros((5, 3)))
+
+
+@pytest.mark.unit
+def test_kde_model_fit_rejects_bandwidth_of_wrong_dimension():
+    """A per-dimension std that does not match the samples fails at fit."""
+    with pytest.raises(ValidationError, match="wrong shape"):
+        KDEModel(std=jnp.array([1.0, 1.0, 1.0])).fit(jnp.zeros((10, 2)))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("std", [0.0, -1.0, np.nan, np.inf, [1.0, 0.0]])
+def test_kde_model_fit_rejects_unusable_bandwidth(std):
+    """A zero, negative or non-finite std would give NaN densities."""
+    with pytest.raises(ValidationError, match="std"):
+        KDEModel(std=std).fit(jnp.zeros((10, 2)))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("weights", "match"),
+    [
+        (np.full(10, np.nan), "finite"),
+        (np.r_[np.ones(9), np.inf], "finite"),
+        (-np.ones(10), "non-negative"),
+        (np.r_[np.ones(9), -1.0], "non-negative"),
+        (np.ones(9), "shape"),
+    ],
+)
+def test_kde_model_fit_rejects_invalid_weights(weights, match):
+    """NaN or negative weights made ``predict`` return 0 silently."""
+    with pytest.raises(ValidationError, match=match):
+        KDEModel(std=1.0).fit(jnp.zeros((10, 2)), weights=weights)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("samples", "weights"),
+    [(np.zeros((0, 2)), np.zeros(0)), (np.zeros((4, 2)), np.zeros(4))],
+    ids=["empty", "zero-weight"],
+)
+def test_kde_model_without_mass_has_zero_density(samples, weights):
+    """``predict``, ``predict_log`` and ``kde_log_density`` agree on zero mass."""
+    model = KDEModel(std=1.0).fit(jnp.asarray(samples), weights=weights)
+    points = jnp.zeros((3, 2))
+    np.testing.assert_array_equal(np.asarray(model.predict(points)), 0.0)
+    np.testing.assert_array_equal(np.asarray(model.predict_log(points)), -np.inf)
+    np.testing.assert_array_equal(np.asarray(kde_log_density(model, points)), -np.inf)
 
 
 def test_kde_model_predict_before_fit_raises():

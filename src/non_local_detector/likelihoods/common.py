@@ -1835,18 +1835,29 @@ class KDEModel:
         ----------
         samples : jnp.ndarray, shape (n_samples, n_dims)
             Training samples.
+        weights : jnp.ndarray, shape (n_samples,), optional
+            Finite, non-negative sample weights, by default None (uniform).
 
         Returns
         -------
         self : KDEModel
+
+        Raises
+        ------
+        ValidationError
+            If ``std`` is not finite and positive with shape ``()`` or
+            ``(n_dims,)``, or ``weights`` is not finite, non-negative and of
+            length ``n_samples``.
         """
         samples = jnp.asarray(samples)
         if samples.ndim == 1:
             samples = jnp.expand_dims(samples, axis=1)
+        validate_bandwidth(self.std, samples.shape[1], "std")
         self.samples_ = samples
         if weights is None:
             self.weights_ = jnp.ones((samples.shape[0],))
         else:
+            validate_weights(weights, samples.shape[0])
             self.weights_ = jnp.asarray(weights)
 
         return self
@@ -1876,6 +1887,9 @@ class KDEModel:
     def predict_log(self, eval_points: jnp.ndarray) -> jnp.ndarray:
         """
         Log-density version of predict(). Same inputs, returns log p(eval_points).
+
+        A model without positive weight has zero density, so ``-inf``, as
+        ``predict`` returns 0 and :func:`kde_log_density` returns ``-inf``.
         """
         if self.samples_ is None:
             raise RuntimeError("This KDE instance is not fitted yet.")
@@ -1885,7 +1899,10 @@ class KDEModel:
         block_size = (
             eval_points.shape[0] if self.block_size is None else self.block_size
         )
-        return block_log_kde(eval_points, self.samples_, std, block_size, self.weights_)
+        values = block_log_kde(
+            eval_points, self.samples_, std, block_size, self.weights_
+        )
+        return jnp.where(jnp.sum(self.weights_) > 0.0, values, -jnp.inf)
 
 
 def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
