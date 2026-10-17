@@ -557,6 +557,9 @@ class TestLogRatePrior:
         implied_variance = coefficient_variance * np.sum(spline**2, axis=1)
         np.testing.assert_allclose(implied_variance.mean(), prior_std**2, rtol=1e-6)
 
+    def test_intercept_only_basis_has_no_penalty(self):
+        assert sorted_spikes_glm.log_rate_prior_l2_penalty(np.ones((5, 1))) == 0.0
+
     def test_explicit_l2_penalty_overrides_the_prior(
         self, monkeypatch, simple_1d_environment, simple_spike_data
     ):

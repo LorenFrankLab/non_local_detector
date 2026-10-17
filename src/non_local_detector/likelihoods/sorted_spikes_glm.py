@@ -214,8 +214,8 @@ def log_rate_prior_l2_penalty(
     log_rate_prior_std**2 / mean_k ||B_k||**2`` makes its average over the
     bins ``log_rate_prior_std**2`` whatever the knot spacing or the number of
     dimensions; the penalty is ``1 / (2 * tau**2)``. For the environment
-    anchored ``cr`` bases, the per-bin prior SD stays within 0.8-1.2 times
-    the target.
+    anchored ``cr`` bases, the per-bin prior SD is about 0.7-1.2 times the
+    target, depending on the geometry and knot spacing.
 
     Parameters
     ----------
