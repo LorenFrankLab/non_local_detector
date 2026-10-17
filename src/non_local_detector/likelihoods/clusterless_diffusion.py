@@ -97,6 +97,7 @@ from non_local_detector.likelihoods.common import (
     log_density_intensity,
     log_nonnegative,
     resolve_row_slice,
+    select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
     spike_row_ids,
@@ -1340,7 +1341,7 @@ def predict_clusterless_diffusion_log_likelihood(
     # starting sum too lets every electrode reuse one executable.
     log_likelihood = jax.device_put(log_likelihood, eigvecs.sharding)
 
-    for (
+    for electrode, (
         electrode_bins,
         electrode_marks,
         electrode_weights,
@@ -1349,21 +1350,23 @@ def predict_clusterless_diffusion_log_likelihood(
         electrode_decode_features,
         electrode_spike_times,
         electrode_mark_reference,
-    ) in zip(
-        tqdm(
-            encoding_bin_indices,
-            unit="electrode",
-            desc="Local Likelihood" if is_local else "Non-Local Likelihood",
-            disable=disable_progress_bar,
-        ),
-        encoding_marks,
-        encoding_weights,
-        weight_total,
-        mean_rates,
-        spike_waveform_features,
-        spike_times,
-        mark_reference,
-        strict=True,
+    ) in enumerate(
+        zip(
+            tqdm(
+                encoding_bin_indices,
+                unit="electrode",
+                desc="Local Likelihood" if is_local else "Non-Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            encoding_marks,
+            encoding_weights,
+            weight_total,
+            mean_rates,
+            spike_waveform_features,
+            spike_times,
+            mark_reference,
+            strict=True,
+        )
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
@@ -1372,15 +1375,11 @@ def predict_clusterless_diffusion_log_likelihood(
             time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
-        # Validate only the in-window decode features that actually enter the
-        # likelihood (mirrors fit's post-clip validation); an out-of-window
-        # spike's feature must not raise. Select FIRST, convert after:
-        # converting the whole array would cost every decoding spike in the
-        # recording on every chunk call.
-        decode_features = np.asarray(
-            select_spike_rows(electrode_decode_features, selection)
+        # Select FIRST, convert after: converting the whole array would cost
+        # every decoding spike in the recording on every chunk call.
+        decode_features = select_decode_marks(
+            electrode_decode_features, selection, electrode
         )
-        validate_finite(decode_features, "spike_waveform_features")
         n_decode = decode_features.shape[0]
         if n_decode == 0:
             continue
