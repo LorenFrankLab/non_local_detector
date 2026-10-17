@@ -107,7 +107,8 @@ from non_local_detector.likelihoods.common import (
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
-    _HEAT_KERNEL_RANK_TOL,
+    _FIELD_RESOLUTION,
+    _resolved_occupancy,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
@@ -524,12 +525,6 @@ def _pad_sources(sources, n_padded: int) -> np.ndarray:
     return np.pad(sources, (0, n_padded - sources.size), mode="edge")
 
 
-# Diffused-field values below this fraction of their column's maximum are not
-# resolved: the float32 spectral product and the heat-kernel rank truncation
-# (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
-_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
-
-
 # The scaled spatial product multiplies exp(log_source - peak) by kernel
 # entries; a product below float32's smallest normal number may flush to zero.
 _LOG_TINY = float(np.log(np.finfo(np.float32).tiny))
@@ -727,26 +722,6 @@ def _log_intensity_scale(occupancy, bin_sizes, mean_rate, weight_total):
         ),
         -jnp.inf,
     )
-
-
-def _resolved_occupancy(occupancy):
-    """Bins whose diffused occupancy the heat kernel resolves.
-
-    Occupancy is itself a diffused field, so in unvisited bins it is numerical
-    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
-    encoding information: their marked and ground intensities are zero, and
-    spikes there are explained by the background alone, as for the KDE's
-    zero-occupancy bins.
-
-    Parameters
-    ----------
-    occupancy : array, shape (n_bins,)
-
-    Returns
-    -------
-    resolved : array of bool, shape (n_bins,)
-    """
-    return occupancy >= _FIELD_RESOLUTION * occupancy.max()
 
 
 def _source_layout(bins: np.ndarray, n_bins: int, tile_budget: int):

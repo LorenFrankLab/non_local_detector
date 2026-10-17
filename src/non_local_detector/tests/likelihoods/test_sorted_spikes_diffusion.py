@@ -1051,6 +1051,55 @@ def test_no_rate_leak_across_impassable_barrier():
     assert kde_leak > 10 * diffusion_leak
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("full_rank", [False, True])
+def test_unvisited_interior_bins_get_floor_rate(full_rank):
+    """Interior bins far from every encoding sample get the floor rate.
+
+    The animal only covers [0, 100] of a [0, 200] interior track. Far from the data,
+    the diffused occupancy and spike fields are both numerical noise, so their ratio
+    is not a rate estimate and must not be reported as one.
+    """
+    rng = np.random.default_rng(0)
+    dt = 0.002
+    time = np.arange(20_000) * dt
+    position = np.clip(
+        50 + 50 * np.sin(2 * np.pi * time / 4.0) + rng.normal(0, 0.5, time.size),
+        0,
+        100,
+    )
+    env = Environment(place_bin_size=1.0, infer_track_interior=False)
+    env.fit_place_grid(np.linspace(0, 200, 1000)[:, np.newaxis])
+    # One field mid-track and one at the edge of the visited range.
+    spike_times = [
+        time[
+            rng.random(time.size)
+            < 20.0 * np.exp(-((position - center) ** 2) / (2 * 10.0**2)) * dt
+        ]
+        for center in (50.0, 90.0)
+    ]
+    interior = env.is_track_interior_.ravel()
+
+    model = fit_sorted_spikes_diffusion_encoding_model(
+        time,
+        position[:, np.newaxis],
+        spike_times,
+        env,
+        position_std=3.0,
+        rank=int(interior.sum()) if full_rank else None,
+        disable_progress_bar=True,
+    )
+
+    place_fields = np.asarray(model["place_fields"])[:, interior]
+    bin_centers = env.place_bin_centers_[interior, 0]
+    # 30 cm (10 position_std) past the last visited position.
+    unvisited = bin_centers > 130.0
+    assert np.all(place_fields[:, unvisited] == RATE_EPS_HZ)
+    # The visited mid-track field is unaffected: it still peaks near 20 Hz at 50.
+    assert abs(bin_centers[np.argmax(place_fields[0])] - 50.0) < 5.0
+    assert 15.0 < place_fields[0].max() < 25.0
+
+
 def test_truncated_rank_conserves_per_component_occupancy_mass():
     """A truncated-rank fit on a disconnected environment must not shift occupancy
     mass between components: heat conserves each component's mass at any rank, so the
