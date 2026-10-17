@@ -155,9 +155,31 @@ def fit_mark_reference(
     reference : MarkReference or None
         None when no spike has positive weight: the electrode then has no
         identifiable reference.
+
+    Raises
+    ------
+    ValidationError
+        If ``marks`` is not 2-D with one weight per row, ``kernel_scale`` is
+        neither scalar nor ``(n_features,)``, a weight is negative or not
+        finite, or a positively weighted mark is not finite.
     """
     marks = np.asarray(marks, dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)
+    if marks.ndim != 2 or weights.shape != marks.shape[:1]:
+        raise ValidationError(
+            f"Training marks and weights of electrode {electrode} do not pair "
+            "one weight with each spike",
+            expected="marks (n_spikes, n_features) and weights (n_spikes,)",
+            got=f"marks {marks.shape}, weights {weights.shape}",
+            hint="Pass each electrode's weights at its own spike times.",
+        )
+    kernel_scale = np.asarray(kernel_scale, dtype=np.float64)
+    if kernel_scale.shape not in ((), marks.shape[1:]):
+        raise ValidationError(
+            f"kernel_scale of electrode {electrode} does not match its features",
+            expected=f"a scalar or shape {marks.shape[1:]}",
+            got=f"shape {kernel_scale.shape}",
+        )
     if not np.all(np.isfinite(weights) & (weights >= 0)):
         raise ValidationError(
             f"Training weights of electrode {electrode} must be finite and non-negative"
@@ -170,7 +192,7 @@ def fit_mark_reference(
     weights = weights / weights.sum()
     location = weights @ marks
     variance = weights @ (marks - location) ** 2
-    kernel = np.broadcast_to(np.asarray(kernel_scale, dtype=np.float64), location.shape)
+    kernel = np.broadcast_to(kernel_scale, location.shape)
     # The marks' spread after the model's mark kernel.
     return MarkReference(location, np.sqrt(variance + kernel**2))
 
