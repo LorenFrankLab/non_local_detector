@@ -292,17 +292,24 @@ def environment_grid_fingerprint(environment: Environment) -> dict:
         a copy of every bin, and holds only Python values, so it pickles with
         the encoding model.
     """
+    centers_shape = tuple(int(n) for n in environment.centers_shape_)
+    # A grid without an interior mask treats every bin as interior.
+    is_track_interior = (
+        np.ones(centers_shape, dtype=bool)
+        if environment.is_track_interior_ is None
+        else np.asarray(environment.is_track_interior_, dtype=bool)
+    )
     digest = hashlib.sha256()
     for array in (
         np.asarray(environment.place_bin_centers_, dtype="<f8"),
-        np.asarray(environment.is_track_interior_, dtype=bool),
+        is_track_interior,
         *(np.asarray(edge, dtype="<f8") for edge in environment.edges_),
     ):
         digest.update(repr(array.shape).encode())
         digest.update(np.ascontiguousarray(array).tobytes())
     return {
-        "centers_shape": tuple(int(n) for n in environment.centers_shape_),
-        "n_interior_bins": int(np.sum(environment.is_track_interior_)),
+        "centers_shape": centers_shape,
+        "n_interior_bins": int(np.sum(is_track_interior)),
         "sha256": digest.hexdigest(),
     }
 
