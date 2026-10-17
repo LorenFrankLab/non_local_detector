@@ -1,8 +1,10 @@
 """Encoding fits warn when tracking moves farther per sample than their bandwidth.
 
-Occupancy is built from the tracking samples while spikes are placed on the
-interpolated path between them, so samples much farther apart than the
-position bandwidth leave the occupancy unresolved where spikes land.
+KDE and clusterless diffusion fits build occupancy from the tracking samples
+while spikes are placed on the interpolated path between them, so samples much
+farther apart than the position bandwidth leave the occupancy unresolved where
+spikes land. Sorted diffusion and MRF fits bin spikes with their bracketing
+samples, as they do exposure, so they have no such mismatch and do not warn.
 """
 
 import warnings
@@ -27,6 +29,9 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
+)
+from non_local_detector.likelihoods.sorted_spikes_mrf import (
+    fit_sorted_spikes_mrf_encoding_model,
 )
 
 pytestmark = pytest.mark.unit
@@ -63,6 +68,10 @@ def _fit(name, time, position, position_std):
             position_std=position_std,
             disable_progress_bar=True,
         )
+    if name == "sorted_mrf":
+        return fit_sorted_spikes_mrf_encoding_model(
+            time, position, spikes, environment, disable_progress_bar=True
+        )
     marks = [np.zeros((len(spikes[0]), 2))]
     fit = (
         fit_clusterless_kde_encoding_model
@@ -80,7 +89,7 @@ def _fit(name, time, position, position_std):
     )
 
 
-FITS = ["sorted_kde", "sorted_diffusion", "clusterless_kde", "clusterless_diffusion"]
+FITS = ["sorted_kde", "clusterless_kde", "clusterless_diffusion"]
 
 
 @pytest.mark.parametrize("name", FITS)
@@ -88,6 +97,15 @@ def test_fit_warns_when_tracking_steps_exceed_the_bandwidth(name):
     time, position = _track(step=6.0)
     with pytest.warns(UserWarning, match=MESSAGE):
         _fit(name, time, position, position_std=2.0)
+
+
+@pytest.mark.parametrize("name", ["sorted_diffusion", "sorted_mrf"])
+def test_sample_basis_fits_do_not_warn_about_sparse_tracking(name):
+    time, position = _track(step=6.0)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _fit(name, time, position, position_std=2.0)
+    assert not [w for w in caught if MESSAGE in str(w.message)]
 
 
 @pytest.mark.parametrize("name", FITS)
