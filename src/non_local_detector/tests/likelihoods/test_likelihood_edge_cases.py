@@ -19,7 +19,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import LOG_EPS
+from non_local_detector.likelihoods.common import LOG_EPS, RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
@@ -224,6 +224,17 @@ def _predict_clusterless_gmm(
 # ---------------------------------------------------------------------------
 
 
+def _assert_no_spike_closed_form(ll, env, summed_rate, n_decode=6):
+    """With no spikes every bin scores ``-duration * summed_rate`` (float32).
+
+    ``n_decode`` matches the decoding edges of the ``_predict_*`` helpers.
+    """
+    lo, hi = env.position_range[0]
+    durations = np.diff(np.linspace(0.0, float(hi - lo), n_decode))
+    expected = np.broadcast_to(-durations[:, None] * summed_rate, ll.shape)
+    np.testing.assert_allclose(np.asarray(ll), expected, rtol=1e-6, atol=0.0)
+
+
 def test_sorted_kde_zero_spikes_all_neurons():
     """Fit and predict with all neurons having zero spikes."""
     env = _make_env_1d()
@@ -233,9 +244,11 @@ def test_sorted_kde_zero_spikes_all_neurons():
     assert enc["place_fields"].shape[0] == 2
     for mr in enc["mean_rates"]:
         assert mr == 0.0
+    # Silent neurons sit at the (float32) rate floor.
+    np.testing.assert_allclose(np.asarray(enc["place_fields"]), RATE_EPS_HZ, rtol=1e-6)
 
     ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
 
 
 def test_sorted_glm_zero_spikes_all_neurons():
@@ -244,11 +257,11 @@ def test_sorted_glm_zero_spikes_all_neurons():
     spike_times = [jnp.array([]), jnp.array([])]
     enc, t, pos = _fit_sorted_glm(env, spike_times, n_time=101)
 
-    for pf in enc["place_fields"]:
-        assert jnp.all(jnp.isfinite(pf))
+    # Silent neurons sit at the rate floor.
+    np.testing.assert_allclose(np.asarray(enc["place_fields"]), RATE_EPS_HZ, rtol=1e-6)
 
     ll = _predict_sorted_glm(enc, env, spike_times, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
 
 
 def test_clusterless_kde_zero_spikes_all_electrodes():
@@ -257,9 +270,13 @@ def test_clusterless_kde_zero_spikes_all_electrodes():
     spike_times = [jnp.array([]), jnp.array([])]
     spike_features = [jnp.zeros((0, 2)), jnp.zeros((0, 2))]
     enc, t, pos = _fit_clusterless_kde(env, spike_times, spike_features)
+    np.testing.assert_array_equal(
+        np.asarray(enc["summed_ground_process_intensity"]), 0.0
+    )
 
     ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    # Only each electrode's background rate RATE_EPS_HZ remains.
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
 
 
 def test_clusterless_gmm_zero_spikes_all_electrodes():
@@ -280,7 +297,8 @@ def test_clusterless_gmm_zero_spikes_all_electrodes():
     dec_spikes = [jnp.array([]), jnp.array([])]
     dec_feats = [jnp.zeros((0, 2)), jnp.zeros((0, 2))]
     ll = _predict_clusterless_gmm(enc, env, dec_spikes, dec_feats, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    # Only each electrode's background rate RATE_EPS_HZ remains.
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +421,22 @@ def test_clusterless_kde_very_large_waveform_std():
 # ---------------------------------------------------------------------------
 
 
+def _assert_peaks_in_visited_half(env, fields, ll, t_edges, visited_max=5.0):
+    """Each field, and each spiking row's likelihood, peaks below ``visited_max``.
+
+    The partial-occupancy tests sample positions in [0, 5] of a [0, 10] track
+    and place every spike there (spikes at t = 1-4 s, position t / 2).
+    """
+    interior = env.is_track_interior_.ravel()
+    centers = env.place_bin_centers_[interior, 0]
+    if fields.shape[-1] != centers.size:
+        fields = fields[:, interior]
+    assert np.all(centers[np.argmax(fields, axis=1)] < visited_max)
+    spiking_rows = np.asarray(t_edges)[:-1] < 4.0
+    ll = np.asarray(ll)[spiking_rows]
+    assert np.all(centers[np.argmax(ll, axis=1)] < visited_max)
+
+
 def test_sorted_kde_partial_occupancy():
     """Position visits only half the track; zero-occupancy bins should not NaN."""
     env = _make_env_1d(position_range=(0.0, 10.0), bin_size=1.0)
@@ -445,6 +479,9 @@ def test_sorted_kde_partial_occupancy():
     assert not jnp.any(jnp.isnan(ll))
     # Log-likelihoods must be finite or -inf, never +inf
     assert not jnp.any(ll == jnp.inf)
+    # Fields and the most likely bin of every row with spikes are in the
+    # visited half, not in the unvisited bins' occupancy tails.
+    _assert_peaks_in_visited_half(env, np.asarray(enc["place_fields"]), ll, t_edges)
 
 
 def test_clusterless_kde_partial_occupancy():
@@ -492,6 +529,9 @@ def test_clusterless_kde_partial_occupancy():
     )
 
     assert not jnp.any(jnp.isnan(ll))
+    _assert_peaks_in_visited_half(
+        env, np.asarray(enc["summed_ground_process_intensity"])[None], ll, t_edges
+    )
 
 
 # ---------------------------------------------------------------------------
