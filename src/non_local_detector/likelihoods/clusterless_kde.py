@@ -40,6 +40,7 @@ from non_local_detector.likelihoods.common import (
     as_std_array,
     deterministic_row_sum,
     drop_zero_weight_samples,
+    environment_grid_fingerprint,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     kde_log_density,
@@ -56,6 +57,7 @@ from non_local_detector.likelihoods.common import (
     spike_row_ids,
     sum_spikes_into_rows,
     validate_bandwidth,
+    validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
     validate_weights,
@@ -1754,6 +1756,7 @@ def fit_clusterless_kde_encoding_model(
         "encoding_positions": encoding_positions,
         "encoding_weights": encoding_weights,
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "mean_rates": mean_rates,
         "summed_ground_process_intensity": summed_ground_process_intensity,
         "position_std": position_std,
@@ -1797,6 +1800,7 @@ def predict_clusterless_kde_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     log_occupancy: jnp.ndarray | None = None,
+    environment_grid: dict | None = None,
     mark_reference: list[MarkReference | None],
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
@@ -1867,6 +1871,13 @@ def predict_clusterless_kde_log_likelihood(
         against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -1885,10 +1896,7 @@ def predict_clusterless_kde_log_likelihood(
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
+    validate_encoding_contract(rate_units, environment, environment_grid)
     _validate_tile_sizes(enc_tile_size, pos_tile_size)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges

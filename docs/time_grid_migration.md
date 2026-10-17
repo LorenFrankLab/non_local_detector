@@ -118,7 +118,10 @@ not a log likelihood. Predictors multiply it by duration and subtract it.
 Direct predictors default to `rate_units="Hz"`: callers supplying rate arrays
 themselves are responsible for those units. Passing an old per-sample array
 without its marker cannot be detected; prefer freshly fitted dictionaries or
-the guarded detector API.
+the guarded detector API. Likewise, a dictionary without `environment_grid`
+(the fit's record of the environment's grid) is predicted without checking
+that the environment's grid is unchanged since the fit; with it, prediction
+raises `ValidationError` after the grid has been refit to a different one.
 
 Do not multiply fitted Hz fields by the tracking or decoding frequency when
 plotting firing rates. Custom GLM penalties must also be chosen in the new
