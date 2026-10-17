@@ -237,6 +237,34 @@ def diffusion_eigenbasis(
     return all_eigvals[order], all_eigvecs[:, order]
 
 
+def _weyl_exponent(eigvals: np.ndarray) -> float:
+    """Growth exponent ``d / 2`` of the eigenvalue-counting function ``N(λ) ~ λ^(d/2)``.
+
+    Weyl's law gives ``d = 1`` on a linearized track and ``d = 2`` on an open field.
+    ``d`` is read off the probe's own spectrum, from how much ``λ`` grows while the
+    mode count doubles over its upper half, and rounded to 1 or 2 (a higher-dimensional
+    spectrum is capped at ``d = 2``, which underestimates its growth).
+
+    Parameters
+    ----------
+    eigvals : np.ndarray, shape (k,)
+        The ``k`` smallest Laplacian eigenvalues, ascending.
+
+    Returns
+    -------
+    exponent : float
+        ``0.5`` or ``1.0``; ``1.0`` when the upper half has no nonzero spread to
+        measure (e.g. it is all null modes).
+    """
+    n_modes = eigvals.size
+    half = n_modes // 2
+    low, high = float(eigvals[half - 1]), float(eigvals[-1])
+    if not 0.0 < low < high:
+        return 1.0
+    local = np.log(n_modes / half) / np.log(high / low)
+    return min(max(round(2.0 * local), 1), 2) / 2.0
+
+
 def _adaptive_heat_kernel_basis(
     laplacian: scipy.sparse.spmatrix,
     sigma: float,
@@ -288,9 +316,10 @@ def _adaptive_heat_kernel_basis(
             return keep, eigvals[:keep], eigvecs[:, :keep]
         if k >= max_trunc:
             return None, None, None  # cutoff not reached below the dense threshold
-        # 2D Weyl: the eigenvalue-counting function grows ~linearly, so estimate the
-        # index at lambda_cut (10% margin) and jump there, at least doubling k.
-        estimated = int(np.ceil(1.1 * k * lambda_cut / max(float(eigvals[-1]), 1e-30)))
+        # Weyl: the eigenvalue-counting function grows ~lambda**(d/2), so extrapolate
+        # the index at lambda_cut (10% margin) and jump there, at least doubling k.
+        ratio = lambda_cut / max(float(eigvals[-1]), 1e-30)
+        estimated = int(np.ceil(1.1 * k * ratio ** _weyl_exponent(eigvals)))
         if estimated > max_trunc:
             return None, None, None
         k = min(max(estimated, 2 * k), max_trunc)
@@ -313,10 +342,12 @@ def heat_kernel_rank(
 
     The rank is found adaptively without a full eigendecomposition: compute the smallest
     ``k`` eigenvalues; if the largest is still below the cutoff ``λ_cut = -ln(tol) / t``,
-    jump ``k`` toward the estimated cutoff index (the 2D eigenvalue-counting function is
-    ~linear, Weyl) and retry — typically one or two probes. To build the basis (not just
-    query the rank), use :func:`cached_heat_kernel_eigenbasis`, which reuses the probe's
-    final eigensolve instead of recomputing.
+    jump ``k`` toward the estimated cutoff index and retry — typically one or two probes.
+    The estimate extrapolates the eigenvalue-counting function ``N(λ) ~ λ^(d/2)``
+    (Weyl), with ``d = 1`` on a linearized track and ``d = 2`` on an open field, read
+    off the probe's own spectrum. To build the basis (not just query the rank), use
+    :func:`cached_heat_kernel_eigenbasis`, which reuses the probe's final eigensolve
+    instead of recomputing.
 
     Parameters
     ----------

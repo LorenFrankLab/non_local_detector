@@ -363,6 +363,47 @@ def test_heat_kernel_rank_is_near_lossless():
     assert rel < 10 * tol
 
 
+@pytest.mark.parametrize("sigma", [5.0, 10.0])
+def test_heat_kernel_rank_truncates_one_dimensional_track(sigma, monkeypatch):
+    """A 1-D track whose needed rank is below the dense cap gets a truncated rank.
+
+    The eigenvalue-counting function of a 1-D track grows like sqrt(lambda), not
+    linearly as on an open field, so a linear extrapolation from the first probe
+    overshoots the cap and would fall back to the dense basis. The resolver must
+    return exactly the number of modes with weight >= tol, in two eigensolves (the
+    first probe plus one jump), and the truncated basis must diffuse like the full one.
+    """
+    import non_local_detector.likelihoods.diffusion as diffusion_mod
+
+    L = build_laplacian(path_graph(1000))
+    tol = 1e-6
+    full_vals, full_vecs = diffusion_eigenbasis(L, rank=None)
+    expected = int(
+        np.searchsorted(full_vals, -np.log(tol) / (sigma**2 / 2), side="right")
+    )
+    assert expected < L.shape[0] // 2  # below the dense cap -> must truncate
+
+    calls = {"n": 0}
+    real = diffusion_mod.diffusion_eigenbasis
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(diffusion_mod, "diffusion_eigenbasis", counting)
+    rank = heat_kernel_rank(L, sigma, tol=tol)
+    assert rank == expected
+    assert calls["n"] == 2
+
+    trunc_vals, trunc_vecs = real(L, rank=rank)
+    fields = np.zeros((L.shape[0], 3))
+    fields[[10, 500, 990], [0, 1, 2]] = 1.0  # point sources, incl. near the ends
+    full = diffuse(full_vals, full_vecs, sigma, fields)
+    trunc = diffuse(trunc_vals, trunc_vecs, sigma, fields)
+    rel = np.max(np.linalg.norm(full - trunc, axis=0) / np.linalg.norm(full, axis=0))
+    assert rel < 10 * tol
+
+
 def test_heat_kernel_rank_dense_fallback_for_small_bandwidth():
     """When smoothing barely spreads (sigma ~ bin spacing), nearly every mode matters,
     so the resolver returns None (use the exact dense eigendecomposition)."""
