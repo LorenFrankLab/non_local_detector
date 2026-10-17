@@ -1,10 +1,10 @@
 """Encoding fits warn when tracking moves farther per sample than their bandwidth.
 
-KDE and clusterless diffusion fits build occupancy from the tracking samples
-while spikes are placed on the interpolated path between them, so samples much
-farther apart than the position bandwidth leave the occupancy unresolved where
-spikes land. Sorted diffusion and MRF fits bin spikes with their bracketing
-samples, as they do exposure, so they have no such mismatch and do not warn.
+KDE fits build occupancy from the tracking samples while spikes are placed on
+the interpolated path between them, so samples much farther apart than the
+position bandwidth leave the occupancy unresolved where spikes land. Diffusion
+and MRF fits bin spikes with their bracketing samples, as they do exposure, so
+they have no such mismatch and do not warn.
 """
 
 import warnings
@@ -89,7 +89,7 @@ def _fit(name, time, position, position_std):
     )
 
 
-FITS = ["sorted_kde", "clusterless_kde", "clusterless_diffusion"]
+FITS = ["sorted_kde", "clusterless_kde"]
 
 
 @pytest.mark.parametrize("name", FITS)
@@ -99,7 +99,9 @@ def test_fit_warns_when_tracking_steps_exceed_the_bandwidth(name):
         _fit(name, time, position, position_std=2.0)
 
 
-@pytest.mark.parametrize("name", ["sorted_diffusion", "sorted_mrf"])
+@pytest.mark.parametrize(
+    "name", ["sorted_diffusion", "sorted_mrf", "clusterless_diffusion"]
+)
 def test_sample_basis_fits_do_not_warn_about_sparse_tracking(name):
     time, position = _track(step=6.0)
     with warnings.catch_warnings(record=True) as caught:
