@@ -38,6 +38,7 @@ from non_local_detector.likelihoods.common import (
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
+    snap_off_track_positions,
     spike_row_ids,
     sum_spikes_into_rows,
     validate_population_lengths,
@@ -1236,10 +1237,13 @@ def compute_local_log_likelihood(
 
     # Interpolate position at the requested rows' bin times (use bin centers)
 
-    interp_pos = get_position_at_time(
-        position_time,
-        position,
-        decode_bin_centers(time_edges, row_start, row_stop),
+    interp_pos = snap_off_track_positions(
+        get_position_at_time(
+            position_time,
+            position,
+            decode_bin_centers(time_edges, row_start, row_stop),
+            environment,
+        ),
         environment,
     )  # (n_rows, pos_dims)
 
@@ -1299,10 +1303,13 @@ def compute_local_log_likelihood(
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
             n_padded = _padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
-            spike_positions = get_position_at_time(
-                position_time,
-                position,
-                select_spike_rows(elect_times, selection),
+            spike_positions = snap_off_track_positions(
+                get_position_at_time(
+                    position_time,
+                    position,
+                    select_spike_rows(elect_times, selection),
+                    environment,
+                ),
                 environment,
             )
             log_likelihood = _add_electrode_gmm_spike_terms(

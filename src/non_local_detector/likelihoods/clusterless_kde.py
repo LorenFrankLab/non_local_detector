@@ -52,6 +52,7 @@ from non_local_detector.likelihoods.common import (
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
+    snap_off_track_positions,
     spike_row_ids,
     sum_spikes_into_rows,
     traced_kde_log_density,
@@ -2231,10 +2232,13 @@ def compute_local_log_likelihood(
             time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
-        position_at_spike_time = get_position_at_time(
-            position_time,
-            position,
-            select_spike_rows(electrode_spike_times, selection),
+        position_at_spike_time = snap_off_track_positions(
+            get_position_at_time(
+                position_time,
+                position,
+                select_spike_rows(electrode_spike_times, selection),
+                environment,
+            ),
             environment,
         )
         electrode_decoding_spike_waveform_features = select_decode_marks(

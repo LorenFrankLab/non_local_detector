@@ -132,7 +132,18 @@ def test_sorted_accumulation_matches_per_neuron_xlogy(
     actual = function(**arguments, row_slice=rows)
     expected = reference(arguments, rows)
     np.testing.assert_array_equal(np.isfinite(actual), np.isfinite(expected))
-    np.testing.assert_allclose(actual, expected, **EXACT)
+    # The matrix path sums log(rate) + log(duration), which rounds differently
+    # from the per-neuron xlogy(count, rate * duration); both stay within a
+    # few ulp of the exact sum.
+    finite = np.isfinite(expected)
+    exact = float64_nonlocal_emission(
+        arguments["spike_times"], arguments | {"row_slice": rows}
+    )
+    assert_within_ulps(np.asarray(actual)[finite], exact[finite], np.float32)
+    np.testing.assert_array_equal(np.asarray(actual)[~finite], expected[~finite])
+    if zero:
+        # Zero rates take the per-neuron xlogy fallback.
+        np.testing.assert_allclose(actual, expected, **EXACT)
     if rows is not None:
         np.testing.assert_allclose(actual, function(**arguments)[rows], **EXACT)
 
@@ -248,6 +259,60 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
     assert max(block_rows, default=0) <= 128
 
 
+@pytest.mark.parametrize("backend", [sorted_spikes_kde, sorted_spikes_glm])
+@pytest.mark.parametrize("count_blocks", [False, True])
+def test_irregular_grid_rows_do_not_depend_on_partition(
+    backend, count_blocks, monkeypatch
+):
+    """A row's emission is the same for any row range that contains it.
+
+    Blocks that start at the request's first row put a row in a different
+    block for each partition. When a block's arithmetic path followed its
+    durations, that changed rows by up to 3.1e-5.
+    """
+    import non_local_detector.likelihoods.common as common
+
+    rng = np.random.default_rng(7309)
+    widths = np.full(200, 0.002)
+    # Three distinct durations in rows [0, 64) and in the final rows [192, 200).
+    widths[[5, 193]] = 0.003
+    widths[[10, 197]] = 0.004
+    edges = np.r_[0.0, np.cumsum(widths)]
+    n_neurons = 32
+    fields = jnp.asarray(rng.uniform(0.02, 40, (n_neurons, 6)).astype(np.float32))
+    arguments = inputs(backend, np.ones((3, 4), np.float32))
+    arguments.update(
+        time_edges=edges,
+        # About 1.5 spikes per neuron per row, so the two paths' rounding
+        # differs on several rows.
+        spike_times=[np.sort(rng.uniform(0, edges[-1], 300)) for _ in range(n_neurons)],
+        place_fields=fields,
+        no_spike_part_log_likelihood=fields.sum(axis=0),
+        is_track_interior=np.ones(6, bool),
+    )
+    if backend is sorted_spikes_kde:
+        arguments.update(
+            marginal_models=[None] * n_neurons, mean_rates=np.ones(n_neurons)
+        )
+    else:
+        arguments["coefficients"] = np.zeros((n_neurons, 1))
+    function = (
+        backend.predict_sorted_spikes_kde_log_likelihood
+        if backend is sorted_spikes_kde
+        else backend.predict_sorted_spikes_glm_log_likelihood
+    )
+    full = np.asarray(function(**arguments))
+    if count_blocks:
+        # int64 counts: a 64-row host block budget.
+        monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 64 * n_neurons * 8)
+    for bounds in [(0, 8, 200), (0, 70, 130, 200), (0, 3, 11, 64, 195, 199, 200)]:
+        parts = [
+            function(**arguments, row_slice=slice(start, stop))
+            for start, stop in zip(bounds[:-1], bounds[1:], strict=True)
+        ]
+        np.testing.assert_allclose(np.concatenate(parts), full, **EXACT)
+
+
 def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
@@ -267,11 +332,12 @@ def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
 
 
 @pytest.mark.parametrize("x64", [False, True])
-def test_matrix_emission_accepts_rounding_jittered_durations(x64):
-    """Blocks whose durations differ only by timestamp rounding use the matrix.
+def test_matrix_emission_accepts_any_durations(x64):
+    """The matrix path depends only on the rates, never on bin durations.
 
-    Real recordings with Unix-epoch times give two distinct bin durations; the
-    exact per-neuron fallback is about 70x slower on an A100 for 305 units.
+    Real recordings with Unix-epoch times give two distinct bin durations and
+    irregular grids give more; the exact per-neuron fallback is about 70x
+    slower on an A100 for 305 units. Zero or non-finite rates stay exact.
     """
     from non_local_detector.likelihoods.common import _matrix_emission_is_safe
 
@@ -280,19 +346,14 @@ def test_matrix_emission_accepts_rounding_jittered_durations(x64):
         rates = jnp.full((3, 4), 2.0, dtype=dtype)
         durations = unix_epoch_durations(64, dtype)
         assert np.unique(durations).size == 2
-
-        assert _matrix_emission_is_safe(rates, jnp.asarray(durations), dtype)
-        # Three distinct durations, zero or non-finite products stay exact.
         three = durations.copy()
         three[5] = 0.003
-        for unsafe_rates, unsafe_durations in [
-            (rates, three),
-            (rates, np.where(np.arange(64) == 7, 0.0, durations).astype(dtype)),
-            (rates.at[0, 0].set(0.0), durations),
-            (rates.at[0, 0].set(jnp.inf), durations),
-        ]:
+
+        for safe_durations in (durations, three):
+            assert _matrix_emission_is_safe(rates, jnp.asarray(safe_durations), dtype)
+        for unsafe_rates in (rates.at[0, 0].set(0.0), rates.at[0, 0].set(jnp.inf)):
             assert not _matrix_emission_is_safe(
-                unsafe_rates, jnp.asarray(unsafe_durations), dtype
+                unsafe_rates, jnp.asarray(durations), dtype
             )
 
 
@@ -549,18 +610,19 @@ def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkey
     np.testing.assert_array_equal(actual.is_missing, missing)
 
 
-def test_uniform_duration_blocks_compute_one_emission_product():
-    """A block of equal durations needs one matrix product, not both.
+def test_matrix_blocks_compute_one_emission_product():
+    """Each block's matrix path is one product, whatever its durations.
 
-    Selecting between the two durations' products with ``where`` computed both
-    for every block, making uniform-width emissions about 1.8x slower.
+    The rates' log is taken once per call and each row adds its own duration
+    term, so no block computes a product per distinct duration.
     """
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
-    counts = jnp.zeros((128, 5), dtype=jnp.int32)
+    # 256 rows: edge blocks and the interior block loop.
+    counts = jnp.zeros((256, 5), dtype=jnp.int32)
     rates = jnp.ones((5, 7))
     jaxpr = jax.make_jaxpr(_poisson_nonlocal_log_likelihood)(
-        counts, rates, jnp.full(128, 0.002), rates.sum(0)
+        counts, rates, jnp.full(256, 0.002), rates.sum(0)
     )
 
     def count(jaxpr, name):
@@ -588,4 +650,6 @@ def test_uniform_duration_blocks_compute_one_emission_product():
         sorted(count(branch.jaxpr, "dot_general") for branch in eqn.params["branches"])
         for eqn in conds(jaxpr.jaxpr)
     ]
-    assert [1, 2] in branch_products, branch_products
+    # One cond per block chooses the matrix product or the xlogy fallback.
+    assert len(branch_products) == 4, branch_products
+    assert all(products == [0, 1] for products in branch_products), branch_products
