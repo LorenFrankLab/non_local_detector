@@ -344,11 +344,12 @@ class TestPoissonRegression:
 
 
 def _poisson_objective64(design_matrix, spikes, weights, coefficients, l2_penalty):
-    """The fitted objective in float64, per cell."""
+    """The fitted objective in float64, per cell: the penalized negative total
+    log likelihood, divided by the total exposure."""
     rate = np.maximum(np.exp(coefficients @ design_matrix.T), EPS)
     data = np.where(spikes > 0, spikes * np.log(rate), 0.0) - weights * rate
     penalty = l2_penalty * np.sum(coefficients[:, 1:] ** 2, axis=1)
-    return -data.sum(axis=1) / weights.sum() + penalty
+    return (-data.sum(axis=1) + penalty) / weights.sum()
 
 
 @pytest.mark.unit
@@ -453,6 +454,30 @@ class TestBatchedPoissonRegression:
             atol=1e-8,
         )
 
+    def test_penalty_does_not_grow_with_recording_length(self, problem):
+        """The penalty is on the total log likelihood, so a recording repeated
+        ``k`` times fits like the original with the penalty divided by ``k``.
+        (A penalty on the per-second average would instead give every
+        repetition the same fit, letting the prior grow with the data.)"""
+        design_matrix, spikes, weights = problem
+        k, l2_penalty = 4, 2.0
+        repeated = np.asarray(
+            fit_poisson_regressions(
+                np.tile(design_matrix, (k, 1)),
+                np.tile(spikes, (1, k)),
+                np.tile(weights, k),
+                l2_penalty,
+            )
+        )
+        once = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty / k)
+        )
+        np.testing.assert_allclose(repeated, once, rtol=0, atol=2e-3)
+        unscaled = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
+        )
+        assert np.abs(unscaled - once).max() > 0.05
+
     def test_unsupported_basis_function_stays_at_zero(self, problem):
         """A basis function with no weighted support is set only by the penalty."""
         design_matrix, spikes, weights = problem
@@ -494,6 +519,95 @@ class TestBatchedPoissonRegression:
             rtol=0,
             atol=1e-7,
         )
+
+
+def _fit_encoding(env, data, **kwargs):
+    return fit_sorted_spikes_glm_encoding_model(
+        position_time=jnp.asarray(data["position_time"]),
+        position=jnp.asarray(data["position"]),
+        spike_times=data["spike_times"],
+        environment=env,
+        place_bin_edges=env.place_bin_edges_,
+        edges=env.edges_,
+        is_track_interior=env.is_track_interior_,
+        is_track_boundary=env.is_track_boundary_,
+        disable_progress_bar=True,
+        **kwargs,
+    )
+
+
+def _spy_l2_penalty(monkeypatch):
+    """Record the ``l2_penalty`` the encoding fit hands the optimizer."""
+    penalties = []
+
+    def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
+        penalties.append(l2_penalty)
+        return fit_poisson_regressions(
+            design_matrix, spikes, weights, l2_penalty, **kwargs
+        )
+
+    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
+    return penalties
+
+
+@pytest.mark.unit
+class TestLogRatePrior:
+    """By default the coefficient penalty is a Gaussian prior on log-rate."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "prior_std"),
+        [
+            ({}, sorted_spikes_glm.GLM_LOG_RATE_PRIOR_STD),
+            ({"log_rate_prior_std": 1.0}, 1.0),
+        ],
+    )
+    @pytest.mark.parametrize("knot_spacing", [5.0, 20.0])
+    def test_prior_sets_the_log_rate_sd_at_the_bins(
+        self,
+        monkeypatch,
+        simple_1d_environment,
+        simple_spike_data,
+        kwargs,
+        prior_std,
+        knot_spacing,
+    ):
+        """Under ``Normal(0, 1 / (2 l2_penalty))`` coefficients, the spline's
+        log-rate deviation from baseline has the prior variance on average
+        over the interior bins, whatever the knot spacing."""
+        penalties = _spy_l2_penalty(monkeypatch)
+        env = simple_1d_environment
+        encoding = _fit_encoding(
+            env, simple_spike_data, emission_knot_spacing=knot_spacing, **kwargs
+        )
+        centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
+        spline = np.asarray(
+            make_spline_predict_matrix(encoding["emission_design_info"], centers)
+        )[:, 1:]
+        (l2_penalty,) = penalties
+        coefficient_variance = 1.0 / (2.0 * l2_penalty)
+        implied_variance = coefficient_variance * np.sum(spline**2, axis=1)
+        np.testing.assert_allclose(implied_variance.mean(), prior_std**2, rtol=1e-6)
+
+    def test_intercept_only_basis_has_no_penalty(self):
+        assert sorted_spikes_glm.log_rate_prior_l2_penalty(np.ones((5, 1))) == 0.0
+
+    def test_explicit_l2_penalty_overrides_the_prior(
+        self, monkeypatch, simple_1d_environment, simple_spike_data
+    ):
+        penalties = _spy_l2_penalty(monkeypatch)
+        _fit_encoding(simple_1d_environment, simple_spike_data, l2_penalty=0.3)
+        assert penalties == [0.3]
+
+    @pytest.mark.parametrize("prior_std", [0.0, -1.0, np.inf, np.nan])
+    def test_invalid_prior_std_raises(
+        self, simple_1d_environment, simple_spike_data, prior_std
+    ):
+        with pytest.raises(ValidationError, match="log_rate_prior_std"):
+            _fit_encoding(
+                simple_1d_environment,
+                simple_spike_data,
+                log_rate_prior_std=prior_std,
+            )
 
 
 def test_encoding_fit_solves_all_cells_in_one_call(
