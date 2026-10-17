@@ -1173,7 +1173,10 @@ class GaussianMixtureModel:
         X : Array, shape (n_samples, n_features)
             Training data.
         key : jax.Array
-            PRNG key; if `random_state` is provided, it overrides JAX randomness in inits.
+            PRNG key, split into one key per restart. Random-responsibility
+            inits draw from it (folded with `random_state` when that is set),
+            as do the KMeans seeds of restarts after the first; the first
+            KMeans restart is seeded by `random_state` alone when it is set.
         sample_weight : Array | np.ndarray | None, shape (n_samples,), default=None
             Nonnegative per-sample weights. They are rescaled to mean one
             before initialization and EM, so their common scale does not change

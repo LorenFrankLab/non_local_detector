@@ -384,7 +384,7 @@ def _assemble_place_fields(
     Returns
     -------
     place_fields : jnp.ndarray, shape (n_neurons, n_total_bins)
-        EPS-floored on interior bins, exactly 0 off-track.
+        Floored at ``RATE_EPS_HZ`` on interior bins, exactly 0 off-track.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
         Sum of Hz rates across neurons; multiply by duration before scoring.
     interior_log_place_fields : jnp.ndarray, shape (n_neurons, n_interior)
@@ -489,6 +489,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
         - 'bin_sizes': per-interior-bin volume, shape (n_interior,)
         - 'local_interpolation': local likelihood interpolation mode
         - 'disable_progress_bar': progress-bar setting
+        - 'rate_units': ``"Hz"``
+        - 'encoding_exposure_seconds': weighted encoding occupancy time, seconds
 
     Raises
     ------
@@ -684,6 +686,12 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
     **_encoding_extras
         Extra encoding-dict keys a reusing estimator carries (e.g. the MRF's
         ``mrf_*`` diagnostics); absorbed and unused.
@@ -731,7 +739,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         )
         # local_rates is (n_time, n_neurons). The per-neuron loop summed
         # xlogy(count_n, rate_n) - rate_n over neurons; vectorize as one elementwise
-        # reduction. xlogy is kept (local rates are not guaranteed EPS-floored).
+        # reduction. Local rates are floored at RATE_EPS_HZ, so xlogy equals
+        # count * log(rate) here.
         spike_counts = jnp.asarray(
             _spike_counts_matrix(
                 spike_times,
@@ -749,11 +758,12 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         ).sum(axis=1)
         return jnp.expand_dims(log_likelihood, axis=1)
 
-    # Slice all neurons' fields to interior bins once. Interior fields are EPS-floored
-    # (see _assemble_place_fields), so log is finite and xlogy(count, field) reduces to
-    # count * log(field). The per-neuron loop accumulated sum_n count_n[:, None] *
-    # log(field_n)[None, :]; vectorize it as a single (n_time, n_neurons) @
-    # (n_neurons, n_interior_bins) matmul instead of N (n_time, n_interior_bins) terms.
+    # Slice all neurons' fields to interior bins once. Interior fields are floored at
+    # RATE_EPS_HZ (see _assemble_place_fields), so log is finite and
+    # xlogy(count, field) reduces to count * log(field). The per-neuron loop
+    # accumulated sum_n count_n[:, None] * log(field_n)[None, :]; vectorize it as a
+    # single (n_time, n_neurons) @ (n_neurons, n_interior_bins) matmul instead of N
+    # (n_time, n_interior_bins) terms.
     # The fit precomputes the interior log fields (in node_order == is_track_interior
     # order), so the non-local likelihood is a single count-matrix @ log-fields matmul.
     log_interior_fields = (

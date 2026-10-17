@@ -396,7 +396,7 @@ def mrf_penalized_poisson_fit(
 
     Fits, for every neuron ``k`` at once,
     ``counts[:, k] ~ Poisson(occupancy * exp(basis @ coeffs[:, k]))`` with penalty
-    ``penalty * coeffs[:, k]^T diag(penalty_weights) coeffs[:, k]``. The design
+    ``(penalty / 2) * coeffs[:, k]^T diag(penalty_weights) coeffs[:, k]``. The design
     matrix, occupancy offset, penalty, and penalty weights are shared across
     neurons; only the response and coefficients differ, so the Newton step is
     batched over the neuron axis (no per-neuron Python loop).
@@ -813,8 +813,9 @@ def fit_sorted_spikes_mrf_encoding_model(
         override). Must be an explicit parameter so a user-supplied ``rank`` is not
         dropped by the base class's signature filter.
     penalty : float or None, optional
-        The smoothing parameter ``lambda``. None (default) selects it by REML. Pass
-        ``0.0`` for an unpenalized (saturated) fit.
+        The smoothing parameter ``lambda`` of the penalty
+        ``(lambda / 2) * gamma_k^T diag(d) gamma_k``. None (default) selects it by
+        REML. Pass ``0.0`` for an unpenalized (saturated) fit.
     max_iter : int, optional
         Maximum Newton iterations for both REML candidate fits and the final fit, by
         default 100.
@@ -853,8 +854,8 @@ def fit_sorted_spikes_mrf_encoding_model(
         The same keys as ``sorted_spikes_diffusion`` -- ``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` (FULL-GRID), ``no_spike_part_log_likelihood``,
         ``interior_log_place_fields``, ``is_track_interior``, ``node_order``,
-        ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar`` -- plus MRF
-        diagnostics:
+        ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar``,
+        ``rate_units``, ``encoding_exposure_seconds`` -- plus MRF diagnostics:
 
         - ``mrf_penalty``: the selected (or supplied) smoothing parameter ``lambda``
         - ``mrf_rank``: number of eigenmodes used as the basis

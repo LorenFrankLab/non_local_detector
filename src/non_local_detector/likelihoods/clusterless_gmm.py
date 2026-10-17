@@ -4,7 +4,10 @@ Clusterless decoding using Gaussian Mixture Models (GMM)
 Spike log intensities are the raw ``log(rate) + log p(pos, mark) - log
 p_occ(pos)`` and the ground process is ``rate * p_joint(pos) / p_occ(pos)``,
 where ``p_joint(pos)`` is the analytical position marginal of the same joint
-GMM. Both are formed in log space.
+GMM. Both are formed in log space. Each spike's intensity is combined with the
+electrode's background ``RATE_EPS_HZ * q(mark)`` by ``logaddexp`` (``q`` is the
+electrode's reference mark density, see ``mark_reference``), and each
+electrode's expected count gains ``RATE_EPS_HZ``.
 """
 
 from __future__ import annotations
@@ -556,7 +559,6 @@ def fit_clusterless_gmm_encoding_model(
         Covariance type for occupancy GMM. Options: "full", "tied", "diag", "spherical".
     gmm_covariance_type_joint : str, default="full"
         Covariance type for joint GMM. Options: "full", "tied", "diag", "spherical".
-        Note: "diag" may offer speedups but currently has JIT compatibility issues.
     gmm_random_state : int | None, default=0
         Random state for reproducibility.
     gmm_reg_covar : float, default=1.0
@@ -600,6 +602,8 @@ def fit_clusterless_gmm_encoding_model(
         - gmm_requested_components
         - gmm_effective_components
         - mark_dimensions
+        - rate_units ("Hz")
+        - encoding_exposure_seconds (weighted encoding occupancy time, seconds)
     """
     for parameter in ("gmm_components_gpi", "gmm_covariance_type_gpi"):
         if parameter in kwargs:
@@ -630,7 +634,8 @@ def fit_clusterless_gmm_encoding_model(
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(np.asarray(weights), position.shape[0])
-    # Weighted occupancy "time": sum of per-sample weights (uniform -> sample count).
+    # Weighted occupancy time in seconds: per-sample weight times the tracking
+    # time each sample covers (its integrated interpolation exposure).
     weight_sum = float(exposure_weights.sum())
     if weight_sum == 0.0:
         warnings.warn(
@@ -876,8 +881,26 @@ def predict_clusterless_gmm_log_likelihood(
         Decoding spike times per electrode.
     spike_waveform_features : list[jnp.ndarray]
         Decoding spike waveform features per electrode.
-    encoding_model : dict
-        Output of fit_clusterless_gmm_encoding_model.
+    environment : Environment
+        Fitted environment; the local path uses its track graph, if any, to
+        linearize the animal's position.
+    occupancy_model : GaussianMixtureModel
+        Occupancy density over position (1-D linearized position when the
+        environment has a track graph and position is multi-dimensional).
+    interior_place_bin_centers : jnp.ndarray, shape (n_interior_bins, n_position_dims)
+        Centers of the environment's interior place bins.
+    log_occupancy : jnp.ndarray, shape (n_interior_bins,)
+        Log occupancy density at ``interior_place_bin_centers``.
+    gpi_models : list of GaussianMixtureModel or None, length n_electrodes
+        Position marginal of each electrode's joint GMM; None for a zero-rate
+        electrode.
+    joint_models : list of GaussianMixtureModel or None, length n_electrodes
+        Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
+    mean_rates : jnp.ndarray, shape (n_electrodes,)
+        Weighted mean firing rate per electrode, in Hz.
+    summed_ground_process_intensity : jnp.ndarray, shape (n_interior_bins,)
+        Sum over electrodes of ``rate * p_gpi(x) / p_occ(x)`` at the interior
+        bins, in Hz (without the background rate).
     is_local : bool, default=False
         If True, compute local likelihood at the animal's position.
         Else compute non-local likelihood across interior bins.
@@ -906,6 +929,12 @@ def predict_clusterless_gmm_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -914,7 +943,7 @@ def predict_clusterless_gmm_log_likelihood(
     Returns
     -------
     log_likelihood :
-        If non-local: jnp.ndarray, shape (n_rows, n_place_bins)
+        If non-local: jnp.ndarray, shape (n_rows, n_interior_bins)
         If local    : jnp.ndarray, shape (n_rows, 1)
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
@@ -987,9 +1016,6 @@ def predict_clusterless_gmm_log_likelihood(
     n_bins = interior_place_bin_centers.shape[0]
 
     # Start with the expected-counts (ground process) term, broadcast over time
-    # log_likelihood = (
-    #     (-summed_ground_process_intensity).reshape(1, -1).repeat(n_rows, axis=0)
-    # )  # (n_rows, n_bins)
     log_likelihood = -jnp.asarray(_time_grid.durations(row_start, row_stop))[
         :, None
     ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
@@ -1142,8 +1168,17 @@ def compute_local_log_likelihood(
         Spike times per electrode during decoding.
     spike_waveform_features : list[jnp.ndarray]
         Spike waveform features per electrode during decoding.
-    encoding_model : dict
-        Fitted encoding model containing GMM components.
+    environment : Environment
+        Fitted environment; its track graph, if any, linearizes the position.
+    occupancy_model : GaussianMixtureModel
+        Occupancy density over (possibly linearized) position.
+    gpi_models : list of GaussianMixtureModel or None, length n_electrodes
+        Position marginal of each electrode's joint GMM; None for a zero-rate
+        electrode.
+    joint_models : list of GaussianMixtureModel or None, length n_electrodes
+        Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
+    mean_rates : jnp.ndarray, shape (n_electrodes,)
+        Weighted mean firing rate per electrode, in Hz.
     disable_progress_bar : bool, optional
         Turn off progress bar display, by default False.
     row_slice : slice | None, optional

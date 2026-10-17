@@ -326,7 +326,8 @@ def heat_kernel_rank(
         Smoothing standard deviation (``position_std``) in coordinate units; positive.
     tol : float, optional
         Heat-kernel weight below which a mode is dropped, in ``(0, 1)``. Smaller ``tol``
-        keeps more modes (more accurate, larger rank). Default ``1e-6`` (error ``~1e-7``).
+        keeps more modes (more accurate, larger rank). Default ``1e-6`` (truncation
+        error below ``1e-6 * ‖field‖``).
     dense_fraction : float, optional
         Return ``None`` (use the dense solver) when the resolved rank would exceed
         ``dense_fraction * n_bins``, where a truncated ``eigsh`` no longer beats a dense
