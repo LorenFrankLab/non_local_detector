@@ -710,6 +710,76 @@ def test_exposure_weighted_mean_rate_equals_mean_rate_on_unequal_bins():
     np.testing.assert_allclose(weighted_mean, encoding["mean_rates"], rtol=1e-5)
 
 
+def simulate_sparse_uniform_tracking(
+    sampling_frequency: float = 30.0,
+    rate: float = 10.0,
+    duration: float = 600.0,
+    seed: int = 0,
+):
+    """A uniform-rate neuron tracked at 150 units/s on a [0, 100] track.
+
+    The animal bounces between 1.25 and 96.25 at constant speed. At 30 Hz it moves
+    5 units per sample, so with 2.5-unit bins every sample sits on an even bin's
+    center (1.25 + 5k) and the odd bins between them get no tracking sample.
+
+    Returns
+    -------
+    time : np.ndarray, shape (n_time,)
+    position : np.ndarray, shape (n_time, 1)
+    spike_times : list[np.ndarray]
+        One neuron firing as a homogeneous Poisson process at ``rate`` Hz over
+        the encoding support (sample centers plus endpoint half-cells).
+    environment : Environment
+        2.5-unit bins on [0, 100], every bin interior.
+    """
+    rng = np.random.default_rng(seed)
+    dt = 1.0 / sampling_frequency
+    time = np.arange(0.0, duration, dt)
+    span = 95.0
+    phase = (150.0 * time) % (2 * span)
+    position = (1.25 + np.where(phase < span, phase, 2 * span - phase))[:, None]
+    n_spikes = rng.poisson(rate * (time[-1] - time[0] + dt))
+    spike_times = np.sort(rng.uniform(time[0] - dt / 2, time[-1] + dt / 2, n_spikes))
+    environment = Environment(
+        place_bin_size=2.5, position_range=((0.0, 100.0),)
+    ).fit_place_grid(position, infer_track_interior=False)
+    return time, position, [spike_times], environment
+
+
+@pytest.mark.unit
+def test_pixellated_spikes_share_the_exposure_rule_under_sparse_tracking():
+    """Spike mass lands only where exposure does, in proportion to it.
+
+    Exposure sits at each tracking sample's bin, so spikes must be split between
+    the bins of their bracketing samples (the encoding support's event rule), not
+    placed at the interpolated position: bins with no sample have no exposure and
+    must get no spikes, and a uniform neuron's raw rate is uniform.
+    """
+    time, position, spike_times, env = simulate_sparse_uniform_tracking(rate=20.0)
+    _, node_order, _ = environment_graph(env)
+    exposure, (counts,), (mean_rate,) = pixellate_interior_fields(
+        time, position, spike_times, env, node_order, np.ones_like(time), True
+    )
+    unexposed = exposure == 0.0
+    assert unexposed.sum() >= 15  # the odd bins (and the never-visited last bin)
+    np.testing.assert_array_equal(counts[unexposed], 0.0)
+    np.testing.assert_allclose(counts.sum(), len(spike_times[0]))
+    np.testing.assert_allclose(mean_rate, counts.sum() / exposure.sum())
+    raw_rate = counts[~unexposed] / exposure[~unexposed]
+    assert np.max(np.abs(raw_rate / 20.0 - 1.0)) < 0.2
+
+
+@pytest.mark.unit
+def test_uniform_rate_is_recovered_under_sparse_tracking():
+    """A 10 Hz neuron tracked 2 bins per sample fits ~10 Hz in every bin."""
+    time, position, spike_times, env = simulate_sparse_uniform_tracking()
+    encoding = fit_sorted_spikes_diffusion_encoding_model(
+        time, position, spike_times, env, position_std=2.5, disable_progress_bar=True
+    )
+    place_field = np.asarray(encoding["place_fields"])[0]
+    assert np.max(np.abs(place_field / 10.0 - 1.0)) < 0.15
+
+
 def test_registered_in_sorted_spikes_algorithms():
     """The algorithm is selectable via sorted_spikes_algorithm='sorted_spikes_diffusion'."""
     assert "sorted_spikes_diffusion" in _SORTED_SPIKES_ALGORITHMS
@@ -1254,3 +1324,57 @@ def test_detectors_reject_population_mismatch(algorithm):
                 position=position[:200],
                 position_time=time[:200],
             )
+
+
+@pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
+def three_neuron_fit(request):
+    """A registered diffusion-family model fit on three neurons."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3)
+    fit, predict = _SORTED_SPIKES_ALGORITHMS[request.param]
+    fit_params = (
+        {"position_std": 6.0} if request.param == "sorted_spikes_diffusion" else {}
+    )
+    encoding = fit(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        **fit_params,
+    )
+    return predict, encoding, time, position, spike_times
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rows", [None, slice(37, 901), slice(100, 100)])
+def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypatch):
+    """Non-local spike counts are built in bounded row blocks, bitwise
+    identically to one block, so a full-grid request never holds the whole
+    rows-by-population count matrix."""
+    import non_local_detector.likelihoods.common as common
+    import non_local_detector.likelihoods.sorted_spikes_diffusion as diffusion
+
+    predict, encoding, time, position, spike_times = three_neuron_fit
+    arguments = {
+        **encoding,
+        "is_local": False,
+        "time_edges": time[:1001],
+        "row_slice": rows,
+    }
+    unblocked = predict(time, position, spike_times, **arguments)
+    original = diffusion._spike_counts_matrix
+    block_rows = []
+
+    def spy(*args, **kwargs):
+        counts = original(*args, **kwargs)
+        block_rows.append(counts.shape[0])
+        return counts
+
+    monkeypatch.setattr(diffusion, "_spike_counts_matrix", spy)
+    # Three neurons of int64 counts: a 128-row block budget.
+    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
+    blocked = predict(time, position, spike_times, **arguments)
+    np.testing.assert_array_equal(blocked, unblocked)
+    start, stop, _ = (slice(None) if rows is None else rows).indices(1000)
+    assert sum(block_rows) == stop - start
+    assert max(block_rows, default=0) <= 128

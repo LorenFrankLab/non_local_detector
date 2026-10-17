@@ -11,6 +11,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
 )
+from non_local_detector.likelihoods.common import _padded_spike_count
 from non_local_detector.tests.likelihoods.conftest import (
     FLOAT32_ROUNDING,
     realistic_log_background,
@@ -135,15 +136,18 @@ def test_oversized_mark_blocks_do_not_allocate_requested_padding(
 ):
     """A sparse native chunk must not create a 10k-row spatial output.
 
-    Intercept before compilation/allocation: the old padded shape would require
-    1.325 GB for this output alone, while actual marks need at most 2.3 MB.
+    Intercept before compilation/allocation: padding to the block would require
+    1.325 GB for this output alone, while the few padded sizes shared across
+    chunks need at most 4.2 MB.
     """
     n_position_bins = 33_124
+    n_padded = _padded_spike_count(n_decoding, 10_000)
+    assert n_padded <= 2 * max(n_decoding, 16)
 
     def bounded_core(features, *args, log_background, **kwargs):
-        assert features.shape[0] == n_decoding
-        assert log_background.shape == (n_decoding,)
-        return jnp.zeros((n_decoding, n_position_bins), dtype=features.dtype)
+        assert features.shape[0] == n_padded
+        assert log_background.shape == (n_padded,)
+        return jnp.zeros((n_padded, n_position_bins), dtype=features.dtype)
 
     monkeypatch.setattr(marked_kde, "estimate_log_joint_mark_intensity", bounded_core)
     actual = block_estimate_log_joint_mark_intensity(

@@ -20,7 +20,6 @@ from non_local_detector.likelihoods.common import (
     EPS,
     block_kde,
     block_log_kde,
-    safe_log,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
@@ -242,10 +241,10 @@ def test_local_likelihood_log_space_moderate_features(
 
 
 def test_block_log_kde_vs_log_block_kde():
-    """Test that block_log_kde is more accurate than safe_log(block_kde).
+    """Test that block_log_kde is more accurate than the floored log of block_kde.
 
     This directly tests the numerical difference between:
-    1. Linear-space: marginal = block_kde(...); log_marginal = safe_log(marginal)
+    1. Linear-space: marginal = block_kde(...); log_marginal = log(max(marginal, EPS))
     2. Log-space: log_marginal = block_log_kde(...)
 
     With extreme feature distances, (1) suffers from underflow and produces
@@ -269,7 +268,7 @@ def test_block_log_kde_vs_log_block_kde():
 
     # Method 1: Linear-space then log (current implementation)
     marginal_linear = block_kde(eval_points, samples, std, block_size=5)
-    log_marginal_linear = safe_log(marginal_linear, eps=EPS)
+    log_marginal_linear = jnp.log(jnp.maximum(marginal_linear, EPS))
 
     # Method 2: Pure log-space (proposed implementation)
     log_marginal_log = block_log_kde(eval_points, samples, std, block_size=5)
@@ -283,7 +282,7 @@ def test_block_log_kde_vs_log_block_kde():
         f"but got min={np.min(marginal_linear)}, max={np.max(marginal_linear)}"
     )
 
-    # Which safe_log clamps to exactly LOG_EPS
+    # Which the EPS floor clamps to exactly LOG_EPS
     assert np.all(log_marginal_linear == LOG_EPS), (
         f"Expected all log_marginal_linear values to be clamped to LOG_EPS={LOG_EPS}, "
         f"but got values: {np.unique(log_marginal_linear)}"

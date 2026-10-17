@@ -200,16 +200,12 @@ def test_local_terms_keep_compiled_workspace_bounded_without_tiling(
             shape(n_position_dims),  # position_std
             shape(n_features),  # waveform_stds
             shape(n_spikes),  # log_occupancy_at_spikes
-            shape(n_encoding, n_position_dims),  # gpi_samples
-            shape(n_encoding),  # gpi_weights
-            shape(n_position_dims),  # gpi_std
-            shape(n_rows, n_position_dims),  # positions
+            shape(n_rows),  # log_gpi_density
             shape(n_rows),  # log_occupancy
             1.0,  # scaled_rate
             1.0,  # mean_rate
             shape(n_spikes),  # log_background
             block_size=10_000,
-            gpi_block_size=10_000,
             indices_are_sorted=True,
         ).compile()
     workspace = compiled.memory_analysis().temp_size_in_bytes

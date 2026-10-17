@@ -51,10 +51,17 @@ import numpy as np
 import scipy.optimize
 from jax import lax
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_no_encoding_exposure,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import RATE_EPS_HZ, validate_weights
+from non_local_detector.likelihoods.common import (
+    RATE_EPS_HZ,
+    environment_grid_fingerprint,
+    validate_weights,
+)
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     connected_component_labels,
@@ -877,8 +884,10 @@ def fit_sorted_spikes_mrf_encoding_model(
         If some, but not all, connected components of the interior graph have
         exactly zero exposure. Their rates are unidentified, so spike counts binned
         there are ignored, their place fields are set to ``RATE_EPS_HZ`` and their
-        modes' coefficients to zero. All-zero exposure gives the same place fields
-        without a warning.
+        modes' coefficients to zero.
+    UserWarning
+        If the exposure is zero everywhere. Every place field is then
+        ``RATE_EPS_HZ``.
     """
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -892,6 +901,9 @@ def fit_sorted_spikes_mrf_encoding_model(
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(weights, position.shape[0])
+    warn_if_no_encoding_exposure(
+        exposure_weights, "Sorted-spikes MRF", clusterless=False
+    )
     max_iter = _as_positive_int("max_iter", max_iter)
     tol = _as_positive_float("tol", tol)
     log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
@@ -1033,6 +1045,7 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy_field,
         "mean_rates": mean_rates,
         "place_fields": place_fields,
