@@ -65,7 +65,10 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_tracking_is_sparse,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -364,6 +367,7 @@ def fit_clusterless_diffusion_encoding_model(
     # barely spreads past one bin -> near-raw histograms), matching sorted_spikes_diffusion.
     check_smoothing_bandwidth(position_std, graph)
     bin_sizes = np.asarray(bin_sizes)
+    warn_if_tracking_is_sparse(support, position, position_std)
     n_interior = node_order.shape[0]
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
     full_to_local = _full_to_local(node_order, n_total_bins)

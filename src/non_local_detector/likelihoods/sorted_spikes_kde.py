@@ -54,7 +54,10 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_tracking_is_sparse,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -334,6 +337,7 @@ def fit_sorted_spikes_kde_encoding_model(
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     n_dims = 1 if environment.track_graph is not None else position.shape[1]
     position_std = validate_bandwidth(position_std, n_dims, "position_std")
+    warn_if_tracking_is_sparse(support, position, position_std)
 
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()

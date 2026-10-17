@@ -16,7 +16,10 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_tracking_is_sparse,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -1669,6 +1672,7 @@ def fit_clusterless_kde_encoding_model(
     # non-finite std would otherwise fit a degenerate kernel. waveform_std stays
     # scalar or per-feature and is expanded per electrode at predict time.
     position_std = validate_bandwidth(position_std, n_std_dims, "position_std")
+    warn_if_tracking_is_sparse(support, position, position_std)
     for features in spike_waveform_features:
         validate_bandwidth(waveform_std, features.shape[1], "waveform_std")
 

@@ -5,6 +5,8 @@ tracking intervals determine which times can contribute encoding evidence.
 Event weights are dimensionless; integrated sample exposure is in seconds.
 """
 
+import warnings
+
 import numpy as np
 
 from non_local_detector.exceptions import DataError, ValidationError
@@ -260,3 +262,65 @@ def prepare_encoding_support(
     weights = np.where(np.all(np.isfinite(position), axis=1), weights, 0.0)
     exposure_weights = weights * support.exposure
     return support, weights, exposure_weights, np.nan_to_num(position)
+
+
+def largest_tracking_step(support: EncodingSupport, position) -> float:
+    """Largest distance between consecutive tracking samples within a segment.
+
+    Only samples that share an interpolation segment of ``support`` count, so
+    jumps across declared tracking gaps or missing samples are ignored.
+
+    Parameters
+    ----------
+    support : EncodingSupport
+    position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
+        The samples ``support`` was built from, in the units of the bandwidth.
+
+    Returns
+    -------
+    step : float
+        Euclidean distance; 0 when no segment has two samples.
+    """
+    position = np.asarray(position, dtype=float).reshape(len(support.time), -1)
+    steps = [
+        np.linalg.norm(np.diff(position[indices], axis=0), axis=1)
+        for _, _, indices in support.segments
+        if indices.size > 1
+    ]
+    return float(max((step.max() for step in steps), default=0.0))
+
+
+def warn_if_tracking_is_sparse(
+    support: EncodingSupport, position, position_std, *, stacklevel: int = 3
+) -> None:
+    """Warn when tracking moves farther per sample than ``position_std``.
+
+    Occupancy is built from the tracking samples, while spikes are placed on
+    the interpolated path between them. For uniform motion with samples ``d``
+    apart, a Gaussian occupancy of width ``sigma`` differs from that of the
+    continuous path by at most about ``2 exp(-2 pi**2 sigma**2 / d**2)``:
+    5e-9 at ``d = sigma``, 3e-4 at ``1.5 sigma`` and 1.4% at ``2 sigma``. Above
+    ``sigma`` the place fields can be biased where spikes fall between samples.
+
+    Parameters
+    ----------
+    support : EncodingSupport
+    position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
+    position_std : float or array_like
+        Position bandwidth; its smallest entry is used.
+    stacklevel : int, optional
+        Passed to ``warnings.warn``, by default 3 (the encoding fit's caller).
+    """
+    scale = float(np.min(position_std))
+    step = largest_tracking_step(support, position)
+    if step > scale:
+        warnings.warn(
+            f"Tracking moves up to {step:.3g} position units between samples, more "
+            f"than position_std={scale:.3g}. Occupancy is estimated from the "
+            "tracking samples while spikes are placed on the path between them, "
+            "so place fields can be biased where spikes fall between distant "
+            "samples. Use position sampled more often (or upsampled along the "
+            "path), or a position_std at least as large as the largest step.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
