@@ -33,8 +33,8 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
+    log_nonnegative,
     resolve_row_slice,
-    safe_log,
     select_spike_rows,
     select_spikes_in_rows,
     spike_row_ids,
@@ -286,7 +286,7 @@ def _add_electrode_gmm_spike_terms(
     occupancy_logp = _gmm_score(spike_positions, occupancy, occupancy_type)
     # Density difference first (see _accumulate_log_likelihood_block).
     terms = jnp.logaddexp(
-        safe_log(mean_rate, eps=RATE_EPS_HZ) + (joint_logp - occupancy_logp),
+        log_nonnegative(mean_rate) + (joint_logp - occupancy_logp),
         log_background,
     )
     return log_likelihood + deterministic_row_sum(
@@ -746,7 +746,7 @@ def fit_clusterless_gmm_encoding_model(
                 UserWarning,
                 stacklevel=2,
             )
-            mean_rates.append(0.0)  # zero rate, not the EPS floor below
+            mean_rates.append(0.0)
             gpi_models.append(None)
             joint_models.append(None)
             effective_gpi_components.append(0)
@@ -754,9 +754,7 @@ def fit_clusterless_gmm_encoding_model(
             continue
 
         # Weighted mean firing rate: weighted spike count / weighted occupancy time.
-        mean_rate = jnp.clip(
-            weighted_mean_rate(elect_weights, weight_sum), min=RATE_EPS_HZ
-        )  # avoid 0 rate
+        mean_rate = jnp.asarray(weighted_mean_rate(elect_weights, weight_sum))
         mean_rates.append(mean_rate)
 
         # Positions at spike times
@@ -1043,7 +1041,7 @@ def predict_clusterless_gmm_log_likelihood(
             )
             continue
 
-        log_mean_rate = safe_log(mean_rate, eps=RATE_EPS_HZ)
+        log_mean_rate = log_nonnegative(mean_rate)
 
         if bin_tile_size is None or bin_tile_size >= n_bins:
             # Spikes padded to a few counts (padding rows are dropped from the
