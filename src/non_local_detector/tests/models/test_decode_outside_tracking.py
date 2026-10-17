@@ -328,3 +328,56 @@ def test_estimate_parameters_without_position_reads_decodes_every_bin(tracking):
     # A missing bin's log likelihood is 0; a decoded one includes the
     # negative no-spike term.
     assert not np.any(np.all(results.log_likelihood.values == 0.0, axis=1))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("kind", ["sorted", "clusterless"])
+@pytest.mark.parametrize("nan_samples", [slice(300, 400), slice(None)])
+def test_predict_without_position_reads_ignores_nan_position(
+    tracking, kind, nan_samples
+):
+    """NaN position marks no bin missing for a model that never reads it."""
+    time, position, _, _ = tracking
+    detector, spikes = _detector(kind, tracking, reads_position=False)
+    position = position.copy()
+    position[nan_samples] = np.nan
+    time_edges = time_edges_from_centers(time)
+
+    with_position = detector.predict(
+        *spikes,
+        time_edges=time_edges,
+        position_time=time,
+        position=position,
+        return_outputs="log_likelihood",
+    )
+    without_position = detector.predict(
+        *spikes, time_edges=time_edges, return_outputs="log_likelihood"
+    )
+
+    np.testing.assert_array_equal(
+        with_position.log_likelihood.values, without_position.log_likelihood.values
+    )
+    np.testing.assert_array_equal(
+        with_position.acausal_posterior.values,
+        without_position.acausal_posterior.values,
+    )
+
+
+@pytest.mark.integration
+def test_predict_with_position_reads_still_masks_nan_position(tracking):
+    time, position, spike_times, _ = tracking
+    detector, _ = _detector("sorted", tracking)
+    position = position.copy()
+    position[300:400] = np.nan
+
+    results = detector.predict(
+        spike_times,
+        time_edges=time_edges_from_centers(time),
+        position_time=time,
+        position=position,
+        return_outputs="log_likelihood",
+    )
+
+    # Bins 299-400 read a NaN sample by interpolation.
+    np.testing.assert_array_equal(results.log_likelihood.values[299:401], 0.0)
+    assert not np.any(np.all(results.log_likelihood.values[:299] == 0.0, axis=1))

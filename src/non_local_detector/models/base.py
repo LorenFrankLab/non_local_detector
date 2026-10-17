@@ -172,8 +172,9 @@ class _LikelihoodPositionContext:
             prepared = np.asarray(position)
             prepared = prepared[:, None] if prepared.ndim == 1 else prepared
             finite = np.all(np.isfinite(prepared), axis=1)
-            all_missing = not np.any(finite)
-            if not np.all(finite) and not all_missing:
+            # A model that never reads position decodes even without any.
+            all_missing = reads_position and not np.any(finite)
+            if np.any(finite) and not np.all(finite):
                 prepared = prepared.copy()
                 prepared[~finite] = prepared[finite][0]
         return cls(
@@ -283,10 +284,10 @@ def _prepare_likelihood_callback(
     Declaring ``_spike_time_order`` or ``_no_spike_time_bin_sizes`` lets this
     adapter bind shared preparation. ``reads_position`` is the detector's
     decision whether its decode likelihood reads position; the bound position
-    context applies the tracking-range rule only when it does. Each call
-    creates fresh preparation; nothing is stored on the detector or reused by
-    a later prediction. Callers with a precomputed likelihood bypass this
-    adapter entirely.
+    context marks bins missing for NaN or untracked position only when it
+    does. Each call creates fresh preparation; nothing is stored on the
+    detector or reused by a later prediction. Callers with a precomputed
+    likelihood bypass this adapter entirely.
     """
     parameters = inspect.signature(callback).parameters
     prepared: dict[str, object] = {}
@@ -835,10 +836,10 @@ def _missing_bins(
     uniformity tolerance. A bin is decoded as missing when any time it owns
     (``[edges[i], edges[i + 1])``, plus ``edges[-1]`` for the final bin) lies
     in such a span, so the center and every spike of a non-missing bin have
-    tracked, finite positions. The tracking-range rule applies only when the
-    decode likelihood reads position (``reads_position``); a model without
-    Local states or a non-local position penalty decodes those bins. This
-    concerns decoding only: encoding fits use position for their support.
+    tracked, finite positions. Both rules apply only when the decode
+    likelihood reads position (``reads_position``); a model without Local
+    states or a non-local position penalty decodes every bin. This concerns
+    decoding only: encoding fits use position for their support.
 
     Parameters
     ----------
@@ -848,7 +849,7 @@ def _missing_bins(
     position : np.ndarray, shape (n_time_position, n_position_dims), optional
     reads_position : bool, optional
         Whether the decode likelihood reads position, by default True. When
-        False, no bin is missing for being outside the tracked period.
+        False, position marks no bin missing; only ``is_missing`` does.
     warn_outside_tracking : bool, optional
         Warn when bins are missing because they extend outside the tracked
         period, by default False. Public decode entry points set it, so one
@@ -898,11 +899,9 @@ def _missing_bins(
         )
     val.ensure_all_finite(position_time, "position_time")
     val.ensure_monotonic_increasing(position_time, "position_time")
-    affected = (
-        _bins_outside_tracking(time_edges, position_time)
-        if reads_position
-        else np.zeros(n_bins, dtype=bool)
-    )
+    if not reads_position:
+        return is_missing
+    affected = _bins_outside_tracking(time_edges, position_time)
     if warn_outside_tracking and np.any(affected):
         warnings.warn(
             f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
