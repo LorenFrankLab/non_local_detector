@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     common,
@@ -276,6 +277,13 @@ def test_traced_block_log_kde_matches_block_log_kde(n_points, x64):
         )
 
 
+def glm_line_environment():
+    """A line whose interior bin centers span the GLM tests' 0-1 positions."""
+    return Environment(
+        place_bin_size=0.5, position_range=((-1.0, 2.0),)
+    ).fit_place_grid(np.array([[0.0], [1.0]]), infer_track_interior=False)
+
+
 def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
     small_count_blocks(monkeypatch, 1)
     rows = record_rows(monkeypatch, sorted_spikes_glm, "_local_glm_log_likelihood")
@@ -288,12 +296,12 @@ def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
         position_time=np.array([0.0, 6.0]),
         position=np.array([[0.0], [1.0]]),
         spike_times=[np.array([0.006])],
-        environment=None,
+        environment=glm_line_environment(),
         coefficients=jnp.zeros((1, 2)),
         emission_design_info=None,
-        place_fields=np.ones((1, 1)),
-        no_spike_part_log_likelihood=np.ones(1),
-        is_track_interior=np.ones(1, bool),
+        place_fields=np.ones((1, 6)),
+        no_spike_part_log_likelihood=np.ones(6),
+        is_track_interior=np.ones(6, bool),
         disable_progress_bar=True,
         is_local=True,
         time_edges=np.arange(3001) * 0.002,
@@ -314,12 +322,12 @@ def test_local_glm_blocks_read_their_own_design_rows(monkeypatch):
         "position_time": np.array([0.0, 6.0]),
         "position": np.array([[0.0], [1.0]]),
         "spike_times": [np.sort(np.random.default_rng(5).uniform(0, 6, 400))],
-        "environment": None,
+        "environment": glm_line_environment(),
         "coefficients": jnp.array([[np.log(5.0), 3.0]]),
         "emission_design_info": None,
-        "place_fields": np.ones((1, 1)),
-        "no_spike_part_log_likelihood": np.ones(1),
-        "is_track_interior": np.ones(1, bool),
+        "place_fields": np.ones((1, 6)),
+        "no_spike_part_log_likelihood": np.ones(6),
+        "is_track_interior": np.ones(6, bool),
         "disable_progress_bar": True,
         "is_local": True,
         "time_edges": np.arange(3001) * 0.002,
