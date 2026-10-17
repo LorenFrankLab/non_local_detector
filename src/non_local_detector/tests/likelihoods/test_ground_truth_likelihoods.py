@@ -84,7 +84,7 @@ MARK_KERNEL_SD = {
 }
 
 # Nats per spike; see test_nonlocal_likelihood_tracks_the_exact_likelihood.
-LEVEL_TOLERANCE = {"sorted_spikes_glm": 1.5, "clusterless_gmm": 1.5}
+LEVEL_TOLERANCE = {"clusterless_gmm": 1.5}
 
 
 def _true_rates(x):
@@ -235,9 +235,8 @@ def _level_offset_per_spike(model, exact, n_spikes):
 
     The log marginal ``logsumexp`` over position bins is set by the bins
     where the spikes are likely, where rates are well estimated. (A row mean
-    is instead dominated by the log of the near-zero tail rates: the GLM's
-    tails sit ~2.2 nats per spike above the 0.1 Hz baseline, the GMM's
-    Gaussian tails ~18 below.) A constant error in every spike's log
+    is instead dominated by the log of the near-zero tail rates: the GMM's
+    Gaussian tails sit ~18 nats per spike below the 0.1 Hz baseline.) A constant error in every spike's log
     intensity shifts a row by exactly that constant times its spike count.
     """
     gap = logsumexp(model, axis=1) - logsumexp(exact, axis=1)
@@ -407,11 +406,11 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording, f
 
     The correlation ignores a constant per row, so the absolute level is
     checked too: the median per-spike gap in log marginal likelihood. Measured
-    smoothing/fit bias: -0.69 (GLM, flattened peaks), -0.81 (GMM), within
-    0.15 for the rest (the KDE and diffusion clusterless backends against the
-    kernel-smoothed mark density; against the true one their 24-unit mark
-    kernel costs 2.9 nats per spike in 4-D). The tolerances, 1.5 and 0.5
-    nats, sit above those biases and below the constant errors guarded
+    smoothing/fit bias: -0.81 (GMM), within 0.15 for the rest (GLM 0.01; the
+    KDE and diffusion clusterless backends against the kernel-smoothed mark
+    density; against the true one their 24-unit mark kernel costs 2.9 nats
+    per spike in 4-D). The tolerances, 1.5 (GMM) and 0.5 nats, sit above
+    those biases and below the constant errors guarded
     against: a missing sqrt(2 pi) in one mark dimension (0.92, caught for
     the kernel backends), a mis-scaled rate reference (log 10 = 2.3), a
     missing (2 pi)^2 in a 4-D mark density (3.7), a dropped log(dt) (3.9).
@@ -437,14 +436,12 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording, f
 def test_2d_sorted_place_fields_recover_the_true_fields(algorithm, recording_2d, fits):
     """Fitted 2-D fields have the true shape, location, amplitude and rate.
 
-    Measured: correlations 0.92-0.96; field centers of mass within 1.8 cm of
+    Measured: correlations 0.94-0.995; field centers of mass within 1.8 cm of
     the true ones in each axis (fields 20 cm apart in x, 12 in y);
     occupancy-weighted rate ratios (expected training spikes, fitted over
-    true) 0.87-1.10; peak ratios 0.48-0.61 for the KDE and diffusion
-    backends, as a 6 cm kernel on an (8, 6) cm field predicts (0.57), and
-    0.94-1.55 for the MRF.
-    The GLM's default L2 penalty (0.5 per second) shrinks its peaks to
-    3-7% of the truth (19-31% in 1-D), so its amplitude is not checked.
+    true) 0.87-1.11; peak ratios 0.48-0.61 for the KDE and diffusion
+    backends, as a 6 cm kernel on an (8, 6) cm field predicts (0.57),
+    0.88-1.19 for the GLM and 0.94-1.55 for the MRF.
     """
     train, _, _ = recording_2d
     _, encoding, interior, centers = _cached_fit(
@@ -459,9 +456,8 @@ def test_2d_sorted_place_fields_recover_the_true_fields(algorithm, recording_2d,
     occupancy = _occupancy(centers, train["position"])
     ratio = (fitted @ occupancy) / (truth @ occupancy)
     assert np.all((ratio > 0.8) & (ratio < 1.25)), ratio
-    if algorithm != "sorted_spikes_glm":
-        peak_ratio = fitted.max(axis=1) / truth.max(axis=1)
-        assert np.all(peak_ratio > 0.4), peak_ratio
+    peak_ratio = fitted.max(axis=1) / truth.max(axis=1)
+    assert np.all(peak_ratio > 0.4), peak_ratio
 
 
 @pytest.mark.parametrize("algorithm", CLUSTERLESS)
@@ -489,11 +485,11 @@ def test_2d_nonlocal_likelihood_tracks_the_exact_likelihood(
     """Held-out 2-D non-local log likelihoods follow the exact one.
 
     Measured median correlations: 0.93 (KDE and diffusion), 0.97 (MRF),
-    0.86 (GLM), 0.69 (GMM); most likely bins within 6.5 cm (about two 3 cm
-    bins) in 95% (KDE, diffusion), 91% (MRF), 70% (GLM) and 65% (GMM) of
+    0.92 (GLM), 0.69 (GMM); most likely bins within 6.5 cm (about two 3 cm
+    bins) in 95% (KDE, diffusion), 93% (GLM), 91% (MRF) and 65% (GMM) of
     rows. Against reassigned cells: correlations below -0.1 and at most 1.2%
-    of rows within 6.5 cm. Level offsets: -1.01 (GLM), within 0.21 for the
-    rest; tolerances as in 1-D.
+    of rows within 6.5 cm. Level offsets within 0.21 (GLM -0.01);
+    tolerances as in 1-D.
     """
     train, test, edges = recording_2d
     model, _, _, centers = _cached_fit(fits, algorithm, train, PLACE_BIN_SIZE_2D)
@@ -502,8 +498,6 @@ def test_2d_nonlocal_likelihood_tracks_the_exact_likelihood(
     )
     if algorithm == "clusterless_gmm":
         assert correlation > 0.5 and within > 0.5
-    elif algorithm == "sorted_spikes_glm":
-        assert correlation > 0.8 and within > 0.5
     else:
         assert correlation > 0.8 and within > 0.85
     wrong_correlation, wrong_within = wrong
