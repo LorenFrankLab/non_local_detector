@@ -1017,14 +1017,20 @@ def _group_spike_mask(
 
 
 def _group_weights(
-    is_group: np.ndarray, weights: np.ndarray | None, likelihood_name: tuple
+    is_group: np.ndarray,
+    weights: np.ndarray | None,
+    likelihood_name: tuple,
+    encoding_support: EncodingSupport,
 ) -> np.ndarray:
     """Per-sample weights of one encoding group on the full position timeline.
 
-    The group mask is the model's exposure: a sample outside it contributes no
-    occupancy and owns no spikes. Warns when no sample has positive weight;
-    such a group is fit with zero exposure. The existing rate floors still
-    determine its likelihood, which is usually a mask or label mistake.
+    The group mask selects the model's samples: a sample outside it
+    contributes no occupancy and owns no spikes. Warns when the group has zero
+    exposure, i.e. no sample with positive weight also has a finite position
+    and time inside the encoding support; positive weights only on NaN
+    positions or outside ``encoding_time_range`` count as none. The existing
+    rate floors then determine its likelihood, which is usually a mask or
+    label mistake.
 
     Parameters
     ----------
@@ -1033,21 +1039,26 @@ def _group_weights(
         Extra per-sample weights (e.g. EM local-state weights).
     likelihood_name : tuple
         ``(environment_name, encoding_group)`` of the group.
+    encoding_support : EncodingSupport
+        Support of the encoding fit; its ``exposure`` is zero for samples with
+        NaN position or outside the support.
 
     Returns
     -------
     group_weights : np.ndarray, shape (n_time_position,)
     """
     group_weights = is_group.astype(float) if weights is None else weights * is_group
-    if not np.any(group_weights > 0.0):
+    if not np.sum(group_weights * encoding_support.exposure) > 0.0:
         environment_name, encoding_group = likelihood_name
         warnings.warn(
             f"Encoding group {encoding_group!r} in environment "
-            f"{environment_name!r} has no training samples with positive weight, "
-            "so its encoding model is fit with zero exposure. Its likelihood is "
-            "then set by the rate floor (sorted spikes) or the background rate "
-            "(clusterless). Check is_training, encoding_group_labels, and "
-            "environment_labels.",
+            f"{environment_name!r} has no training samples with positive "
+            "exposure (a positive weight, a finite position and time inside the "
+            "encoding support), so its encoding model is fit with zero exposure. "
+            "Its likelihood is then set by the rate floor (sorted spikes) or the "
+            "background rate (clusterless). Check is_training, "
+            "encoding_group_labels, environment_labels, NaN positions, and "
+            "encoding_time_range / valid_position_intervals.",
             UserWarning,
             stacklevel=3,
         )
@@ -5038,7 +5049,7 @@ class ClusterlessDetector(_DetectorBase):
             # The mask is this model's exposure on the full timeline, as for
             # sorted spikes: a subset timeline would let spike-weight
             # interpolation bridge the mask's gaps.
-            group_weights = _group_weights(is_group, weights, likelihood_name)
+            group_weights = _group_weights(is_group, weights, likelihood_name, support)
             is_group_spike = [
                 _group_spike_mask(times, position_time, group_weights, support)
                 for times in spike_times
@@ -6346,7 +6357,7 @@ class SortedSpikesDetector(_DetectorBase):
             # count does not, biasing every place field low. The position array
             # stays full-length so it remains aligned with the weights and with
             # the grid used to interpolate per-spike weights.
-            group_weights = _group_weights(is_group, weights, likelihood_name)
+            group_weights = _group_weights(is_group, weights, likelihood_name, support)
 
             # GLM requires environment geometry that KDE derives internally
             glm_kwargs = {}

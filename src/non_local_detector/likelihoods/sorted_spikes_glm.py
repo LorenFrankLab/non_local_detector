@@ -60,7 +60,10 @@ import pandas as pd  # type: ignore[import-untyped]
 from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
 from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_no_encoding_exposure,
+)
 from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -613,6 +616,9 @@ def fit_sorted_spikes_glm_encoding_model(
         _encoding_support=_encoding_support,
     )
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
+    warn_if_no_encoding_exposure(
+        exposure_weights, "Sorted-spikes GLM", clusterless=False
+    )
     # Use position_time directly so spike counts, design matrix, and
     # weights all share the same time grid.
 

@@ -835,7 +835,7 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
             disable_progress_bar=True,
         )
     messages = [str(w.message) for w in record if issubclass(w.category, UserWarning)]
-    assert any("occupancy weights sum to 0" in m for m in messages), messages
+    assert any("zero training exposure" in m for m in messages), messages
     assert any("zero total encoding weight" in m for m in messages), messages
 
     assert np.all(np.isfinite(np.asarray(enc["occupancy"])))
