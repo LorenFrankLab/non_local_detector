@@ -2,8 +2,8 @@
 
 Active clusterless states score each spike with a marked intensity
 ``lambda(x, m)``, a density over waveform features ``m``. Its value carries
-the inverse volume of the waveform units. The No-Spike state models a
-population firing at ``no_spike_rate`` with marks distributed as a
+the inverse volume of the waveform units. The No-Spike state models each
+electrode firing at ``no_spike_rate`` with marks distributed as a
 normalized reference density ``q(m)``, so each of its spikes scores
 ``log(no_spike_rate * dt) + log q(m)``. Under a per-feature affine change of
 waveform units, with mark bandwidths transformed alike, every state then gains
