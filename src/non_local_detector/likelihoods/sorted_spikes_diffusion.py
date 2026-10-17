@@ -35,6 +35,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
+    _concatenate_row_blocks,
     _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
@@ -743,32 +744,48 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     # Slice all neurons' fields to interior bins once. Interior fields are EPS-floored
     # (see _assemble_place_fields), so log is finite and xlogy(count, field) reduces to
     # count * log(field). The per-neuron loop accumulated sum_n count_n[:, None] *
-    # log(field_n)[None, :]; vectorize it as a single (n_time, n_neurons) @
-    # (n_neurons, n_interior_bins) matmul instead of N (n_time, n_interior_bins) terms.
+    # log(field_n)[None, :]; vectorize it as a (n_block_rows, n_neurons) @
+    # (n_neurons, n_interior_bins) matmul per row block instead of N terms.
     # The fit precomputes the interior log fields (in node_order == is_track_interior
-    # order), so the non-local likelihood is a single count-matrix @ log-fields matmul.
+    # order), so the non-local likelihood is a count-matrix @ log-fields matmul.
     log_interior_fields = (
         jnp.log(jnp.asarray(place_fields)[:, is_track_interior])
         if interior_log_place_fields is None
         else jnp.asarray(interior_log_place_fields)
     )
-    spike_counts = jnp.asarray(
-        _spike_counts_matrix(
-            spike_times,
-            time_edges,
-            "Non-Local Likelihood",
-            disable_progress_bar,
-            row_slice=row_slice,
-            _spike_time_order=_spike_time_order,
-        ),
-        dtype=log_interior_fields.dtype,
-    )
-    log_likelihood = jnp.matmul(
-        spike_counts, log_interior_fields, precision=jax.lax.Precision.HIGHEST
-    )
-    log_likelihood += spike_counts.sum(axis=1)[:, None] * jnp.log(durations)[:, None]
-    log_likelihood -= (
-        durations[:, None] * no_spike_part_log_likelihood[is_track_interior]
-    )
+    interior_summed_rates = no_spike_part_log_likelihood[is_track_interior]
 
-    return log_likelihood
+    def evaluate(start, stop):
+        spike_counts = jnp.asarray(
+            _spike_counts_matrix(
+                spike_times,
+                time_edges,
+                "Non-Local Likelihood",
+                True,
+                slice(start, stop),
+                _spike_time_order=_spike_time_order,
+            ),
+            dtype=log_interior_fields.dtype,
+        )
+        block_durations = durations[start - row_start : stop - row_start]
+        log_likelihood = jnp.matmul(
+            spike_counts, log_interior_fields, precision=jax.lax.Precision.HIGHEST
+        )
+        log_likelihood += (
+            spike_counts.sum(axis=1)[:, None] * jnp.log(block_durations)[:, None]
+        )
+        log_likelihood -= block_durations[:, None] * interior_summed_rates
+        return log_likelihood
+
+    if row_start == row_stop:
+        return evaluate(row_start, row_stop)
+    # Bounded count blocks, so a full-grid request never builds the
+    # rows-by-population count matrix.
+    return _concatenate_row_blocks(
+        row_start,
+        row_stop,
+        len(spike_times),
+        evaluate,
+        "Non-Local Likelihood",
+        disable_progress_bar,
+    )
