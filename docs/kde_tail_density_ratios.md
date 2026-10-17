@@ -49,9 +49,7 @@ and the pass computes the probability-space KDE. A term is lost only if it
 underflows below float `tiny`; a point whose scaled sum is below `n_samples *
 tiny / (4 * eps)` could have lost more than `4 * eps` of it that way and is
 evaluated in log space instead: `kde_log_density` re-evaluates those points
-after its compiled pass. `traced_kde_log_density`, used inside compiled kernels,
-does so for each block under `lax.cond`; callers that map it in batches, where
-that branch would become a select, evaluate in log space throughout. Log space
+after its compiled pass. Log space
 offsets each point by its largest weighted term, keeping each kernel relative to
 that offset before its log weight is added, so it recovers what either scale
 loses, including mass carried by weights whose ratio to the largest is below
