@@ -144,6 +144,7 @@ class _LikelihoodPositionContext:
     position: np.ndarray | None
     is_missing: np.ndarray | None
     all_missing: bool
+    reads_position: bool
 
     @classmethod
     def prepare(
@@ -152,6 +153,7 @@ class _LikelihoodPositionContext:
         position_time: np.ndarray | None,
         position: np.ndarray | None,
         *,
+        reads_position: bool = True,
         warn_outside_tracking: bool = False,
     ) -> "_LikelihoodPositionContext":
         missing = _missing_bins(
@@ -159,6 +161,7 @@ class _LikelihoodPositionContext:
             None,
             position_time,
             position,
+            reads_position=reads_position,
             warn_outside_tracking=warn_outside_tracking,
             # Through this method and compute_log_likelihood to its caller.
             stacklevel=5,
@@ -173,13 +176,22 @@ class _LikelihoodPositionContext:
             if not np.all(finite) and not all_missing:
                 prepared = prepared.copy()
                 prepared[~finite] = prepared[finite][0]
-        return cls(time_edges, position_time, position, prepared, missing, all_missing)
+        return cls(
+            time_edges,
+            position_time,
+            position,
+            prepared,
+            missing,
+            all_missing,
+            reads_position,
+        )
 
-    def matches(self, time_edges, position_time, position) -> bool:
+    def matches(self, time_edges, position_time, position, reads_position) -> bool:
         return (
             self.time_edges is time_edges
             and self.source_time is position_time
             and self.source_position is position
+            and self.reads_position == reads_position
         )
 
 
@@ -244,6 +256,7 @@ def _prepare_likelihood_callback(
     has_no_spike: bool,
     log_likelihood_args: tuple = (),
     _time_grid: _DecodeTimeGrid | None = None,
+    reads_position: bool = True,
 ) -> Callable:
     """Adapt a detector likelihood to core's observation-row callback contract.
 
@@ -268,9 +281,12 @@ def _prepare_likelihood_callback(
     bins.
 
     Declaring ``_spike_time_order`` or ``_no_spike_time_bin_sizes`` lets this
-    adapter bind shared preparation. Each call creates fresh preparation;
-    nothing is stored on the detector or reused by a later prediction. Callers
-    with a precomputed likelihood bypass this adapter entirely.
+    adapter bind shared preparation. ``reads_position`` is the detector's
+    decision whether its decode likelihood reads position; the bound position
+    context applies the tracking-range rule only when it does. Each call
+    creates fresh preparation; nothing is stored on the detector or reused by
+    a later prediction. Callers with a precomputed likelihood bypass this
+    adapter entirely.
     """
     parameters = inspect.signature(callback).parameters
     prepared: dict[str, object] = {}
@@ -280,7 +296,7 @@ def _prepare_likelihood_callback(
         prepared["_time_grid"] = _time_grid
     if "_position_context" in parameters and len(log_likelihood_args) >= 2:
         prepared["_position_context"] = _LikelihoodPositionContext.prepare(
-            time_edges, *log_likelihood_args[:2]
+            time_edges, *log_likelihood_args[:2], reads_position=reads_position
         )
     if has_no_spike and "_no_spike_time_bin_sizes" in parameters:
         prepared["_no_spike_time_bin_sizes"] = no_spike_time_bin_sizes(time_edges)
@@ -799,6 +815,7 @@ def _missing_bins(
     position_time: np.ndarray | None,
     position: np.ndarray | None,
     *,
+    reads_position: bool = True,
     warn_outside_tracking: bool = False,
     stacklevel: int = 4,
 ) -> np.ndarray | None:
@@ -818,7 +835,10 @@ def _missing_bins(
     uniformity tolerance. A bin is decoded as missing when any time it owns
     (``[edges[i], edges[i + 1])``, plus ``edges[-1]`` for the final bin) lies
     in such a span, so the center and every spike of a non-missing bin have
-    tracked, finite positions.
+    tracked, finite positions. The tracking-range rule applies only when the
+    decode likelihood reads position (``reads_position``); a model without
+    Local states or a non-local position penalty decodes those bins. This
+    concerns decoding only: encoding fits use position for their support.
 
     Parameters
     ----------
@@ -826,6 +846,9 @@ def _missing_bins(
     is_missing : np.ndarray, shape (n_bins,), optional
     position_time : np.ndarray, shape (n_time_position,), optional
     position : np.ndarray, shape (n_time_position, n_position_dims), optional
+    reads_position : bool, optional
+        Whether the decode likelihood reads position, by default True. When
+        False, no bin is missing for being outside the tracked period.
     warn_outside_tracking : bool, optional
         Warn when bins are missing because they extend outside the tracked
         period, by default False. Public decode entry points set it, so one
@@ -875,7 +898,11 @@ def _missing_bins(
         )
     val.ensure_all_finite(position_time, "position_time")
     val.ensure_monotonic_increasing(position_time, "position_time")
-    affected = _bins_outside_tracking(time_edges, position_time)
+    affected = (
+        _bins_outside_tracking(time_edges, position_time)
+        if reads_position
+        else np.zeros(n_bins, dtype=bool)
+    )
     if warn_outside_tracking and np.any(affected):
         warnings.warn(
             f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
@@ -1507,6 +1534,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"    detector.{context}(..., position=position_2d)"
                 ),
             )
+
+    def _decode_reads_position(self) -> bool:
+        """Whether the decode likelihood reads the animal's position.
+
+        Local observation models and a positive ``non_local_position_penalty``
+        read it; other models ignore position at decode (``local_position_std``
+        only shapes Local states). Fitting and EM encoding refits always use
+        position for the encoding support, whatever this returns.
+
+        Returns
+        -------
+        reads_position : bool
+        """
+        return bool(
+            any(obs.is_local for obs in self.observation_models)
+            or getattr(self, "non_local_position_penalty", 0.0) > 0
+        )
 
     def _compute_non_local_position_penalty(
         self, time, position_time, position, environment
@@ -2943,6 +2987,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 time_edges,
                 has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
                 log_likelihood_args=log_likelihood_args,
+                reads_position=self._decode_reads_position(),
                 _time_grid=time_grid,
             )
 
@@ -3001,6 +3046,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             edges,
             has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
             log_likelihood_args=log_likelihood_args,
+            reads_position=self._decode_reads_position(),
             _time_grid=time_grid,
         )
 
@@ -4243,6 +4289,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             time_edges,
             has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
             log_likelihood_args=log_likelihood_args,
+            reads_position=self._decode_reads_position(),
             _time_grid=_DecodeTimeGrid.from_validated_edges(
                 time_edges,
                 uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
@@ -5289,15 +5336,19 @@ class ClusterlessDetector(_DetectorBase):
             )
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
+        needs_position = self._decode_reads_position()
         if not isinstance(
             _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(time_edges, position_time, position):
+        ) or not _position_context.matches(
+            time_edges, position_time, position, needs_position
+        ):
             # Without a prepared context this is a direct call, so it warns
             # like the other public decode entry points.
             _position_context = _LikelihoodPositionContext.prepare(
                 time_edges,
                 position_time,
                 position,
+                reads_position=needs_position,
                 warn_outside_tracking=_position_context is None,
             )
         self._validate_decode_population(spike_times, spike_waveform_features)
@@ -5306,12 +5357,6 @@ class ClusterlessDetector(_DetectorBase):
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
-        # ``local_position_std`` only shapes Local states, so it does not require
-        # position on its own.
-        needs_position = (
-            np.any([obs.is_local for obs in self.observation_models])
-            or non_local_penalty > 0
-        )
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):
@@ -5672,6 +5717,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing,
             position_time,
             position,
+            reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
 
@@ -6009,6 +6055,7 @@ class ClusterlessDetector(_DetectorBase):
             None
             if position is None
             else (position[:, np.newaxis] if position.ndim == 1 else position),
+            reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
         self._fit_em_model(
@@ -6117,6 +6164,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing,
             position_time,
             position,
+            reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
         return super().most_likely_sequence(
@@ -6585,15 +6633,19 @@ class SortedSpikesDetector(_DetectorBase):
             )
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
+        needs_position = self._decode_reads_position()
         if not isinstance(
             _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(time_edges, position_time, position):
+        ) or not _position_context.matches(
+            time_edges, position_time, position, needs_position
+        ):
             # Without a prepared context this is a direct call, so it warns
             # like the other public decode entry points.
             _position_context = _LikelihoodPositionContext.prepare(
                 time_edges,
                 position_time,
                 position,
+                reads_position=needs_position,
                 warn_outside_tracking=_position_context is None,
             )
         self._validate_decode_population(spike_times)
@@ -6608,12 +6660,6 @@ class SortedSpikesDetector(_DetectorBase):
         # bins' centers; the spike likelihoods bin against the full edges.
 
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
-        # ``local_position_std`` only shapes Local states, so it does not require
-        # position on its own.
-        needs_position = (
-            np.any([obs.is_local for obs in self.observation_models])
-            or non_local_penalty > 0
-        )
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):
@@ -6878,6 +6924,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing,
             position_time,
             position,
+            reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
 
@@ -7210,6 +7257,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing,
             position_time,
             position,
+            reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
         self._fit_em_model(
@@ -7312,6 +7360,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing,
             position_time,
             position,
+            reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
         return super().most_likely_sequence(

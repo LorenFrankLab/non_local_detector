@@ -5,7 +5,8 @@ samples, which extrapolates from the first or last interval: tracking 0-9.5 s
 at 10 cm/s puts the animal at 300 cm at 30 s. Local models would score that
 invented position. A bin that owns any time more than half a sample beyond the
 first or last tracking sample is therefore decoded as missing, like a bin with
-NaN position, and predict warns once.
+NaN position, and predict warns once. Models that never read position at
+decode (no Local state, no non-local position penalty) ignore the rule.
 """
 
 import warnings
@@ -14,8 +15,10 @@ import numpy as np
 import pytest
 
 from non_local_detector import (
+    ClusterlessDecoder,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    SortedSpikesDecoder,
     time_edges_from_centers,
 )
 from non_local_detector.environment import Environment
@@ -83,14 +86,18 @@ def tracking():
     return time, position, spike_times, marks
 
 
-def _detector(kind, tracking):
+def _detector(kind, tracking, *, reads_position=True):
+    """Fit a detector with a Local state, or a decoder that never reads position."""
     time, position, spike_times, marks = tracking
     training_spikes = [times <= TRACKING_END for times in spike_times]
     environment = Environment(place_bin_size=5.0, position_range=((0.0, 100.0),))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         if kind == "sorted":
-            detector = NonLocalSortedSpikesDetector(
+            detector_cls = (
+                NonLocalSortedSpikesDetector if reads_position else SortedSpikesDecoder
+            )
+            detector = detector_cls(
                 environments=environment,
                 sorted_spikes_algorithm_params={
                     "position_std": 6.0,
@@ -107,7 +114,10 @@ def _detector(kind, tracking):
                 ],
             )
             return detector, (spike_times,)
-        detector = NonLocalClusterlessDetector(
+        detector_cls = (
+            NonLocalClusterlessDetector if reads_position else ClusterlessDecoder
+        )
+        detector = detector_cls(
             environments=environment,
             clusterless_algorithm_params={
                 "position_std": 6.0,
@@ -214,3 +224,107 @@ def test_estimate_parameters_beyond_tracking_warns_once(tracking):
         )
 
     assert len(_outside_tracking_warnings(caught)) == 1
+
+
+def _decode_edges():
+    return time_edges_from_centers(np.arange(0.0, 12.0, 1.0 / SAMPLING_FREQUENCY))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("kind", ["sorted", "clusterless"])
+def test_predict_without_position_reads_ignores_the_tracking_range(tracking, kind):
+    """A model that never reads position decodes every bin, as without it."""
+    time, position, _, _ = tracking
+    detector, spikes = _detector(kind, tracking, reads_position=False)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with_position = detector.predict(
+            *spikes,
+            time_edges=_decode_edges(),
+            position_time=time,
+            position=position,
+            return_outputs="log_likelihood",
+        )
+    without_position = detector.predict(
+        *spikes, time_edges=_decode_edges(), return_outputs="log_likelihood"
+    )
+
+    assert not _outside_tracking_warnings(caught)
+    np.testing.assert_array_equal(
+        with_position.log_likelihood.values, without_position.log_likelihood.values
+    )
+    np.testing.assert_array_equal(
+        with_position.acausal_posterior.values,
+        without_position.acausal_posterior.values,
+    )
+
+
+@pytest.mark.integration
+def test_compute_log_likelihood_without_position_reads_ignores_the_tracking_range(
+    tracking,
+):
+    time, position, spike_times, _ = tracking
+    detector, _ = _detector("sorted", tracking, reads_position=False)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with_position = detector.compute_log_likelihood(
+            time, position, spike_times, time_edges=_decode_edges()
+        )
+    without_position = detector.compute_log_likelihood(
+        None, None, spike_times, time_edges=_decode_edges()
+    )
+
+    assert not _outside_tracking_warnings(caught)
+    np.testing.assert_array_equal(
+        np.asarray(with_position), np.asarray(without_position)
+    )
+
+
+@pytest.mark.integration
+def test_most_likely_sequence_without_position_reads_ignores_the_tracking_range(
+    tracking,
+):
+    time, position, spike_times, _ = tracking
+    detector, _ = _detector("sorted", tracking, reads_position=False)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with_position = detector.most_likely_sequence(
+            spike_times,
+            time_edges=_decode_edges(),
+            position_time=time,
+            position=position,
+        )
+    without_position = detector.most_likely_sequence(
+        spike_times, time_edges=_decode_edges()
+    )
+
+    assert not _outside_tracking_warnings(caught)
+    np.testing.assert_array_equal(
+        np.asarray(with_position), np.asarray(without_position)
+    )
+
+
+@pytest.mark.integration
+def test_estimate_parameters_without_position_reads_decodes_every_bin(tracking):
+    """EM still fits on the tracking but its E-step masks no bin."""
+    time, position, spike_times, _ = tracking
+    detector, _ = _detector("sorted", tracking, reads_position=False)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        results = detector.estimate_parameters(
+            time,
+            position,
+            [times[times <= TRACKING_END] for times in spike_times],
+            time_edges=_decode_edges(),
+            max_iter=1,
+            return_outputs="log_likelihood",
+        )
+
+    assert not _outside_tracking_warnings(caught)
+    # A missing bin's log likelihood is 0; a decoded one includes the
+    # negative no-spike term.
+    assert not np.any(np.all(results.log_likelihood.values == 0.0, axis=1))
