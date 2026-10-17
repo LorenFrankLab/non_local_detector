@@ -52,7 +52,11 @@ def log_bin_duration_evidence(
     intensity_time_scale=1.0,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
-    """The marked-process event term ``N_bin * log(duration_seconds)``."""
+    """The marked-process event term ``N_bin * log(duration / intensity_time_scale)``.
+
+    ``duration`` is each decode bin's width in seconds; ``intensity_time_scale``
+    (seconds, by default 1) is the time unit of the caller's intensities.
+    """
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if spike_time_order is None:
@@ -468,15 +472,20 @@ def interpolate_weights_at_spike_times(
 ) -> np.ndarray:
     """Per-spike weights: the per-sample ``weights`` linearly interpolated onto times.
 
-    Spike times are assumed already clipped to ``[position_time[0], position_time[-1]]``,
-    so 1-D ``np.interp`` matches ``interpn`` without building an interpolator (and does
-    not extrapolate). Shared by the clusterless and sorted-spikes encoding fits.
+    With ``encoding_support``, weights are interpolated within each of its
+    segments and a spike outside every segment gets weight 0. Without it, spike
+    times are assumed already clipped to ``[position_time[0], position_time[-1]]``
+    and 1-D ``np.interp`` is used (it does not extrapolate). Shared by the
+    clusterless and sorted-spikes encoding fits.
 
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
     position_time : np.ndarray, shape (n_time_position,)
     weights : np.ndarray, shape (n_time_position,)
+    encoding_support : EncodingSupport, optional
+        Encoding support whose segments bound the interpolation; by default
+        None.
 
     Returns
     -------
@@ -1420,18 +1429,24 @@ def log_gaussian_pdf(
     """Compute the log of the Gaussian probability density function at x with
     given mean and sigma.
 
+    Elementwise and univariate: the arguments broadcast against each other and
+    nothing is summed over dimensions. Kernel builders pass one dimension at a
+    time, e.g. ``x`` of shape ``(1, n_eval)`` against ``mean`` of shape
+    ``(n_samples, 1)`` for a ``(n_samples, n_eval)`` result.
+
     Parameters
     ----------
-    x : jnp.ndarray, shape (n_samples, n_dims)
-        Input data.
-    mean : jnp.ndarray, shape (n_dims,)
+    x : jnp.ndarray
+        Input data, broadcastable with ``mean`` and ``sigma``.
+    mean : jnp.ndarray
         Mean of the Gaussian.
-    sigma : jnp.ndarray, shape (n_dims,)
+    sigma : jnp.ndarray
         Standard deviation of the Gaussian.
 
     Returns
     -------
-    log_pdf : jnp.ndarray, shape (n_samples,)
+    log_pdf : jnp.ndarray
+        Shape ``broadcast_shapes(x.shape, mean.shape, sigma.shape)``.
     """
     # For singleton-shaped tiles XLA:CPU can rewrite division by a broadcast
     # scalar into multiplication by a rounded reciprocal, so tiled and untiled
@@ -1450,18 +1465,22 @@ def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.n
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma.
 
+    Elementwise with broadcasting, like :func:`log_gaussian_pdf`; nothing is
+    summed over dimensions.
+
     Parameters
     ----------
-    x : jnp.ndarray, shape (n_samples, n_dims)
-        Input data.
-    mean : jnp.ndarray, shape (n_dims,)
+    x : jnp.ndarray
+        Input data, broadcastable with ``mean`` and ``sigma``.
+    mean : jnp.ndarray
         Mean of the Gaussian.
-    sigma : jnp.ndarray, shape (n_dims,)
+    sigma : jnp.ndarray
         Standard deviation of the Gaussian.
 
     Returns
     -------
-    pdf : jnp.ndarray, shape (n_samples,)
+    pdf : jnp.ndarray
+        Shape ``broadcast_shapes(x.shape, mean.shape, sigma.shape)``.
     """
     return jnp.exp(log_gaussian_pdf(x, mean, sigma))
 
@@ -1877,6 +1896,10 @@ def log_kde(
       std:         (n_dims,)
       weights:     (n_samp,)
     Returns: (n_eval,)
+
+    With no samples or no positive weight it returns the finite floor
+    ``LOG_EPS`` at every point (``kde_log_density`` returns ``-inf`` there). A
+    point whose weighted kernel mass underflows to zero gets ``-inf``.
     """
     if eval_points.ndim == 1:
         eval_points = jnp.expand_dims(eval_points, axis=1)
@@ -2013,6 +2036,21 @@ def drop_zero_weight_samples(
 
 @dataclass
 class KDEModel:
+    """Weighted Gaussian kernel density estimate with a diagonal bandwidth.
+
+    Attributes
+    ----------
+    std : jnp.ndarray, shape (n_dims,) or scalar
+        Kernel standard deviation per dimension; a scalar applies to every
+        dimension.
+    block_size : int, optional
+        Evaluation points per block; None (default) evaluates all at once.
+    samples_ : jnp.ndarray, shape (n_samples, n_dims)
+        Training samples, set by :meth:`fit`.
+    weights_ : jnp.ndarray, shape (n_samples,)
+        Sample weights, set by :meth:`fit` (ones when none are given).
+    """
+
     std: jnp.ndarray
     block_size: int | None = None
     samples_: jnp.ndarray | None = field(init=False, default=None)
@@ -2029,6 +2067,7 @@ class KDEModel:
             Training samples.
         weights : jnp.ndarray, shape (n_samples,), optional
             Finite, non-negative sample weights, by default None (uniform).
+            The density is normalized by their sum.
 
         Returns
         -------
@@ -2099,6 +2138,9 @@ class KDEModel:
 
 def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
     """True log density, with zero total fitted weight represented as zero mass.
+
+    No samples or zero total weight gives ``-inf`` at every point, unlike
+    :func:`log_kde`, which returns the finite floor ``LOG_EPS``.
 
     Runs outside jit. One compiled pass scales each point by an upper bound
     on its largest log kernel, exact for 1D points; points whose pass could

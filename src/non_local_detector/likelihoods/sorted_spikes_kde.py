@@ -322,11 +322,14 @@ def fit_sorted_spikes_kde_encoding_model(
         - 'marginal_models': KDE models for each neuron's spatial firing
         - 'occupancy_model': KDE model for spatial occupancy
         - 'occupancy': Occupancy density at interior place bins
+        - 'log_occupancy': Log occupancy density at interior place bins
         - 'mean_rates': Mean firing rates per neuron
         - 'place_fields': Derived place fields (firing rates) per neuron
         - 'no_spike_part_log_likelihood': Sum of Hz rates across neurons
         - 'is_track_interior': Boolean mask for interior track bins
         - 'disable_progress_bar': Progress bar setting
+        - 'rate_units': ``"Hz"``
+        - 'encoding_exposure_seconds': Weighted encoding occupancy time, seconds
     """
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -509,8 +512,10 @@ def predict_sorted_spikes_kde_log_likelihood(
         Marginal models for each neuron.
     occupancy_model : KDEModel
         Occupancy model.
-    occupancy : jnp.ndarray, shape (n_place_bins,)
-        Occupancy for each place bin.
+    occupancy : jnp.ndarray, shape (n_interior_bins,)
+        Occupancy density at the interior bins, from the fit. Unused: the
+        non-local path reads ``place_fields`` and the local path evaluates
+        ``occupancy_model`` at the animal's position.
     mean_rates : jnp.ndarray, shape (n_neurons,)
         Mean firing rates in Hz for each neuron.
     place_fields : jnp.ndarray, shape (n_neurons, n_place_bins)
@@ -540,13 +545,23 @@ def predict_sorted_spikes_kde_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
+    log_occupancy : jnp.ndarray, shape (n_interior_bins,), optional, keyword-only
+        Log occupancy density at the interior bins, from the fit. Unused, like
+        ``occupancy``.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins) or (n_rows, 1)
+    log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) or (n_rows, 1)
         The log likelihood of the spikes at each requested time bin. ``n_rows``
         is ``n_bins`` unless ``row_slice`` is given. The shape is
-        (n_rows, n_place_bins) if is_local is False, otherwise (n_rows, 1).
+        (n_rows, n_interior_bins) if is_local is False (interior bins only),
+        otherwise (n_rows, 1).
 
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
