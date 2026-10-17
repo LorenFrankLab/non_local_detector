@@ -1205,3 +1205,57 @@ def test_detectors_reject_population_mismatch(algorithm):
                 position=position[:200],
                 position_time=time[:200],
             )
+
+
+@pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
+def three_neuron_fit(request):
+    """A registered diffusion-family model fit on three neurons."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3)
+    fit, predict = _SORTED_SPIKES_ALGORITHMS[request.param]
+    fit_params = (
+        {"position_std": 6.0} if request.param == "sorted_spikes_diffusion" else {}
+    )
+    encoding = fit(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        **fit_params,
+    )
+    return predict, encoding, time, position, spike_times
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rows", [None, slice(37, 901), slice(100, 100)])
+def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypatch):
+    """Non-local spike counts are built in bounded row blocks, bitwise
+    identically to one block, so a full-grid request never holds the whole
+    rows-by-population count matrix."""
+    import non_local_detector.likelihoods.common as common
+    import non_local_detector.likelihoods.sorted_spikes_diffusion as diffusion
+
+    predict, encoding, time, position, spike_times = three_neuron_fit
+    arguments = {
+        **encoding,
+        "is_local": False,
+        "time_edges": time[:1001],
+        "row_slice": rows,
+    }
+    unblocked = predict(time, position, spike_times, **arguments)
+    original = diffusion._spike_counts_matrix
+    block_rows = []
+
+    def spy(*args, **kwargs):
+        counts = original(*args, **kwargs)
+        block_rows.append(counts.shape[0])
+        return counts
+
+    monkeypatch.setattr(diffusion, "_spike_counts_matrix", spy)
+    # Three neurons of int64 counts: a 128-row block budget.
+    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
+    blocked = predict(time, position, spike_times, **arguments)
+    np.testing.assert_array_equal(blocked, unblocked)
+    start, stop, _ = (slice(None) if rows is None else rows).indices(1000)
+    assert sum(block_rows) == stop - start
+    assert max(block_rows, default=0) <= 128
