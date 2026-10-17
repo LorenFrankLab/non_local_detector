@@ -1888,8 +1888,6 @@ def predict_clusterless_kde_log_likelihood(
         against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
-    rate_units : str, optional
-        Units of the fitted rates, by default "Hz"; any other value raises.
     environment_grid : dict | None, optional
         The fit's record of the environment's grid (see
         ``environment_grid_fingerprint``), by default None, which skips the

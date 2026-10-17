@@ -684,8 +684,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
-    rate_units : str, optional
-        Units of the fitted rates, by default "Hz"; any other value raises.
     environment_grid : dict | None, optional
         The fit's record of the environment's grid (see
         ``environment_grid_fingerprint``), by default None, which skips the

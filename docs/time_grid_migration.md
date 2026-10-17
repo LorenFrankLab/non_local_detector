@@ -108,8 +108,9 @@ weight once. Fitted `mean_rates`, `place_fields`, and ground-process intensities
 are now Hz, independently of tracking frequency. Predictions multiply those
 rates by each decode-bin duration. The unused `sampling_frequency` argument has
 been removed from encoding fit functions; the detector setting remains useful
-for grid construction. The GLM default L2 penalty is now 0.5 per second,
-equivalent to the previous 0.001 at the 500 Hz reference.
+for grid construction. The GLM penalty now comes from a prior on log firing
+rate (`log_rate_prior_std`, 2 nats by default) and penalizes the total log
+likelihood, so it no longer grows with recording length.
 
 Stored `mean_rates`, `place_fields`, and `summed_ground_process_intensity` are
 Hz; `interior_log_place_fields` is log-Hz. The historical
@@ -124,9 +125,9 @@ that the environment's grid is unchanged since the fit; with it, prediction
 raises `ValidationError` after the grid has been refit to a different one.
 
 Do not multiply fitted Hz fields by the tracking or decoding frequency when
-plotting firing rates. Custom GLM penalties must also be chosen in the new
-per-second objective units; the default conversion does not convert a custom
-penalty automatically.
+plotting firing rates. A custom GLM `l2_penalty` now penalizes the total log
+likelihood: a value chosen for the earlier per-second objective reproduces the
+old fit when multiplied by `encoding_exposure_seconds`.
 
 ## Align masks, covariates, and interval labels
 
