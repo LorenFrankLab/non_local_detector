@@ -9,6 +9,7 @@ GMM. Both are formed in log space.
 
 from __future__ import annotations
 
+import inspect
 import warnings
 from dataclasses import replace
 from functools import partial
@@ -527,9 +528,14 @@ def fit_clusterless_gmm_encoding_model(
     gmm_reg_covar: float = DEFAULT_GMM_REG_COVAR,
     gmm_max_iter: int = 200,
     gmm_tol: float = 0.001,
+    spike_block_size: int = 1000,
+    bin_tile_size: int | None = None,
     disable_progress_bar: bool = False,
     encoding_time_range=None,
     valid_position_intervals=None,
+    waveform_std: object = None,
+    position_std: object = None,
+    block_size: object = None,
     _encoding_support=None,
     **kwargs,
 ) -> dict:
@@ -572,6 +578,13 @@ def fit_clusterless_gmm_encoding_model(
         Maximum EM iterations for every fitted GMM.
     gmm_tol : float, default=1e-3
         Convergence tolerance for every fitted GMM.
+    spike_block_size : int, default=1000
+        Decode spikes scored per block at predict. Stored in the encoding model,
+        which is how a detector's ``clusterless_algorithm_params`` reach
+        ``predict_clusterless_gmm_log_likelihood``.
+    bin_tile_size : int | None, default=None
+        Position bins scored per tile at predict (None: all bins at once).
+        Stored in the encoding model like ``spike_block_size``.
     disable_progress_bar : bool, default=False
         If True, disable progress bar.
 
@@ -584,6 +597,14 @@ def fit_clusterless_gmm_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    waveform_std, position_std, block_size : optional
+        Ignored. A detector's default ``clusterless_algorithm_params`` hold
+        these KDE and diffusion parameters and are passed to every clusterless
+        algorithm; the GMM has no kernel bandwidths, and its predict blocks
+        spikes by ``spike_block_size``.
+    **kwargs
+        Any other name raises a ``ValidationError`` that lists the valid
+        parameters.
 
     Returns
     -------
@@ -598,6 +619,8 @@ def fit_clusterless_gmm_encoding_model(
         - mean_rates
         - summed_ground_process_intensity
         - disable_progress_bar
+        - spike_block_size
+        - bin_tile_size
         - gmm_requested_components
         - gmm_effective_components
         - mark_dimensions
@@ -608,6 +631,22 @@ def fit_clusterless_gmm_encoding_model(
                 f"{parameter} has been removed; configure the joint GMM with "
                 "gmm_components_joint and gmm_covariance_type_joint instead."
             )
+    if kwargs:
+        valid = [
+            name
+            for name, parameter in inspect.signature(
+                fit_clusterless_gmm_encoding_model
+            ).parameters.items()
+            if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            and not name.startswith("_")
+        ]
+        raise ValidationError(
+            f"unknown clusterless_gmm fit parameter(s): {', '.join(sorted(kwargs))}",
+            expected=f"parameters among: {', '.join(valid)}",
+            got=", ".join(f"{name}={value!r}" for name, value in kwargs.items()),
+            hint="Check the spelling. A detector passes its "
+            "clusterless_algorithm_params to this fit.",
+        )
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -810,6 +849,8 @@ def fit_clusterless_gmm_encoding_model(
         "mean_rates": jnp.asarray(mean_rates),
         "summed_ground_process_intensity": summed_ground_process_intensity,
         "disable_progress_bar": disable_progress_bar,
+        "spike_block_size": spike_block_size,
+        "bin_tile_size": bin_tile_size,
         "gmm_requested_components": {
             "occupancy": gmm_components_occupancy,
             "gpi": gmm_components_joint,
@@ -885,6 +926,8 @@ def predict_clusterless_gmm_log_likelihood(
     spike_block_size : int, default=1000
         Process spikes in blocks of this size to reduce peak memory.
         Reduces memory from O(n_spikes × n_bins) to O(spike_block_size × n_bins).
+        A fitted encoding model supplies it and ``bin_tile_size`` (both are
+        fit parameters).
     bin_tile_size : int | None, default=None
         If provided, tile computation over position bins in chunks of this size.
         Reduces memory from O(spike_block_size × n_bins) to O(spike_block_size × bin_tile_size).
