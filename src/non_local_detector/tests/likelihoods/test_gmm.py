@@ -297,6 +297,42 @@ def test_singular_covariance_raises_actionable_error(key):
             model.fit(degenerate, key)
 
 
+def test_discarded_restarts_are_reported(key):
+    """Restarts whose covariance turns singular are dropped with a warning.
+
+    Five duplicated points let some KMeans restarts collapse a component onto
+    them with ``reg_covar=0``; the others fit the two clusters.
+    """
+    rng = np.random.default_rng(0)
+    X = jnp.asarray(
+        np.vstack(
+            [
+                np.zeros((5, 2)),
+                rng.normal([4.0, 4.0], 1.0, (100, 2)),
+                rng.normal([-4.0, 4.0], 1.0, (100, 2)),
+            ]
+        ).astype(np.float32)
+    )
+    model = GaussianMixtureModel(
+        n_components=3,
+        reg_covar=0.0,
+        n_init=8,
+        kmeans_init="random",
+        random_state=0,
+    )
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        model.fit(X, key)
+    reports = [
+        str(w.message) for w in record if "restarts were discarded" in str(w.message)
+    ]
+    assert len(reports) == 1
+    n_discarded = int(reports[0].split(" of ")[0])
+    assert 0 < n_discarded < model.n_init
+    assert "reg_covar" in reports[0]
+    assert np.all(np.isfinite(np.asarray(model.means_)))
+
+
 # ---------------------------------------------------------------------
 # tied covariance parameterization (previously untested)
 # ---------------------------------------------------------------------
