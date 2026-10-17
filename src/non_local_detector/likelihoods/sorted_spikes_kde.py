@@ -56,6 +56,7 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
+    warn_if_no_encoding_exposure,
     warn_if_tracking_is_sparse,
 )
 from non_local_detector.environment import Environment
@@ -338,6 +339,9 @@ def fit_sorted_spikes_kde_encoding_model(
     n_dims = 1 if environment.track_graph is not None else position.shape[1]
     position_std = validate_bandwidth(position_std, n_dims, "position_std")
     warn_if_tracking_is_sparse(support, position, position_std)
+    warn_if_no_encoding_exposure(
+        exposure_weights, "Sorted-spikes KDE", clusterless=False
+    )
 
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()

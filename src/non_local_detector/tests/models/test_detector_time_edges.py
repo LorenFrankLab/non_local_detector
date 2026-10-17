@@ -200,6 +200,20 @@ def _expected_missing(edges, position_time, is_nan):
     return missing
 
 
+def _expected_outside_tracking(edges, position_time):
+    """Bins owning any time more than half a median sample beyond the tracking.
+
+    Bin ``i`` owns ``[edges[i], edges[i + 1])``, and the final bin also owns
+    ``edges[-1]``; the half sample is half the median sampling interval.
+    """
+    half = np.median(np.diff(position_time)) / 2
+    start, stop = position_time[0] - half, position_time[-1] + half
+    missing = np.zeros(edges.size - 1, bool)
+    for i in range(edges.size - 1):
+        missing[i] = edges[i] < start or edges[i + 1] > stop
+    return missing
+
+
 @pytest.mark.unit
 def test_interpolation_reads_a_nan_sample_on_a_half_open_span():
     """Pins the convention the missing-bin oracle relies on: at the lower
@@ -577,7 +591,8 @@ def test_nan_near_the_ends_marks_extrapolated_bins_missing(nan_index):
 @pytest.mark.unit
 @pytest.mark.parametrize("seed", range(20))
 def test_missing_bins_match_the_interpolation_oracle(seed):
-    """Random masks, edges on sample times, and NaN at either end."""
+    """Random masks, edges on sample times, NaN at either end, and edges
+    beyond the tracking."""
     from non_local_detector.models.base import _missing_bins
 
     rng = np.random.default_rng(seed)
@@ -593,6 +608,7 @@ def test_missing_bins_match_the_interpolation_oracle(seed):
     user_mask = rng.random(edges.size - 1) < 0.1
 
     expected = _expected_missing(edges, position_time, is_nan)
+    expected |= _expected_outside_tracking(edges, position_time)
     np.testing.assert_array_equal(
         _missing_bins(edges, user_mask, position_time, position), expected | user_mask
     )
