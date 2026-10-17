@@ -19,7 +19,6 @@ from non_local_detector.likelihoods.common import (
     decode_bin_centers,
     get_position_at_time,
     log_bin_duration_evidence,
-    safe_log,
     select_spike_rows,
     select_spikes_in_rows,
     sum_spikes_into_rows,
@@ -164,7 +163,7 @@ def reference(recording, is_local, row_slice):
             )
             total = total + sum_spikes_into_rows(
                 jnp.logaddexp(
-                    safe_log(rate, eps=RATE_EPS_HZ)
+                    jnp.log(jnp.maximum(rate, RATE_EPS_HZ))
                     + (log_density - encoding["log_occupancy"]),
                     log_background[:, None],
                 ),
@@ -196,7 +195,7 @@ def reference(recording, is_local, row_slice):
                     env,
                 )
                 terms = jnp.logaddexp(
-                    safe_log(rate, eps=RATE_EPS_HZ)
+                    jnp.log(jnp.maximum(rate, RATE_EPS_HZ))
                     + (
                         joint.score_samples(
                             jnp.concatenate(
