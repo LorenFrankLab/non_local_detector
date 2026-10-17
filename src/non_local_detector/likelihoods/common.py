@@ -2068,9 +2068,8 @@ def _padded_index(index: np.ndarray) -> np.ndarray:
 def _log_space_kde_log_density(points, samples, std, block_size, weights):
     """True log density evaluated entirely in log space.
 
-    Callers that map over batches use this directly: under ``vmap`` the
-    log-space repair in :func:`traced_kde_log_density` becomes a select that
-    evaluates both forms.
+    Re-evaluates the points a scaled pass flags; traced callers use it
+    directly.
     """
     if points.shape[0] == 0:
         return jnp.full((0,), LOG_EPS)
@@ -2159,9 +2158,7 @@ def _kde_log_scale(points, std, keys=None):
     return jax.lax.stop_gradient(jnp.where(jnp.isfinite(scale), scale, peak))
 
 
-def _scaled_kde_log_density(
-    points, samples, std, block_size, weights, keys=None, *, repair_in_graph
-):
+def _scaled_kde_log_density(points, samples, std, block_size, weights, keys=None):
     """True log density in one pass per block, each point scaled first.
 
     Each point's log kernels are shifted by :func:`_kde_log_scale` before
@@ -2182,15 +2179,12 @@ def _scaled_kde_log_density(
     keys : jnp.ndarray, shape (n_samples,), optional
         Sorted 1D keys for an exact per-point scale; None scales by the
         kernel's peak.
-    repair_in_graph : bool
-        Evaluate flagged points in log space inside the graph, under a
-        ``lax.cond`` per block.
 
     Returns
     -------
     log_density : jnp.ndarray, shape (n_points,)
     needs_log_space : jnp.ndarray, shape (n_points,)
-        The flagged points, already repaired when ``repair_in_graph``.
+        The flagged points, which callers re-evaluate in log space.
     """
     n_points = points.shape[0]
     if n_points == 0:
@@ -2229,17 +2223,6 @@ def _scaled_kde_log_density(
             / (4 * jnp.finfo(scaled.dtype).eps)
         )
         needs_log_space = scaled < lost
-        if repair_in_graph:
-            values = jax.lax.cond(
-                jnp.any(needs_log_space),
-                lambda values: jnp.where(
-                    needs_log_space,
-                    log_kde(block_points, samples, std, weights),
-                    values,
-                ),
-                lambda values: values,
-                values,
-            )
         return values, needs_log_space
 
     rows = min(_kde_block_rows(block_size, points, samples, std, weights), n_points)
@@ -2264,28 +2247,10 @@ def _scaled_kde_log_density(
     return values, needs_log_space.reshape(-1)[:n_points] & (total > 0.0)
 
 
-def traced_kde_log_density(points, samples, std, block_size, weights):
-    """Traceable true-density counterpart of :func:`kde_log_density`.
-
-    Points are scaled by the kernel's peak, so each block's pass matches the
-    probability-space KDE; a block holding points in a distant tail evaluates
-    them in log space under a ``lax.cond``. Under ``vmap`` that becomes a
-    select evaluating both forms; callers mapped in batches use
-    :func:`_log_space_kde_log_density`. Without a sort in the graph, 1D tails
-    are not scaled per point; callers expecting many tail points should use
-    :func:`kde_log_density`.
-    """
-    return _scaled_kde_log_density(
-        points, samples, std, block_size, weights, repair_in_graph=True
-    )[0]
-
-
 @partial(jax.jit, static_argnames=("block_size",))
 def _compiled_scaled_kde_log_density(points, samples, std, block_size, weights, keys):
     """The scaled pass for :func:`kde_log_density`, which repairs on the host."""
-    return _scaled_kde_log_density(
-        points, samples, std, block_size, weights, keys, repair_in_graph=False
-    )
+    return _scaled_kde_log_density(points, samples, std, block_size, weights, keys)
 
 
 def _batched_kde_rows(
@@ -2338,7 +2303,6 @@ def _compiled_batched_scaled_kde_log_density(
             block_size,
             model_weights,
             model_keys,
-            repair_in_graph=False,
         )
 
     return jax.lax.map(one_model, (samples, weights, keys), batch_size=batch_size)

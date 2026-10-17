@@ -242,6 +242,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `likelihoods.common.traced_kde_log_density` and the in-graph ground-process density branch of the local `clusterless_kde` kernel. Prediction always evaluated that density on the host (`kde_log_density`) and passed it in, so the branch never ran, yet each electrode's ground-process samples were padded and copied to the device on every local prediction. The compiled local kernel is unchanged (1547-1565 MiB workspace at the bounded-workspace test's sizes, before and after).
 - `likelihoods.common.get_spike_time_bin_ind` (no production callers) and `calculate_time_bins` (replaced by `calculate_time_edges`, see Changed).
 - The incidental re-export of `get_spike_time_bin_ind` from `likelihoods.clusterless_kde`, `likelihoods.clusterless_kde_log`, `likelihoods.clusterless_gmm`, and `likelihoods.clusterless_diffusion`. All four modules imported it from `likelihoods.common` for their own use and thereby re-exported it; none of them calls it any more (they select spikes through `likelihoods.common.select_spikes_in_rows`), so the dead imports were dropped rather than kept alive with a `# noqa: F401`. The function itself has since been removed as well (see above).
 - `environment.order_boundary` and `environment.get_track_boundary_points`: both called `nx.from_scipy_sparse_matrix`, which was removed in NetworkX 3.0. Neither was used anywhere outside their own module. The now-unused `from sklearn.neighbors import NearestNeighbors` import was removed alongside them.
