@@ -143,6 +143,13 @@ def test_large_no_spike_request_keeps_bounded_neuron_workspace(monkeypatch):
     np.testing.assert_array_equal(result, expected)
 
 
+def line_environment():
+    """A line whose interior bin centers span the local tests' 0-1 positions."""
+    return Environment(
+        place_bin_size=0.5, position_range=((-1.0, 2.0),)
+    ).fit_place_grid(np.array([[0.0], [1.0]]), infer_track_interior=False)
+
+
 def local_kde_problem(n_rows, block_size):
     rng = np.random.default_rng(7364)
     models = [
@@ -156,14 +163,14 @@ def local_kde_problem(n_rows, block_size):
         "position_time": np.array([0.0, edges[-1]]),
         "position": np.array([[0.0], [1.0]]),
         "spike_times": [rng.uniform(0, edges[-1], 40) for _ in models],
-        "environment": None,
+        "environment": line_environment(),
         "marginal_models": models,
         "occupancy_model": models[-1],
         "occupancy": None,
         "mean_rates": [2.0, 5.0, 0.5],
-        "place_fields": np.ones((len(models), 1)),
-        "no_spike_part_log_likelihood": np.ones(1),
-        "is_track_interior": np.ones(1, bool),
+        "place_fields": np.ones((len(models), 6)),
+        "no_spike_part_log_likelihood": np.ones(6),
+        "is_track_interior": np.ones(6, bool),
         "disable_progress_bar": True,
         "is_local": True,
         "time_edges": edges,
@@ -277,13 +284,6 @@ def test_traced_block_log_kde_matches_block_log_kde(n_points, x64):
         )
 
 
-def glm_line_environment():
-    """A line whose interior bin centers span the GLM tests' 0-1 positions."""
-    return Environment(
-        place_bin_size=0.5, position_range=((-1.0, 2.0),)
-    ).fit_place_grid(np.array([[0.0], [1.0]]), infer_track_interior=False)
-
-
 def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
     small_count_blocks(monkeypatch, 1)
     rows = record_rows(monkeypatch, sorted_spikes_glm, "_local_glm_log_likelihood")
@@ -296,7 +296,7 @@ def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
         position_time=np.array([0.0, 6.0]),
         position=np.array([[0.0], [1.0]]),
         spike_times=[np.array([0.006])],
-        environment=glm_line_environment(),
+        environment=line_environment(),
         coefficients=jnp.zeros((1, 2)),
         emission_design_info=None,
         place_fields=np.ones((1, 6)),
@@ -322,7 +322,7 @@ def test_local_glm_blocks_read_their_own_design_rows(monkeypatch):
         "position_time": np.array([0.0, 6.0]),
         "position": np.array([[0.0], [1.0]]),
         "spike_times": [np.sort(np.random.default_rng(5).uniform(0, 6, 400))],
-        "environment": glm_line_environment(),
+        "environment": line_environment(),
         "coefficients": jnp.array([[np.log(5.0), 3.0]]),
         "emission_design_info": None,
         "place_fields": np.ones((1, 6)),
