@@ -73,6 +73,7 @@ from non_local_detector.likelihoods.common import (
     decode_bin_centers,
     get_position_at_time,
     resolve_row_slice,
+    snap_off_track_positions,
     validate_population_lengths,
     validate_weights,
 )
@@ -773,9 +774,10 @@ def predict_sorted_spikes_glm_log_likelihood(
         If True, suppresses the progress bar display. By default False.
     is_local : bool, optional
         If True, compute the log likelihood only at the animal's current
-        interpolated position (local decoding). If False, compute the log
-        likelihood across all position bins (non-local decoding).
-        By default False.
+        interpolated position (local decoding); positions outside the track
+        are moved to the nearest interior bin center so the spline is never
+        extrapolated. If False, compute the log likelihood across all
+        position bins (non-local decoding). By default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
@@ -811,8 +813,11 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     if is_local:
         # Need to interpolate position
-        interpolated_position = get_position_at_time(
-            position_time, position, row_time, environment
+        # The natural spline extrapolates log-rate linearly past its boundary
+        # knots; off-track positions read the nearest interior bin instead.
+        interpolated_position = snap_off_track_positions(
+            get_position_at_time(position_time, position, row_time, environment),
+            environment,
         )
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, interpolated_position
