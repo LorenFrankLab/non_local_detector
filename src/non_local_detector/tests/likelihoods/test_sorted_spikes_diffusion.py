@@ -710,6 +710,76 @@ def test_exposure_weighted_mean_rate_equals_mean_rate_on_unequal_bins():
     np.testing.assert_allclose(weighted_mean, encoding["mean_rates"], rtol=1e-5)
 
 
+def simulate_sparse_uniform_tracking(
+    sampling_frequency: float = 30.0,
+    rate: float = 10.0,
+    duration: float = 600.0,
+    seed: int = 0,
+):
+    """A uniform-rate neuron tracked at 150 units/s on a [0, 100] track.
+
+    The animal bounces between 1.25 and 96.25 at constant speed. At 30 Hz it moves
+    5 units per sample, so with 2.5-unit bins every sample sits on an even bin's
+    center (1.25 + 5k) and the odd bins between them get no tracking sample.
+
+    Returns
+    -------
+    time : np.ndarray, shape (n_time,)
+    position : np.ndarray, shape (n_time, 1)
+    spike_times : list[np.ndarray]
+        One neuron firing as a homogeneous Poisson process at ``rate`` Hz over
+        the encoding support (sample centers plus endpoint half-cells).
+    environment : Environment
+        2.5-unit bins on [0, 100], every bin interior.
+    """
+    rng = np.random.default_rng(seed)
+    dt = 1.0 / sampling_frequency
+    time = np.arange(0.0, duration, dt)
+    span = 95.0
+    phase = (150.0 * time) % (2 * span)
+    position = (1.25 + np.where(phase < span, phase, 2 * span - phase))[:, None]
+    n_spikes = rng.poisson(rate * (time[-1] - time[0] + dt))
+    spike_times = np.sort(rng.uniform(time[0] - dt / 2, time[-1] + dt / 2, n_spikes))
+    environment = Environment(
+        place_bin_size=2.5, position_range=((0.0, 100.0),)
+    ).fit_place_grid(position, infer_track_interior=False)
+    return time, position, [spike_times], environment
+
+
+@pytest.mark.unit
+def test_pixellated_spikes_share_the_exposure_rule_under_sparse_tracking():
+    """Spike mass lands only where exposure does, in proportion to it.
+
+    Exposure sits at each tracking sample's bin, so spikes must be split between
+    the bins of their bracketing samples (the encoding support's event rule), not
+    placed at the interpolated position: bins with no sample have no exposure and
+    must get no spikes, and a uniform neuron's raw rate is uniform.
+    """
+    time, position, spike_times, env = simulate_sparse_uniform_tracking(rate=20.0)
+    _, node_order, _ = environment_graph(env)
+    exposure, (counts,), (mean_rate,) = pixellate_interior_fields(
+        time, position, spike_times, env, node_order, np.ones_like(time), True
+    )
+    unexposed = exposure == 0.0
+    assert unexposed.sum() >= 15  # the odd bins (and the never-visited last bin)
+    np.testing.assert_array_equal(counts[unexposed], 0.0)
+    np.testing.assert_allclose(counts.sum(), len(spike_times[0]))
+    np.testing.assert_allclose(mean_rate, counts.sum() / exposure.sum())
+    raw_rate = counts[~unexposed] / exposure[~unexposed]
+    assert np.max(np.abs(raw_rate / 20.0 - 1.0)) < 0.2
+
+
+@pytest.mark.unit
+def test_uniform_rate_is_recovered_under_sparse_tracking():
+    """A 10 Hz neuron tracked 2 bins per sample fits ~10 Hz in every bin."""
+    time, position, spike_times, env = simulate_sparse_uniform_tracking()
+    encoding = fit_sorted_spikes_diffusion_encoding_model(
+        time, position, spike_times, env, position_std=2.5, disable_progress_bar=True
+    )
+    place_field = np.asarray(encoding["place_fields"])[0]
+    assert np.max(np.abs(place_field / 10.0 - 1.0)) < 0.15
+
+
 def test_registered_in_sorted_spikes_algorithms():
     """The algorithm is selectable via sorted_spikes_algorithm='sorted_spikes_diffusion'."""
     assert "sorted_spikes_diffusion" in _SORTED_SPIKES_ALGORITHMS
@@ -979,6 +1049,55 @@ def test_no_rate_leak_across_impassable_barrier():
     assert diffusion_leak < 0.01
     assert kde_leak > 0.05
     assert kde_leak > 10 * diffusion_leak
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("full_rank", [False, True])
+def test_unvisited_interior_bins_get_floor_rate(full_rank):
+    """Interior bins far from every encoding sample get the floor rate.
+
+    The animal only covers [0, 100] of a [0, 200] interior track. Far from the data,
+    the diffused occupancy and spike fields are both numerical noise, so their ratio
+    is not a rate estimate and must not be reported as one.
+    """
+    rng = np.random.default_rng(0)
+    dt = 0.002
+    time = np.arange(20_000) * dt
+    position = np.clip(
+        50 + 50 * np.sin(2 * np.pi * time / 4.0) + rng.normal(0, 0.5, time.size),
+        0,
+        100,
+    )
+    env = Environment(place_bin_size=1.0, infer_track_interior=False)
+    env.fit_place_grid(np.linspace(0, 200, 1000)[:, np.newaxis])
+    # One field mid-track and one at the edge of the visited range.
+    spike_times = [
+        time[
+            rng.random(time.size)
+            < 20.0 * np.exp(-((position - center) ** 2) / (2 * 10.0**2)) * dt
+        ]
+        for center in (50.0, 90.0)
+    ]
+    interior = env.is_track_interior_.ravel()
+
+    model = fit_sorted_spikes_diffusion_encoding_model(
+        time,
+        position[:, np.newaxis],
+        spike_times,
+        env,
+        position_std=3.0,
+        rank=int(interior.sum()) if full_rank else None,
+        disable_progress_bar=True,
+    )
+
+    place_fields = np.asarray(model["place_fields"])[:, interior]
+    bin_centers = env.place_bin_centers_[interior, 0]
+    # 30 cm (10 position_std) past the last visited position.
+    unvisited = bin_centers > 130.0
+    assert np.all(place_fields[:, unvisited] == RATE_EPS_HZ)
+    # The visited mid-track field is unaffected: it still peaks near 20 Hz at 50.
+    assert abs(bin_centers[np.argmax(place_fields[0])] - 50.0) < 5.0
+    assert 15.0 < place_fields[0].max() < 25.0
 
 
 def test_truncated_rank_conserves_per_component_occupancy_mass():

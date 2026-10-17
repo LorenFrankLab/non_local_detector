@@ -15,13 +15,20 @@ import pytest
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
+    predict_clusterless_gmm_log_likelihood,
+)
+from non_local_detector.likelihoods.clusterless_gmm import (
+    mark_reference_scale as gmm_mark_reference_scale,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.tests.likelihoods.conftest import training_mark_references
+from non_local_detector.tests.likelihoods.conftest import (
+    FLOAT32_ROUNDING,
+    training_mark_references,
+)
 
 
 def _mark_reference(encoding, t_pos, spike_times, feats, weights=None):
@@ -199,6 +206,67 @@ def test_weights_change_the_clusterless_gmm_occupancy(simple_1d_environment):
     assert not np.allclose(
         np.asarray(uniform["log_occupancy"]), np.asarray(weighted["log_occupancy"])
     ), "weights had no effect on the GMM occupancy -- they are being ignored"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("is_local", [False, True])
+def test_constant_weights_predict_like_unweighted_clusterless_gmm(
+    simple_1d_environment, is_local
+):
+    """Weights all equal to c are a change of exposure units, not of the model.
+
+    The mean rate (weighted spikes over weighted exposure), the occupancy and
+    joint mixtures (normalized sample weights) and the mark reference are all
+    invariant to a common scale, so the predicted log likelihood must match
+    ``weights=None`` to float32 rounding.
+    """
+    rng = np.random.default_rng(0)
+    t_pos = np.linspace(0.0, 20.0, 2001)
+    pos = (5.0 + 4.5 * np.sin(2 * np.pi * t_pos / 4.0))[:, None]
+    # Two units on one electrode, with fields at 2 and 8 and separate marks.
+    rate = np.stack(
+        [15.0 * np.exp(-0.5 * ((pos[:, 0] - c) / 1.0) ** 2) for c in (2.0, 8.0)]
+    )
+    dt = t_pos[1] - t_pos[0]
+    unit_times = [
+        t_pos[rng.random(t_pos.size) < r * dt] + rng.uniform(-dt / 2, dt / 2)
+        for r in rate
+    ]
+    times = np.concatenate(unit_times)
+    marks = np.concatenate(
+        [rng.normal(3.0 * u, 0.5, (t.size, 2)) for u, t in enumerate(unit_times)]
+    )
+    order = np.argsort(times)
+    spikes, feats = [times[order]], [marks[order]]
+    t_edges = np.linspace(0.0, 20.0, 41)
+
+    def predict(weights):
+        encoding = _fit_gmm(simple_1d_environment, t_pos, pos, spikes, feats, weights)
+        return np.asarray(
+            predict_clusterless_gmm_log_likelihood(
+                time_edges=t_edges,
+                position_time=t_pos,
+                position=pos,
+                spike_times=spikes,
+                spike_waveform_features=feats,
+                is_local=is_local,
+                mark_reference=training_mark_references(
+                    t_pos,
+                    spikes,
+                    feats,
+                    gmm_mark_reference_scale(),
+                    weights,
+                    pos,
+                ),
+                **{**encoding, "disable_progress_bar": True},
+            )
+        )
+
+    unweighted = predict(None)
+    constant = predict(np.full(t_pos.size, 2.5))
+    assert np.ptp(unweighted) > 1.0  # the likelihood is informative
+    # Measured: at most 7.3e-7 relative.
+    np.testing.assert_allclose(constant, unweighted, **FLOAT32_ROUNDING)
 
 
 @pytest.mark.unit
