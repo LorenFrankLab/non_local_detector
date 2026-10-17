@@ -1246,7 +1246,7 @@ class GaussianMixtureModel:
         self.converged_ = False
         self.n_iter_ = 0
 
-        saw_nan = False
+        n_invalid = 0
         for i in range(self.n_init):
             params = self._initialize_parameters(
                 X, init_keys[i], sample_weight=sw, init_index=i
@@ -1262,13 +1262,13 @@ class GaussianMixtureModel:
 
             # A singular covariance makes the Cholesky (and hence the lower
             # bound) NaN; NaN never beats best_lower_bound, so such a restart is
-            # discarded. Remember it to give an actionable error if all fail.
+            # discarded. Count it to give an actionable error if all fail.
             final_precision = _compute_precision_cholesky(final_S, self.covariance_type)
             valid_final = bool(np.isfinite(final_lb)) and bool(
                 _fitted_parameters_finite((final_w, final_m, final_S, final_precision))
             )
-            saw_nan = saw_nan or not valid_final
             if not valid_final:
+                n_invalid += 1
                 continue
 
             if final_lb > best_lower_bound:
@@ -1282,7 +1282,7 @@ class GaussianMixtureModel:
 
         self.lower_bound_ = float(best_lower_bound)
         if self.weights_ is None:
-            if saw_nan:
+            if n_invalid:
                 raise RuntimeError(
                     "GMM fitting failed: a component's covariance became "
                     "singular, giving a non-finite log-likelihood. Increase "
@@ -1294,6 +1294,18 @@ class GaussianMixtureModel:
             raise RuntimeError(
                 "GMM fitting failed: no restart produced a finite lower bound. "
                 "Check X for NaN/Inf values or try a different initialization."
+            )
+
+        if n_invalid:
+            warnings.warn(
+                f"{n_invalid} of {self.n_init} GMM restarts were discarded: a "
+                f"component's covariance became singular, giving a non-finite "
+                f"lower bound or parameters. The fit keeps the best of the other "
+                f"{self.n_init - n_invalid}. Increase reg_covar, reduce "
+                f"n_components, or remove duplicate/degenerate samples so every "
+                f"restart is usable.",
+                UserWarning,
+                stacklevel=2,
             )
 
         if not self.converged_:
