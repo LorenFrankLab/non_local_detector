@@ -5266,9 +5266,10 @@ class ClusterlessDetector(_DetectorBase):
                     time_edges=time_edges,
                     row_slice=row_slice,
                     # The fitted setting, as the other likelihoods receive it.
-                    disable_progress_bar=self.encoding_model_[likelihood_name[:2]].get(
-                        "disable_progress_bar", False
-                    ),
+                    # No-Spike may have no encoding entry; default to showing the bar.
+                    disable_progress_bar=self.encoding_model_.get(
+                        likelihood_name[:2], {}
+                    ).get("disable_progress_bar", False),
                     _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
                     _time_grid=_time_grid,
@@ -6548,9 +6549,10 @@ class SortedSpikesDetector(_DetectorBase):
                     time_edges=time_edges,
                     row_slice=row_slice,
                     # The fitted setting, as the other likelihoods receive it.
-                    disable_progress_bar=self.encoding_model_[likelihood_name[:2]].get(
-                        "disable_progress_bar", False
-                    ),
+                    # No-Spike may have no encoding entry; default to showing the bar.
+                    disable_progress_bar=self.encoding_model_.get(
+                        likelihood_name[:2], {}
+                    ).get("disable_progress_bar", False),
                     _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
                     _time_grid=_time_grid,
