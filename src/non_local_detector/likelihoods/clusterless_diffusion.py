@@ -82,7 +82,6 @@ from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
     LOG_RATE_EPS_HZ,
-    RATE_EPS_HZ,
     _pad_rows,
     _padded_sample_count,
     _padded_spike_count,
@@ -117,6 +116,7 @@ from non_local_detector.likelihoods.diffusion import (
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
+    background_rate,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
@@ -485,11 +485,6 @@ def fit_clusterless_diffusion_encoding_model(
         summed_ground_process_intensity += next(spike_fields_hat) * np.exp(
             np.asarray(_log_intensity_scale(occupancy, bin_sizes, mean_rate, w_total))
         )
-
-    # Every electrode, including zero-rate ones, adds its background rate.
-    summed_ground_process_intensity = (
-        summed_ground_process_intensity + len(spike_times) * RATE_EPS_HZ
-    )
 
     return {
         "environment": environment,
@@ -1233,7 +1228,7 @@ def predict_clusterless_diffusion_log_likelihood(
     occupancy = jnp.asarray(encoding_model["occupancy"])
     summed_ground_process_intensity = jnp.asarray(
         encoding_model["summed_ground_process_intensity"]
-    )
+    ) + background_rate(len(spike_times))
     encoding_bin_indices = encoding_model["encoding_bin_indices"]
     encoding_marks = encoding_model["encoding_marks"]
     encoding_weights = encoding_model["encoding_weights"]

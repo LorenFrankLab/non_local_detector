@@ -23,7 +23,6 @@ from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
     LOG_EPS,
-    RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
     KDEModel,
     _kde_log_densities,
@@ -61,6 +60,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
+    background_rate,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -1751,11 +1751,6 @@ def fit_clusterless_kde_encoding_model(
             log_density_intensity(mean_rate, log_gpi_density, log_occupancy)
         )
 
-    # Every electrode, including zero-rate ones, adds its background rate.
-    summed_ground_process_intensity = (
-        summed_ground_process_intensity + len(spike_times) * RATE_EPS_HZ
-    )
-
     return {
         "occupancy": occupancy,
         "log_occupancy": log_occupancy,
@@ -1844,7 +1839,8 @@ def predict_clusterless_kde_log_likelihood(
     mean_rates : jnp.ndarray, shape (n_electrodes,)
         Mean firing rate for each electrode.
     summed_ground_process_intensity : jnp.ndarray, shape (n_position_bins,)
-        Summed ground process intensity for all electrodes.
+        Summed ground process intensity of the encoding model, in Hz; predict
+        adds each electrode's background rate.
     position_std : jnp.ndarray
         Gaussian smoothing standard deviation for position.
     waveform_std : jnp.ndarray
@@ -1953,10 +1949,9 @@ def predict_clusterless_kde_log_likelihood(
         if log_occupancy is None:
             log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
-        log_likelihood = (
-            -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
-            * summed_ground_process_intensity
-        )
+        log_likelihood = -jnp.asarray(_time_grid.durations(row_start, row_stop))[
+            :, None
+        ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
 
         for (
             electrode_encoding_spike_waveform_features,
@@ -2315,9 +2310,7 @@ def compute_local_log_likelihood(
             ),
         )
 
-    # Every electrode, including zero-rate ones, adds its background rate, as in
-    # fit_clusterless_kde_encoding_model's summed_ground_process_intensity.
     log_likelihood -= jnp.asarray(_time_grid.durations(row_start, row_stop)) * (
-        summed_expected_counts + len(spike_times) * RATE_EPS_HZ
+        summed_expected_counts + background_rate(len(spike_times))
     )
     return log_likelihood[:, jnp.newaxis]
