@@ -106,3 +106,29 @@ def test_one_center_grid_is_intercept_only():
     )
     assert model["coefficients"].shape == (1, 1)
     np.testing.assert_allclose(model["place_fields"], 2.0, rtol=1e-6)
+
+
+def test_unvisited_bins_do_not_extrapolate_in_two_dimensions():
+    """The tensor-product basis spans the whole environment in each dimension."""
+    rng = np.random.default_rng(0)
+    sampling_frequency = 30.0
+    time = np.arange(0.0, 300.0, 1 / sampling_frequency)
+    # The animal covers x in about [0, 70] of a 100 x 100 box; the field is
+    # still rising at x = 70.
+    x = 35.0 + 35.0 * np.sin(2 * np.pi * time / 23.7)
+    y = 50.0 + 50.0 * np.sin(2 * np.pi * time / 31.3 + 1.0)
+    rate = 20.0 * np.exp(-0.5 * (((x - 80.0) / 10.0) ** 2 + ((y - 50.0) / 10.0) ** 2))
+    spikes = [time[rng.random(time.size) < rate / sampling_frequency]]
+    position = np.c_[x, y]
+    env = Environment(
+        place_bin_size=5.0, position_range=((0.0, 100.0), (0.0, 100.0))
+    ).fit_place_grid(position, infer_track_interior=False)
+    model = _fit(env, time, position, spikes, l2_penalty=0.01)
+    edges = env.place_bin_edges_
+    for knots, low, high in zip(
+        _spline_knots(model), edges.min(axis=0), edges.max(axis=0), strict=True
+    ):
+        np.testing.assert_array_equal(knots[[0, -1]], [low, high])
+    centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
+    field = np.asarray(model["place_fields"])[0]
+    assert field[centers[:, 0] > 75.0].max() <= field[centers[:, 0] <= 70.0].max()

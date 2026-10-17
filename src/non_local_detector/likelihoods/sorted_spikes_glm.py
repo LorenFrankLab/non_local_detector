@@ -569,7 +569,8 @@ def fit_sorted_spikes_glm_encoding_model(
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
     emission_knot_spacing : float, optional
-        Knots over position, by default 10.0
+        Spacing of the spline knots in position units, by default
+        ``sqrt(12.5) * 2`` (about 7.07).
     l2_penalty : float, optional
         L2 penalty per second, by default 0.5 (0.001 at the 500 Hz reference)
     disable_progress_bar : bool, optional
