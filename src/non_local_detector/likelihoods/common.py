@@ -396,53 +396,31 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
-# Rows per non-local Poisson emission block, which chooses its arithmetic path.
+# Rows per non-local Poisson emission block. Every block has this shape, and a
+# row's position in its block is fixed by the decode grid.
 _EMISSION_BLOCK_ROWS = 64
 
 
-def _block_duration_values(block_durations):
-    """The block's first duration and its first different one (or the first).
-
-    Parameters
-    ----------
-    block_durations : jnp.ndarray, shape (block_rows,)
-
-    Returns
-    -------
-    first, other : jnp.ndarray, shape ()
-    """
-    first = block_durations[0]
-    return first, block_durations[jnp.argmax(block_durations != first)]
-
-
-def _matrix_emission_is_safe(rates, block_durations, accumulator_dtype):
-    """Whether one block's Poisson emission can use the rate-matrix product.
+def _matrix_emission_is_safe(rates, durations, accumulator_dtype):
+    """Whether the Poisson emission can use the log-rate matrix product.
 
     Parameters
     ----------
     rates : jnp.ndarray, shape (n_neurons, n_bins)
-    block_durations : jnp.ndarray, shape (block_rows,)
+    durations : jnp.ndarray, shape (n_rows,)
+        Only their dtype is used.
     accumulator_dtype : dtype
         The emission's accumulator dtype.
 
     Returns
     -------
     is_safe : jnp.ndarray, shape ()
-        True when every rate-duration product is positive and finite, the block
-        has at most two distinct durations (a uniform grid whose timestamps
-        round to two values), and the inputs already have the accumulator dtype.
+        True when every rate is positive and finite and the inputs already
+        have the accumulator dtype. No duration value enters, so every row
+        range of a decode grid takes the same path.
     """
-    first, other = _block_duration_values(block_durations)
-    smallest = jnp.min(rates) * jnp.min(block_durations)
-    largest = jnp.max(rates) * jnp.max(block_durations)
-    return (
-        jnp.all(jnp.isfinite(rates))
-        & jnp.all(jnp.isfinite(block_durations))
-        & jnp.all((block_durations == first) | (block_durations == other))
-        & (jnp.min(block_durations) > 0)
-        & (smallest > 0)
-        & jnp.isfinite(largest)
-        & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+    return jnp.all(jnp.isfinite(rates) & (rates > 0)) & (
+        jnp.result_type(rates, durations) == accumulator_dtype
     )
 
 
@@ -452,16 +430,14 @@ def _poisson_nonlocal_log_likelihood(
     rates: jnp.ndarray,
     durations: jnp.ndarray,
     summed_rates: jnp.ndarray,
-    block_durations: jnp.ndarray | None = None,
     lead: int = 0,
 ) -> jnp.ndarray:
     """Batched Poisson emissions with fixed arithmetic across row partitions.
 
     A fixed 64-row matrix kernel multiplies counts by the log rates, taken
     once per call, and adds each row's count-weighted log duration. Highest
-    dot precision excludes a TF32 approximation.
-    Exact zeros, non-finite products and blocks with more than two distinct
-    durations retain xlogy.
+    dot precision excludes a TF32 approximation. Exact zeros and non-finite
+    rates retain xlogy.
     Padding is internal and never contributes an observation or returned row.
 
     Parameters
@@ -470,15 +446,11 @@ def _poisson_nonlocal_log_likelihood(
     rates : jnp.ndarray, shape (n_neurons, n_bins)
     durations : jnp.ndarray, shape (n_rows,)
     summed_rates : jnp.ndarray, shape (n_bins,)
-    block_durations : jnp.ndarray, shape (n_blocks * 64,), optional
-        Durations of whole 64-row blocks that cover the rows, starting
-        ``lead`` rows before the first row, with ``durations`` at the rows
-        and at most one block beyond those the rows need. Each block's path
-        follows these, so blocks fixed to the decode grid make a row's value
-        independent of the requested row range. By default, blocks start at
-        the first row.
     lead : int, optional
-        Block rows before the first row, in ``[0, 64)``; 0 by default.
+        Rows of the first 64-row block before the first row, in ``[0, 64)``;
+        0 by default. Passing the first row's decode-grid index modulo 64
+        keeps each row at one position in one block shape, whatever row
+        range is requested.
 
     Returns
     -------
@@ -493,32 +465,36 @@ def _poisson_nonlocal_log_likelihood(
             - durations[:, None] * summed_rates
         )
     block_rows = _EMISSION_BLOCK_ROWS
-    if block_durations is None:
-        block_durations = jnp.pad(durations, (0, (-n_rows) % block_rows), mode="edge")
-    n_blocks = block_durations.shape[0] // block_rows
-    # Rows take their own durations, so duration derivatives reach
-    # ``durations``; the remaining block rows have no counts.
-    row_durations = jax.lax.dynamic_update_slice(block_durations, durations, (lead,))
+    # Enough blocks for any ``lead``, so the shape depends only on n_rows.
+    n_blocks = (n_rows + 2 * block_rows - 2) // block_rows
+    # Block rows outside the request have no counts and a unit duration.
+    row_durations = jax.lax.dynamic_update_slice(
+        jnp.ones(n_blocks * block_rows, dtype=durations.dtype), durations, (lead,)
+    )
+    matrix_is_safe = _matrix_emission_is_safe(rates, durations, accumulator_dtype)
     matrix_dtype = jnp.result_type(rates, durations)
     # Once per call rather than per block. Unsafe rates (which never take the
     # matrix path) are replaced so their unused log has a finite derivative.
     usable_rates = jnp.isfinite(rates) & (rates > 0)
     log_rates = jnp.log(jnp.where(usable_rates, rates, 1).astype(matrix_dtype))
 
-    def emit_block(block_counts, block_durations, row_durations):
-        matrix_is_safe = _matrix_emission_is_safe(
-            rates, block_durations, accumulator_dtype
-        )
-
+    def emit_block(block_counts, block_durations):
         def matrix_accumulation(_):
             block_counts_float = block_counts.astype(matrix_dtype)
+            n_spikes = block_counts_float.sum(axis=1, keepdims=True)
             # log(rate * duration) = log(rate) + log(duration): one product
-            # with the per-call log rates, plus each row's own duration term.
-            values = jnp.matmul(
-                block_counts_float, log_rates, precision=jax.lax.Precision.HIGHEST
-            ) + (
-                block_counts_float.sum(axis=1, keepdims=True)
-                * jnp.log(row_durations.astype(matrix_dtype))[:, None]
+            # with the per-call log rates, plus each row's own duration term,
+            # which is 0 for a row without spikes (as xlogy gives).
+            duration_term = jnp.where(
+                n_spikes == 0,
+                0,
+                n_spikes * jnp.log(block_durations.astype(matrix_dtype))[:, None],
+            )
+            values = (
+                jnp.matmul(
+                    block_counts_float, log_rates, precision=jax.lax.Precision.HIGHEST
+                )
+                + duration_term
             )
             return values.astype(accumulator_dtype)
 
@@ -526,7 +502,7 @@ def _poisson_nonlocal_log_likelihood(
             def add_neuron(likelihood, neuron):
                 neuron_counts, neuron_rates = neuron
                 product = jax.lax.optimization_barrier(
-                    neuron_rates[None, :] * row_durations[:, None]
+                    neuron_rates[None, :] * block_durations[:, None]
                 )
                 # Floating counts give integer inputs a zero tangent instead of
                 # float0, so rate and duration derivatives pass through.
@@ -551,11 +527,8 @@ def _poisson_nonlocal_log_likelihood(
             matrix_is_safe, matrix_accumulation, xlogy_accumulation, None
         )
 
-    def block_durations_at(first):
-        return (
-            jax.lax.dynamic_slice(block_durations, (first,), (block_rows,)),
-            jax.lax.dynamic_slice(row_durations, (first,), (block_rows,)),
-        )
+    def durations_at(first):
+        return jax.lax.dynamic_slice(row_durations, (first,), (block_rows,))
 
     def update_edge_block(number, result):
         first = number * block_rows
@@ -565,7 +538,7 @@ def _poisson_nonlocal_log_likelihood(
         rows = first - lead + jnp.arange(block_rows)
         rows = jnp.where(rows < 0, n_rows, rows)
         block = emit_block(
-            counts.at[rows].get(mode="fill", fill_value=0), *block_durations_at(first)
+            counts.at[rows].get(mode="fill", fill_value=0), durations_at(first)
         )
         return result.at[rows].set(block, mode="drop")
 
@@ -573,13 +546,12 @@ def _poisson_nonlocal_log_likelihood(
         first = number * block_rows
         block = emit_block(
             jax.lax.dynamic_slice(counts, (first - lead, 0), (block_rows, n_neurons)),
-            *block_durations_at(first),
+            durations_at(first),
         )
         return jax.lax.dynamic_update_slice(result, block, (first - lead, 0))
 
-    # With at most one block beyond those the rows need, blocks 1 through
-    # n_blocks - 3 lie within the rows for any ``lead``; only the first and
-    # last two can extend past them.
+    # Blocks 1 through n_blocks - 3 lie within the rows for any ``lead``; only
+    # the first and last two can extend past them.
     likelihood = jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
     for number in sorted({0, max(n_blocks - 2, 0), n_blocks - 1}):
         likelihood = update_edge_block(number, likelihood)
@@ -693,7 +665,6 @@ def _blocked_nonlocal_poisson_log_likelihood(
         return _poisson_nonlocal_log_likelihood(
             jnp.zeros((0, len(spike_times))), rates, durations, summed_rates
         )
-    n_time_bins = len(time_edges) - 1
 
     def evaluate(start, stop):
         counts = _spike_counts_matrix(
@@ -704,26 +675,14 @@ def _blocked_nonlocal_poisson_log_likelihood(
             slice(start, stop),
             _spike_time_order=_spike_time_order,
         )
-        # Emission blocks start at multiples of 64 decode rows, so each row's
-        # arithmetic path follows its own block, not the requested range. One
-        # block more than the rows need keeps the shape independent of ``lead``.
-        lead = start % _EMISSION_BLOCK_ROWS
-        n_blocks = -(-(stop - start) // _EMISSION_BLOCK_ROWS) + 1
-        block_stop = min(start - lead + n_blocks * _EMISSION_BLOCK_ROWS, n_time_bins)
-        block_durations = np.diff(time_edges[start - lead : block_stop + 1])
-        # Rows past the grid's end repeat its final duration in every request.
-        block_durations = np.pad(
-            block_durations,
-            (0, n_blocks * _EMISSION_BLOCK_ROWS - block_durations.size),
-            mode="edge",
-        )
+        # Emission blocks start at multiples of 64 decode rows, so a row sits
+        # at the same position of the same block shape in every row range.
         return _poisson_nonlocal_log_likelihood(
             jnp.asarray(counts),
             rates,
             durations[start - row_start : stop - row_start],
             summed_rates,
-            jnp.asarray(block_durations),
-            lead,
+            start % _EMISSION_BLOCK_ROWS,
         )
 
     return _concatenate_row_blocks(

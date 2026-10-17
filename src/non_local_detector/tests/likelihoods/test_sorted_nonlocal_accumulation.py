@@ -266,10 +266,9 @@ def test_irregular_grid_rows_do_not_depend_on_partition(
 ):
     """A row's emission is the same for any row range that contains it.
 
-    A 64-row block with more than two distinct durations takes the per-neuron
-    xlogy path and one with at most two the matrix product, which rounds
-    differently. Blocks that start at the request's first row put a row in a
-    different block for each partition, which changed rows by up to 3.1e-5.
+    Blocks that start at the request's first row put a row in a different
+    block for each partition. When a block's arithmetic path followed its
+    durations, that changed rows by up to 3.1e-5.
     """
     import non_local_detector.likelihoods.common as common
 
@@ -333,11 +332,12 @@ def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
 
 
 @pytest.mark.parametrize("x64", [False, True])
-def test_matrix_emission_accepts_rounding_jittered_durations(x64):
-    """Blocks whose durations differ only by timestamp rounding use the matrix.
+def test_matrix_emission_accepts_any_durations(x64):
+    """The matrix path depends only on the rates, never on bin durations.
 
-    Real recordings with Unix-epoch times give two distinct bin durations; the
-    exact per-neuron fallback is about 70x slower on an A100 for 305 units.
+    Real recordings with Unix-epoch times give two distinct bin durations and
+    irregular grids give more; the exact per-neuron fallback is about 70x
+    slower on an A100 for 305 units. Zero or non-finite rates stay exact.
     """
     from non_local_detector.likelihoods.common import _matrix_emission_is_safe
 
@@ -346,19 +346,14 @@ def test_matrix_emission_accepts_rounding_jittered_durations(x64):
         rates = jnp.full((3, 4), 2.0, dtype=dtype)
         durations = unix_epoch_durations(64, dtype)
         assert np.unique(durations).size == 2
-
-        assert _matrix_emission_is_safe(rates, jnp.asarray(durations), dtype)
-        # Three distinct durations, zero or non-finite products stay exact.
         three = durations.copy()
         three[5] = 0.003
-        for unsafe_rates, unsafe_durations in [
-            (rates, three),
-            (rates, np.where(np.arange(64) == 7, 0.0, durations).astype(dtype)),
-            (rates.at[0, 0].set(0.0), durations),
-            (rates.at[0, 0].set(jnp.inf), durations),
-        ]:
+
+        for safe_durations in (durations, three):
+            assert _matrix_emission_is_safe(rates, jnp.asarray(safe_durations), dtype)
+        for unsafe_rates in (rates.at[0, 0].set(0.0), rates.at[0, 0].set(jnp.inf)):
             assert not _matrix_emission_is_safe(
-                unsafe_rates, jnp.asarray(unsafe_durations), dtype
+                unsafe_rates, jnp.asarray(durations), dtype
             )
 
 
