@@ -1198,8 +1198,6 @@ def predict_clusterless_diffusion_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
-    rate_units : str, optional
-        Units of the fitted rates, by default "Hz"; any other value raises.
     environment_grid : dict | None, optional
         The fit's record of the environment's grid (see
         ``environment_grid_fingerprint``), by default None, which skips the

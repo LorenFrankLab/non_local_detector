@@ -926,8 +926,10 @@ def predict_clusterless_gmm_log_likelihood(
     spike_waveform_features : list[jnp.ndarray]
         Decoding spike waveform features per electrode.
     environment : Environment
-        Fitted environment; the local path uses its track graph, if any, to
-        linearize the animal's position.
+        Fitted environment. Its grid must be the one the model was fit on
+        (see ``environment_grid``). The local path uses its track graph, if
+        any, to linearize the animal's position, and moves positions off the
+        track to the nearest interior bin.
     occupancy_model : GaussianMixtureModel
         Occupancy density over position (1-D linearized position when the
         environment has a track graph and position is multi-dimensional).
