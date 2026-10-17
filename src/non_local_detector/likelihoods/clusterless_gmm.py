@@ -30,6 +30,7 @@ from non_local_detector.likelihoods.common import (
     decode_bin_centers,
     deterministic_row_add,
     deterministic_row_sum,
+    environment_grid_fingerprint,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
@@ -41,6 +42,7 @@ from non_local_detector.likelihoods.common import (
     snap_off_track_positions,
     spike_row_ids,
     sum_spikes_into_rows,
+    validate_encoding_contract,
     validate_population_lengths,
     validate_spike_feature_pair,
     validate_weights,
@@ -842,6 +844,7 @@ def fit_clusterless_gmm_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "occupancy_model": occupancy_model,
         "interior_place_bin_centers": interior_place_bin_centers,
         "log_occupancy": log_occupancy,
@@ -898,6 +901,7 @@ def predict_clusterless_gmm_log_likelihood(
     encoding_exposure_seconds: float | None = None,
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
+    environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **kwargs,
@@ -951,6 +955,13 @@ def predict_clusterless_gmm_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -963,10 +974,7 @@ def predict_clusterless_gmm_log_likelihood(
         If local    : jnp.ndarray, shape (n_rows, 1)
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
+    validate_encoding_contract(rate_units, environment, environment_grid)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
