@@ -363,7 +363,7 @@ def test_heat_kernel_rank_is_near_lossless():
     assert rel < 10 * tol
 
 
-@pytest.mark.parametrize("sigma", [5.0, 10.0])
+@pytest.mark.parametrize("sigma", [10.0, 20.0])
 def test_heat_kernel_rank_truncates_one_dimensional_track(sigma, monkeypatch):
     """A 1-D track whose needed rank is below the dense cap gets a truncated rank.
 
@@ -381,7 +381,8 @@ def test_heat_kernel_rank_truncates_one_dimensional_track(sigma, monkeypatch):
     expected = int(
         np.searchsorted(full_vals, -np.log(tol) / (sigma**2 / 2), side="right")
     )
-    assert expected < L.shape[0] // 2  # below the dense cap -> must truncate
+    # Below the dense cap -> must truncate.
+    assert expected < diffusion_mod._HEAT_KERNEL_DENSE_FRACTION * L.shape[0]
 
     calls = {"n": 0}
     real = diffusion_mod.diffusion_eigenbasis

@@ -45,10 +45,13 @@ if TYPE_CHECKING:
 # Defaults for heat_kernel_rank (bandwidth-aware auto-truncation): drop modes whose
 # heat-kernel weight exp(-t*lambda) is below _HEAT_KERNEL_RANK_TOL, and fall back to the
 # dense eigendecomposition once the resolved rank exceeds _HEAT_KERNEL_DENSE_FRACTION *
-# n_bins (where a truncated eigsh no longer beats a dense eigh). _HEAT_KERNEL_RANK_START
-# is the first probe size for the adaptive rank search.
+# n_bins (where a truncated eigsh no longer beats a dense eigh). A shift-invert eigsh of
+# k = f * n_bins modes costs as much as a dense eigh near f = 0.23-0.28 on 1-D paths of
+# 1500-8000 bins and a 60x60 grid, and near f = 0.35 on a 100x100 grid, so the cutoff
+# sits just below that range.
+# _HEAT_KERNEL_RANK_START is the first probe size for the adaptive rank search.
 _HEAT_KERNEL_RANK_TOL = 1e-6
-_HEAT_KERNEL_DENSE_FRACTION = 0.5
+_HEAT_KERNEL_DENSE_FRACTION = 0.2
 _HEAT_KERNEL_RANK_START = 32
 
 
@@ -276,7 +279,7 @@ def _adaptive_heat_kernel_basis(
     The adaptive probe's *final* eigendecomposition is the returned basis (sliced to the
     resolved rank), so a caller building the basis does a single eigensolve rather than
     resolving the rank and then recomputing. Returns ``(None, None, None)`` when the
-    bandwidth needs most modes (rank would exceed ``dense_fraction * n_bins``), signalling
+    bandwidth needs many modes (rank would exceed ``dense_fraction * n_bins``), signalling
     the caller to use the full dense basis. See :func:`heat_kernel_rank` for the math.
     """
     if not sigma > 0:
@@ -361,14 +364,14 @@ def heat_kernel_rank(
     dense_fraction : float, optional
         Return ``None`` (use the dense solver) when the resolved rank would exceed
         ``dense_fraction * n_bins``, where a truncated ``eigsh`` no longer beats a dense
-        ``eigh``. Default ``0.5``.
+        ``eigh``. Default ``0.2``.
 
     Returns
     -------
     rank : int or None
         The truncation rank (``>= n_components``, so every component's null mode is kept
         and :func:`diffuse` cannot leak mass across components), or ``None`` to signal the
-        caller should use the full dense basis — a light bandwidth needing most modes.
+        caller should use the full dense basis — a light bandwidth needing many modes.
 
     Raises
     ------
@@ -857,7 +860,7 @@ def cached_heat_kernel_eigenbasis(
     resolved rank is memoized per ``(sigma, tol, dense_fraction)`` on
     ``environment._diffusion_heat_kernel_rank_``, so EM refits at the same bandwidth
     reuse the basis **without re-running the adaptive probe** (zero eigensolves). When
-    the bandwidth needs most modes the resolver falls back to the full dense basis. All
+    the bandwidth needs many modes the resolver falls back to the full dense basis. All
     diffusion caches are invalidated together by ``Environment.fit_place_grid``.
 
     Parameters
@@ -867,7 +870,7 @@ def cached_heat_kernel_eigenbasis(
     sigma : float
         Smoothing standard deviation (``position_std``) in coordinate units.
     tol, dense_fraction : float, optional
-        Forwarded to :func:`heat_kernel_rank`, by default 1e-6 and 0.5 respectively.
+        Forwarded to :func:`heat_kernel_rank`, by default 1e-6 and 0.2 respectively.
 
     Returns
     -------
