@@ -1008,6 +1008,11 @@ def estimate_log_joint_mark_intensity(
         None (default), every spike is weighted uniformly (``1 / n``). When given,
         each spike contributes ``w_e / sum_w``; a zero weight drops that spike out
         of the reduction entirely. Applied identically on every numerical path.
+    log_occupancy : jnp.ndarray | None, shape (n_position_bins,), optional
+        Log occupancy density. When given it replaces ``occupancy``: the
+        position kernel is divided by it in log space before the mark kernel is
+        added, which keeps small tail intensities representable. Bins where it
+        is ``-inf`` have zero intensity. By default None (use ``occupancy``).
     log_background : jnp.ndarray, shape (n_decoding_spikes,), keyword-only
         Log background intensity of each decoding spike, in the units of
         ``mean_rate``: ``log(RATE_EPS_HZ * RATE_REFERENCE_SECONDS) + log q(mark)``
@@ -1483,6 +1488,9 @@ def block_estimate_log_joint_mark_intensity(
     encoding_weights : jnp.ndarray | None, shape (n_encoding_spikes,), optional
         Per-encoding-spike weights forwarded to the per-block estimator. None
         (default) weights every encoding spike uniformly.
+    log_occupancy : jnp.ndarray | None, shape (n_position_bins,), optional
+        Log occupancy density forwarded to the per-block estimator, where it
+        replaces ``occupancy`` (see ``estimate_log_joint_mark_intensity``).
     log_background : jnp.ndarray, shape (n_decoding_spikes,), keyword-only
         Log background intensity of each decoding spike (see
         ``estimate_log_joint_mark_intensity``).
@@ -1631,6 +1639,9 @@ def fit_clusterless_kde_encoding_model(
     Returns
     -------
     encoding_model : dict
+        Keyword arguments for ``predict_clusterless_kde_log_likelihood``,
+        including ``rate_units`` (``"Hz"``) and ``encoding_exposure_seconds``
+        (weighted encoding occupancy time in seconds).
 
     Notes
     -----
@@ -1657,9 +1668,10 @@ def fit_clusterless_kde_encoding_model(
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(np.asarray(weights), position.shape[0])
-    # Weighted occupancy "time": the sum of per-sample weights (uniform weights
-    # recover the training-sample count). Gaps from is_training / encoding-group
-    # masks carry weight 0 and are not charged as occupancy time.
+    # Weighted occupancy time in seconds: each sample's weight times the
+    # tracking time it covers (its integrated interpolation exposure). Gaps from
+    # is_training / encoding-group masks carry weight 0 and are not charged as
+    # occupancy time.
     weight_sum = float(exposure_weights.sum())
     # A track graph with multi-dim position linearizes occupancy to 1D, so the
     # bandwidth is a single dimension there; otherwise one per position column.
@@ -1827,8 +1839,10 @@ def predict_clusterless_kde_log_likelihood(
         Spike times for each electrode.
     spike_waveform_features : list[jnp.ndarray]
         Waveform features for each electrode.
-    occupancy : jnp.ndarray, shape (n_position_bins,)
-        How much time is spent in each position bin by the animal.
+    occupancy : jnp.ndarray, shape (n_interior_bins,)
+        Occupancy density at the interior place bins (the fit's
+        ``exp(log_occupancy)``). The non-local path reads ``log_occupancy``
+        instead and uses this only for the bin count; the local path ignores it.
     occupancy_model : KDEModel
         KDE model for occupancy.
     gpi_models : list[KDEModel]
@@ -1842,9 +1856,9 @@ def predict_clusterless_kde_log_likelihood(
         The spatial environment
     mean_rates : jnp.ndarray, shape (n_electrodes,)
         Mean firing rate for each electrode.
-    summed_ground_process_intensity : jnp.ndarray, shape (n_position_bins,)
-        Summed ground process intensity of the encoding model, in Hz; predict
-        adds each electrode's background rate.
+    summed_ground_process_intensity : jnp.ndarray, shape (n_interior_bins,)
+        Summed ground process intensity of the encoding model at the interior
+        bins, in Hz; predict adds each electrode's background rate.
     position_std : jnp.ndarray
         Gaussian smoothing standard deviation for position.
     waveform_std : jnp.ndarray
@@ -1863,10 +1877,11 @@ def predict_clusterless_kde_log_likelihood(
         If provided, tile computation over position dimension to reduce memory.
         By default None (no tiling).
     use_streaming : bool, optional
-        If True, compute position kernel on-the-fly per encoding chunk (streaming mode).
-        Avoids materializing full (n_enc × n_pos) position distance matrix.
-        Provides D× memory reduction where D is position dimensionality.
-        Requires enc_tile_size to be specified and < n_enc. By default False.
+        If True, compute each encoding tile's position kernel when it is used
+        instead of materializing the full ``(n_encoding_spikes, n_interior_bins)``
+        position kernel. Requires ``enc_tile_size``; an electrode with at most
+        ``enc_tile_size`` encoding spikes materializes its (small) kernel
+        instead. By default False.
     encoding_weights : list[jnp.ndarray] | None, optional
         Per-electrode encoding-spike weights (the ``encoding_weights`` returned by
         the fit). Each entry has shape (n_encoding_spikes,) and weights that
@@ -1888,10 +1903,20 @@ def predict_clusterless_kde_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
+    log_occupancy : jnp.ndarray, shape (n_interior_bins,), optional, keyword-only
+        Log occupancy density at the interior bins, as returned by the fit.
+        Used by the non-local path, which computes it from ``occupancy_model``
+        when None; the local path ignores it.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, 1) or (n_rows, n_position_bins)
+    log_likelihood : jnp.ndarray, shape (n_rows, 1) or (n_rows, n_interior_bins)
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
@@ -2235,7 +2260,7 @@ def compute_local_log_likelihood(
         electrode_decoding_spike_waveform_features = select_spike_rows(
             electrode_decoding_spike_waveform_features, selection
         )
-        # Expand waveform_std to match this electrode's feature count if scalar
+        # This electrode's feature count, used below to expand a scalar waveform_std.
         n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
 
         # Padded spikes and zero-weight samples let electrodes and chunks with

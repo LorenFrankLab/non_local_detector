@@ -7,7 +7,8 @@ to a distinct, pre-identified neural unit.
 
 The core idea is to model the firing rate of each neuron as a function of the
 animal's position. This relationship (the place field) is captured flexibly
-using B-splines defined over the spatial dimensions. The model assumes:
+using natural cubic regression splines over the spatial dimensions (a tensor
+product across dimensions). The model assumes:
   `spike_count ~ Poisson(rate)`
   `log(rate) = design_matrix @ coefficients`
 where the `design_matrix` is constructed using spatial spline basis functions
@@ -16,9 +17,10 @@ to the data.
 
 Key functionalities include:
 1.  **Spline Basis Generation:**
-    - `make_spline_design_matrix`: Creates the design matrix for fitting using
-      `patsy`, defining cyclic cubic regression splines based on position data
-      and specified knot spacing.
+    - `make_spline_design_matrix`: Creates the spline basis using `patsy`
+      natural cubic regression splines (`cr`) with the specified knot spacing.
+      The fit defines it on the environment (interior bin centers plus the
+      track ends), not on the tracked positions.
     - `make_spline_predict_matrix`: Generates the corresponding matrix for new
       positions based on the fitted model's design information, ensuring
       consistent basis functions for prediction.
@@ -128,14 +130,19 @@ def make_spline_design_matrix(
 
     Parameters
     ----------
-    position : np.ndarray, shape (n_time, n_position_dims)
-    place_bin_edges : np.ndarray, shape (n_bins,)
+    position : np.ndarray, shape (n_points, n_position_dims)
+        Positions that define the basis; inner knots lie strictly inside their
+        range. The encoding fit passes the interior bin centers plus the track
+        ends.
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+        Place-bin edge coordinates (``Environment.place_bin_edges_``); only
+        each dimension's extent is used, to place the knots.
     knot_spacing : float, optional
         Spacing of spline knots
 
     Returns
     -------
-    design_matrix : np.ndarray, shape (n_time, n_spline_basis)
+    design_matrix : np.ndarray, shape (n_points, n_spline_basis)
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     varying_dimensions = np.flatnonzero(np.ptp(position, axis=0) > 0)
@@ -557,14 +564,18 @@ def fit_sorted_spikes_glm_encoding_model(
         Spike times for each neuron.
     environment : Environment
         The spatial environment.
-    place_bin_edges : np.ndarray, shape (n_bins + 1,)
-        The edges of the place bins.
-    edges : np.ndarray, shape (n_edges, 2)
-        The edges of the place bins.
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+        Place-bin edge coordinates (``environment.place_bin_edges_``):
+        ``(n_bins + 1, 1)`` in 1-D or on a track graph, one row per grid-edge
+        point in N-D. Their extent sets the spline's boundaries and knots.
+    edges : tuple of np.ndarray
+        Per-dimension bin edges (``environment.edges_``). Unused; accepted
+        because the detector passes the environment geometry.
     is_track_interior : np.ndarray, shape (n_position_bins,)
-        Identifies if the bin is on the track interior.
+        Unused: the fit reads ``environment.is_track_interior_`` instead (all
+        bins when that is None).
     is_track_boundary : np.ndarray, shape (n_position_bins,)
-        Identifies if the bin is on the track boundary.
+        Unused; accepted because the detector passes the environment geometry.
     weights : np.ndarray, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
@@ -602,6 +613,10 @@ def fit_sorted_spikes_glm_encoding_model(
             Boolean array indicating track interior.
         disable_progress_bar : bool
             If True, suppresses the progress bar display.
+        rate_units : str
+            ``"Hz"``.
+        encoding_exposure_seconds : float
+            Weighted encoding occupancy time in seconds.
 
     """
     support, weights, exposure_weights, position = prepare_encoding_support(
@@ -785,11 +800,19 @@ def predict_sorted_spikes_glm_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins)
-        ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
+    log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) or (n_rows, 1)
+        Non-local or local (``is_local``) log likelihood, respectively; the
+        non-local columns are the interior bins only. ``n_rows`` is ``n_bins``
+        unless ``row_slice`` is given.
     """
     if rate_units != "Hz":
         raise ValidationError(

@@ -42,18 +42,20 @@ exactly the expected count.
 
 The likelihood follows the shared marked-point-process contract::
 
-    log L_e = sum_{j: decode spikes on e} log lambda_e(x, m_j) - integral lambda_bar_e(x) dt
+    log L_e = sum_{j: decode spikes on e} log(lambda_e(x, m_j) + beta * q_e(m_j))
+              - integral (lambda_bar_e(x) + beta) dt
     lambda_e(x, m)  = mean_rate_e * p_e(x, m) / occupancy(x)
     lambda_bar_e(x) = mean_rate_e * p_gpi_e(x) / occupancy(x)
+
+where ``beta = RATE_EPS_HZ`` is the background rate and ``q_e`` the electrode's
+reference mark density (the per-spike sum is formed with ``logaddexp``).
 
 Occupancy and the mark-marginalized ground-process field are diffused once at fit.
 Per block of decode spikes, each spike's mark kernels are combined per source bin
 in log space and applied through ``H`` relative to the spike's strongest source;
 a spike whose weaker sources could underflow there yet reach its background is
 recomputed exactly in log space. ``H`` is built once per prediction when it fits
-half of ``memory_budget`` and otherwise in tiles of columns. Each spike's
-intensity gains the background ``RATE_EPS_HZ * q(mark)`` of the electrode's mark
-reference.
+half of ``memory_budget`` and otherwise in tiles of columns.
 """
 
 import logging
@@ -145,7 +147,7 @@ def _validate_diffusion_params(
     memory_budget: int,
     block_size: int,
 ) -> float:
-    """Tier-1 (raise-on-invalid) validation for the diffusion-specific parameters.
+    """Raise-on-invalid validation for the diffusion-specific parameters.
 
     Returns ``position_std`` coerced to a plain float (it becomes part of the
     bandwidth-keyed eigenbasis cache key, so a JAX scalar/array would be
@@ -334,7 +336,9 @@ def fit_clusterless_diffusion_encoding_model(
         ``encoding_weights`` (list), ``weight_total`` (list of float),
         ``mean_rates`` (list), ``resolved_rank`` (int), ``node_order``,
         ``bin_sizes`` (dV per interior bin), ``position_std``, ``waveform_std``,
-        ``block_size``, ``memory_budget``, ``disable_progress_bar``.
+        ``block_size``, ``memory_budget``, ``disable_progress_bar``,
+        ``rate_units`` (``"Hz"``), ``encoding_exposure_seconds`` (weighted
+        encoding occupancy time in seconds).
     """
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -1215,6 +1219,12 @@ def predict_clusterless_diffusion_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
     **encoding_model
         The dict returned by :func:`fit_clusterless_diffusion_encoding_model`.
 
