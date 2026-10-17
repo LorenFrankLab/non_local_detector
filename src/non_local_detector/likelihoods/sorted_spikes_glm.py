@@ -283,17 +283,22 @@ def fit_poisson_regressions(
 ) -> jnp.ndarray:
     """Fit weighted Poisson regressions for many cells sharing one design.
 
-    Each cell maximizes ``sum_i [spikes_i * log(lambda_i) - weights_i *
-    lambda_i]`` (normalized by ``sum(weights)``) minus ``l2_penalty`` times the
-    squared non-intercept coefficients, with ``lambda = max(exp(design_matrix
-    @ coefficients), rate_floor)``. The event and exposure terms are weighted
+    Each cell maximizes its total log likelihood ``sum_i [spikes_i *
+    log(lambda_i) - weights_i * lambda_i]`` minus ``l2_penalty`` times the sum
+    of its squared non-intercept coefficients, with ``lambda =
+    max(exp(design_matrix @ coefficients), rate_floor)``. This is the
+    posterior mode under independent ``Normal(0, 1 / (2 * l2_penalty))``
+    priors on those coefficients, so the prior's weight against the data does
+    not grow with the exposure. The event and exposure terms are weighted
     separately: ``spikes`` already carries each event's weight, so it is not
     multiplied by ``weights`` again.
 
     All cells take damped Newton steps together. The sums over rows run
     compiled on the device in row blocks; each cell's small Newton system is
     solved in float64 on the host, so basis functions with almost no weighted
-    support are not moved by float32 rounding. A cell stops once its gradient
+    support are not moved by float32 rounding. The optimizer works on the
+    penalized objective divided by ``sum(weights)``, so the gradient
+    tolerances are per second of exposure. A cell stops once that gradient's
     inf-norm is below ``GLM_GRADIENT_TOL`` or no step halving lowers its
     objective.
 
@@ -306,7 +311,9 @@ def fit_poisson_regressions(
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
-        L2 regression penalty, by default 1e-7
+        Penalty on the sum of squared non-intercept coefficients, in nats
+        against the total log likelihood (not per second of exposure), by
+        default 1e-7.
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
 
@@ -355,13 +362,18 @@ def fit_poisson_regressions(
             block_rows=block_rows,
             derivatives=derivatives,
         )
+        # The penalty is on the total log likelihood, so its weight against the
+        # data does not grow with the exposure. Dividing both by the exposure
+        # keeps the gradient tolerances per second of exposure.
         sums = [np.asarray(value, dtype=np.float64) for value in sums]
-        sums[0] = -sums[0] / weight_sum + l2_penalty * np.sum(
-            penalized * coefficients**2, axis=1
-        )
+        sums[0] = (
+            -sums[0] + l2_penalty * np.sum(penalized * coefficients**2, axis=1)
+        ) / weight_sum
         if derivatives:
-            sums[1] = -sums[1] / weight_sum + 2 * l2_penalty * penalized * coefficients
-            sums[2] = sums[2] / weight_sum + 2 * l2_penalty * np.diag(penalized)
+            sums[1] = (
+                -sums[1] + 2 * l2_penalty * penalized * coefficients
+            ) / weight_sum
+            sums[2] = (sums[2] + 2 * l2_penalty * np.diag(penalized)) / weight_sum
         return sums
 
     loss, gradient, hessian = evaluate(coefficients, derivatives=True)
@@ -460,7 +472,8 @@ def fit_poisson_regression(
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
-        L2 regression penalty, by default 1e-7
+        Penalty on the sum of squared non-intercept coefficients against the
+        total log likelihood, by default 1e-7.
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
 
@@ -572,7 +585,7 @@ def fit_sorted_spikes_glm_encoding_model(
         Spacing of the spline knots in position units, by default
         ``sqrt(12.5) * 2`` (about 7.07).
     l2_penalty : float, optional
-        L2 penalty per second, by default 0.5 (0.001 at the 500 Hz reference)
+        L2 penalty against the total log likelihood, by default 0.5.
     disable_progress_bar : bool, optional
         Stored in the encoding model for prediction's progress bars; the fit
         has none. By default False.

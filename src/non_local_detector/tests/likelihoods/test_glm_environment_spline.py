@@ -123,7 +123,8 @@ def test_unvisited_bins_do_not_extrapolate_in_two_dimensions():
     env = Environment(
         place_bin_size=5.0, position_range=((0.0, 100.0), (0.0, 100.0))
     ).fit_place_grid(position, infer_track_interior=False)
-    model = _fit(env, time, position, spikes, l2_penalty=0.01)
+    # 0.01 per second of the 300 s recording.
+    model = _fit(env, time, position, spikes, l2_penalty=3.0)
     edges = env.place_bin_edges_
     for knots, low, high in zip(
         _spline_knots(model), edges.min(axis=0), edges.max(axis=0), strict=True

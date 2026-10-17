@@ -344,11 +344,12 @@ class TestPoissonRegression:
 
 
 def _poisson_objective64(design_matrix, spikes, weights, coefficients, l2_penalty):
-    """The fitted objective in float64, per cell."""
+    """The fitted objective in float64, per cell: the penalized negative total
+    log likelihood, divided by the total exposure."""
     rate = np.maximum(np.exp(coefficients @ design_matrix.T), EPS)
     data = np.where(spikes > 0, spikes * np.log(rate), 0.0) - weights * rate
     penalty = l2_penalty * np.sum(coefficients[:, 1:] ** 2, axis=1)
-    return -data.sum(axis=1) / weights.sum() + penalty
+    return (-data.sum(axis=1) + penalty) / weights.sum()
 
 
 @pytest.mark.unit
@@ -452,6 +453,30 @@ class TestBatchedPoissonRegression:
             rtol=0,
             atol=1e-8,
         )
+
+    def test_penalty_does_not_grow_with_recording_length(self, problem):
+        """The penalty is on the total log likelihood, so a recording repeated
+        ``k`` times fits like the original with the penalty divided by ``k``.
+        (A penalty on the per-second average would instead give every
+        repetition the same fit, letting the prior grow with the data.)"""
+        design_matrix, spikes, weights = problem
+        k, l2_penalty = 4, 2.0
+        repeated = np.asarray(
+            fit_poisson_regressions(
+                np.tile(design_matrix, (k, 1)),
+                np.tile(spikes, (1, k)),
+                np.tile(weights, k),
+                l2_penalty,
+            )
+        )
+        once = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty / k)
+        )
+        np.testing.assert_allclose(repeated, once, rtol=0, atol=2e-3)
+        unscaled = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
+        )
+        assert np.abs(unscaled - once).max() > 0.05
 
     def test_unsupported_basis_function_stays_at_zero(self, problem):
         """A basis function with no weighted support is set only by the penalty."""
