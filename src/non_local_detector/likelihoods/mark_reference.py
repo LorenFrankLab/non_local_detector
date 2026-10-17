@@ -29,6 +29,7 @@ from scipy.special import gammaln
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
+    RATE_EPS_HZ,
     _SpikeTimeOrder,
     resolve_row_slice,
     select_spike_rows,
@@ -244,6 +245,24 @@ def background_log_intensity(
     if reference is None:
         return np.full(np.shape(marks)[0], log_rate)
     return log_rate + reference.log_density(marks)
+
+
+def background_rate(n_electrodes: int) -> float:
+    """Summed background rate of ``n_electrodes`` electrodes, in Hz.
+
+    Every electrode, including a zero-rate one, has background rate
+    ``RATE_EPS_HZ``. Encoding fits store only the encoding model's ground
+    intensity; every clusterless predict path adds this to its expected count.
+
+    Parameters
+    ----------
+    n_electrodes : int
+
+    Returns
+    -------
+    rate : float
+    """
+    return n_electrodes * RATE_EPS_HZ
 
 
 def mark_reference_log_likelihood(

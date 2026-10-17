@@ -449,3 +449,39 @@ def test_gmm_rate_below_the_background_still_sets_its_intensity(run_data, is_loc
     higher, lower = spike_terms(1e-13), spike_terms(1e-14)
     assert np.all(higher >= lower - 1e-6)
     assert np.max(higher - lower) > 1e-2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+@pytest.mark.parametrize("is_local", [False, True], ids=["nonlocal", "local"])
+def test_predict_adds_the_background_rate_that_fits_leave_out(
+    run_data, algorithm, is_local
+):
+    """Fitted ground intensities hold only the encoding model; predict adds
+    each electrode's background rate ``RATE_EPS_HZ`` once, on every path."""
+    n_electrodes = len(run_data["train_spikes"])
+    no_spikes = [np.array([]) for _ in range(n_electrodes)]
+    no_marks = [np.zeros((0, f.shape[1])) for f in run_data["train_marks"]]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # zero-rate electrodes
+        model = _fit(run_data, (algorithm, {}), marks=no_marks, spikes=no_spikes)
+    np.testing.assert_array_equal(
+        np.asarray(model["summed_ground_process_intensity"]), 0.0
+    )
+
+    log_likelihood = _predict(
+        run_data,
+        (algorithm, {}),
+        {**model, "mark_reference": [None] * n_electrodes},
+        no_marks,
+        is_local,
+        spikes=no_spikes,
+    )
+    durations = np.diff(time_edges_from_centers(run_data["test_time"]))
+    np.testing.assert_allclose(
+        log_likelihood,
+        np.broadcast_to(
+            -durations[:, None] * n_electrodes * RATE_EPS_HZ, log_likelihood.shape
+        ),
+        rtol=1e-6,
+    )

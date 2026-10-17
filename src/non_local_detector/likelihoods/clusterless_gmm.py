@@ -23,7 +23,6 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
-    RATE_EPS_HZ,
     _pad_rows,
     _padded_spike_count,
     _SpikeTimeOrder,
@@ -54,6 +53,7 @@ from non_local_detector.likelihoods.gmm import (
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
+    background_rate,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -799,11 +799,6 @@ def fit_clusterless_gmm_encoding_model(
             log_occupancy,
         )
 
-    # Every electrode, including zero-rate ones, adds its background rate.
-    summed_ground_process_intensity = (
-        summed_ground_process_intensity + len(spike_times) * RATE_EPS_HZ
-    )
-
     return {
         "environment": environment,
         "occupancy_model": occupancy_model,
@@ -995,10 +990,9 @@ def predict_clusterless_gmm_log_likelihood(
     # log_likelihood = (
     #     (-summed_ground_process_intensity).reshape(1, -1).repeat(n_rows, axis=0)
     # )  # (n_rows, n_bins)
-    log_likelihood = (
-        -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
-        * summed_ground_process_intensity
-    )
+    log_likelihood = -jnp.asarray(_time_grid.durations(row_start, row_stop))[
+        :, None
+    ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
 
     # Per-electrode contributions in log-space
     for elect_feats, elect_times, joint_gmm, mean_rate, reference in tqdm(
@@ -1272,10 +1266,8 @@ def compute_local_log_likelihood(
             gpi_type=gpi_gmm.covariance_type,
         )
 
-    # Every electrode, including zero-rate ones, adds its background rate, as
-    # in fit_clusterless_gmm_encoding_model's summed_ground_process_intensity.
     log_likelihood = log_likelihood - jnp.asarray(
         _time_grid.durations(row_start, row_stop)
-    ) * (summed_expected_counts + len(spike_times) * RATE_EPS_HZ)
+    ) * (summed_expected_counts + background_rate(len(spike_times)))
 
     return log_likelihood[:, None]
