@@ -185,6 +185,21 @@ def test_sorted_place_fields_recover_the_true_fields(algorithm, recording):
     assert np.all((ratio > 0.8) & (ratio < 1.25))
 
 
+def test_glm_place_field_peaks_match_the_truth(recording):
+    """The GLM's default log-rate prior does not flatten the fields.
+
+    Measured: peak ratios 0.80-1.29, median 1.05, as with a near-zero
+    penalty (finite-data noise). The former per-second penalty, which grew
+    with the recording, gave 0.19-0.31.
+    """
+    train, _, _ = recording
+    _, encoding, interior, x = _fit("sorted_spikes_glm", train)
+    fitted = np.asarray(encoding["place_fields"])[:, interior]
+    peak = fitted.max(axis=1) / _true_rates(x).max(axis=0)
+    assert np.all((peak > 0.7) & (peak < 1.4)), peak
+    assert 0.9 < np.median(peak) < 1.15
+
+
 @pytest.mark.parametrize("algorithm", CLUSTERLESS)
 def test_clusterless_ground_process_recovers_the_true_intensity(algorithm, recording):
     """Measured: correlations 0.98-0.99 and mean ratios 1.02-1.03."""

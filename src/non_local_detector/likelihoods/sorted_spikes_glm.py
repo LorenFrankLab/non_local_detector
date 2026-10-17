@@ -191,6 +191,62 @@ def make_spline_predict_matrix(
     return jnp.asarray(design_matrix)
 
 
+# Prior standard deviation, in nats, of a place field's log-rate deviation
+# from the cell's baseline across the environment's bins. Firing rates are
+# roughly log-normally distributed and span orders of magnitude (Mizuseki &
+# Buzsaki 2013, Cell Reports 4:1010). CA1 place cells fire up to ~40 Hz in
+# field and below ~0.1-0.5 Hz out of field, a log-rate range of up to
+# log(40 / 0.1) ~= 6 nats; taking that as +/-1.5 standard deviations about
+# the baseline gives about 2. The same SD is the root-mean-square deviation
+# of a field with a log(peak / baseline) of 6 over 10-15% of the bins,
+# 6 * sqrt(0.12 * 0.88) ~= 2.
+GLM_LOG_RATE_PRIOR_STD = 2.0
+
+
+def log_rate_prior_l2_penalty(
+    predict_matrix: np.ndarray, log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD
+) -> float:
+    """Coefficient penalty that gives the spline log-rate a prior SD.
+
+    With independent ``Normal(0, tau**2)`` priors on the spline coefficients,
+    the log-rate deviation from baseline at bin ``k``, ``f_k = B_k @ beta``,
+    has prior variance ``tau**2 * ||B_k||**2``. Choosing ``tau**2 =
+    log_rate_prior_std**2 / mean_k ||B_k||**2`` makes its average over the
+    bins ``log_rate_prior_std**2`` whatever the knot spacing or the number of
+    dimensions; the penalty is ``1 / (2 * tau**2)``. For the environment
+    anchored ``cr`` bases, the per-bin prior SD stays within 0.8-1.2 times
+    the target.
+
+    Parameters
+    ----------
+    predict_matrix : np.ndarray, shape (n_bins, n_coefficients)
+        Spline basis at the environment's interior bin centers. Column 0 is
+        the unpenalized intercept.
+    log_rate_prior_std : float, optional
+        Prior SD of the log-rate deviation, in nats, by default
+        ``GLM_LOG_RATE_PRIOR_STD``.
+
+    Returns
+    -------
+    l2_penalty : float
+        Penalty on the sum of squared non-intercept coefficients against the
+        total log likelihood, as ``fit_poisson_regressions`` takes it; 0.0
+        for an intercept-only basis.
+    """
+    if not (np.isfinite(log_rate_prior_std) and log_rate_prior_std > 0):
+        raise ValidationError(
+            "log_rate_prior_std must be a positive, finite standard deviation",
+            expected="a float > 0 (nats of log-rate)",
+            got=repr(log_rate_prior_std),
+            hint=f"The default is {GLM_LOG_RATE_PRIOR_STD}.",
+        )
+    spline = np.asarray(predict_matrix, dtype=np.float64)[:, 1:]
+    if spline.shape[1] == 0:
+        return 0.0
+    mean_squared_norm = float(np.mean(np.sum(spline**2, axis=1)))
+    return mean_squared_norm / (2.0 * log_rate_prior_std**2)
+
+
 # Gradient inf-norm above which a fit is treated as genuinely non-converged.
 # Set well above GLM_GRADIENT_TOL, which float32 sums over long recordings
 # cannot always reach, so stopping at the precision limit does not warn.
@@ -553,8 +609,9 @@ def fit_sorted_spikes_glm_encoding_model(
     is_track_boundary: np.ndarray,
     weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
-    l2_penalty: float = 0.5,
+    l2_penalty: float | None = None,
     disable_progress_bar: bool = False,
+    log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     *,
     encoding_time_range=None,
     valid_position_intervals=None,
@@ -585,10 +642,20 @@ def fit_sorted_spikes_glm_encoding_model(
         Spacing of the spline knots in position units, by default
         ``sqrt(12.5) * 2`` (about 7.07).
     l2_penalty : float, optional
-        L2 penalty against the total log likelihood, by default 0.5.
+        Penalty on the sum of squared spline (non-intercept) coefficients, in
+        nats against the total log likelihood: a ``Normal(0, 1 / (2 *
+        l2_penalty))`` prior on each coefficient. It does not scale with the
+        recording length. By default None, which derives it from
+        ``log_rate_prior_std`` with ``log_rate_prior_l2_penalty``; a value
+        overrides ``log_rate_prior_std``.
     disable_progress_bar : bool, optional
         Stored in the encoding model for prediction's progress bars; the fit
         has none. By default False.
+    log_rate_prior_std : float, optional
+        Prior SD, in nats, of each neuron's log-rate deviation from its
+        baseline across the interior bins, by default
+        ``GLM_LOG_RATE_PRIOR_STD`` (2.0, a peak-to-baseline ratio of up to
+        ``exp(6)``, about 400). Ignored when ``l2_penalty`` is given.
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
@@ -677,6 +744,10 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_predict_matrix = make_spline_predict_matrix(
         emission_design_info, interior_place_bin_centers
     )
+    if l2_penalty is None:
+        l2_penalty = log_rate_prior_l2_penalty(
+            np.asarray(emission_predict_matrix), log_rate_prior_std
+        )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
     else:
