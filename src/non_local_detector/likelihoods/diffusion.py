@@ -45,11 +45,19 @@ if TYPE_CHECKING:
 # Defaults for heat_kernel_rank (bandwidth-aware auto-truncation): drop modes whose
 # heat-kernel weight exp(-t*lambda) is below _HEAT_KERNEL_RANK_TOL, and fall back to the
 # dense eigendecomposition once the resolved rank exceeds _HEAT_KERNEL_DENSE_FRACTION *
-# n_bins (where a truncated eigsh no longer beats a dense eigh). _HEAT_KERNEL_RANK_START
-# is the first probe size for the adaptive rank search.
+# n_bins (where a truncated eigsh no longer beats a dense eigh). A shift-invert eigsh of
+# k = f * n_bins modes costs as much as a dense eigh near f = 0.23-0.28 on 1-D paths of
+# 1500-8000 bins and a 60x60 grid, and near f = 0.35 on a 100x100 grid, so the cutoff
+# sits just below that range.
+# _HEAT_KERNEL_RANK_START is the first probe size for the adaptive rank search.
 _HEAT_KERNEL_RANK_TOL = 1e-6
-_HEAT_KERNEL_DENSE_FRACTION = 0.5
+_HEAT_KERNEL_DENSE_FRACTION = 0.2
 _HEAT_KERNEL_RANK_START = 32
+
+# Diffused-field values below this fraction of their column's maximum are not
+# resolved: the float32 spectral product and the heat-kernel rank truncation
+# (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
+_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
 
 def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
@@ -237,6 +245,34 @@ def diffusion_eigenbasis(
     return all_eigvals[order], all_eigvecs[:, order]
 
 
+def _weyl_exponent(eigvals: np.ndarray) -> float:
+    """Growth exponent ``d / 2`` of the eigenvalue-counting function ``N(λ) ~ λ^(d/2)``.
+
+    Weyl's law gives ``d = 1`` on a linearized track and ``d = 2`` on an open field.
+    ``d`` is read off the probe's own spectrum, from how much ``λ`` grows while the
+    mode count doubles over its upper half, and rounded to 1 or 2 (a higher-dimensional
+    spectrum is capped at ``d = 2``, which underestimates its growth).
+
+    Parameters
+    ----------
+    eigvals : np.ndarray, shape (k,)
+        The ``k`` smallest Laplacian eigenvalues, ascending.
+
+    Returns
+    -------
+    exponent : float
+        ``0.5`` or ``1.0``; ``1.0`` when the upper half has no nonzero spread to
+        measure (e.g. it is all null modes).
+    """
+    n_modes = eigvals.size
+    half = n_modes // 2
+    low, high = float(eigvals[half - 1]), float(eigvals[-1])
+    if not 0.0 < low < high:
+        return 1.0
+    local = np.log(n_modes / half) / np.log(high / low)
+    return min(max(round(2.0 * local), 1), 2) / 2.0
+
+
 def _adaptive_heat_kernel_basis(
     laplacian: scipy.sparse.spmatrix,
     sigma: float,
@@ -248,7 +284,7 @@ def _adaptive_heat_kernel_basis(
     The adaptive probe's *final* eigendecomposition is the returned basis (sliced to the
     resolved rank), so a caller building the basis does a single eigensolve rather than
     resolving the rank and then recomputing. Returns ``(None, None, None)`` when the
-    bandwidth needs most modes (rank would exceed ``dense_fraction * n_bins``), signalling
+    bandwidth needs many modes (rank would exceed ``dense_fraction * n_bins``), signalling
     the caller to use the full dense basis. See :func:`heat_kernel_rank` for the math.
     """
     if not sigma > 0:
@@ -288,9 +324,10 @@ def _adaptive_heat_kernel_basis(
             return keep, eigvals[:keep], eigvecs[:, :keep]
         if k >= max_trunc:
             return None, None, None  # cutoff not reached below the dense threshold
-        # 2D Weyl: the eigenvalue-counting function grows ~linearly, so estimate the
-        # index at lambda_cut (10% margin) and jump there, at least doubling k.
-        estimated = int(np.ceil(1.1 * k * lambda_cut / max(float(eigvals[-1]), 1e-30)))
+        # Weyl: the eigenvalue-counting function grows ~lambda**(d/2), so extrapolate
+        # the index at lambda_cut (10% margin) and jump there, at least doubling k.
+        ratio = lambda_cut / max(float(eigvals[-1]), 1e-30)
+        estimated = int(np.ceil(1.1 * k * ratio ** _weyl_exponent(eigvals)))
         if estimated > max_trunc:
             return None, None, None
         k = min(max(estimated, 2 * k), max_trunc)
@@ -313,10 +350,12 @@ def heat_kernel_rank(
 
     The rank is found adaptively without a full eigendecomposition: compute the smallest
     ``k`` eigenvalues; if the largest is still below the cutoff ``λ_cut = -ln(tol) / t``,
-    jump ``k`` toward the estimated cutoff index (the 2D eigenvalue-counting function is
-    ~linear, Weyl) and retry — typically one or two probes. To build the basis (not just
-    query the rank), use :func:`cached_heat_kernel_eigenbasis`, which reuses the probe's
-    final eigensolve instead of recomputing.
+    jump ``k`` toward the estimated cutoff index and retry — typically one or two probes.
+    The estimate extrapolates the eigenvalue-counting function ``N(λ) ~ λ^(d/2)``
+    (Weyl), with ``d = 1`` on a linearized track and ``d = 2`` on an open field, read
+    off the probe's own spectrum. To build the basis (not just query the rank), use
+    :func:`cached_heat_kernel_eigenbasis`, which reuses the probe's final eigensolve
+    instead of recomputing.
 
     Parameters
     ----------
@@ -330,14 +369,14 @@ def heat_kernel_rank(
     dense_fraction : float, optional
         Return ``None`` (use the dense solver) when the resolved rank would exceed
         ``dense_fraction * n_bins``, where a truncated ``eigsh`` no longer beats a dense
-        ``eigh``. Default ``0.5``.
+        ``eigh``. Default ``0.2``.
 
     Returns
     -------
     rank : int or None
         The truncation rank (``>= n_components``, so every component's null mode is kept
         and :func:`diffuse` cannot leak mass across components), or ``None`` to signal the
-        caller should use the full dense basis — a light bandwidth needing most modes.
+        caller should use the full dense basis — a light bandwidth needing many modes.
 
     Raises
     ------
@@ -591,6 +630,26 @@ def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
     return np.where(mass > 0, smoothed / safe / bin_sizes[:, np.newaxis], 0.0)
 
 
+def _resolved_occupancy(occupancy):
+    """Bins whose diffused occupancy the heat kernel resolves.
+
+    Occupancy is itself a diffused field, so in unvisited bins it is numerical
+    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
+    encoding information: a ratio of a diffused spike field to this noise is
+    not a rate, so the likelihoods treat them as zero-occupancy bins. A bin
+    with zero occupancy is never resolved, even when no bin has any.
+
+    Parameters
+    ----------
+    occupancy : array, shape (n_bins,)
+
+    Returns
+    -------
+    resolved : array of bool, shape (n_bins,)
+    """
+    return (occupancy > 0.0) & (occupancy >= _FIELD_RESOLUTION * occupancy.max())
+
+
 def environment_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
@@ -826,7 +885,7 @@ def cached_heat_kernel_eigenbasis(
     resolved rank is memoized per ``(sigma, tol, dense_fraction)`` on
     ``environment._diffusion_heat_kernel_rank_``, so EM refits at the same bandwidth
     reuse the basis **without re-running the adaptive probe** (zero eigensolves). When
-    the bandwidth needs most modes the resolver falls back to the full dense basis. All
+    the bandwidth needs many modes the resolver falls back to the full dense basis. All
     diffusion caches are invalidated together by ``Environment.fit_place_grid``.
 
     Parameters
@@ -836,7 +895,7 @@ def cached_heat_kernel_eigenbasis(
     sigma : float
         Smoothing standard deviation (``position_std``) in coordinate units.
     tol, dense_fraction : float, optional
-        Forwarded to :func:`heat_kernel_rank`, by default 1e-6 and 0.5 respectively.
+        Forwarded to :func:`heat_kernel_rank`, by default 1e-6 and 0.2 respectively.
 
     Returns
     -------
