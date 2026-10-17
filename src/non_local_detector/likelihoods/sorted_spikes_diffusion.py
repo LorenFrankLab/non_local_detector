@@ -49,6 +49,7 @@ from non_local_detector.likelihoods.common import (
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
+    _resolved_occupancy,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
@@ -570,8 +571,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
     occupancy = density[:, 0]
     marginals = density[:, 1:]
 
-    # rate(x) = mean_rate * marginal / occupancy on occupied bins, EPS elsewhere.
-    occupied = occupancy > 0.0
+    # rate(x) = mean_rate * marginal / occupancy on resolved bins, EPS elsewhere.
+    occupied = _resolved_occupancy(occupancy)
     safe_occupancy = np.where(occupied, occupancy, 1.0)
     rate_interior = np.asarray(mean_rates)[np.newaxis, :] * np.where(
         occupied[:, np.newaxis], marginals / safe_occupancy[:, np.newaxis], EPS
