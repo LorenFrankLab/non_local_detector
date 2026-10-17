@@ -192,9 +192,8 @@ def make_spline_predict_matrix(
 
 
 # Prior standard deviation, in nats, of a place field's log-rate deviation
-# from the cell's baseline across the environment's bins. Firing rates are
-# roughly log-normally distributed and span orders of magnitude (Mizuseki &
-# Buzsaki 2013, Cell Reports 4:1010). CA1 place cells fire up to ~40 Hz in
+# from the cell's baseline across the environment's bins. Firing rates span
+# orders of magnitude. CA1 place cells fire up to ~40 Hz in
 # field and below ~0.1-0.5 Hz out of field, a log-rate range of up to
 # log(40 / 0.1) ~= 6 nats; spanning that with three standard deviations gives
 # 2. The same SD is the root-mean-square log-rate deviation across bins of a
