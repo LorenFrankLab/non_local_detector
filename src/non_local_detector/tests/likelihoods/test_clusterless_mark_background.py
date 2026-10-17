@@ -418,3 +418,34 @@ def test_diffusion_model_checking_follows_the_decoder_in_unresolved_bins():
     electrode = electrode_model(model, "clusterless_diffusion", 0)
     np.testing.assert_array_equal(electrode.ground_intensity(centers[reached]), 0.0)
     assert np.all(electrode.ground_intensity(centers[~unresolved]) >= 0.0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("is_local", [False, True], ids=["nonlocal", "local"])
+def test_gmm_rate_below_the_background_still_sets_its_intensity(run_data, is_local):
+    """GMM has no rate floor, like KDE and diffusion.
+
+    Each spike's term is ``logaddexp(log(rate * p(m | x)), log(beta q(m)))``.
+    Flooring the rate at ``beta`` would count the background twice and make
+    every rate below it score spikes identically.
+    """
+    variant = ("clusterless_gmm", {})
+    model = _fit(run_data, variant)
+    n_electrodes = len(run_data["test_spikes"])
+    silent_spikes = [np.array([]) for _ in range(n_electrodes)]
+    silent_marks = [np.zeros((0, f.shape[1])) for f in run_data["test_marks"]]
+
+    def spike_terms(rate):
+        rated = {**model, "mean_rates": [rate] * n_electrodes}
+        with_spikes = _predict(
+            run_data, variant, rated, run_data["test_marks"], is_local
+        )
+        silent = _predict(
+            run_data, variant, rated, silent_marks, is_local, spikes=silent_spikes
+        )
+        return with_spikes - silent
+
+    assert 1e-13 < RATE_EPS_HZ
+    higher, lower = spike_terms(1e-13), spike_terms(1e-14)
+    assert np.all(higher >= lower - 1e-6)
+    assert np.max(higher - lower) > 1e-2
