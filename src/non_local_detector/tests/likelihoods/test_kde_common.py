@@ -16,8 +16,6 @@ from non_local_detector.likelihoods.common import (
     kde_log_density,
     log_gaussian_pdf,
     log_kde,
-    safe_divide,
-    safe_log,
     validate_population_lengths,
 )
 from non_local_detector.tests.conftest import precision_mode
@@ -268,8 +266,8 @@ def test_log_kde_consistent_with_kde_log():
 def test_log_kde_zero_weight_sample_is_dropped():
     """A zero-weight sample must not change ``log_kde`` vs. omitting it entirely.
 
-    ``safe_log`` floors a zero weight to LOG_EPS instead of -inf, so a zero-weight
-    sample leaks an ``EPS * kernel`` contribution into the log KDE. At an eval point
+    Flooring a zero weight's log at LOG_EPS instead of -inf would let a zero-weight
+    sample leak an ``EPS * kernel`` contribution into the log KDE. At an eval point
     that sits on the zero-weight sample but far from every positive-weight sample the
     legitimate density is ~0, so the leak dominates the result. Dropping the
     zero-weight sample (as the linear ``kde`` does exactly) must give the same value.
@@ -333,28 +331,6 @@ def test_kde_model_shapes_and_predict_log():
     assert dens.shape == (eval_points.shape[0],)
     assert log_dens.shape == (eval_points.shape[0],)
     assert jnp.all(jnp.isfinite(log_dens))
-
-
-def test_safe_divide_and_safe_log_stability_and_broadcast():
-    from non_local_detector.likelihoods.common import EPS
-
-    a = jnp.array([1.0, 0.0, 2.0])
-    b = jnp.array([0.0, 0.0, 4.0])
-    out = safe_divide(a, b)
-    assert out.shape == a.shape
-    assert jnp.all(jnp.isfinite(out))
-    # Zero-denominator elements should return eps, not NaN/inf
-    assert out[0] == pytest.approx(EPS, rel=1e-5)
-    assert out[1] == pytest.approx(EPS, rel=1e-5)
-    assert out[2] == pytest.approx(0.5, rel=1e-5)
-
-    x = jnp.array([0.0, 1e-20, 1.0])
-    log_x = safe_log(x)
-    assert log_x.shape == x.shape
-    assert jnp.all(jnp.isfinite(log_x))
-    # Zero/tiny inputs should return log(eps), not -inf
-    assert log_x[0] == pytest.approx(float(jnp.log(jnp.array(EPS))), rel=1e-5)
-    assert log_x[2] == pytest.approx(0.0, abs=1e-10)
 
 
 def test_get_spikecount_per_time_bin_edges_and_outliers():

@@ -299,7 +299,7 @@ def fit_poisson_regressions(
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_cells, n_time)
         Event mass per row and cell: the weighted spike counts from
-        ``weighted_spike_counts``, not multiplied by ``weights`` again.
+        ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
@@ -472,7 +472,7 @@ def fit_poisson_regression(
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_time,)
         Event mass per row: the weighted spike counts from
-        ``weighted_spike_counts``, not multiplied by ``weights`` again.
+        ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
@@ -491,58 +491,6 @@ def fit_poisson_regression(
         l2_penalty,
         rate_floor=rate_floor,
     )[0]
-
-
-def weighted_spike_counts(
-    spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
-) -> np.ndarray:
-    """Split each spike's interpolated weight between its bracketing samples.
-
-    A spike a fraction ``a`` of the way from sample ``i`` to sample ``i + 1``
-    adds ``(1 - a) * weights[i]`` to row ``i`` and ``a * weights[i + 1]`` to
-    row ``i + 1``. The two parts sum to ``weights`` linearly interpolated to the
-    spike time, so each spike keeps its canonical weight and complementary
-    groups still partition it. Each part is carried by the sample that supplies
-    it, so a row receives event mass only where its own exposure weight is
-    positive; a row with events but no exposure would let the fitted rate at
-    its position diverge. For a locally constant rate and uniform sampling, an
-    interior row's expected event mass is ``rate * weights[i] * dt``,
-    proportional to its exposure term. Spikes outside
-    ``[position_time[0], position_time[-1]]`` are dropped.
-
-    Parameters
-    ----------
-    spike_times : np.ndarray, shape (n_spikes,)
-    position_time : np.ndarray, shape (n_time_position,)
-    weights : np.ndarray, shape (n_time_position,)
-
-    Returns
-    -------
-    counts : np.ndarray, shape (n_time_position,)
-        Event mass per position row.
-    """
-    position_time = np.asarray(position_time)
-    weights = np.asarray(weights)
-    spike_times = np.asarray(spike_times)
-    n_time = position_time.shape[0]
-    times = spike_times[
-        (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
-    ]
-    # Encoding rows are position samples, not decode bins: the left sample is
-    # the last one at or before the spike, never the final sample, so a spike
-    # at position_time[-1] splits into the final interval.
-    left = np.searchsorted(position_time[1:-1], times, side="right")
-    right = np.minimum(left + 1, n_time - 1)
-    interval = position_time[right] - position_time[left]
-    safe_interval = np.where(interval > 0.0, interval, 1.0)
-    # A zero-length interval (a repeated final timestamp, or a single sample)
-    # gives the spike the right sample's weight, as np.interp does.
-    fraction = np.where(
-        interval > 0.0, (times - position_time[left]) / safe_interval, 1.0
-    )
-    return np.bincount(
-        left, weights=(1.0 - fraction) * weights[left], minlength=n_time
-    ) + np.bincount(right, weights=fraction * weights[right], minlength=n_time)
 
 
 def fit_sorted_spikes_glm_encoding_model(

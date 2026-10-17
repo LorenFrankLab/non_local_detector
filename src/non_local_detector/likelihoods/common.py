@@ -2689,43 +2689,12 @@ def decode_bin_centers(
     return edges[:-1] + 0.5 * np.diff(edges)
 
 
-def safe_divide(numerator, denominator, eps=EPS, condition=None):
-    """Safely divide two arrays, avoiding division by zero.
-
-    Parameters
-    ----------
-    numerator : jnp.ndarray
-        Numerator array of any shape.
-    denominator : jnp.ndarray
-        Denominator array, must be broadcastable with numerator.
-    eps : float, optional
-        Small value to avoid division by zero, by default 1e-8.
-    condition : jnp.ndarray, optional
-        Boolean condition array to apply the division, by default None.
-        If None, condition is computed as abs(denominator) < eps.
-        Useful if pre-computing the condition is more efficient.
-
-    Returns
-    -------
-    result : jnp.ndarray
-        Result of safe division with same shape as broadcast of inputs.
-        Where condition is True, returns eps instead of dividing.
-    """
-    if condition is None:
-        condition = jnp.abs(denominator) < eps
-
-    # Double-where: substitute safe denominator first, then select result.
-    # This avoids NaN in both forward pass and gradients.
-    safe_denominator = jnp.where(condition, 1.0, denominator)
-    return jnp.where(condition, eps, numerator / safe_denominator)
-
-
 def log_nonnegative(x: jnp.ndarray) -> jnp.ndarray:
     """Log of a non-negative array: ``-inf`` at zero, ``NaN`` kept.
 
-    Unlike ``safe_log`` it applies no floor, so a zero intensity stays an
-    impossible event for the caller to combine (for example with a background
-    by ``logaddexp``). The gradient is zero at zero instead of ``NaN``.
+    No floor is applied, so a zero intensity stays an impossible event for the
+    caller to combine (for example with a background by ``logaddexp``). The
+    gradient is zero at zero instead of ``NaN``.
 
     Parameters
     ----------
@@ -2743,29 +2712,3 @@ def log_nonnegative(x: jnp.ndarray) -> jnp.ndarray:
         jnp.log(jnp.where(positive, x, 1.0)),
         jnp.where(jnp.isnan(x), jnp.nan, -jnp.inf),
     )
-
-
-def safe_log(x, eps=EPS, condition=None):
-    """Safely compute the logarithm of an array, avoiding log(0).
-
-    Parameters
-    ----------
-    x : jnp.ndarray
-        Input array of any shape.
-    eps : float, optional
-        Small value to avoid log(0), by default 1e-8.
-    condition : jnp.ndarray, optional
-        Boolean condition array to apply the logarithm, by default None.
-        If None, condition is computed as abs(x) < eps.
-        Useful if pre-computing the condition is more efficient.
-
-    Returns
-    -------
-    result : jnp.ndarray
-        Logarithm of input array with same shape as x.
-        Where condition is True, returns log(eps) instead of log(0).
-    """
-    if condition is None:
-        condition = jnp.abs(x) < eps
-
-    return jnp.log(jnp.where(condition, eps, x))

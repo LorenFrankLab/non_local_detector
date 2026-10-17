@@ -20,7 +20,6 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     gaussian_pdf,
     log_gaussian_pdf,
-    safe_log,
 )
 from non_local_detector.likelihoods.mark_reference import MarkReference
 
@@ -408,7 +407,7 @@ class TestLogJointFromLogMarginal:
         log_marginal = jnp.array([[-2.0]])
         occupancy = jnp.array([0.5])
         out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
-        expected = safe_log(2.5, eps=EPS) + (-2.0) - safe_log(0.5, eps=EPS)
+        expected = jnp.log(2.5) + (-2.0) - jnp.log(0.5)
         assert jnp.allclose(out[0, 0], expected)
 
     def test_neg_inf_marginal_at_occupied_bin_is_zero_intensity(self):
