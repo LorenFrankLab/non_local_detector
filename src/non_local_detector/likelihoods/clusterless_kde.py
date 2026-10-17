@@ -1464,7 +1464,9 @@ def block_estimate_log_joint_mark_intensity(
         Log-space position kernel. Prevents underflow in multi-dimensional position spaces.
         Can be None if use_streaming=True.
     block_size : int, optional
-        Number of decoding spikes to process per block.
+        Number of decoding spikes to process per block. Fewer spikes are
+        padded to a power of two (at least 16), so calls with nearby spike
+        counts share one compiled reduction.
     use_gemm : bool, optional
         If True (default), use the scaled-GEMM reduction.
     pos_tile_size : int | None, optional
@@ -1498,8 +1500,9 @@ def block_estimate_log_joint_mark_intensity(
 
     if n_decoding_spikes == 0:
         return jnp.zeros((0, n_position_bins))
-    # A large configured block must not pad a sparse chunk up to its capacity.
-    block_size = min(block_size, n_decoding_spikes)
+    # A large configured block must not pad a sparse chunk up to its capacity;
+    # a few padded sizes let chunks with nearby spike counts share a kernel.
+    block_size = min(block_size, _padded_spike_count(n_decoding_spikes, block_size))
 
     # Process decoding spikes in fixed-size blocks. Each decoding spike is
     # computed independently, so the final partial block is padded up to
@@ -1999,23 +2002,23 @@ def predict_clusterless_kde_log_likelihood(
             n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
             electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
 
+            n_spikes = electrode_decoding_spike_waveform_features.shape[0]
+            if n_spikes == 0:
+                continue
+            # Padded spikes and zero-weight encoding samples let electrodes
+            # and chunks with nearby sizes share one compiled kernel.
+            padded_features, padded_weights = _padded_samples(
+                _spike_time_order,
+                electrode_encoding_spike_waveform_features,
+                electrode_encoding_weights,
+            )
+            padded_positions, _ = _padded_samples(
+                _spike_time_order,
+                electrode_encoding_positions,
+                electrode_encoding_weights,
+            )
             if not use_streaming and enc_tile_size is None:
-                n_spikes = electrode_decoding_spike_waveform_features.shape[0]
-                if n_spikes == 0:
-                    continue
-                # Padded spikes and zero-weight encoding samples let electrodes
-                # and chunks with nearby sizes share one compiled kernel.
                 n_padded = _padded_spike_count(n_spikes, block_size)
-                padded_features, padded_weights = _padded_samples(
-                    _spike_time_order,
-                    electrode_encoding_spike_waveform_features,
-                    electrode_encoding_weights,
-                )
-                padded_positions, _ = _padded_samples(
-                    _spike_time_order,
-                    electrode_encoding_positions,
-                    electrode_encoding_weights,
-                )
                 log_likelihood = _add_electrode_log_mark_intensities(
                     log_likelihood,
                     jnp.asarray(
@@ -2046,14 +2049,14 @@ def predict_clusterless_kde_log_likelihood(
             else:
                 log_position_distance = log_kde_distance(
                     interior_place_bin_centers,
-                    electrode_encoding_positions,
+                    padded_positions,
                     std=position_std,
                 )
 
             log_likelihood += sum_spikes_into_rows(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
-                    electrode_encoding_spike_waveform_features,
+                    padded_features,
                     electrode_waveform_std,
                     occupancy,
                     electrode_mean_rate * RATE_REFERENCE_SECONDS,
@@ -2062,14 +2065,12 @@ def predict_clusterless_kde_log_likelihood(
                     enc_tile_size=enc_tile_size,
                     pos_tile_size=pos_tile_size,
                     use_streaming=use_streaming,
-                    encoding_positions=(
-                        electrode_encoding_positions if use_streaming else None
-                    ),
+                    encoding_positions=padded_positions if use_streaming else None,
                     position_eval_points=(
                         interior_place_bin_centers if use_streaming else None
                     ),
                     position_std=position_std if use_streaming else None,
-                    encoding_weights=electrode_encoding_weights,
+                    encoding_weights=padded_weights,
                     log_occupancy=log_occupancy,
                     log_background=log_background,
                 ),

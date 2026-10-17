@@ -346,6 +346,63 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels():
     assert [kernel._cache_size() for kernel in kernels] == [1, 1]
 
 
+@pytest.mark.parametrize(
+    "policy",
+    [{"enc_tile_size": 64}, {"enc_tile_size": 64, "use_streaming": True}],
+    ids=["tiled", "streaming"],
+)
+def test_tiled_electrodes_and_chunks_with_nearby_sizes_share_compiled_kernels(
+    policy,
+):
+    """Encoding tiles and streaming pad like the default path, so electrodes
+    and row chunks with nearby sizes reuse one compiled reduction."""
+    rng = np.random.default_rng(34)
+    env = Environment(place_bin_size=5.0, position_range=((0.0, 30.0), (0.0, 30.0)))
+    position_time = np.arange(0, 20.0, 1 / 30)
+    position = np.column_stack(
+        (15 + 10 * np.sin(position_time), 15 + 10 * np.cos(position_time))
+    )
+    env = env.fit_place_grid(position, infer_track_interior=False)
+    encoding_times = [np.sort(rng.uniform(0, 20, n)) for n in (200, 210)]
+    encoding = fit_encoding(
+        position_time=position_time,
+        position=position,
+        spike_times=encoding_times,
+        spike_waveform_features=[
+            rng.normal(0, 30, (len(t), 4)) for t in encoding_times
+        ],
+        environment=env,
+        disable_progress_bar=True,
+        **policy,
+    )
+    assert _padded_sample_count(200) == _padded_sample_count(210)
+    # Two row chunks per electrode; every chunk holds between 17 and 32
+    # decoding spikes, which share one padded count.
+    decode_times = [
+        np.sort(np.concatenate([rng.uniform(0, 1, n0), rng.uniform(1, 2, n1)]))
+        for n0, n1 in ((20, 30), (25, 18))
+    ]
+    assert _padded_spike_count(17, 10_000) == _padded_spike_count(32, 10_000)
+    edges = np.arange(0, 2.0 + 1e-9, 0.002)
+    recording = (
+        env,
+        position_time,
+        position,
+        {**encoding, "block_size": 10_000},
+        decode_times,
+        [rng.normal(0, 30, (len(t), 4)) for t in decode_times],
+        edges,
+    )
+    kernel = clusterless_kde.estimate_log_joint_mark_intensity
+    kernel.clear_cache()
+    chunks = [
+        predict(recording, False, rows) for rows in (slice(0, 500), slice(500, 1000))
+    ]
+    assert kernel._cache_size() == 1
+    whole = predict(recording, False, slice(0, 1000))
+    np.testing.assert_allclose(np.concatenate(chunks), whole, rtol=1e-5, atol=1e-4)
+
+
 def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
     """EM refits the occupancy from decode bins, one sample fewer than the
     position samples of the first fit; the local kernel must not recompile."""
