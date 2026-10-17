@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     fit_clusterless_kde_encoding_model,
     fit_sorted_spikes_kde_encoding_model,
@@ -422,16 +423,23 @@ def test_true_log_density_keeps_nan_points_and_samples_visible(entry):
 
 @pytest.mark.parametrize("entry", ENTRIES)
 def test_true_log_density_keeps_empty_and_invalid_support(entry):
-    """Zero total weight is no support; a NaN weight stays visible."""
+    """Zero total weight is no support; a NaN weight stays visible.
+
+    ``KDEModel.fit`` rejects a NaN weight outright, so only the traced kernel
+    can see one.
+    """
     samples = jnp.zeros((3, 1))
     points = jnp.asarray([[0.0], [50.0]])
     std = jnp.ones(1)
     empty = _true_log_density(entry, points, samples, std, 64, jnp.zeros(3))
-    invalid = _true_log_density(
-        entry, points, samples, std, 64, jnp.asarray([1.0, jnp.nan, 1.0])
-    )
     assert np.isneginf(empty).all()
-    assert np.isnan(invalid).all()
+    nan_weights = jnp.asarray([1.0, jnp.nan, 1.0])
+    if entry == "host":
+        with pytest.raises(ValidationError, match="finite"):
+            _true_log_density(entry, points, samples, std, 64, nan_weights)
+    else:
+        invalid = _true_log_density(entry, points, samples, std, 64, nan_weights)
+        assert np.isnan(invalid).all()
 
 
 @pytest.mark.parametrize("n_dims", [1, 2])
