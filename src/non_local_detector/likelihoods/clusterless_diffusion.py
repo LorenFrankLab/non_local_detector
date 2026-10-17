@@ -92,6 +92,7 @@ from non_local_detector.likelihoods.common import (
     as_std_array,
     decode_bin_centers,
     deterministic_row_sum,
+    environment_grid_fingerprint,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
@@ -102,6 +103,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     spike_row_ids,
     sum_spikes_into_rows,
+    validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
     validate_weights,
@@ -492,6 +494,7 @@ def fit_clusterless_diffusion_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy,
         "summed_ground_process_intensity": summed_ground_process_intensity,
         "encoding_bin_indices": encoding_bin_indices,
@@ -1174,6 +1177,7 @@ def predict_clusterless_diffusion_log_likelihood(
     is_local: bool = False,
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],
+    environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **encoding_model: object,
@@ -1211,6 +1215,13 @@ def predict_clusterless_diffusion_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -1224,11 +1235,8 @@ def predict_clusterless_diffusion_log_likelihood(
         False, else (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice``
         is given.
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
     environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
+    validate_encoding_contract(rate_units, environment, environment_grid)
     occupancy = jnp.asarray(encoding_model["occupancy"])
     summed_ground_process_intensity = jnp.asarray(
         encoding_model["summed_ground_process_intensity"]
@@ -1264,28 +1272,6 @@ def predict_clusterless_diffusion_log_likelihood(
         _spike_time_order = _SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = occupancy.shape[0]
-
-    # The encoding model is grid-bound: its occupancy, node_order, per-spike bin
-    # indices, and ground-process field all describe the interior-bin layout at fit
-    # time. If the shared Environment was refit (fit_place_grid) to a different grid
-    # afterwards, those stale arrays no longer match the environment's current graph
-    # -- and when the interior-bin count happens to be unchanged, the shape checks in
-    # the diffusion matmul do not catch it, silently misattributing the likelihood to
-    # the wrong bins. Compare the fit-time node_order against the environment's
-    # current one and fail loudly instead. Re-fit the encoding model after any refit.
-    current_node_order = environment_graph(environment)[1]
-    if not np.array_equal(np.asarray(node_order), np.asarray(current_node_order)):
-        raise ValidationError(
-            "encoding model is stale: the environment's grid was refit after this "
-            "encoding model was fit, so its interior-bin layout no longer matches.",
-            expected="an encoding model fit against the environment's current grid",
-            got=(
-                f"fit-time interior-bin count {np.asarray(node_order).shape[0]} vs "
-                f"current {np.asarray(current_node_order).shape[0]}"
-            ),
-            hint="Re-fit the encoding model (fit_clusterless_diffusion_encoding_model) "
-            "against the refit environment before predicting.",
-        )
 
     eigvals, eigvecs, labels, n_components = get_device_basis(
         environment, resolved_rank

@@ -54,7 +54,11 @@ from jax import lax
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import RATE_EPS_HZ, validate_weights
+from non_local_detector.likelihoods.common import (
+    RATE_EPS_HZ,
+    environment_grid_fingerprint,
+    validate_weights,
+)
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     connected_component_labels,
@@ -1033,6 +1037,7 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy_field,
         "mean_rates": mean_rates,
         "place_fields": place_fields,

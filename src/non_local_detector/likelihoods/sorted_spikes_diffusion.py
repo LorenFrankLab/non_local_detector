@@ -41,9 +41,11 @@ from non_local_detector.likelihoods.common import (
     _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
+    environment_grid_fingerprint,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
+    validate_encoding_contract,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
@@ -582,6 +584,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy,
         "mean_rates": mean_rates,
         "place_fields": place_fields,
@@ -619,6 +622,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
+    environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **_encoding_extras: object,
@@ -680,6 +684,13 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -694,10 +705,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         Shape (n_rows, n_interior_bins) when ``is_local`` is False, else
         (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
+    validate_encoding_contract(rate_units, environment, environment_grid)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
