@@ -380,7 +380,9 @@ class TestBatchedPoissonRegression:
         from scipy.optimize import minimize
 
         design_matrix, spikes, weights = problem
-        l2_penalty = 1e-3
+        # 1e-3 per second of exposure: the conditioning these tests were
+        # written for, now that the penalty is on the total log likelihood.
+        l2_penalty = 1e-3 * weights.sum()
         actual = np.asarray(
             fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
@@ -410,18 +412,23 @@ class TestBatchedPoissonRegression:
         agree. A 2e-4 coefficient perturbation changes it by about 1.7e-7.
         """
         design_matrix, spikes, weights = problem
+        # 1e-3 per second of exposure: the conditioning these tests were
+        # written for, now that the penalty is on the total log likelihood.
+        l2_penalty = 1e-3 * weights.sum()
         batched = np.asarray(
-            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
         single = np.stack(
             [
-                np.asarray(fit_poisson_regression(design_matrix, y, weights, 1e-3))
+                np.asarray(
+                    fit_poisson_regression(design_matrix, y, weights, l2_penalty)
+                )
                 for y in spikes
             ]
         )
         np.testing.assert_allclose(
-            _poisson_objective64(design_matrix, spikes, weights, batched, 1e-3),
-            _poisson_objective64(design_matrix, spikes, weights, single, 1e-3),
+            _poisson_objective64(design_matrix, spikes, weights, batched, l2_penalty),
+            _poisson_objective64(design_matrix, spikes, weights, single, l2_penalty),
             rtol=0,
             atol=1e-8,
         )
@@ -434,8 +441,11 @@ class TestBatchedPoissonRegression:
         about 1e-3); the float64 objective is what must agree.
         """
         design_matrix, spikes, weights = problem
+        # 1e-3 per second of exposure: the conditioning these tests were
+        # written for, now that the penalty is on the total log likelihood.
+        l2_penalty = 1e-3 * weights.sum()
         whole = np.asarray(
-            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
         n_cells, n_basis = spikes.shape[0], design_matrix.shape[1]
         # 37 rows per block: 400 rows need 11 blocks and 7 padding rows.
@@ -444,12 +454,12 @@ class TestBatchedPoissonRegression:
         )
         sorted_spikes_glm._poisson_regression_sums.clear_cache()
         blocked = np.asarray(
-            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
         assert np.all(np.isfinite(blocked))
         np.testing.assert_allclose(
-            _poisson_objective64(design_matrix, spikes, weights, blocked, 1e-3),
-            _poisson_objective64(design_matrix, spikes, weights, whole, 1e-3),
+            _poisson_objective64(design_matrix, spikes, weights, blocked, l2_penalty),
+            _poisson_objective64(design_matrix, spikes, weights, whole, l2_penalty),
             rtol=0,
             atol=1e-8,
         )
