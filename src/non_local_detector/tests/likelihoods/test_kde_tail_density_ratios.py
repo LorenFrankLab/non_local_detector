@@ -28,7 +28,6 @@ from non_local_detector.likelihoods.common import (
     _sorted_sample_keys,
     kde_log_density,
     log_density_intensity,
-    traced_kde_log_density,
 )
 from non_local_detector.tests.likelihoods.conftest import (
     realistic_log_background,
@@ -252,13 +251,11 @@ def test_sorted_public_local_path_preserves_nan_position_diagnostic():
     assert np.isnan(np.asarray(result)[0, 0])
 
 
-ENTRIES = ["traced", "host"]
+ENTRIES = ["host"]
 
 
 def _true_log_density(entry, points, samples, std, block_size, weights):
-    """True log density through the traced kernel or the host entry."""
-    if entry == "traced":
-        return traced_kde_log_density(points, samples, std, block_size, weights)
+    """True log density through the host entry."""
     model = KDEModel(std=std, block_size=block_size).fit(samples, weights)
     return kde_log_density(model, points)
 
@@ -283,9 +280,8 @@ def test_true_log_density_matches_log_space_evaluation_in_and_beyond_tails(
     """The one-pass scaled KDE matches full log-space evaluation everywhere.
 
     Points near the samples are ordinary; the last three lie far in the tail,
-    where the traced kernel repairs their blocks in log space, and the host
-    entry point either scales them exactly (1D) or repairs them afterwards in
-    log space.
+    where the host entry point either scales them exactly (1D) or repairs them
+    afterwards in log space.
     """
     points, samples, std, weights = _tail_case(n_dims)
     actual = _true_log_density(entry, points, samples, std, block_size, weights)
