@@ -9,7 +9,8 @@ Because the true rates are known, two things can be checked directly:
   intensity (clusterless) match the true ones;
 - the likelihood itself: on held-out laps, each model's non-local log
   likelihood per 20 ms bin tracks the exact Poisson log likelihood computed
-  from the true rates (and, for clusterless, the true mark densities).
+  from the true rates (and, for clusterless, the true mark densities), both in
+  shape across position bins and in absolute level.
 
 A negative control scores each model against the truth with the cells
 reassigned; the same metrics must then fail, so the thresholds discriminate.
@@ -17,12 +18,14 @@ reassigned; the same metrics must then fail, so the thresholds discriminate.
 
 import numpy as np
 import pytest
+from scipy.special import logsumexp  # type: ignore[import-untyped]
 
 from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.likelihoods.common import DEFAULT_WAVEFORM_STD
 
 pytestmark = [
     pytest.mark.integration,
@@ -49,6 +52,16 @@ CLUSTERLESS = (
     "clusterless_gmm",
     "clusterless_diffusion",
 )
+# Mark-kernel bandwidth of each clusterless backend at the detector defaults.
+# A kernel estimate converges to the true mark density convolved with its
+# kernel, so the KDE and diffusion backends are compared in absolute level
+# against an exact likelihood whose mark sd is sqrt(MARK_SD**2 + h**2); the GMM
+# fits the mark clusters themselves.
+MARK_KERNEL_SD = {
+    "clusterless_kde": DEFAULT_WAVEFORM_STD,
+    "clusterless_gmm": 0.0,
+    "clusterless_diffusion": DEFAULT_WAVEFORM_STD,
+}
 
 
 def _true_rates(x):
@@ -104,27 +117,28 @@ def recording():
 
 
 def _exact_sorted(x, spike_times, edges):
-    """Exact non-local log likelihood, (n_rows, n_bins), up to a row constant."""
+    """Exact non-local log likelihood, (n_rows, n_bins), without log(n!) terms."""
     rates = _true_rates(x)
     counts = np.stack([np.histogram(s, edges)[0] for s in spike_times], axis=1)
     return counts @ np.log(rates * DECODE_BIN).T - rates.sum(1) * DECODE_BIN
 
 
-def _exact_clusterless(x, tetrode_times, tetrode_marks, edges, cells):
+def _exact_clusterless(x, tetrode_times, tetrode_marks, edges, cells, mark_sd=MARK_SD):
     """Exact clusterless log likelihood with true joint mark intensities.
 
     ``cells`` maps each tetrode's mark identities to the cells whose rates
-    they carry (the negative control reassigns them).
+    they carry (the negative control reassigns them). ``mark_sd`` replaces
+    the true mark sd, to score against the kernel-smoothed mark density.
     """
     rates = _true_rates(x)
     log_likelihood = np.tile(-rates.sum(1) * DECODE_BIN, (edges.size - 1, 1))
     centers = MARK_SPACING * np.arange(CELLS_PER_TETRODE)
-    normalizer = (2 * np.pi * MARK_SD**2) ** (N_MARK_DIMS / 2)
+    normalizer = (2 * np.pi * mark_sd**2) ** (N_MARK_DIMS / 2)
     for tetrode, (times, marks) in enumerate(
         zip(tetrode_times, tetrode_marks, strict=True)
     ):
         squared = ((marks[:, None, :] - centers[None, :, None]) ** 2).sum(-1)
-        mark_density = np.exp(-squared / (2 * MARK_SD**2)) / normalizer
+        mark_density = np.exp(-squared / (2 * mark_sd**2)) / normalizer
         joint = mark_density @ rates[:, cells[tetrode]].T  # (n_spikes, n_bins)
         rows = np.searchsorted(edges, times, side="right") - 1
         keep = (rows >= 0) & (rows < edges.size - 1)
@@ -144,6 +158,20 @@ def _agreement(model, exact):
         float(np.mean(distance <= 2)),
         float(np.mean(distance <= 3)),
     )
+
+
+def _level_offset_per_spike(model, exact, n_spikes):
+    """Median over rows of the per-spike gap in log marginal likelihood.
+
+    The log marginal ``logsumexp`` over position bins is set by the bins
+    where the spikes are likely, where rates are well estimated. (A row mean
+    is instead dominated by the log of the near-zero tail rates: the GLM's
+    tails sit ~2.2 nats per spike above the 0.1 Hz baseline, the GMM's
+    Gaussian tails ~18 below.) A constant error in every spike's log
+    intensity shifts a row by exactly that constant times its spike count.
+    """
+    gap = logsumexp(model, axis=1) - logsumexp(exact, axis=1)
+    return float(np.median(gap / n_spikes))
 
 
 def _fit(algorithm, data):
@@ -208,6 +236,17 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording):
     likely bins agree within 2 bins in 97.8-99.6% of rows (GMM: 89% within
     2, 96% within 3). Against reassigned cells the correlations are below
     0.15 and agreement within 3 bins below 0.15.
+
+    The correlation ignores a constant per row, so the absolute level is
+    checked too: the median per-spike gap in log marginal likelihood. Measured
+    smoothing/fit bias: -0.69 (GLM, flattened peaks), -0.81 (GMM), within
+    0.15 for the rest (the KDE and diffusion clusterless backends against the
+    kernel-smoothed mark density; against the true one their 24-unit mark
+    kernel costs 2.9 nats per spike in 4-D). The tolerances, 1.5 and 0.5
+    nats, sit above those biases and below the constant errors guarded
+    against: a missing sqrt(2 pi) in one mark dimension (0.92, caught for
+    the kernel backends), a mis-scaled rate reference (log 10 = 2.3), a
+    missing (2 pi)^2 in a 4-D mark density (3.7), a dropped log(dt) (3.9).
     """
     train, test, edges = recording
     model, _, _, x = _fit(algorithm, train)
@@ -238,9 +277,14 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording):
         times, marks = test["tetrode_times"], test["tetrode_marks"]
         exact = _exact_clusterless(x, times, marks, edges, identity)
         wrong = _exact_clusterless(x, times, marks, edges, reassigned)
+        smoothed_sd = np.hypot(MARK_SD, MARK_KERNEL_SD[algorithm])
+        level_reference = _exact_clusterless(
+            x, times, marks, edges, identity, mark_sd=smoothed_sd
+        )
     else:
         exact = _exact_sorted(x, test["spike_times"], edges)
         wrong = _exact_sorted(x, test["spike_times"][::-1], edges)
+        level_reference = exact
 
     correlation, within_2, within_3 = _agreement(nonlocal_ll[rows], exact[rows])
     if algorithm == "clusterless_gmm":
@@ -249,3 +293,9 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording):
         assert correlation > 0.7 and within_2 > 0.95
     wrong_correlation, _, wrong_within_3 = _agreement(nonlocal_ll[rows], wrong[rows])
     assert wrong_correlation < 0.3 and wrong_within_3 < 0.3
+
+    offset = _level_offset_per_spike(
+        nonlocal_ll[rows], level_reference[rows], n_spikes[rows]
+    )
+    tolerance = 1.5 if algorithm in ("sorted_spikes_glm", "clusterless_gmm") else 0.5
+    assert abs(offset) < tolerance, f"level off by {offset:.2f} nats per spike"
