@@ -196,10 +196,10 @@ def make_spline_predict_matrix(
 # roughly log-normally distributed and span orders of magnitude (Mizuseki &
 # Buzsaki 2013, Cell Reports 4:1010). CA1 place cells fire up to ~40 Hz in
 # field and below ~0.1-0.5 Hz out of field, a log-rate range of up to
-# log(40 / 0.1) ~= 6 nats; taking that as +/-1.5 standard deviations about
-# the baseline gives about 2. The same SD is the root-mean-square deviation
-# of a field with a log(peak / baseline) of 6 over 10-15% of the bins,
-# 6 * sqrt(0.12 * 0.88) ~= 2.
+# log(40 / 0.1) ~= 6 nats; spanning that with three standard deviations gives
+# 2. The same SD is the root-mean-square log-rate deviation across bins of a
+# field 6 nats above baseline over 10-15% of the bins, 6 * sqrt(0.12 * 0.88)
+# ~= 2.
 GLM_LOG_RATE_PRIOR_STD = 2.0
 
 
@@ -611,8 +611,8 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float | None = None,
     disable_progress_bar: bool = False,
-    log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     *,
+    log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     encoding_time_range=None,
     valid_position_intervals=None,
     _encoding_support=None,
@@ -651,12 +651,13 @@ def fit_sorted_spikes_glm_encoding_model(
     disable_progress_bar : bool, optional
         Stored in the encoding model for prediction's progress bars; the fit
         has none. By default False.
+
     log_rate_prior_std : float, optional
         Prior SD, in nats, of each neuron's log-rate deviation from its
         baseline across the interior bins, by default
-        ``GLM_LOG_RATE_PRIOR_STD`` (2.0, a peak-to-baseline ratio of up to
-        ``exp(6)``, about 400). Ignored when ``l2_penalty`` is given.
-
+        ``GLM_LOG_RATE_PRIOR_STD`` (2.0: three SDs span a peak-to-baseline
+        ratio of ``exp(6)``, about 400). Ignored when ``l2_penalty`` is
+        given.
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
         original interpolation basis. Uniform samples otherwise include endpoint
