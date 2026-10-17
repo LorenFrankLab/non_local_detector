@@ -464,6 +464,35 @@ class TestBatchedPoissonRegression:
         )
         np.testing.assert_allclose(coefficients[:, -1], 0.0, atol=1e-6)
 
+    def test_singular_newton_system_warns_and_reaches_the_optimum(self, problem):
+        """Without a penalty, an unsupported basis function makes every
+        Hessian exactly singular. Least squares still reaches the optimum of
+        the identified coefficients, and the fit warns once naming the cells.
+        """
+        design_matrix, spikes, weights = problem
+        unsupported = np.column_stack(
+            [design_matrix, np.where(weights == 0.0, 1.0, 0.0)]
+        )
+        reference = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, 0.0)
+        )
+        with pytest.warns(UserWarning, match="singular") as record:
+            coefficients = np.asarray(
+                fit_poisson_regressions(unsupported, spikes, weights, 0.0)
+            )
+        singular = [w for w in record if "singular" in str(w.message)]
+        assert len(singular) == 1
+        assert "[1, 2, 3, 4, 5]" in str(singular[0].message)
+        np.testing.assert_array_equal(coefficients[:, -1], 0.0)
+        np.testing.assert_allclose(
+            _poisson_objective64(
+                design_matrix, spikes, weights, coefficients[:, :-1], 0.0
+            ),
+            _poisson_objective64(design_matrix, spikes, weights, reference, 0.0),
+            rtol=0,
+            atol=1e-8,
+        )
+
 
 def test_encoding_fit_solves_all_cells_in_one_call(
     monkeypatch, simple_1d_environment, simple_spike_data

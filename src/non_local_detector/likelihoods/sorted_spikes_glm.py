@@ -49,7 +49,6 @@ context and uses common helper functions for spike counting and position
 interpolation.
 """
 
-import logging
 import warnings
 from functools import partial
 
@@ -82,8 +81,6 @@ from non_local_detector.time_edges import (
     _resolve_time_grid,
     requires_time_edges,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @jax.jit
@@ -366,6 +363,7 @@ def fit_poisson_regressions(
 
     loss, gradient, hessian = evaluate(coefficients, derivatives=True)
     active = np.ones(n_cells, dtype=bool)
+    singular_cells: set[int] = set()
     for _ in range(GLM_MAX_NEWTON_STEPS):
         gradient_norm = np.max(np.abs(gradient), axis=1)
         active &= np.isfinite(loss) & (gradient_norm > GLM_GRADIENT_TOL)
@@ -376,17 +374,21 @@ def fit_poisson_regressions(
                 ..., 0
             ]
         except np.linalg.LinAlgError:
-            logger.debug(
-                "GLM Newton system singular for a cell; using least squares for "
-                "cells %s",
-                np.flatnonzero(active).tolist(),
-            )
-            direction = -np.stack(
-                [
-                    np.linalg.lstsq(h, g, rcond=None)[0]
-                    for h, g in zip(hessian[active], gradient[active], strict=True)
-                ]
-            )
+            # Solve cell by cell so only the singular systems use least squares.
+            direction = np.empty((int(active.sum()), n_coefficients))
+            for index, (cell, h, g) in enumerate(
+                zip(
+                    np.flatnonzero(active),
+                    hessian[active],
+                    gradient[active],
+                    strict=True,
+                )
+            ):
+                try:
+                    direction[index] = -np.linalg.solve(h, g)
+                except np.linalg.LinAlgError:
+                    singular_cells.add(int(cell))
+                    direction[index] = -np.linalg.lstsq(h, g, rcond=None)[0]
         slope = np.sum(gradient[active] * direction, axis=1)
         step = np.ones(direction.shape[0])
         accepted = np.zeros(direction.shape[0], dtype=bool)
@@ -409,6 +411,20 @@ def fit_poisson_regressions(
         # A cell no step can improve has reached the precision limit.
         active[np.flatnonzero(active)[~accepted]] = False
         loss, gradient, hessian = evaluate(coefficients, derivatives=True)
+
+    if singular_cells:
+        cells = sorted(singular_cells)
+        warnings.warn(
+            f"GLM Poisson regression had a singular Newton system for "
+            f"{len(cells)} of {n_cells} cells (indices {cells[:20]}), so those "
+            f"steps used least squares. Some coefficients are then not "
+            f"identified by the data, e.g. a basis function without weighted "
+            f"exposure when l2_penalty is 0; least squares leaves those "
+            f"combinations at their starting values. Use a positive l2_penalty "
+            f"to identify them.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Judge convergence by the gradient inf-norm, and also warn when a fit
     # diverged to a non-finite loss or gradient: ``NaN > tol`` is ``False``,

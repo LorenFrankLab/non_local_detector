@@ -121,6 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `sorted_spikes_glm` warns once per fit, naming the cells, when a Newton system is singular and its step falls back to least squares; before, this was logged only at debug level. Least squares is now used only for the singular cells instead of every active cell in the batch.
 - `KDEModel.fit` validates its inputs: a zero, negative, non-finite or wrongly shaped `std` and NaN, infinite, negative or wrongly sized `weights` raise a `ValidationError`. Before, they gave NaN densities, or a `predict` of 0 everywhere. `KDEModel.predict_log` of a model without positive weight is now `-inf`, matching `predict` (0) and `kde_log_density`, instead of `LOG_EPS`. Detector fits are unaffected: they validate the same inputs earlier and score through `kde_log_density`.
 - `fit_mark_reference` raises a `ValidationError` naming the electrode and both shapes when marks and weights do not pair one weight per spike, or when a per-feature `kernel_scale` has the wrong length, instead of a NumPy `IndexError` or broadcast `ValueError`.
 - The No-Spike likelihood honors `disable_progress_bar`. `predict_no_spike_log_likelihood` takes it as a keyword, and detectors pass the setting from their algorithm params; before, every decoded chunk printed a "No Spike Likelihood" bar.
