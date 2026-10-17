@@ -12,7 +12,9 @@ import pytest
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
+    predict_sorted_spikes_glm_log_likelihood,
 )
+from non_local_detector.time_edges import time_edges_from_centers
 
 pytestmark = pytest.mark.unit
 
@@ -123,7 +125,7 @@ def test_unvisited_bins_do_not_extrapolate_in_two_dimensions():
     env = Environment(
         place_bin_size=5.0, position_range=((0.0, 100.0), (0.0, 100.0))
     ).fit_place_grid(position, infer_track_interior=False)
-    model = _fit(env, time, position, spikes, l2_penalty=0.01)
+    model = _fit(env, time, position, spikes)
     edges = env.place_bin_edges_
     for knots, low, high in zip(
         _spline_knots(model), edges.min(axis=0), edges.max(axis=0), strict=True
@@ -132,3 +134,39 @@ def test_unvisited_bins_do_not_extrapolate_in_two_dimensions():
     centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
     field = np.asarray(model["place_fields"])[0]
     assert field[centers[:, 0] > 75.0].max() <= field[centers[:, 0] <= 70.0].max()
+
+
+def test_local_rate_beyond_the_environment_is_the_edge_bin_rate():
+    """A natural spline extrapolates log-rate linearly past its boundary knots,
+    so a tracked position beyond the environment must not be evaluated there.
+    The local path reads such a position at the nearest edge bin, as the
+    non-local path scores it."""
+    rng = np.random.default_rng(0)
+    sampling_frequency = 500.0
+    time = np.arange(0.0, 300.0, 1 / sampling_frequency)
+    position = 50.0 + 45.0 * np.sin(2 * np.pi * time / 20.0)
+    # The field peaks beyond the 5-95 cm track, so it is still rising at 95.
+    rate = 40.0 * np.exp(-0.5 * ((position - 105.0) / 10.0) ** 2)
+    is_spike = rng.random(time.size) < rate / sampling_frequency
+    spikes = np.sort(
+        time[is_spike] + rng.uniform(-0.5, 0.5, is_spike.sum()) / sampling_frequency
+    )
+    env = Environment(place_bin_size=2.5, position_range=((5.0, 95.0),))
+    env = env.fit_place_grid(position[:, None], infer_track_interior=False)
+    model = _fit(env, time, position[:, None], [spikes])
+    field = np.asarray(model["place_fields"])[0]
+
+    beyond = np.array([-20.0, 0.0, 4.0, 96.0, 100.0, 110.0, 130.0])
+    dt = 0.002
+    decode_time = np.arange(beyond.size) * dt
+    log_likelihood = predict_sorted_spikes_glm_log_likelihood(
+        decode_time,
+        beyond[:, None],
+        [np.array([])],
+        time_edges=time_edges_from_centers(decode_time),
+        is_local=True,
+        **model,
+    )
+    local_rate = -np.asarray(log_likelihood)[:, 0] / dt
+    edge_rate = np.where(beyond < 50.0, field[0], field[-1])
+    np.testing.assert_allclose(local_rate, edge_rate, rtol=1e-5)

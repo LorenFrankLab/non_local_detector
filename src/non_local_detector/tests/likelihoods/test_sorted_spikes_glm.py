@@ -344,11 +344,12 @@ class TestPoissonRegression:
 
 
 def _poisson_objective64(design_matrix, spikes, weights, coefficients, l2_penalty):
-    """The fitted objective in float64, per cell."""
+    """The fitted objective in float64, per cell: the penalized negative total
+    log likelihood, divided by the total exposure."""
     rate = np.maximum(np.exp(coefficients @ design_matrix.T), EPS)
     data = np.where(spikes > 0, spikes * np.log(rate), 0.0) - weights * rate
     penalty = l2_penalty * np.sum(coefficients[:, 1:] ** 2, axis=1)
-    return -data.sum(axis=1) / weights.sum() + penalty
+    return (-data.sum(axis=1) + penalty) / weights.sum()
 
 
 @pytest.mark.unit
@@ -379,7 +380,9 @@ class TestBatchedPoissonRegression:
         from scipy.optimize import minimize
 
         design_matrix, spikes, weights = problem
-        l2_penalty = 1e-3
+        # 1e-3 per second of exposure: the conditioning these tests were
+        # written for, now that the penalty is on the total log likelihood.
+        l2_penalty = 1e-3 * weights.sum()
         actual = np.asarray(
             fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
@@ -409,18 +412,23 @@ class TestBatchedPoissonRegression:
         agree. A 2e-4 coefficient perturbation changes it by about 1.7e-7.
         """
         design_matrix, spikes, weights = problem
+        # 1e-3 per second of exposure: the conditioning these tests were
+        # written for, now that the penalty is on the total log likelihood.
+        l2_penalty = 1e-3 * weights.sum()
         batched = np.asarray(
-            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
         single = np.stack(
             [
-                np.asarray(fit_poisson_regression(design_matrix, y, weights, 1e-3))
+                np.asarray(
+                    fit_poisson_regression(design_matrix, y, weights, l2_penalty)
+                )
                 for y in spikes
             ]
         )
         np.testing.assert_allclose(
-            _poisson_objective64(design_matrix, spikes, weights, batched, 1e-3),
-            _poisson_objective64(design_matrix, spikes, weights, single, 1e-3),
+            _poisson_objective64(design_matrix, spikes, weights, batched, l2_penalty),
+            _poisson_objective64(design_matrix, spikes, weights, single, l2_penalty),
             rtol=0,
             atol=1e-8,
         )
@@ -433,8 +441,11 @@ class TestBatchedPoissonRegression:
         about 1e-3); the float64 objective is what must agree.
         """
         design_matrix, spikes, weights = problem
+        # 1e-3 per second of exposure: the conditioning these tests were
+        # written for, now that the penalty is on the total log likelihood.
+        l2_penalty = 1e-3 * weights.sum()
         whole = np.asarray(
-            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
         n_cells, n_basis = spikes.shape[0], design_matrix.shape[1]
         # 37 rows per block: 400 rows need 11 blocks and 7 padding rows.
@@ -443,15 +454,39 @@ class TestBatchedPoissonRegression:
         )
         sorted_spikes_glm._poisson_regression_sums.clear_cache()
         blocked = np.asarray(
-            fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
         )
         assert np.all(np.isfinite(blocked))
         np.testing.assert_allclose(
-            _poisson_objective64(design_matrix, spikes, weights, blocked, 1e-3),
-            _poisson_objective64(design_matrix, spikes, weights, whole, 1e-3),
+            _poisson_objective64(design_matrix, spikes, weights, blocked, l2_penalty),
+            _poisson_objective64(design_matrix, spikes, weights, whole, l2_penalty),
             rtol=0,
             atol=1e-8,
         )
+
+    def test_penalty_does_not_grow_with_recording_length(self, problem):
+        """The penalty is on the total log likelihood, so a recording repeated
+        ``k`` times fits like the original with the penalty divided by ``k``.
+        (A penalty on the per-second average would instead give every
+        repetition the same fit, letting the prior grow with the data.)"""
+        design_matrix, spikes, weights = problem
+        k, l2_penalty = 4, 2.0
+        repeated = np.asarray(
+            fit_poisson_regressions(
+                np.tile(design_matrix, (k, 1)),
+                np.tile(spikes, (1, k)),
+                np.tile(weights, k),
+                l2_penalty,
+            )
+        )
+        once = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty / k)
+        )
+        np.testing.assert_allclose(repeated, once, rtol=0, atol=2e-3)
+        unscaled = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, l2_penalty)
+        )
+        assert np.abs(unscaled - once).max() > 0.05
 
     def test_unsupported_basis_function_stays_at_zero(self, problem):
         """A basis function with no weighted support is set only by the penalty."""
@@ -463,6 +498,126 @@ class TestBatchedPoissonRegression:
             fit_poisson_regressions(design_matrix, spikes, weights, 1e-3)
         )
         np.testing.assert_allclose(coefficients[:, -1], 0.0, atol=1e-6)
+
+    def test_singular_newton_system_warns_and_reaches_the_optimum(self, problem):
+        """Without a penalty, an unsupported basis function makes every
+        Hessian exactly singular. Least squares still reaches the optimum of
+        the identified coefficients, and the fit warns once naming the cells.
+        """
+        design_matrix, spikes, weights = problem
+        unsupported = np.column_stack(
+            [design_matrix, np.where(weights == 0.0, 1.0, 0.0)]
+        )
+        reference = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, 0.0)
+        )
+        with pytest.warns(UserWarning, match="singular") as record:
+            coefficients = np.asarray(
+                fit_poisson_regressions(unsupported, spikes, weights, 0.0)
+            )
+        singular = [w for w in record if "singular" in str(w.message)]
+        assert len(singular) == 1
+        assert "[1, 2, 3, 4, 5]" in str(singular[0].message)
+        np.testing.assert_array_equal(coefficients[:, -1], 0.0)
+        # Least-squares directions converge less tightly than Newton steps:
+        # objectives on Linux CI were 4e-8 from the Newton fit's.
+        np.testing.assert_allclose(
+            _poisson_objective64(
+                design_matrix, spikes, weights, coefficients[:, :-1], 0.0
+            ),
+            _poisson_objective64(design_matrix, spikes, weights, reference, 0.0),
+            rtol=0,
+            atol=1e-7,
+        )
+
+
+def _fit_encoding(env, data, **kwargs):
+    return fit_sorted_spikes_glm_encoding_model(
+        position_time=jnp.asarray(data["position_time"]),
+        position=jnp.asarray(data["position"]),
+        spike_times=data["spike_times"],
+        environment=env,
+        place_bin_edges=env.place_bin_edges_,
+        edges=env.edges_,
+        is_track_interior=env.is_track_interior_,
+        is_track_boundary=env.is_track_boundary_,
+        disable_progress_bar=True,
+        **kwargs,
+    )
+
+
+def _spy_l2_penalty(monkeypatch):
+    """Record the ``l2_penalty`` the encoding fit hands the optimizer."""
+    penalties = []
+
+    def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
+        penalties.append(l2_penalty)
+        return fit_poisson_regressions(
+            design_matrix, spikes, weights, l2_penalty, **kwargs
+        )
+
+    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
+    return penalties
+
+
+@pytest.mark.unit
+class TestLogRatePrior:
+    """By default the coefficient penalty is a Gaussian prior on log-rate."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "prior_std"),
+        [
+            ({}, sorted_spikes_glm.GLM_LOG_RATE_PRIOR_STD),
+            ({"log_rate_prior_std": 1.0}, 1.0),
+        ],
+    )
+    @pytest.mark.parametrize("knot_spacing", [5.0, 20.0])
+    def test_prior_sets_the_log_rate_sd_at_the_bins(
+        self,
+        monkeypatch,
+        simple_1d_environment,
+        simple_spike_data,
+        kwargs,
+        prior_std,
+        knot_spacing,
+    ):
+        """Under ``Normal(0, 1 / (2 l2_penalty))`` coefficients, the spline's
+        log-rate deviation from baseline has the prior variance on average
+        over the interior bins, whatever the knot spacing."""
+        penalties = _spy_l2_penalty(monkeypatch)
+        env = simple_1d_environment
+        encoding = _fit_encoding(
+            env, simple_spike_data, emission_knot_spacing=knot_spacing, **kwargs
+        )
+        centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
+        spline = np.asarray(
+            make_spline_predict_matrix(encoding["emission_design_info"], centers)
+        )[:, 1:]
+        (l2_penalty,) = penalties
+        coefficient_variance = 1.0 / (2.0 * l2_penalty)
+        implied_variance = coefficient_variance * np.sum(spline**2, axis=1)
+        np.testing.assert_allclose(implied_variance.mean(), prior_std**2, rtol=1e-6)
+
+    def test_intercept_only_basis_has_no_penalty(self):
+        assert sorted_spikes_glm.log_rate_prior_l2_penalty(np.ones((5, 1))) == 0.0
+
+    def test_explicit_l2_penalty_overrides_the_prior(
+        self, monkeypatch, simple_1d_environment, simple_spike_data
+    ):
+        penalties = _spy_l2_penalty(monkeypatch)
+        _fit_encoding(simple_1d_environment, simple_spike_data, l2_penalty=0.3)
+        assert penalties == [0.3]
+
+    @pytest.mark.parametrize("prior_std", [0.0, -1.0, np.inf, np.nan])
+    def test_invalid_prior_std_raises(
+        self, simple_1d_environment, simple_spike_data, prior_std
+    ):
+        with pytest.raises(ValidationError, match="log_rate_prior_std"):
+            _fit_encoding(
+                simple_1d_environment,
+                simple_spike_data,
+                log_rate_prior_std=prior_std,
+            )
 
 
 def test_encoding_fit_solves_all_cells_in_one_call(
@@ -892,85 +1047,6 @@ class TestWeightedEventOwnership:
 
         ((event_counts, _),) = captured
         np.testing.assert_allclose(event_counts, [1.75, 1.25, 0.0, 0.25, 2.75])
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("position_time", "weights", "spike_times"),
-    [
-        # Repeated final timestamp: the spike at t=2 has interpolated weight 1.
-        ([0.0, 1.0, 2.0, 2.0], [1.0, 1.0, 0.0, 1.0], [2.0]),
-        # Repeated interior timestamp.
-        ([0.0, 1.0, 1.0, 2.0], [1.0, 0.0, 1.0, 1.0], [1.0, 1.5]),
-        # A single position sample.
-        ([3.0], [0.5], [3.0, 3.0]),
-    ],
-    ids=["repeated-final", "repeated-interior", "single-sample"],
-)
-def test_weighted_spike_counts_conserve_interpolated_weight(
-    position_time, weights, spike_times
-):
-    """Event mass always equals the spike's interpolated weight, including
-    zero-length sample intervals, so a selected spike cannot lose its weight."""
-    from non_local_detector.likelihoods.sorted_spikes_glm import weighted_spike_counts
-
-    position_time, weights = np.array(position_time), np.array(weights)
-    counts = weighted_spike_counts(np.array(spike_times), position_time, weights)
-    np.testing.assert_allclose(
-        counts.sum(), np.interp(spike_times, position_time, weights).sum()
-    )
-    np.testing.assert_array_equal(counts[weights == 0.0], 0.0)
-
-
-def _reference_weighted_spike_counts(spike_times, position_time, weights):
-    """Per-spike loop: a spike in ``[t[0], t[-1]]`` splits its interpolated
-    weight between the last sample ``i <= n - 2`` with ``t[i] <= spike`` (or
-    ``i = 0``) and sample ``i + 1``, each part carried by its own sample."""
-    n = len(position_time)
-    counts = np.zeros(n)
-    for spike in spike_times:
-        if not position_time[0] <= spike <= position_time[-1]:
-            continue
-        left = 0
-        for i in range(1, n - 1):
-            if position_time[i] <= spike:
-                left = i
-        right = min(left + 1, n - 1)
-        interval = position_time[right] - position_time[left]
-        fraction = (spike - position_time[left]) / interval if interval > 0 else 1.0
-        counts[left] += (1.0 - fraction) * weights[left]
-        counts[right] += fraction * weights[right]
-    return counts
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("n_samples", [1, 2, 3, 17])
-@pytest.mark.parametrize("seed", range(5))
-def test_weighted_spike_counts_match_per_spike_reference(n_samples, seed):
-    """Encoding event rows follow the position samples, independently of the
-    decode binning convention: unsorted spikes, spikes on samples, repeated
-    timestamps, and spikes outside the position timeline."""
-    from non_local_detector.likelihoods.sorted_spikes_glm import weighted_spike_counts
-
-    rng = np.random.default_rng(seed)
-    position_time = np.sort(rng.integers(0, 2 * n_samples, n_samples)).astype(float)
-    weights = rng.choice([0.0, 0.3, 1.0], n_samples)
-    on_samples = rng.choice(position_time, 5)
-    spike_times = rng.permutation(
-        np.concatenate(
-            [
-                rng.uniform(position_time[0] - 1.0, position_time[-1] + 1.0, 20),
-                on_samples,
-            ]
-        )
-    )
-
-    np.testing.assert_allclose(
-        weighted_spike_counts(spike_times, position_time, weights),
-        _reference_weighted_spike_counts(spike_times, position_time, weights),
-        rtol=1e-12,
-        atol=1e-15,
-    )
 
 
 def _corner_track_data(environment_name="corner", seed=0):

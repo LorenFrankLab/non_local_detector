@@ -512,6 +512,32 @@ def test_fit_mark_reference_rejects_invalid_weights(bad):
         fit_mark_reference(marks, np.array([bad, 1.0, 1.0]), 24.0)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("marks", "weights"),
+    [
+        (np.zeros((3, 2)), np.ones(2)),
+        (np.zeros((3, 2)), np.ones(4)),
+        (np.zeros((3, 2)), np.ones((3, 1))),
+        (np.zeros(3), np.ones(3)),
+    ],
+    ids=["fewer-weights", "more-weights", "2-d-weights", "1-d-marks"],
+)
+def test_fit_mark_reference_rejects_unpaired_rows(marks, weights):
+    """One weight per training spike, or the rows of the two do not pair."""
+    with pytest.raises(ValidationError, match="electrode 4") as error:
+        fit_mark_reference(marks, weights, 24.0, electrode=4)
+    assert str(marks.shape) in str(error.value)
+
+
+@pytest.mark.unit
+def test_fit_mark_reference_rejects_kernel_scale_per_other_features():
+    marks = np.arange(6.0).reshape(3, 2)
+    with pytest.raises(ValidationError, match="kernel_scale") as error:
+        fit_mark_reference(marks, np.ones(3), np.array([24.0, 24.0, 24.0]), 1)
+    assert "(3,)" in str(error.value)
+
+
 @pytest.mark.integration
 def test_reference_uses_requested_environments_every_group_and_the_weights():
     """The reference spans every encoding group of the modelled environments,

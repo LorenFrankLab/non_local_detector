@@ -56,10 +56,10 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
+    warn_if_no_encoding_exposure,
     warn_if_tracking_is_sparse,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
@@ -77,11 +77,13 @@ from non_local_detector.likelihoods.common import (
     _traced_block_kde,
     as_std_array,
     drop_zero_weight_samples,
+    environment_grid_fingerprint,
     get_position_at_time,
     kde_log_density,
     log_density_intensity,
     resolve_row_slice,
     validate_bandwidth,
+    validate_encoding_contract,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
@@ -341,6 +343,9 @@ def fit_sorted_spikes_kde_encoding_model(
     n_dims = 1 if environment.track_graph is not None else position.shape[1]
     position_std = validate_bandwidth(position_std, n_dims, "position_std")
     warn_if_tracking_is_sparse(support, position, position_std)
+    warn_if_no_encoding_exposure(
+        exposure_weights, "Sorted-spikes KDE", clusterless=False
+    )
 
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -449,6 +454,7 @@ def fit_sorted_spikes_kde_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "marginal_models": marginal_models,
         "occupancy_model": occupancy_model,
         "occupancy": occupancy,
@@ -484,6 +490,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     log_occupancy: jnp.ndarray | None = None,
+    environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -527,6 +534,13 @@ def predict_sorted_spikes_kde_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -550,10 +564,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         otherwise (n_rows, 1).
 
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
+    validate_encoding_contract(rate_units, environment, environment_grid)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:

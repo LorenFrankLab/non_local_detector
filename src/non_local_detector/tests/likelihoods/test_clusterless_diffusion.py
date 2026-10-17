@@ -71,6 +71,9 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _interior_bin_indices,
 )
 from non_local_detector.tests.likelihoods.conftest import training_mark_references
+from non_local_detector.tests.likelihoods.test_sorted_spikes_diffusion import (
+    simulate_sparse_uniform_tracking,
+)
 
 WAVEFORM_STD = 6.0
 POSITION_STD = 1.5
@@ -835,7 +838,7 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
             disable_progress_bar=True,
         )
     messages = [str(w.message) for w in record if issubclass(w.category, UserWarning)]
-    assert any("occupancy weights sum to 0" in m for m in messages), messages
+    assert any("zero training exposure" in m for m in messages), messages
     assert any("zero total encoding weight" in m for m in messages), messages
 
     assert np.all(np.isfinite(np.asarray(enc["occupancy"])))
@@ -2242,3 +2245,32 @@ def test_encoding_spikes_are_bin_sorted_and_legacy_unsorted_models_still_predict
             rtol=1e-5,
             atol=1e-5,
         )
+
+
+@pytest.mark.unit
+def test_uniform_rate_is_recovered_under_sparse_tracking():
+    """A uniform-rate electrode tracked 2 bins per sample has a uniform ground process.
+
+    Exposure sits at each tracking sample's bin, so each encoding spike must be
+    split between its bracketing samples' bins (the encoding support's event
+    rule), not placed at its interpolated position in a bin the samples skip.
+    """
+    time, position, spike_times, env = simulate_sparse_uniform_tracking(rate=40.0)
+    rng = np.random.default_rng(0)
+    marks = [rng.normal(0.0, 30.0, (len(spike_times[0]), 4)).astype(np.float32)]
+    encoding = fit_clusterless_diffusion_encoding_model(
+        time,
+        position,
+        spike_times,
+        marks,
+        env,
+        position_std=2.5,
+        waveform_std=WAVEFORM_STD,
+        disable_progress_bar=True,
+    )
+    ground = np.asarray(encoding["summed_ground_process_intensity"])
+    assert np.max(np.abs(ground / 40.0 - 1.0)) < 0.1
+    # Splitting conserves each spike's weight.
+    np.testing.assert_allclose(
+        np.sum(encoding["encoding_weights"][0]), len(spike_times[0])
+    )

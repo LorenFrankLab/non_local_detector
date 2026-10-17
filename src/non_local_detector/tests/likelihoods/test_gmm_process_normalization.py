@@ -119,16 +119,16 @@ def test_public_event_intensity_integrates_to_compensator(
     marks = np.linspace(-20.0, 20.0, 801)
     edges = np.arange(len(marks) + 1) * 0.01
     position = np.full((2, 1), 2.5)
-    kwargs = dict(
-        position_time=np.array([edges[0], edges[-1]]),
-        position=position,
-        time_edges=edges,
-        is_local=is_local,
-        block_size=128,
-        bin_tile_size=3,
-        mark_reference=mark_reference,
+    kwargs = {
         **encoding,
-    )
+        "position_time": np.array([edges[0], edges[-1]]),
+        "position": position,
+        "time_edges": edges,
+        "is_local": is_local,
+        "block_size": 128,
+        "bin_tile_size": 3,
+        "mark_reference": mark_reference,
+    }
     empty = clusterless_gmm.predict_clusterless_gmm_log_likelihood(
         spike_times=[np.empty(0)],
         spike_waveform_features=[np.empty((0, 1))],

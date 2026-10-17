@@ -64,6 +64,7 @@ def predict_no_spike_log_likelihood(
     row_slice: slice | None = None,
     *,
     time_edges: np.ndarray,
+    disable_progress_bar: bool = False,
     _time_bin_sizes: np.ndarray | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
@@ -90,6 +91,9 @@ def predict_no_spike_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges: the bin duration
         and the spike-to-row assignment are both taken from them, so the result
         equals the full-time result sliced by ``row_slice``.
+    disable_progress_bar : bool, default=False
+        Turn off the per-block progress bar. Detectors pass their
+        ``disable_progress_bar`` algorithm parameter.
     _time_bin_sizes : np.ndarray | None, optional
         Internal precomputed ``no_spike_time_bin_sizes(time_edges)`` for these edges.
         Detector predictions prepare it once and reuse it across chunks. Direct
@@ -170,5 +174,10 @@ def predict_no_spike_log_likelihood(
         )
 
     return _concatenate_row_blocks(
-        row_start, row_stop, len(spike_times), evaluate, "No Spike Likelihood", False
+        row_start,
+        row_stop,
+        len(spike_times),
+        evaluate,
+        "No Spike Likelihood",
+        disable_progress_bar,
     )[:, None]

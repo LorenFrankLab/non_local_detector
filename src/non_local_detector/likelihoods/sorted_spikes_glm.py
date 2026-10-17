@@ -51,7 +51,6 @@ context and uses common helper functions for spike counting and position
 interpolation.
 """
 
-import logging
 import warnings
 from functools import partial
 
@@ -62,7 +61,10 @@ import pandas as pd  # type: ignore[import-untyped]
 from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
 from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_no_encoding_exposure,
+)
 from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -73,8 +75,11 @@ from non_local_detector.likelihoods.common import (
     _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
+    environment_grid_fingerprint,
     get_position_at_time,
     resolve_row_slice,
+    snap_off_track_positions,
+    validate_encoding_contract,
     validate_population_lengths,
     validate_weights,
 )
@@ -84,8 +89,6 @@ from non_local_detector.time_edges import (
     _resolve_time_grid,
     requires_time_edges,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @jax.jit
@@ -198,6 +201,61 @@ def make_spline_predict_matrix(
     return jnp.asarray(design_matrix)
 
 
+# Prior standard deviation, in nats, of a place field's log-rate deviation
+# from the cell's baseline across the environment's bins. Firing rates span
+# orders of magnitude. CA1 place cells fire up to ~40 Hz in
+# field and below ~0.1-0.5 Hz out of field, a log-rate range of up to
+# log(40 / 0.1) ~= 6 nats; spanning that with three standard deviations gives
+# 2. The same SD is the root-mean-square log-rate deviation across bins of a
+# field 6 nats above baseline over 10-15% of the bins, 6 * sqrt(0.12 * 0.88)
+# ~= 2.
+GLM_LOG_RATE_PRIOR_STD = 2.0
+
+
+def log_rate_prior_l2_penalty(
+    predict_matrix: np.ndarray, log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD
+) -> float:
+    """Coefficient penalty that gives the spline log-rate a prior SD.
+
+    With independent ``Normal(0, tau**2)`` priors on the spline coefficients,
+    the log-rate deviation from baseline at bin ``k``, ``f_k = B_k @ beta``,
+    has prior variance ``tau**2 * ||B_k||**2``. Choosing ``tau**2 =
+    log_rate_prior_std**2 / mean_k ||B_k||**2`` makes its average over the
+    bins ``log_rate_prior_std**2`` whatever the knot spacing or the number of
+    dimensions; the penalty is ``1 / (2 * tau**2)``. For the environment
+    anchored ``cr`` bases, the per-bin prior SD is about 0.7-1.2 times the
+    target, depending on the geometry and knot spacing.
+
+    Parameters
+    ----------
+    predict_matrix : np.ndarray, shape (n_bins, n_coefficients)
+        Spline basis at the environment's interior bin centers. Column 0 is
+        the unpenalized intercept.
+    log_rate_prior_std : float, optional
+        Prior SD of the log-rate deviation, in nats, by default
+        ``GLM_LOG_RATE_PRIOR_STD``.
+
+    Returns
+    -------
+    l2_penalty : float
+        Penalty on the sum of squared non-intercept coefficients against the
+        total log likelihood, as ``fit_poisson_regressions`` takes it; 0.0
+        for an intercept-only basis.
+    """
+    if not (np.isfinite(log_rate_prior_std) and log_rate_prior_std > 0):
+        raise ValidationError(
+            "log_rate_prior_std must be a positive, finite standard deviation",
+            expected="a float > 0 (nats of log-rate)",
+            got=repr(log_rate_prior_std),
+            hint=f"The default is {GLM_LOG_RATE_PRIOR_STD}.",
+        )
+    spline = np.asarray(predict_matrix, dtype=np.float64)[:, 1:]
+    if spline.shape[1] == 0:
+        return 0.0
+    mean_squared_norm = float(np.mean(np.sum(spline**2, axis=1)))
+    return mean_squared_norm / (2.0 * log_rate_prior_std**2)
+
+
 # Gradient inf-norm above which a fit is treated as genuinely non-converged.
 # Set well above GLM_GRADIENT_TOL, which float32 sums over long recordings
 # cannot always reach, so stopping at the precision limit does not warn.
@@ -290,17 +348,22 @@ def fit_poisson_regressions(
 ) -> jnp.ndarray:
     """Fit weighted Poisson regressions for many cells sharing one design.
 
-    Each cell maximizes ``sum_i [spikes_i * log(lambda_i) - weights_i *
-    lambda_i]`` (normalized by ``sum(weights)``) minus ``l2_penalty`` times the
-    squared non-intercept coefficients, with ``lambda = max(exp(design_matrix
-    @ coefficients), rate_floor)``. The event and exposure terms are weighted
+    Each cell maximizes its total log likelihood ``sum_i [spikes_i *
+    log(lambda_i) - weights_i * lambda_i]`` minus ``l2_penalty`` times the sum
+    of its squared non-intercept coefficients, with ``lambda =
+    max(exp(design_matrix @ coefficients), rate_floor)``. This is the
+    posterior mode under independent ``Normal(0, 1 / (2 * l2_penalty))``
+    priors on those coefficients, so the prior's weight against the data does
+    not grow with the exposure. The event and exposure terms are weighted
     separately: ``spikes`` already carries each event's weight, so it is not
     multiplied by ``weights`` again.
 
     All cells take damped Newton steps together. The sums over rows run
     compiled on the device in row blocks; each cell's small Newton system is
     solved in float64 on the host, so basis functions with almost no weighted
-    support are not moved by float32 rounding. A cell stops once its gradient
+    support are not moved by float32 rounding. The optimizer works on the
+    penalized objective divided by ``sum(weights)``, so the gradient
+    tolerances are per second of exposure. A cell stops once that gradient's
     inf-norm is below ``GLM_GRADIENT_TOL`` or no step halving lowers its
     objective.
 
@@ -309,11 +372,13 @@ def fit_poisson_regressions(
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_cells, n_time)
         Event mass per row and cell: the weighted spike counts from
-        ``weighted_spike_counts``, not multiplied by ``weights`` again.
+        ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
-        L2 regression penalty, by default 1e-7
+        Penalty on the sum of squared non-intercept coefficients, in nats
+        against the total log likelihood (not per second of exposure), by
+        default 1e-7.
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
 
@@ -362,17 +427,23 @@ def fit_poisson_regressions(
             block_rows=block_rows,
             derivatives=derivatives,
         )
+        # The penalty is on the total log likelihood, so its weight against the
+        # data does not grow with the exposure. Dividing both by the exposure
+        # keeps the gradient tolerances per second of exposure.
         sums = [np.asarray(value, dtype=np.float64) for value in sums]
-        sums[0] = -sums[0] / weight_sum + l2_penalty * np.sum(
-            penalized * coefficients**2, axis=1
-        )
+        sums[0] = (
+            -sums[0] + l2_penalty * np.sum(penalized * coefficients**2, axis=1)
+        ) / weight_sum
         if derivatives:
-            sums[1] = -sums[1] / weight_sum + 2 * l2_penalty * penalized * coefficients
-            sums[2] = sums[2] / weight_sum + 2 * l2_penalty * np.diag(penalized)
+            sums[1] = (
+                -sums[1] + 2 * l2_penalty * penalized * coefficients
+            ) / weight_sum
+            sums[2] = (sums[2] + 2 * l2_penalty * np.diag(penalized)) / weight_sum
         return sums
 
     loss, gradient, hessian = evaluate(coefficients, derivatives=True)
     active = np.ones(n_cells, dtype=bool)
+    singular_cells: set[int] = set()
     for _ in range(GLM_MAX_NEWTON_STEPS):
         gradient_norm = np.max(np.abs(gradient), axis=1)
         active &= np.isfinite(loss) & (gradient_norm > GLM_GRADIENT_TOL)
@@ -383,17 +454,21 @@ def fit_poisson_regressions(
                 ..., 0
             ]
         except np.linalg.LinAlgError:
-            logger.debug(
-                "GLM Newton system singular for a cell; using least squares for "
-                "cells %s",
-                np.flatnonzero(active).tolist(),
-            )
-            direction = -np.stack(
-                [
-                    np.linalg.lstsq(h, g, rcond=None)[0]
-                    for h, g in zip(hessian[active], gradient[active], strict=True)
-                ]
-            )
+            # Solve cell by cell so only the singular systems use least squares.
+            direction = np.empty((int(active.sum()), n_coefficients))
+            for index, (cell, h, g) in enumerate(
+                zip(
+                    np.flatnonzero(active),
+                    hessian[active],
+                    gradient[active],
+                    strict=True,
+                )
+            ):
+                try:
+                    direction[index] = -np.linalg.solve(h, g)
+                except np.linalg.LinAlgError:
+                    singular_cells.add(int(cell))
+                    direction[index] = -np.linalg.lstsq(h, g, rcond=None)[0]
         slope = np.sum(gradient[active] * direction, axis=1)
         step = np.ones(direction.shape[0])
         accepted = np.zeros(direction.shape[0], dtype=bool)
@@ -416,6 +491,20 @@ def fit_poisson_regressions(
         # A cell no step can improve has reached the precision limit.
         active[np.flatnonzero(active)[~accepted]] = False
         loss, gradient, hessian = evaluate(coefficients, derivatives=True)
+
+    if singular_cells:
+        cells = sorted(singular_cells)
+        warnings.warn(
+            f"GLM Poisson regression had a singular Newton system for "
+            f"{len(cells)} of {n_cells} cells (indices {cells[:20]}), so those "
+            f"steps used least squares. Some coefficients are then not "
+            f"identified by the data, e.g. a basis function without weighted "
+            f"exposure when l2_penalty is 0; least squares leaves those "
+            f"combinations at their starting values. Use a positive l2_penalty "
+            f"to identify them.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Judge convergence by the gradient inf-norm, and also warn when a fit
     # diverged to a non-finite loss or gradient: ``NaN > tol`` is ``False``,
@@ -463,11 +552,12 @@ def fit_poisson_regression(
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_time,)
         Event mass per row: the weighted spike counts from
-        ``weighted_spike_counts``, not multiplied by ``weights`` again.
+        ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
-        L2 regression penalty, by default 1e-7
+        Penalty on the sum of squared non-intercept coefficients against the
+        total log likelihood, by default 1e-7.
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
 
@@ -484,58 +574,6 @@ def fit_poisson_regression(
     )[0]
 
 
-def weighted_spike_counts(
-    spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
-) -> np.ndarray:
-    """Split each spike's interpolated weight between its bracketing samples.
-
-    A spike a fraction ``a`` of the way from sample ``i`` to sample ``i + 1``
-    adds ``(1 - a) * weights[i]`` to row ``i`` and ``a * weights[i + 1]`` to
-    row ``i + 1``. The two parts sum to ``weights`` linearly interpolated to the
-    spike time, so each spike keeps its canonical weight and complementary
-    groups still partition it. Each part is carried by the sample that supplies
-    it, so a row receives event mass only where its own exposure weight is
-    positive; a row with events but no exposure would let the fitted rate at
-    its position diverge. For a locally constant rate and uniform sampling, an
-    interior row's expected event mass is ``rate * weights[i] * dt``,
-    proportional to its exposure term. Spikes outside
-    ``[position_time[0], position_time[-1]]`` are dropped.
-
-    Parameters
-    ----------
-    spike_times : np.ndarray, shape (n_spikes,)
-    position_time : np.ndarray, shape (n_time_position,)
-    weights : np.ndarray, shape (n_time_position,)
-
-    Returns
-    -------
-    counts : np.ndarray, shape (n_time_position,)
-        Event mass per position row.
-    """
-    position_time = np.asarray(position_time)
-    weights = np.asarray(weights)
-    spike_times = np.asarray(spike_times)
-    n_time = position_time.shape[0]
-    times = spike_times[
-        (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
-    ]
-    # Encoding rows are position samples, not decode bins: the left sample is
-    # the last one at or before the spike, never the final sample, so a spike
-    # at position_time[-1] splits into the final interval.
-    left = np.searchsorted(position_time[1:-1], times, side="right")
-    right = np.minimum(left + 1, n_time - 1)
-    interval = position_time[right] - position_time[left]
-    safe_interval = np.where(interval > 0.0, interval, 1.0)
-    # A zero-length interval (a repeated final timestamp, or a single sample)
-    # gives the spike the right sample's weight, as np.interp does.
-    fraction = np.where(
-        interval > 0.0, (times - position_time[left]) / safe_interval, 1.0
-    )
-    return np.bincount(
-        left, weights=(1.0 - fraction) * weights[left], minlength=n_time
-    ) + np.bincount(right, weights=fraction * weights[right], minlength=n_time)
-
-
 def fit_sorted_spikes_glm_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
@@ -547,9 +585,10 @@ def fit_sorted_spikes_glm_encoding_model(
     is_track_boundary: np.ndarray,
     weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
-    l2_penalty: float = 0.5,
+    l2_penalty: float | None = None,
     disable_progress_bar: bool = False,
     *,
+    log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     encoding_time_range=None,
     valid_position_intervals=None,
     _encoding_support=None,
@@ -583,11 +622,22 @@ def fit_sorted_spikes_glm_encoding_model(
         Spacing of the spline knots in position units, by default
         ``sqrt(12.5) * 2`` (about 7.07).
     l2_penalty : float, optional
-        L2 penalty per second, by default 0.5 (0.001 at the 500 Hz reference)
+        Penalty on the sum of squared spline (non-intercept) coefficients, in
+        nats against the total log likelihood: a ``Normal(0, 1 / (2 *
+        l2_penalty))`` prior on each coefficient. It does not scale with the
+        recording length. By default None, which derives it from
+        ``log_rate_prior_std`` with ``log_rate_prior_l2_penalty``; a value
+        overrides ``log_rate_prior_std``.
     disable_progress_bar : bool, optional
         Stored in the encoding model for prediction's progress bars; the fit
         has none. By default False.
 
+    log_rate_prior_std : float, optional
+        Prior SD, in nats, of each neuron's log-rate deviation from its
+        baseline across the interior bins, by default
+        ``GLM_LOG_RATE_PRIOR_STD`` (2.0: three SDs span a peak-to-baseline
+        ratio of ``exp(6)``, about 400). Ignored when ``l2_penalty`` is
+        given.
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
         original interpolation basis. Uniform samples otherwise include endpoint
@@ -628,6 +678,9 @@ def fit_sorted_spikes_glm_encoding_model(
         _encoding_support=_encoding_support,
     )
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
+    warn_if_no_encoding_exposure(
+        exposure_weights, "Sorted-spikes GLM", clusterless=False
+    )
     # Use position_time directly so spike counts, design matrix, and
     # weights all share the same time grid.
 
@@ -679,6 +732,10 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_predict_matrix = make_spline_predict_matrix(
         emission_design_info, interior_place_bin_centers
     )
+    if l2_penalty is None:
+        l2_penalty = log_rate_prior_l2_penalty(
+            np.asarray(emission_predict_matrix), log_rate_prior_std
+        )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
     else:
@@ -719,6 +776,7 @@ def fit_sorted_spikes_glm_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "coefficients": coefficients,
         "emission_design_info": emission_design_info,
         "place_fields": place_fields,
@@ -748,6 +806,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
+    environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -788,14 +847,22 @@ def predict_sorted_spikes_glm_log_likelihood(
         If True, suppresses the progress bar display. By default False.
     is_local : bool, optional
         If True, compute the log likelihood only at the animal's current
-        interpolated position (local decoding). If False, compute the log
-        likelihood across all position bins (non-local decoding).
-        By default False.
+        interpolated position (local decoding); positions outside the track
+        are moved to the nearest interior bin center so the spline is never
+        extrapolated. If False, compute the log likelihood across all
+        position bins (non-local decoding). By default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -814,10 +881,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         non-local columns are the interior bins only. ``n_rows`` is ``n_bins``
         unless ``row_slice`` is given.
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
+    validate_encoding_contract(rate_units, environment, environment_grid)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
@@ -834,8 +898,11 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     if is_local:
         # Need to interpolate position
-        interpolated_position = get_position_at_time(
-            position_time, position, row_time, environment
+        # The natural spline extrapolates log-rate linearly past its boundary
+        # knots; off-track positions read the nearest interior bin instead.
+        interpolated_position = snap_off_track_positions(
+            get_position_at_time(position_time, position, row_time, environment),
+            environment,
         )
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, interpolated_position
