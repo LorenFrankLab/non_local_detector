@@ -19,6 +19,9 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
+from non_local_detector.likelihoods.mark_reference import (
+    mark_reference_log_likelihood,
+)
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 ALGORITHMS = [
@@ -134,3 +137,88 @@ def test_refit_with_mismatch_leaves_fitted_state_unchanged(sim):
     assert vars(detector).keys() == state_before.keys()
     for name, value in state_before.items():
         assert vars(detector)[name] is value, name
+
+
+def _with_nonfinite_mark(sim, before_time, value=np.nan):
+    """Copies of the waveform features with one mark of electrode 0 set to ``value``.
+
+    The corrupted spike is the first one (it must lie before ``before_time``) or,
+    when ``before_time`` is None, the last spike of the recording.
+    """
+    features = [np.array(f, copy=True) for f in sim.spike_waveform_features]
+    times = np.asarray(sim.spike_times[0])
+    spike = 0 if before_time is not None else len(times) - 1
+    if before_time is not None:
+        assert times[spike] < before_time
+    features[0][spike, 0] = value
+    return features
+
+
+def _direct_predict(decoder, sim, features, time_edges, is_local):
+    _, predict = _CLUSTERLESS_ALGORITHMS[decoder.clusterless_algorithm]
+    (encoding_model,) = decoder.encoding_model_.values()
+    return predict(
+        sim.position_time,
+        sim.position,
+        sim.spike_times,
+        features,
+        **encoding_model,
+        mark_reference=decoder.mark_reference_,
+        is_local=is_local,
+        time_edges=jnp.asarray(time_edges),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [np.nan, np.inf])
+@pytest.mark.parametrize("is_local", [False, True], ids=["non_local", "local"])
+def test_predict_rejects_nonfinite_decode_mark(fitted_decoder, sim, is_local, value):
+    """One non-finite mark in the decoding window raises instead of returning NaN.
+
+    A NaN mark makes its bin's likelihood NaN, and the filter then carries NaN
+    into the posterior of every later bin.
+    """
+    time_edges = time_edges_from_centers(sim.position_time[:N_DECODE])
+    features = _with_nonfinite_mark(sim, before_time=time_edges[-1], value=value)
+    with pytest.raises(ValidationError, match="non-finite.*electrode 0"):
+        _direct_predict(fitted_decoder, sim, features, time_edges, is_local)
+    with pytest.raises(ValidationError, match="non-finite.*electrode 0"):
+        fitted_decoder.predict(sim.spike_times, features, time_edges=time_edges)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("is_local", [False, True], ids=["non_local", "local"])
+def test_predict_ignores_nonfinite_mark_outside_decoding_window(
+    fitted_decoder, sim, is_local
+):
+    """A spike outside the requested bins never enters the likelihood, so its
+    mark is not checked and the result equals the uncorrupted prediction."""
+    time_edges = time_edges_from_centers(sim.position_time[:N_DECODE])
+    features = _with_nonfinite_mark(sim, before_time=None)
+    assert sim.spike_times[0][-1] > time_edges[-1]
+    corrupted = _direct_predict(fitted_decoder, sim, features, time_edges, is_local)
+    clean = _direct_predict(
+        fitted_decoder, sim, sim.spike_waveform_features, time_edges, is_local
+    )
+    assert np.all(np.isfinite(np.asarray(corrupted)))
+    np.testing.assert_array_equal(np.asarray(corrupted), np.asarray(clean))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_fit_rejects_nonfinite_encoding_mark(sim, algorithm):
+    features = _with_nonfinite_mark(sim, before_time=sim.position_time[-1])
+    detector = ClusterlessDecoder(clusterless_algorithm=algorithm)
+    with pytest.raises(ValidationError, match="finite"):
+        detector.fit(sim.position_time, sim.position, sim.spike_times, features)
+
+
+@pytest.mark.unit
+def test_mark_reference_likelihood_rejects_nonfinite_decode_mark(fitted_decoder, sim):
+    """No-Spike scores marks with the reference density alone; it checks them too."""
+    time_edges = time_edges_from_centers(sim.position_time[:N_DECODE])
+    features = _with_nonfinite_mark(sim, before_time=time_edges[-1])
+    with pytest.raises(ValidationError, match="non-finite.*electrode 0"):
+        mark_reference_log_likelihood(
+            fitted_decoder.mark_reference_, sim.spike_times, features, time_edges
+        )

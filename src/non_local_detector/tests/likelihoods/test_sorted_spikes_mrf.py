@@ -46,6 +46,7 @@ from non_local_detector.tests.likelihoods.test_sorted_spikes_diffusion import (
     make_2d_env,
     make_two_room_env,
     simulate_place_data,
+    simulate_sparse_uniform_tracking,
 )
 
 ENCODING_DICT_KEYS = {
@@ -919,6 +920,21 @@ def test_component_with_any_exposure_is_fit_not_floored():
     place_fields = np.asarray(encoding["place_fields"])[:, node_order]
     assert np.all(np.isfinite(place_fields))
     assert np.all(place_fields[:, right_bins] > 1e3 * RATE_EPS_HZ)
+
+
+@pytest.mark.unit
+def test_uniform_rate_is_recovered_under_sparse_tracking():
+    """A 10 Hz neuron tracked 2 bins per sample fits ~10 Hz in every bin.
+
+    The bins between samples have no exposure, so spikes placed there would make
+    those bins' rates unbounded (finite counts against a zero offset).
+    """
+    time, position, spike_times, env = simulate_sparse_uniform_tracking()
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        time, position, spike_times, env, disable_progress_bar=True
+    )
+    place_field = np.asarray(encoding["place_fields"])[0]
+    assert np.max(np.abs(place_field / 10.0 - 1.0)) < 0.1
 
 
 def test_default_rank_covers_disconnected_components(monkeypatch):

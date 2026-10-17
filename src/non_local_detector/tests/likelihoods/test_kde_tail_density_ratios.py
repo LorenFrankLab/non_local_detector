@@ -235,7 +235,9 @@ def test_sorted_public_local_path_preserves_nan_position_diagnostic():
         position_time=np.array([0.0, 1.0]),
         position=np.full((2, 1), np.nan),
         spike_times=[np.empty(0)],
-        environment=None,
+        environment=Environment(
+            place_bin_size=2.0, position_range=((0.0, 1.0),)
+        ).fit_place_grid(np.array([[0.0], [1.0]]), infer_track_interior=False),
         marginal_models=[model],
         occupancy_model=model,
         occupancy=jnp.ones(1),
