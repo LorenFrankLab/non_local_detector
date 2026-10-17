@@ -144,6 +144,7 @@ class _LikelihoodPositionContext:
     position: np.ndarray | None
     is_missing: np.ndarray | None
     all_missing: bool
+    reads_position: bool
 
     @classmethod
     def prepare(
@@ -151,25 +152,47 @@ class _LikelihoodPositionContext:
         time_edges: np.ndarray,
         position_time: np.ndarray | None,
         position: np.ndarray | None,
+        *,
+        reads_position: bool = True,
+        warn_outside_tracking: bool = False,
     ) -> "_LikelihoodPositionContext":
-        missing = _missing_bins(time_edges, None, position_time, position)
+        missing = _missing_bins(
+            time_edges,
+            None,
+            position_time,
+            position,
+            reads_position=reads_position,
+            warn_outside_tracking=warn_outside_tracking,
+            # Through this method and compute_log_likelihood to its caller.
+            stacklevel=5,
+        )
         prepared = position
         all_missing = False
         if position is not None:
             prepared = np.asarray(position)
             prepared = prepared[:, None] if prepared.ndim == 1 else prepared
             finite = np.all(np.isfinite(prepared), axis=1)
-            all_missing = not np.any(finite)
-            if not np.all(finite) and not all_missing:
+            # A model that never reads position decodes even without any.
+            all_missing = reads_position and not np.any(finite)
+            if np.any(finite) and not np.all(finite):
                 prepared = prepared.copy()
                 prepared[~finite] = prepared[finite][0]
-        return cls(time_edges, position_time, position, prepared, missing, all_missing)
+        return cls(
+            time_edges,
+            position_time,
+            position,
+            prepared,
+            missing,
+            all_missing,
+            reads_position,
+        )
 
-    def matches(self, time_edges, position_time, position) -> bool:
+    def matches(self, time_edges, position_time, position, reads_position) -> bool:
         return (
             self.time_edges is time_edges
             and self.source_time is position_time
             and self.source_position is position
+            and self.reads_position == reads_position
         )
 
 
@@ -234,6 +257,7 @@ def _prepare_likelihood_callback(
     has_no_spike: bool,
     log_likelihood_args: tuple = (),
     _time_grid: _DecodeTimeGrid | None = None,
+    reads_position: bool = True,
 ) -> Callable:
     """Adapt a detector likelihood to core's observation-row callback contract.
 
@@ -258,9 +282,12 @@ def _prepare_likelihood_callback(
     bins.
 
     Declaring ``_spike_time_order`` or ``_no_spike_time_bin_sizes`` lets this
-    adapter bind shared preparation. Each call creates fresh preparation;
-    nothing is stored on the detector or reused by a later prediction. Callers
-    with a precomputed likelihood bypass this adapter entirely.
+    adapter bind shared preparation. ``reads_position`` is the detector's
+    decision whether its decode likelihood reads position; the bound position
+    context marks bins missing for NaN or untracked position only when it
+    does. Each call creates fresh preparation; nothing is stored on the
+    detector or reused by a later prediction. Callers with a precomputed
+    likelihood bypass this adapter entirely.
     """
     parameters = inspect.signature(callback).parameters
     prepared: dict[str, object] = {}
@@ -270,7 +297,7 @@ def _prepare_likelihood_callback(
         prepared["_time_grid"] = _time_grid
     if "_position_context" in parameters and len(log_likelihood_args) >= 2:
         prepared["_position_context"] = _LikelihoodPositionContext.prepare(
-            time_edges, *log_likelihood_args[:2]
+            time_edges, *log_likelihood_args[:2], reads_position=reads_position
         )
     if has_no_spike and "_no_spike_time_bin_sizes" in parameters:
         prepared["_no_spike_time_bin_sizes"] = no_spike_time_bin_sizes(time_edges)
@@ -788,8 +815,12 @@ def _missing_bins(
     is_missing: np.ndarray | None,
     position_time: np.ndarray | None,
     position: np.ndarray | None,
+    *,
+    reads_position: bool = True,
+    warn_outside_tracking: bool = False,
+    stacklevel: int = 4,
 ) -> np.ndarray | None:
-    """Combine the caller's missing mask with bins affected by NaN position.
+    """Combine the caller's missing mask with bins that lack tracked position.
 
     Missing tracking is a break in support. Likelihoods read the position by
     linear interpolation (extrapolating from the end intervals) at the bin
@@ -797,10 +828,18 @@ def _missing_bins(
     A read is non-finite exactly when its time lies in ``[t[k - 1], t[k + 1])``
     for a non-finite sample ``k``: at ``t[k - 1]`` the sample still enters
     with weight zero (``0 * nan``), while at ``t[k + 1]`` it no longer does.
-    The span extends to infinity for a sample in an end interval. A bin is
-    decoded as missing when any time it owns (``[edges[i], edges[i + 1])``,
-    plus ``edges[-1]`` for the final bin) lies in such a span, so the center
-    and every spike of a non-missing bin have finite positions.
+    The span extends to infinity for a sample in an end interval. A read more
+    than half a sample before ``t[0]`` or after ``t[-1]`` is an extrapolation,
+    not tracking, so it is missing too; the half sample keeps bins centered on
+    the tracking samples, whose outer edges lie half a sample beyond them. The
+    half sample is half the median sampling interval, plus the timestamp
+    uniformity tolerance. A bin is decoded as missing when any time it owns
+    (``[edges[i], edges[i + 1])``, plus ``edges[-1]`` for the final bin) lies
+    in such a span, so the center and every spike of a non-missing bin have
+    tracked, finite positions. Both rules apply only when the decode
+    likelihood reads position (``reads_position``); a model without Local
+    states or a non-local position penalty decodes every bin. This concerns
+    decoding only: encoding fits use position for their support.
 
     Parameters
     ----------
@@ -808,11 +847,27 @@ def _missing_bins(
     is_missing : np.ndarray, shape (n_bins,), optional
     position_time : np.ndarray, shape (n_time_position,), optional
     position : np.ndarray, shape (n_time_position, n_position_dims), optional
+    reads_position : bool, optional
+        Whether the decode likelihood reads position, by default True. When
+        False, position marks no bin missing; only ``is_missing`` does.
+    warn_outside_tracking : bool, optional
+        Warn when bins are missing because they extend outside the tracked
+        period, by default False. Public decode entry points set it, so one
+        call warns once however many chunks or EM iterations it runs.
+    stacklevel : int, optional
+        Passed to ``warnings.warn``, by default 4 (the caller of a public
+        method decorated with ``requires_time_edges``).
 
     Returns
     -------
     is_missing : np.ndarray of bool, shape (n_bins,), or None
         None when nothing is missing and no mask was given.
+
+    Warns
+    -----
+    UserWarning
+        If ``warn_outside_tracking`` and some bins extend outside the tracked
+        period.
 
     Raises
     ------
@@ -844,10 +899,81 @@ def _missing_bins(
         )
     val.ensure_all_finite(position_time, "position_time")
     val.ensure_monotonic_increasing(position_time, "position_time")
-    is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
-    if not np.any(is_nan):
+    if not reads_position:
         return is_missing
+    affected = _bins_outside_tracking(time_edges, position_time)
+    if warn_outside_tracking and np.any(affected):
+        warnings.warn(
+            f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
+            "a position sample outside the tracked period "
+            f"[{position_time[0]:.6g}, {position_time[-1]:.6g}] s. Position there "
+            "could only be extrapolated from the first or last tracking interval, "
+            "so these bins are decoded as missing, like bins with NaN position: "
+            "their log likelihood is 0 and the posterior follows the transitions "
+            "alone. Pass position covering the decode time_edges, or restrict "
+            "time_edges to the tracked period.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+    is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
+    if np.any(is_nan):
+        affected |= _bins_reading_nan_position(time_edges, position_time, is_nan)
+    if not np.any(affected):
+        return is_missing
+    return affected if is_missing is None else is_missing | affected
 
+
+def _bins_outside_tracking(
+    time_edges: np.ndarray, position_time: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time more than half a sample outside the tracking.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and non-decreasing.
+
+    Returns
+    -------
+    is_outside : np.ndarray of bool, shape (n_bins,)
+    """
+    n_bins = len(time_edges) - 1
+    if position_time.size < 2:
+        return np.zeros(n_bins, dtype=bool)
+    sample_interval = float(np.median(np.diff(position_time)))
+    half_sample = sample_interval / 2 + _uniformity_tolerance(
+        position_time, sample_interval
+    )
+    # Bin i owns [edges[i], edges[i + 1]) (the final bin also edges[-1]), so it
+    # reaches before ``start`` iff edges[i] < start and after ``stop`` iff
+    # edges[i + 1] > stop.
+    start = position_time[0] - half_sample
+    stop = position_time[-1] + half_sample
+    return (time_edges[:-1] < start) | (time_edges[1:] > stop)
+
+
+def _bins_reading_nan_position(
+    time_edges: np.ndarray, position_time: np.ndarray, is_nan: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time whose interpolated position is non-finite.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+    position_time : np.ndarray, shape (n_time_position,)
+    is_nan : np.ndarray of bool, shape (n_time_position,)
+        Samples with a non-finite position; at least one is True.
+
+    Returns
+    -------
+    affected : np.ndarray of bool, shape (n_bins,)
+    """
+    n_bins = len(time_edges) - 1
     nan_index = np.flatnonzero(is_nan)
     # Spans of consecutive NaN samples, widened to the neighbouring samples.
     # Positions before the first sample (after the last) are extrapolated from
@@ -873,8 +999,7 @@ def _missing_bins(
     change = np.zeros(n_bins + 1, dtype=int)
     np.add.at(change, first, 1)
     np.add.at(change, stop, -1)
-    affected = np.cumsum(change[:-1]) > 0
-    return affected if is_missing is None else is_missing | affected
+    return np.cumsum(change[:-1]) > 0
 
 
 def _group_spike_mask(
@@ -918,14 +1043,20 @@ def _group_spike_mask(
 
 
 def _group_weights(
-    is_group: np.ndarray, weights: np.ndarray | None, likelihood_name: tuple
+    is_group: np.ndarray,
+    weights: np.ndarray | None,
+    likelihood_name: tuple,
+    encoding_support: EncodingSupport,
 ) -> np.ndarray:
     """Per-sample weights of one encoding group on the full position timeline.
 
-    The group mask is the model's exposure: a sample outside it contributes no
-    occupancy and owns no spikes. Warns when no sample has positive weight;
-    such a group is fit with zero exposure. The existing rate floors still
-    determine its likelihood, which is usually a mask or label mistake.
+    The group mask selects the model's samples: a sample outside it
+    contributes no occupancy and owns no spikes. Warns when the group has zero
+    exposure, i.e. no sample with positive weight also has a finite position
+    and time inside the encoding support; positive weights only on NaN
+    positions or outside ``encoding_time_range`` count as none. The existing
+    rate floors then determine its likelihood, which is usually a mask or
+    label mistake.
 
     Parameters
     ----------
@@ -934,21 +1065,26 @@ def _group_weights(
         Extra per-sample weights (e.g. EM local-state weights).
     likelihood_name : tuple
         ``(environment_name, encoding_group)`` of the group.
+    encoding_support : EncodingSupport
+        Support of the encoding fit; its ``exposure`` is zero for samples with
+        NaN position or outside the support.
 
     Returns
     -------
     group_weights : np.ndarray, shape (n_time_position,)
     """
     group_weights = is_group.astype(float) if weights is None else weights * is_group
-    if not np.any(group_weights > 0.0):
+    if not np.sum(group_weights * encoding_support.exposure) > 0.0:
         environment_name, encoding_group = likelihood_name
         warnings.warn(
             f"Encoding group {encoding_group!r} in environment "
-            f"{environment_name!r} has no training samples with positive weight, "
-            "so its encoding model is fit with zero exposure. Its likelihood is "
-            "then set by the rate floor (sorted spikes) or the background rate "
-            "(clusterless). Check is_training, encoding_group_labels, and "
-            "environment_labels.",
+            f"{environment_name!r} has no training samples with positive "
+            "exposure (a positive weight, a finite position and time inside the "
+            "encoding support), so its encoding model is fit with zero exposure. "
+            "Its likelihood is then set by the rate floor (sorted spikes) or the "
+            "background rate (clusterless). Check is_training, "
+            "encoding_group_labels, environment_labels, NaN positions, and "
+            "encoding_time_range / valid_position_intervals.",
             UserWarning,
             stacklevel=3,
         )
@@ -1397,6 +1533,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"    detector.{context}(..., position=position_2d)"
                 ),
             )
+
+    def _decode_reads_position(self) -> bool:
+        """Whether the decode likelihood reads the animal's position.
+
+        Local observation models and a positive ``non_local_position_penalty``
+        read it; other models ignore position at decode (``local_position_std``
+        only shapes Local states). Fitting and EM encoding refits always use
+        position for the encoding support, whatever this returns.
+
+        Returns
+        -------
+        reads_position : bool
+        """
+        return bool(
+            any(obs.is_local for obs in self.observation_models)
+            or getattr(self, "non_local_position_penalty", 0.0) > 0
+        )
 
     def _compute_non_local_position_penalty(
         self, time, position_time, position, environment
@@ -2833,6 +2986,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 time_edges,
                 has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
                 log_likelihood_args=log_likelihood_args,
+                reads_position=self._decode_reads_position(),
                 _time_grid=time_grid,
             )
 
@@ -2891,6 +3045,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             edges,
             has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
             log_likelihood_args=log_likelihood_args,
+            reads_position=self._decode_reads_position(),
             _time_grid=time_grid,
         )
 
@@ -3533,7 +3688,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     int(np.count_nonzero(self.is_track_interior_state_bins_)),
                 )
         # Subclasses have already combined ``is_missing`` with the bins
-        # affected by NaN positions via ``_missing_bins``.
+        # without tracked position via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
 
         if log_likelihood_args is None:
@@ -4133,6 +4288,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             time_edges,
             has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
             log_likelihood_args=log_likelihood_args,
+            reads_position=self._decode_reads_position(),
             _time_grid=_DecodeTimeGrid.from_validated_edges(
                 time_edges,
                 uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
@@ -4939,7 +5095,7 @@ class ClusterlessDetector(_DetectorBase):
             # The mask is this model's exposure on the full timeline, as for
             # sorted spikes: a subset timeline would let spike-weight
             # interpolation bridge the mask's gaps.
-            group_weights = _group_weights(is_group, weights, likelihood_name)
+            group_weights = _group_weights(is_group, weights, likelihood_name, support)
             is_group_spike = [
                 _group_spike_mask(times, position_time, group_weights, support)
                 for times in spike_times
@@ -5179,11 +5335,20 @@ class ClusterlessDetector(_DetectorBase):
             )
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
+        needs_position = self._decode_reads_position()
         if not isinstance(
             _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(time_edges, position_time, position):
+        ) or not _position_context.matches(
+            time_edges, position_time, position, needs_position
+        ):
+            # Without a prepared context this is a direct call, so it warns
+            # like the other public decode entry points.
             _position_context = _LikelihoodPositionContext.prepare(
-                time_edges, position_time, position
+                time_edges,
+                position_time,
+                position,
+                reads_position=needs_position,
+                warn_outside_tracking=_position_context is None,
             )
         self._validate_decode_population(spike_times, spike_waveform_features)
         position_missing = _position_context.is_missing
@@ -5191,12 +5356,6 @@ class ClusterlessDetector(_DetectorBase):
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
-        # ``local_position_std`` only shapes Local states, so it does not require
-        # position on its own.
-        needs_position = (
-            np.any([obs.is_local for obs in self.observation_models])
-            or non_local_penalty > 0
-        )
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):
@@ -5557,7 +5716,14 @@ class ClusterlessDetector(_DetectorBase):
         )
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(time_edges, is_missing, position_time, position)
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+        )
 
         # Handle deprecated boolean flags
         if (
@@ -5884,7 +6050,7 @@ class ClusterlessDetector(_DetectorBase):
             min_encoding_local_mass,
             min_encoding_local_ess,
         )
-        # Mirror predict(): bins affected by NaN positions are missing
+        # Mirror predict(): bins without tracked position are missing
         # observations in the E-step.
         is_missing = _missing_bins(
             time_edges,
@@ -5893,6 +6059,8 @@ class ClusterlessDetector(_DetectorBase):
             None
             if position is None
             else (position[:, np.newaxis] if position.ndim == 1 else position),
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
         )
         self._fit_em_model(
             lambda representation: self.fit(
@@ -5995,7 +6163,14 @@ class ClusterlessDetector(_DetectorBase):
         )
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(time_edges, is_missing, position_time, position)
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+        )
         return super().most_likely_sequence(
             time_edges=time_edges,
             log_likelihood_args=(
@@ -6234,7 +6409,7 @@ class SortedSpikesDetector(_DetectorBase):
             # count does not, biasing every place field low. The position array
             # stays full-length so it remains aligned with the weights and with
             # the grid used to interpolate per-spike weights.
-            group_weights = _group_weights(is_group, weights, likelihood_name)
+            group_weights = _group_weights(is_group, weights, likelihood_name, support)
 
             # GLM requires environment geometry that KDE derives internally
             glm_kwargs = {}
@@ -6462,11 +6637,20 @@ class SortedSpikesDetector(_DetectorBase):
             )
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
+        needs_position = self._decode_reads_position()
         if not isinstance(
             _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(time_edges, position_time, position):
+        ) or not _position_context.matches(
+            time_edges, position_time, position, needs_position
+        ):
+            # Without a prepared context this is a direct call, so it warns
+            # like the other public decode entry points.
             _position_context = _LikelihoodPositionContext.prepare(
-                time_edges, position_time, position
+                time_edges,
+                position_time,
+                position,
+                reads_position=needs_position,
+                warn_outside_tracking=_position_context is None,
             )
         self._validate_decode_population(spike_times)
         position_missing = _position_context.is_missing
@@ -6480,12 +6664,6 @@ class SortedSpikesDetector(_DetectorBase):
         # bins' centers; the spike likelihoods bin against the full edges.
 
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
-        # ``local_position_std`` only shapes Local states, so it does not require
-        # position on its own.
-        needs_position = (
-            np.any([obs.is_local for obs in self.observation_models])
-            or non_local_penalty > 0
-        )
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):
@@ -6750,7 +6928,14 @@ class SortedSpikesDetector(_DetectorBase):
         )
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(time_edges, is_missing, position_time, position)
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+        )
 
         # Handle deprecated boolean flags
         if (
@@ -7074,9 +7259,16 @@ class SortedSpikesDetector(_DetectorBase):
             min_encoding_local_ess,
         )
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Mirror predict(): bins affected by NaN positions are missing
+        # Mirror predict(): bins without tracked position are missing
         # observations in the E-step.
-        is_missing = _missing_bins(time_edges, is_missing, position_time, position)
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+        )
         self._fit_em_model(
             lambda representation: self.fit(
                 position_time,
@@ -7172,7 +7364,14 @@ class SortedSpikesDetector(_DetectorBase):
         )
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(time_edges, is_missing, position_time, position)
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+        )
         return super().most_likely_sequence(
             time_edges=time_edges,
             log_likelihood_args=(

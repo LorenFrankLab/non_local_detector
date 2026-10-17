@@ -316,6 +316,49 @@ def prepare_encoding_support(
     return support, weights, exposure_weights, np.nan_to_num(position)
 
 
+def warn_if_no_encoding_exposure(
+    exposure_weights, model: str, *, clusterless: bool, stacklevel: int = 3
+) -> None:
+    """Warn when an encoding fit has zero training exposure.
+
+    A sample's exposure is its weight, zero for a NaN position, times the time
+    its interpolation basis spends inside the encoding support (see
+    :func:`prepare_encoding_support`). With none, rates are unidentified and
+    the fit returns its floor model: rate-floor place fields (sorted spikes)
+    or zero-rate electrodes (clusterless). That is usually a mask or label
+    mistake.
+
+    Parameters
+    ----------
+    exposure_weights : array_like, shape (n_samples,)
+        Weighted sample exposure in seconds.
+    model : str
+        Name of the encoding model, for the message.
+    clusterless : bool
+        Whether the model is clusterless, which selects the stated consequence.
+    stacklevel : int, optional
+        Passed to ``warnings.warn``, by default 3 (the encoding fit's caller).
+    """
+    if not np.sum(exposure_weights) > 0.0:
+        consequence = (
+            "Every electrode is zero-rate, so its decode spikes are explained "
+            "by the background rate alone."
+            if clusterless
+            else "Every place field is set to the rate floor, so the model "
+            "carries no spatial information."
+        )
+        warnings.warn(
+            f"{model} encoding has zero training exposure: no position sample "
+            "has a positive weight, a finite position and time inside the "
+            "encoding support, so the exposure weights sum to 0. "
+            f"{consequence} Check the weights (or is_training, "
+            "encoding_group_labels and environment_labels), NaN positions, and "
+            "encoding_time_range / valid_position_intervals.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+
+
 def largest_tracking_step(support: EncodingSupport, position) -> float:
     """Largest distance between consecutive tracking samples within a segment.
 

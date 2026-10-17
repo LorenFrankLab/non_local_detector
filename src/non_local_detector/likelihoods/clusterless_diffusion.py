@@ -68,7 +68,10 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_no_encoding_exposure,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -405,13 +408,9 @@ def fit_clusterless_diffusion_encoding_model(
     occupancy_field = np.bincount(
         sample_bins[active], weights=exposure_weights[active], minlength=n_interior
     )
-    if weight_sum == 0:
-        warnings.warn(
-            "occupancy weights sum to 0; the diffusion occupancy is degenerate and a "
-            "safe denominator is used. Every electrode will be zero-rate.",
-            UserWarning,
-            stacklevel=2,
-        )
+    warn_if_no_encoding_exposure(
+        exposure_weights, "Clusterless diffusion", clusterless=True
+    )
 
     # ---- per electrode: marks, bin indices, weights, mean rate, ground process ----
     encoding_bin_indices: list[np.ndarray] = []

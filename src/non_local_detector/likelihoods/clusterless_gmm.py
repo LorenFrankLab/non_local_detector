@@ -19,7 +19,10 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_no_encoding_exposure,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -483,7 +486,7 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     all-zero ``sample_weight`` is rejected by ``GaussianMixtureModel.fit`` (it
     leaves no effective training data), so a fully de-weighted encoding group
     deliberately degrades to an unweighted occupancy fit after the caller's
-    "weights sum to 0" warning rather than raising; detectors pass the full
+    zero-exposure warning rather than raising; detectors pass the full
     position timeline, so that fallback occupancy covers every supplied sample,
     not only the group's. Because the unweighted
     fallback keeps every position row, the caller's ``occupancy_n_samples < 1``
@@ -675,13 +678,7 @@ def fit_clusterless_gmm_encoding_model(
     weights = validate_weights(np.asarray(weights), position.shape[0])
     # Weighted occupancy "time": sum of per-sample weights (uniform -> sample count).
     weight_sum = float(exposure_weights.sum())
-    if weight_sum == 0.0:
-        warnings.warn(
-            "clusterless GMM encoding weights sum to 0 (no effective training data "
-            "for this environment / encoding group); the fit will be degenerate.",
-            UserWarning,
-            stacklevel=2,
-        )
+    warn_if_no_encoding_exposure(exposure_weights, "Clusterless GMM", clusterless=True)
     occupancy_sample_weight = _gmm_sample_weight(exposure_weights, False)
 
     # Interior bins (cached)
