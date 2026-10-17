@@ -42,7 +42,6 @@ from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     decode_bin_centers,
     get_position_at_time,
-    interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
@@ -276,6 +275,15 @@ def pixellate_interior_fields(
     count fields (in ``node_order`` order) and per-neuron mean rates before they
     diverge (diffusion smooths + normalizes; the MRF fits a penalized-Poisson GAM).
 
+    Exposure and spikes follow one rule, the encoding support's sample basis:
+    each tracking sample's integrated exposure goes to the bin of its position,
+    and each spike's weight is split between its two bracketing samples by the
+    linear-interpolation fraction (:meth:`EncodingSupport.event_counts`) and goes
+    to their bins. A bin then holds spikes only where it holds exposure, in
+    proportion to it, even when the animal moves more than a bin per sample.
+    Placing spikes at their interpolated positions instead puts them in bins the
+    samples skip, which have little or no exposure.
+
     Parameters
     ----------
     position_time : np.ndarray, shape (n_time_position,)
@@ -315,19 +323,23 @@ def pixellate_interior_fields(
 
     full_to_local = _full_to_local(node_order, n_total_bins)
 
-    occupancy_field: np.ndarray
+    # A sample that receives event mass brackets a supported spike, so its basis
+    # overlaps the support: binning the exposed samples covers every event.
     active = exposure_weights > 0
-    if np.any(active):
-        occupancy_positions = get_position_at_time(
-            position_time, position, position_time[active], environment
+    sample_bins = (
+        _interior_bin_indices(
+            environment,
+            get_position_at_time(
+                position_time, position, position_time[active], environment
+            ),
+            full_to_local,
         )
-        occupancy_field = np.bincount(
-            _interior_bin_indices(environment, occupancy_positions, full_to_local),
-            weights=exposure_weights[active],
-            minlength=n_interior,
-        )
-    else:
-        occupancy_field = np.zeros(n_interior)
+        if np.any(active)
+        else np.zeros(0, dtype=int)
+    )
+    occupancy_field = np.bincount(
+        sample_bins, weights=exposure_weights[active], minlength=n_interior
+    )
 
     weight_sum = exposure_weights.sum()
     mean_rates: list[float] = []
@@ -338,29 +350,11 @@ def pixellate_interior_fields(
         desc="Encoding models",
         disable=disable_progress_bar,
     ):
-        neuron_spike_times = neuron_spike_times[support.contains(neuron_spike_times)]
-        # Spike times are clipped above, so the 1-D interpolation does not extrapolate.
-        weights_at_spike_times = interpolate_weights_at_spike_times(
-            neuron_spike_times, position_time, weights, encoding_support=support
+        event_counts = support.event_counts(neuron_spike_times, weights)[active]
+        mean_rates.append(weighted_mean_rate(event_counts, weight_sum))
+        spike_fields.append(
+            np.bincount(sample_bins, weights=event_counts, minlength=n_interior)
         )
-        mean_rates.append(weighted_mean_rate(weights_at_spike_times, weight_sum))
-
-        if neuron_spike_times.shape[0] > 0:
-            spike_positions = get_position_at_time(
-                position_time,
-                position,
-                neuron_spike_times,
-                environment,
-                encoding_support=support,
-            )
-            spike_field = np.bincount(
-                _interior_bin_indices(environment, spike_positions, full_to_local),
-                weights=weights_at_spike_times,
-                minlength=n_interior,
-            )
-        else:
-            spike_field = np.zeros((n_interior,))
-        spike_fields.append(spike_field)
 
     return occupancy_field, spike_fields, mean_rates
 
