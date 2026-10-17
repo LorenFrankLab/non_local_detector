@@ -1,3 +1,4 @@
+import hashlib
 from collections import OrderedDict
 from collections.abc import Callable, Sequence, Sized
 from dataclasses import dataclass, field
@@ -266,6 +267,109 @@ def validate_population_lengths(unit_name: str, **populations: Sized | None) -> 
             ),
         )
     return expected
+
+
+def environment_grid_fingerprint(environment: Environment) -> dict:
+    """Identify the fitted place grid that an encoding model's arrays describe.
+
+    Encoding models store occupancy, rates and interior masks per bin of the
+    grid the environment had at fit time, and keep a reference to the
+    environment, which ``Environment.fit_place_grid`` refits in place. The
+    fingerprint lets prediction detect that the grid has changed since.
+
+    Parameters
+    ----------
+    environment : Environment
+        A fitted environment.
+
+    Returns
+    -------
+    environment_grid : dict
+        ``centers_shape`` (tuple of int), ``n_interior_bins`` (int) and
+        ``sha256`` (str), a SHA-256 digest of the bin centers, the bin edges of
+        each dimension and the interior mask. It identifies bin positions and
+        sizes as well as which bins are interior, in 64 characters rather than
+        a copy of every bin, and holds only Python values, so it pickles with
+        the encoding model.
+    """
+    digest = hashlib.sha256()
+    for array in (
+        np.asarray(environment.place_bin_centers_, dtype="<f8"),
+        np.asarray(environment.is_track_interior_, dtype=bool),
+        *(np.asarray(edge, dtype="<f8") for edge in environment.edges_),
+    ):
+        digest.update(repr(array.shape).encode())
+        digest.update(np.ascontiguousarray(array).tobytes())
+    return {
+        "centers_shape": tuple(int(n) for n in environment.centers_shape_),
+        "n_interior_bins": int(np.sum(environment.is_track_interior_)),
+        "sha256": digest.hexdigest(),
+    }
+
+
+def validate_encoding_contract(
+    rate_units: str | None,
+    environment: Environment,
+    environment_grid: dict | None,
+) -> None:
+    """Require Hz rates fit on the environment's current grid.
+
+    Every predict calls this first with its encoding model's contract keys.
+    Direct predict calls accept a dict missing either key: each predict
+    defaults ``rate_units`` to ``"Hz"`` and ``environment_grid`` to None, which
+    skips the grid comparison. Callers may assemble the keyword arguments
+    themselves, and a model fitted before the grid was recorded predicts as it
+    did when fitted. Detectors are stricter about units: they reject a fitted
+    entry without ``rate_units`` before decoding (``_validate_time_contract``).
+
+    Parameters
+    ----------
+    rate_units : str | None
+        The model's ``rate_units``; must be ``"Hz"``.
+    environment : Environment
+        The environment the encoding model references now.
+    environment_grid : dict | None
+        The model's ``environment_grid``, from
+        :func:`environment_grid_fingerprint` at fit time, or None to skip the
+        comparison.
+
+    Raises
+    ------
+    ValidationError
+        If the rates are not in Hz, or the environment's grid has changed
+        since the fit.
+    """
+    if rate_units != "Hz":
+        raise ValidationError(
+            "Encoding rates must be in Hz; refit legacy encoding models before decoding.",
+            expected='rate_units="Hz"',
+            got=f"rate_units={rate_units!r}",
+        )
+    if environment_grid is None:
+        return
+    current = environment_grid_fingerprint(environment)
+    if current == environment_grid:
+        return
+    raise ValidationError(
+        "Encoding model was fit on a different environment grid; its per-bin "
+        "occupancy and rates no longer match the environment's bins.",
+        expected=(
+            f"the fit-time grid: shape {environment_grid['centers_shape']}, "
+            f"{environment_grid['n_interior_bins']} interior bins"
+        ),
+        got=(
+            f"the current grid: shape {current['centers_shape']}, "
+            f"{current['n_interior_bins']} interior bins, with different bin "
+            "positions, sizes or interior mask"
+        ),
+        hint=(
+            "The environment was refit (Environment.fit_place_grid) after this "
+            "encoding model was fit, e.g. on other positions or by another "
+            "detector sharing the same Environment. Refit the encoding model "
+            "against the current environment, or give each fitted model its own "
+            "Environment."
+        ),
+    )
 
 
 def validate_spike_feature_pair(
