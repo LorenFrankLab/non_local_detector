@@ -51,6 +51,11 @@ _HEAT_KERNEL_RANK_TOL = 1e-6
 _HEAT_KERNEL_DENSE_FRACTION = 0.5
 _HEAT_KERNEL_RANK_START = 32
 
+# Diffused-field values below this fraction of their column's maximum are not
+# resolved: the float32 spectral product and the heat-kernel rank truncation
+# (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
+_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
+
 
 def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     """Finite-difference symmetric graph Laplacian ``L = D - W``.
@@ -589,6 +594,26 @@ def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
     mass = smoothed.sum(axis=0)  # (n_fields,)
     safe = np.where(mass > 0, mass, 1.0)
     return np.where(mass > 0, smoothed / safe / bin_sizes[:, np.newaxis], 0.0)
+
+
+def _resolved_occupancy(occupancy):
+    """Bins whose diffused occupancy the heat kernel resolves.
+
+    Occupancy is itself a diffused field, so in unvisited bins it is numerical
+    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
+    encoding information: a ratio of a diffused spike field to this noise is
+    not a rate, so the likelihoods treat them as zero-occupancy bins. A bin
+    with zero occupancy is never resolved, even when no bin has any.
+
+    Parameters
+    ----------
+    occupancy : array, shape (n_bins,)
+
+    Returns
+    -------
+    resolved : array of bool, shape (n_bins,)
+    """
+    return (occupancy > 0.0) & (occupancy >= _FIELD_RESOLUTION * occupancy.max())
 
 
 def environment_graph(
