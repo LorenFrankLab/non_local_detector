@@ -49,7 +49,6 @@ context and uses common helper functions for spike counting and position
 interpolation.
 """
 
-import logging
 import warnings
 from functools import partial
 
@@ -65,7 +64,6 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment, get_n_bins
-from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
@@ -74,8 +72,11 @@ from non_local_detector.likelihoods.common import (
     _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
+    environment_grid_fingerprint,
     get_position_at_time,
     resolve_row_slice,
+    snap_off_track_positions,
+    validate_encoding_contract,
     validate_population_lengths,
     validate_weights,
 )
@@ -85,8 +86,6 @@ from non_local_detector.time_edges import (
     _resolve_time_grid,
     requires_time_edges,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @jax.jit
@@ -305,7 +304,7 @@ def fit_poisson_regressions(
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_cells, n_time)
         Event mass per row and cell: the weighted spike counts from
-        ``weighted_spike_counts``, not multiplied by ``weights`` again.
+        ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
@@ -369,6 +368,7 @@ def fit_poisson_regressions(
 
     loss, gradient, hessian = evaluate(coefficients, derivatives=True)
     active = np.ones(n_cells, dtype=bool)
+    singular_cells: set[int] = set()
     for _ in range(GLM_MAX_NEWTON_STEPS):
         gradient_norm = np.max(np.abs(gradient), axis=1)
         active &= np.isfinite(loss) & (gradient_norm > GLM_GRADIENT_TOL)
@@ -379,17 +379,21 @@ def fit_poisson_regressions(
                 ..., 0
             ]
         except np.linalg.LinAlgError:
-            logger.debug(
-                "GLM Newton system singular for a cell; using least squares for "
-                "cells %s",
-                np.flatnonzero(active).tolist(),
-            )
-            direction = -np.stack(
-                [
-                    np.linalg.lstsq(h, g, rcond=None)[0]
-                    for h, g in zip(hessian[active], gradient[active], strict=True)
-                ]
-            )
+            # Solve cell by cell so only the singular systems use least squares.
+            direction = np.empty((int(active.sum()), n_coefficients))
+            for index, (cell, h, g) in enumerate(
+                zip(
+                    np.flatnonzero(active),
+                    hessian[active],
+                    gradient[active],
+                    strict=True,
+                )
+            ):
+                try:
+                    direction[index] = -np.linalg.solve(h, g)
+                except np.linalg.LinAlgError:
+                    singular_cells.add(int(cell))
+                    direction[index] = -np.linalg.lstsq(h, g, rcond=None)[0]
         slope = np.sum(gradient[active] * direction, axis=1)
         step = np.ones(direction.shape[0])
         accepted = np.zeros(direction.shape[0], dtype=bool)
@@ -412,6 +416,20 @@ def fit_poisson_regressions(
         # A cell no step can improve has reached the precision limit.
         active[np.flatnonzero(active)[~accepted]] = False
         loss, gradient, hessian = evaluate(coefficients, derivatives=True)
+
+    if singular_cells:
+        cells = sorted(singular_cells)
+        warnings.warn(
+            f"GLM Poisson regression had a singular Newton system for "
+            f"{len(cells)} of {n_cells} cells (indices {cells[:20]}), so those "
+            f"steps used least squares. Some coefficients are then not "
+            f"identified by the data, e.g. a basis function without weighted "
+            f"exposure when l2_penalty is 0; least squares leaves those "
+            f"combinations at their starting values. Use a positive l2_penalty "
+            f"to identify them.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Judge convergence by the gradient inf-norm, and also warn when a fit
     # diverged to a non-finite loss or gradient: ``NaN > tol`` is ``False``,
@@ -459,7 +477,7 @@ def fit_poisson_regression(
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_time,)
         Event mass per row: the weighted spike counts from
-        ``weighted_spike_counts``, not multiplied by ``weights`` again.
+        ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
@@ -478,58 +496,6 @@ def fit_poisson_regression(
         l2_penalty,
         rate_floor=rate_floor,
     )[0]
-
-
-def weighted_spike_counts(
-    spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
-) -> np.ndarray:
-    """Split each spike's interpolated weight between its bracketing samples.
-
-    A spike a fraction ``a`` of the way from sample ``i`` to sample ``i + 1``
-    adds ``(1 - a) * weights[i]`` to row ``i`` and ``a * weights[i + 1]`` to
-    row ``i + 1``. The two parts sum to ``weights`` linearly interpolated to the
-    spike time, so each spike keeps its canonical weight and complementary
-    groups still partition it. Each part is carried by the sample that supplies
-    it, so a row receives event mass only where its own exposure weight is
-    positive; a row with events but no exposure would let the fitted rate at
-    its position diverge. For a locally constant rate and uniform sampling, an
-    interior row's expected event mass is ``rate * weights[i] * dt``,
-    proportional to its exposure term. Spikes outside
-    ``[position_time[0], position_time[-1]]`` are dropped.
-
-    Parameters
-    ----------
-    spike_times : np.ndarray, shape (n_spikes,)
-    position_time : np.ndarray, shape (n_time_position,)
-    weights : np.ndarray, shape (n_time_position,)
-
-    Returns
-    -------
-    counts : np.ndarray, shape (n_time_position,)
-        Event mass per position row.
-    """
-    position_time = np.asarray(position_time)
-    weights = np.asarray(weights)
-    spike_times = np.asarray(spike_times)
-    n_time = position_time.shape[0]
-    times = spike_times[
-        (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
-    ]
-    # Encoding rows are position samples, not decode bins: the left sample is
-    # the last one at or before the spike, never the final sample, so a spike
-    # at position_time[-1] splits into the final interval.
-    left = np.searchsorted(position_time[1:-1], times, side="right")
-    right = np.minimum(left + 1, n_time - 1)
-    interval = position_time[right] - position_time[left]
-    safe_interval = np.where(interval > 0.0, interval, 1.0)
-    # A zero-length interval (a repeated final timestamp, or a single sample)
-    # gives the spike the right sample's weight, as np.interp does.
-    fraction = np.where(
-        interval > 0.0, (times - position_time[left]) / safe_interval, 1.0
-    )
-    return np.bincount(
-        left, weights=(1.0 - fraction) * weights[left], minlength=n_time
-    ) + np.bincount(right, weights=fraction * weights[right], minlength=n_time)
 
 
 def fit_sorted_spikes_glm_encoding_model(
@@ -710,6 +676,7 @@ def fit_sorted_spikes_glm_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "coefficients": coefficients,
         "emission_design_info": emission_design_info,
         "place_fields": place_fields,
@@ -739,6 +706,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
+    environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -779,14 +747,22 @@ def predict_sorted_spikes_glm_log_likelihood(
         If True, suppresses the progress bar display. By default False.
     is_local : bool, optional
         If True, compute the log likelihood only at the animal's current
-        interpolated position (local decoding). If False, compute the log
-        likelihood across all position bins (non-local decoding).
-        By default False.
+        interpolated position (local decoding); positions outside the track
+        are moved to the nearest interior bin center so the spline is never
+        extrapolated. If False, compute the log likelihood across all
+        position bins (non-local decoding). By default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -797,10 +773,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins)
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
+    validate_encoding_contract(rate_units, environment, environment_grid)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
@@ -817,8 +790,11 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     if is_local:
         # Need to interpolate position
-        interpolated_position = get_position_at_time(
-            position_time, position, row_time, environment
+        # The natural spline extrapolates log-rate linearly past its boundary
+        # knots; off-track positions read the nearest interior bin instead.
+        interpolated_position = snap_off_track_positions(
+            get_position_at_time(position_time, position, row_time, environment),
+            environment,
         )
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, interpolated_position

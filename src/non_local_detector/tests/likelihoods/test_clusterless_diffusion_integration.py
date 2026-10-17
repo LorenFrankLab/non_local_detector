@@ -276,7 +276,7 @@ def test_stale_encoding_model_after_refit_raises() -> None:
     bins 9..19 (also 11 bins, different physical bins) leaves the stale encoding
     model's node_order/occupancy/bin-indices bound to the old layout while the
     device basis is rebuilt from the new graph -- finite output, wrong bins. The
-    node_order staleness guard turns that into a clear ValidationError.
+    fit-time grid record turns that into a clear ValidationError.
     """
     env = Environment(position_range=[(0.0, 20.0)], place_bin_size=1.0)
     env = env.fit_place_grid(
@@ -305,7 +305,7 @@ def test_stale_encoding_model_after_refit_raises() -> None:
     assert int(env.is_track_interior_.ravel().sum()) == n_before  # same count
 
     decode_time = np.linspace(0.0, 1.0, 6)
-    with pytest.raises(ValidationError, match="stale"):
+    with pytest.raises(ValidationError, match="different environment grid"):
         predict_clusterless_diffusion_log_likelihood(
             position_time,
             position,

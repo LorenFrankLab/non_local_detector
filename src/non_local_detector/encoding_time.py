@@ -190,46 +190,98 @@ class EncodingSupport:
                     )
         return result
 
+    def _segment_events(self, segment_index, spike_times):
+        """Spikes one segment owns, with their bracketing samples and fraction.
+
+        Parameters
+        ----------
+        segment_index : int
+        spike_times : np.ndarray, shape (n_spikes,)
+
+        Returns
+        -------
+        owned : np.ndarray of bool, shape (n_spikes,)
+        left, right : np.ndarray of int, shape (n_owned,)
+            Sample indices bracketing each owned spike (equal at an endpoint).
+        fraction : np.ndarray, shape (n_owned,)
+            Weight of ``right``; ``left`` carries ``1 - fraction``.
+        """
+        start, stop, indices = self.segments[segment_index]
+        shared_stop = (
+            segment_index + 1 < len(self.segments)
+            and stop == self.segments[segment_index + 1][0]
+        )
+        owned = (spike_times >= start) & (
+            spike_times < stop if shared_stop else spike_times <= stop
+        )
+        times = spike_times[owned]
+        sample_times = self.time[indices]
+        left = np.clip(
+            np.searchsorted(sample_times, times, side="right") - 1,
+            0,
+            len(indices) - 1,
+        )
+        right = np.minimum(left + 1, len(indices) - 1)
+        width = sample_times[right] - sample_times[left]
+        fraction = np.clip(
+            np.divide(
+                times - sample_times[left],
+                width,
+                out=np.zeros_like(times),
+                where=width > 0,
+            ),
+            0,
+            1,
+        )
+        return owned, indices[left], indices[right], fraction
+
+    def event_basis(self, spike_times):
+        """Each supported spike's bracketing samples and interpolation fraction.
+
+        A spike's unit event is split between its two bracketing samples: the
+        ``left`` sample takes ``1 - fraction`` and the ``right`` one ``fraction``.
+
+        Parameters
+        ----------
+        spike_times : array_like, shape (n_spikes,)
+
+        Returns
+        -------
+        spike_index : np.ndarray of int, shape (n_events,)
+            Index into ``spike_times`` of each spike the support owns, in
+            input order.
+        left, right : np.ndarray of int, shape (n_events,)
+            Sample indices bracketing each spike (equal at an endpoint).
+        fraction : np.ndarray, shape (n_events,)
+            Weight of ``right``, in [0, 1].
+        """
+        spike_times = np.asarray(spike_times, dtype=float)
+        parts = [
+            self._segment_events(segment_index, spike_times)
+            for segment_index in range(len(self.segments))
+        ]
+        if not parts:
+            empty = np.zeros(0, dtype=int)
+            return empty, empty, empty, np.zeros(0)
+        spike_index = np.concatenate([np.flatnonzero(part[0]) for part in parts])
+        order = np.argsort(spike_index, kind="stable")
+        left, right, fraction = (
+            np.concatenate([part[column] for part in parts])[order]
+            for column in (1, 2, 3)
+        )
+        return spike_index[order], left, right, fraction
+
     def event_counts(self, spike_times, weights):
         """Dimensionless weighted events assigned to their interpolation basis."""
         spike_times, weights = np.asarray(spike_times, dtype=float), np.asarray(weights)
         counts = np.zeros(len(self.time))
-        for segment_index, (start, stop, indices) in enumerate(self.segments):
-            shared_stop = (
-                segment_index + 1 < len(self.segments)
-                and stop == self.segments[segment_index + 1][0]
-            )
-            owned = (spike_times >= start) & (
-                spike_times < stop if shared_stop else spike_times <= stop
-            )
-            times = spike_times[owned]
-            sample_times = self.time[indices]
-            left = np.clip(
-                np.searchsorted(sample_times, times, side="right") - 1,
-                0,
-                len(indices) - 1,
-            )
-            right = np.minimum(left + 1, len(indices) - 1)
-            width = sample_times[right] - sample_times[left]
-            fraction = np.clip(
-                np.divide(
-                    times - sample_times[left],
-                    width,
-                    out=np.zeros_like(times),
-                    where=width > 0,
-                ),
-                0,
-                1,
+        for segment_index in range(len(self.segments)):
+            _, left, right, fraction = self._segment_events(segment_index, spike_times)
+            counts += np.bincount(
+                left, weights=(1 - fraction) * weights[left], minlength=len(counts)
             )
             counts += np.bincount(
-                indices[left],
-                weights=(1 - fraction) * weights[indices[left]],
-                minlength=len(counts),
-            )
-            counts += np.bincount(
-                indices[right],
-                weights=fraction * weights[indices[right]],
-                minlength=len(counts),
+                right, weights=fraction * weights[right], minlength=len(counts)
             )
         return counts
 

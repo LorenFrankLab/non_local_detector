@@ -29,7 +29,10 @@ For electrode ``e`` the joint mark density on interior bins is
     D_e[:, j]   = sum_i w_i * K_mark(m_j, m_i) * onehot(bin(x_i))
     p_e(x, m_j) = (H D_e)[x, j] / ( (sum_i w_i) * dV(x) )
 
-where ``w_i`` are the per-encoding-spike EM weights, ``K_mark`` is the Gaussian
+where ``i`` runs over encoding entries: each encoding spike's EM weight is split
+between its two bracketing tracking samples by the interpolation fraction and
+placed at their bins, as the samples' exposure is (one entry when both samples
+share a bin, else two with the spike's mark). ``K_mark`` is the Gaussian
 mark kernel with its normalizer, ``H`` is the fixed spatial kernel
 (:func:`_kernel_columns`: heat-kernel columns clipped, kept within their
 connected component, cut below ``_FIELD_RESOLUTION`` of their peak and
@@ -68,7 +71,6 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
-    warn_if_tracking_is_sparse,
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -93,23 +95,26 @@ from non_local_detector.likelihoods.common import (
     as_std_array,
     decode_bin_centers,
     deterministic_row_sum,
+    environment_grid_fingerprint,
     get_position_at_time,
-    interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
     log_density_intensity,
     log_nonnegative,
     resolve_row_slice,
+    select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
     spike_row_ids,
     sum_spikes_into_rows,
+    validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
-    _HEAT_KERNEL_RANK_TOL,
+    _FIELD_RESOLUTION,
+    _resolved_occupancy,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
@@ -332,7 +337,9 @@ def fit_clusterless_diffusion_encoding_model(
         ``environment``, ``occupancy`` (pi, ``(n_interior,)``),
         ``summed_ground_process_intensity`` (``(n_interior,)``),
         ``encoding_bin_indices`` (list per electrode), ``encoding_marks`` (list),
-        ``encoding_weights`` (list), ``weight_total`` (list of float),
+        ``encoding_weights`` (list): one bin-sorted entry per encoding spike, or
+        two when its bracketing tracking samples lie in different bins, each
+        with its share of the spike's weight; ``weight_total`` (list of float),
         ``mean_rates`` (list), ``resolved_rank`` (int), ``node_order``,
         ``bin_sizes`` (dV per interior bin), ``position_std``, ``waveform_std``,
         ``block_size``, ``memory_budget``, ``disable_progress_bar``.
@@ -368,7 +375,6 @@ def fit_clusterless_diffusion_encoding_model(
     # barely spreads past one bin -> near-raw histograms), matching sorted_spikes_diffusion.
     check_smoothing_bandwidth(position_std, graph)
     bin_sizes = np.asarray(bin_sizes)
-    warn_if_tracking_is_sparse(support, position, position_std)
     n_interior = node_order.shape[0]
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
     full_to_local = _full_to_local(node_order, n_total_bins)
@@ -383,20 +389,25 @@ def fit_clusterless_diffusion_encoding_model(
 
     weight_sum = float(exposure_weights.sum())  # weighted occupancy seconds
 
+    # Exposure and encoding spikes share the samples' interpolation basis: each
+    # sample's exposure goes to its bin, and each spike's weight is split between
+    # its two bracketing samples and binned with them, so spikes land only where
+    # exposure does even when the animal moves more than a bin per sample.
+    sample_bins = np.full(n_time_position, -1)
+    if support.indices.size:
+        sample_bins[support.indices] = _interior_bin_indices(
+            environment,
+            get_position_at_time(
+                position_time, position, position_time[support.indices], environment
+            ),
+            full_to_local,
+        )
+
     # ---- occupancy pi = H O / (sum w_pos * dV), floored at EPS ----
-    occupancy_field: np.ndarray
     active = exposure_weights > 0
-    if np.any(active):
-        occupancy_positions = get_position_at_time(
-            position_time, position, position_time[active], environment
-        )
-        occupancy_field = np.bincount(
-            _interior_bin_indices(environment, occupancy_positions, full_to_local),
-            weights=exposure_weights[active],
-            minlength=n_interior,
-        )
-    else:
-        occupancy_field = np.zeros(n_interior)
+    occupancy_field = np.bincount(
+        sample_bins[active], weights=exposure_weights[active], minlength=n_interior
+    )
     warn_if_no_encoding_exposure(
         exposure_weights, "Clusterless diffusion", clusterless=True
     )
@@ -422,36 +433,35 @@ def fit_clusterless_diffusion_encoding_model(
             strict=True,
         )
     ):
-        electrode_spike_times = np.asarray(electrode_spike_times)
-        is_in_bounds = support.contains(electrode_spike_times)
-        electrode_spike_times = electrode_spike_times[is_in_bounds]
+        spike_index, left, right, fraction = support.event_basis(electrode_spike_times)
         # Validate only the in-window features that actually enter the fit.
-        bounded_features = np.asarray(electrode_features)[is_in_bounds]
+        bounded_features = np.asarray(electrode_features)[spike_index]
         validate_finite(bounded_features, "spike_waveform_features")
         _validate_waveform_std_shape(waveform_std, bounded_features.shape[1], electrode)
 
-        spike_weights = interpolate_weights_at_spike_times(
-            electrode_spike_times, position_time, weights, encoding_support=support
+        # One entry per spike whose bracketing samples share a bin; otherwise a
+        # second entry carries the mark into the right sample's bin.
+        left_weight = (1.0 - fraction) * weights[left]
+        right_weight = fraction * weights[right]
+        left_bins, right_bins = sample_bins[left], sample_bins[right]
+        split = (left_bins != right_bins) & (right_weight > 0)
+        bins = np.concatenate([left_bins, right_bins[split]])
+        spike_weights = np.concatenate(
+            [
+                np.where(split, left_weight, left_weight + right_weight),
+                right_weight[split],
+            ]
         )
+        entry_features = np.concatenate([bounded_features, bounded_features[split]])
         w_total = float(spike_weights.sum())
 
-        spike_positions = get_position_at_time(
-            position_time,
-            position,
-            electrode_spike_times,
-            environment,
-            encoding_support=support,
-        )
-        bins = np.asarray(
-            _interior_bin_indices(environment, spike_positions, full_to_local)
-        )
-        # Store encoding spikes sorted by bin: predict sums them by bin with
+        # Store encoding entries sorted by bin: predict sums them by bin with
         # indices_are_sorted=True, which requires nondecreasing ids.
         order = np.argsort(bins, kind="stable")
 
         encoding_bin_indices.append(bins[order])
-        encoding_marks.append(jnp.asarray(np.asarray(bounded_features)[order]))
-        encoding_weights.append(jnp.asarray(np.asarray(spike_weights)[order]))
+        encoding_marks.append(jnp.asarray(entry_features[order]))
+        encoding_weights.append(jnp.asarray(spike_weights[order]))
         weight_total.append(w_total)
 
         if w_total == 0:
@@ -489,6 +499,7 @@ def fit_clusterless_diffusion_encoding_model(
 
     return {
         "environment": environment,
+        "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy,
         "summed_ground_process_intensity": summed_ground_process_intensity,
         "encoding_bin_indices": encoding_bin_indices,
@@ -515,12 +526,6 @@ def _pad_sources(sources, n_padded: int) -> np.ndarray:
     if sources.size == 0:
         return np.zeros(n_padded, dtype=np.int32)
     return np.pad(sources, (0, n_padded - sources.size), mode="edge")
-
-
-# Diffused-field values below this fraction of their column's maximum are not
-# resolved: the float32 spectral product and the heat-kernel rank truncation
-# (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
-_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
 
 # The scaled spatial product multiplies exp(log_source - peak) by kernel
@@ -720,26 +725,6 @@ def _log_intensity_scale(occupancy, bin_sizes, mean_rate, weight_total):
         ),
         -jnp.inf,
     )
-
-
-def _resolved_occupancy(occupancy):
-    """Bins whose diffused occupancy the heat kernel resolves.
-
-    Occupancy is itself a diffused field, so in unvisited bins it is numerical
-    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
-    encoding information: their marked and ground intensities are zero, and
-    spikes there are explained by the background alone, as for the KDE's
-    zero-occupancy bins.
-
-    Parameters
-    ----------
-    occupancy : array, shape (n_bins,)
-
-    Returns
-    -------
-    resolved : array of bool, shape (n_bins,)
-    """
-    return occupancy >= _FIELD_RESOLUTION * occupancy.max()
 
 
 def _source_layout(bins: np.ndarray, n_bins: int, tile_budget: int):
@@ -1171,6 +1156,7 @@ def predict_clusterless_diffusion_log_likelihood(
     is_local: bool = False,
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],
+    environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **encoding_model: object,
@@ -1208,6 +1194,13 @@ def predict_clusterless_diffusion_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
+    rate_units : str, optional
+        Units of the fitted rates, by default "Hz"; any other value raises.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -1221,11 +1214,8 @@ def predict_clusterless_diffusion_log_likelihood(
         False, else (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice``
         is given.
     """
-    if rate_units != "Hz":
-        raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
-        )
     environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
+    validate_encoding_contract(rate_units, environment, environment_grid)
     occupancy = jnp.asarray(encoding_model["occupancy"])
     summed_ground_process_intensity = jnp.asarray(
         encoding_model["summed_ground_process_intensity"]
@@ -1261,28 +1251,6 @@ def predict_clusterless_diffusion_log_likelihood(
         _spike_time_order = _SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = occupancy.shape[0]
-
-    # The encoding model is grid-bound: its occupancy, node_order, per-spike bin
-    # indices, and ground-process field all describe the interior-bin layout at fit
-    # time. If the shared Environment was refit (fit_place_grid) to a different grid
-    # afterwards, those stale arrays no longer match the environment's current graph
-    # -- and when the interior-bin count happens to be unchanged, the shape checks in
-    # the diffusion matmul do not catch it, silently misattributing the likelihood to
-    # the wrong bins. Compare the fit-time node_order against the environment's
-    # current one and fail loudly instead. Re-fit the encoding model after any refit.
-    current_node_order = environment_graph(environment)[1]
-    if not np.array_equal(np.asarray(node_order), np.asarray(current_node_order)):
-        raise ValidationError(
-            "encoding model is stale: the environment's grid was refit after this "
-            "encoding model was fit, so its interior-bin layout no longer matches.",
-            expected="an encoding model fit against the environment's current grid",
-            got=(
-                f"fit-time interior-bin count {np.asarray(node_order).shape[0]} vs "
-                f"current {np.asarray(current_node_order).shape[0]}"
-            ),
-            hint="Re-fit the encoding model (fit_clusterless_diffusion_encoding_model) "
-            "against the refit environment before predicting.",
-        )
 
     eigvals, eigvecs, labels, n_components = get_device_basis(
         environment, resolved_rank
@@ -1358,7 +1326,7 @@ def predict_clusterless_diffusion_log_likelihood(
     # starting sum too lets every electrode reuse one executable.
     log_likelihood = jax.device_put(log_likelihood, eigvecs.sharding)
 
-    for (
+    for electrode, (
         electrode_bins,
         electrode_marks,
         electrode_weights,
@@ -1367,21 +1335,23 @@ def predict_clusterless_diffusion_log_likelihood(
         electrode_decode_features,
         electrode_spike_times,
         electrode_mark_reference,
-    ) in zip(
-        tqdm(
-            encoding_bin_indices,
-            unit="electrode",
-            desc="Local Likelihood" if is_local else "Non-Local Likelihood",
-            disable=disable_progress_bar,
-        ),
-        encoding_marks,
-        encoding_weights,
-        weight_total,
-        mean_rates,
-        spike_waveform_features,
-        spike_times,
-        mark_reference,
-        strict=True,
+    ) in enumerate(
+        zip(
+            tqdm(
+                encoding_bin_indices,
+                unit="electrode",
+                desc="Local Likelihood" if is_local else "Non-Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            encoding_marks,
+            encoding_weights,
+            weight_total,
+            mean_rates,
+            spike_waveform_features,
+            spike_times,
+            mark_reference,
+            strict=True,
+        )
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
@@ -1390,15 +1360,11 @@ def predict_clusterless_diffusion_log_likelihood(
             time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
-        # Validate only the in-window decode features that actually enter the
-        # likelihood (mirrors fit's post-clip validation); an out-of-window
-        # spike's feature must not raise. Select FIRST, convert after:
-        # converting the whole array would cost every decoding spike in the
-        # recording on every chunk call.
-        decode_features = np.asarray(
-            select_spike_rows(electrode_decode_features, selection)
+        # Select FIRST, convert after: converting the whole array would cost
+        # every decoding spike in the recording on every chunk call.
+        decode_features = select_decode_marks(
+            electrode_decode_features, selection, electrode
         )
-        validate_finite(decode_features, "spike_waveform_features")
         n_decode = decode_features.shape[0]
         if n_decode == 0:
             continue
