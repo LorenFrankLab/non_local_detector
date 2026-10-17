@@ -32,7 +32,7 @@ from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     _SpikeTimeOrder,
     resolve_row_slice,
-    select_spike_rows,
+    select_decode_marks,
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_finite,
@@ -299,8 +299,8 @@ def mark_reference_log_likelihood(
     )
     row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     total = jnp.zeros((row_stop - row_start,))
-    for reference, times, features in zip(
-        references, spike_times, spike_waveform_features, strict=True
+    for electrode, (reference, times, features) in enumerate(
+        zip(references, spike_times, spike_waveform_features, strict=True)
     ):
         if reference is None:
             continue
@@ -311,6 +311,8 @@ def mark_reference_log_likelihood(
             time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
-        log_density = reference.log_density(select_spike_rows(features, selection))
+        log_density = reference.log_density(
+            select_decode_marks(features, selection, electrode)
+        )
         total = total + sum_spikes_into_rows(log_density, selection)
     return total[:, None]

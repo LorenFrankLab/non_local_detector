@@ -116,10 +116,9 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "spike_block_size": 999999},
         mark_reference=mark_reference,
         is_local=False,
-        spike_block_size=999999,
     )
 
     # Predict with blocking
@@ -129,10 +128,9 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "spike_block_size": 10},
         mark_reference=mark_reference,
         is_local=False,
-        spike_block_size=10,
     )
 
     # Results should be identical (within numerical precision)
@@ -181,10 +179,9 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "bin_tile_size": None},
         mark_reference=mark_reference,
         is_local=False,
-        bin_tile_size=None,
     )
 
     # Predict with bin tiling
@@ -196,10 +193,9 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "bin_tile_size": bin_tile_size},
         mark_reference=mark_reference,
         is_local=False,
-        bin_tile_size=bin_tile_size,
     )
 
     # Results should be identical (within numerical precision)
@@ -248,11 +244,9 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "spike_block_size": 999999, "bin_tile_size": None},
         mark_reference=mark_reference,
         is_local=False,
-        spike_block_size=999999,
-        bin_tile_size=None,
     )
 
     # Predict with both optimizations
@@ -264,11 +258,9 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "spike_block_size": 10, "bin_tile_size": bin_tile_size},
         mark_reference=mark_reference,
         is_local=False,
-        spike_block_size=10,
-        bin_tile_size=bin_tile_size,
     )
 
     # Results should be identical (within numerical precision)
@@ -331,10 +323,9 @@ def test_gmm_edge_cases(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "spike_block_size": 1000},
         mark_reference=mark_reference,
         is_local=False,
-        spike_block_size=1000,
     )
 
     # Test 2: Bin tile size larger than total bins (should work fine)
@@ -344,10 +335,9 @@ def test_gmm_edge_cases(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "bin_tile_size": 10000},
         mark_reference=mark_reference,
         is_local=False,
-        bin_tile_size=10000,
     )
 
     # Test 3: Both combined with single spike
@@ -357,11 +347,9 @@ def test_gmm_edge_cases(gmm_simulation_data):
         spike_times,
         spike_features,
         time_edges=time,
-        **encoding_model,
+        **{**encoding_model, "spike_block_size": 1000, "bin_tile_size": 10000},
         mark_reference=mark_reference,
         is_local=False,
-        spike_block_size=1000,
-        bin_tile_size=10000,
     )
 
     # One row per decode bin; ``time`` is passed as the decode edges.

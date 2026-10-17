@@ -49,6 +49,7 @@ from non_local_detector.likelihoods.common import (
     log_gaussian_pdf,
     log_nonnegative,
     resolve_row_slice,
+    select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
     spike_row_ids,
@@ -1957,7 +1958,7 @@ def predict_clusterless_kde_log_likelihood(
             :, None
         ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
 
-        for (
+        for electrode, (
             electrode_encoding_spike_waveform_features,
             electrode_encoding_positions,
             electrode_mean_rate,
@@ -1965,20 +1966,22 @@ def predict_clusterless_kde_log_likelihood(
             electrode_spike_times,
             electrode_encoding_weights,
             electrode_mark_reference,
-        ) in zip(
-            tqdm(
-                encoding_spike_waveform_features,
-                unit="electrode",
-                desc="Non-Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            encoding_positions,
-            mean_rates,
-            spike_waveform_features,
-            spike_times,
-            per_electrode_weights,
-            mark_reference,
-            strict=True,
+        ) in enumerate(
+            zip(
+                tqdm(
+                    encoding_spike_waveform_features,
+                    unit="electrode",
+                    desc="Non-Local Likelihood",
+                    disable=disable_progress_bar,
+                ),
+                encoding_positions,
+                mean_rates,
+                spike_waveform_features,
+                spike_times,
+                per_electrode_weights,
+                mark_reference,
+                strict=True,
+            )
         ):
             selection = select_spikes_in_rows(
                 electrode_spike_times,
@@ -1987,8 +1990,8 @@ def predict_clusterless_kde_log_likelihood(
                 time_edges=time_edges,
                 _spike_time_order=_spike_time_order,
             )
-            electrode_decoding_spike_waveform_features = select_spike_rows(
-                electrode_decoding_spike_waveform_features, selection
+            electrode_decoding_spike_waveform_features = select_decode_marks(
+                electrode_decoding_spike_waveform_features, selection, electrode
             )
             log_background = background_log_intensity(
                 electrode_mark_reference,
@@ -2194,7 +2197,7 @@ def compute_local_log_likelihood(
     n_position_dims = positions.shape[1]
     position_std_array = jnp.asarray(position_std)
     occupancy_std = as_std_array(occupancy_model.std, n_position_dims)
-    for (
+    for electrode, (
         electrode_encoding_spike_waveform_features,
         electrode_encoding_positions,
         electrode_encoding_weights,
@@ -2203,21 +2206,23 @@ def compute_local_log_likelihood(
         electrode_decoding_spike_waveform_features,
         electrode_spike_times,
         electrode_mark_reference,
-    ) in zip(
-        tqdm(
-            encoding_spike_waveform_features,
-            unit="electrode",
-            desc="Local Likelihood",
-            disable=disable_progress_bar,
-        ),
-        encoding_positions,
-        encoding_weights,
-        mean_rates,
-        gpi_models,
-        spike_waveform_features,
-        spike_times,
-        mark_reference,
-        strict=True,
+    ) in enumerate(
+        zip(
+            tqdm(
+                encoding_spike_waveform_features,
+                unit="electrode",
+                desc="Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            encoding_positions,
+            encoding_weights,
+            mean_rates,
+            gpi_models,
+            spike_waveform_features,
+            spike_times,
+            mark_reference,
+            strict=True,
+        )
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
@@ -2232,8 +2237,8 @@ def compute_local_log_likelihood(
             select_spike_rows(electrode_spike_times, selection),
             environment,
         )
-        electrode_decoding_spike_waveform_features = select_spike_rows(
-            electrode_decoding_spike_waveform_features, selection
+        electrode_decoding_spike_waveform_features = select_decode_marks(
+            electrode_decoding_spike_waveform_features, selection, electrode
         )
         # Expand waveform_std to match this electrode's feature count if scalar
         n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]

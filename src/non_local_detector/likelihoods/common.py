@@ -2560,6 +2560,58 @@ def select_spike_rows(
     return np.asarray(selected)
 
 
+def select_decode_marks(
+    spike_waveform_features: "np.ndarray | jnp.ndarray",
+    selection: SpikeSelection,
+    electrode: int,
+) -> np.ndarray:
+    """Select one electrode's decode-spike marks and require them to be finite.
+
+    Every clusterless likelihood (and the No-Spike mark density) reads the
+    waveform features of the spikes in the requested bins through this
+    function. One non-finite mark gives its bin a NaN likelihood, and filtering
+    carries NaN into the posterior of every later bin, so it is rejected here.
+    Only the selected spikes are checked: a spike outside the requested bins
+    never enters the likelihood, matching the encoding fits, which check only
+    the spikes inside the encoding support.
+
+    Parameters
+    ----------
+    spike_waveform_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
+        One electrode's waveform features, row-paired with its spike times.
+    selection : SpikeSelection
+        The selection from ``select_spikes_in_rows`` for the same electrode.
+    electrode : int
+        Electrode index, used in the error message.
+
+    Returns
+    -------
+    marks : np.ndarray, shape (n_selected, n_features)
+        The selected rows, on the host.
+
+    Raises
+    ------
+    ValidationError
+        If any selected mark is NaN or infinite, or if the feature rows do not
+        match the spike count (see ``select_spike_rows``).
+    """
+    marks = select_spike_rows(spike_waveform_features, selection)
+    is_finite = np.isfinite(marks)
+    if not is_finite.all():
+        n_bad = int(np.count_nonzero(~is_finite.all(axis=1)))
+        raise ValidationError(
+            f"non-finite waveform features for electrode {electrode}",
+            expected="finite (non-NaN, non-inf) waveform features for every "
+            "spike in the decoding bins",
+            got=f"{n_bad} of {marks.shape[0]} spikes with NaN or inf features",
+            hint="Drop these spikes from both spike_times and "
+            "spike_waveform_features, or replace their features, before "
+            "predicting. A non-finite mark makes the likelihood of its bin NaN, "
+            "and the posterior of every later bin with it.",
+        )
+    return marks
+
+
 @requires_time_edges
 def get_spikecount_per_time_bin(
     spike_times: np.ndarray,

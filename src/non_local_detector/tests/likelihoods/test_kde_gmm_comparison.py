@@ -277,11 +277,9 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
         position=position,
         spike_times=decoding_spike_times,
         spike_waveform_features=decoding_spike_features,
-        **gmm_encoding,
+        **{**gmm_encoding, "spike_block_size": 1000, "bin_tile_size": None},
         mark_reference=data["gmm_mark_reference"],
         is_local=False,
-        spike_block_size=1000,
-        bin_tile_size=None,
     )
 
     # Verify non-local output
