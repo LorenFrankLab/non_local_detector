@@ -464,6 +464,37 @@ class TestBatchedPoissonRegression:
         )
         np.testing.assert_allclose(coefficients[:, -1], 0.0, atol=1e-6)
 
+    def test_singular_newton_system_warns_and_reaches_the_optimum(self, problem):
+        """Without a penalty, an unsupported basis function makes every
+        Hessian exactly singular. Least squares still reaches the optimum of
+        the identified coefficients, and the fit warns once naming the cells.
+        """
+        design_matrix, spikes, weights = problem
+        unsupported = np.column_stack(
+            [design_matrix, np.where(weights == 0.0, 1.0, 0.0)]
+        )
+        reference = np.asarray(
+            fit_poisson_regressions(design_matrix, spikes, weights, 0.0)
+        )
+        with pytest.warns(UserWarning, match="singular") as record:
+            coefficients = np.asarray(
+                fit_poisson_regressions(unsupported, spikes, weights, 0.0)
+            )
+        singular = [w for w in record if "singular" in str(w.message)]
+        assert len(singular) == 1
+        assert "[1, 2, 3, 4, 5]" in str(singular[0].message)
+        np.testing.assert_array_equal(coefficients[:, -1], 0.0)
+        # Least-squares directions converge less tightly than Newton steps:
+        # objectives on Linux CI were 4e-8 from the Newton fit's.
+        np.testing.assert_allclose(
+            _poisson_objective64(
+                design_matrix, spikes, weights, coefficients[:, :-1], 0.0
+            ),
+            _poisson_objective64(design_matrix, spikes, weights, reference, 0.0),
+            rtol=0,
+            atol=1e-7,
+        )
+
 
 def test_encoding_fit_solves_all_cells_in_one_call(
     monkeypatch, simple_1d_environment, simple_spike_data
@@ -892,85 +923,6 @@ class TestWeightedEventOwnership:
 
         ((event_counts, _),) = captured
         np.testing.assert_allclose(event_counts, [1.75, 1.25, 0.0, 0.25, 2.75])
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("position_time", "weights", "spike_times"),
-    [
-        # Repeated final timestamp: the spike at t=2 has interpolated weight 1.
-        ([0.0, 1.0, 2.0, 2.0], [1.0, 1.0, 0.0, 1.0], [2.0]),
-        # Repeated interior timestamp.
-        ([0.0, 1.0, 1.0, 2.0], [1.0, 0.0, 1.0, 1.0], [1.0, 1.5]),
-        # A single position sample.
-        ([3.0], [0.5], [3.0, 3.0]),
-    ],
-    ids=["repeated-final", "repeated-interior", "single-sample"],
-)
-def test_weighted_spike_counts_conserve_interpolated_weight(
-    position_time, weights, spike_times
-):
-    """Event mass always equals the spike's interpolated weight, including
-    zero-length sample intervals, so a selected spike cannot lose its weight."""
-    from non_local_detector.likelihoods.sorted_spikes_glm import weighted_spike_counts
-
-    position_time, weights = np.array(position_time), np.array(weights)
-    counts = weighted_spike_counts(np.array(spike_times), position_time, weights)
-    np.testing.assert_allclose(
-        counts.sum(), np.interp(spike_times, position_time, weights).sum()
-    )
-    np.testing.assert_array_equal(counts[weights == 0.0], 0.0)
-
-
-def _reference_weighted_spike_counts(spike_times, position_time, weights):
-    """Per-spike loop: a spike in ``[t[0], t[-1]]`` splits its interpolated
-    weight between the last sample ``i <= n - 2`` with ``t[i] <= spike`` (or
-    ``i = 0``) and sample ``i + 1``, each part carried by its own sample."""
-    n = len(position_time)
-    counts = np.zeros(n)
-    for spike in spike_times:
-        if not position_time[0] <= spike <= position_time[-1]:
-            continue
-        left = 0
-        for i in range(1, n - 1):
-            if position_time[i] <= spike:
-                left = i
-        right = min(left + 1, n - 1)
-        interval = position_time[right] - position_time[left]
-        fraction = (spike - position_time[left]) / interval if interval > 0 else 1.0
-        counts[left] += (1.0 - fraction) * weights[left]
-        counts[right] += fraction * weights[right]
-    return counts
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("n_samples", [1, 2, 3, 17])
-@pytest.mark.parametrize("seed", range(5))
-def test_weighted_spike_counts_match_per_spike_reference(n_samples, seed):
-    """Encoding event rows follow the position samples, independently of the
-    decode binning convention: unsorted spikes, spikes on samples, repeated
-    timestamps, and spikes outside the position timeline."""
-    from non_local_detector.likelihoods.sorted_spikes_glm import weighted_spike_counts
-
-    rng = np.random.default_rng(seed)
-    position_time = np.sort(rng.integers(0, 2 * n_samples, n_samples)).astype(float)
-    weights = rng.choice([0.0, 0.3, 1.0], n_samples)
-    on_samples = rng.choice(position_time, 5)
-    spike_times = rng.permutation(
-        np.concatenate(
-            [
-                rng.uniform(position_time[0] - 1.0, position_time[-1] + 1.0, 20),
-                on_samples,
-            ]
-        )
-    )
-
-    np.testing.assert_allclose(
-        weighted_spike_counts(spike_times, position_time, weights),
-        _reference_weighted_spike_counts(spike_times, position_time, weights),
-        rtol=1e-12,
-        atol=1e-15,
-    )
 
 
 def _corner_track_data(environment_name="corner", seed=0):

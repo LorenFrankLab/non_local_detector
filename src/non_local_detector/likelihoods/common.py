@@ -1,4 +1,5 @@
 import hashlib
+import itertools
 from collections import OrderedDict
 from collections.abc import Callable, Sequence, Sized
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
+import scipy.spatial  # type: ignore[import-untyped]
 from jax.nn import logsumexp
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
@@ -507,49 +509,31 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
-def _block_duration_values(block_durations):
-    """The block's first duration and its first different one (or the first).
-
-    Parameters
-    ----------
-    block_durations : jnp.ndarray, shape (block_rows,)
-
-    Returns
-    -------
-    first, other : jnp.ndarray, shape ()
-    """
-    first = block_durations[0]
-    return first, block_durations[jnp.argmax(block_durations != first)]
+# Rows per non-local Poisson emission block. Every block has this shape, and a
+# row's position in its block is fixed by the decode grid.
+_EMISSION_BLOCK_ROWS = 64
 
 
-def _matrix_emission_is_safe(rates, block_durations, accumulator_dtype):
-    """Whether one block's Poisson emission can use the rate-matrix product.
+def _matrix_emission_is_safe(rates, durations, accumulator_dtype):
+    """Whether the Poisson emission can use the log-rate matrix product.
 
     Parameters
     ----------
     rates : jnp.ndarray, shape (n_neurons, n_bins)
-    block_durations : jnp.ndarray, shape (block_rows,)
+    durations : jnp.ndarray, shape (n_rows,)
+        Only their dtype is used.
     accumulator_dtype : dtype
         The emission's accumulator dtype.
 
     Returns
     -------
     is_safe : jnp.ndarray, shape ()
-        True when every rate-duration product is positive and finite, the block
-        has at most two distinct durations (a uniform grid whose timestamps
-        round to two values), and the inputs already have the accumulator dtype.
+        True when every rate is positive and finite and the inputs already
+        have the accumulator dtype. No duration value enters, so every row
+        range of a decode grid takes the same path.
     """
-    first, other = _block_duration_values(block_durations)
-    smallest = jnp.min(rates) * jnp.min(block_durations)
-    largest = jnp.max(rates) * jnp.max(block_durations)
-    return (
-        jnp.all(jnp.isfinite(rates))
-        & jnp.all(jnp.isfinite(block_durations))
-        & jnp.all((block_durations == first) | (block_durations == other))
-        & (jnp.min(block_durations) > 0)
-        & (smallest > 0)
-        & jnp.isfinite(largest)
-        & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+    return jnp.all(jnp.isfinite(rates) & (rates > 0)) & (
+        jnp.result_type(rates, durations) == accumulator_dtype
     )
 
 
@@ -559,14 +543,31 @@ def _poisson_nonlocal_log_likelihood(
     rates: jnp.ndarray,
     durations: jnp.ndarray,
     summed_rates: jnp.ndarray,
+    lead: int = 0,
 ) -> jnp.ndarray:
     """Batched Poisson emissions with fixed arithmetic across row partitions.
 
-    A fixed 64-row matrix kernel uses the same rate-duration products as the
-    per-neuron reference. Highest dot precision excludes a TF32 approximation.
-    Exact zeros, non-finite products and blocks with more than two distinct
-    durations retain xlogy.
+    A fixed 64-row matrix kernel multiplies counts by the log rates, taken
+    once per call, and adds each row's count-weighted log duration. Highest
+    dot precision excludes a TF32 approximation. Exact zeros and non-finite
+    rates retain xlogy.
     Padding is internal and never contributes an observation or returned row.
+
+    Parameters
+    ----------
+    counts : jnp.ndarray, shape (n_rows, n_neurons)
+    rates : jnp.ndarray, shape (n_neurons, n_bins)
+    durations : jnp.ndarray, shape (n_rows,)
+    summed_rates : jnp.ndarray, shape (n_bins,)
+    lead : int, optional
+        Rows of the first 64-row block before the first row, in ``[0, 64)``;
+        0 by default. Passing the first row's decode-grid index modulo 64
+        keeps each row at one position in one block shape, whatever row
+        range is requested.
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
     """
     n_rows, n_neurons = counts.shape
     n_bins = rates.shape[1]
@@ -576,51 +577,39 @@ def _poisson_nonlocal_log_likelihood(
             jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
             - durations[:, None] * summed_rates
         )
-    block_rows = 64
-    n_full, remainder = divmod(n_rows, block_rows)
-    padded_rows = n_rows + (-n_rows) % block_rows
-    padded_counts = jnp.pad(counts, ((0, padded_rows - n_rows), (0, 0)))
-    padded_durations = jnp.pad(durations, (0, padded_rows - n_rows), mode="edge")
+    block_rows = _EMISSION_BLOCK_ROWS
+    # Enough blocks for any ``lead``, so the shape depends only on n_rows.
+    n_blocks = (n_rows + 2 * block_rows - 2) // block_rows
+    # Block rows outside the request have no counts and a unit duration.
+    row_durations = jax.lax.dynamic_update_slice(
+        jnp.ones(n_blocks * block_rows, dtype=durations.dtype), durations, (lead,)
+    )
+    matrix_is_safe = _matrix_emission_is_safe(rates, durations, accumulator_dtype)
+    matrix_dtype = jnp.result_type(rates, durations)
+    # Once per call rather than per block. Unsafe rates (which never take the
+    # matrix path) are replaced so their unused log has a finite derivative.
+    usable_rates = jnp.isfinite(rates) & (rates > 0)
+    log_rates = jnp.log(jnp.where(usable_rates, rates, 1).astype(matrix_dtype))
 
     def emit_block(block_counts, block_durations):
-        matrix_is_safe = _matrix_emission_is_safe(
-            rates, block_durations, accumulator_dtype
-        )
-
         def matrix_accumulation(_):
-            dtype = jnp.result_type(rates, block_durations)
-            block_counts_float = block_counts.astype(dtype)
-            # Each row uses the product for its own duration, one of the
-            # block's at most two values, so a row's value does not depend on
-            # where a row partition starts. The zero-valued term (exactly 0 for
-            # these finite durations) restores each row's own duration
-            # derivative, which the stopped gradients would collapse.
-            log_durations = jnp.log(block_durations.astype(dtype))
-            duration_tangent = (
-                block_counts_float.sum(axis=1, keepdims=True)
-                * (log_durations - jax.lax.stop_gradient(log_durations))[:, None]
+            block_counts_float = block_counts.astype(matrix_dtype)
+            n_spikes = block_counts_float.sum(axis=1, keepdims=True)
+            # log(rate * duration) = log(rate) + log(duration): one product
+            # with the per-call log rates, plus each row's own duration term,
+            # which is 0 for a row without spikes (as xlogy gives).
+            duration_term = jnp.where(
+                n_spikes == 0,
+                0,
+                n_spikes * jnp.log(block_durations.astype(matrix_dtype))[:, None],
             )
-            first, other = _block_duration_values(block_durations)
-
-            def emission(duration):
-                return jnp.matmul(
-                    block_counts_float,
-                    jnp.log(rates.astype(dtype) * jax.lax.stop_gradient(duration)),
-                    precision=jax.lax.Precision.HIGHEST,
+            values = (
+                jnp.matmul(
+                    block_counts_float, log_rates, precision=jax.lax.Precision.HIGHEST
                 )
-
-            # A block of equal durations (the usual uniform grid) needs one
-            # product; ``where`` alone would compute both.
-            values = jax.lax.cond(
-                first == other,
-                lambda: emission(first),
-                lambda: jnp.where(
-                    (block_durations == first)[:, None],
-                    emission(first),
-                    emission(other),
-                ),
+                + duration_term
             )
-            return (values + duration_tangent).astype(accumulator_dtype)
+            return values.astype(accumulator_dtype)
 
         def xlogy_accumulation(_):
             def add_neuron(likelihood, neuron):
@@ -651,33 +640,45 @@ def _poisson_nonlocal_log_likelihood(
             matrix_is_safe, matrix_accumulation, xlogy_accumulation, None
         )
 
+    def durations_at(first):
+        return jax.lax.dynamic_slice(row_durations, (first,), (block_rows,))
+
+    def update_edge_block(number, result):
+        first = number * block_rows
+        # Indexing the requested rows directly, with zero counts outside them
+        # and those rows dropped from the result, copies neither the counts
+        # nor the result. Negative rows would otherwise wrap.
+        rows = first - lead + jnp.arange(block_rows)
+        rows = jnp.where(rows < 0, n_rows, rows)
+        block = emit_block(
+            counts.at[rows].get(mode="fill", fill_value=0), durations_at(first)
+        )
+        return result.at[rows].set(block, mode="drop")
+
+    def update_interior_block(number, result):
+        first = number * block_rows
+        block = emit_block(
+            jax.lax.dynamic_slice(counts, (first - lead, 0), (block_rows, n_neurons)),
+            durations_at(first),
+        )
+        return jax.lax.dynamic_update_slice(result, block, (first - lead, 0))
+
+    # Blocks 1 through n_blocks - 3 lie within the rows for any ``lead``; only
+    # the first and last two can extend past them.
     likelihood = jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
-    if n_full:
-
-        def update_block(number, result):
-            first = number * block_rows
-            block_counts = jax.lax.dynamic_slice(
-                padded_counts, (first, 0), (block_rows, n_neurons)
-            )
-            block_durations = jax.lax.dynamic_slice(
-                padded_durations, (first,), (block_rows,)
-            )
-            return jax.lax.dynamic_update_slice(
-                result, emit_block(block_counts, block_durations), (first, 0)
-            )
-
-        likelihood = jax.lax.fori_loop(0, n_full, update_block, likelihood)
-    if remainder:
-        first = n_full * block_rows
-        tail = emit_block(padded_counts[first:], padded_durations[first:])[:remainder]
-        likelihood = likelihood.at[first:].set(tail)
+    for number in sorted({0, max(n_blocks - 2, 0), n_blocks - 1}):
+        likelihood = update_edge_block(number, likelihood)
+    if n_blocks > 3:
+        likelihood = jax.lax.fori_loop(
+            1, n_blocks - 2, update_interior_block, likelihood
+        )
     return likelihood - durations[:, None] * summed_rates
 
 
 # Host bytes for one block of int64 spike counts, so full-grid requests never
-# build a rows-by-population count matrix. Block rows are a multiple of the
-# non-local emission's fixed 64-row kernel, so blocked and unblocked requests
-# are bitwise identical.
+# build a rows-by-population count matrix. The non-local emission's 64-row
+# blocks are fixed to the decode grid, so blocked and unblocked requests are
+# bitwise identical.
 COUNT_BLOCK_BYTES = 32 * 1024**2
 
 
@@ -787,11 +788,14 @@ def _blocked_nonlocal_poisson_log_likelihood(
             slice(start, stop),
             _spike_time_order=_spike_time_order,
         )
+        # Emission blocks start at multiples of 64 decode rows, so a row sits
+        # at the same position of the same block shape in every row range.
         return _poisson_nonlocal_log_likelihood(
             jnp.asarray(counts),
             rates,
             durations[start - row_start : stop - row_start],
             summed_rates,
+            start % _EMISSION_BLOCK_ROWS,
         )
 
     return _concatenate_row_blocks(
@@ -841,6 +845,83 @@ def get_position_at_time(
             position_at_spike_times = np.array([])[:, None]
 
     return position_at_spike_times
+
+
+def snap_off_track_positions(
+    position: np.ndarray, environment: Environment
+) -> np.ndarray:
+    """Move positions outside the track to the nearest interior bin center.
+
+    A local likelihood evaluates its encoding model at the animal's position,
+    but the non-local likelihood only scores interior bins. A position beyond
+    the grid or in a non-interior bin (a hole, a boundary ring or an
+    inter-arm gap) is moved to the nearest interior bin center by Euclidean
+    distance, so the local likelihood there equals the non-local one at that
+    bin, and no model is evaluated where it extrapolates. Positions inside an
+    interior bin, including on its closed boundary, and non-finite positions
+    are returned unchanged.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time, n_position_dims) or (n_time,)
+        Positions in the environment's binning coordinates (linear position
+        on a track graph), as ``get_position_at_time`` returns them.
+    environment : Environment
+        The fitted environment.
+
+    Returns
+    -------
+    np.ndarray
+        Shape and dtype of the input; the input itself when no position is
+        off the track.
+    """
+    position = np.asarray(position)
+    points = position if position.ndim > 1 else position[:, np.newaxis]
+    if points.shape[0] == 0:
+        return position
+    edges = environment.edges_
+    n_bins = [len(dimension_edges) - 1 for dimension_edges in edges]
+    is_interior = (
+        np.ones(np.prod(n_bins), dtype=bool)
+        if environment.is_track_interior_ is None
+        else np.asarray(environment.is_track_interior_).ravel()
+    )
+    finite = np.all(np.isfinite(points), axis=1)
+    in_grid = finite & np.all(
+        [
+            (points[:, dim] >= dimension_edges[0])
+            & (points[:, dim] <= dimension_edges[-1])
+            for dim, dimension_edges in enumerate(edges)
+        ],
+        axis=0,
+    )
+    # A position on an edge between bins belongs to every bin sharing it, so
+    # the end of a track arm next to an inter-arm gap, or the corner of an
+    # interior bin, is on the track. Per dimension, "left" gives the lower
+    # and "right" the upper of the bins sharing an edge (the same bin off an
+    # edge); a position is on the track if any combination is interior.
+    candidate_bins = [
+        [
+            np.clip(
+                np.searchsorted(dimension_edges, points[:, dim], side=side) - 1,
+                0,
+                n_bins[dim] - 1,
+            )
+            for side in ("left", "right")
+        ]
+        for dim, dimension_edges in enumerate(edges)
+    ]
+    in_interior_bin = np.zeros(points.shape[0], dtype=bool)
+    for bins in itertools.product(*candidate_bins):
+        in_interior_bin |= is_interior[np.ravel_multi_index(bins, n_bins)]
+    off_track = finite & ~(in_grid & in_interior_bin)
+    if not off_track.any():
+        return position
+    interior_centers = np.asarray(environment.place_bin_centers_)[is_interior]
+    _, nearest = scipy.spatial.cKDTree(interior_centers).query(points[off_track])
+    snapped = points.copy()
+    snapped[off_track] = interior_centers[nearest]
+    return snapped.reshape(position.shape)
 
 
 def resolve_row_slice(row_slice: slice | None, n_bins: int) -> tuple[int, int]:
@@ -1946,18 +2027,29 @@ class KDEModel:
         ----------
         samples : jnp.ndarray, shape (n_samples, n_dims)
             Training samples.
+        weights : jnp.ndarray, shape (n_samples,), optional
+            Finite, non-negative sample weights, by default None (uniform).
 
         Returns
         -------
         self : KDEModel
+
+        Raises
+        ------
+        ValidationError
+            If ``std`` is not finite and positive with shape ``()`` or
+            ``(n_dims,)``, or ``weights`` is not finite, non-negative and of
+            length ``n_samples``.
         """
         samples = jnp.asarray(samples)
         if samples.ndim == 1:
             samples = jnp.expand_dims(samples, axis=1)
+        validate_bandwidth(self.std, samples.shape[1], "std")
         self.samples_ = samples
         if weights is None:
             self.weights_ = jnp.ones((samples.shape[0],))
         else:
+            validate_weights(weights, samples.shape[0])
             self.weights_ = jnp.asarray(weights)
 
         return self
@@ -1987,6 +2079,9 @@ class KDEModel:
     def predict_log(self, eval_points: jnp.ndarray) -> jnp.ndarray:
         """
         Log-density version of predict(). Same inputs, returns log p(eval_points).
+
+        A model without positive weight has zero density, so ``-inf``, as
+        ``predict`` returns 0 and :func:`kde_log_density` returns ``-inf``.
         """
         if self.samples_ is None:
             raise RuntimeError("This KDE instance is not fitted yet.")
@@ -1996,7 +2091,10 @@ class KDEModel:
         block_size = (
             eval_points.shape[0] if self.block_size is None else self.block_size
         )
-        return block_log_kde(eval_points, self.samples_, std, block_size, self.weights_)
+        values = block_log_kde(
+            eval_points, self.samples_, std, block_size, self.weights_
+        )
+        return jnp.where(jnp.sum(self.weights_) > 0.0, values, -jnp.inf)
 
 
 def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
@@ -2179,9 +2277,8 @@ def _padded_index(index: np.ndarray) -> np.ndarray:
 def _log_space_kde_log_density(points, samples, std, block_size, weights):
     """True log density evaluated entirely in log space.
 
-    Callers that map over batches use this directly: under ``vmap`` the
-    log-space repair in :func:`traced_kde_log_density` becomes a select that
-    evaluates both forms.
+    Re-evaluates the points a scaled pass flags; traced callers use it
+    directly.
     """
     if points.shape[0] == 0:
         return jnp.full((0,), LOG_EPS)
@@ -2270,9 +2367,7 @@ def _kde_log_scale(points, std, keys=None):
     return jax.lax.stop_gradient(jnp.where(jnp.isfinite(scale), scale, peak))
 
 
-def _scaled_kde_log_density(
-    points, samples, std, block_size, weights, keys=None, *, repair_in_graph
-):
+def _scaled_kde_log_density(points, samples, std, block_size, weights, keys=None):
     """True log density in one pass per block, each point scaled first.
 
     Each point's log kernels are shifted by :func:`_kde_log_scale` before
@@ -2293,15 +2388,12 @@ def _scaled_kde_log_density(
     keys : jnp.ndarray, shape (n_samples,), optional
         Sorted 1D keys for an exact per-point scale; None scales by the
         kernel's peak.
-    repair_in_graph : bool
-        Evaluate flagged points in log space inside the graph, under a
-        ``lax.cond`` per block.
 
     Returns
     -------
     log_density : jnp.ndarray, shape (n_points,)
     needs_log_space : jnp.ndarray, shape (n_points,)
-        The flagged points, already repaired when ``repair_in_graph``.
+        The flagged points, which callers re-evaluate in log space.
     """
     n_points = points.shape[0]
     if n_points == 0:
@@ -2340,17 +2432,6 @@ def _scaled_kde_log_density(
             / (4 * jnp.finfo(scaled.dtype).eps)
         )
         needs_log_space = scaled < lost
-        if repair_in_graph:
-            values = jax.lax.cond(
-                jnp.any(needs_log_space),
-                lambda values: jnp.where(
-                    needs_log_space,
-                    log_kde(block_points, samples, std, weights),
-                    values,
-                ),
-                lambda values: values,
-                values,
-            )
         return values, needs_log_space
 
     rows = min(_kde_block_rows(block_size, points, samples, std, weights), n_points)
@@ -2375,28 +2456,10 @@ def _scaled_kde_log_density(
     return values, needs_log_space.reshape(-1)[:n_points] & (total > 0.0)
 
 
-def traced_kde_log_density(points, samples, std, block_size, weights):
-    """Traceable true-density counterpart of :func:`kde_log_density`.
-
-    Points are scaled by the kernel's peak, so each block's pass matches the
-    probability-space KDE; a block holding points in a distant tail evaluates
-    them in log space under a ``lax.cond``. Under ``vmap`` that becomes a
-    select evaluating both forms; callers mapped in batches use
-    :func:`_log_space_kde_log_density`. Without a sort in the graph, 1D tails
-    are not scaled per point; callers expecting many tail points should use
-    :func:`kde_log_density`.
-    """
-    return _scaled_kde_log_density(
-        points, samples, std, block_size, weights, repair_in_graph=True
-    )[0]
-
-
 @partial(jax.jit, static_argnames=("block_size",))
 def _compiled_scaled_kde_log_density(points, samples, std, block_size, weights, keys):
     """The scaled pass for :func:`kde_log_density`, which repairs on the host."""
-    return _scaled_kde_log_density(
-        points, samples, std, block_size, weights, keys, repair_in_graph=False
-    )
+    return _scaled_kde_log_density(points, samples, std, block_size, weights, keys)
 
 
 def _batched_kde_rows(
@@ -2449,7 +2512,6 @@ def _compiled_batched_scaled_kde_log_density(
             block_size,
             model_weights,
             model_keys,
-            repair_in_graph=False,
         )
 
     return jax.lax.map(one_model, (samples, weights, keys), batch_size=batch_size)
@@ -2501,10 +2563,13 @@ def _prepare_kde_local_inputs(
     points = spike_time_order.memo_kde(
         f"kde_local_position:{row_start}:{row_stop}",
         (position_time, position, environment, time_grid),
-        lambda: get_position_at_time(
-            position_time,
-            position,
-            decode_bin_centers(time_grid.edges, row_start, row_stop),
+        lambda: snap_off_track_positions(
+            get_position_at_time(
+                position_time,
+                position,
+                decode_bin_centers(time_grid.edges, row_start, row_stop),
+                environment,
+            ),
             environment,
         ),
     )
@@ -2671,6 +2736,58 @@ def select_spike_rows(
     return np.asarray(selected)
 
 
+def select_decode_marks(
+    spike_waveform_features: "np.ndarray | jnp.ndarray",
+    selection: SpikeSelection,
+    electrode: int,
+) -> np.ndarray:
+    """Select one electrode's decode-spike marks and require them to be finite.
+
+    Every clusterless likelihood (and the No-Spike mark density) reads the
+    waveform features of the spikes in the requested bins through this
+    function. One non-finite mark gives its bin a NaN likelihood, and filtering
+    carries NaN into the posterior of every later bin, so it is rejected here.
+    Only the selected spikes are checked: a spike outside the requested bins
+    never enters the likelihood, matching the encoding fits, which check only
+    the spikes inside the encoding support.
+
+    Parameters
+    ----------
+    spike_waveform_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
+        One electrode's waveform features, row-paired with its spike times.
+    selection : SpikeSelection
+        The selection from ``select_spikes_in_rows`` for the same electrode.
+    electrode : int
+        Electrode index, used in the error message.
+
+    Returns
+    -------
+    marks : np.ndarray, shape (n_selected, n_features)
+        The selected rows, on the host.
+
+    Raises
+    ------
+    ValidationError
+        If any selected mark is NaN or infinite, or if the feature rows do not
+        match the spike count (see ``select_spike_rows``).
+    """
+    marks = select_spike_rows(spike_waveform_features, selection)
+    is_finite = np.isfinite(marks)
+    if not is_finite.all():
+        n_bad = int(np.count_nonzero(~is_finite.all(axis=1)))
+        raise ValidationError(
+            f"non-finite waveform features for electrode {electrode}",
+            expected="finite (non-NaN, non-inf) waveform features for every "
+            "spike in the decoding bins",
+            got=f"{n_bad} of {marks.shape[0]} spikes with NaN or inf features",
+            hint="Drop these spikes from both spike_times and "
+            "spike_waveform_features, or replace their features, before "
+            "predicting. A non-finite mark makes the likelihood of its bin NaN, "
+            "and the posterior of every later bin with it.",
+        )
+    return marks
+
+
 @requires_time_edges
 def get_spikecount_per_time_bin(
     spike_times: np.ndarray,
@@ -2783,43 +2900,12 @@ def decode_bin_centers(
     return edges[:-1] + 0.5 * np.diff(edges)
 
 
-def safe_divide(numerator, denominator, eps=EPS, condition=None):
-    """Safely divide two arrays, avoiding division by zero.
-
-    Parameters
-    ----------
-    numerator : jnp.ndarray
-        Numerator array of any shape.
-    denominator : jnp.ndarray
-        Denominator array, must be broadcastable with numerator.
-    eps : float, optional
-        Small value to avoid division by zero, by default 1e-8.
-    condition : jnp.ndarray, optional
-        Boolean condition array to apply the division, by default None.
-        If None, condition is computed as abs(denominator) < eps.
-        Useful if pre-computing the condition is more efficient.
-
-    Returns
-    -------
-    result : jnp.ndarray
-        Result of safe division with same shape as broadcast of inputs.
-        Where condition is True, returns eps instead of dividing.
-    """
-    if condition is None:
-        condition = jnp.abs(denominator) < eps
-
-    # Double-where: substitute safe denominator first, then select result.
-    # This avoids NaN in both forward pass and gradients.
-    safe_denominator = jnp.where(condition, 1.0, denominator)
-    return jnp.where(condition, eps, numerator / safe_denominator)
-
-
 def log_nonnegative(x: jnp.ndarray) -> jnp.ndarray:
     """Log of a non-negative array: ``-inf`` at zero, ``NaN`` kept.
 
-    Unlike ``safe_log`` it applies no floor, so a zero intensity stays an
-    impossible event for the caller to combine (for example with a background
-    by ``logaddexp``). The gradient is zero at zero instead of ``NaN``.
+    No floor is applied, so a zero intensity stays an impossible event for the
+    caller to combine (for example with a background by ``logaddexp``). The
+    gradient is zero at zero instead of ``NaN``.
 
     Parameters
     ----------
@@ -2837,29 +2923,3 @@ def log_nonnegative(x: jnp.ndarray) -> jnp.ndarray:
         jnp.log(jnp.where(positive, x, 1.0)),
         jnp.where(jnp.isnan(x), jnp.nan, -jnp.inf),
     )
-
-
-def safe_log(x, eps=EPS, condition=None):
-    """Safely compute the logarithm of an array, avoiding log(0).
-
-    Parameters
-    ----------
-    x : jnp.ndarray
-        Input array of any shape.
-    eps : float, optional
-        Small value to avoid log(0), by default 1e-8.
-    condition : jnp.ndarray, optional
-        Boolean condition array to apply the logarithm, by default None.
-        If None, condition is computed as abs(x) < eps.
-        Useful if pre-computing the condition is more efficient.
-
-    Returns
-    -------
-    result : jnp.ndarray
-        Logarithm of input array with same shape as x.
-        Where condition is True, returns log(eps) instead of log(0).
-    """
-    if condition is None:
-        condition = jnp.abs(x) < eps
-
-    return jnp.log(jnp.where(condition, eps, x))
