@@ -638,29 +638,26 @@ def fit_sorted_spikes_glm_encoding_model(
         encoding_positions = environment._linear_position(
             np.asarray(encoding_positions)
         )[:, None]
-    # A known recording duration can expose a stationary/singleton sample.
-    # Define its spline on the environment, then retain only actual encoding
-    # rows for the event and exposure terms. A one-center grid uses an intercept.
-    basis_positions = (
-        encoding_positions
-        if len(encoding_positions) and np.all(np.ptp(encoding_positions, axis=0) > 0)
-        else np.asarray(interior_place_bin_centers)
-    )
-    emission_design_matrix = make_spline_design_matrix(
-        np.asarray(basis_positions),
-        place_bin_edges,
-        knot_spacing=emission_knot_spacing,
-    )
-    emission_design_info = emission_design_matrix.design_info
-    emission_design_matrix = (
-        jnp.asarray(emission_design_matrix)
-        if basis_positions is encoding_positions
-        else make_spline_predict_matrix(
-            emission_design_info,
-            encoding_positions
-            if len(encoding_positions)
-            else interior_place_bin_centers,
-        )
+    # Define the spline on the environment, not on the tracking: interior bin
+    # centers plus the physical edge extrema of each varying dimension, so the
+    # natural-spline boundaries sit at the track ends. Bins the animal never
+    # visited are then set by the penalty, near the neuron's baseline, instead
+    # of a linear extrapolation of log-rate. A one-center dimension adds no
+    # spline; a one-center grid is intercept-only.
+    basis_positions = np.asarray(interior_place_bin_centers)
+    varying_dimensions = np.ptp(basis_positions, axis=0) > 0
+    if np.any(varying_dimensions):
+        boundary_positions = np.tile(basis_positions[0], (2, 1))
+        boundary_positions[:, varying_dimensions] = np.vstack(
+            (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
+        )[:, varying_dimensions]
+        basis_positions = np.vstack((basis_positions, boundary_positions))
+    emission_design_info = make_spline_design_matrix(
+        basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
+    ).design_info
+    emission_design_matrix = make_spline_predict_matrix(
+        emission_design_info,
+        encoding_positions if len(encoding_positions) else interior_place_bin_centers,
     )
 
     emission_predict_matrix = make_spline_predict_matrix(
