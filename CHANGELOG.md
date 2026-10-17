@@ -121,6 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The No-Spike likelihood honors `disable_progress_bar`. `predict_no_spike_log_likelihood` takes it as a keyword, and detectors pass the setting from their algorithm params; before, every decoded chunk printed a "No Spike Likelihood" bar.
 - `sorted_spikes_glm` defines its spline basis on the environment (interior bin centers plus the physical track ends) instead of on the tracking samples. Natural-spline boundaries were at the edges of the visited range, so log-rate extrapolated linearly into bins the animal never visited: for an animal covering 0-140 cm of a 0-170 cm track, with a field still rising at 140 cm, those bins reached 5-8 Hz against a visited peak of 2.4-2.8 Hz (much more with a weaker `l2_penalty`). They are now set by the penalty, near the neuron's baseline. The basis no longer changes with the tracking rate, and a one-bin grid fits an intercept-only model. Place fields over visited bins change slightly.
 - HPD thresholds handle missing spatial bins per frame and return NaN for frames without posterior mass. An undefined first frame in the default conditional non-local posterior no longer prevents analysis of later frames.
 - Caller-supplied Cartesian `is_track_interior` masks now define the fitted geometry, with shape and boolean dtype validation and a copy that protects fitted geometry from later caller mutation. The exported 2-D graph helper uses the same bounds-aware graph construction as the environment.
