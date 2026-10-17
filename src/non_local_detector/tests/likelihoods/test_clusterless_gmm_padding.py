@@ -103,11 +103,10 @@ def predict(recording, is_local, row_slice, **kwargs):
         times,
         marks,
         time_edges=edges,
-        **encoding,
+        **{**encoding, **kwargs},
         mark_reference=mark_reference,
         is_local=is_local,
         row_slice=row_slice,
-        **kwargs,
     )
 
 

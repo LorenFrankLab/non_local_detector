@@ -12,6 +12,7 @@ leveraging JAX for efficient computation on both CPU and GPU.
 from __future__ import annotations
 
 import warnings
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Literal
@@ -20,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from sklearn.cluster import KMeans  # type: ignore[import-untyped]
+from threadpoolctl import threadpool_limits
 
 from non_local_detector.likelihoods.common import _padded_sample_count
 
@@ -848,7 +850,9 @@ class GaussianMixtureModel:
     kmeans_n_init : int, default=1
         KMeans restarts (used if init_params='kmeans').
     random_state : int | None, default=None
-        Random seed used in KMeans/k-means++ and random responsibilities.
+        Random seed used in KMeans/k-means++ and random responsibilities. When
+        set, a refit of the same input reproduces the fit bit for bit on CPU;
+        the KMeans initialization then runs on a single OpenMP thread.
     weights_init : Array | None, shape (n_components,), default=None
         User-provided initial mixture weights.
     means_init : Array | None, shape (n_components, n_features), default=None
@@ -1454,6 +1458,11 @@ class GaussianMixtureModel:
         - ``random_state`` set, ``init_index > 0``: derive a distinct,
           reproducible seed from ``key`` so ``n_init`` restarts differ instead
           of repeating the primary init.
+
+        A seeded fit runs KMeans on a single OpenMP thread. With more threads
+        scikit-learn merges per-thread partial sums in completion order, so the
+        centers vary in their last bits between runs and a point near a
+        cluster boundary can change label, which moves the whole EM fit.
         """
         n_samples, _ = X.shape
         X_np = np.asarray(X)
@@ -1470,15 +1479,23 @@ class GaussianMixtureModel:
                     jnp.iinfo(jnp.int32).max,
                 )
             )
-        km = KMeans(
-            n_clusters=self.n_components,
-            init=self.kmeans_init,
-            n_init=self.kmeans_n_init,
-            random_state=seed,
-        ).fit(
-            X_np,
-            sample_weight=None if sample_weight is None else np.asarray(sample_weight),
+        single_thread = (
+            nullcontext()
+            if seed is None
+            else threadpool_limits(limits=1, user_api="openmp")
         )
+        with single_thread:
+            km = KMeans(
+                n_clusters=self.n_components,
+                init=self.kmeans_init,
+                n_init=self.kmeans_n_init,
+                random_state=seed,
+            ).fit(
+                X_np,
+                sample_weight=(
+                    None if sample_weight is None else np.asarray(sample_weight)
+                ),
+            )
         labels = km.labels_
         resp_np = np.zeros((n_samples, self.n_components), dtype=X_np.dtype)
         resp_np[np.arange(n_samples), labels] = 1.0
