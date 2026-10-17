@@ -132,7 +132,18 @@ def test_sorted_accumulation_matches_per_neuron_xlogy(
     actual = function(**arguments, row_slice=rows)
     expected = reference(arguments, rows)
     np.testing.assert_array_equal(np.isfinite(actual), np.isfinite(expected))
-    np.testing.assert_allclose(actual, expected, **EXACT)
+    # The matrix path sums log(rate) + log(duration), which rounds differently
+    # from the per-neuron xlogy(count, rate * duration); both stay within a
+    # few ulp of the exact sum.
+    finite = np.isfinite(expected)
+    exact = float64_nonlocal_emission(
+        arguments["spike_times"], arguments | {"row_slice": rows}
+    )
+    assert_within_ulps(np.asarray(actual)[finite], exact[finite], np.float32)
+    np.testing.assert_array_equal(np.asarray(actual)[~finite], expected[~finite])
+    if zero:
+        # Zero rates take the per-neuron xlogy fallback.
+        np.testing.assert_allclose(actual, expected, **EXACT)
     if rows is not None:
         np.testing.assert_allclose(actual, function(**arguments)[rows], **EXACT)
 
@@ -604,18 +615,19 @@ def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkey
     np.testing.assert_array_equal(actual.is_missing, missing)
 
 
-def test_uniform_duration_blocks_compute_one_emission_product():
-    """A block of equal durations needs one matrix product, not both.
+def test_matrix_blocks_compute_one_emission_product():
+    """Each block's matrix path is one product, whatever its durations.
 
-    Selecting between the two durations' products with ``where`` computed both
-    for every block, making uniform-width emissions about 1.8x slower.
+    The rates' log is taken once per call and each row adds its own duration
+    term, so no block computes a product per distinct duration.
     """
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
-    counts = jnp.zeros((128, 5), dtype=jnp.int32)
+    # 256 rows: edge blocks and the interior block loop.
+    counts = jnp.zeros((256, 5), dtype=jnp.int32)
     rates = jnp.ones((5, 7))
     jaxpr = jax.make_jaxpr(_poisson_nonlocal_log_likelihood)(
-        counts, rates, jnp.full(128, 0.002), rates.sum(0)
+        counts, rates, jnp.full(256, 0.002), rates.sum(0)
     )
 
     def count(jaxpr, name):
@@ -643,4 +655,6 @@ def test_uniform_duration_blocks_compute_one_emission_product():
         sorted(count(branch.jaxpr, "dot_general") for branch in eqn.params["branches"])
         for eqn in conds(jaxpr.jaxpr)
     ]
-    assert [1, 2] in branch_products, branch_products
+    # One cond per block chooses the matrix product or the xlogy fallback.
+    assert len(branch_products) == 4, branch_products
+    assert all(products == [0, 1] for products in branch_products), branch_products
