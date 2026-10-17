@@ -34,6 +34,7 @@ from non_local_detector.likelihoods.common import (
     log_bin_duration_evidence,
     log_nonnegative,
     resolve_row_slice,
+    select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
     spike_row_ids,
@@ -995,18 +996,26 @@ def predict_clusterless_gmm_log_likelihood(
     ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
 
     # Per-electrode contributions in log-space
-    for elect_feats, elect_times, joint_gmm, mean_rate, reference in tqdm(
-        zip(
-            spike_waveform_features,
-            spike_times,
-            joint_models,
-            mean_rates,
-            mark_reference,
-            strict=True,
-        ),
-        desc="Non-Local Likelihood (GMM, log-space)",
-        unit="electrode",
-        disable=disable_progress_bar,
+    for electrode, (
+        elect_feats,
+        elect_times,
+        joint_gmm,
+        mean_rate,
+        reference,
+    ) in enumerate(
+        tqdm(
+            zip(
+                spike_waveform_features,
+                spike_times,
+                joint_models,
+                mean_rates,
+                mark_reference,
+                strict=True,
+            ),
+            desc="Non-Local Likelihood (GMM, log-space)",
+            unit="electrode",
+            disable=disable_progress_bar,
+        )
     ):
         # A None model marks a zero-rate electrode: it has no effective encoding
         # spikes, so no density was fit and each observed spike is explained by
@@ -1024,7 +1033,7 @@ def predict_clusterless_gmm_log_likelihood(
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes == 0:
             continue
-        selected_feats = np.asarray(select_spike_rows(elect_feats, selection))
+        selected_feats = select_decode_marks(elect_feats, selection, electrode)
         log_background = background_log_intensity(
             reference, selected_feats, LOG_RATE_EPS_HZ
         )
@@ -1197,19 +1206,28 @@ def compute_local_log_likelihood(
     log_likelihood = jnp.zeros((n_rows,), dtype=working_dtype)
     summed_expected_counts = jnp.zeros((n_rows,), dtype=working_dtype)
 
-    for elect_feats, elect_times, joint_gmm, gpi_gmm, mean_rate, reference in tqdm(
-        zip(
-            spike_waveform_features,
-            spike_times,
-            joint_models,
-            gpi_models,
-            mean_rates,
-            mark_reference,
-            strict=True,
-        ),
-        desc="Local Likelihood (GMM, log-space)",
-        unit="electrode",
-        disable=disable_progress_bar,
+    for electrode, (
+        elect_feats,
+        elect_times,
+        joint_gmm,
+        gpi_gmm,
+        mean_rate,
+        reference,
+    ) in enumerate(
+        tqdm(
+            zip(
+                spike_waveform_features,
+                spike_times,
+                joint_models,
+                gpi_models,
+                mean_rates,
+                mark_reference,
+                strict=True,
+            ),
+            desc="Local Likelihood (GMM, log-space)",
+            unit="electrode",
+            disable=disable_progress_bar,
+        )
     ):
         # None marks a zero-rate electrode with no effective encoding spikes: each
         # observed spike is explained by the background alone. Do not skip -- an
@@ -1223,7 +1241,7 @@ def compute_local_log_likelihood(
         )
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes:
-            selected_feats = np.asarray(select_spike_rows(elect_feats, selection))
+            selected_feats = select_decode_marks(elect_feats, selection, electrode)
             log_background = background_log_intensity(
                 reference, selected_feats, LOG_RATE_EPS_HZ
             )
