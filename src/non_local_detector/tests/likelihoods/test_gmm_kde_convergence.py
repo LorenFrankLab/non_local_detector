@@ -9,7 +9,6 @@ import warnings
 
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
@@ -21,10 +20,6 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
-    predict_clusterless_kde_log_likelihood,
-)
-from non_local_detector.likelihoods.clusterless_kde import (
-    mark_reference_scale as kde_mark_reference_scale,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
@@ -163,95 +158,6 @@ def test_gmm_nonlocal_likelihood_is_finite(convergence_test_data):
     print(f"All finite: {np.all(np.isfinite(ll_gmm))}")
 
     assert np.all(np.isfinite(ll_gmm)), "All likelihoods should be finite"
-
-
-@pytest.mark.skip(reason="Visualization - run manually")
-def test_visualize_convergence(convergence_test_data):
-    """Visualize GMM convergence to KDE."""
-    data = convergence_test_data
-
-    position_time = jnp.asarray(data["position_time"])
-    position = jnp.asarray(data["position"])
-    time_edges = jnp.asarray(data["time_edges"])
-    spike_times = [jnp.asarray(st) for st in data["spike_times"]]
-    spike_features = [jnp.asarray(sf) for sf in data["spike_features"]]
-
-    # KDE reference
-    kde_enc = fit_clusterless_kde_encoding_model(
-        position_time=position_time,
-        position=position,
-        spike_times=spike_times,
-        spike_waveform_features=spike_features,
-        environment=data["environment"],
-        position_std=1.5,
-        disable_progress_bar=True,
-    )
-
-    ll_kde = predict_clusterless_kde_log_likelihood(
-        time_edges=time_edges,
-        position_time=position_time,
-        position=position,
-        spike_times=spike_times,
-        spike_waveform_features=spike_features,
-        occupancy=kde_enc["occupancy"],
-        occupancy_model=kde_enc["occupancy_model"],
-        gpi_models=kde_enc["gpi_models"],
-        encoding_spike_waveform_features=kde_enc["encoding_spike_waveform_features"],
-        encoding_positions=kde_enc["encoding_positions"],
-        environment=data["environment"],
-        mean_rates=kde_enc["mean_rates"],
-        summed_ground_process_intensity=kde_enc["summed_ground_process_intensity"],
-        position_std=kde_enc["position_std"],
-        waveform_std=kde_enc["waveform_std"],
-        mark_reference=fit_mark_references(
-            spike_features,
-            kde_mark_reference_scale(waveform_std=kde_enc["waveform_std"]),
-        ),
-        is_local=False,
-        disable_progress_bar=True,
-    )
-
-    # GMMs with different components
-    component_counts = [4, 16, 64]
-    fig, axes = plt.subplots(1, len(component_counts) + 1, figsize=(20, 4))
-
-    # Plot KDE
-    axes[0].imshow(np.asarray(ll_kde).T, aspect="auto", cmap="viridis")
-    axes[0].set_title("KDE (Reference)")
-    axes[0].set_xlabel("Time bin")
-    axes[0].set_ylabel("Position bin")
-
-    # Plot GMMs
-    for idx, n_comp in enumerate(component_counts):
-        gmm_enc = fit_clusterless_gmm_encoding_model(
-            position_time=position_time,
-            position=position,
-            spike_times=spike_times,
-            spike_waveform_features=spike_features,
-            environment=data["environment"],
-            gmm_components_occupancy=n_comp,
-            gmm_components_joint=n_comp,
-            disable_progress_bar=True,
-        )
-
-        ll_gmm = predict_clusterless_gmm_log_likelihood(
-            time_edges=time_edges,
-            position_time=position_time,
-            position=position,
-            spike_times=spike_times,
-            spike_waveform_features=spike_features,
-            **gmm_enc,
-            mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
-            is_local=False,
-        )
-
-        axes[idx + 1].imshow(np.asarray(ll_gmm).T, aspect="auto", cmap="viridis")
-        axes[idx + 1].set_title(f"GMM ({n_comp} components)")
-        axes[idx + 1].set_xlabel("Time bin")
-
-    plt.tight_layout()
-    plt.savefig("gmm_kde_convergence.png", dpi=150, bbox_inches="tight")
-    print("\nSaved visualization to gmm_kde_convergence.png")
 
 
 def test_gmm_max_iter_warning():
