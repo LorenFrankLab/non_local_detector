@@ -248,6 +248,61 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
     assert max(block_rows, default=0) <= 128
 
 
+@pytest.mark.parametrize("backend", [sorted_spikes_kde, sorted_spikes_glm])
+@pytest.mark.parametrize("count_blocks", [False, True])
+def test_irregular_grid_rows_do_not_depend_on_partition(
+    backend, count_blocks, monkeypatch
+):
+    """A row's emission is the same for any row range that contains it.
+
+    A 64-row block with more than two distinct durations takes the per-neuron
+    xlogy path and one with at most two the matrix product, which rounds
+    differently. Blocks that start at the request's first row put a row in a
+    different block for each partition, which changed rows by up to 3.1e-5.
+    """
+    import non_local_detector.likelihoods.common as common
+
+    rng = np.random.default_rng(7309)
+    widths = np.full(200, 0.002)
+    # Three distinct durations in rows [0, 64) and in the final rows [192, 200).
+    widths[[5, 193]] = 0.003
+    widths[[10, 197]] = 0.004
+    edges = np.r_[0.0, np.cumsum(widths)]
+    n_neurons = 32
+    fields = jnp.asarray(rng.uniform(0.02, 40, (n_neurons, 6)).astype(np.float32))
+    arguments = inputs(backend, np.ones((3, 4), np.float32))
+    arguments.update(
+        time_edges=edges,
+        # About 1.5 spikes per neuron per row, so the two paths' rounding
+        # differs on several rows.
+        spike_times=[np.sort(rng.uniform(0, edges[-1], 300)) for _ in range(n_neurons)],
+        place_fields=fields,
+        no_spike_part_log_likelihood=fields.sum(axis=0),
+        is_track_interior=np.ones(6, bool),
+    )
+    if backend is sorted_spikes_kde:
+        arguments.update(
+            marginal_models=[None] * n_neurons, mean_rates=np.ones(n_neurons)
+        )
+    else:
+        arguments["coefficients"] = np.zeros((n_neurons, 1))
+    function = (
+        backend.predict_sorted_spikes_kde_log_likelihood
+        if backend is sorted_spikes_kde
+        else backend.predict_sorted_spikes_glm_log_likelihood
+    )
+    full = np.asarray(function(**arguments))
+    if count_blocks:
+        # int64 counts: a 64-row host block budget.
+        monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 64 * n_neurons * 8)
+    for bounds in [(0, 8, 200), (0, 70, 130, 200), (0, 3, 11, 64, 195, 199, 200)]:
+        parts = [
+            function(**arguments, row_slice=slice(start, stop))
+            for start, stop in zip(bounds[:-1], bounds[1:], strict=True)
+        ]
+        np.testing.assert_allclose(np.concatenate(parts), full, **EXACT)
+
+
 def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
