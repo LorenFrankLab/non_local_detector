@@ -13,10 +13,16 @@ counted — biasing every place field low.
 everything.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
-from non_local_detector import SortedSpikesDecoder, time_edges_from_centers
+from non_local_detector import (
+    ClusterlessDecoder,
+    SortedSpikesDecoder,
+    time_edges_from_centers,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
@@ -156,6 +162,84 @@ def test_masked_fit_matches_subset_fit(run_data):
         rtol=1e-3,
     )
     assert masked["mean_rates"][0] == pytest.approx(subset["mean_rates"][0], rel=1e-3)
+
+
+def _group_exposure_warnings(kind, run_data, *, position, is_training, **fit_kwargs):
+    """Fit a one-group decoder, returning its detector-level exposure warnings."""
+    time, _, spike_times, _ = run_data
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        if kind == "sorted":
+            SortedSpikesDecoder(
+                sorted_spikes_algorithm_params={"disable_progress_bar": True},
+                sampling_frequency=SAMPLING_FREQUENCY,
+            ).fit(
+                position_time=time,
+                position=position,
+                spike_times=spike_times,
+                is_training=is_training,
+                **fit_kwargs,
+            )
+        else:
+            marks = [np.zeros((len(spike_times[0]), 2))]
+            ClusterlessDecoder(
+                clusterless_algorithm_params={"disable_progress_bar": True},
+                sampling_frequency=SAMPLING_FREQUENCY,
+            ).fit(
+                time,
+                position,
+                spike_times,
+                marks,
+                is_training=is_training,
+                **fit_kwargs,
+            )
+    return [w for w in caught if "Encoding group" in str(w.message)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", ["sorted", "clusterless"])
+def test_group_trained_only_on_nan_positions_warns(run_data, kind):
+    """Positive group weights on NaN-position samples are zero exposure."""
+    time, position, _, _ = run_data
+    position = position.copy()
+    is_missing = (time > 10.0) & (time < 12.0)
+    position[is_missing] = np.nan
+
+    caught = _group_exposure_warnings(
+        kind, run_data, position=position, is_training=is_missing
+    )
+
+    assert len(caught) == 1
+    assert "no training samples with positive exposure" in str(caught[0].message)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", ["sorted", "clusterless"])
+def test_group_trained_only_outside_encoding_time_range_warns(run_data, kind):
+    """Positive group weights outside the encoding support are zero exposure."""
+    time, position, _, _ = run_data
+
+    caught = _group_exposure_warnings(
+        kind,
+        run_data,
+        position=position,
+        is_training=time > 30.0,
+        encoding_time_range=(0.0, 20.0),
+    )
+
+    assert len(caught) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", ["sorted", "clusterless"])
+def test_group_with_training_exposure_does_not_warn(run_data, kind):
+    _, position, _, is_training = run_data
+
+    caught = _group_exposure_warnings(
+        kind, run_data, position=position, is_training=is_training
+    )
+
+    assert not caught
 
 
 @pytest.mark.unit

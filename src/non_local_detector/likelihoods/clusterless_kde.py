@@ -18,6 +18,7 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
+    warn_if_no_encoding_exposure,
     warn_if_tracking_is_sparse,
 )
 from non_local_detector.environment import Environment
@@ -1653,6 +1654,7 @@ def fit_clusterless_kde_encoding_model(
     # recover the training-sample count). Gaps from is_training / encoding-group
     # masks carry weight 0 and are not charged as occupancy time.
     weight_sum = float(exposure_weights.sum())
+    warn_if_no_encoding_exposure(exposure_weights, "Clusterless KDE", clusterless=True)
     # A track graph with multi-dim position linearizes occupancy to 1D, so the
     # bandwidth is a single dimension there; otherwise one per position column.
     n_std_dims = (

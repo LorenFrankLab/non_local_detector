@@ -29,7 +29,10 @@ import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.encoding_time import prepare_encoding_support
+from non_local_detector.encoding_time import (
+    prepare_encoding_support,
+    warn_if_no_encoding_exposure,
+)
 from non_local_detector.environment import Environment, get_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -520,6 +523,9 @@ def fit_sorted_spikes_diffusion_encoding_model(
 
     graph, node_order, bin_sizes = environment_graph(environment)
     check_smoothing_bandwidth(position_std, graph)
+    warn_if_no_encoding_exposure(
+        exposure_weights, "Sorted-spikes diffusion", clusterless=False
+    )
     if rank is None:
         # Auto-truncate: keep only the modes the heat kernel needs at this bandwidth
         # (near-lossless), so large grids avoid a full dense eigendecomposition. Resolving
