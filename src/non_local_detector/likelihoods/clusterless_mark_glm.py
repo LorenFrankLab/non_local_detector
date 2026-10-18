@@ -238,7 +238,7 @@ def fit_mark_mixture(
     reg_covar: float = DEFAULT_GMM_REG_COVAR,
     max_spikes: int = 20_000,
     max_iter: int = 500,
-    tol: float = 1e-3,
+    tol: float = 1e-4,
     random_state: int = 0,
 ) -> MarkMixture:
     """Fit a Dirichlet-process variational Bayes mixture to weighted marks.
@@ -261,9 +261,12 @@ def fit_mark_mixture(
     max_spikes : int, optional
         At most this many positive-weight spikes, drawn at random with
         ``random_state``, are used for the fit, by default 20,000.
-    max_iter, tol : optional
-        Variational iterations and convergence tolerance, by default 500 and
-        1e-3.
+    max_iter : int, optional
+        Maximum variational iterations, by default 500.
+    tol : float, optional
+        Convergence tolerance on the variational lower bound per weighted
+        spike, in nats, by default 1e-4. scikit-learn's bound is a sum over
+        spikes, so its tolerance is ``tol`` times the fit's total weight.
     random_state : int, optional
         Seed for the subsample and the k-means initialization, by default 0.
 
@@ -300,7 +303,7 @@ def fit_mark_mixture(
         weight_concentration_prior=weight_concentration_prior,
         reg_covar=reg_covar,
         max_iter=max_iter,
-        tol=tol,
+        tol=tol * weights.sum(),
         init_params="kmeans",
         random_state=random_state,
     ).fit_weighted(marks, weights)
@@ -347,7 +350,7 @@ def fit_clusterless_mark_glm_encoding_model(
     mark_reg_covar: float = DEFAULT_GMM_REG_COVAR,
     mark_fit_max_spikes: int = 20_000,
     mark_max_iter: int = 500,
-    mark_tol: float = 1e-3,
+    mark_tol: float = 1e-4,
     mark_random_state: int = 0,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
@@ -391,9 +394,11 @@ def fit_clusterless_mark_glm_encoding_model(
     mark_fit_max_spikes : int, optional
         At most this many spikes per electrode, drawn at random, fit the mark
         mixture, by default 20,000. Every spike contributes to the rate maps.
-    mark_max_iter, mark_tol : optional
-        Variational iterations and tolerance of the mark mixture, by default
-        500 and 1e-3.
+    mark_max_iter : int, optional
+        Maximum variational iterations of the mark mixture, by default 500.
+    mark_tol : float, optional
+        Convergence tolerance of the mark mixture's variational bound per
+        weighted spike, in nats, by default 1e-4.
     mark_random_state : int, optional
         Seed of the mark subsample and k-means initialization, by default 0.
     emission_knot_spacing : float, optional

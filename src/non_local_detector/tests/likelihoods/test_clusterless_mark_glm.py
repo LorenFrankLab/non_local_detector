@@ -223,6 +223,27 @@ def test_integer_weights_equal_replicated_spikes():
 
 
 @pytest.mark.unit
+def test_convergence_tolerance_is_per_weighted_spike(monkeypatch):
+    """scikit-learn's variational bound is a sum over samples, so the tolerance
+    is scaled by the total weight: fits of any size stop at the same change
+    per spike."""
+    tolerances = []
+    original = _WeightedBayesianGaussianMixture.fit_weighted
+
+    def spy(self, X, sample_weight):
+        tolerances.append((self.tol, float(np.sum(sample_weight))))
+        return original(self, X, sample_weight)
+
+    monkeypatch.setattr(_WeightedBayesianGaussianMixture, "fit_weighted", spy)
+    rng = np.random.default_rng(11)
+    for n in (200, 2000):
+        marks = rng.standard_normal((n, 2))
+        fit_mark_mixture(marks, np.full(n, 0.5), n_components=2, tol=1e-4)
+    for tol, total_weight in tolerances:
+        assert tol == pytest.approx(1e-4 * total_weight)
+
+
+@pytest.mark.unit
 def test_bypassed_weighted_m_step_raises(monkeypatch):
     """If scikit-learn stopped calling the weighted M-step, the fit would ignore
     the weights; it raises instead."""
