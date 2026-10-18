@@ -38,9 +38,11 @@ Key functionalities include:
       from their weighted spike counts, with damped Newton steps taken
       together (`fit_poisson_regression` fits a single neuron the same way).
     - `fit_sorted_spikes_glm_encoding_model`: Orchestrates the fitting process
-      for *all neurons*: it builds every neuron's weighted spike counts, calls
-      `fit_poisson_regressions` once, and computes the resulting place fields
-      (expected firing rate across space).
+      for *all neurons*: it builds every neuron's weighted spike counts, sums
+      them and the exposure over position cells a sixteenth of the knot
+      spacing wide (`_aggregate_by_position_cell`), calls
+      `fit_poisson_regressions` once on the cells, and computes the resulting
+      place fields (expected firing rate across space).
 
 3.  **Likelihood Prediction:**
     - `predict_sorted_spikes_glm_log_likelihood`: Calculates the log-likelihood
@@ -494,14 +496,128 @@ def make_track_graph_basis(
     )
 
 
+# Spline columns whose largest absolute value on every interior bin is at most
+# this are dropped: an environment that fills a small part of its bounding box
+# (a maze) leaves most tensor-product columns with almost no support on it.
+_GLM_COLUMN_SUPPORT_TOL = 1e-2
+
+
+@dataclass(frozen=True, eq=False)
+class SelectedColumnsDesign:
+    """A patsy spline design restricted to the columns used by the fit.
+
+    Attributes
+    ----------
+    design_info : patsy.design_info.DesignInfo
+        The full spline design.
+    columns : np.ndarray, shape (n_used_columns,)
+        Indices of the used columns, the intercept (column 0) first.
+    """
+
+    design_info: DesignInfo
+    columns: np.ndarray
+
+
+def _select_supported_columns(
+    design_info: DesignInfo, interior_place_bin_centers: np.ndarray
+) -> "DesignInfo | SelectedColumnsDesign":
+    """Drop spline columns with almost no support on the environment's bins."""
+    full = np.asarray(
+        make_spline_predict_matrix(design_info, interior_place_bin_centers)
+    )
+    support = (
+        np.max(np.abs(full[:, 1:]), axis=0) if len(full) else np.ones(full.shape[1] - 1)
+    )
+    columns = np.concatenate(
+        [[0], 1 + np.flatnonzero(support > _GLM_COLUMN_SUPPORT_TOL)]
+    )
+    if columns.size == full.shape[1]:
+        return design_info
+    return SelectedColumnsDesign(design_info=design_info, columns=columns)
+
+
+# The fit sums counts and exposure over position cells this fraction of the knot
+# spacing wide: the basis barely changes within a cell, and a 2-D fit no longer
+# scales with the number of tracking samples.
+_GLM_FIT_CELL_FRACTION = 1.0 / 16.0
+
+
+def _aggregate_by_position_cell(
+    position: np.ndarray,
+    counts: np.ndarray,
+    exposure: np.ndarray,
+    cell_size: float,
+    region: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sum counts and exposure over square position cells.
+
+    The Poisson log likelihood ``sum_t [counts_t * log(rate(x_t)) - exposure_t *
+    rate(x_t)]`` depends on position only through the rate, so samples in a small
+    cell can share one rate, evaluated at their exposure-weighted mean position
+    (the plain mean for a cell without exposure). Samples with different
+    ``region`` labels never share a cell.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_samples, n_position_dims)
+    counts : np.ndarray, shape (n_cells, n_samples)
+        Event mass of each cell (neuron) at each sample.
+    exposure : np.ndarray, shape (n_samples,)
+    cell_size : float
+        Width of the position cells.
+    region : np.ndarray, shape (n_samples,), optional
+        Integer label (e.g. the track-graph edge) that cells may not cross.
+
+    Returns
+    -------
+    mean_position : np.ndarray, shape (n_position_cells, n_position_dims)
+    cell_counts : np.ndarray, shape (n_cells, n_position_cells)
+    cell_exposure : np.ndarray, shape (n_position_cells,)
+    """
+    position = np.asarray(position, dtype=float).reshape(len(exposure), -1)
+    key = np.floor(position / cell_size).astype(np.int64)
+    if region is not None:
+        key = np.column_stack([np.asarray(region, dtype=np.int64), key])
+    _, cell = np.unique(key, axis=0, return_inverse=True)
+    cell = cell.ravel()
+    n_position_cells = int(cell.max()) + 1 if cell.size else 0
+    cell_exposure = np.bincount(cell, weights=exposure, minlength=n_position_cells)
+    weight = np.where(cell_exposure[cell] > 0, exposure, 1.0)
+    weight_sum = np.bincount(cell, weights=weight, minlength=n_position_cells)
+    mean_position = (
+        np.stack(
+            [
+                np.bincount(
+                    cell, weights=weight * position[:, dim], minlength=n_position_cells
+                )
+                for dim in range(position.shape[1])
+            ],
+            axis=1,
+        )
+        / weight_sum[:, None]
+    )
+    cell_counts = (
+        np.stack(
+            [
+                np.bincount(cell, weights=row, minlength=n_position_cells)
+                for row in counts
+            ]
+        )
+        if len(counts)
+        else np.zeros((0, n_position_cells))
+    )
+    return mean_position, cell_counts, cell_exposure
+
+
 def make_spline_predict_matrix(
-    design_info: "DesignInfo | TrackGraphBasis", position: jnp.ndarray
+    design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
+    position: jnp.ndarray,
 ) -> jnp.ndarray:
     """Create a prediction matrix for a spline basis.
 
     Parameters
     ----------
-    design_info : patsy.design_info.DesignInfo or TrackGraphBasis
+    design_info : patsy.design_info.DesignInfo, TrackGraphBasis or SelectedColumnsDesign
     position : jnp.ndarray, shape (n_position_bins, n_position_dims)
         Positions; linear positions, shape ``(n_position_bins, 1)``, for a
         ``TrackGraphBasis``.
@@ -510,6 +626,9 @@ def make_spline_predict_matrix(
     -------
     jnp.ndarray, shape (n_position_bins, n_spline_basis)
     """
+    if isinstance(design_info, SelectedColumnsDesign):
+        full = make_spline_predict_matrix(design_info.design_info, position)
+        return full[:, jnp.asarray(design_info.columns)]
     position = jnp.asarray(position)
     is_nan = jnp.any(jnp.isnan(position), axis=1)
     position = jnp.where(is_nan[:, jnp.newaxis], 0.0, position)
@@ -923,6 +1042,13 @@ def fit_sorted_spikes_glm_encoding_model(
 ) -> dict:
     """Fit a GLM encoding model
 
+    The Poisson likelihood depends on position only through the basis, so the
+    spike counts and exposure are summed over square position cells
+    ``emission_knot_spacing / 16`` wide (on a track graph, along each edge) and
+    the basis is evaluated at each cell's exposure-weighted mean position. The
+    fit's cost then scales with the number of occupied cells, not with the
+    number of tracking samples.
+
     Parameters
     ----------
     position_time : jnp.ndarray, shape (n_time_position,)
@@ -982,7 +1108,7 @@ def fit_sorted_spikes_glm_encoding_model(
     encoding_model : dict
         coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
             Fitted coefficients for each neuron.
-        emission_design_info : patsy.design_info.DesignInfo or TrackGraphBasis
+        emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
             The spline basis, or on a track graph the basis along the track.
         place_fields : jnp.ndarray, shape (n_neurons, n_bins)
             Spatial firing rates in Hz for each neuron.
@@ -1057,9 +1183,12 @@ def fit_sorted_spikes_glm_encoding_model(
                 (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
             )[:, varying_dimensions]
             basis_positions = np.vstack((basis_positions, boundary_positions))
-        emission_design_info = make_spline_design_matrix(
-            basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
-        ).design_info
+        emission_design_info = _select_supported_columns(
+            make_spline_design_matrix(
+                basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
+            ).design_info,
+            np.asarray(interior_place_bin_centers),
+        )
 
     emission_predict_matrix = make_spline_predict_matrix(
         emission_design_info, interior_place_bin_centers
@@ -1086,7 +1215,29 @@ def fit_sorted_spikes_glm_encoding_model(
             ]
         ).reshape(len(spike_times), -1)
         exposure = exposure_weights[support.indices]
-        fit_positions = encoding_positions
+        # Fit on sums over small position cells. On a track graph the cells are
+        # laid out along each edge from its first node, so they do not depend on
+        # the linear layout (edge_order spacing) and never span two edges.
+        cell_size = _GLM_FIT_CELL_FRACTION * emission_knot_spacing
+        if isinstance(emission_design_info, TrackGraphBasis):
+            linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
+            edge = emission_design_info.edge_index(linear)
+            offset = linear - emission_design_info.edge_starts[edge]
+            cell_offset_edge, event_counts, exposure = _aggregate_by_position_cell(
+                np.column_stack([offset, edge]),
+                event_counts,
+                exposure,
+                cell_size=cell_size,
+                region=edge,
+            )
+            cell_edge = np.rint(cell_offset_edge[:, 1]).astype(int)
+            fit_positions = (
+                emission_design_info.edge_starts[cell_edge] + cell_offset_edge[:, 0]
+            )[:, None]
+        else:
+            fit_positions, event_counts, exposure = _aggregate_by_position_cell(
+                np.asarray(encoding_positions), event_counts, exposure, cell_size
+            )
     else:
         fit_positions = interior_place_bin_centers
         event_counts = np.zeros((len(spike_times), len(fit_positions)))
@@ -1167,7 +1318,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         The spatial environment object containing track geometry information.
     coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
         Fitted GLM coefficients for each neuron.
-    emission_design_info : patsy.design_info.DesignInfo or TrackGraphBasis
+    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
         The encoding fit's basis (a patsy DesignInfo, or a ``TrackGraphBasis``
         on a track graph), needed for prediction.
     place_fields : jnp.ndarray, shape (n_neurons, n_position_bins)
