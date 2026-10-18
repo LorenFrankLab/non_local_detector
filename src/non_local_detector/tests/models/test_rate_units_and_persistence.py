@@ -22,6 +22,7 @@ ALGORITHMS = [
     "clusterless_kde",
     "clusterless_gmm",
     "clusterless_diffusion",
+    "clusterless_mark_glm",
 ]
 
 
@@ -102,7 +103,13 @@ def test_known_rate_is_calibrated_through_public_fit_and_predict(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "algorithm", [name for name in ALGORITHMS if name != "sorted_spikes_glm"]
+    "algorithm",
+    # The GLMs' patsy spline basis (DesignInfo) cannot be pickled.
+    [
+        name
+        for name in ALGORITHMS
+        if name not in ("sorted_spikes_glm", "clusterless_mark_glm")
+    ],
 )
 def test_serializable_backend_round_trip_preserves_units_and_predictions(
     algorithm, tmp_path

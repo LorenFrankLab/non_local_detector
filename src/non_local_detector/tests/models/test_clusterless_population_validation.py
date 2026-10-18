@@ -28,6 +28,7 @@ ALGORITHMS = [
     "clusterless_kde",
     "clusterless_gmm",
     "clusterless_diffusion",
+    "clusterless_mark_glm",
 ]
 N_DECODE = 300
 

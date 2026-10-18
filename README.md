@@ -167,6 +167,7 @@ covariates, independent intervals, and downstream pipeline changes.
    - `sorted_spikes_kde`: KDE-based likelihood for sorted spike data
    - `clusterless_kde`: KDE-based likelihood for clusterless data
    - `clusterless_gmm`: GMM-based likelihood for clusterless data
+   - `clusterless_mark_glm`: a mark mixture (variational Bayes Gaussian mixture over each electrode's marks) with a Poisson GLM rate map per component, for clusterless data
 
 2. **State Transition Models**
    - **Continuous**: `RandomWalk`, `EmpiricalMovement`, `Identity`, `Uniform`

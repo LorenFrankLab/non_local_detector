@@ -228,6 +228,7 @@ CLUSTERLESS_ALGORITHMS = [
     "clusterless_kde",
     "clusterless_gmm",
     "clusterless_diffusion",
+    "clusterless_mark_glm",
 ]
 
 
@@ -273,6 +274,10 @@ def test_clusterless_exposure_uses_full_timeline_mask(
     ]
     np.testing.assert_allclose(model["mean_rates"], expected_rates, rtol=1e-5)
 
+    if algorithm == "clusterless_mark_glm":
+        # No occupancy is stored: exposure enters each rate map's GLM fit, and
+        # test_clusterless_mark_glm checks zero weights against a subset fit.
+        return
     fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
     dt = np.median(np.diff(sim.position_time))
     selected_indices = np.flatnonzero(is_training)

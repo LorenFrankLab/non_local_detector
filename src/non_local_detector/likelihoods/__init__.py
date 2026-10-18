@@ -4,6 +4,7 @@ from non_local_detector.likelihoods import (
     clusterless_diffusion,
     clusterless_gmm,
     clusterless_kde,
+    clusterless_mark_glm,
 )
 from non_local_detector.likelihoods.clusterless_diffusion import (
     fit_clusterless_diffusion_encoding_model,
@@ -16,6 +17,10 @@ from non_local_detector.likelihoods.clusterless_gmm import (  # noqa
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
+)
+from non_local_detector.likelihoods.clusterless_mark_glm import (
+    fit_clusterless_mark_glm_encoding_model,
+    predict_clusterless_mark_glm_log_likelihood,
 )
 from non_local_detector.likelihoods.mark_reference import (  # noqa
     fit_mark_references,
@@ -71,6 +76,10 @@ _CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
         fit_clusterless_diffusion_encoding_model,
         predict_clusterless_diffusion_log_likelihood,
     ),
+    "clusterless_mark_glm": (
+        fit_clusterless_mark_glm_encoding_model,
+        predict_clusterless_mark_glm_log_likelihood,
+    ),
 }
 # Each clusterless algorithm's mark-kernel width, from its fit parameters, which
 # the mark reference adds in quadrature to each feature's training spread (see
@@ -79,4 +88,5 @@ _CLUSTERLESS_MARK_REFERENCE_SCALES: dict[str, Callable[..., object]] = {
     "clusterless_kde": clusterless_kde.mark_reference_scale,
     "clusterless_gmm": clusterless_gmm.mark_reference_scale,
     "clusterless_diffusion": clusterless_diffusion.mark_reference_scale,
+    "clusterless_mark_glm": clusterless_mark_glm.mark_reference_scale,
 }

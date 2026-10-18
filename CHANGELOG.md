@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### New clusterless likelihood: mark-mixture GLM
+
+- **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.
+  - The components are a Dirichlet-process variational Bayes Gaussian mixture fit to the electrode's marks alone, each spike counted by its encoding weight. The prior prunes components the marks do not support, so `n_mark_components` (default 32) is an upper bound, not the number used; capping at 32 or 64 gave the same held-out information.
+  - Each component's rate map is a Poisson GLM fit to the spikes' mark responsibilities, with the `sorted_spikes_glm` basis (branch splines on a track graph, column-pruned tensor splines in 2-D), position-cell sums and log-rate prior (`log_rate_prior_std`).
+  - Parameters: `n_mark_components`, `mark_weight_concentration`, `mark_reg_covar` (also the mark-reference kernel width), `mark_fit_max_spikes` (20,000 spikes per electrode fit the mixture; all spikes fit the rate maps), `emission_knot_spacing`, `log_rate_prior_std`.
+- On a 23.6 min bandit-maze recording (22 tetrodes, 5 time-block folds), held-out position information of the full detector, relative to `clusterless_kde` with `waveform_std=16` (the better of 16 and the default 24): +5.6 ± 7.1 nats/s on the track graph (4/5 folds), +6.4 ± 7.7 with EM-estimated transitions (4/5), and +9.2 ± 6.1 on a 2-D grid (5/5 folds). The default KDE is a further 3.9–5.0 nats/s lower. Held-out marginal likelihood is about 340 nats/s above the KDE's, mostly because the mixture describes the marks better. State occupancy matches the KDE's.
+- Its rate maps follow the track's topology. On a simulated Y maze with no gap between edges, a 20 Hz field at the end of one arm gives 0.41 Hz at the start of the next arm in `edge_order`, against 6.7 Hz for `clusterless_kde` and 5.6 Hz for `clusterless_gmm`.
+- Limitations:
+  - Mark responsibilities do not depend on position, so where two units' marks overlap a component's rate map mixes their fields.
+  - Weights count as spikes in the mixture's prior, so a fit whose weights sum to few spikes supports fewer components.
+  - Off a track graph its patsy spline basis cannot be pickled, as for `sorted_spikes_glm`.
+  - `model_checking.clusterless` does not support it yet.
+  - Each EM encoding refit refits the mark mixtures from scratch.
+- Internal: the sorted GLM's spatial fit is factored into `_fit_rate_maps`, which both GLMs use; sorted GLM fits are unchanged (bit-identical on 1-D, weighted, track-graph and 2-D fixtures).
+- Choosing the number of joint-GMM components did not help `clusterless_gmm` on the same recording: BIC-selected components gave 15.3 ± 27.6 nats/s less information than the default 64, and a variational Bayes joint mixture 36.1 ± 26.9 less, with more time in non-local states.
+
 ### GLM place fields follow the track graph
 
 - **Changed:** on a track-graph environment, `sorted_spikes_glm` models log-rate with a cubic spline along each branch of the track, a maximal path between leaves and junctions (`make_track_graph_basis`, `TrackGraphBasis`). Knots are at most `emission_knot_spacing` apart along each branch; the value at a leaf or junction is shared by every branch that ends there. Branch ends are not-a-knot rather than natural, so fields at reward wells are not forced flat, and a loop of degree-2 nodes is periodic. The log-rate prior is unchanged. 2-D and position-range environments keep the patsy spline.
