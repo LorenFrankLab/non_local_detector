@@ -629,13 +629,18 @@ def make_spline_predict_matrix(
     if isinstance(design_info, SelectedColumnsDesign):
         full = make_spline_predict_matrix(design_info.design_info, position)
         return full[:, jnp.asarray(design_info.columns)]
+    if isinstance(design_info, TrackGraphBasis):
+        # Choose each position's edge before any float32 conversion: with no
+        # gap, an edge's end and the next edge's start share a linear position,
+        # and rounding up would read the next, possibly unrelated, edge.
+        linear = np.asarray(position, dtype=float)[:, 0]
+        is_nan = np.isnan(linear)
+        design_matrix = design_info.design_matrix(np.where(is_nan, 0.0, linear))
+        design_matrix[is_nan] = np.nan
+        return jnp.asarray(design_matrix)
     position = jnp.asarray(position)
     is_nan = jnp.any(jnp.isnan(position), axis=1)
     position = jnp.where(is_nan[:, jnp.newaxis], 0.0, position)
-    if isinstance(design_info, TrackGraphBasis):
-        design_matrix = design_info.design_matrix(np.asarray(position)[:, 0])
-        design_matrix[np.asarray(is_nan)] = np.nan
-        return jnp.asarray(design_matrix)
 
     predict_data = {}
     for ind in range(position.shape[1]):

@@ -316,7 +316,8 @@ def test_glm_predict_and_pickle_with_track_graph_basis(y_track):
     design = np.asarray(
         make_spline_predict_matrix(enc["emission_design_info"], linear[:, None])
     )
-    # Positions and the predict matrix are float32, like the patsy path's.
+    # The predict matrix is float32, like the patsy path's; edges are chosen
+    # at full precision.
     np.testing.assert_allclose(
         design, enc["emission_design_info"].design_matrix(linear), rtol=1e-4, atol=1e-5
     )
@@ -367,3 +368,47 @@ def test_branch_returning_to_its_own_junction(nodes, edges):
     ]
     rows = basis.design_matrix(np.asarray(at_node))
     np.testing.assert_allclose(rows, np.broadcast_to(rows[0], rows.shape), atol=1e-10)
+
+
+def test_local_rate_at_an_arm_end_that_float32_rounds_onto_the_next_arm():
+    """With no gap, the end of arm 1-2 and the junction end of arm 1-3 share a
+    linear position. Here that position rounds up in float32, onto arm 1-3, so the
+    edge must be chosen at full precision: the local rate at the arm end is the
+    field there, not the junction end of the other arm."""
+    nodes = {**Y_NODES, 2: (70.0, 31.0)}
+    env = _track_env(nodes, Y_EDGES, Y_EDGES, edge_spacing=0.0, name="y-float32")
+    linear_end = env._linear_position(np.asarray([nodes[2]]))
+    basis = make_track_graph_basis(env, KNOT_SPACING)
+    assert basis.edge_index(linear_end)[0] == 1
+    assert basis.edge_index(linear_end.astype(np.float32).astype(float))[0] == 2
+
+    rng = np.random.default_rng(0)
+    time, position = _walk(env, (0, 1, 2, 1, 3, 1, 0))
+    distance = np.linalg.norm(position - np.asarray(nodes[2]), axis=1)
+    rate = 0.2 + 20.0 * np.exp(-0.5 * (distance / 4.0) ** 2)
+    spikes = time[rng.random(time.size) < rate * 0.01]
+    enc = _fit(env, time, position, [spikes])
+    coefficients = np.asarray(enc["coefficients"])[0]
+    expected = float(np.exp(basis.design_matrix(linear_end) @ coefficients)[0])
+    assert expected > 10.0
+
+    dt = 0.01
+    decode_time = np.arange(5) * dt
+    log_likelihood = predict_sorted_spikes_glm_log_likelihood(
+        decode_time,
+        np.tile(nodes[2], (decode_time.size, 1)),
+        [np.array([])],
+        env,
+        **{
+            k: v
+            for k, v in enc.items()
+            if k not in ("environment", "disable_progress_bar")
+        },
+        is_local=True,
+        time_edges=time_edges_from_centers(decode_time),
+        disable_progress_bar=True,
+    )
+    # No spikes: each bin's local log likelihood is -rate * dt.
+    np.testing.assert_allclose(
+        -np.asarray(log_likelihood).ravel() / dt, expected, rtol=1e-3
+    )
