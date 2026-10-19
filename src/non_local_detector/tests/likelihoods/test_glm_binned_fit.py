@@ -242,3 +242,65 @@ def test_2d_basis_drops_columns_without_support_on_the_environment(monkeypatch):
     fitted = np.asarray(enc["place_fields"]).T[interior]
     full = np.asarray(every_column["place_fields"]).T[interior]
     assert np.median(np.abs(fitted - full) / full) < 1e-3
+
+
+def _open_field_fit(bin_size, box, field_center, field_std, n_time):
+    """A random walk in a ``box``-wide square with one Gaussian place field."""
+    rng = np.random.default_rng(0)
+    walk = np.cumsum(rng.normal(0.0, box / 400.0, (n_time, 2)), axis=0)
+    position = np.abs((walk % (2 * box)) - box)
+    time = np.arange(n_time) * 0.002
+    env = Environment(
+        place_bin_size=bin_size, position_range=((0, box), (0, box))
+    ).fit_place_grid(position)
+    distance = np.linalg.norm(position - np.asarray(field_center), axis=1)
+    rate = 0.3 + 20.0 * np.exp(-0.5 * (distance / field_std) ** 2)
+    spikes = [time[rng.random(n_time) < rate * 0.002]]
+    args = (
+        time,
+        position,
+        spikes,
+        env,
+        env.place_bin_edges_,
+        env.edges_,
+        env.is_track_interior_,
+        env.is_track_boundary_,
+    )
+    return args, position, distance
+
+
+def test_2d_column_support_includes_positions_between_bin_centers(monkeypatch):
+    """With knots closer together than the bins, a column can be negligible at
+    every bin center and still carry the field between them, where the fit and
+    the local likelihood evaluate it. Such columns are kept: the fitted rates at
+    the animal's positions match the fit with every column."""
+    from non_local_detector.likelihoods import sorted_spikes_glm
+
+    args, position, distance = _open_field_fit(
+        bin_size=5.0,
+        box=20.0,
+        field_center=(11.3, 8.7),
+        field_std=1.5,
+        n_time=100_000,
+    )
+
+    def local_rates(enc):
+        design = np.asarray(
+            make_spline_predict_matrix(enc["emission_design_info"], position)
+        )
+        return np.exp(design @ np.asarray(enc["coefficients"])[0])
+
+    pruned = local_rates(
+        fit_sorted_spikes_glm_encoding_model(
+            *args, emission_knot_spacing=1.0, disable_progress_bar=True
+        )
+    )
+    monkeypatch.setattr(sorted_spikes_glm, "_GLM_COLUMN_SUPPORT_TOL", -1.0)
+    every_column = local_rates(
+        fit_sorted_spikes_glm_encoding_model(
+            *args, emission_knot_spacing=1.0, disable_progress_bar=True
+        )
+    )
+    in_field = distance < 1.0
+    assert every_column[in_field].mean() > 10.0
+    np.testing.assert_allclose(pruned[in_field], every_column[in_field], rtol=0.05)

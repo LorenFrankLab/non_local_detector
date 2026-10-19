@@ -496,9 +496,10 @@ def make_track_graph_basis(
     )
 
 
-# Spline columns whose largest absolute value on every interior bin is at most
-# this are dropped: an environment that fills a small part of its bounding box
-# (a maze) leaves most tensor-product columns with almost no support on it.
+# Spline columns whose largest absolute value is at most this at every interior
+# bin center and every fit position are dropped: an environment that fills a
+# small part of its bounding box (a maze) leaves most tensor-product columns with
+# almost no support on it.
 _GLM_COLUMN_SUPPORT_TOL = 1e-2
 
 
@@ -519,12 +520,22 @@ class SelectedColumnsDesign:
 
 
 def _select_supported_columns(
-    design_info: DesignInfo, interior_place_bin_centers: np.ndarray
+    design_info: DesignInfo, positions: np.ndarray
 ) -> "DesignInfo | SelectedColumnsDesign":
-    """Drop spline columns with almost no support on the environment's bins."""
-    full = np.asarray(
-        make_spline_predict_matrix(design_info, interior_place_bin_centers)
-    )
+    """Drop spline columns with almost no support at ``positions``.
+
+    The fit passes the interior bin centers, where place fields are reported,
+    and its own fit positions. A column that is negligible at every fit position
+    is set only by the coefficient prior, which holds it near zero, so dropping it
+    leaves the rates at other positions, such as the animal's position between
+    bin centers in a local likelihood, unchanged.
+
+    Parameters
+    ----------
+    design_info : patsy.design_info.DesignInfo
+    positions : np.ndarray, shape (n_points, n_position_dims)
+    """
+    full = np.asarray(make_spline_predict_matrix(design_info, positions))
     support = (
         np.max(np.abs(full[:, 1:]), axis=0) if len(full) else np.ones(full.shape[1] - 1)
     )
@@ -1188,20 +1199,10 @@ def fit_sorted_spikes_glm_encoding_model(
                 (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
             )[:, varying_dimensions]
             basis_positions = np.vstack((basis_positions, boundary_positions))
-        emission_design_info = _select_supported_columns(
-            make_spline_design_matrix(
-                basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
-            ).design_info,
-            np.asarray(interior_place_bin_centers),
-        )
+        emission_design_info = make_spline_design_matrix(
+            basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
+        ).design_info
 
-    emission_predict_matrix = make_spline_predict_matrix(
-        emission_design_info, interior_place_bin_centers
-    )
-    if l2_penalty is None:
-        l2_penalty = log_rate_prior_l2_penalty(
-            np.asarray(emission_predict_matrix), log_rate_prior_std
-        )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
     else:
@@ -1247,6 +1248,23 @@ def fit_sorted_spikes_glm_encoding_model(
         fit_positions = interior_place_bin_centers
         event_counts = np.zeros((len(spike_times), len(fit_positions)))
         exposure = np.zeros(len(fit_positions))
+    if not isinstance(emission_design_info, TrackGraphBasis):
+        # Support is checked where the fit evaluates the basis, not only at bin
+        # centers: with knots closer than the bins, a column can vanish at every
+        # center and still carry a field between them.
+        emission_design_info = _select_supported_columns(
+            emission_design_info,
+            np.vstack(
+                [np.asarray(interior_place_bin_centers), np.asarray(fit_positions)]
+            ),
+        )
+    emission_predict_matrix = make_spline_predict_matrix(
+        emission_design_info, interior_place_bin_centers
+    )
+    if l2_penalty is None:
+        l2_penalty = log_rate_prior_l2_penalty(
+            np.asarray(emission_predict_matrix), log_rate_prior_std
+        )
     emission_design_matrix = make_spline_predict_matrix(
         emission_design_info, fit_positions
     )
