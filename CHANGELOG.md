@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Compressed encoding dictionaries for the clusterless KDE
+
+- **Added:** `clusterless_kde` can replace each electrode's encoding spikes with a smaller weighted dictionary of kernels (`encoding_compression`), which bounds its prediction cost. The default (`None`) is unchanged and bit-identical.
+  - `"uniform"`: a uniform random subset of `n_encoding_kernels` spikes.
+  - `"stratified"`: Pareto πps sampling of `n_encoding_kernels` spikes, with inclusion probabilities falling as the inverse square root of the spike's stratum size (position cells two `position_std` wide crossed with 32 k-means cells of the bandwidth-scaled marks), so rare marks and rarely visited places are kept more often.
+  - Kept spikes are weighted by their inverse inclusion probability.
+  - Mean rates, exposure and occupancy still use every spike. The ground process uses the dictionary, so the expected count stays the integral of the compressed marked intensity over marks.
+  - `compression_seed` (default 0) seeds the sampling.
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.

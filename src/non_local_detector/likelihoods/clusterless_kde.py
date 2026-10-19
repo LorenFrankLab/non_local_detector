@@ -64,6 +64,11 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.kde_compression import (
+    CompressionMethod,
+    compress_encoding_spikes,
+    validate_compression,
+)
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
@@ -1577,6 +1582,9 @@ def fit_clusterless_kde_encoding_model(
     use_streaming: bool = False,
     disable_progress_bar: bool = False,
     *,
+    encoding_compression: CompressionMethod | None = None,
+    n_encoding_kernels: int | None = None,
+    compression_seed: int = 0,
     encoding_time_range=None,
     valid_position_intervals=None,
     _encoding_support=None,
@@ -1618,6 +1626,21 @@ def fit_clusterless_kde_encoding_model(
         ``enc_tile_size``. By default False.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    encoding_compression : {"uniform", "stratified"} or None, optional
+        Replace each electrode's encoding spikes with a smaller weighted
+        dictionary of kernels, which bounds the prediction cost (see
+        ``kde_compression``). ``"uniform"`` keeps a uniform random subset of
+        ``n_encoding_kernels`` spikes; ``"stratified"`` keeps rare marks and
+        rarely visited places more often. Kept spikes are weighted by their
+        inverse inclusion probability. Mean rates, exposure and occupancy still
+        use every spike; the ground process uses the dictionary, so it stays the
+        integral of the compressed marked intensity over marks. By default None
+        (every spike is a kernel).
+    n_encoding_kernels : int, optional
+        Dictionary size per electrode, required by ``"uniform"`` and
+        ``"stratified"``. An electrode with no more spikes keeps them all.
+    compression_seed : int, optional
+        Seed of the dictionary sampling, by default 0.
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
@@ -1643,6 +1666,7 @@ def fit_clusterless_kde_encoding_model(
     event weights are dimensionless. Decode bins may differ from tracking samples.
     """
     _validate_tile_sizes(enc_tile_size, pos_tile_size)
+    validate_compression(encoding_compression, n_encoding_kernels)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -1722,7 +1746,6 @@ def fit_clusterless_kde_encoding_model(
         # discarded here anyway and must not abort fitting.
         bounded_features = electrode_spike_waveform_features[is_in_bounds]
         validate_finite(bounded_features, "spike_waveform_features")
-        bounded_spike_waveform_features.append(bounded_features)
         # Weight each encoding spike by the posterior weight at its spike time.
         electrode_weights_host = interpolate_weights_at_spike_times(
             electrode_spike_times,
@@ -1730,20 +1753,35 @@ def fit_clusterless_kde_encoding_model(
             np.asarray(weights),
             encoding_support=support,
         )
-        electrode_weights = jnp.asarray(electrode_weights_host)
-        encoding_weights.append(electrode_weights)
         # Weighted mean rate: weighted spike count / weighted occupancy time. Sum on the
         # host array (as the GMM fit does) to avoid a device->host sync per electrode.
+        # Every spike counts, whatever the dictionary keeps.
         mean_rates.append(weighted_mean_rate(electrode_weights_host, weight_sum))
-        encoding_positions.append(
-            get_position_at_time(
-                position_time,
-                position,
-                electrode_spike_times,
-                environment,
-                encoding_support=support,
-            )
+        electrode_positions = get_position_at_time(
+            position_time,
+            position,
+            electrode_spike_times,
+            environment,
+            encoding_support=support,
         )
+        if encoding_compression is not None:
+            electrode_positions, bounded_features, electrode_weights_host = (
+                compress_encoding_spikes(
+                    electrode_positions,
+                    bounded_features,
+                    electrode_weights_host,
+                    encoding_compression,
+                    n_encoding_kernels,
+                    np.asarray(position_std),
+                    np.asarray(as_std_array(waveform_std, bounded_features.shape[1])),
+                    compression_seed,
+                )
+            )
+            electrode_positions = jnp.asarray(electrode_positions)
+        bounded_spike_waveform_features.append(bounded_features)
+        electrode_weights = jnp.asarray(electrode_weights_host)
+        encoding_weights.append(electrode_weights)
+        encoding_positions.append(electrode_positions)
 
         gpi_model = KDEModel(std=position_std, block_size=block_size).fit(
             encoding_positions[-1], weights=electrode_weights
