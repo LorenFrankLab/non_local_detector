@@ -8,7 +8,8 @@ to a distinct, pre-identified neural unit.
 The core idea is to model the firing rate of each neuron as a function of the
 animal's position. This relationship (the place field) is captured flexibly
 using natural cubic regression splines over the spatial dimensions (a tensor
-product across dimensions). The model assumes:
+product across dimensions) or, on a track graph, cubic splines along the
+track's branches. The model assumes:
   `spike_count ~ Poisson(rate)`
   `log(rate) = design_matrix @ coefficients`
 where the `design_matrix` is constructed using spatial spline basis functions
@@ -21,6 +22,12 @@ Key functionalities include:
       natural cubic regression splines (`cr`) with the specified knot spacing.
       The fit defines it on the environment (interior bin centers plus the
       track ends), not on the tracked positions.
+    - `make_track_graph_basis`: On a track graph, cubic splines along each
+      branch of the track (a path between leaves or junctions), sharing their
+      values at junctions (`TrackGraphBasis`). A spline over linear position
+      would join segments that are only neighbors in `edge_order` and depend on
+      `edge_spacing`; this basis depends only on the track's geometry and
+      connections.
     - `make_spline_predict_matrix`: Generates the corresponding matrix for new
       positions based on the fitted model's design information, ensuring
       consistent basis functions for prediction.
@@ -31,9 +38,11 @@ Key functionalities include:
       from their weighted spike counts, with damped Newton steps taken
       together (`fit_poisson_regression` fits a single neuron the same way).
     - `fit_sorted_spikes_glm_encoding_model`: Orchestrates the fitting process
-      for *all neurons*: it builds every neuron's weighted spike counts, calls
-      `fit_poisson_regressions` once, and computes the resulting place fields
-      (expected firing rate across space).
+      for *all neurons*: it builds every neuron's weighted spike counts, sums
+      them and the exposure over position cells a sixteenth of the knot
+      spacing wide (`_aggregate_by_position_cell`), calls
+      `fit_poisson_regressions` once on the cells, and computes the resulting
+      place fields (expected firing rate across space).
 
 3.  **Likelihood Prediction:**
     - `predict_sorted_spikes_glm_log_likelihood`: Calculates the log-likelihood
@@ -52,6 +61,7 @@ interpolation.
 """
 
 import warnings
+from dataclasses import dataclass
 from functools import partial
 
 import jax
@@ -124,6 +134,72 @@ def _local_glm_log_likelihood(design, coefficients, counts, durations):
     return _poisson_row_log_likelihood(counts, expected)
 
 
+def _spline_inner_knots(
+    position: np.ndarray, place_bin_edges: np.ndarray, knot_spacing: float
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Varying dimensions of ``position`` and the spline's inner knots in each.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_points, n_position_dims)
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+    knot_spacing : float
+
+    Returns
+    -------
+    varying_dimensions : np.ndarray, shape (n_varying_dims,)
+    inner_knots : list of np.ndarray
+        Knots strictly inside each varying dimension's range of ``position``.
+    """
+    varying_dimensions = np.flatnonzero(np.ptp(position, axis=0) > 0)
+    inner_knots = []
+    for ind in varying_dimensions:
+        pos, edges = position[:, ind], place_bin_edges[:, ind]
+        n_points = get_n_bins(edges, bin_size=knot_spacing)
+        knots = np.linspace(edges.min(), edges.max(), n_points)[1:-1]
+        knots = knots[(knots > pos.min()) & (knots < pos.max())]
+        if not len(knots):
+            knots = np.asarray([(pos.min() + pos.max()) / 2])
+        inner_knots.append(knots)
+    return varying_dimensions, inner_knots
+
+
+def _narrowest_knot_interval(
+    design_info: "DesignInfo | TrackGraphBasis",
+    basis_positions: np.ndarray | None,
+    place_bin_edges: np.ndarray,
+    knot_spacing: float,
+) -> float:
+    """Narrowest interval between adjacent knots of a spline basis.
+
+    The knots are those the basis was built with: along each branch of a
+    ``TrackGraphBasis``, or, for a tensor spline, each dimension's inner knots
+    and its boundary knots at the range of ``basis_positions``. An
+    intercept-only basis returns ``knot_spacing``.
+    """
+    if isinstance(design_info, TrackGraphBasis):
+        return float(min(np.diff(knots).min() for knots in design_info.branch_knots))
+    varying_dimensions, inner_knots = _spline_inner_knots(
+        basis_positions, place_bin_edges, knot_spacing
+    )
+    if not len(varying_dimensions):
+        return float(knot_spacing)
+    return float(
+        min(
+            np.diff(
+                np.concatenate(
+                    [
+                        [basis_positions[:, ind].min()],
+                        knots,
+                        [basis_positions[:, ind].max()],
+                    ]
+                )
+            ).min()
+            for ind, knots in zip(varying_dimensions, inner_knots, strict=True)
+        )
+    )
+
+
 def make_spline_design_matrix(
     position: np.ndarray,
     place_bin_edges: np.ndarray,
@@ -148,18 +224,12 @@ def make_spline_design_matrix(
     design_matrix : np.ndarray, shape (n_points, n_spline_basis)
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
-    varying_dimensions = np.flatnonzero(np.ptp(position, axis=0) > 0)
+    # ``inner_knots`` is read by name by the patsy formula below.
+    varying_dimensions, inner_knots = _spline_inner_knots(
+        position, place_bin_edges, knot_spacing
+    )
     if not len(varying_dimensions):
         return dmatrix("1", pd.DataFrame(index=np.arange(len(position))))
-    inner_knots = []
-    for ind in varying_dimensions:
-        pos, edges = position[:, ind], place_bin_edges[:, ind]
-        n_points = get_n_bins(edges, bin_size=knot_spacing)
-        knots = np.linspace(edges.min(), edges.max(), n_points)[1:-1]
-        knots = knots[(knots > pos.min()) & (knots < pos.max())]
-        if not len(knots):
-            knots = np.asarray([(pos.min() + pos.max()) / 2])
-        inner_knots.append(knots)
 
     data = {}
     formula = "1 + te("
@@ -172,20 +242,479 @@ def make_spline_design_matrix(
     return dmatrix(formula, data)
 
 
+def _track_branches(graph) -> list[list[tuple]]:
+    """Maximal paths of the track graph between nodes whose degree is not 2.
+
+    Each branch is a list of directed edges ``(a, b)``; a cycle of degree-2 nodes
+    is one branch that starts and ends at the same node.
+    """
+    anchors = {node for node, degree in graph.degree() if degree != 2}
+    seen: set[frozenset] = set()
+    branches = []
+
+    def walk(start, first):
+        path, previous, current = [(start, first)], start, first
+        seen.add(frozenset((start, first)))
+        while current not in anchors and current != start:
+            following = next(n for n in graph.neighbors(current) if n != previous)
+            if frozenset((current, following)) in seen:
+                break
+            path.append((current, following))
+            seen.add(frozenset((current, following)))
+            previous, current = current, following
+        return path
+
+    for node in sorted(anchors, key=str):
+        for neighbor in sorted(graph.neighbors(node), key=str):
+            if frozenset((node, neighbor)) not in seen:
+                branches.append(walk(node, neighbor))
+    for u, v in sorted(graph.edges(), key=str):  # cycles with no anchor
+        if frozenset((u, v)) not in seen:
+            branches.append(walk(u, v))
+    return branches
+
+
+def _cubic_cardinal_basis(
+    knots: np.ndarray, x: np.ndarray, periodic: bool = False
+) -> np.ndarray:
+    """Cubic splines through unit values at each knot, evaluated at ``x``.
+
+    Column ``j`` is the cubic spline that is 1 at ``knots[j]`` and 0 at the other
+    knots, so coefficients are the spline's values at the knots. The ends are
+    not-a-knot (the third derivative is continuous at the second and second-last
+    knots, so any cubic is reproduced and nothing is forced flat at the ends), or
+    natural with fewer than four knots. With ``periodic``, the last knot is the
+    first one again (a closed loop): there is no column for it and the spline is
+    smooth through it.
+
+    Parameters
+    ----------
+    knots : np.ndarray, shape (n_knots,)
+        Strictly increasing, at least two (at least four with ``periodic``).
+    x : np.ndarray, shape (n_points,)
+        Clipped to the knots.
+    periodic : bool, optional
+        Treat the last knot as the first, by default False.
+
+    Returns
+    -------
+    basis : np.ndarray, shape (n_points, n_knots), or (n_points, n_knots - 1)
+        with ``periodic``.
+    """
+    n_knots = knots.size
+    x = np.clip(x, knots[0], knots[-1])
+    widths = np.diff(knots)
+    n_values = n_knots - 1 if periodic else n_knots
+    # Second derivatives at the knots as a linear map of the knot values:
+    # system @ second = rhs @ values.
+    system = np.zeros((n_knots, n_knots))
+    rhs = np.zeros((n_knots, n_values))
+    for i in range(1, n_knots - 1):
+        system[i, i - 1 : i + 2] = (
+            widths[i - 1],
+            2.0 * (widths[i - 1] + widths[i]),
+            widths[i],
+        )
+        rhs[i, i - 1] += 6.0 / widths[i - 1]
+        rhs[i, i % n_values] += -6.0 / widths[i - 1] - 6.0 / widths[i]
+        rhs[i, (i + 1) % n_values] += 6.0 / widths[i]
+    if periodic:
+        # Smooth through the first knot: equal second derivatives at both ends,
+        # and the usual continuity equation there, wrapping around the loop.
+        system[0, 0], system[0, -1] = 1.0, -1.0
+        system[-1, -2], system[-1, -1], system[-1, 1] = (
+            widths[-1],
+            2.0 * (widths[-1] + widths[0]),
+            widths[0],
+        )
+        rhs[-1, n_values - 1] += 6.0 / widths[-1]
+        rhs[-1, 0] += -6.0 / widths[-1] - 6.0 / widths[0]
+        rhs[-1, 1] += 6.0 / widths[0]
+    elif n_knots >= 4:
+        system[0, :3] = widths[1], -(widths[0] + widths[1]), widths[0]
+        system[-1, -3:] = widths[-1], -(widths[-2] + widths[-1]), widths[-2]
+    else:
+        system[0, 0] = system[-1, -1] = 1.0
+    second_derivative = np.linalg.solve(system, rhs)
+    values = np.eye(n_knots, n_values)
+    if periodic:
+        values[-1, 0] = 1.0
+    interval = np.clip(np.searchsorted(knots, x, side="right") - 1, 0, n_knots - 2)
+    width = widths[interval]
+    a = (knots[interval + 1] - x) / width
+    b = 1.0 - a
+    return (
+        a[:, None] * values[interval]
+        + b[:, None] * values[interval + 1]
+        + (
+            (a**3 - a)[:, None] * second_derivative[interval]
+            + (b**3 - b)[:, None] * second_derivative[interval + 1]
+        )
+        * (width**2 / 6.0)[:, None]
+    )
+
+
+@dataclass(frozen=True, eq=False)
+class TrackGraphBasis:
+    """Log-rate cubic splines along the branches of a track graph.
+
+    A branch is a maximal path between nodes whose degree is not 2 (leaves and
+    junctions), so how a branch is split into edges does not matter. Each branch
+    has a cubic spline parameterized by the log-rate at knots spaced evenly along
+    it. The value at a leaf or junction is one coefficient shared by every branch
+    that ends there, so a field is continuous through junctions, and edges that
+    are only neighbors in ``edge_order`` are not coupled. Branch ends are
+    not-a-knot rather than natural, so a field at a reward well at the end of an
+    arm is not forced flat there. A loop of degree-2 nodes is a periodic spline;
+    a loop that leaves and returns to one junction is continuous there, like any
+    junction, but not smooth through it. Column 0 of the design is the intercept.
+
+    Attributes
+    ----------
+    edge_starts : np.ndarray, shape (n_edges,)
+        Linear position of each edge's first node, in ``edge_order``.
+    edge_lengths : np.ndarray, shape (n_edges,)
+    edge_branches : np.ndarray, shape (n_edges,)
+        Branch holding each edge.
+    edge_branch_starts : np.ndarray, shape (n_edges,)
+        Distance along its branch to the end of the edge that the branch reaches
+        first.
+    edge_forward : np.ndarray, shape (n_edges,)
+        Whether the branch runs from the edge's first node in ``edge_order``.
+    branch_knots : tuple of np.ndarray
+        Knot positions along each branch, from 0 to its length.
+    branch_columns : tuple of np.ndarray
+        Design column of each branch's knots (without the repeated last knot of
+        a loop).
+    branch_periodic : tuple of bool
+        Whether each branch is a loop of degree-2 nodes.
+    n_columns : int
+        Number of design columns, including the intercept.
+    """
+
+    edge_starts: np.ndarray
+    edge_lengths: np.ndarray
+    edge_branches: np.ndarray
+    edge_branch_starts: np.ndarray
+    edge_forward: np.ndarray
+    branch_knots: tuple
+    branch_columns: tuple
+    branch_periodic: tuple
+    n_columns: int
+
+    def edge_index(self, linear_position: np.ndarray) -> np.ndarray:
+        """Edge (index into ``edge_order``) holding each linear position.
+
+        A position in a gap between edges belongs to the nearest edge.
+
+        Parameters
+        ----------
+        linear_position : np.ndarray, shape (n_points,) or (n_points, 1)
+
+        Returns
+        -------
+        edge : np.ndarray, shape (n_points,)
+        """
+        x = np.asarray(linear_position, dtype=float).reshape(-1)
+        # Edges are laid out in order along the linear axis: the candidates are
+        # the last edge starting at or before x and the next one. With no gap,
+        # an edge's end and the next edge's start share a linear position; that
+        # point belongs to the earlier edge.
+        ends = self.edge_starts + self.edge_lengths
+        edge = np.clip(np.searchsorted(self.edge_starts, x, side="right") - 1, 0, None)
+        at_previous_end = (edge > 0) & (x <= ends[np.maximum(edge - 1, 0)])
+        edge = np.where(at_previous_end, edge - 1, edge)
+        following = np.minimum(edge + 1, self.edge_starts.size - 1)
+        past_end = x - ends[edge]
+        short_of_next = self.edge_starts[following] - x
+        return np.where((past_end > 0) & (short_of_next < past_end), following, edge)
+
+    def design_matrix(
+        self, linear_position: np.ndarray, edge: np.ndarray | None = None
+    ) -> np.ndarray:
+        """Design matrix at linear positions.
+
+        A position in a gap between edges is read at the nearest edge end.
+
+        Parameters
+        ----------
+        linear_position : np.ndarray, shape (n_points,) or (n_points, 1)
+        edge : np.ndarray, shape (n_points,), optional
+            Edge (index into ``edge_order``) holding each position, by default
+            ``edge_index(linear_position)``. Positions are read at the nearest
+            point of their edge.
+
+        Returns
+        -------
+        design : np.ndarray, shape (n_points, n_columns)
+        """
+        x = np.asarray(linear_position, dtype=float).reshape(-1)
+        edge = self.edge_index(x) if edge is None else np.asarray(edge, dtype=int)
+        offset = np.clip(x - self.edge_starts[edge], 0.0, self.edge_lengths[edge])
+        along_branch = self.edge_branch_starts[edge] + np.where(
+            self.edge_forward[edge], offset, self.edge_lengths[edge] - offset
+        )
+        branch = self.edge_branches[edge]
+        design = np.zeros((x.size, self.n_columns))
+        design[:, 0] = 1.0
+        for index, (knots, columns, periodic) in enumerate(
+            zip(
+                self.branch_knots,
+                self.branch_columns,
+                self.branch_periodic,
+                strict=True,
+            )
+        ):
+            on_branch = np.flatnonzero(branch == index)
+            if on_branch.size:
+                # add.at accumulates repeated columns: a branch that leaves and
+                # returns to one junction has that junction's column at both ends.
+                np.add.at(
+                    design,
+                    (on_branch[:, None], columns[None, :]),
+                    _cubic_cardinal_basis(
+                        knots, along_branch[on_branch], periodic=periodic
+                    ),
+                )
+        return design
+
+
+def make_track_graph_basis(
+    environment: Environment, knot_spacing: float = np.sqrt(12.5) * 2
+) -> TrackGraphBasis:
+    """Cubic spline basis along the branches of a track-graph environment.
+
+    Knots are evenly spaced at most ``knot_spacing`` apart along each branch
+    (a loop has at least four). Edges are laid out in linear position as the
+    environment linearizes positions: in ``edge_order``, each starting at its
+    first node, separated by ``edge_spacing``.
+
+    Parameters
+    ----------
+    environment : Environment
+        Fitted, with a ``track_graph``, ``edge_order`` and ``edge_spacing``.
+    knot_spacing : float, optional
+        Largest distance between knots along a branch, by default
+        ``2 * sqrt(12.5)``.
+
+    Returns
+    -------
+    basis : TrackGraphBasis
+    """
+    graph = environment.track_graph
+    edge_order = [tuple(edge) for edge in environment.edge_order]
+    lengths = np.asarray([float(graph.edges[edge]["distance"]) for edge in edge_order])
+    spacing = environment.edge_spacing
+    gaps = (
+        np.full(len(edge_order) - 1, float(spacing))
+        if np.ndim(spacing) == 0
+        else np.asarray(spacing, dtype=float)
+    )
+    starts = np.concatenate([[0.0], np.cumsum(lengths[:-1] + gaps)])
+    edge_index = {frozenset(edge): index for index, edge in enumerate(edge_order)}
+    edge_branches = np.zeros(len(edge_order), dtype=int)
+    edge_branch_starts = np.zeros(len(edge_order))
+    edge_forward = np.zeros(len(edge_order), dtype=bool)
+
+    branches = _track_branches(graph)
+    periodic = [
+        branch[0][0] == branch[-1][1] and graph.degree(branch[0][0]) == 2
+        for branch in branches
+    ]
+    node_column: dict = {}
+    for branch, is_loop in zip(branches, periodic, strict=True):
+        if not is_loop:
+            for node in (branch[0][0], branch[-1][1]):
+                node_column.setdefault(node, 1 + len(node_column))
+    next_column = 1 + len(node_column)
+    branch_knots, branch_columns = [], []
+    for index, (branch, is_loop) in enumerate(zip(branches, periodic, strict=True)):
+        along = 0.0
+        for a, b in branch:
+            edge = edge_index[frozenset((a, b))]
+            edge_branches[edge] = index
+            edge_branch_starts[edge] = along
+            edge_forward[edge] = edge_order[edge][0] == a
+            along += lengths[edge]
+        n_intervals = max(int(np.ceil(along / knot_spacing)), 3 if is_loop else 1)
+        knots = np.linspace(0.0, along, n_intervals + 1)
+        if is_loop:
+            columns = np.arange(next_column, next_column + n_intervals)
+            next_column += n_intervals
+        else:
+            inner = np.arange(next_column, next_column + n_intervals - 1)
+            next_column += n_intervals - 1
+            columns = np.concatenate(
+                [[node_column[branch[0][0]]], inner, [node_column[branch[-1][1]]]]
+            )
+        branch_knots.append(knots)
+        branch_columns.append(columns)
+    return TrackGraphBasis(
+        edge_starts=starts,
+        edge_lengths=lengths,
+        edge_branches=edge_branches,
+        edge_branch_starts=edge_branch_starts,
+        edge_forward=edge_forward,
+        branch_knots=tuple(branch_knots),
+        branch_columns=tuple(branch_columns),
+        branch_periodic=tuple(periodic),
+        n_columns=next_column,
+    )
+
+
+# Spline columns whose largest absolute value is at most this at every interior
+# bin center and every fit position are dropped: an environment that fills a
+# small part of its bounding box (a maze) leaves most tensor-product columns with
+# almost no support on it.
+_GLM_COLUMN_SUPPORT_TOL = 1e-2
+
+
+@dataclass(frozen=True, eq=False)
+class SelectedColumnsDesign:
+    """A patsy spline design restricted to the columns used by the fit.
+
+    Attributes
+    ----------
+    design_info : patsy.design_info.DesignInfo
+        The full spline design.
+    columns : np.ndarray, shape (n_used_columns,)
+        Indices of the used columns, the intercept (column 0) first.
+    """
+
+    design_info: DesignInfo
+    columns: np.ndarray
+
+
+def _select_supported_columns(
+    design_info: DesignInfo, positions: np.ndarray
+) -> "DesignInfo | SelectedColumnsDesign":
+    """Drop spline columns with almost no support at ``positions``.
+
+    The fit passes the interior bin centers, where place fields are reported,
+    and its own fit positions. A column that is negligible at every fit position
+    is set only by the coefficient prior, which holds it near zero, so dropping it
+    leaves the rates at other positions, such as the animal's position between
+    bin centers in a local likelihood, unchanged.
+
+    Parameters
+    ----------
+    design_info : patsy.design_info.DesignInfo
+    positions : np.ndarray, shape (n_points, n_position_dims)
+    """
+    full = np.asarray(make_spline_predict_matrix(design_info, positions))
+    support = (
+        np.max(np.abs(full[:, 1:]), axis=0) if len(full) else np.ones(full.shape[1] - 1)
+    )
+    columns = np.concatenate(
+        [[0], 1 + np.flatnonzero(support > _GLM_COLUMN_SUPPORT_TOL)]
+    )
+    if columns.size == full.shape[1]:
+        return design_info
+    return SelectedColumnsDesign(design_info=design_info, columns=columns)
+
+
+# The fit sums counts and exposure over position cells this fraction of the knot
+# spacing wide: the basis barely changes within a cell, and a 2-D fit no longer
+# scales with the number of tracking samples.
+_GLM_FIT_CELL_FRACTION = 1.0 / 16.0
+
+
+def _aggregate_by_position_cell(
+    position: np.ndarray,
+    counts: np.ndarray,
+    exposure: np.ndarray,
+    cell_size: float,
+    region: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sum counts and exposure over square position cells.
+
+    The Poisson log likelihood ``sum_t [counts_t * log(rate(x_t)) - exposure_t *
+    rate(x_t)]`` depends on position only through the rate, so samples in a small
+    cell can share one rate, evaluated at their exposure-weighted mean position
+    (the plain mean for a cell without exposure). Samples with different
+    ``region`` labels never share a cell.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_samples, n_position_dims)
+    counts : np.ndarray, shape (n_cells, n_samples)
+        Event mass of each cell (neuron) at each sample.
+    exposure : np.ndarray, shape (n_samples,)
+    cell_size : float
+        Width of the position cells.
+    region : np.ndarray, shape (n_samples,), optional
+        Integer label (e.g. the track-graph edge) that cells may not cross.
+
+    Returns
+    -------
+    mean_position : np.ndarray, shape (n_position_cells, n_position_dims)
+    cell_counts : np.ndarray, shape (n_cells, n_position_cells)
+    cell_exposure : np.ndarray, shape (n_position_cells,)
+    """
+    position = np.asarray(position, dtype=float).reshape(len(exposure), -1)
+    key = np.floor(position / cell_size).astype(np.int64)
+    if region is not None:
+        key = np.column_stack([np.asarray(region, dtype=np.int64), key])
+    _, cell = np.unique(key, axis=0, return_inverse=True)
+    cell = cell.ravel()
+    n_position_cells = int(cell.max()) + 1 if cell.size else 0
+    cell_exposure = np.bincount(cell, weights=exposure, minlength=n_position_cells)
+    weight = np.where(cell_exposure[cell] > 0, exposure, 1.0)
+    weight_sum = np.bincount(cell, weights=weight, minlength=n_position_cells)
+    mean_position = (
+        np.stack(
+            [
+                np.bincount(
+                    cell, weights=weight * position[:, dim], minlength=n_position_cells
+                )
+                for dim in range(position.shape[1])
+            ],
+            axis=1,
+        )
+        / weight_sum[:, None]
+    )
+    cell_counts = (
+        np.stack(
+            [
+                np.bincount(cell, weights=row, minlength=n_position_cells)
+                for row in counts
+            ]
+        )
+        if len(counts)
+        else np.zeros((0, n_position_cells))
+    )
+    return mean_position, cell_counts, cell_exposure
+
+
 def make_spline_predict_matrix(
-    design_info: DesignInfo, position: jnp.ndarray
+    design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
+    position: jnp.ndarray,
 ) -> jnp.ndarray:
     """Create a prediction matrix for a spline basis.
 
     Parameters
     ----------
-    design_info : patsy.design_info.DesignInfo
+    design_info : patsy.design_info.DesignInfo, TrackGraphBasis or SelectedColumnsDesign
     position : jnp.ndarray, shape (n_position_bins, n_position_dims)
+        Positions; linear positions, shape ``(n_position_bins, 1)``, for a
+        ``TrackGraphBasis``.
 
     Returns
     -------
     jnp.ndarray, shape (n_position_bins, n_spline_basis)
     """
+    if isinstance(design_info, SelectedColumnsDesign):
+        full = make_spline_predict_matrix(design_info.design_info, position)
+        return full[:, jnp.asarray(design_info.columns)]
+    if isinstance(design_info, TrackGraphBasis):
+        # Choose each position's edge before any float32 conversion: with no
+        # gap, an edge's end and the next edge's start share a linear position,
+        # and rounding up would read the next, possibly unrelated, edge.
+        linear = np.asarray(position, dtype=float)[:, 0]
+        is_nan = np.isnan(linear)
+        design_matrix = design_info.design_matrix(np.where(is_nan, 0.0, linear))
+        design_matrix[is_nan] = np.nan
+        return jnp.asarray(design_matrix)
     position = jnp.asarray(position)
     is_nan = jnp.any(jnp.isnan(position), axis=1)
     position = jnp.where(is_nan[:, jnp.newaxis], 0.0, position)
@@ -595,6 +1124,14 @@ def fit_sorted_spikes_glm_encoding_model(
 ) -> dict:
     """Fit a GLM encoding model
 
+    The Poisson likelihood depends on position only through the basis, so the
+    spike counts and exposure are summed over square position cells a sixteenth
+    of ``emission_knot_spacing`` or of the spline's narrowest knot interval wide,
+    whichever is smaller (on a track graph, along each edge), and
+    the basis is evaluated at each cell's exposure-weighted mean position. The
+    fit's cost then scales with the number of occupied cells, not with the
+    number of tracking samples.
+
     Parameters
     ----------
     position_time : jnp.ndarray, shape (n_time_position,)
@@ -620,7 +1157,8 @@ def fit_sorted_spikes_glm_encoding_model(
         If None, uniform weights are used.
     emission_knot_spacing : float, optional
         Spacing of the spline knots in position units, by default
-        ``sqrt(12.5) * 2`` (about 7.07).
+        ``sqrt(12.5) * 2`` (about 7.07). On a track graph, the largest knot
+        spacing along each branch of the track.
     l2_penalty : float, optional
         Penalty on the sum of squared spline (non-intercept) coefficients, in
         nats against the total log likelihood: a ``Normal(0, 1 / (2 *
@@ -653,8 +1191,8 @@ def fit_sorted_spikes_glm_encoding_model(
     encoding_model : dict
         coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
             Fitted coefficients for each neuron.
-        emission_design_info : patsy.design_info.DesignInfo
-            DesignInfo object for the spline basis.
+        emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+            The spline basis, or on a track graph the basis along the track.
         place_fields : jnp.ndarray, shape (n_neurons, n_bins)
             Spatial firing rates in Hz for each neuron.
         no_spike_part_log_likelihood : jnp.ndarray, shape (n_bins,)
@@ -713,29 +1251,26 @@ def fit_sorted_spikes_glm_encoding_model(
     # visited are then set by the penalty, near the neuron's baseline, instead
     # of a linear extrapolation of log-rate. A one-center dimension adds no
     # spline; a one-center grid is intercept-only.
-    basis_positions = np.asarray(interior_place_bin_centers)
-    varying_dimensions = np.ptp(basis_positions, axis=0) > 0
-    if np.any(varying_dimensions):
-        boundary_positions = np.tile(basis_positions[0], (2, 1))
-        boundary_positions[:, varying_dimensions] = np.vstack(
-            (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
-        )[:, varying_dimensions]
-        basis_positions = np.vstack((basis_positions, boundary_positions))
-    emission_design_info = make_spline_design_matrix(
-        basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
-    ).design_info
-    emission_design_matrix = make_spline_predict_matrix(
-        emission_design_info,
-        encoding_positions if len(encoding_positions) else interior_place_bin_centers,
-    )
-
-    emission_predict_matrix = make_spline_predict_matrix(
-        emission_design_info, interior_place_bin_centers
-    )
-    if l2_penalty is None:
-        l2_penalty = log_rate_prior_l2_penalty(
-            np.asarray(emission_predict_matrix), log_rate_prior_std
+    if environment.track_graph is not None:
+        # Splines along the track's branches: one spline over linear position
+        # would join segments that are only neighbors in edge_order.
+        emission_design_info = make_track_graph_basis(
+            environment, knot_spacing=emission_knot_spacing
         )
+        basis_positions = None
+    else:
+        basis_positions = np.asarray(interior_place_bin_centers)
+        varying_dimensions = np.ptp(basis_positions, axis=0) > 0
+        if np.any(varying_dimensions):
+            boundary_positions = np.tile(basis_positions[0], (2, 1))
+            boundary_positions[:, varying_dimensions] = np.vstack(
+                (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
+            )[:, varying_dimensions]
+            basis_positions = np.vstack((basis_positions, boundary_positions))
+        emission_design_info = make_spline_design_matrix(
+            basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
+        ).design_info
+
     if weights is None:
         weights = jnp.ones((position.shape[0],))
     else:
@@ -744,6 +1279,7 @@ def fit_sorted_spikes_glm_encoding_model(
     # Ensure weights is not None for type checking
     assert weights is not None
 
+    fit_edges = None
     if len(support.indices) and len(spike_times):
         event_counts = np.stack(
             [
@@ -754,9 +1290,70 @@ def fit_sorted_spikes_glm_encoding_model(
             ]
         ).reshape(len(spike_times), -1)
         exposure = exposure_weights[support.indices]
+        # Fit on sums over small position cells. On a track graph the cells are
+        # laid out along each edge from its first node, so they do not depend on
+        # the linear layout (edge_order spacing) and never span two edges. The
+        # cells are also bounded by the basis's actual knots, which can be closer
+        # together than the requested spacing (an environment narrower than it).
+        cell_size = _GLM_FIT_CELL_FRACTION * min(
+            emission_knot_spacing,
+            _narrowest_knot_interval(
+                emission_design_info,
+                basis_positions,
+                place_bin_edges,
+                emission_knot_spacing,
+            ),
+        )
+        if isinstance(emission_design_info, TrackGraphBasis):
+            linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
+            edge = emission_design_info.edge_index(linear)
+            offset = linear - emission_design_info.edge_starts[edge]
+            cell_offset_edge, event_counts, exposure = _aggregate_by_position_cell(
+                np.column_stack([offset, edge]),
+                event_counts,
+                exposure,
+                cell_size=cell_size,
+                region=edge,
+            )
+            fit_edges = np.rint(cell_offset_edge[:, 1]).astype(int)
+            fit_positions = (
+                emission_design_info.edge_starts[fit_edges] + cell_offset_edge[:, 0]
+            )[:, None]
+        else:
+            fit_positions, event_counts, exposure = _aggregate_by_position_cell(
+                np.asarray(encoding_positions), event_counts, exposure, cell_size
+            )
     else:
-        event_counts = np.zeros((len(spike_times), len(emission_design_matrix)))
-        exposure = np.zeros(len(emission_design_matrix))
+        fit_positions = interior_place_bin_centers
+        event_counts = np.zeros((len(spike_times), len(fit_positions)))
+        exposure = np.zeros(len(fit_positions))
+    if not isinstance(emission_design_info, TrackGraphBasis):
+        # Support is checked where the fit evaluates the basis, not only at bin
+        # centers: with knots closer than the bins, a column can vanish at every
+        # center and still carry a field between them.
+        emission_design_info = _select_supported_columns(
+            emission_design_info,
+            np.vstack(
+                [np.asarray(interior_place_bin_centers), np.asarray(fit_positions)]
+            ),
+        )
+    emission_predict_matrix = make_spline_predict_matrix(
+        emission_design_info, interior_place_bin_centers
+    )
+    if l2_penalty is None:
+        l2_penalty = log_rate_prior_l2_penalty(
+            np.asarray(emission_predict_matrix), log_rate_prior_std
+        )
+    if fit_edges is None:
+        emission_design_matrix = make_spline_predict_matrix(
+            emission_design_info, fit_positions
+        )
+    else:
+        # A cell's mean position can round past its edge's end; with no gap
+        # that is the next edge, so each cell keeps the edge it was built on.
+        emission_design_matrix = jnp.asarray(
+            emission_design_info.design_matrix(fit_positions, edge=fit_edges)
+        )
     coefficients = fit_poisson_regressions(
         emission_design_matrix,
         event_counts,
@@ -830,9 +1427,9 @@ def predict_sorted_spikes_glm_log_likelihood(
         The spatial environment object containing track geometry information.
     coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
         Fitted GLM coefficients for each neuron.
-    emission_design_info : patsy.design_info.DesignInfo
-        Patsy DesignInfo object used for creating the spline design matrix
-        during encoding, needed for prediction.
+    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+        The encoding fit's basis (a patsy DesignInfo, or a ``TrackGraphBasis``
+        on a track graph), needed for prediction.
     place_fields : jnp.ndarray, shape (n_neurons, n_position_bins)
         Expected firing rate in Hz for each neuron in each position bin, derived
         from the fitted GLM (`exp(predict_matrix @ coefficients)`).
@@ -897,7 +1494,8 @@ def predict_sorted_spikes_glm_log_likelihood(
     if is_local:
         # Need to interpolate position
         # The natural spline extrapolates log-rate linearly past its boundary
-        # knots; off-track positions read the nearest interior bin instead.
+        # knots (the track-graph basis reads the nearest edge end); off-track
+        # positions read the nearest interior bin instead.
         interpolated_position = snap_off_track_positions(
             get_position_at_time(position_time, position, row_time, environment),
             environment,

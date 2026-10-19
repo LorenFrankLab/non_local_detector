@@ -930,16 +930,16 @@ def _fit_glm(
 
 
 def _spy_event_counts(monkeypatch):
-    """Record the (event counts, exposure) pairs the GLM hands the optimizer."""
+    """Record the per-sample (event counts, exposure) pairs of the GLM fit,
+    before they are summed over position cells for the optimizer."""
     captured = []
+    aggregate = sorted_spikes_glm._aggregate_by_position_cell
 
-    def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
-        captured.extend((np.asarray(row), np.asarray(weights)) for row in spikes)
-        return fit_poisson_regressions(
-            design_matrix, spikes, weights, l2_penalty, **kwargs
-        )
+    def spy(position, counts, exposure, *args, **kwargs):
+        captured.extend((np.asarray(row), np.asarray(exposure)) for row in counts)
+        return aggregate(position, counts, exposure, *args, **kwargs)
 
-    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
+    monkeypatch.setattr(sorted_spikes_glm, "_aggregate_by_position_cell", spy)
     return captured
 
 
