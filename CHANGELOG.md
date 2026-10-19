@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Mean rates, exposure and occupancy still use every spike. The ground process uses the dictionary, so the expected count stays the integral of the compressed marked intensity over marks.
   - `compression_seed` (default 0) seeds the sampling or the merge order.
 - `model_checking.clusterless` does not support merged dictionaries, whose mark CDFs would need per-kernel bandwidths; subsampled ones are supported.
+- On two recordings (5 blocked time folds each, full detector, held-out marginal log likelihood relative to the full KDE in the same fold):
+  - Tetrodes (22, 4-D marks): merging at threshold 1 keeps 26% of the kernels for −0.5 ± 0.1 nats/s; threshold 2 keeps 7% for −10.1 ± 2.1. Decoding error, coverage and non-local fraction were unchanged up to threshold 2. At 137k kernels in all, stratified subsampling lost 3.5 ± 0.9 and uniform 7.8 ± 5.1.
+  - 31-channel probe shanks (11): merging is not recommended. At threshold 2.5 it kept 23% of the kernels and the decoding metrics, but lost 157 ± 3 nats/s, mostly in how well the marks are described. Subsampling to 10,000 kernels per shank lost 63 ± 3 (stratified) and 77 ± 8 (uniform).
+  - Stratified subsampling beat uniform at every size on both recordings.
+  - On an A100, a compiled prediction's kernel sums got 7–12× faster (0.4–0.7 s against 5.0 s on the probe recording), but a first prediction's time is dominated by compilation and did not drop.
 
 ### New clusterless likelihood: mark-mixture GLM
 
