@@ -753,12 +753,17 @@ def _masked_log_density(
 ) -> jnp.ndarray:
     """``log N(m; mu_k, Sigma_k)``, shape (n_spikes, n_components).
 
-    ``-inf`` for padded components.
+    ``-inf`` for padded components, and for a mark that overflows float32 (an
+    infinite feature gives NaN in the precision product): its density is zero
+    under every component, as for a finite mark whose squared distance
+    overflows.
     """
     log_density = _estimate_log_gaussian_prob(
         features, means, precisions_cholesky, "full"
     )
-    return jnp.where(is_component[None], log_density, -jnp.inf)
+    return jnp.where(
+        is_component[None] & ~jnp.isnan(log_density), log_density, -jnp.inf
+    )
 
 
 @partial(

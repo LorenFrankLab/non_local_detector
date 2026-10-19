@@ -736,19 +736,23 @@ def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
 
 
 @pytest.mark.unit
-def test_mark_beyond_float32_range_is_background_only(track_1d):
-    """A mark with zero density under every component is explained by the
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize("value", [1e20, 1e40])
+def test_mark_beyond_float32_range_is_background_only(track_1d, value, is_local):
+    """A mark whose squared distance (1e20) or value itself (1e40) overflows
+    float32 has zero density under every component and is explained by the
     background, not NaN."""
     time_edges = np.linspace(10.0, 10.2, 11)
     common = dict(
         time_edges=time_edges,
         mark_reference=track_1d["mark_reference"],
+        is_local=is_local,
         **track_1d["encoding"],
     )
     empty = ([np.zeros(0)] * 2, [np.zeros((0, 4))] * 2)
     extreme = (
         [np.array([10.05]), np.zeros(0)],
-        [np.full((1, 4), 1e20), np.zeros((0, 4))],
+        [np.full((1, 4), value), np.zeros((0, 4))],
     )
     args = (track_1d["time"], track_1d["position"])
     with_spike = np.asarray(
@@ -758,7 +762,15 @@ def test_mark_beyond_float32_range_is_background_only(track_1d):
         predict_clusterless_mark_glm_log_likelihood(*args, *empty, **common)
     )
     assert np.all(np.isfinite(with_spike))
-    np.testing.assert_allclose(np.ptp((with_spike - without)[2]), 0.0, atol=1e-4)
+    log_background = float(
+        background_log_intensity(
+            track_1d["mark_reference"][0], np.full((1, 4), value), LOG_RATE_EPS_HZ
+        )[0]
+    )
+    # Only the spike's bin changes, by the background's log intensity per bin.
+    np.testing.assert_allclose(
+        (with_spike - without)[2], log_background + np.log(0.02), rtol=1e-4
+    )
 
 
 @pytest.mark.unit
