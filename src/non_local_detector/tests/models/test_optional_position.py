@@ -28,6 +28,7 @@ from non_local_detector.models.cont_frag_model import (
 POSITION_FREE_ALGORITHMS = [
     "clusterless_gmm",
     "clusterless_kde",
+    "clusterless_mark_glm",
 ]
 N_DECODE = 400
 

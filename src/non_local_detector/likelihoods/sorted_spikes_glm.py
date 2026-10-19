@@ -61,6 +61,7 @@ interpolation.
 """
 
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 
@@ -621,7 +622,7 @@ _GLM_FIT_CELL_FRACTION = 1.0 / 16.0
 
 def _aggregate_by_position_cell(
     position: np.ndarray,
-    counts: np.ndarray,
+    counts: np.ndarray | Callable[[np.ndarray, int], np.ndarray],
     exposure: np.ndarray,
     cell_size: float,
     region: np.ndarray | None = None,
@@ -637,8 +638,12 @@ def _aggregate_by_position_cell(
     Parameters
     ----------
     position : np.ndarray, shape (n_samples, n_position_dims)
-    counts : np.ndarray, shape (n_cells, n_samples)
-        Event mass of each cell (neuron) at each sample.
+    counts : np.ndarray, shape (n_cells, n_samples), or callable
+        Event mass of each cell (neuron) at each sample. A callable instead
+        takes each sample's position-cell index, shape (n_samples,), and the
+        number of position cells, and returns the summed counts, shape
+        (n_cells, n_position_cells); it avoids a dense per-sample array when
+        the events are sparse.
     exposure : np.ndarray, shape (n_samples,)
     cell_size : float
         Width of the position cells.
@@ -673,16 +678,17 @@ def _aggregate_by_position_cell(
         )
         / weight_sum[:, None]
     )
-    cell_counts = (
-        np.stack(
+    if callable(counts):
+        cell_counts = counts(cell, n_position_cells)
+    elif len(counts):
+        cell_counts = np.stack(
             [
                 np.bincount(cell, weights=row, minlength=n_position_cells)
                 for row in counts
             ]
         )
-        if len(counts)
-        else np.zeros((0, n_position_cells))
-    )
+    else:
+        cell_counts = np.zeros((0, n_position_cells))
     return mean_position, cell_counts, cell_exposure
 
 
@@ -1103,6 +1109,167 @@ def fit_poisson_regression(
     )[0]
 
 
+def _fit_rate_maps(
+    environment: Environment,
+    place_bin_edges: np.ndarray,
+    interior_place_bin_centers: jnp.ndarray,
+    encoding_positions: np.ndarray,
+    event_counts: np.ndarray | Callable[[np.ndarray, int], np.ndarray],
+    exposure: np.ndarray,
+    *,
+    emission_knot_spacing: float,
+    log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
+    l2_penalty: float | None = None,
+    n_maps: int | None = None,
+) -> tuple[
+    "DesignInfo | TrackGraphBasis | SelectedColumnsDesign", jnp.ndarray, jnp.ndarray
+]:
+    """Penalized Poisson GLM rate maps on the environment's spline basis.
+
+    Shared by the sorted-spikes GLM (one map per neuron) and the clusterless
+    mark-mixture GLM (one map per mark component). See
+    ``fit_sorted_spikes_glm_encoding_model`` for the basis, the position-cell
+    sums the fit uses and the log-rate prior.
+
+    Parameters
+    ----------
+    environment : Environment
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+        Place-bin edge coordinates (``environment.place_bin_edges_``).
+    interior_place_bin_centers : jnp.ndarray, shape (n_interior_bins, n_position_dims)
+    encoding_positions : np.ndarray, shape (n_samples, n_position_dims)
+        Position of each encoding sample; linear position on a track graph.
+    event_counts : np.ndarray, shape (n_maps, n_samples), or callable
+        Weighted events assigned to each sample, or a callable that sums them
+        into position cells (see ``_aggregate_by_position_cell``).
+    exposure : np.ndarray, shape (n_samples,)
+        Weighted exposure of each sample, in seconds.
+    emission_knot_spacing : float
+        Spacing of the spline knots in position units.
+    log_rate_prior_std : float, optional
+        Prior SD, in nats, of each map's log-rate deviation from its baseline,
+        by default ``GLM_LOG_RATE_PRIOR_STD``. Ignored when ``l2_penalty`` is
+        given.
+    l2_penalty : float, optional
+        Penalty on the squared non-intercept coefficients, by default None
+        (derived from ``log_rate_prior_std``).
+    n_maps : int, optional
+        Number of rate maps; required when ``event_counts`` is callable.
+
+    Returns
+    -------
+    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+    coefficients : jnp.ndarray, shape (n_maps, n_coefficients)
+    interior_rates : jnp.ndarray, shape (n_interior_bins, n_maps)
+        Floored rates in Hz at the interior bin centers.
+    """
+    # Define the spline on the environment, not on the tracking: interior bin
+    # centers plus the physical edge extrema of each varying dimension, so the
+    # natural-spline boundaries sit at the track ends. Bins the animal never
+    # visited are then set by the penalty, near the map's baseline, instead
+    # of a linear extrapolation of log-rate. A one-center dimension adds no
+    # spline; a one-center grid is intercept-only.
+    if environment.track_graph is not None:
+        # Splines along the track's branches: one spline over linear position
+        # would join segments that are only neighbors in edge_order.
+        emission_design_info = make_track_graph_basis(
+            environment, knot_spacing=emission_knot_spacing
+        )
+        basis_positions = None
+    else:
+        basis_positions = np.asarray(interior_place_bin_centers)
+        varying_dimensions = np.ptp(basis_positions, axis=0) > 0
+        if np.any(varying_dimensions):
+            boundary_positions = np.tile(basis_positions[0], (2, 1))
+            boundary_positions[:, varying_dimensions] = np.vstack(
+                (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
+            )[:, varying_dimensions]
+            basis_positions = np.vstack((basis_positions, boundary_positions))
+        emission_design_info = make_spline_design_matrix(
+            basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
+        ).design_info
+
+    if n_maps is None:
+        n_maps = event_counts.shape[0]
+    fit_edges = None
+    if exposure.size and n_maps:
+        # Fit on sums over small position cells. On a track graph the cells are
+        # laid out along each edge from its first node, so they do not depend on
+        # the linear layout (edge_order spacing) and never span two edges. The
+        # cells are also bounded by the basis's actual knots, which can be closer
+        # together than the requested spacing (an environment narrower than it).
+        cell_size = _GLM_FIT_CELL_FRACTION * min(
+            emission_knot_spacing,
+            _narrowest_knot_interval(
+                emission_design_info,
+                basis_positions,
+                place_bin_edges,
+                emission_knot_spacing,
+            ),
+        )
+        if isinstance(emission_design_info, TrackGraphBasis):
+            linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
+            edge = emission_design_info.edge_index(linear)
+            offset = linear - emission_design_info.edge_starts[edge]
+            cell_offset_edge, event_counts, exposure = _aggregate_by_position_cell(
+                np.column_stack([offset, edge]),
+                event_counts,
+                exposure,
+                cell_size=cell_size,
+                region=edge,
+            )
+            fit_edges = np.rint(cell_offset_edge[:, 1]).astype(int)
+            fit_positions = (
+                emission_design_info.edge_starts[fit_edges] + cell_offset_edge[:, 0]
+            )[:, None]
+        else:
+            fit_positions, event_counts, exposure = _aggregate_by_position_cell(
+                np.asarray(encoding_positions), event_counts, exposure, cell_size
+            )
+    else:
+        fit_positions = interior_place_bin_centers
+        event_counts = np.zeros((n_maps, len(fit_positions)))
+        exposure = np.zeros(len(fit_positions))
+    if not isinstance(emission_design_info, TrackGraphBasis):
+        # Support is checked where the fit evaluates the basis, not only at bin
+        # centers: with knots closer than the bins, a column can vanish at every
+        # center and still carry a field between them.
+        emission_design_info = _select_supported_columns(
+            emission_design_info,
+            np.vstack(
+                [np.asarray(interior_place_bin_centers), np.asarray(fit_positions)]
+            ),
+        )
+    emission_predict_matrix = make_spline_predict_matrix(
+        emission_design_info, interior_place_bin_centers
+    )
+    if l2_penalty is None:
+        l2_penalty = log_rate_prior_l2_penalty(
+            np.asarray(emission_predict_matrix), log_rate_prior_std
+        )
+    if fit_edges is None:
+        emission_design_matrix = make_spline_predict_matrix(
+            emission_design_info, fit_positions
+        )
+    else:
+        # A cell's mean position can round past its edge's end; with no gap
+        # that is the next edge, so each cell keeps the edge it was built on.
+        emission_design_matrix = jnp.asarray(
+            emission_design_info.design_matrix(fit_positions, edge=fit_edges)
+        )
+    coefficients = fit_poisson_regressions(
+        emission_design_matrix,
+        event_counts,
+        exposure,
+        l2_penalty=l2_penalty,
+        rate_floor=RATE_EPS_HZ,
+    )
+    interior_rates = _glm_rates(
+        jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
+    )  # (n_interior_bins, n_maps)
+    return emission_design_info, coefficients, interior_rates
+
+
 def fit_sorted_spikes_glm_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
@@ -1234,6 +1401,11 @@ def fit_sorted_spikes_glm_encoding_model(
         environment.place_bin_centers_[is_track_interior]
     )
 
+    if weights is None:
+        weights = jnp.ones((position.shape[0],))
+    else:
+        weights = validate_weights(weights, position.shape[0])
+
     encoding_positions = position[support.indices]
     if (
         environment.track_graph is not None
@@ -1245,41 +1417,6 @@ def fit_sorted_spikes_glm_encoding_model(
         encoding_positions = environment._linear_position(
             np.asarray(encoding_positions)
         )[:, None]
-    # Define the spline on the environment, not on the tracking: interior bin
-    # centers plus the physical edge extrema of each varying dimension, so the
-    # natural-spline boundaries sit at the track ends. Bins the animal never
-    # visited are then set by the penalty, near the neuron's baseline, instead
-    # of a linear extrapolation of log-rate. A one-center dimension adds no
-    # spline; a one-center grid is intercept-only.
-    if environment.track_graph is not None:
-        # Splines along the track's branches: one spline over linear position
-        # would join segments that are only neighbors in edge_order.
-        emission_design_info = make_track_graph_basis(
-            environment, knot_spacing=emission_knot_spacing
-        )
-        basis_positions = None
-    else:
-        basis_positions = np.asarray(interior_place_bin_centers)
-        varying_dimensions = np.ptp(basis_positions, axis=0) > 0
-        if np.any(varying_dimensions):
-            boundary_positions = np.tile(basis_positions[0], (2, 1))
-            boundary_positions[:, varying_dimensions] = np.vstack(
-                (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
-            )[:, varying_dimensions]
-            basis_positions = np.vstack((basis_positions, boundary_positions))
-        emission_design_info = make_spline_design_matrix(
-            basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
-        ).design_info
-
-    if weights is None:
-        weights = jnp.ones((position.shape[0],))
-    else:
-        weights = validate_weights(weights, position.shape[0])
-
-    # Ensure weights is not None for type checking
-    assert weights is not None
-
-    fit_edges = None
     if len(support.indices) and len(spike_times):
         event_counts = np.stack(
             [
@@ -1290,80 +1427,20 @@ def fit_sorted_spikes_glm_encoding_model(
             ]
         ).reshape(len(spike_times), -1)
         exposure = exposure_weights[support.indices]
-        # Fit on sums over small position cells. On a track graph the cells are
-        # laid out along each edge from its first node, so they do not depend on
-        # the linear layout (edge_order spacing) and never span two edges. The
-        # cells are also bounded by the basis's actual knots, which can be closer
-        # together than the requested spacing (an environment narrower than it).
-        cell_size = _GLM_FIT_CELL_FRACTION * min(
-            emission_knot_spacing,
-            _narrowest_knot_interval(
-                emission_design_info,
-                basis_positions,
-                place_bin_edges,
-                emission_knot_spacing,
-            ),
-        )
-        if isinstance(emission_design_info, TrackGraphBasis):
-            linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
-            edge = emission_design_info.edge_index(linear)
-            offset = linear - emission_design_info.edge_starts[edge]
-            cell_offset_edge, event_counts, exposure = _aggregate_by_position_cell(
-                np.column_stack([offset, edge]),
-                event_counts,
-                exposure,
-                cell_size=cell_size,
-                region=edge,
-            )
-            fit_edges = np.rint(cell_offset_edge[:, 1]).astype(int)
-            fit_positions = (
-                emission_design_info.edge_starts[fit_edges] + cell_offset_edge[:, 0]
-            )[:, None]
-        else:
-            fit_positions, event_counts, exposure = _aggregate_by_position_cell(
-                np.asarray(encoding_positions), event_counts, exposure, cell_size
-            )
     else:
-        fit_positions = interior_place_bin_centers
-        event_counts = np.zeros((len(spike_times), len(fit_positions)))
-        exposure = np.zeros(len(fit_positions))
-    if not isinstance(emission_design_info, TrackGraphBasis):
-        # Support is checked where the fit evaluates the basis, not only at bin
-        # centers: with knots closer than the bins, a column can vanish at every
-        # center and still carry a field between them.
-        emission_design_info = _select_supported_columns(
-            emission_design_info,
-            np.vstack(
-                [np.asarray(interior_place_bin_centers), np.asarray(fit_positions)]
-            ),
-        )
-    emission_predict_matrix = make_spline_predict_matrix(
-        emission_design_info, interior_place_bin_centers
-    )
-    if l2_penalty is None:
-        l2_penalty = log_rate_prior_l2_penalty(
-            np.asarray(emission_predict_matrix), log_rate_prior_std
-        )
-    if fit_edges is None:
-        emission_design_matrix = make_spline_predict_matrix(
-            emission_design_info, fit_positions
-        )
-    else:
-        # A cell's mean position can round past its edge's end; with no gap
-        # that is the next edge, so each cell keeps the edge it was built on.
-        emission_design_matrix = jnp.asarray(
-            emission_design_info.design_matrix(fit_positions, edge=fit_edges)
-        )
-    coefficients = fit_poisson_regressions(
-        emission_design_matrix,
+        event_counts = np.zeros((len(spike_times), 0))
+        exposure = np.zeros(0)
+    emission_design_info, coefficients, interior_rates = _fit_rate_maps(
+        environment,
+        place_bin_edges,
+        interior_place_bin_centers,
+        encoding_positions,
         event_counts,
         exposure,
+        emission_knot_spacing=emission_knot_spacing,
+        log_rate_prior_std=log_rate_prior_std,
         l2_penalty=l2_penalty,
-        rate_floor=RATE_EPS_HZ,
     )
-    interior_rates = _glm_rates(
-        jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
-    )  # (n_interior_bins, n_cells)
     place_fields = (
         jnp.zeros((len(spike_times), is_track_interior.shape[0]))
         .at[:, is_track_interior]

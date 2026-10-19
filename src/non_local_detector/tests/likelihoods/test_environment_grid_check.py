@@ -125,7 +125,11 @@ def test_grid_refit_on_the_same_positions_keeps_the_model(fitted, encoding_data,
 @pytest.mark.parametrize(
     "name",
     # Patsy DesignInfo serialization remains a separately tracked GLM defect.
-    [name for name in ALGORITHMS if name != "sorted_spikes_glm"],
+    [
+        name
+        for name in ALGORITHMS
+        if name not in ("sorted_spikes_glm", "clusterless_mark_glm")
+    ],
 )
 def test_grid_check_survives_pickling(fitted, encoding_data, name):
     """A pickled model predicts identically and still detects a changed grid."""
