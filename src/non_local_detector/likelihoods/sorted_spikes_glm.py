@@ -134,6 +134,72 @@ def _local_glm_log_likelihood(design, coefficients, counts, durations):
     return _poisson_row_log_likelihood(counts, expected)
 
 
+def _spline_inner_knots(
+    position: np.ndarray, place_bin_edges: np.ndarray, knot_spacing: float
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Varying dimensions of ``position`` and the spline's inner knots in each.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_points, n_position_dims)
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+    knot_spacing : float
+
+    Returns
+    -------
+    varying_dimensions : np.ndarray, shape (n_varying_dims,)
+    inner_knots : list of np.ndarray
+        Knots strictly inside each varying dimension's range of ``position``.
+    """
+    varying_dimensions = np.flatnonzero(np.ptp(position, axis=0) > 0)
+    inner_knots = []
+    for ind in varying_dimensions:
+        pos, edges = position[:, ind], place_bin_edges[:, ind]
+        n_points = get_n_bins(edges, bin_size=knot_spacing)
+        knots = np.linspace(edges.min(), edges.max(), n_points)[1:-1]
+        knots = knots[(knots > pos.min()) & (knots < pos.max())]
+        if not len(knots):
+            knots = np.asarray([(pos.min() + pos.max()) / 2])
+        inner_knots.append(knots)
+    return varying_dimensions, inner_knots
+
+
+def _narrowest_knot_interval(
+    design_info: "DesignInfo | TrackGraphBasis",
+    basis_positions: np.ndarray | None,
+    place_bin_edges: np.ndarray,
+    knot_spacing: float,
+) -> float:
+    """Narrowest interval between adjacent knots of a spline basis.
+
+    The knots are those the basis was built with: along each branch of a
+    ``TrackGraphBasis``, or, for a tensor spline, each dimension's inner knots
+    and its boundary knots at the range of ``basis_positions``. An
+    intercept-only basis returns ``knot_spacing``.
+    """
+    if isinstance(design_info, TrackGraphBasis):
+        return float(min(np.diff(knots).min() for knots in design_info.branch_knots))
+    varying_dimensions, inner_knots = _spline_inner_knots(
+        basis_positions, place_bin_edges, knot_spacing
+    )
+    if not len(varying_dimensions):
+        return float(knot_spacing)
+    return float(
+        min(
+            np.diff(
+                np.concatenate(
+                    [
+                        [basis_positions[:, ind].min()],
+                        knots,
+                        [basis_positions[:, ind].max()],
+                    ]
+                )
+            ).min()
+            for ind, knots in zip(varying_dimensions, inner_knots, strict=True)
+        )
+    )
+
+
 def make_spline_design_matrix(
     position: np.ndarray,
     place_bin_edges: np.ndarray,
@@ -158,18 +224,12 @@ def make_spline_design_matrix(
     design_matrix : np.ndarray, shape (n_points, n_spline_basis)
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
-    varying_dimensions = np.flatnonzero(np.ptp(position, axis=0) > 0)
+    # ``inner_knots`` is read by name by the patsy formula below.
+    varying_dimensions, inner_knots = _spline_inner_knots(
+        position, place_bin_edges, knot_spacing
+    )
     if not len(varying_dimensions):
         return dmatrix("1", pd.DataFrame(index=np.arange(len(position))))
-    inner_knots = []
-    for ind in varying_dimensions:
-        pos, edges = position[:, ind], place_bin_edges[:, ind]
-        n_points = get_n_bins(edges, bin_size=knot_spacing)
-        knots = np.linspace(edges.min(), edges.max(), n_points)[1:-1]
-        knots = knots[(knots > pos.min()) & (knots < pos.max())]
-        if not len(knots):
-            knots = np.asarray([(pos.min() + pos.max()) / 2])
-        inner_knots.append(knots)
 
     data = {}
     formula = "1 + te("
@@ -1059,8 +1119,9 @@ def fit_sorted_spikes_glm_encoding_model(
     """Fit a GLM encoding model
 
     The Poisson likelihood depends on position only through the basis, so the
-    spike counts and exposure are summed over square position cells
-    ``emission_knot_spacing / 16`` wide (on a track graph, along each edge) and
+    spike counts and exposure are summed over square position cells a sixteenth
+    of ``emission_knot_spacing`` or of the spline's narrowest knot interval wide,
+    whichever is smaller (on a track graph, along each edge), and
     the basis is evaluated at each cell's exposure-weighted mean position. The
     fit's cost then scales with the number of occupied cells, not with the
     number of tracking samples.
@@ -1190,6 +1251,7 @@ def fit_sorted_spikes_glm_encoding_model(
         emission_design_info = make_track_graph_basis(
             environment, knot_spacing=emission_knot_spacing
         )
+        basis_positions = None
     else:
         basis_positions = np.asarray(interior_place_bin_centers)
         varying_dimensions = np.ptp(basis_positions, axis=0) > 0
@@ -1223,8 +1285,18 @@ def fit_sorted_spikes_glm_encoding_model(
         exposure = exposure_weights[support.indices]
         # Fit on sums over small position cells. On a track graph the cells are
         # laid out along each edge from its first node, so they do not depend on
-        # the linear layout (edge_order spacing) and never span two edges.
-        cell_size = _GLM_FIT_CELL_FRACTION * emission_knot_spacing
+        # the linear layout (edge_order spacing) and never span two edges. The
+        # cells are also bounded by the basis's actual knots, which can be closer
+        # together than the requested spacing (an environment narrower than it).
+        cell_size = _GLM_FIT_CELL_FRACTION * min(
+            emission_knot_spacing,
+            _narrowest_knot_interval(
+                emission_design_info,
+                basis_positions,
+                place_bin_edges,
+                emission_knot_spacing,
+            ),
+        )
         if isinstance(emission_design_info, TrackGraphBasis):
             linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
             edge = emission_design_info.edge_index(linear)

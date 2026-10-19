@@ -304,3 +304,35 @@ def test_2d_column_support_includes_positions_between_bin_centers(monkeypatch):
     in_field = distance < 1.0
     assert every_column[in_field].mean() > 10.0
     np.testing.assert_allclose(pruned[in_field], every_column[in_field], rtol=0.05)
+
+
+def test_fit_cells_are_narrower_than_the_actual_knot_intervals():
+    """The fit's position cells follow the spline's actual knots. In a range
+    narrower than the requested knot spacing the spline still has knots inside
+    it; cells as wide as the requested spacing would merge the whole range into
+    one cell and flatten the field."""
+    rng = np.random.default_rng(0)
+    n_time = 50_000
+    position = rng.uniform(0.0, 0.4, n_time)[:, None]
+    time = np.arange(n_time) * 0.002
+    env = Environment(place_bin_size=0.01, position_range=((0.0, 0.4),)).fit_place_grid(
+        position
+    )
+    rate = 0.3 + 20.0 * np.exp(-0.5 * ((position[:, 0] - 0.1) / 0.08) ** 2)
+    spikes = [time[rng.random(n_time) < rate * 0.002]]
+    enc = fit_sorted_spikes_glm_encoding_model(
+        time,
+        position,
+        spikes,
+        env,
+        env.place_bin_edges_,
+        env.edges_,
+        env.is_track_interior_,
+        env.is_track_boundary_,
+        disable_progress_bar=True,
+    )
+    interior = env.is_track_interior_.ravel()
+    field = np.asarray(enc["place_fields"])[0][interior]
+    centers = env.place_bin_centers_.ravel()[interior]
+    assert field.max() / field.min() > 5.0
+    assert abs(centers[np.argmax(field)] - 0.1) < 0.1
