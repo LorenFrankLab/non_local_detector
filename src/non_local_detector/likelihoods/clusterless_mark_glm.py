@@ -230,7 +230,19 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
         if self.mean_prior is None:
             self.mean_prior_ = np.average(X, axis=0, weights=weight)
         if self.covariance_prior is None:
-            covariance = np.atleast_2d(np.cov(X.T, aweights=weight))
+            n_features = X.shape[1]
+            if weight.sum() ** 2 / np.sum(weight**2) < n_features + 1:
+                # Too few effective spikes for a full-rank covariance (one spike
+                # can carry nearly all the weight): the unbiased estimate is
+                # singular or, at a zero denominator, infinite, and a component
+                # left with no weight inherits it. Use the weighted spread plus
+                # the regularization added to every component covariance.
+                deviation = X - np.average(X, axis=0, weights=weight)
+                covariance = (deviation * weight[:, None]).T @ deviation / (
+                    weight.sum()
+                ) + self.reg_covar * np.eye(n_features)
+            else:
+                covariance = np.atleast_2d(np.cov(X.T, aweights=weight))
             self.covariance_prior_ = {
                 "full": covariance,
                 "tied": covariance,

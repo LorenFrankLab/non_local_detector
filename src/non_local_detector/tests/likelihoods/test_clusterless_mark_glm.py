@@ -306,6 +306,28 @@ def test_negligible_weight_spikes_do_not_shape_the_priors():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "weights", [[1.0, 1e-20], [1.0, 1e-10], [1.0, 1e-10, 1e-10], [1.0, 1.0]]
+)
+def test_mark_mixture_with_fewer_effective_spikes_than_dimensions(weights):
+    """When the weights leave fewer effective spikes than mark dimensions plus
+    one (one spike carrying nearly all the weight, as concentrated EM posteriors
+    can), the covariance prior cannot be estimated; the fit is still finite."""
+    marks = np.array(
+        [[50.0, 60.0, 70.0, 80.0], [55.0, 65.0, 72.0, 85.0], [40.0, 61.0, 75.0, 79.0]]
+    )[: len(weights)]
+    weights = np.asarray(weights)
+    mixture = fit_mark_mixture(marks, weights, n_components=4)
+    assert np.all(np.isfinite(mixture.means))
+    assert np.all(np.isfinite(mixture.precisions_cholesky))
+    np.testing.assert_allclose(
+        mixture.weights @ mixture.means,
+        np.average(marks, axis=0, weights=weights),
+        atol=1e-3 * np.ptp(marks),
+    )
+
+
+@pytest.mark.unit
 def test_rate_maps_recover_the_units_place_fields(track_1d):
     encoding = track_1d["encoding"]
     centers = track_1d["environment"].place_bin_centers_[
