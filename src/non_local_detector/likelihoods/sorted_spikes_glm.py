@@ -429,7 +429,9 @@ class TrackGraphBasis:
         short_of_next = self.edge_starts[following] - x
         return np.where((past_end > 0) & (short_of_next < past_end), following, edge)
 
-    def design_matrix(self, linear_position: np.ndarray) -> np.ndarray:
+    def design_matrix(
+        self, linear_position: np.ndarray, edge: np.ndarray | None = None
+    ) -> np.ndarray:
         """Design matrix at linear positions.
 
         A position in a gap between edges is read at the nearest edge end.
@@ -437,13 +439,17 @@ class TrackGraphBasis:
         Parameters
         ----------
         linear_position : np.ndarray, shape (n_points,) or (n_points, 1)
+        edge : np.ndarray, shape (n_points,), optional
+            Edge (index into ``edge_order``) holding each position, by default
+            ``edge_index(linear_position)``. Positions are read at the nearest
+            point of their edge.
 
         Returns
         -------
         design : np.ndarray, shape (n_points, n_columns)
         """
         x = np.asarray(linear_position, dtype=float).reshape(-1)
-        edge = self.edge_index(x)
+        edge = self.edge_index(x) if edge is None else np.asarray(edge, dtype=int)
         offset = np.clip(x - self.edge_starts[edge], 0.0, self.edge_lengths[edge])
         along_branch = self.edge_branch_starts[edge] + np.where(
             self.edge_forward[edge], offset, self.edge_lengths[edge] - offset
@@ -1273,6 +1279,7 @@ def fit_sorted_spikes_glm_encoding_model(
     # Ensure weights is not None for type checking
     assert weights is not None
 
+    fit_edges = None
     if len(support.indices) and len(spike_times):
         event_counts = np.stack(
             [
@@ -1308,9 +1315,9 @@ def fit_sorted_spikes_glm_encoding_model(
                 cell_size=cell_size,
                 region=edge,
             )
-            cell_edge = np.rint(cell_offset_edge[:, 1]).astype(int)
+            fit_edges = np.rint(cell_offset_edge[:, 1]).astype(int)
             fit_positions = (
-                emission_design_info.edge_starts[cell_edge] + cell_offset_edge[:, 0]
+                emission_design_info.edge_starts[fit_edges] + cell_offset_edge[:, 0]
             )[:, None]
         else:
             fit_positions, event_counts, exposure = _aggregate_by_position_cell(
@@ -1337,9 +1344,16 @@ def fit_sorted_spikes_glm_encoding_model(
         l2_penalty = log_rate_prior_l2_penalty(
             np.asarray(emission_predict_matrix), log_rate_prior_std
         )
-    emission_design_matrix = make_spline_predict_matrix(
-        emission_design_info, fit_positions
-    )
+    if fit_edges is None:
+        emission_design_matrix = make_spline_predict_matrix(
+            emission_design_info, fit_positions
+        )
+    else:
+        # A cell's mean position can round past its edge's end; with no gap
+        # that is the next edge, so each cell keeps the edge it was built on.
+        emission_design_matrix = jnp.asarray(
+            emission_design_info.design_matrix(fit_positions, edge=fit_edges)
+        )
     coefficients = fit_poisson_regressions(
         emission_design_matrix,
         event_counts,

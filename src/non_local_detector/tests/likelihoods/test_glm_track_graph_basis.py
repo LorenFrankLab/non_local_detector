@@ -412,3 +412,39 @@ def test_local_rate_at_an_arm_end_that_float32_rounds_onto_the_next_arm():
     np.testing.assert_allclose(
         -np.asarray(log_likelihood).ravel() / dt, expected, rtol=1e-3
     )
+
+
+def test_fit_cells_at_an_arm_end_stay_on_their_edge(monkeypatch):
+    """The fit evaluates the basis at each position cell's mean position. Averaging
+    the samples at an arm end can land one ulp past the edge's end; with no gap
+    that is the junction end of the next arm in linear order, so the cell's
+    spikes and exposure must stay on the edge they were recorded on."""
+    from non_local_detector.likelihoods import sorted_spikes_glm
+
+    nodes = {**Y_NODES, 2: (70.0, 33.25)}
+    env = _track_env(nodes, Y_EDGES, Y_EDGES, edge_spacing=0.0, name="y-ulp")
+    time, position = _walk(env, (0, 1, 2, 1, 3, 1, 0), n_laps=40)
+    rng = np.random.default_rng(0)
+    distance = np.linalg.norm(position - np.asarray(nodes[2]), axis=1)
+    rate = 0.2 + 20.0 * np.exp(-0.5 * (distance / 4.0) ** 2)
+    spikes = time[rng.random(time.size) < rate * 0.01]
+
+    cells = []
+    aggregate = sorted_spikes_glm._aggregate_by_position_cell
+
+    def recording_aggregate(*args, **kwargs):
+        cells.append(aggregate(*args, **kwargs)[0])
+        return aggregate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sorted_spikes_glm, "_aggregate_by_position_cell", recording_aggregate
+    )
+    enc = _fit(env, time, position, [spikes])
+    basis = enc["emission_design_info"]
+    # Guard: here an arm-end cell's mean offset does land past its edge's end.
+    cell_edge = np.rint(cells[0][:, 1]).astype(int)
+    assert np.any(cells[0][:, 0] > basis.edge_lengths[cell_edge])
+
+    coefficients = np.asarray(enc["coefficients"])[0]
+    arm3_junction_end = basis.edge_starts[2] + np.linspace(0.25, 3.0, 12)
+    assert np.exp(basis.design_matrix(arm3_junction_end) @ coefficients).max() < 0.5
