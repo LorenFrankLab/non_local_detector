@@ -181,10 +181,12 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
 
     Scales each sample's responsibilities by its weight in the initialization
     and every M-step, so the sufficient statistics are weighted sums. The
-    mean and covariance priors are scikit-learn's defaults (the data's mean and
-    covariance), and convergence uses its unweighted lower bound. Overrides
-    private scikit-learn methods; ``fit_weighted`` raises unless both ran, so
-    an incompatible scikit-learn cannot silently ignore the weights.
+    default mean and covariance priors are the weighted mean and covariance of
+    the data (scikit-learn's defaults, weighted), and convergence uses the
+    variational bound of the weighted data. With integer weights the fit is
+    that of the replicated samples. Overrides private scikit-learn methods;
+    ``fit_weighted`` raises unless each override ran, so an incompatible
+    scikit-learn cannot silently ignore the weights.
     """
 
     def fit_weighted(
@@ -205,14 +207,49 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
             The fitted mixture.
         """
         self._sample_weight = np.asarray(sample_weight, dtype=float)
-        self._n_initialize = self._n_m_step = 0
+        self._n_check_parameters = self._n_initialize = 0
+        self._n_m_step = self._n_lower_bound = 0
         self.fit(X)
-        if self._n_initialize == 0 or self._n_m_step == 0:
+        if 0 in (
+            self._n_check_parameters,
+            self._n_initialize,
+            self._n_m_step,
+            self._n_lower_bound,
+        ):
             raise RuntimeError(
                 "scikit-learn's BayesianGaussianMixture internals changed: the "
                 "sample weights were not applied. Please report this issue."
             )
         return self
+
+    def _check_parameters(self, X, *args, **kwargs):
+        """Weighted default mean and covariance priors."""
+        self._n_check_parameters += 1
+        super()._check_parameters(X, *args, **kwargs)
+        weight = self._sample_weight
+        if self.mean_prior is None:
+            self.mean_prior_ = np.average(X, axis=0, weights=weight)
+        if self.covariance_prior is None:
+            covariance = np.atleast_2d(np.cov(X.T, aweights=weight))
+            self.covariance_prior_ = {
+                "full": covariance,
+                "tied": covariance,
+                "diag": np.diag(covariance),
+                "spherical": np.diag(covariance).mean(),
+            }[self.covariance_type]
+
+    def _compute_lower_bound(self, log_resp, log_prob_norm):
+        """Variational bound with each sample's entropy term weighted."""
+        self._n_lower_bound += 1
+        # scikit-learn's bound has -sum_i sum_k r_ik log r_ik; the weighted
+        # samples' bound has -sum_i w_i sum_k r_ik log r_ik. Its other terms
+        # depend on the data only through the weighted M-step's statistics.
+        entropy_correction = np.sum(
+            (1.0 - self._sample_weight)[:, None] * np.exp(log_resp) * log_resp
+        )
+        return super()._compute_lower_bound(log_resp, log_prob_norm) + (
+            entropy_correction
+        )
 
     def _initialize(self, X, resp, *args, **kwargs):
         """Weighted initial sufficient statistics."""

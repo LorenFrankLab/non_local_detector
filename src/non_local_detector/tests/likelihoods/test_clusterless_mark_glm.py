@@ -256,6 +256,56 @@ def test_bypassed_weighted_m_step_raises(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+def test_weighted_bound_equals_the_bound_of_replicated_spikes():
+    """Convergence uses the variational bound of the weighted spikes: with integer
+    weights it equals the bound of the replicated spikes under the same fitted
+    distribution, so the fit stops where a fit to the replicated spikes would."""
+    rng = np.random.default_rng(5)
+    marks = np.concatenate(
+        [center + MARK_STD * rng.standard_normal((200, 2)) for center in (0.0, 6.0)]
+    )
+    copies = rng.integers(1, 5, len(marks)).astype(float)
+    model = _WeightedBayesianGaussianMixture(
+        n_components=4,
+        covariance_type="full",
+        weight_concentration_prior_type="dirichlet_process",
+        max_iter=20,
+        random_state=0,
+    ).fit_weighted(marks, copies)
+    replicated = np.repeat(marks, copies.astype(int), axis=0)
+    _, log_resp = model._estimate_log_prob_resp(marks)
+    _, replicated_log_resp = model._estimate_log_prob_resp(replicated)
+    np.testing.assert_allclose(
+        model._compute_lower_bound(log_resp, None),
+        BayesianGaussianMixture._compute_lower_bound(model, replicated_log_resp, None),
+        rtol=1e-12,
+    )
+
+
+@pytest.mark.unit
+def test_negligible_weight_spikes_do_not_shape_the_priors():
+    """The mean and covariance priors are weighted like the data, so spikes with
+    negligible weight move neither the priors nor the fitted mixture."""
+    rng = np.random.default_rng(3)
+    cluster = MARK_STD * rng.standard_normal((500, 2))
+    far = 1000.0 + rng.standard_normal((100, 2))
+    alone = fit_mark_mixture(cluster, np.ones(500), n_components=1)
+    with_far = fit_mark_mixture(
+        np.concatenate([cluster, far]),
+        np.concatenate([np.ones(500), np.full(100, 1e-12)]),
+        n_components=1,
+    )
+
+    def covariance(mixture):
+        cholesky = mixture.precisions_cholesky[0]
+        return np.linalg.inv(cholesky @ cholesky.T)
+
+    np.testing.assert_allclose(with_far.means, alone.means, atol=1e-3)
+    np.testing.assert_allclose(covariance(with_far), covariance(alone), rtol=1e-3)
+
+
+@pytest.mark.unit
 def test_rate_maps_recover_the_units_place_fields(track_1d):
     encoding = track_1d["encoding"]
     centers = track_1d["environment"].place_bin_centers_[
