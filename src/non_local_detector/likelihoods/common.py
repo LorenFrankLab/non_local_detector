@@ -1498,14 +1498,18 @@ def _log_kernel_matrix(
     ----------
     eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
     samples : jnp.ndarray, shape (n_samples, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Shared bandwidths, or one row per sample.
 
     Returns
     -------
     log_kernel : jnp.ndarray, shape (n_samples, n_eval_points)
-        ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``.
+        ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``,
+        with ``std[i, d]`` for per-sample bandwidths.
     """
     log_kernel = jnp.zeros((samples.shape[0], eval_points.shape[0]))
+    if jnp.ndim(std) == 2:
+        std = list(jnp.asarray(std).T[:, :, None])
     for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=True):
         log_kernel += log_gaussian_pdf(
             jnp.expand_dims(dim_eval, axis=0),
@@ -2136,6 +2140,62 @@ class KDEModel:
         return jnp.where(jnp.sum(self.weights_) > 0.0, values, -jnp.inf)
 
 
+class PerSampleBandwidthKDEModel(KDEModel):
+    """Weighted Gaussian KDE whose samples each have their own diagonal bandwidth.
+
+    The density is ``sum_i w_i N(x; samples_i, diag(std_i**2)) / sum_i w_i``.
+    :func:`kde_log_density` evaluates it through :meth:`predict_log`.
+
+    Attributes
+    ----------
+    std : jnp.ndarray, shape (n_samples, n_dims)
+        Finite, positive kernel standard deviations, one row per sample.
+    block_size : int, optional
+        Evaluation points per block; None (default) evaluates all at once.
+    samples_ : jnp.ndarray, shape (n_samples, n_dims)
+    weights_ : jnp.ndarray, shape (n_samples,)
+    """
+
+    def fit(
+        self, samples: jnp.ndarray, weights: jnp.ndarray | None = None
+    ) -> "PerSampleBandwidthKDEModel":
+        """Fit the model.
+
+        Parameters
+        ----------
+        samples : jnp.ndarray, shape (n_samples, n_dims)
+        weights : jnp.ndarray, shape (n_samples,), optional
+            Finite, non-negative sample weights, by default None (uniform).
+
+        Returns
+        -------
+        self : PerSampleBandwidthKDEModel
+
+        Raises
+        ------
+        ValidationError
+            If ``std`` is not finite and positive with shape ``samples.shape``,
+            or ``weights`` is invalid.
+        """
+        samples = jnp.asarray(samples)
+        if samples.ndim == 1:
+            samples = jnp.expand_dims(samples, axis=1)
+        std = np.asarray(self.std, dtype=float)
+        if std.shape != samples.shape or not np.all(np.isfinite(std) & (std > 0)):
+            raise ValidationError(
+                "Per-sample bandwidths must be finite, positive and one row per sample",
+                expected=f"shape {samples.shape}",
+                got=f"shape {std.shape}",
+            )
+        self.samples_ = samples
+        if weights is None:
+            self.weights_ = jnp.ones((samples.shape[0],))
+        else:
+            validate_weights(weights, samples.shape[0])
+            self.weights_ = jnp.asarray(weights)
+        return self
+
+
 def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
     """True log density, with zero total fitted weight represented as zero mass.
 
@@ -2657,7 +2717,8 @@ def local_kde_log_ratio(
     n_position_dims = positions.shape[1]
     points = jnp.concatenate((positions, marks, log_occupancy[:, None]), axis=1)
     samples = jnp.concatenate((encoding_positions, encoding_marks), axis=1)
-    std = jnp.concatenate((position_std, mark_std))
+    # Shared (n_dims,) bandwidths or one row per sample, (n_samples, n_dims).
+    std = jnp.concatenate((position_std, mark_std), axis=-1)
 
     def kernel(query, samples, std, weights):
         def supported(_):
@@ -2667,14 +2728,14 @@ def local_kde_log_ratio(
                 _log_kernel_matrix(
                     query[:, :n_position_dims],
                     samples[:, :n_position_dims],
-                    std[:n_position_dims],
+                    std[..., :n_position_dims],
                 )
                 - safe_occ[None, :]
             )
             log_marks = _log_kernel_matrix(
                 query[:, n_position_dims:-1],
                 samples[:, n_position_dims:],
-                std[n_position_dims:],
+                std[..., n_position_dims:],
             )
             safe_weights = jnp.where(weights > 0.0, weights, 1.0)
             log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)

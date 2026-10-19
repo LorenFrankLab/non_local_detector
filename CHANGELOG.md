@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `"uniform"`: a uniform random subset of `n_encoding_kernels` spikes.
   - `"stratified"`: Pareto πps sampling of `n_encoding_kernels` spikes, with inclusion probabilities falling as the inverse square root of the spike's stratum size (position cells two `position_std` wide crossed with 32 k-means cells of the bandwidth-scaled marks), so rare marks and rarely visited places are kept more often.
   - Kept spikes are weighted by their inverse inclusion probability.
+  - `"merge"`: the kernel compression of Sodkomkham et al. (2016), reimplemented from the paper. Spikes are visited once in a seeded random order; each joins the nearest kernel when its Mahalanobis distance, in that kernel's own bandwidths over position and marks, is at most `compression_threshold` (default 1.0), and the merged kernel matches the pair's weight, mean and per-dimension variance. Every kernel then has its own diagonal bandwidth (`encoding_position_stds`, `encoding_waveform_stds` in the encoding model). Nearest-kernel distances grow with the number of mark dimensions, so many-channel marks need larger thresholds than tetrodes: with 32-dimensional marks a threshold of 1 merged nothing in simulation.
   - Mean rates, exposure and occupancy still use every spike. The ground process uses the dictionary, so the expected count stays the integral of the compressed marked intensity over marks.
-  - `compression_seed` (default 0) seeds the sampling.
+  - `compression_seed` (default 0) seeds the sampling or the merge order.
+- `model_checking.clusterless` does not support merged dictionaries, whose mark CDFs would need per-kernel bandwidths; subsampled ones are supported.
 
 ### New clusterless likelihood: mark-mixture GLM
 

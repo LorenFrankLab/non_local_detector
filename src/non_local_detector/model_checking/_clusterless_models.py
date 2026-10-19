@@ -150,6 +150,12 @@ class _KDEElectrode(_MarkKernelMixture):
     """Clusterless KDE: Gaussian position and mark kernels on encoding spikes."""
 
     def __init__(self, model: dict, electrode: int) -> None:
+        if model.get("encoding_waveform_stds") is not None:
+            raise ValueError(
+                "Model checking needs one shared mark bandwidth; a dictionary from "
+                "encoding_compression='merge' gives each kernel its own. Refit "
+                "without merging (subsampled dictionaries are supported)."
+            )
         self.environment = model["environment"]
         self.mean_rate = float(model["mean_rates"][electrode])
         self.occupancy_model: KDEModel = model["occupancy_model"]
