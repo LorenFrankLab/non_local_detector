@@ -2697,6 +2697,49 @@ def log_density_intensity(mean_rate, log_density, log_occupancy):
     return jnp.where(no_support, -jnp.inf, result)
 
 
+def low_rank_log_kernel_correction(
+    eval_points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+    mark_projections: tuple[jnp.ndarray, jnp.ndarray],
+) -> jnp.ndarray:
+    """Log Gaussian kernel with covariance diag(std**2) + U U^T, less the diagonal one.
+
+    With ``z = (sample - point) / std`` and ``V = U / std``, the kernel's log
+    density is the diagonal kernel's plus ``0.5 * |C^-1 V^T z|**2 - log det C``
+    (Woodbury), where ``C C^T = I + V^T V``. Each pair's features are
+    subtracted before scaling, halved so the subtraction cannot overflow, as
+    the diagonal mark kernels form their distances.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_samples, n_dims)
+        Each kernel's diagonal standard deviations; clipped below at ``EPS``.
+    mark_projections : tuple of jnp.ndarray
+        ``(C^-1 V^T, log det C)`` of each kernel, shapes (n_samples, rank,
+        n_dims) and (n_samples,).
+
+    Returns
+    -------
+    correction : jnp.ndarray, shape (n_samples, n_eval_points)
+    """
+    projections, half_log_det = mark_projections
+    std = jnp.clip(std, min=EPS)
+    projected = jnp.zeros(
+        (projections.shape[1], samples.shape[0], eval_points.shape[0])
+    )
+    for dim, (eval_dim, sample_dim, dim_std) in enumerate(
+        zip(eval_points.T, samples.T, std.T, strict=True)
+    ):
+        z = 2.0 * (
+            (0.5 * sample_dim[:, None] - 0.5 * eval_dim[None, :]) / dim_std[:, None]
+        )
+        projected = projected + projections[:, :, dim].T[:, :, None] * z[None]
+    return 0.5 * jnp.sum(projected**2, axis=0) - half_log_det[:, None]
+
+
 def local_kde_log_ratio(
     positions,
     marks,
@@ -2707,12 +2750,15 @@ def local_kde_log_ratio(
     log_occupancy,
     weights,
     block_size,
+    mark_projections=None,
 ):
     """Joint KDE/occupancy ratio, dividing position kernels before adding marks.
 
     Keeping the mark term separate preserves its normalizer when position log
     densities are large enough that adding it would round it away in float32.
     Evaluation blocking retains the shared KDE kernel-workspace limit.
+    ``mark_projections`` (see ``low_rank_log_kernel_correction``) gives each
+    kernel a low-rank mark covariance on top of its per-sample ``mark_std``.
     """
     n_position_dims = positions.shape[1]
     points = jnp.concatenate((positions, marks, log_occupancy[:, None]), axis=1)
@@ -2737,6 +2783,13 @@ def local_kde_log_ratio(
                 samples[:, n_position_dims:],
                 std[..., n_position_dims:],
             )
+            if mark_projections is not None:
+                log_marks = log_marks + low_rank_log_kernel_correction(
+                    query[:, n_position_dims:-1],
+                    samples[:, n_position_dims:],
+                    std[..., n_position_dims:],
+                    mark_projections,
+                )
             safe_weights = jnp.where(weights > 0.0, weights, 1.0)
             log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)
             ratio = logsumexp(

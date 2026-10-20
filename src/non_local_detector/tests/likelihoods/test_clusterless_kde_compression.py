@@ -331,6 +331,11 @@ def test_invalid_compression_settings_raise(session, track_environment, params):
     [
         {"encoding_compression": "stratified", "n_encoding_kernels": 200},
         {"encoding_compression": "merge", "compression_threshold": 1.5},
+        {
+            "encoding_compression": "merge",
+            "compression_threshold": 1.5,
+            "compression_rank": 2,
+        },
     ],
 )
 def test_detector_fits_and_decodes_with_a_compressed_kde(session, compression):
@@ -790,3 +795,426 @@ def test_merged_model_predicts_alike_on_every_reduction_path(
         rtol=1e-5,
         atol=1e-3,
     )
+
+
+# --- Low-rank merged kernels: mark covariance diag(d) + U U^T ---------------
+
+
+def _reference_log_low_rank_mixture(points, means, variances, factors, weights):
+    """log sum_k w_k N(points; means_k, diag(variances_k) + U_k U_k^T) / sum w, float64.
+
+    Returns shape (n_points,).
+    """
+    points, means, variances, factors = (
+        np.asarray(a, np.float64) for a in (points, means, variances, factors)
+    )
+    log_kernel = []
+    for mean, variance, factor in zip(means, variances, factors, strict=True):
+        covariance = np.diag(variance) + factor @ factor.T
+        chol = np.linalg.cholesky(covariance)
+        z = np.linalg.solve(chol, (points - mean).T)
+        log_kernel.append(
+            -0.5 * np.sum(z**2, axis=0)
+            - np.sum(np.log(np.diag(chol)))
+            - 0.5 * len(mean) * np.log(2 * np.pi)
+        )
+    log_kernel = np.stack(log_kernel)
+    log_w = np.log(np.asarray(weights, np.float64) / np.sum(weights))
+    peak = np.max(log_kernel + log_w[:, None], axis=0)
+    return peak + np.log(np.sum(np.exp(log_kernel + log_w[:, None] - peak), axis=0))
+
+
+@pytest.fixture(scope="module")
+def low_rank_kernels(heterogeneous_kernels):
+    rng = np.random.default_rng(3)
+    k = heterogeneous_kernels
+    return {**k, "mark_factors": rng.normal(0.0, 1.5, (len(k["weights"]), 3, 2))}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("offset", [0.0, 1e5])
+def test_low_rank_mark_kernel_matches_a_dense_gaussian(low_rank_kernels, offset):
+    """Large shared offsets keep nearby distances, as for diagonal kernels."""
+    from non_local_detector.likelihoods.clusterless_kde import (
+        _compute_log_mark_kernel_gemm,
+        mark_projections,
+    )
+
+    k = low_rank_kernels
+    # The reference sees the float32 values the kernel sees.
+    marks = (k["marks"] + offset).astype(np.float32)
+    queries = (k["queries"] + offset).astype(np.float32)
+    expected = np.stack(
+        [
+            _reference_log_low_rank_mixture(
+                queries,
+                marks[i : i + 1],
+                k["mark_stds"][i : i + 1] ** 2,
+                k["mark_factors"][i : i + 1],
+                [1.0],
+            )
+            for i in range(len(k["weights"]))
+        ]
+    )
+    actual = _compute_log_mark_kernel_gemm(
+        jnp.asarray(queries, jnp.float32),
+        jnp.asarray(marks, jnp.float32),
+        jnp.asarray(k["mark_stds"], jnp.float32),
+        mark_projections(k["mark_stds"], k["mark_factors"]),
+    )
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"enc_tile_size": 8},
+        {"enc_tile_size": 8, "pos_tile_size": 5},
+        {"enc_tile_size": 8, "use_streaming": True},
+    ],
+)
+@pytest.mark.parametrize("log_background", [-30.0, -np.inf])
+def test_joint_intensity_with_low_rank_kernels(
+    low_rank_kernels, options, log_background
+):
+    """Every reduction path, scaled GEMM (-30) and exact repair (-inf)."""
+    from non_local_detector.likelihoods.clusterless_kde import mark_projections
+
+    k = low_rank_kernels
+    joint = np.concatenate([k["positions"], k["marks"]], axis=1)
+    joint_variances = np.concatenate([k["position_stds"], k["mark_stds"]], axis=1) ** 2
+    joint_factors = np.concatenate(
+        [np.zeros((len(k["weights"]), 1, 2)), k["mark_factors"]], axis=1
+    )
+    expected = np.stack(
+        [
+            _reference_log_low_rank_mixture(
+                np.column_stack([k["bins"][:, 0], np.tile(query, (len(k["bins"]), 1))]),
+                joint,
+                joint_variances,
+                joint_factors,
+                k["weights"],
+            )
+            for query in k["queries"]
+        ]
+    )
+    streaming = options.get("use_streaming", False)
+    position_std = jnp.asarray(k["position_stds"])
+    log_joint = estimate_log_joint_mark_intensity(
+        jnp.asarray(k["queries"]),
+        jnp.asarray(k["marks"]),
+        jnp.asarray(k["mark_stds"]),
+        jnp.ones(len(k["bins"])),
+        1.0,
+        None
+        if streaming
+        else log_kde_distance(
+            jnp.asarray(k["bins"]), jnp.asarray(k["positions"]), position_std
+        ),
+        encoding_positions=jnp.asarray(k["positions"]) if streaming else None,
+        position_eval_points=jnp.asarray(k["bins"]) if streaming else None,
+        position_std=position_std if streaming else None,
+        encoding_weights=jnp.asarray(k["weights"]),
+        log_occupancy=jnp.zeros(len(k["bins"])),
+        log_background=jnp.full(len(k["queries"]), log_background),
+        mark_projections=mark_projections(k["mark_stds"], k["mark_factors"]),
+        **options,
+    )
+    np.testing.assert_allclose(
+        np.asarray(log_joint),
+        np.logaddexp(expected, log_background),
+        rtol=1e-5,
+        atol=1e-4,
+    )
+
+
+@pytest.mark.unit
+def test_local_ratio_with_low_rank_kernels(low_rank_kernels):
+    from non_local_detector.likelihoods.clusterless_kde import mark_projections
+    from non_local_detector.likelihoods.common import local_kde_log_ratio
+
+    k = low_rank_kernels
+    rng = np.random.default_rng(2)
+    positions = rng.uniform(0.0, 100.0, (len(k["queries"]), 1))
+    log_occupancy = rng.normal(-4.0, 0.3, len(k["queries"]))
+    joint_factors = np.concatenate(
+        [np.zeros((len(k["weights"]), 1, 2)), k["mark_factors"]], axis=1
+    )
+    expected = (
+        np.array(
+            [
+                _reference_log_low_rank_mixture(
+                    np.concatenate([position, query])[None, :],
+                    np.concatenate([k["positions"], k["marks"]], axis=1),
+                    np.concatenate([k["position_stds"], k["mark_stds"]], axis=1) ** 2,
+                    joint_factors,
+                    k["weights"],
+                )[0]
+                for position, query in zip(positions, k["queries"], strict=True)
+            ]
+        )
+        - log_occupancy
+    )
+    ratio = local_kde_log_ratio(
+        jnp.asarray(positions),
+        jnp.asarray(k["queries"]),
+        jnp.asarray(k["positions"]),
+        jnp.asarray(k["marks"]),
+        jnp.asarray(k["position_stds"]),
+        jnp.asarray(k["mark_stds"]),
+        jnp.asarray(log_occupancy),
+        jnp.asarray(k["weights"]),
+        4,
+        mark_projections=mark_projections(k["mark_stds"], k["mark_factors"]),
+    )
+    np.testing.assert_allclose(np.asarray(ratio), expected, rtol=1e-5, atol=1e-4)
+
+
+def _merged_moments(merged):
+    """Weighted mean and second moments (position variance, mark matrix) of a merge."""
+    weights = merged.weights / merged.weights.sum()
+    factors = (
+        merged.mark_factors
+        if merged.mark_factors is not None
+        else np.zeros((len(weights), merged.marks.shape[1], 0))
+    )
+    mark_covariances = np.einsum(
+        "kd,de->kde", merged.mark_stds**2, np.eye(merged.marks.shape[1])
+    ) + factors @ np.swapaxes(factors, 1, 2)
+    mark_second = np.einsum(
+        "k,kde->de",
+        weights,
+        mark_covariances + np.einsum("kd,ke->kde", merged.marks, merged.marks),
+    )
+    position_second = np.sum(
+        weights[:, None] * (merged.position_stds**2 + merged.positions**2), axis=0
+    )
+    mean = np.concatenate([weights @ merged.positions, weights @ merged.marks])
+    return mean, position_second, mark_second
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rank", [1, 2, 3])
+def test_low_rank_merge_keeps_weight_mean_and_second_moments(session, rank):
+    """The mark block's second moments are kept exactly at full rank.
+
+    Below full rank, the diagonal (each dimension's second moment) is kept, as
+    in the diagonal merge. Position keeps its marginal second moment.
+    """
+    from non_local_detector.likelihoods.kde_compression import merge_encoding_spikes
+
+    marks = session["spike_waveform_features"][0][:300]
+    positions = np.interp(
+        session["spike_times"][0][:300],
+        session["position_time"],
+        session["position"][:, 0],
+    )[:, None]
+    weights = np.random.default_rng(0).uniform(0.5, 2.0, len(marks))
+    position_std, waveform_std = np.array([POSITION_STD]), np.full(2, WAVEFORM_STD)
+    merged = merge_encoding_spikes(
+        positions, marks, weights, 3.0, position_std, waveform_std, rank=rank
+    )
+    assert len(merged.weights) < len(weights)
+    assert merged.mark_factors.shape == (len(merged.weights), 2, rank)
+    w = weights / weights.sum()
+    mean, position_second, mark_second = _merged_moments(merged)
+    np.testing.assert_allclose(np.sum(merged.weights), np.sum(weights), rtol=1e-5)
+    np.testing.assert_allclose(
+        mean, np.concatenate([w @ positions, w @ marks]), rtol=1e-4
+    )
+    np.testing.assert_allclose(
+        position_second, w @ (position_std**2 + positions**2), rtol=1e-4
+    )
+    expected_marks = np.diag(waveform_std**2) + np.einsum(
+        "k,kd,ke->de", w, marks, marks
+    )
+    if rank == 3:  # the joint dimension: every merge is moment-matched exactly
+        np.testing.assert_allclose(mark_second, expected_marks, rtol=1e-4)
+    else:
+        np.testing.assert_allclose(
+            np.diag(mark_second), np.diag(expected_marks), rtol=1e-4
+        )
+
+
+@pytest.mark.unit
+def test_low_rank_merge_of_two_kernels_matches_their_covariance():
+    from non_local_detector.likelihoods.kde_compression import merge_encoding_spikes
+
+    positions = np.array([[10.0], [11.0]])
+    marks = np.array([[5.0, 7.0], [6.0, 7.5]])
+    weights = np.array([1.0, 3.0])
+    position_std, waveform_std = np.array([2.0]), np.array([1.0, 1.0])
+    merged = merge_encoding_spikes(
+        positions, marks, weights, 2.0, position_std, waveform_std, rank=1
+    )
+    mark_mean = np.average(marks, axis=0, weights=weights)
+    mark_covariance = np.diag(waveform_std**2) + np.cov(
+        marks.T, aweights=weights, bias=True
+    )
+    np.testing.assert_allclose(merged.weights, [4.0])
+    np.testing.assert_allclose(merged.marks[0], mark_mean, rtol=1e-6)
+    np.testing.assert_allclose(
+        np.diag(merged.mark_stds[0] ** 2)
+        + merged.mark_factors[0] @ merged.mark_factors[0].T,
+        mark_covariance,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    position_variance = position_std**2 + np.average(
+        (positions - np.average(positions, axis=0, weights=weights)) ** 2,
+        axis=0,
+        weights=weights,
+    )
+    np.testing.assert_allclose(
+        merged.position_stds[0] ** 2, position_variance, rtol=1e-5
+    )
+
+
+@pytest.mark.unit
+def test_low_rank_merged_model_expected_count_is_its_intensity_integrated_over_marks(
+    track_environment,
+):
+    from non_local_detector.likelihoods.clusterless_kde import mark_projections
+
+    session = _simulate_session(n_mark_dims=1, duration=200.0)
+    encoding = _fit(
+        session,
+        track_environment,
+        encoding_compression="merge",
+        compression_threshold=1.0,
+        compression_rank=1,
+    )
+    assert encoding["encoding_positions"][0].shape[0] < len(session["spike_times"][0])
+    mark_grid = np.linspace(-10.0, 45.0, 2201)
+    bins = track_environment.place_bin_centers_
+    log_joint = estimate_log_joint_mark_intensity(
+        jnp.asarray(mark_grid[:, None]),
+        jnp.asarray(encoding["encoding_spike_waveform_features"][0]),
+        jnp.asarray(encoding["encoding_waveform_stds"][0]),
+        encoding["occupancy"],
+        encoding["mean_rates"][0] * RATE_REFERENCE_SECONDS,
+        log_kde_distance(
+            jnp.asarray(bins),
+            jnp.asarray(encoding["encoding_positions"][0]),
+            jnp.asarray(encoding["encoding_position_stds"][0]),
+        ),
+        encoding_weights=jnp.asarray(encoding["encoding_weights"][0]),
+        log_occupancy=encoding["log_occupancy"],
+        log_background=jnp.full(mark_grid.size, LOG_BACKGROUND),
+        mark_projections=mark_projections(
+            encoding["encoding_waveform_stds"][0], encoding["encoding_mark_factors"][0]
+        ),
+    )
+    integrated = np.trapezoid(
+        np.exp(np.asarray(log_joint, float)) - np.exp(LOG_BACKGROUND),
+        mark_grid,
+        axis=0,
+    )
+    np.testing.assert_allclose(
+        integrated / RATE_REFERENCE_SECONDS,
+        encoding["summed_ground_process_intensity"],
+        rtol=1e-3,
+    )
+
+
+@pytest.mark.unit
+def test_low_rank_merged_model_predicts_like_its_dense_mixture(track_environment):
+    """Fit then predict (non-local and local) with rank-2 kernels on 3-D marks."""
+    from non_local_detector.likelihoods.clusterless_kde import mark_projections
+
+    session = _simulate_session(n_mark_dims=3, duration=200.0)
+    low_rank = _fit(
+        session,
+        track_environment,
+        encoding_compression="merge",
+        compression_threshold=1.5,
+        compression_rank=2,
+    )
+    factors = low_rank["encoding_mark_factors"][0]
+    assert factors.shape[1:] == (3, 2)
+    assert np.any(np.abs(factors) > 0.1)
+    for is_local in (False, True):
+        log_likelihood = _predict(low_rank, session, track_environment, is_local)
+        assert np.all(np.isfinite(log_likelihood))
+    # The non-local prediction equals one whose mark kernels are the dense
+    # Gaussians: compare against the same model with the factors folded into a
+    # float64 reference on a few spikes.
+    queries = session["spike_waveform_features"][0][:5]
+    bins = track_environment.place_bin_centers_
+    expected = np.stack(
+        [
+            _reference_log_low_rank_mixture(
+                np.column_stack([bins[:, 0], np.tile(q, (len(bins), 1))]),
+                np.concatenate(
+                    [
+                        low_rank["encoding_positions"][0],
+                        low_rank["encoding_spike_waveform_features"][0],
+                    ],
+                    axis=1,
+                ),
+                np.concatenate(
+                    [
+                        low_rank["encoding_position_stds"][0],
+                        low_rank["encoding_waveform_stds"][0],
+                    ],
+                    axis=1,
+                )
+                ** 2,
+                np.concatenate([np.zeros((len(factors), 1, 2)), factors], axis=1),
+                low_rank["encoding_weights"][0],
+            )
+            for q in queries
+        ]
+    )
+    actual = estimate_log_joint_mark_intensity(
+        jnp.asarray(queries),
+        jnp.asarray(low_rank["encoding_spike_waveform_features"][0]),
+        jnp.asarray(low_rank["encoding_waveform_stds"][0]),
+        jnp.ones(len(bins)),
+        1.0,
+        log_kde_distance(
+            jnp.asarray(bins),
+            jnp.asarray(low_rank["encoding_positions"][0]),
+            jnp.asarray(low_rank["encoding_position_stds"][0]),
+        ),
+        encoding_weights=jnp.asarray(low_rank["encoding_weights"][0]),
+        log_occupancy=jnp.zeros(len(bins)),
+        log_background=jnp.full(len(queries), -np.inf),
+        mark_projections=mark_projections(
+            low_rank["encoding_waveform_stds"][0], factors
+        ),
+    )
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"compression_rank": 1},
+        {
+            "encoding_compression": "uniform",
+            "n_encoding_kernels": 50,
+            "compression_rank": 1,
+        },
+        {"encoding_compression": "merge", "compression_rank": -1},
+        {"encoding_compression": "merge", "compression_rank": 4},
+        {"encoding_compression": "merge", "compression_rank": 1.5},
+    ],
+)
+def test_invalid_compression_rank_raises(session, track_environment, params):
+    with pytest.raises(ValidationError):
+        _fit(session, track_environment, **params)
+
+
+@pytest.mark.unit
+def test_zero_compression_rank_is_the_diagonal_merge(session, track_environment):
+    diagonal = _fit(session, track_environment, encoding_compression="merge")
+    rank_zero = _fit(
+        session, track_environment, encoding_compression="merge", compression_rank=0
+    )
+    assert rank_zero["encoding_mark_factors"] is None
+    for key in ("encoding_positions", "encoding_waveform_stds", "encoding_weights"):
+        np.testing.assert_array_equal(diagonal[key][0], rank_zero[key][0])

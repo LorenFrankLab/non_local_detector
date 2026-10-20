@@ -23,11 +23,24 @@ whose weighted kernel sum estimates the full one:
   per-dimension variance (moment matching), so every kernel ends up with its
   own diagonal bandwidth. Larger thresholds give fewer kernels.
 
+  With ``compression_rank`` r > 0 each kernel instead keeps the part of its
+  moment-matched covariance in excess of the base bandwidths as a diagonal
+  plus a rank-r factor, ``diag(base + e) + U U^T``: after every merge the
+  excess is projected back to rank r and the dropped variance moves to the
+  diagonal, so each dimension's variance is kept exactly and, at full rank,
+  the whole covariance. Distances use that covariance (Woodbury). The kernel
+  to merge into is the nearest by full Mahalanobis distance among the
+  ``_LOW_RANK_SHORTLIST`` nearest by diagonal distance. The returned kernels
+  keep the mark covariance and each kernel's position variance; the
+  position-mark covariance is dropped, so position factors out of the kernel
+  as for the diagonal merge.
+
 The dictionary leaves the electrode's mean rate and the encoding exposure to
 the caller, which computes them from every spike: a smaller dictionary must
 not look like a shorter recording.
 """
 
+from functools import partial
 from typing import Literal, NamedTuple
 
 import jax
@@ -44,12 +57,16 @@ COMPRESSION_METHODS: tuple[str, ...] = ("uniform", "stratified", "merge")
 _MARK_STRATA = 32
 # Position strata are cells this many position bandwidths wide.
 _POSITION_STRATUM_WIDTH = 2.0
+# Low-rank merge: kernels nearest by diagonal distance whose full Mahalanobis
+# distance to a new spike is evaluated.
+_LOW_RANK_SHORTLIST = 32
 
 
 def validate_compression(
     encoding_compression: str | None,
     n_encoding_kernels: object,
     compression_threshold: float,
+    compression_rank: object = 0,
 ) -> None:
     """Raise ``ValidationError`` for an unknown method or invalid setting.
 
@@ -61,7 +78,24 @@ def validate_compression(
         ``"merge"``, whose size follows from the threshold.
     compression_threshold : float
         Finite and non-negative for ``"merge"``.
+    compression_rank : object, optional
+        A non-negative integer; nonzero only for ``"merge"``. By default 0.
     """
+    if (
+        isinstance(compression_rank, (bool, np.bool_))
+        or not isinstance(compression_rank, (int, np.integer))
+        or compression_rank < 0
+    ):
+        raise ValidationError(
+            "compression_rank must be a non-negative integer",
+            got=repr(compression_rank),
+        )
+    if compression_rank > 0 and encoding_compression != "merge":
+        raise ValidationError(
+            "compression_rank applies to merged kernels only",
+            expected="encoding_compression='merge'",
+            got=repr(encoding_compression),
+        )
     if encoding_compression is None:
         return
     if encoding_compression not in COMPRESSION_METHODS:
@@ -222,6 +256,11 @@ class MergedKernels(NamedTuple):
     weights : np.ndarray, shape (n_kernels,)
     position_stds : np.ndarray, shape (n_kernels, n_position_dims)
     mark_stds : np.ndarray, shape (n_kernels, n_features)
+        Square roots of the diagonal of each kernel's mark covariance, less the
+        low-rank part.
+    mark_factors : np.ndarray, shape (n_kernels, n_features, rank), or None
+        Low-rank merges only: each kernel's mark covariance is
+        ``diag(mark_stds**2) + mark_factors @ mark_factors.T``.
     """
 
     positions: np.ndarray
@@ -229,6 +268,7 @@ class MergedKernels(NamedTuple):
     weights: np.ndarray
     position_stds: np.ndarray
     mark_stds: np.ndarray
+    mark_factors: np.ndarray | None = None
 
 
 @jax.jit
@@ -291,6 +331,132 @@ def _merge_scan(samples, weights, base_variance, threshold):
     return means, variances, totals, n_kernels
 
 
+@partial(jax.jit, static_argnames=("rank", "shortlist"))
+def _low_rank_merge_scan(samples, weights, base_variance, threshold, rank, shortlist):
+    """Online merge keeping each kernel's excess covariance as diag(e) + U U^T.
+
+    Parameters
+    ----------
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+        Kernel centres in visiting order.
+    weights : jnp.ndarray, shape (n_samples,)
+        Positive weights.
+    base_variance : jnp.ndarray, shape (n_dims,)
+        Squared base bandwidths: the covariance of each new kernel is
+        ``diag(base_variance)``.
+    threshold : float
+        Largest Mahalanobis distance that merges.
+    rank : int
+        Columns of each kernel's factor ``U``.
+    shortlist : int
+        Kernels nearest by diagonal distance whose full distance is evaluated.
+
+    Returns
+    -------
+    means : jnp.ndarray, shape (n_samples, n_dims)
+    factors : jnp.ndarray, shape (n_samples, n_dims, rank)
+    excess : jnp.ndarray, shape (n_samples, n_dims)
+        Kernel covariance is ``diag(base_variance + excess) + U U^T``.
+    totals : jnp.ndarray, shape (n_samples,)
+    n_kernels : jnp.ndarray, shape ()
+        The first ``n_kernels`` rows are the dictionary.
+    """
+    n_samples, n_dims = samples.shape
+    slots = jnp.arange(n_samples)
+    shortlist = min(shortlist, n_samples)
+    # A factor of rank >= n_dims keeps every direction of the update.
+    n_kept = min(rank, n_dims)
+
+    def mahalanobis_squared(offsets, factors, variances):
+        # (x)^T (D + U U^T)^-1 (x) = x^T D^-1 x - v^T (I + U^T D^-1 U)^-1 v,
+        # v = U^T D^-1 x (Woodbury), for each candidate kernel.
+        scaled = factors / variances[..., None]
+        inner = jnp.eye(rank, dtype=samples.dtype)[None] + jnp.einsum(
+            "cdr,cds->crs", factors, scaled
+        )
+        v = jnp.einsum("cdr,cd->cr", scaled, offsets)
+        return jnp.sum(offsets**2 / variances, axis=-1) - jnp.einsum(
+            "cr,cr->c", v, jnp.linalg.solve(inner, v[..., None])[..., 0]
+        )
+
+    def step(carry, sample):
+        means, factors, excess, marginal_variances, totals, n_kernels = carry
+        x, weight = sample
+        diagonal_distance = jnp.sum((x - means) ** 2 / marginal_variances, axis=1)
+        diagonal_distance = jnp.where(slots < n_kernels, diagonal_distance, jnp.inf)
+        _, candidates = jax.lax.top_k(-diagonal_distance, shortlist)
+        distance_squared = mahalanobis_squared(
+            x - means[candidates],
+            factors[candidates],
+            base_variance[None] + excess[candidates],
+        )
+        distance_squared = jnp.where(
+            jnp.isfinite(diagonal_distance[candidates]), distance_squared, jnp.inf
+        )
+        best = jnp.argmin(distance_squared)
+        nearest = candidates[best]
+        merges = distance_squared[best] <= threshold**2
+        total = totals[nearest] + weight
+        kept_share = totals[nearest] / total
+        cross_share = totals[nearest] * weight / total**2
+        offset = x - means[nearest]
+        # The moment-matched excess is kept_share (diag(e) + U U^T)
+        # + cross_share offset offset^T: a rank-(r + 1) update of the factor,
+        # projected back to rank r with the dropped direction moved to the
+        # diagonal, so the diagonal is kept exactly.
+        stacked = jnp.concatenate(
+            [
+                jnp.sqrt(kept_share) * factors[nearest],
+                jnp.sqrt(cross_share) * offset[:, None],
+            ],
+            axis=1,
+        )
+        left, singular, _ = jnp.linalg.svd(stacked, full_matrices=False)
+        merged_factor = jnp.zeros((n_dims, rank), samples.dtype)
+        merged_factor = merged_factor.at[:, :n_kept].set(
+            left[:, :n_kept] * singular[:n_kept]
+        )
+        dropped = (
+            (left[:, rank] * singular[rank]) ** 2
+            if rank < singular.shape[0]
+            else jnp.zeros(n_dims, samples.dtype)
+        )
+        merged_excess = kept_share * excess[nearest] + dropped
+        merged_mean = means[nearest] + (weight / total) * offset
+        slot = jnp.where(merges, nearest, n_kernels)
+        slot_factor = jnp.where(merges, merged_factor, 0.0)
+        slot_excess = jnp.where(merges, merged_excess, 0.0)
+        means = means.at[slot].set(jnp.where(merges, merged_mean, x))
+        factors = factors.at[slot].set(slot_factor)
+        excess = excess.at[slot].set(slot_excess)
+        marginal_variances = marginal_variances.at[slot].set(
+            base_variance + slot_excess + jnp.sum(slot_factor**2, axis=1)
+        )
+        totals = totals.at[slot].set(jnp.where(merges, total, weight))
+        carry = (
+            means,
+            factors,
+            excess,
+            marginal_variances,
+            totals,
+            n_kernels + jnp.where(merges, 0, 1),
+        )
+        return carry, None
+
+    initial = (
+        jnp.zeros_like(samples),
+        jnp.zeros((n_samples, n_dims, rank), samples.dtype),
+        jnp.zeros_like(samples),
+        jnp.ones_like(samples),  # unused slots; never divide by zero
+        jnp.zeros_like(weights),
+        jnp.asarray(0),
+    )
+    (means, factors, excess, _, totals, n_kernels), _ = jax.lax.scan(
+        step, initial, (samples, weights)
+    )
+    return means, factors, excess, totals, n_kernels
+
+
 def merge_encoding_spikes(
     positions: np.ndarray,
     marks: np.ndarray,
@@ -299,6 +465,7 @@ def merge_encoding_spikes(
     position_std: np.ndarray,
     waveform_std: np.ndarray,
     seed: int = 0,
+    rank: int = 0,
 ) -> MergedKernels:
     """Merge one electrode's joint kernels (Sodkomkham et al. 2016).
 
@@ -320,10 +487,15 @@ def merge_encoding_spikes(
         Base bandwidths of each spike's kernel.
     seed : int, optional
         Seed of the visiting order, by default 0.
+    rank : int, optional
+        0 (the default) for diagonal kernels; otherwise the rank of each
+        kernel's excess covariance factor (see the module docstring), at most
+        ``n_position_dims + n_features``.
 
     Returns
     -------
     merged : MergedKernels
+        ``mark_factors`` is None for ``rank=0``.
     """
     positions, marks, weights = (np.asarray(a) for a in (positions, marks, weights))
     keep = np.flatnonzero(weights > 0)
@@ -336,6 +508,7 @@ def merge_encoding_spikes(
             weights=weights[:0],
             position_stds=np.ones((0, n_position_dims)),
             mark_stds=np.ones((0, marks.shape[1])),
+            mark_factors=None if rank == 0 else np.zeros((0, marks.shape[1], rank)),
         )
     order = keep[np.random.default_rng(seed).permutation(keep.size)]
     samples = np.concatenate([positions[order], marks[order]], axis=1)
@@ -347,6 +520,32 @@ def merge_encoding_spikes(
     )
     # The default float: float32, or float64 with x64 enabled.
     dtype = jax.dtypes.canonicalize_dtype(np.float64)
+    if rank > 0:
+        means, factors, excess, totals, n_kernels = _low_rank_merge_scan(
+            jnp.asarray(samples, dtype),
+            jnp.asarray(weights[order], dtype),
+            jnp.asarray(base_std**2, dtype),
+            threshold,
+            rank,
+            _LOW_RANK_SHORTLIST,
+        )
+        n_kernels = int(n_kernels)
+        means = np.asarray(means[:n_kernels])
+        factors = np.asarray(factors[:n_kernels])
+        variances = base_std**2 + np.asarray(excess[:n_kernels])
+        # Position keeps its marginal variance, factor included; the
+        # position-mark covariance is dropped.
+        position_variances = variances[:, :n_position_dims] + np.sum(
+            factors[:, :n_position_dims] ** 2, axis=2
+        )
+        return MergedKernels(
+            positions=means[:, :n_position_dims],
+            marks=means[:, n_position_dims:],
+            weights=np.asarray(totals[:n_kernels]),
+            position_stds=np.sqrt(position_variances),
+            mark_stds=np.sqrt(variances[:, n_position_dims:]),
+            mark_factors=factors[:, n_position_dims:],
+        )
     means, variances, totals, n_kernels = _merge_scan(
         jnp.asarray(samples, dtype),
         jnp.asarray(weights[order], dtype),
