@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Streaming decode chunks reuse compiled kernels
+
+- **Changed:** GLM spline prediction matrices (`make_spline_predict_matrix`, used by the local likelihood of `sorted_spikes_glm` and `clusterless_mark_glm`) are built on the host and moved to the device once. Before, NaN masking and column selection ran as device ops on the unpadded positions, so each new spike count in a decode chunk compiled about six small kernels. The matrices are bit-for-bit unchanged.
+  - Decoding fixed-length chunks (for example 10 bins of 5 ms) whose spike counts vary now compiles nothing after a warm-up chunk with a spike on every electrode, for both `clusterless_kde` and `clusterless_mark_glm`. On CPU, the mark GLM's 99th-percentile chunk latency in a simulated stream dropped from 12.7 to 6.7 ms (single bins) and from 62 to 7 ms (10-bin chunks).
+  - Chunks whose number of bins varies still compile once per new length, in the likelihood and in the causal filter. Streaming decoders should use a fixed number of bins per call.
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.

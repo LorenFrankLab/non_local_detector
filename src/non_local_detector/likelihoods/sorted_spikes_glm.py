@@ -709,9 +709,20 @@ def make_spline_predict_matrix(
     -------
     jnp.ndarray, shape (n_position_bins, n_spline_basis)
     """
+    # The matrix is built on the host and moved to the device once: the row
+    # count changes with each prediction chunk's spikes, and any device op on
+    # the unpadded rows would compile once per new count.
+    return jnp.asarray(_spline_predict_matrix_on_host(design_info, position))
+
+
+def _spline_predict_matrix_on_host(
+    design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
+    position: jnp.ndarray,
+) -> np.ndarray:
+    """``make_spline_predict_matrix`` before the move to the device."""
     if isinstance(design_info, SelectedColumnsDesign):
-        full = make_spline_predict_matrix(design_info.design_info, position)
-        return full[:, jnp.asarray(design_info.columns)]
+        full = _spline_predict_matrix_on_host(design_info.design_info, position)
+        return full[:, np.asarray(design_info.columns)]
     if isinstance(design_info, TrackGraphBasis):
         # Choose each position's edge before any float32 conversion: with no
         # gap, an edge's end and the next edge's start share a linear position,
@@ -720,10 +731,13 @@ def make_spline_predict_matrix(
         is_nan = np.isnan(linear)
         design_matrix = design_info.design_matrix(np.where(is_nan, 0.0, linear))
         design_matrix[is_nan] = np.nan
-        return jnp.asarray(design_matrix)
-    position = jnp.asarray(position)
-    is_nan = jnp.any(jnp.isnan(position), axis=1)
-    position = jnp.where(is_nan[:, jnp.newaxis], 0.0, position)
+        return design_matrix
+    # Patsy evaluates the basis at the positions in JAX's working dtype
+    # (float32 unless x64 is enabled), the dtype of the returned matrix.
+    position = np.asarray(position)
+    position = position.astype(jax.dtypes.canonicalize_dtype(position.dtype))
+    is_nan = np.any(np.isnan(position), axis=1)
+    position = np.where(is_nan[:, np.newaxis], 0.0, position)
 
     predict_data = {}
     for ind in range(position.shape[1]):
@@ -733,7 +747,7 @@ def make_spline_predict_matrix(
     design_matrix = build_design_matrices([design_info], data)[0]
     design_matrix[is_nan] = np.nan
 
-    return jnp.asarray(design_matrix)
+    return design_matrix
 
 
 # Prior standard deviation, in nats, of a place field's log-rate deviation
