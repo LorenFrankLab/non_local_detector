@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - A first prediction, dominated by compilation, takes 80–190 s for every variant.
     - Fitting the probe recording takes 12 s for the full KDE, 62 s for a diagonal merge and about 500 s at rank 8 (8×). Fitting tetrodes takes about 50 s for a diagonal merge and 190 s at rank 2 (3.8×).
 
+### Faster clusterless KDE likelihood step
+
+- **Changed:** the KDE mark kernel no longer branches on feature overflow. It subtracts halved features, which cannot overflow, and scales the sum of squares back by 4, which is exact in floating point. Results are bit-for-bit unchanged on RS58 (10 shanks, 26–33 features). The loop now fuses with the exponentials that consume it and is traced once: the non-local step on RS58 runs 16–18% faster warm on an A100 (2.97 → 2.45 s at the detector's block size), and its first call compiles in half the time (173 → 87 s summed over shanks).
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.

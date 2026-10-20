@@ -500,50 +500,22 @@ def _compute_log_mark_kernel_gemm(
             decoding_features, encoding_features, waveform_stds, mark_projections
         )
 
-    def squared_distances(guard_overflow: bool) -> jnp.ndarray:
-        sq_dist = jnp.zeros(
-            (encoding_features.shape[0], decoding_features.shape[0]),
-            dtype=feature_dtype,
-        )
-        for decoding_dim, encoding_dim, sigma in zip(
-            decoding_features.T, encoding_features.T, sigmas, strict=True
-        ):
-            encoding_column, decoding_row = encoding_dim[:, None], decoding_dim[None, :]
-            difference = encoding_column - decoding_row
-            if guard_overflow:
-                overflow = (
-                    jnp.isinf(difference)
-                    & jnp.isfinite(encoding_column)
-                    & jnp.isfinite(decoding_row)
-                )
-                # A broad sigma can make a finite distance even if subtraction
-                # overflows. Only those pairs subtract scaled features. Mask
-                # before division to keep inactive terms out of derivatives.
-                scaled_difference = jnp.where(overflow, 0.0, difference) / sigma
-                scaled_difference += (
-                    jnp.where(overflow, encoding_column, 0.0) / sigma
-                    - jnp.where(overflow, decoding_row, 0.0) / sigma
-                )
-            else:
-                scaled_difference = difference / sigma
-            sq_dist += scaled_difference**2
-        return sq_dist
-
-    # No pair can overflow subtraction when both operands are within half the
-    # dtype limit. Check the feature arrays once, so ordinary waveforms avoid
-    # per-pair overflow masks and the downstream logsumexp does not fuse those
-    # masks across every spatial bin.
-    half_limit = jnp.finfo(feature_dtype).max / 2
-    can_overflow = jnp.any(jnp.abs(encoding_features) > half_limit) | jnp.any(
-        jnp.abs(decoding_features) > half_limit
+    # Halved features cannot overflow their subtraction, and a broad sigma can
+    # make a finite distance from features whose plain difference overflows.
+    # Scaling by a power of two commutes with rounding, so 4 * sum(half^2)
+    # equals sum(difference^2) bit for bit wherever the difference is finite.
+    # One branch-free expression keeps the loop fused with the exponentials
+    # that consume it and is traced once.
+    half_sq_dist = jnp.zeros(
+        (encoding_features.shape[0], decoding_features.shape[0]),
+        dtype=feature_dtype,
     )
-    sq_dist: jnp.ndarray = jax.lax.cond(
-        can_overflow,
-        lambda _: squared_distances(True),
-        lambda _: squared_distances(False),
-        None,
-    )
-    logK_mark = log_norm_const - 0.5 * sq_dist  # (n_enc, n_dec)
+    for decoding_dim, encoding_dim, sigma in zip(
+        0.5 * decoding_features.T, 0.5 * encoding_features.T, sigmas, strict=True
+    ):
+        half_difference = (encoding_dim[:, None] - decoding_dim[None, :]) / sigma
+        half_sq_dist += half_difference**2
+    logK_mark = log_norm_const - 2.0 * half_sq_dist  # (n_enc, n_dec)
 
     return logK_mark
 
