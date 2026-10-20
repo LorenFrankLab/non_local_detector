@@ -20,6 +20,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
+    LOG_EPS,
     RATE_REFERENCE_SECONDS,
     kde_log_density,
     log_density_intensity,
@@ -1119,74 +1120,203 @@ def test_low_rank_merged_model_expected_count_is_its_intensity_integrated_over_m
     )
 
 
-@pytest.mark.unit
-def test_low_rank_merged_model_predicts_like_its_dense_mixture(track_environment):
-    """Fit then predict (non-local and local) with rank-2 kernels on 3-D marks."""
-    from non_local_detector.likelihoods.clusterless_kde import mark_projections
-
+@pytest.fixture(scope="module")
+def low_rank_model(track_environment):
+    """A rank-2 merge of 3-D marks, fitted once."""
     session = _simulate_session(n_mark_dims=3, duration=200.0)
-    low_rank = _fit(
+    encoding = _fit(
         session,
         track_environment,
         encoding_compression="merge",
         compression_threshold=1.5,
         compression_rank=2,
     )
-    factors = low_rank["encoding_mark_factors"][0]
+    factors = encoding["encoding_mark_factors"][0]
     assert factors.shape[1:] == (3, 2)
-    assert np.any(np.abs(factors) > 0.1)
-    for is_local in (False, True):
-        log_likelihood = _predict(low_rank, session, track_environment, is_local)
-        assert np.all(np.isfinite(log_likelihood))
-    # The non-local prediction equals one whose mark kernels are the dense
-    # Gaussians: compare against the same model with the factors folded into a
-    # float64 reference on a few spikes.
-    queries = session["spike_waveform_features"][0][:5]
-    bins = track_environment.place_bin_centers_
-    expected = np.stack(
-        [
-            _reference_log_low_rank_mixture(
-                np.column_stack([bins[:, 0], np.tile(q, (len(bins), 1))]),
-                np.concatenate(
-                    [
-                        low_rank["encoding_positions"][0],
-                        low_rank["encoding_spike_waveform_features"][0],
-                    ],
-                    axis=1,
+    whitened = factors / encoding["encoding_waveform_stds"][0][:, :, None]
+    assert np.abs(whitened).max() > 0.5, "the factors must matter"
+    return session, encoding
+
+
+# Each chosen spike sits alone in a bin this many seconds on either side of it.
+_SPIKE_HALF_WIDTH = 0.005
+
+
+def _single_spike_terms(encoding, session, environment, is_local=False):
+    """Per-spike terms of the prediction, isolated by a no-spike prediction.
+
+    Four spikes each sit alone in a bin; subtracting the same bins' prediction
+    without spikes leaves ``logaddexp(log intensity, log background)`` plus
+    ``log(bin width / RATE_REFERENCE_SECONDS)`` for each spike.
+    """
+    times = session["spike_times"][0]
+    marks = session["spike_waveform_features"][0]
+    picks = np.linspace(20, len(times) - 20, 4).astype(int)
+    edges = np.sort(
+        np.concatenate(
+            [times[picks] - _SPIKE_HALF_WIDTH, times[picks] + _SPIKE_HALF_WIDTH]
+        )
+    )
+    assert np.all(np.diff(edges) > 0)
+    params = {k: v for k, v in encoding.items() if k != "block_size"}
+
+    def predict(rows):
+        return np.asarray(
+            predict_clusterless_kde_log_likelihood(
+                position_time=session["position_time"],
+                position=session["position"],
+                spike_times=[times[rows]],
+                spike_waveform_features=[marks[rows]],
+                time_edges=edges,
+                is_local=is_local,
+                mark_reference=fit_mark_references(
+                    session["spike_waveform_features"], kernel_scale=WAVEFORM_STD
                 ),
-                np.concatenate(
-                    [
-                        low_rank["encoding_position_stds"][0],
-                        low_rank["encoding_waveform_stds"][0],
-                    ],
-                    axis=1,
-                )
-                ** 2,
-                np.concatenate([np.zeros((len(factors), 1, 2)), factors], axis=1),
-                low_rank["encoding_weights"][0],
-            )
-            for q in queries
-        ]
+                block_size=1000,
+                **params,
+            ),
+            np.float64,
+        )
+
+    return picks, (predict(picks) - predict(picks[:0]))[0::2]
+
+
+def _dense_spike_terms(encoding, session, picks, points):
+    """float64 reference of ``_single_spike_terms`` at each spike's (position, mark) points.
+
+    ``points`` maps a pick index to the joint points to evaluate, shape
+    (n_points, 1 + n_features); the last axis of the result runs over them.
+    """
+    from non_local_detector.likelihoods.mark_reference import (
+        background_log_intensity,
     )
-    actual = estimate_log_joint_mark_intensity(
-        jnp.asarray(queries),
-        jnp.asarray(low_rank["encoding_spike_waveform_features"][0]),
-        jnp.asarray(low_rank["encoding_waveform_stds"][0]),
-        jnp.ones(len(bins)),
-        1.0,
-        log_kde_distance(
-            jnp.asarray(bins),
-            jnp.asarray(low_rank["encoding_positions"][0]),
-            jnp.asarray(low_rank["encoding_position_stds"][0]),
-        ),
-        encoding_weights=jnp.asarray(low_rank["encoding_weights"][0]),
-        log_occupancy=jnp.zeros(len(bins)),
-        log_background=jnp.full(len(queries), -np.inf),
-        mark_projections=mark_projections(
-            low_rank["encoding_waveform_stds"][0], factors
+
+    factors = encoding["encoding_mark_factors"][0]
+    means = np.concatenate(
+        [
+            encoding["encoding_positions"][0],
+            encoding["encoding_spike_waveform_features"][0],
+        ],
+        axis=1,
+    )
+    variances = (
+        np.concatenate(
+            [
+                encoding["encoding_position_stds"][0],
+                encoding["encoding_waveform_stds"][0],
+            ],
+            axis=1,
+        )
+        ** 2
+    )
+    joint_factors = np.concatenate([np.zeros((len(factors), 1, 2)), factors], axis=1)
+    reference = fit_mark_references(
+        session["spike_waveform_features"], kernel_scale=WAVEFORM_STD
+    )[0]
+    log_rate = np.log(float(encoding["mean_rates"][0]) * RATE_REFERENCE_SECONDS)
+    terms = []
+    for pick in picks:
+        joint, log_occupancy = points(pick)
+        log_mixture = _reference_log_low_rank_mixture(
+            joint, means, variances, joint_factors, encoding["encoding_weights"][0]
+        )
+        log_background = background_log_intensity(
+            reference, session["spike_waveform_features"][0][pick][None], LOG_EPS
+        )[0]
+        terms.append(
+            np.logaddexp(log_rate + log_mixture - log_occupancy, log_background)
+            + np.log(2 * _SPIKE_HALF_WIDTH / RATE_REFERENCE_SECONDS)
+        )
+    return np.stack(terms)
+
+
+@pytest.mark.unit
+def test_low_rank_prediction_matches_its_dense_mixture(
+    low_rank_model, track_environment
+):
+    """Non-local predicted spike terms equal a float64 dense-covariance mixture."""
+    session, encoding = low_rank_model
+    picks, actual = _single_spike_terms(encoding, session, track_environment)
+    bins = track_environment.place_bin_centers_
+    marks = session["spike_waveform_features"][0]
+    expected = _dense_spike_terms(
+        encoding,
+        session,
+        picks,
+        lambda pick: (
+            np.column_stack([bins[:, 0], np.tile(marks[pick], (len(bins), 1))]),
+            np.asarray(encoding["log_occupancy"], np.float64),
         ),
     )
-    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-4)
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-3)
+
+
+@pytest.mark.unit
+def test_low_rank_local_prediction_matches_its_dense_mixture(
+    low_rank_model, track_environment
+):
+    """Local spike terms: the dense mixture at the animal's position over occupancy."""
+    session, encoding = low_rank_model
+    picks, actual = _single_spike_terms(
+        encoding, session, track_environment, is_local=True
+    )
+    times = session["spike_times"][0]
+    marks = session["spike_waveform_features"][0]
+
+    def at_animal(pick):
+        position = np.interp(
+            times[pick], session["position_time"], session["position"][:, 0]
+        )
+        log_occupancy = float(
+            kde_log_density(encoding["occupancy_model"], jnp.asarray([[position]]))[0]
+        )
+        return np.concatenate([[position], marks[pick]])[None], log_occupancy
+
+    expected = _dense_spike_terms(encoding, session, picks, at_animal)
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-3)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"enc_tile_size": 10},
+        {"pos_tile_size": 5},
+        {"enc_tile_size": 10, "use_streaming": True},
+    ],
+)
+def test_low_rank_prediction_is_alike_on_every_reduction_path(
+    low_rank_model, track_environment, options
+):
+    from non_local_detector.likelihoods.common import _padded_sample_count
+
+    session, encoding = low_rank_model
+    n_padded = _padded_sample_count(encoding["encoding_positions"][0].shape[0])
+    assert n_padded % 10, "the last encoding tile is ragged"
+    np.testing.assert_allclose(
+        _predict({**encoding, **options}, session, track_environment),
+        _predict(encoding, session, track_environment),
+        rtol=1e-5,
+        atol=1e-3,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("is_local,smallest_change", [(False, 1.0), (True, 0.1)])
+def test_low_rank_factors_change_the_prediction(
+    low_rank_model, track_environment, is_local, smallest_change
+):
+    """Dropping the factors (diagonal kernels, same dictionary) changes it clearly."""
+    session, encoding = low_rank_model
+    low_rank = _predict(encoding, session, track_environment, is_local)
+    diagonal = _predict(
+        {**encoding, "encoding_mark_factors": None},
+        session,
+        track_environment,
+        is_local,
+    )
+    assert np.all(np.isfinite(low_rank))
+    assert np.max(np.abs(low_rank - diagonal)) > smallest_change
 
 
 @pytest.mark.unit
