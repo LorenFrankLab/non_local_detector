@@ -1471,7 +1471,7 @@ def block_estimate_log_joint_mark_intensity(
     occupancy: jnp.ndarray,
     mean_rate: float,
     log_position_distance: jnp.ndarray | None = None,
-    block_size: int = 100,
+    block_size: int = 10_000,
     use_gemm: bool = True,
     pos_tile_size: int | None = None,
     enc_tile_size: int | None = None,
@@ -1497,9 +1497,9 @@ def block_estimate_log_joint_mark_intensity(
         Log-space position kernel. Prevents underflow in multi-dimensional position spaces.
         Can be None if use_streaming=True.
     block_size : int, optional
-        Number of decoding spikes to process per block. Fewer spikes are
-        padded to a power of two (at least 16), so calls with nearby spike
-        counts share one compiled reduction.
+        Number of decoding spikes to process per block, by default 10_000.
+        Fewer spikes are padded to a power of two (at least 16), so calls
+        with nearby spike counts share one compiled reduction.
     use_gemm : bool, optional
         If True (default), use the scaled-GEMM reduction.
     pos_tile_size : int | None, optional
@@ -1609,7 +1609,7 @@ def fit_clusterless_kde_encoding_model(
     weights: jnp.ndarray | None = None,
     position_std: float = np.sqrt(12.5),
     waveform_std: float = DEFAULT_WAVEFORM_STD,
-    block_size: int = 100,
+    block_size: int = 10_000,
     enc_tile_size: int | None = None,
     pos_tile_size: int | None = None,
     use_streaming: bool = False,
@@ -1643,7 +1643,8 @@ def fit_clusterless_kde_encoding_model(
     waveform_std : float, optional
         Gaussian smoothing standard deviation for waveform, by default 24.0
     block_size : int, optional
-        Divide computation into blocks, by default 100
+        Decoding spikes per block, by default 10_000, as the detectors
+        pass it.
     enc_tile_size : int, optional
         Encoding samples per reduction tile at predict time (capped at 2048),
         bounding the workspace by the tile rather than the encoding count. By
@@ -1840,7 +1841,7 @@ def predict_clusterless_kde_log_likelihood(
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
     is_local: bool = False,
-    block_size: int = 100,
+    block_size: int = 10_000,
     disable_progress_bar: bool = False,
     enc_tile_size: int | None = None,
     pos_tile_size: int | None = None,
@@ -1900,7 +1901,8 @@ def predict_clusterless_kde_log_likelihood(
     is_local : bool, optional
         If True, compute the log likelihood at the animal's position, by default False
     block_size : int, optional
-        Divide computation into blocks, by default 100
+        Decoding spikes per block, by default 10_000, as the detectors
+        pass it.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
     enc_tile_size : int | None, optional
@@ -2164,7 +2166,7 @@ def compute_local_log_likelihood(
     mean_rates: jnp.ndarray,
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
-    block_size: int = 100,
+    block_size: int = 10_000,
     disable_progress_bar: bool = False,
     encoding_weights: list[jnp.ndarray] | None = None,
     row_slice: slice | None = None,
@@ -2205,7 +2207,8 @@ def compute_local_log_likelihood(
     waveform_std : jnp.ndarray
         Gaussian smoothing standard deviation for waveform.
     block_size : int, optional
-        Divide computation into blocks, by default 100
+        Decoding spikes per block, by default 10_000, as the detectors
+        pass it.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
     encoding_weights : list[jnp.ndarray] | None, optional
