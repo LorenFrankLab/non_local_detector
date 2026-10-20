@@ -1706,13 +1706,13 @@ def test_low_rank_kernels_stay_on_the_scaled_gemm_near_their_peak(
     """
     k = request.getfixturevalue(fixture)
     flagged = []
-    repair = clusterless_kde._repair_flagged
+    repair = clusterless_kde._repair_flagged_in_groups
 
-    def counting_repair(values, needs_exact, repaired):
+    def counting_repair(values, needs_exact, exact_rows, group_size):
         jax.debug.callback(lambda n: flagged.append(int(n)), jnp.sum(needs_exact))
-        return repair(values, needs_exact, repaired)
+        return repair(values, needs_exact, exact_rows, group_size)
 
-    monkeypatch.setattr(clusterless_kde, "_repair_flagged", counting_repair)
+    monkeypatch.setattr(clusterless_kde, "_repair_flagged_in_groups", counting_repair)
     for log_background in (-30.0, -np.inf):
         jax.clear_caches()
         _kernel_joint_intensity(k, log_background)

@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Faster clusterless KDE likelihood step
 
 - **Changed:** the KDE mark kernel no longer branches on feature overflow. It subtracts halved features, which cannot overflow, and scales the sum of squares back by 4, which is exact in floating point. Results are bit-for-bit unchanged on RS58 (10 shanks, 26–33 features). The loop now fuses with the exponentials that consume it and is traced once: the non-local step on RS58 runs 16–18% faster warm on an A100 (2.97 → 2.45 s at the detector's block size), and its first call compiles in half the time (173 → 87 s summed over shanks).
+- **Changed:** spikes that the KDE's exactness gate sends to the exact reduction are recomputed in groups (up to 32 at a time, within a 16 MiB temporary) instead of one by one. A block with more than 32 flagged spikes used to visit every row in turn. On RS58 one shank with 81 flagged spikes ran 5× faster (0.56 → 0.11 s), and the whole step is 1.94 s warm at the detector's block size, against 2.97 s before both changes. Repaired rows match the earlier one-at-a-time reduction to float32 rounding (at most 1.5e-5 on values in the tens); all other rows are bit-for-bit unchanged.
 
 ### New clusterless likelihood: mark-mixture GLM
 

@@ -88,9 +88,13 @@ from non_local_detector.time_edges import (
 # Encoding rows per reduction tile. Each tile is one GEMM over the whole query
 # block, so temporaries scale with the tile rather than the encoding count.
 _LOG_REDUCTION_ENCODING_ROWS = 2048
-# Flagged spikes per block whose exact reduction visits only those rows; a block
-# with more flagged spikes visits every row.
+# Flagged spikes per block whose exact reduction visits only those spikes (the
+# KDE in groups); a block with more flagged spikes visits every row or group.
 _EXACT_REPAIR_SLOTS = 32
+# Elements of one exact-repair temporary (encoding tile x flagged spikes x
+# position tile): 16 MiB of float32. It sets how many flagged spikes are
+# reduced together.
+_EXACT_REPAIR_ELEMENTS = 1 << 22
 
 
 def _masked_logsumexp(values: jnp.ndarray) -> jnp.ndarray:
@@ -152,6 +156,62 @@ def _repair_flagged(values, needs_exact: jnp.ndarray, repaired):
             n_flagged <= n_slots,
             partial(repair, n_slots),
             partial(repair, n),
+            current,
+        ),
+        values,
+    )
+
+
+def _repair_flagged_in_groups(values, needs_exact, exact_rows, group_size: int):
+    """Replace each flagged row of ``values`` by ``exact_rows`` of it.
+
+    Flagged rows are recomputed ``group_size`` at a time. Nothing runs when no
+    row is flagged; up to ``_EXACT_REPAIR_SLOTS`` flagged rows visit only the
+    groups that cover them, and more visit every group, skipping those past the
+    last flagged row. Static loop bounds keep the repair differentiable.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n, ...)
+    needs_exact : jnp.ndarray of bool, shape (n,)
+    exact_rows : callable
+        ``exact_rows(rows) -> (group_size, ...)`` exact values of the given rows.
+    group_size : int
+
+    Returns
+    -------
+    values : jnp.ndarray, shape (n, ...)
+    """
+    n = needs_exact.shape[0]
+    group_size = min(n, group_size)
+    n_groups = -(-n // group_size)
+    n_flagged = jnp.sum(needs_exact)
+    flagged = jnp.nonzero(needs_exact, size=n_groups * group_size, fill_value=0)[0]
+
+    def repair_group(group, current):
+        start = group * group_size
+        rows = jax.lax.dynamic_slice_in_dim(flagged, start, group_size)
+        is_flagged = start + jnp.arange(group_size) < n_flagged
+        # Unflagged slots write past the end, where the scatter drops them.
+        targets = jnp.where(is_flagged, rows, n)
+        return jax.lax.cond(
+            start < n_flagged,
+            lambda current: current.at[targets].set(exact_rows(rows), mode="drop"),
+            lambda current: current,
+            current,
+        )
+
+    def repair(n_visits, current):
+        return jax.lax.fori_loop(0, n_visits, repair_group, current)
+
+    n_slot_groups = min(n_groups, -(-_EXACT_REPAIR_SLOTS // group_size))
+    return jax.lax.cond(
+        n_flagged == 0,
+        lambda current: current,
+        lambda current: jax.lax.cond(
+            n_flagged <= n_slot_groups * group_size,
+            partial(repair, n_slot_groups),
+            partial(repair, n_groups),
             current,
         ),
         values,
@@ -964,27 +1024,30 @@ def _estimate_with_enc_chunking(
             - 2.0 * shift
         )
 
-    def exact_row(row):
-        # One spike's tile is only encoding x position, so it is reduced by a
-        # direct logsumexp, with no scaling to validate.
-        query = jax.lax.dynamic_slice_in_dim(decoding_spike_waveform_features, row, 1)
+    def exact_rows(rows):
+        # A spike's tile is only encoding x position, so it is reduced by a
+        # direct logsumexp, with no scaling to validate; a group of flagged
+        # spikes is reduced together.
+        queries = decoding_spike_waveform_features[rows]
 
         def process_enc_chunk(enc_idx, marginal):
-            enc_start, log_mark, weights, positions = encoding_tile(enc_idx, query)
+            enc_start, log_mark, weights, positions = encoding_tile(enc_idx, queries)
 
             def process_position_chunk(pos_idx, marginal):
                 pos_start, log_position, is_new = position_tile(
                     pos_idx, enc_start, positions
                 )
                 contribution = _masked_logsumexp(
-                    log_mark + log_position + weights[:, None]
+                    log_mark[:, :, None]
+                    + log_position[:, None, :]
+                    + weights[:, None, None]
                 )
                 current = jax.lax.dynamic_slice_in_dim(
                     marginal, pos_start, pos_tile_size, axis=1
                 )
                 combined = jnp.where(
                     is_new[None, :],
-                    _masked_logaddexp(current, contribution[None, :]),
+                    _masked_logaddexp(current, contribution),
                     current,
                 )
                 return jax.lax.dynamic_update_slice(marginal, combined, (0, pos_start))
@@ -992,19 +1055,22 @@ def _estimate_with_enc_chunking(
             return jax.lax.fori_loop(0, n_pos_chunks, process_position_chunk, marginal)
 
         return jax.lax.fori_loop(
-            0, n_enc_chunks, process_enc_chunk, jnp.full((1, n_pos), -jnp.inf, dtype)
+            0,
+            n_enc_chunks,
+            process_enc_chunk,
+            jnp.full((rows.shape[0], n_pos), -jnp.inf, dtype),
         )
 
-    def repaired(marginal, row, needs_exact):
-        # A scalar cond on one row; the full estimate is updated in place.
-        values = jax.lax.cond(
-            needs_exact,
-            lambda: exact_row(row),
-            lambda: jax.lax.dynamic_slice_in_dim(marginal, row, 1),
-        )
-        return jax.lax.dynamic_update_slice_in_dim(marginal, values, row, 0)
-
-    marginal = _repair_flagged(reduce_linearly(), needs_exact_row, repaired)
+    group_size = max(
+        1,
+        min(
+            _EXACT_REPAIR_SLOTS,
+            _EXACT_REPAIR_ELEMENTS // (enc_tile_size * pos_tile_size),
+        ),
+    )
+    marginal = _repair_flagged_in_groups(
+        reduce_linearly(), needs_exact_row, exact_rows, group_size
+    )
     return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
 
 
