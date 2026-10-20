@@ -183,6 +183,38 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(enc_tile_s
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("enc_tile_size", [None, 64])
+def test_every_spike_is_exact_when_more_spikes_need_repair_than_slots(enc_tile_size):
+    """Backgrounds far below every intensity flag all spikes for the exact path.
+
+    With more flagged spikes than any repair group or slot count, each one must
+    still match the float64 reduction.
+    """
+    decoding, encoding, stds, occupancy, log_position = _place_field_tile(n_dec=90)
+    log_background = np.full(decoding.shape[0], -400.0, np.float32)
+    out = np.asarray(
+        estimate_log_joint_mark_intensity(
+            decoding,
+            encoding,
+            stds,
+            occupancy,
+            1.0,
+            log_position,
+            enc_tile_size=enc_tile_size,
+            log_background=log_background,
+        )
+    )
+    reference = _reference_log_joint(
+        decoding, encoding, stds, occupancy, 1.0, log_position
+    )
+    expected = np.logaddexp(reference, np.asarray(log_background, np.float64)[:, None])
+    above = expected > -300
+    # More spikes with entries to check than the 32 slots, twice over.
+    assert (above.sum(axis=1) > 0).sum() > 64
+    np.testing.assert_allclose(out[above], expected[above], atol=1e-4, rtol=0)
+
+
+@pytest.mark.unit
 def test_mark_kernel_preserves_distances_after_large_translation():
     decoded = jnp.asarray([[1.0]])
     encoded = jnp.asarray([[0.0]])
