@@ -369,14 +369,18 @@ def _low_rank_merge_scan(samples, weights, base_variance, threshold, rank, short
 
     def mahalanobis_squared(offsets, factors, variances):
         # (x)^T (D + U U^T)^-1 (x) = x^T D^-1 x - v^T (I + U^T D^-1 U)^-1 v,
-        # v = U^T D^-1 x (Woodbury), for each candidate kernel.
+        # v = U^T D^-1 x (Woodbury), for each candidate kernel. The difference
+        # can round below zero in float32 for elongated kernels; a squared
+        # distance is never negative, and a negative one would always merge.
         scaled = factors / variances[..., None]
         inner = jnp.eye(rank, dtype=samples.dtype)[None] + jnp.einsum(
             "cdr,cds->crs", factors, scaled
         )
         v = jnp.einsum("cdr,cd->cr", scaled, offsets)
-        return jnp.sum(offsets**2 / variances, axis=-1) - jnp.einsum(
-            "cr,cr->c", v, jnp.linalg.solve(inner, v[..., None])[..., 0]
+        return jnp.maximum(
+            jnp.sum(offsets**2 / variances, axis=-1)
+            - jnp.einsum("cr,cr->c", v, jnp.linalg.solve(inner, v[..., None])[..., 0]),
+            0.0,
         )
 
     def step(carry, sample):
