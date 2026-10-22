@@ -546,6 +546,36 @@ def _compute_log_mark_kernel_gemm(
     return logK_mark
 
 
+def _mark_kernel_peak(waveform_stds, n_features: int, mark_projections, dtype):
+    """Largest log mark kernel value: each kernel's value at zero distance.
+
+    The exactness gate scales mark factors by this peak. Below the true
+    maximum, scaled factors could overflow; above it, more spikes than
+    needed are recomputed exactly.
+
+    Parameters
+    ----------
+    waveform_stds : jnp.ndarray, shape (n_features,) or (n_kernels, n_features)
+    n_features : int
+    mark_projections : tuple of jnp.ndarray, or None
+        Low-rank kernels (see ``mark_projections``), whose peak is lowered by
+        their ``log det C``.
+    dtype : dtype
+
+    Returns
+    -------
+    peak : jnp.ndarray, shape ()
+    """
+    if waveform_stds.ndim == 2:
+        # Kernels with their own bandwidths peak at their own normalizers.
+        normalizers = _log_gaussian_normalizer(waveform_stds, n_features)
+        if mark_projections is not None:
+            normalizers = normalizers - mark_projections[1]
+        return jnp.max(normalizers).astype(dtype)
+    origin = jnp.zeros((1, n_features), dtype)
+    return _compute_log_mark_kernel_gemm(origin, origin, waveform_stds)[0, 0]
+
+
 def mark_projections(
     mark_stds: np.ndarray, mark_factors: np.ndarray
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -785,15 +815,7 @@ def _estimate_with_enc_chunking(
     n_features = encoding_spike_waveform_features.shape[1]
     per_kernel_marks = waveform_stds.ndim == 2
     per_kernel_positions = use_streaming and position_std.ndim == 2
-    if per_kernel_marks:
-        # Kernels with their own bandwidths peak at their own normalizers.
-        normalizers = _log_gaussian_normalizer(waveform_stds, n_features)
-        if mark_projections is not None:
-            normalizers = normalizers - mark_projections[1]
-        mark_peak = jnp.max(normalizers).astype(dtype)
-    else:
-        origin = jnp.zeros((1, n_features), dtype)
-        mark_peak = _compute_log_mark_kernel_gemm(origin, origin, waveform_stds)[0, 0]
+    mark_peak = _mark_kernel_peak(waveform_stds, n_features, mark_projections, dtype)
     if use_streaming:
         if per_kernel_positions:
             position_peak = jnp.max(

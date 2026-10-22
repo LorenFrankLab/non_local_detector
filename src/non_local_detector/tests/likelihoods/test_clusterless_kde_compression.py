@@ -1348,3 +1348,98 @@ def test_zero_compression_rank_is_the_diagonal_merge(session, track_environment)
     assert rank_zero["encoding_mark_factors"] is None
     for key in ("encoding_positions", "encoding_waveform_stds", "encoding_weights"):
         np.testing.assert_array_equal(diagonal[key][0], rank_zero[key][0])
+
+
+@pytest.fixture(scope="module")
+def correlated_kernels(heterogeneous_kernels):
+    """Strongly elongated mark kernels: whitened factors of 10-30."""
+    rng = np.random.default_rng(4)
+    k = heterogeneous_kernels
+    n_kernels = len(k["weights"])
+    whitened = rng.uniform(10.0, 30.0, (n_kernels, 3, 2)) * rng.choice(
+        [-1.0, 1.0], (n_kernels, 3, 2)
+    )
+    return {**k, "mark_factors": whitened * k["mark_stds"][:, :, None]}
+
+
+@pytest.mark.unit
+def test_exactness_gate_peak_is_the_largest_low_rank_kernel_value(correlated_kernels):
+    """The gate's mark peak bounds every kernel value and is attained at a centre."""
+    from non_local_detector.likelihoods.clusterless_kde import (
+        _compute_log_mark_kernel_gemm,
+        _mark_kernel_peak,
+        mark_projections,
+    )
+
+    k = correlated_kernels
+    projections = mark_projections(k["mark_stds"], k["mark_factors"])
+    assert float(jnp.min(projections[1])) > 3.0, "log det C of several nats"
+    stds = jnp.asarray(k["mark_stds"], jnp.float32)
+    peak = float(_mark_kernel_peak(stds, 3, projections, jnp.float32))
+    at_centres = np.asarray(
+        _compute_log_mark_kernel_gemm(
+            jnp.asarray(k["marks"], jnp.float32),
+            jnp.asarray(k["marks"], jnp.float32),
+            stds,
+            projections,
+        )
+    )
+    elsewhere = np.asarray(
+        _compute_log_mark_kernel_gemm(
+            jnp.asarray(k["queries"], jnp.float32),
+            jnp.asarray(k["marks"], jnp.float32),
+            stds,
+            projections,
+        )
+    )
+    assert max(at_centres.max(), elsewhere.max()) <= peak + 1e-4
+    np.testing.assert_allclose(np.max(np.diag(at_centres)), peak, atol=1e-3)
+
+
+@pytest.mark.unit
+def test_correlated_low_rank_kernels_are_exact_on_the_scaled_gemm(correlated_kernels):
+    """A background of -30 (scaled GEMM) agrees with -inf (exact repair) and a dense mixture."""
+    from non_local_detector.likelihoods.clusterless_kde import mark_projections
+
+    k = correlated_kernels
+    position_std = jnp.asarray(k["position_stds"])
+
+    def estimate(log_background):
+        return np.asarray(
+            estimate_log_joint_mark_intensity(
+                jnp.asarray(k["queries"]),
+                jnp.asarray(k["marks"]),
+                jnp.asarray(k["mark_stds"]),
+                jnp.ones(len(k["bins"])),
+                1.0,
+                log_kde_distance(
+                    jnp.asarray(k["bins"]), jnp.asarray(k["positions"]), position_std
+                ),
+                encoding_weights=jnp.asarray(k["weights"]),
+                log_occupancy=jnp.zeros(len(k["bins"])),
+                log_background=jnp.full(len(k["queries"]), log_background),
+                mark_projections=mark_projections(k["mark_stds"], k["mark_factors"]),
+            ),
+            np.float64,
+        )
+
+    scaled, exact = estimate(-30.0), estimate(-np.inf)
+    np.testing.assert_allclose(scaled, np.logaddexp(exact, -30.0), rtol=1e-5, atol=1e-4)
+    joint_factors = np.concatenate(
+        [np.zeros((len(k["weights"]), 1, 2)), k["mark_factors"]], axis=1
+    )
+    expected = np.stack(
+        [
+            _reference_log_low_rank_mixture(
+                np.column_stack([k["bins"][:, 0], np.tile(query, (len(k["bins"]), 1))]),
+                np.concatenate([k["positions"], k["marks"]], axis=1),
+                np.concatenate([k["position_stds"], k["mark_stds"]], axis=1) ** 2,
+                joint_factors,
+                k["weights"],
+            )
+            for query in k["queries"]
+        ]
+    )
+    above = expected > -25.0
+    assert above.any()
+    np.testing.assert_allclose(exact[above], expected[above], rtol=1e-5, atol=2e-3)
