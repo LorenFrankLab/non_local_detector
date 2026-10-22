@@ -1891,9 +1891,12 @@ def fit_clusterless_kde_encoding_model(
         covariance. A positive rank r keeps each merged kernel's mark
         covariance as ``diag(d) + U U^T`` with ``U`` of rank r, so kernels
         follow correlated marks (see ``kde_compression``); at most the number
-        of position and mark dimensions. A low-rank merge costs about 10 times
-        a diagonal one to fit, and each prediction evaluates r + 1 terms per
-        feature and kernel instead of one.
+        of position and mark dimensions, which keeps each merge's whole
+        covariance. A low-rank merge costs about 8 times a diagonal one to fit
+        (about 500 s against 62 s for 11 31-channel shanks at rank 8), and each
+        prediction evaluates r + 1 terms per feature and kernel instead of
+        one. Very elongated kernels lose float32 accuracy (see
+        ``low_rank_log_kernel_correction``).
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the

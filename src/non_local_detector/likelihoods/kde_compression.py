@@ -27,8 +27,10 @@ whose weighted kernel sum estimates the full one:
   moment-matched covariance in excess of the base bandwidths as a diagonal
   plus a rank-r factor, ``diag(base + e) + U U^T``: after every merge the
   excess is projected back to rank r and the dropped variance moves to the
-  diagonal, so each dimension's variance is kept exactly and, at full rank,
-  the whole covariance. Distances use that covariance (Woodbury). The kernel
+  diagonal, so each dimension's variance is kept exactly. The factor spans
+  position and marks, so the whole covariance is kept only at a rank of at
+  least ``n_position_dims + n_features``. Distances use that covariance
+  (Woodbury). The kernel
   to merge into is the nearest by full Mahalanobis distance among the
   ``_LOW_RANK_SHORTLIST`` nearest by diagonal distance. The returned kernels
   keep the mark covariance and each kernel's position variance; the
@@ -494,7 +496,8 @@ def merge_encoding_spikes(
     rank : int, optional
         0 (the default) for diagonal kernels; otherwise the rank of each
         kernel's excess covariance factor (see the module docstring), at most
-        ``n_position_dims + n_features``.
+        ``n_position_dims + n_features``; that rank keeps every merge's whole
+        moment-matched covariance.
 
     Returns
     -------

@@ -2711,6 +2711,12 @@ def low_rank_log_kernel_correction(
     subtracted before scaling, halved so the subtraction cannot overflow, as
     the diagonal mark kernels form their distances.
 
+    The correction is added to the diagonal kernel's ``-0.5 * |z|**2``, which it
+    largely cancels along a kernel's long axes, so its float32 rounding error
+    grows as about ``|z|**2 * eps``. For 31 features at rank 8 it measured
+    3e-3 nats at whitened factor magnitudes ``|V|`` of 30, 0.04 at 100 and 3.4
+    at 1000. Kernels that elongated need float64 (x64) to stay exact.
+
     Parameters
     ----------
     eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
