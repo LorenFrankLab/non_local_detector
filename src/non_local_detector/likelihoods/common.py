@@ -1154,15 +1154,134 @@ def select_spikes_in_rows(
     )
 
 
-def _segmented_add(left, right):
-    """Associative segmented sum: a segment start in ``right`` resets the total."""
-    left_start, left_value = left
-    right_start, right_value = right
-    keep = right_start.reshape(
-        right_start.shape + (1,) * (right_value.ndim - right_start.ndim)
+def _segmented_inclusive_sum(starts: jnp.ndarray, values: jnp.ndarray) -> jnp.ndarray:
+    """Running sum of ``values`` that restarts at each ``starts`` position.
+
+    A Hillis-Steele scan: step ``k`` adds the partial sum ``2**k`` rows back
+    unless a segment start lies between. Its ``ceil(log2 n)`` steps run in a
+    loop, so one step is compiled whatever ``n`` is, and reverse-mode
+    differentiation works. The summation tree has depth ``ceil(log2 n)`` and
+    depends only on the segment layout.
+
+    Parameters
+    ----------
+    starts : jnp.ndarray, shape (n,), bool
+        True at the first row of each segment; ``starts[0]`` must be True.
+    values : jnp.ndarray, shape (n, ...)
+
+    Returns
+    -------
+    sums : jnp.ndarray, shape (n, ...)
+        Each row holds the sum of its segment's rows up to and including it.
+    """
+    n = values.shape[0]
+    position = jnp.arange(n)
+    broadcast = (n,) + (1,) * (values.ndim - 1)
+
+    def step(k, carry):
+        reaches_start, sums = carry
+        shift = jnp.left_shift(1, k)
+        # Rows that already reach a start (all rows below ``shift`` do) keep
+        # their sum; the others add the partial sum that ends ``shift`` back.
+        keep = (reaches_start | (position < shift)).reshape(broadcast)
+        sums = jnp.where(keep, sums, jnp.roll(sums, shift, axis=0) + sums)
+        return reaches_start | jnp.roll(reaches_start, shift), sums
+
+    return jax.lax.fori_loop(0, max(n - 1, 0).bit_length(), step, (starts, values))[1]
+
+
+def _segment_totals(
+    values: jnp.ndarray,
+    segment_ids: jnp.ndarray,
+    num_segments: int,
+    indices_are_sorted: bool,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Each segment's total, held at its last row, and the row it belongs to.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n, ...), n > 0
+    segment_ids : jnp.ndarray, shape (n,), integer
+    num_segments : int
+    indices_are_sorted : bool
+
+    Returns
+    -------
+    sums : jnp.ndarray, shape (n, ...)
+        Running segment sums, in sorted id order.
+    targets : jnp.ndarray, shape (n,)
+        The segment at each segment's last row; a distinct negative number
+        elsewhere and for ids outside ``[0, num_segments)``, so the valid
+        targets are unique and every other row is out of bounds.
+    """
+    n = values.shape[0]
+    # A canonical signed index dtype keeps -1 representable for unsigned and
+    # narrow ids; values that wrap negative are invalid and dropped. Clipping
+    # keeps sorted ids sorted: low invalid ids first, high ones last.
+    index_dtype = jax.dtypes.canonicalize_dtype(jnp.int64)
+    ids = jnp.clip(jnp.asarray(segment_ids).astype(index_dtype), -1, num_segments)
+    if not indices_are_sorted:
+        order = jnp.argsort(ids, stable=True)
+        ids, values = ids[order], values[order]
+    changes = ids[1:] != ids[:-1]
+    sums = _segmented_inclusive_sum(
+        jnp.concatenate([jnp.ones(1, bool), changes]), values
     )
-    return left_start | right_start, jnp.where(
-        keep, right_value, left_value + right_value
+    is_total = jnp.concatenate([changes, jnp.ones(1, bool)])
+    is_total &= (ids >= 0) & (ids < num_segments)
+    targets = jnp.where(is_total, ids, -1 - jnp.arange(n, dtype=ids.dtype))
+    return sums, targets
+
+
+def _scatter_add_segment_totals(
+    output: jnp.ndarray,
+    sums: jnp.ndarray,
+    targets: jnp.ndarray,
+    column_start=None,
+) -> jnp.ndarray:
+    """Add each segment's total to its row of ``output``; drop every other row.
+
+    Each output element receives at most one update, so the result does not
+    depend on the order in which the backend applies them.
+
+    Parameters
+    ----------
+    output : jnp.ndarray, shape (num_segments, ...)
+    sums, targets : jnp.ndarray
+        From ``_segment_totals``.
+    column_start : int or scalar array, optional
+        With a 2-D ``output``, the first column of the tile ``sums`` covers,
+        shifted left like ``dynamic_slice`` if the tile would run past the
+        last column. None adds whole rows.
+
+    Returns
+    -------
+    output : jnp.ndarray, same shape as ``output``
+    """
+    if column_start is None:
+        indices = targets[:, None]
+        scatter_dims: tuple[int, ...] = (0,)
+    else:
+        column = jnp.clip(
+            jnp.asarray(column_start).astype(targets.dtype),
+            0,
+            output.shape[1] - sums.shape[1],
+        )
+        indices = jnp.stack([targets, jnp.broadcast_to(column, targets.shape)], 1)
+        scatter_dims = (0, 1)
+    dimension_numbers = jax.lax.ScatterDimensionNumbers(
+        update_window_dims=tuple(range(1, sums.ndim)),
+        inserted_window_dims=(0,),
+        scatter_dims_to_operand_dims=scatter_dims,
+    )
+    return jax.lax.scatter_add(
+        output,
+        indices,
+        sums,
+        dimension_numbers,
+        indices_are_sorted=False,
+        unique_indices=True,
+        mode=jax.lax.GatherScatterMode.FILL_OR_DROP,
     )
 
 
@@ -1173,7 +1292,7 @@ def deterministic_segment_sum(
     num_segments: int,
     indices_are_sorted: bool = False,
 ) -> jnp.ndarray:
-    """Sum rows into segments with a fixed reduction tree and no scatters.
+    """Sum rows into segments with a fixed reduction tree.
 
     Parameters
     ----------
@@ -1191,35 +1310,23 @@ def deterministic_segment_sum(
     -------
     sums : jnp.ndarray, shape (num_segments, ...)
         Repeated evaluation of the same shapes is bitwise identical on every
-        backend; a different ``n`` changes the tree and can change rounding.
+        backend; a different segment layout changes the tree and can change
+        rounding.
 
     Notes
     -----
-    Unlike a scatter, the scan keeps ``O(n)`` temporaries: about 1.5x the
-    size of ``values`` for sorted ids and 2.5x unsorted on XLA:CPU, and about
-    0.05-0.4x on an A100.
+    A segmented scan forms each segment's total; a scatter whose indices are
+    unique then places it, so no output element accumulates floating-point
+    updates in an order the backend chooses.
     """
     n = values.shape[0]
     shape = (num_segments, *values.shape[1:])
     if n == 0 or num_segments == 0:
         return jnp.zeros(shape, values.dtype)
-    # A canonical signed index dtype keeps -1 representable for unsigned and
-    # narrow ids; values that wrap negative are invalid and dropped. Clipping
-    # keeps sorted ids sorted: low invalid ids first, high ones last.
-    index_dtype = jax.dtypes.canonicalize_dtype(jnp.int64)
-    ids = jnp.clip(jnp.asarray(segment_ids).astype(index_dtype), -1, num_segments)
-    if not indices_are_sorted:
-        order = jnp.argsort(ids, stable=True)
-        ids, values = ids[order], values[order]
-    starts = jnp.concatenate([jnp.ones(1, bool), ids[1:] != ids[:-1]])
-    _, prefix = jax.lax.associative_scan(_segmented_add, (starts, values))
-    # Each segment's total is its last prefix element: gather, never scatter.
-    segments = jnp.arange(num_segments, dtype=ids.dtype)
-    last = jnp.clip(jnp.searchsorted(ids, segments, side="right") - 1, 0, n - 1)
-    present = (ids[last] == segments).reshape(
-        (num_segments,) + (1,) * (values.ndim - 1)
+    sums, targets = _segment_totals(
+        values, segment_ids, num_segments, indices_are_sorted
     )
-    return jnp.where(present, prefix[last], jnp.zeros((), values.dtype))
+    return _scatter_add_segment_totals(jnp.zeros(shape, values.dtype), sums, targets)
 
 
 def _reduces_sequentially(values) -> bool:
@@ -1319,17 +1426,23 @@ def deterministic_row_add(
     Returns
     -------
     output : jnp.ndarray, shape (n_rows, n_columns)
-        The tile holds ``initial + sum(contributions)``. Each call builds an
-        ``(n_rows, tile_columns)`` row-sum temporary. Off CPU the reduction
-        also keeps segmented-scan temporaries (see ``deterministic_segment_sum``;
-        about 0.05-0.4x of ``values`` measured on an A100). As with
-        ``dynamic_slice``, a tile that
-        would run past the last column is shifted left, so callers must pass
-        tiles that fit.
+        The tile holds ``initial + sum(contributions)``. On CPU each call
+        builds an ``(n_rows, tile_columns)`` row-sum temporary. Elsewhere a
+        segmented scan sums each row's contributions, keeping temporaries the
+        size of ``values``, and only the rows they own are updated. As with
+        ``dynamic_slice``, a tile that would run past the last column is
+        shifted left, so callers must pass tiles that fit.
     """
     values = jnp.asarray(values).astype(output.dtype)
     if output.shape[0] == 0 or values.shape[0] == 0 or values.size == 0:
         return output
+    if values.shape[0] != np.shape(row_ids)[0]:
+        raise ValueError("values must contain one row per row id")
+    if not _reduces_sequentially(values):
+        sums, targets = _segment_totals(
+            values, row_ids, output.shape[0], indices_are_sorted
+        )
+        return _scatter_add_segment_totals(output, sums, targets, column_start)
     tile = deterministic_row_sum(
         values, row_ids, output.shape[0], indices_are_sorted=indices_are_sorted
     )

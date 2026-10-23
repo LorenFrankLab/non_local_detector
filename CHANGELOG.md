@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Faster compilation of clusterless spike sums on GPU
+
+- **Changed:** off CPU, the deterministic sum of per-spike terms into time bins (`deterministic_segment_sum`, `deterministic_row_add`), used by `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion` and `clusterless_mark_glm`, compiles about 10x faster. It is now a Hillis-Steele segmented scan in a loop instead of `jax.lax.associative_scan`, and a scatter with unique indices adds each bin's total to the bins a block of spikes owns. Before, each block of spikes built an array the size of the whole output.
+  - On an A100, the first prediction call of `clusterless_mark_glm` on fold 0 of a 22-tetrode recording took 15 s instead of 33 s. On an 11-shank, 26-32 channel recording it took 5 s instead of 21-23 s, and later calls were 14-20% faster (0.24 s instead of 0.28 s). The first `clusterless_kde` call took 56 s instead of 84 s and 170 s instead of 202 s; later calls were unchanged.
+  - Results are still bitwise repeatable. They differ from before by float32 rounding: at most 1e-7 of the largest log likelihood on both recordings. CPU results are unchanged, since CPU keeps its sequential scatter.
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.
