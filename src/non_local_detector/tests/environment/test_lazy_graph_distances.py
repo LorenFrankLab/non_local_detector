@@ -157,6 +157,42 @@ def test_deferred_environment_matches_topology_and_queries(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "position_range",
+    [((0.0, 5.6), (0.0, 6.3)), ((0.0, 2.8), (0.0, 3.5), (0.0, 2.1))],
+)
+def test_eager_environment_distances_match_networkx_shortest_paths(position_range):
+    """The dense matrix holds every pair's shortest path over the bin graph.
+
+    Diagonal steps make many equal-length paths; the masked slab and corner
+    bins leave isolated exterior bins (zero self-distance, infinite elsewhere).
+    """
+    kwargs = {"place_bin_size": 0.7, "position_range": position_range}
+    span = np.array(
+        [[low for low, _ in position_range], [hi for _, hi in position_range]]
+    )
+    shape = (
+        Environment(**kwargs, infer_track_interior=False)
+        .fit_place_grid(span, infer_track_interior=False)
+        .centers_shape_
+    )
+    mask = np.ones(shape, dtype=bool)
+    mask[2] = False
+    mask[(0,) * len(shape)] = False
+    mask[(1,) * len(shape)] = False
+    env = Environment(**kwargs, is_track_interior=mask).fit_place_grid(
+        span, infer_track_interior=False
+    )
+
+    expected = np.full(env.distance_between_nodes_.shape, np.inf)
+    for source, distances in nx.shortest_path_length(
+        env.track_graphDD, weight="distance"
+    ):
+        expected[source, list(distances)] = list(distances.values())
+    assert np.isfinite(expected).any() and np.isinf(expected).any()
+    np.testing.assert_array_equal(env.distance_between_nodes_, expected)
+
+
 def test_lazy_graph_rejects_insufficient_workspace_before_dijkstra():
     graph, _ = graph_fixture()
     lazy = LazyGraphDistances.from_graph(graph, max_workspace_bytes=8)
