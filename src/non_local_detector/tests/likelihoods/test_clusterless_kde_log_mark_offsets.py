@@ -78,17 +78,24 @@ def test_mark_kernel_identical_large_features_do_not_produce_nan():
 
 @pytest.mark.parametrize("x64", [False, True])
 def test_mark_kernel_opposite_finite_features_with_large_bandwidth(x64):
-    """A broad kernel can have finite distances even if feature subtraction overflows."""
+    """A broad kernel can have finite distances even if feature subtraction overflows.
+
+    The bandwidth keeps ``1 / sigma`` a normal float. From JAX 0.12, XLA
+    divides by a scalar bandwidth by multiplying with its reciprocal, so a
+    bandwidth within a factor of about 4 of the dtype's maximum flushes every
+    distance to zero, overflowing or not.
+    """
     with precision_mode(x64):
         dtype = "float64" if x64 else "float32"
         magnitude = np.float64(1e308) if x64 else np.float32(3e38)
         encoding = np.array([[magnitude], [-magnitude]], dtype=dtype)
         decoding = encoding[::-1].copy()
-        std = np.array([magnitude], dtype=dtype)
-        # The unlike pairs are exactly two standard deviations apart. Form the
+        sigma = magnitude / 16
+        std = np.array([sigma], dtype=dtype)
+        # The unlike pairs are exactly 32 standard deviations apart. Form the
         # normalizer separately: sigma * sqrt(2*pi) would overflow in float64.
-        normalizer = -np.log(float(magnitude)) - 0.5 * np.log(2 * np.pi)
-        expected = normalizer - np.array([[2.0, 0.0], [0.0, 2.0]])
+        normalizer = -np.log(float(sigma)) - 0.5 * np.log(2 * np.pi)
+        expected = normalizer - 0.5 * np.array([[32.0**2, 0.0], [0.0, 32.0**2]])
         actual = jax.jit(_compute_log_mark_kernel_gemm)(
             jnp.asarray(decoding), jnp.asarray(encoding), jnp.asarray(std)
         )
