@@ -203,9 +203,10 @@ class TestSplineDesignMatrix:
             return jnp.asarray(position)
 
         make_spline_predict_matrix(design_info, positions(2))
+        new_positions = [positions(n_rows) for n_rows in (3, 5, 8)]
         with count_compiles() as compiled:
-            for n_rows in (3, 5, 8):
-                make_spline_predict_matrix(design_info, positions(n_rows))
+            for position in new_positions:
+                make_spline_predict_matrix(design_info, position)
         assert compiled == []
 
 

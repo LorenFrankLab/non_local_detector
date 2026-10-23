@@ -711,8 +711,15 @@ def make_spline_predict_matrix(
     """
     # The matrix is built on the host and moved to the device once: the row
     # count changes with each prediction chunk's spikes, and any device op on
-    # the unpadded rows would compile once per new count.
-    return jnp.asarray(_spline_predict_matrix_on_host(design_info, position))
+    # the unpadded rows would compile once per new count. The move uses
+    # device_put: from JAX 0.12, jnp.asarray of a NumPy array compiles a
+    # staging kernel per new shape, and device_put does not.
+    design_matrix = _spline_predict_matrix_on_host(design_info, position)
+    return jax.device_put(
+        np.ascontiguousarray(
+            design_matrix, dtype=jax.dtypes.canonicalize_dtype(design_matrix.dtype)
+        )
+    )
 
 
 def _spline_predict_matrix_on_host(
