@@ -23,6 +23,7 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     make_spline_predict_matrix,
     predict_sorted_spikes_glm_log_likelihood,
 )
+from non_local_detector.tests.conftest import count_compiles
 
 
 @pytest.fixture
@@ -174,6 +175,39 @@ class TestSplineDesignMatrix:
         # Non-NaN positions should be finite
         assert jnp.all(jnp.isfinite(predict_matrix[0, :]))
         assert jnp.all(jnp.isfinite(predict_matrix[2, :]))
+
+    @pytest.mark.parametrize("selected_columns", [False, True])
+    def test_make_spline_predict_matrix_compiles_nothing_for_new_row_counts(
+        self, selected_columns
+    ):
+        """A new number of positions compiles no JAX kernel.
+
+        Local likelihoods build a spike-position design matrix for each
+        prediction chunk, so its row count changes from chunk to chunk; any
+        device op on the unpadded rows would compile once per new count.
+        """
+        position_fit = np.linspace(0, 100, 50)[:, None]
+        place_bin_edges = np.linspace(0, 100, 21)[:, None]
+        design_info = make_spline_design_matrix(
+            position_fit, place_bin_edges
+        ).design_info
+        if selected_columns:
+            design_info = sorted_spikes_glm.SelectedColumnsDesign(
+                design_info=design_info, columns=np.array([0, 2, 3])
+            )
+        rng = np.random.default_rng(0)
+
+        def positions(n_rows):
+            position = rng.uniform(0, 100, (n_rows, 1))
+            position[0] = np.nan
+            return jnp.asarray(position)
+
+        make_spline_predict_matrix(design_info, positions(2))
+        new_positions = [positions(n_rows) for n_rows in (3, 5, 8)]
+        with count_compiles() as compiled:
+            for position in new_positions:
+                make_spline_predict_matrix(design_info, position)
+        assert compiled == []
 
 
 @pytest.mark.unit

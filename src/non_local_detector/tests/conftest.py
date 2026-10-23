@@ -12,6 +12,7 @@ Usage:
     from conftest import assert_probability_distribution
 """
 
+import logging
 from contextlib import contextmanager
 
 import jax
@@ -37,6 +38,31 @@ def precision_mode(x64: bool):
         yield
     finally:
         jax.config.update("jax_enable_x64", previous)
+
+
+@contextmanager
+def count_compiles():
+    """Names of the JAX computations compiled inside the block.
+
+    Yields a list that fills as JAX compiles: for checking that repeated calls
+    reuse compiled kernels.
+    """
+    compiled = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record):
+            message = record.getMessage()
+            if message.startswith("Compiling "):
+                compiled.append(message.split(" with ")[0])
+
+    handler = _Handler()
+    logger = logging.getLogger("jax")
+    logger.addHandler(handler)
+    try:
+        with jax.log_compiles(True):
+            yield compiled
+    finally:
+        logger.removeHandler(handler)
 
 
 def make_state_bins_results(
