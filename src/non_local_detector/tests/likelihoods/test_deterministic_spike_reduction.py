@@ -43,10 +43,9 @@ def assert_within_pairwise_bound(actual, values, ids, n_rows):
 
     The bound is ``(ceil(log2 n) + 2)`` float32 epsilons times each row's summed
     magnitude. A summation tree of depth ``d`` has error at most ``d`` unit
-    roundoffs of that magnitude, so the bound covers balanced trees such as
-    ``jax.lax.associative_scan``'s (depth at most ``2 * ceil(log2 n)``) but not
-    sequential, depth ``n - 1``, summation. Padding ``n`` up to a power of two
-    leaves ``ceil(log2 n)`` unchanged.
+    roundoffs of that magnitude, so the bound covers the segmented scan's tree
+    (depth ``ceil(log2 n)``) but not sequential, depth ``n - 1``, summation.
+    Padding ``n`` up to a power of two leaves ``ceil(log2 n)`` unchanged.
     """
     values = np.asarray(values, np.float64)
     exact = np.zeros((n_rows, *values.shape[1:]))
@@ -175,6 +174,50 @@ def test_repeated_unequal_float_rows_are_bitwise_identical(reduction_path):
         np.testing.assert_array_equal(actual.view(np.uint32), reference.view(np.uint32))
 
 
+@pytest.mark.parametrize("is_sorted", [True, False])
+@pytest.mark.parametrize("column_start", [2, 5])
+def test_row_add_adds_owned_row_sums_to_the_initial_tile(
+    is_sorted, column_start, reduction_path
+):
+    """Only the tile's owned rows change, by their exact sums; others keep ``output``.
+
+    Integer-valued floats make every summation order exact. A tile starting at
+    column 5 would run past the last column, so it is shifted left to 4.
+    """
+    ids = np.array([-1, 0, 0, 0, 2, 3, 3, 6, 99], np.int32)
+    if not is_sorted:
+        ids = ids[np.random.default_rng(7616).permutation(len(ids))]
+    values = np.arange(27, dtype=np.float32).reshape(9, 3) - 11
+    initial = np.arange(42, dtype=np.float32).reshape(6, 7) * 1000
+    shifted = min(column_start, 7 - 3)
+    expected = initial.copy()
+    expected[:, shifted : shifted + 3] += ordered_reference(values, ids, 6)
+    actual = common.deterministic_row_add(
+        jnp.asarray(initial),
+        jnp.asarray(values),
+        jnp.asarray(ids),
+        column_start,
+        indices_are_sorted=is_sorted,
+    )
+    np.testing.assert_array_equal(actual, expected)
+
+    weights = jnp.arange(42, dtype=jnp.float32).reshape(6, 7)
+    value_gradient, output_gradient = jax.grad(
+        lambda v, o: (
+            common.deterministic_row_add(
+                o, v, jnp.asarray(ids), column_start, indices_are_sorted=is_sorted
+            )
+            * weights
+        ).sum(),
+        argnums=(0, 1),
+    )(jnp.asarray(values), jnp.asarray(initial))
+    expected_gradient = np.zeros((9, 3), np.float32)
+    owned = (ids >= 0) & (ids < 6)
+    expected_gradient[owned] = np.asarray(weights)[ids[owned], shifted : shifted + 3]
+    np.testing.assert_array_equal(value_gradient, expected_gradient)
+    np.testing.assert_array_equal(output_gradient, weights)
+
+
 def test_large_component_mass_matches_float64_without_sequential_drift():
     from non_local_detector.likelihoods.diffusion import _component_mass_sum
 
@@ -299,6 +342,7 @@ def clusterless_log_likelihood(algorithm):
         "clusterless_kde",
         "clusterless_gmm",
         "clusterless_diffusion",
+        "clusterless_mark_glm",
     ],
 )
 def test_clusterless_likelihoods_are_bitwise_repeatable(algorithm, monkeypatch):
