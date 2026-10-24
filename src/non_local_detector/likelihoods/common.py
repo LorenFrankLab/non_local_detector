@@ -2735,16 +2735,22 @@ def low_rank_log_mark_kernel(
     projections, half_log_det = mark_projections
     std = jnp.clip(std, min=EPS)
     n_samples, n_dims = samples.shape
+    # Each feature's halved difference feeds the norm and every projection.
+    # Kept to a subtraction, XLA recomputes it in each consumer's fusion;
+    # scaled by division in each, it kept one (n_samples, n_eval_points)
+    # array per feature alive. So the bandwidths go into the projections.
+    scale = 2.0 / std
+    scaled_projections = projections * scale[:, None, :]
     squared_norm = jnp.zeros((n_samples, eval_points.shape[0]))
     projected = jnp.zeros((projections.shape[1], n_samples, eval_points.shape[0]))
-    for dim, (eval_dim, sample_dim, dim_std) in enumerate(
-        zip(eval_points.T, samples.T, std.T, strict=True)
+    for dim, (eval_dim, sample_dim) in enumerate(
+        zip(eval_points.T, samples.T, strict=True)
     ):
-        z = 2.0 * (
-            (0.5 * sample_dim[:, None] - 0.5 * eval_dim[None, :]) / dim_std[:, None]
+        halved = 0.5 * sample_dim[:, None] - 0.5 * eval_dim[None, :]
+        squared_norm = squared_norm + (halved * scale[:, dim, None]) ** 2
+        projected = (
+            projected + scaled_projections[:, :, dim].T[:, :, None] * halved[None]
         )
-        squared_norm = squared_norm + z**2
-        projected = projected + projections[:, :, dim].T[:, :, None] * z[None]
     projected_norm = jnp.sum(projected**2, axis=0)
     quadratic = jnp.where(
         jnp.isfinite(projected_norm),

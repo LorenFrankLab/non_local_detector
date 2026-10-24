@@ -1029,6 +1029,33 @@ def test_low_rank_kernels_of_overflowing_marks_are_background(
     assert np.all(np.isfinite(np.delete(ratio, 3)))
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("rank", [2, 8])
+def test_low_rank_kernel_workspace_does_not_grow_with_features_or_rank(rank):
+    """31 features: no (n_samples, n_eval_points) temporary per feature or direction."""
+    import jax
+
+    from non_local_detector.likelihoods.common import low_rank_log_mark_kernel
+
+    n_samples, n_eval, n_features = 512, 512, 31
+    compiled = (
+        jax.jit(low_rank_log_mark_kernel)
+        .lower(
+            jax.ShapeDtypeStruct((n_eval, n_features), jnp.float32),
+            jax.ShapeDtypeStruct((n_samples, n_features), jnp.float32),
+            jax.ShapeDtypeStruct((n_samples, n_features), jnp.float32),
+            (
+                jax.ShapeDtypeStruct((n_samples, rank, n_features), jnp.float32),
+                jax.ShapeDtypeStruct((n_samples,), jnp.float32),
+            ),
+        )
+        .compile()
+    )
+    workspace = compiled.memory_analysis().temp_size_in_bytes
+    kernel_bytes = n_samples * n_eval * 4
+    assert workspace <= kernel_bytes, f"{workspace / kernel_bytes:.1f} kernel matrices"
+
+
 def _merged_moments(merged):
     """Weighted mean and second moments (position variance, mark matrix) of a merge."""
     weights = merged.weights / merged.weights.sum()
