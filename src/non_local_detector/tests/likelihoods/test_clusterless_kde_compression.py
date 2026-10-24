@@ -188,8 +188,9 @@ def test_dictionary_keeps_rates_exposure_and_total_weight(
     assert compressed["encoding_spike_waveform_features"][0].shape == (200, 2)
     np.testing.assert_allclose(compressed["mean_rates"], full["mean_rates"])
     assert compressed["encoding_exposure_seconds"] == full["encoding_exposure_seconds"]
-    # Uniform inverse-probability weights keep the total exactly; Pareto
-    # sampling keeps it in expectation. The KDE divides by the total anyway.
+    # These spikes weigh the same, so uniform inverse-probability weights keep
+    # the total exactly; Pareto sampling keeps it approximately. The KDE
+    # divides by the total anyway.
     np.testing.assert_allclose(
         np.sum(compressed["encoding_weights"][0]),
         np.sum(full["encoding_weights"][0]),

@@ -468,9 +468,10 @@ def _compute_log_mark_kernel_gemm(
         Standard deviations for each feature dimension, shared by every encoding
         spike or one row per encoding spike.
     mark_projections : tuple of jnp.ndarray, optional
-        Low-rank kernels (see ``mark_projections``): each encoding spike's mark
-        covariance is ``diag(waveform_stds**2) + U U^T``. Needs one row of
-        ``waveform_stds`` per encoding spike. By default None (diagonal).
+        Low-rank kernels (see the ``mark_projections`` function): each
+        encoding spike's mark covariance is ``diag(waveform_stds**2) + U U^T``.
+        Needs one row of ``waveform_stds`` per encoding spike. By default None
+        (diagonal).
 
     Returns
     -------
@@ -550,17 +551,18 @@ def _compute_log_mark_kernel_gemm(
 def _mark_kernel_peak(waveform_stds, n_features: int, mark_projections, dtype):
     """Largest log mark kernel value: each kernel's value at zero distance.
 
-    The exactness gate scales mark factors by this peak. Below the true
-    maximum, scaled factors could overflow; above it, more spikes than
-    needed are recomputed exactly.
+    The scaled GEMM exponentiates each log mark kernel less this peak. Below
+    the true maximum those exponentials could overflow; above it, more spikes
+    than needed are recomputed exactly. Low-rank kernels clamp their quadratic
+    form at zero, so none exceeds its peak after rounding either.
 
     Parameters
     ----------
     waveform_stds : jnp.ndarray, shape (n_features,) or (n_kernels, n_features)
     n_features : int
     mark_projections : tuple of jnp.ndarray, or None
-        Low-rank kernels (see ``mark_projections``), whose peak is lowered by
-        their ``log det C``.
+        Low-rank kernels (see the ``mark_projections`` function), whose peak is
+        lowered by their ``log det C``.
     dtype : dtype
 
     Returns
@@ -582,7 +584,8 @@ def mark_projections(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Per-kernel terms of mark kernels with covariance diag(mark_stds**2) + U U^T.
 
-    Computed on the host in float64. With ``V = U / mark_stds`` and
+    Computed on the host in float64 and returned in the default float
+    (float32 unless x64 is enabled). With ``V = U / mark_stds`` and
     ``C C^T = I + V^T V``, a kernel's log density is the diagonal kernel's plus
     ``0.5 * |C^-1 V^T z|**2 - log det C``, ``z`` the bandwidth-scaled difference
     (see ``low_rank_log_mark_kernel``).
@@ -808,7 +811,9 @@ def _estimate_with_enc_chunking(
     position_floor = _log_marginal_floor(mean_rate, occupancy)
 
     # Every log kernel is at most its peak: the Gaussian normalizer for marks
-    # (zero distance) and, per position, the largest weighted position kernel.
+    # (zero distance; per kernel the largest, less log det C if low-rank) and
+    # the largest weighted position kernel, per position (one maximum over
+    # kernels when streaming per-kernel bandwidths, still an upper bound).
     # Scaling by these peaks loses under exp(peak - window) per entry, so if
     # that stays below four epsilons of the floor everywhere, no entry above
     # the floor loses mass. float32 is the narrowest GEMM dtype, so its window
@@ -1166,7 +1171,7 @@ def estimate_log_joint_mark_intensity(
         ``mean_rate``: ``log(RATE_EPS_HZ * RATE_REFERENCE_SECONDS) + log q(mark)``
         for a mark reference ``q``.
     mark_projections : tuple of jnp.ndarray, optional, keyword-only
-        Low-rank mark kernels from ``mark_projections``, aligned with the
+        Low-rank mark kernels from the ``mark_projections`` function, aligned with the
         encoding spikes; needs one row of ``waveform_stds`` per encoding spike
         and ``use_gemm=True``. By default None (diagonal kernels).
 
@@ -1588,8 +1593,8 @@ def _add_electrode_log_mark_intensities(
     log_background : jnp.ndarray, shape (n_padded_spikes,)
         Log background intensity of each spike, in the units of ``mean_rate``.
     mark_projections : tuple of jnp.ndarray, optional
-        Low-rank mark kernels, one row per padded encoding sample (see
-        ``mark_projections``). By default None (diagonal kernels).
+        Low-rank mark kernels, one row per padded encoding sample (see the
+        ``mark_projections`` function). By default None (diagonal kernels).
 
     Returns
     -------
@@ -1707,8 +1712,8 @@ def _add_electrode_local_terms(
     log_background : jnp.ndarray, shape (n_padded_spikes,)
         Log background intensity of each spike, in the units of ``scaled_rate``.
     mark_projections : tuple of jnp.ndarray, optional
-        Low-rank mark kernels, one row per padded encoding sample (see
-        ``mark_projections``). By default None (diagonal kernels).
+        Low-rank mark kernels, one row per padded encoding sample (see the
+        ``mark_projections`` function). By default None (diagonal kernels).
 
     Returns
     -------
@@ -1948,21 +1953,25 @@ def fit_clusterless_kde_encoding_model(
     encoding_compression : {"uniform", "stratified", "merge"} or None, optional
         Replace each electrode's encoding spikes with a smaller weighted
         dictionary of kernels, which bounds the prediction cost (see
-        ``kde_compression``). ``"uniform"`` keeps a uniform random subset of
-        ``n_encoding_kernels`` spikes; ``"stratified"`` keeps rare marks and
-        rarely visited places more often. Kept spikes are weighted by their
-        inverse inclusion probability. ``"merge"`` merges nearby kernels
-        (Sodkomkham et al. 2016), giving each kernel its own bandwidths. Mean
-        rates, exposure and occupancy still use every spike; the ground process
-        uses the dictionary, so it stays the integral of the compressed marked
-        intensity over marks. By default None (every spike is a kernel).
+        ``non_local_detector.likelihoods.kde_compression``). ``"uniform"``
+        keeps a uniform random subset of ``n_encoding_kernels`` spikes;
+        ``"stratified"`` keeps rare marks and places with few spikes more
+        often. Kept spikes are weighted by their inverse inclusion
+        probability. ``"merge"`` merges nearby kernels (Sodkomkham et al.
+        2016), giving each kernel its own bandwidths. Mean rates, exposure and
+        occupancy still use every spike; the ground process uses the
+        dictionary, so the expected count stays the integral of the compressed
+        marked intensity over marks. By default None (every spike is a
+        kernel).
     n_encoding_kernels : int, optional
         Dictionary size per electrode, required by ``"uniform"`` and
-        ``"stratified"``. An electrode with no more spikes keeps them all.
+        ``"stratified"``. An electrode with no more than
+        ``n_encoding_kernels`` positive-weight spikes keeps them all.
     compression_threshold : float, optional
-        ``"merge"`` only: the largest Mahalanobis distance, in a kernel's own
-        bandwidths over position and marks, at which a spike merges into it.
-        Larger values give fewer kernels. By default None, which merges at
+        ``"merge"`` only: the largest Mahalanobis distance, in the nearest
+        kernel's own covariance over position and marks (its bandwidths, plus
+        its factor for ``compression_rank`` > 0), at which a spike merges into
+        it. Larger values give fewer kernels. By default None, which merges at
         1.0.
     compression_seed : int, optional
         Seed of the dictionary sampling or merge order, by default 0.
@@ -1970,13 +1979,14 @@ def fit_clusterless_kde_encoding_model(
         ``"merge"`` only: 0 (the default) gives each kernel a diagonal
         covariance. A positive rank r keeps each merged kernel's mark
         covariance as ``diag(d) + U U^T`` with ``U`` of rank r, so kernels
-        follow correlated marks (see ``kde_compression``); at most the number
-        of position and mark dimensions, which keeps each merge's whole
-        covariance. A low-rank merge costs about 8 times a diagonal one to fit
-        (about 500 s against 62 s for 11 31-channel shanks at rank 8), and each
-        prediction evaluates r + 1 terms per feature and kernel instead of
-        one. Very elongated kernels lose float32 accuracy (see
-        ``low_rank_log_mark_kernel``).
+        follow correlated marks (see
+        ``non_local_detector.likelihoods.kde_compression``). At most the
+        number of position and mark dimensions, at which the merges track each
+        kernel's joint covariance exactly. A low-rank merge took 4-8 times as
+        long as a diagonal one to fit in our tests, and each prediction
+        evaluates r + 1 terms per feature and kernel instead of one. Very
+        elongated kernels lose float32 accuracy (see
+        ``non_local_detector.likelihoods.common.low_rank_log_mark_kernel``).
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the

@@ -1534,8 +1534,9 @@ def kde(
         Evaluation points.
     samples : jnp.ndarray, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
-        Standard deviation of the Gaussian kernel.
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Standard deviation of the Gaussian kernel, shared or one row per
+        sample.
     weights : jnp.ndarray, shape (n_samples,)
         Weights for each sample.
 
@@ -1574,8 +1575,9 @@ def block_kde(
         Evaluation points.
     samples : jnp.ndarray, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
-        Standard deviation of the Gaussian kernel.
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Standard deviation of the Gaussian kernel, shared or one row per
+        sample.
     block_size : int, optional
         Evaluation rows per block, by default 100. Reduced when needed so one
         block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
@@ -1897,7 +1899,7 @@ def log_kde(
     Shapes:
       eval_points: (n_eval, n_dims)
       samples:     (n_samp, n_dims)
-      std:         (n_dims,)
+      std:         (n_dims,), or (n_samp, n_dims) for one row per sample
       weights:     (n_samp,)
     Returns: (n_eval,)
 
@@ -1974,8 +1976,9 @@ def block_log_kde(
         Evaluation points.
     samples : jnp.ndarray, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
-        Standard deviation of the Gaussian kernel.
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Standard deviation of the Gaussian kernel, shared or one row per
+        sample.
     block_size : int, optional
         Evaluation rows per block, by default 100. Reduced when needed so one
         block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
@@ -2144,7 +2147,11 @@ class PerSampleBandwidthKDEModel(KDEModel):
     """Weighted Gaussian KDE whose samples each have their own diagonal bandwidth.
 
     The density is ``sum_i w_i N(x; samples_i, diag(std_i**2)) / sum_i w_i``.
-    :func:`kde_log_density` evaluates it through :meth:`predict_log`.
+    :func:`kde_log_density` evaluates it through :meth:`predict_log`. Unlike a
+    ``KDEModel``, ``std`` has one row per sample, so code that reads a
+    ``KDEModel``'s ``std`` as one bandwidth per dimension must not be given
+    this model (``kde_log_density`` and ``_kde_log_densities`` take their
+    shared-bandwidth paths only for an exact ``KDEModel``).
 
     Attributes
     ----------
@@ -2722,9 +2729,12 @@ def low_rank_log_mark_kernel(
     exceeds its value at its centre, and is ``+inf`` wherever either term
     overflows, which gives that pair no kernel mass.
 
-    The two terms cancel along a kernel's long axes, so the float32 rounding
-    error of the log kernel grows in proportion to ``|V|**2 * eps``, ``|V|`` the
-    largest whitened factor entry.
+    The two terms cancel along a kernel's long axis, so the float32 rounding
+    error of the log kernel grows in proportion to ``s**2 * eps``, ``s`` the
+    largest singular value of ``V`` (the long axis's length in bandwidths).
+    For 31 features at rank 8, the largest error near each kernel measured
+    15-25 ``s**2 * eps``: 0.009 nats at ``s`` of about 60 and 1 nat at 600.
+    Kernels that elongated need float64 (x64) to stay accurate.
 
     Parameters
     ----------

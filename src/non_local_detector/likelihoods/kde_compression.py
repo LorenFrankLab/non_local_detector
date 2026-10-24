@@ -7,14 +7,14 @@ whose weighted kernel sum estimates the full one:
 
 - ``"uniform"``: a uniform random subset, each kept spike weighted by the
   inverse of its inclusion probability.
-- ``"stratified"``: Pareto πps sampling (Rosén 1997) whose inclusion
+- ``"stratified"``: Pareto πps sampling [2]_ whose inclusion
   probabilities fall as the inverse square root of the spike's stratum size,
-  so rare marks and rarely visited places are kept more often than a uniform
+  so rare marks and places with few spikes are kept more often than a uniform
   subset keeps them. Strata are position cells of two position bandwidths
   crossed with k-means cells of the bandwidth-scaled marks. Every spike keeps
   a nonzero inclusion probability, and the kept spikes are weighted by its
   inverse, which keeps the weighted sum approximately unbiased.
-- ``"merge"``: the kernel compression of Sodkomkham et al. (2016). Spikes are
+- ``"merge"``: the kernel compression of Sodkomkham et al. [1]_. Spikes are
   visited once in a seeded random order. Each joins the nearest existing
   kernel when its Mahalanobis distance to that kernel, in the kernel's own
   bandwidths over position and marks, is at most ``compression_threshold``;
@@ -23,15 +23,15 @@ whose weighted kernel sum estimates the full one:
   per-dimension variance (moment matching), so every kernel ends up with its
   own diagonal bandwidth. Larger thresholds give fewer kernels.
 
-  With ``compression_rank`` r > 0 each kernel instead keeps the part of its
-  moment-matched covariance in excess of the base bandwidths as a diagonal
-  plus a rank-r factor, ``diag(base + e) + U U^T``: after every merge the
-  excess is projected back to rank r and the dropped variance moves to the
-  diagonal, so each dimension's variance is kept exactly. The factor spans
-  position and marks, so the whole covariance is kept only at a rank of at
-  least ``n_position_dims + n_features``. Distances use that covariance
-  (Woodbury). The kernel
-  to merge into is the nearest by full Mahalanobis distance among the
+  With ``compression_rank`` r > 0, an addition to the paper's method, each
+  kernel instead keeps the part of its moment-matched joint (position and
+  mark) covariance in excess of the base bandwidths as a diagonal plus a
+  rank-r factor, ``diag(base + e) + U U^T``. After every merge the excess is
+  projected back to rank r and the dropped direction's variance moves to the
+  diagonal, so each dimension's variance is kept exactly. A merge adds one
+  direction, so the joint covariance is tracked exactly only at a rank of at
+  least ``n_position_dims + n_features``. Distances use that covariance. The
+  kernel to merge into is the nearest by full Mahalanobis distance among the
   ``_LOW_RANK_SHORTLIST`` nearest by diagonal distance. The returned kernels
   keep the mark covariance and each kernel's position variance; the
   position-mark covariance is dropped, so position factors out of the kernel
@@ -40,6 +40,16 @@ whose weighted kernel sum estimates the full one:
 The dictionary leaves the electrode's mean rate and the encoding exposure to
 the caller, which computes them from every spike: a smaller dictionary must
 not look like a shorter recording.
+
+References
+----------
+.. [1] Sodkomkham, D., Ciliberti, D., Wilson, M. A., Fukui, K., Moriyama, K.,
+   Numao, M., & Kloosterman, F. (2016). Kernel density compression for
+   real-time Bayesian encoding/decoding of unsorted hippocampal spikes.
+   Knowledge-Based Systems, 94, 1-12.
+   https://doi.org/10.1016/j.knosys.2015.09.013
+.. [2] Rosén, B. (1997). On sampling with probability proportional to size.
+   Journal of Statistical Planning and Inference, 62(2), 159-191.
 """
 
 from functools import partial
@@ -294,6 +304,8 @@ class MergedKernels(NamedTuple):
     marks : np.ndarray, shape (n_kernels, n_features)
     weights : np.ndarray, shape (n_kernels,)
     position_stds : np.ndarray, shape (n_kernels, n_position_dims)
+        Square roots of each kernel's position variances; for a low-rank merge
+        they include the factor's position part.
     mark_stds : np.ndarray, shape (n_kernels, n_features)
         Square roots of the diagonal of each kernel's mark covariance, less the
         low-rank part.
@@ -526,7 +538,7 @@ def merge_encoding_spikes(
     seed: int = 0,
     rank: int = 0,
 ) -> MergedKernels:
-    """Merge one electrode's joint kernels (Sodkomkham et al. 2016).
+    """Merge one electrode's joint kernels (Sodkomkham et al. 2016; see the module).
 
     Zero-weight spikes carry no kernel mass and are dropped first. The merged
     dictionary keeps the total weight and, for every dimension, the weighted
@@ -539,8 +551,9 @@ def merge_encoding_spikes(
     weights : np.ndarray, shape (n_spikes,)
         Non-negative spike weights.
     threshold : float
-        Largest Mahalanobis distance, in the existing kernel's bandwidths,
-        at which a spike merges into it; 0 merges only coincident spikes.
+        Largest Mahalanobis distance, in the nearest kernel's own covariance
+        (its bandwidths, plus its factor for ``rank`` > 0), at which a spike
+        merges into it; 0 merges only coincident spikes.
     position_std : np.ndarray, shape (n_position_dims,)
     waveform_std : np.ndarray, shape (n_features,)
         Base bandwidths of each spike's kernel.
@@ -549,8 +562,9 @@ def merge_encoding_spikes(
     rank : int, optional
         0 (the default) for diagonal kernels; otherwise the rank of each
         kernel's excess covariance factor (see the module docstring), at most
-        ``n_position_dims + n_features``; that rank keeps every merge's whole
-        moment-matched covariance.
+        ``n_position_dims + n_features``. At that rank the merges track each
+        kernel's joint covariance exactly; the returned kernels still drop the
+        position-mark covariance.
 
     Returns
     -------
