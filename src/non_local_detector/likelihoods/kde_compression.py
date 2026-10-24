@@ -559,16 +559,18 @@ def merge_encoding_spikes(
     """
     positions, marks, weights = (np.asarray(a) for a in (positions, marks, weights))
     keep = np.flatnonzero(weights > 0)
-    n_position_dims = positions.shape[1]
+    n_position_dims, n_features = positions.shape[1], marks.shape[1]
+    # The default float: float32, or float64 with x64 enabled.
+    dtype = jax.dtypes.canonicalize_dtype(np.float64)
     if keep.size == 0:
         # No kernel mass: an empty dictionary, like the other methods give.
         return MergedKernels(
-            positions=positions[:0],
-            marks=marks[:0],
-            weights=weights[:0],
-            position_stds=np.ones((0, n_position_dims)),
-            mark_stds=np.ones((0, marks.shape[1])),
-            mark_factors=None if rank == 0 else np.zeros((0, marks.shape[1], rank)),
+            positions=np.zeros((0, n_position_dims), dtype),
+            marks=np.zeros((0, n_features), dtype),
+            weights=np.zeros(0, dtype),
+            position_stds=np.ones((0, n_position_dims), dtype),
+            mark_stds=np.ones((0, n_features), dtype),
+            mark_factors=None if rank == 0 else np.zeros((0, n_features, rank), dtype),
         )
     order = keep[np.random.default_rng(seed).permutation(keep.size)]
     samples = np.concatenate([positions[order], marks[order]], axis=1)
@@ -578,8 +580,6 @@ def merge_encoding_spikes(
             np.broadcast_to(waveform_std, (marks.shape[1],)),
         ]
     )
-    # The default float: float32, or float64 with x64 enabled.
-    dtype = jax.dtypes.canonicalize_dtype(np.float64)
     if rank > 0:
         means, factors, excess, totals, n_kernels = _low_rank_merge_scan(
             jnp.asarray(samples, dtype),
@@ -592,7 +592,7 @@ def merge_encoding_spikes(
         n_kernels = int(n_kernels)
         means = np.asarray(means[:n_kernels])
         factors = np.asarray(factors[:n_kernels])
-        variances = base_std**2 + np.asarray(excess[:n_kernels])
+        variances = np.asarray(base_std**2, dtype) + np.asarray(excess[:n_kernels])
         # Position keeps its marginal variance, factor included; the
         # position-mark covariance is dropped.
         position_variances = variances[:, :n_position_dims] + np.sum(

@@ -1190,6 +1190,22 @@ def test_low_rank_merge_distance_is_accurate_for_elongated_kernels(rank, elongat
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("rank", [0, 2])
+def test_merging_no_kernel_mass_gives_the_same_dtypes_as_merging_some(rank):
+    from non_local_detector.likelihoods.kde_compression import merge_encoding_spikes
+
+    positions = np.array([[10.0], [11.0]])
+    marks = np.array([[5.0, 7.0], [6.0, 7.5]])
+    args = (2.0, np.array([2.0]), np.array([1.0, 1.0]))
+    some = merge_encoding_spikes(positions, marks, np.ones(2), *args, rank=rank)
+    none = merge_encoding_spikes(positions, marks, np.zeros(2), *args, rank=rank)
+    assert len(none.weights) == 0
+    for field, value in some._asdict().items():
+        if value is not None:
+            assert getattr(none, field).dtype == value.dtype, field
+
+
+@pytest.mark.unit
 def test_low_rank_merge_of_two_kernels_matches_their_covariance():
     from non_local_detector.likelihoods.kde_compression import merge_encoding_spikes
 
