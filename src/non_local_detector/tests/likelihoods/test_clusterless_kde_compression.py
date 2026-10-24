@@ -605,6 +605,74 @@ def test_merging_two_kernels_matches_their_first_two_moments():
     )
 
 
+def _merge_in_order(joint, threshold, rank=0):
+    """Merge equal-weight spikes (first column position) visited in the listed order.
+
+    Base bandwidths are 1. The visiting order is a seeded permutation; use the
+    first seed whose permutation is the identity.
+    """
+    from non_local_detector.likelihoods.kde_compression import merge_encoding_spikes
+
+    joint = np.asarray(joint, float)
+    seed = next(
+        seed
+        for seed in range(1000)
+        if np.array_equal(
+            np.random.default_rng(seed).permutation(len(joint)), np.arange(len(joint))
+        )
+    )
+    return merge_encoding_spikes(
+        joint[:, :1],
+        joint[:, 1:],
+        np.ones(len(joint)),
+        threshold,
+        np.ones(1),
+        np.ones(joint.shape[1] - 1),
+        seed,
+        rank=rank,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("distance,n_kernels", [(1.5, 1), (1.9, 1), (2.1, 2)])
+def test_spikes_merge_within_the_threshold_distance(distance, n_kernels):
+    """Mahalanobis distance <= threshold merges, compared as squared distances."""
+    merged = _merge_in_order([[0.0, 0.0], [0.0, distance]], threshold=2.0)
+    assert len(merged.weights) == n_kernels
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("offset,n_kernels", [(2.4, 1), (2.8, 2)])
+def test_spikes_merge_by_distance_in_the_kernels_own_bandwidths(offset, n_kernels):
+    """After 0 and 1.8 merge (variance 1 + 0.81), 2.4 from their mean is 1.78
+    of its bandwidths and merges; 2.8 is 2.08 and does not. Both are farther
+    than 2 base bandwidths."""
+    merged = _merge_in_order(
+        [[0.0, 0.0], [0.0, 1.8], [0.0, 0.9 + offset]], threshold=2.0
+    )
+    assert len(merged.weights) == n_kernels
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "direction,n_kernels",
+    [
+        # Along the merged pair's axis: 2.25 / sqrt(1 + 0.81) = 1.67 <= 2.
+        ([1.0, 1.0, 0.0], 1),
+        # Across it: 2.25 by the full covariance; 1.90 by its diagonal alone.
+        ([1.0, -1.0, 0.0], 2),
+    ],
+)
+def test_low_rank_merges_by_full_mahalanobis_distance(direction, n_kernels):
+    """Merging 0 and 1.8 u, u = (1, 1, 0) / sqrt(2), gives covariance
+    I + 0.81 u u^T over (position, mark, mark); a diagonal distance would
+    merge the probe across that axis too."""
+    axis = np.array([1.0, 1.0, 0.0]) / np.sqrt(2)
+    probe = 0.9 * axis + 2.25 * np.asarray(direction) / np.sqrt(2)
+    merged = _merge_in_order([np.zeros(3), 1.8 * axis, probe], threshold=2.0, rank=1)
+    assert len(merged.weights) == n_kernels
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("threshold", [0.5, 1.0, 3.0])
 def test_merging_keeps_total_weight_mean_and_second_moment(session, threshold):
