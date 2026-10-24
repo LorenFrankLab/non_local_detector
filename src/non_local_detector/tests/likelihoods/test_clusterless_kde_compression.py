@@ -191,6 +191,39 @@ def test_zero_weight_spikes_never_enter_the_dictionary(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("method", ["uniform", "stratified"])
+def test_kept_spikes_keep_their_own_position_mark_and_weight(session, method):
+    """Each kept row is one original spike, its weight over its inclusion probability."""
+    from non_local_detector.likelihoods.kde_compression import (
+        compress_encoding_spikes,
+    )
+
+    marks = session["spike_waveform_features"][0]
+    rng = np.random.default_rng(5)
+    positions = rng.uniform(0.0, 100.0, (len(marks), 1))
+    weights = rng.uniform(0.5, 2.0, len(marks))
+    kept_positions, kept_marks, kept_weights = compress_encoding_spikes(
+        positions,
+        marks,
+        weights,
+        method,
+        200,
+        np.array([POSITION_STD]),
+        np.full(2, WAVEFORM_STD),
+    )
+    # Simulated marks are continuous, so each identifies its spike.
+    source = np.array(
+        [np.flatnonzero((marks == mark).all(axis=1))[0] for mark in kept_marks]
+    )
+    assert len(np.unique(source)) == 200
+    np.testing.assert_array_equal(kept_positions, positions[source])
+    inverse_probability = kept_weights / weights[source]
+    assert np.all(inverse_probability >= 1.0 - 1e-12)
+    if method == "uniform":
+        np.testing.assert_allclose(inverse_probability, len(marks) / 200)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["uniform", "stratified"])
 def test_dictionary_is_reproducible_from_its_seed(session, track_environment, method):
     fits = [
         _fit(
@@ -743,6 +776,34 @@ def test_zero_merge_threshold_is_the_full_kde(session, track_environment):
 
 
 @pytest.mark.unit
+def test_zero_merge_threshold_merges_exact_duplicates(session, track_environment):
+    """Coincident spikes merge into one kernel of their summed weight."""
+    order = np.argsort(np.tile(session["spike_times"][0], 2), kind="stable")
+    doubled = {
+        **session,
+        "spike_times": [np.tile(session["spike_times"][0], 2)[order]],
+        "spike_waveform_features": [
+            np.tile(session["spike_waveform_features"][0], (2, 1))[order]
+        ],
+    }
+    merged = _fit(
+        doubled,
+        track_environment,
+        encoding_compression="merge",
+        compression_threshold=0.0,
+    )
+    n_spikes = len(session["spike_times"][0])
+    assert merged["encoding_positions"][0].shape[0] == n_spikes
+    np.testing.assert_allclose(merged["encoding_weights"][0], 2.0)
+    np.testing.assert_allclose(
+        _predict(merged, doubled, track_environment),
+        _predict(_fit(doubled, track_environment), doubled, track_environment),
+        rtol=1e-5,
+        atol=1e-3,
+    )
+
+
+@pytest.mark.unit
 def test_merged_model_expected_count_is_its_intensity_integrated_over_marks(
     track_environment,
 ):
@@ -873,6 +934,7 @@ def test_model_checking_rejects_merged_dictionaries(session, track_environment):
         {"encoding_compression": "uniform", "n_encoding_kernels": 100},
         {"encoding_compression": "stratified", "n_encoding_kernels": 100},
         {"encoding_compression": "merge"},
+        {"encoding_compression": "merge", "compression_rank": 2},
     ],
 )
 def test_electrode_without_encoding_spikes_fits_and_predicts(
@@ -1753,3 +1815,173 @@ def test_correlated_low_rank_kernels_are_exact_on_the_scaled_gemm(correlated_ker
     above = expected > -25.0
     assert above.any()
     np.testing.assert_allclose(exact[above], expected[above], rtol=1e-5, atol=2e-3)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "compression",
+    [
+        {"encoding_compression": "stratified", "n_encoding_kernels": 200},
+        {"encoding_compression": "merge", "compression_threshold": 1.5},
+        {
+            "encoding_compression": "merge",
+            "compression_threshold": 1.5,
+            "compression_rank": 2,
+        },
+    ],
+)
+def test_compressed_fit_skips_untracked_spikes(session, track_environment, compression):
+    """Spikes in a tracking gap leave the dictionary; predictions stay finite."""
+    in_gap = (session["position_time"] > 30.0) & (session["position_time"] < 40.0)
+    with_gap = {
+        **session,
+        "position": np.where(in_gap[:, None], np.nan, session["position"]),
+    }
+    encoding = _fit(with_gap, track_environment, **compression)
+    assert np.all(np.isfinite(np.asarray(encoding["encoding_positions"][0])))
+    for is_local in (False, True):
+        assert np.all(
+            np.isfinite(_predict(encoding, session, track_environment, is_local))
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fixture", ["low_rank_kernels", "correlated_kernels"])
+def test_low_rank_kernels_stay_on_the_scaled_gemm_near_their_peak(
+    request, fixture, monkeypatch
+):
+    """At a background of -30 no spike needs the exact repair; at -inf all do.
+
+    Otherwise the scaled-GEMM tests above would compare the repair to itself.
+    """
+    import jax
+
+    from non_local_detector.likelihoods import clusterless_kde
+    from non_local_detector.likelihoods.clusterless_kde import mark_projections
+
+    k = request.getfixturevalue(fixture)
+    flagged = []
+    repair = clusterless_kde._repair_flagged
+
+    def counting_repair(values, needs_exact, repaired):
+        jax.debug.callback(lambda n: flagged.append(int(n)), jnp.sum(needs_exact))
+        return repair(values, needs_exact, repaired)
+
+    monkeypatch.setattr(clusterless_kde, "_repair_flagged", counting_repair)
+    for log_background in (-30.0, -np.inf):
+        jax.clear_caches()
+        estimate_log_joint_mark_intensity(
+            jnp.asarray(k["queries"]),
+            jnp.asarray(k["marks"]),
+            jnp.asarray(k["mark_stds"]),
+            jnp.ones(len(k["bins"])),
+            1.0,
+            log_kde_distance(
+                jnp.asarray(k["bins"]),
+                jnp.asarray(k["positions"]),
+                jnp.asarray(k["position_stds"]),
+            ),
+            encoding_weights=jnp.asarray(k["weights"]),
+            log_occupancy=jnp.zeros(len(k["bins"])),
+            log_background=jnp.full(len(k["queries"]), log_background),
+            mark_projections=mark_projections(k["mark_stds"], k["mark_factors"]),
+        ).block_until_ready()
+    jax.clear_caches()
+    assert flagged == [0, len(k["queries"])]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("is_local", [False, True])
+def test_pickled_low_rank_model_predicts_the_same(
+    low_rank_model, track_environment, is_local
+):
+    import pickle
+
+    session, encoding = low_rank_model
+    restored = pickle.loads(pickle.dumps(encoding))
+    np.testing.assert_array_equal(
+        _predict(restored, session, track_environment, is_local),
+        _predict(encoding, session, track_environment, is_local),
+    )
+
+
+@pytest.mark.unit
+def test_model_checking_uses_stratified_dictionary_weights(session, track_environment):
+    """Its intensity equals the KDE's at every bin, up to the rate's units.
+
+    Stratified weights vary, so a model ignoring them would differ by mark.
+    """
+    from non_local_detector.model_checking._clusterless_models import electrode_model
+
+    encoding = _fit(
+        session,
+        track_environment,
+        encoding_compression="stratified",
+        n_encoding_kernels=200,
+    )
+    weights = np.asarray(encoding["encoding_weights"][0])
+    assert np.ptp(weights) > 0.1 * weights.mean()
+    model = electrode_model(encoding, "clusterless_kde", 0)
+    marks = session["spike_waveform_features"][0][::50]
+    checked = model.log_intensity_at_bins(marks).T  # (n_marks, n_bins)
+    predicted = np.asarray(
+        estimate_log_joint_mark_intensity(
+            jnp.asarray(marks),
+            jnp.asarray(model.marks),
+            jnp.asarray(model.waveform_std),
+            jnp.exp(jnp.asarray(model._log_occupancy_at_bins)),
+            1.0,
+            log_kde_distance(
+                jnp.asarray(model.bin_centers),
+                jnp.asarray(model.positions),
+                jnp.asarray(model.position_std),
+            ),
+            encoding_weights=jnp.asarray(weights),
+            log_occupancy=jnp.asarray(model._log_occupancy_at_bins),
+            log_background=jnp.full(len(marks), -np.inf),
+        )
+    )
+    supported = np.isfinite(checked) & (checked > checked.max() - 30.0)
+    difference = (checked - predicted)[supported]
+    np.testing.assert_allclose(difference, difference[0], atol=1e-3)
+    assert np.all(
+        np.isfinite(
+            model.conditional_mark_cdf(
+                session["position"][: len(marks)], marks, np.arange(marks.shape[1])
+            )
+        )
+    )
+
+
+@pytest.mark.integration
+def test_em_refits_a_merged_dictionary_each_iteration():
+    """Encoding refits merge the posterior-weighted spikes again."""
+    session = _simulate_session(duration=60.0)
+    detector = NonLocalClusterlessDetector(
+        environments=Environment(place_bin_size=2.0, position_range=((0.0, 100.0),)),
+        clusterless_algorithm="clusterless_kde",
+        clusterless_algorithm_params={
+            "position_std": POSITION_STD,
+            "waveform_std": WAVEFORM_STD,
+            "block_size": 1000,
+            "encoding_compression": "merge",
+            "compression_threshold": 1.5,
+            "compression_rank": 1,
+        },
+        sampling_frequency=SAMPLING_FREQUENCY,
+    )
+    results = detector.estimate_parameters(
+        session["position_time"],
+        session["position"],
+        session["spike_times"],
+        session["spike_waveform_features"],
+        time_edges=time_edges_from_centers(session["position_time"]),
+        estimate_encoding_model=True,
+        max_iter=2,
+    )
+    assert np.all(np.isfinite(results.acausal_state_probabilities.values))
+    encoding = next(iter(detector.encoding_model_.values()))
+    n_kernels = encoding["encoding_positions"][0].shape[0]
+    assert 0 < n_kernels < len(session["spike_times"][0])
+    assert encoding["encoding_mark_factors"][0].shape == (n_kernels, 2, 1)
+    assert np.sum(encoding["encoding_weights"][0]) < len(session["spike_times"][0])
