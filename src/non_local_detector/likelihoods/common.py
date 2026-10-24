@@ -2754,10 +2754,14 @@ def low_rank_log_mark_kernel(
     std = jnp.clip(std, min=EPS)
     n_dims = samples.shape[1]
     # Each feature's halved difference feeds the norm and every projection.
-    # XLA fuses all of them into one pass only when each is a multiply-add of
-    # feature-major rows into its own (n_samples, n_eval_points) sum; a
-    # division per consumer, or one (rank, n_samples, n_eval_points) sum,
-    # kept an array per feature alive (up to twice that on JAX 0.12).
+    # On CPU, XLA fuses all of them into one pass only when each is a
+    # multiply-add of feature-major rows into its own (n_samples,
+    # n_eval_points) sum; a division per consumer, or one (rank, n_samples,
+    # n_eval_points) sum, kept an array per feature alive (up to twice that on
+    # JAX 0.12). On GPU up to rank + 3 such arrays stay alive (JAX 0.9-0.12;
+    # one per feature or more on 0.7). Reductions over broadcast feature
+    # differences keep none on either backend, but took minutes to compile on
+    # GPU with JAX 0.9-0.12.
     scale = (2.0 / std).T
     scaled_projections = jnp.transpose(projections, (1, 2, 0)) * scale[None]
     squared_norm = 0.0
