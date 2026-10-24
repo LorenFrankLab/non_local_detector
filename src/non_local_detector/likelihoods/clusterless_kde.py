@@ -68,6 +68,7 @@ from non_local_detector.likelihoods.common import (
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.kde_compression import (
+    DEFAULT_COMPRESSION_THRESHOLD,
     CompressionMethod,
     compress_encoding_spikes,
     merge_encoding_spikes,
@@ -1822,7 +1823,7 @@ def fit_clusterless_kde_encoding_model(
     *,
     encoding_compression: CompressionMethod | None = None,
     n_encoding_kernels: int | None = None,
-    compression_threshold: float = 1.0,
+    compression_threshold: float | None = None,
     compression_seed: int = 0,
     compression_rank: int = 0,
     encoding_time_range=None,
@@ -1883,7 +1884,8 @@ def fit_clusterless_kde_encoding_model(
     compression_threshold : float, optional
         ``"merge"`` only: the largest Mahalanobis distance, in a kernel's own
         bandwidths over position and marks, at which a spike merges into it.
-        Larger values give fewer kernels. By default 1.0.
+        Larger values give fewer kernels. By default None, which merges at
+        1.0.
     compression_seed : int, optional
         Seed of the dictionary sampling or merge order, by default 0.
     compression_rank : int, optional
@@ -2044,7 +2046,11 @@ def fit_clusterless_kde_encoding_model(
                 electrode_positions,
                 bounded_features,
                 electrode_weights_host,
-                compression_threshold,
+                (
+                    DEFAULT_COMPRESSION_THRESHOLD
+                    if compression_threshold is None
+                    else compression_threshold
+                ),
                 np.asarray(position_std),
                 electrode_waveform_std,
                 compression_seed,

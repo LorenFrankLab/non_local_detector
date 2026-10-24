@@ -319,11 +319,41 @@ def test_stratified_weights_are_unbiased_over_seeds(session, track_environment):
         {"encoding_compression": "merge", "n_encoding_kernels": 100},
         {"encoding_compression": "merge", "compression_threshold": -1.0},
         {"encoding_compression": "merge", "compression_threshold": float("nan")},
+        # Settings that would otherwise be ignored.
+        {"n_encoding_kernels": 100},
+        {"compression_threshold": 2.0},
+        {
+            "encoding_compression": "stratified",
+            "n_encoding_kernels": 100,
+            "compression_threshold": 2.0,
+        },
     ],
 )
 def test_invalid_compression_settings_raise(session, track_environment, params):
     with pytest.raises(ValidationError):
         _fit(session, track_environment, **params)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "method,n_kernels", [("merge", 10), ("Uniform", 10), ("uniform", 0)]
+)
+def test_subsampling_rejects_other_methods_and_empty_sizes(session, method, n_kernels):
+    from non_local_detector.likelihoods.kde_compression import (
+        compress_encoding_spikes,
+    )
+
+    marks = session["spike_waveform_features"][0]
+    with pytest.raises(ValidationError):
+        compress_encoding_spikes(
+            np.zeros((len(marks), 1)),
+            marks,
+            np.ones(len(marks)),
+            method,
+            n_kernels,
+            np.array([POSITION_STD]),
+            np.full(2, WAVEFORM_STD),
+        )
 
 
 @pytest.mark.integration

@@ -43,7 +43,7 @@ not look like a shorter recording.
 """
 
 from functools import partial
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, get_args
 
 import jax
 import jax.numpy as jnp
@@ -52,8 +52,11 @@ from sklearn.cluster import KMeans
 
 from non_local_detector.exceptions import ValidationError
 
+SubsamplingMethod = Literal["uniform", "stratified"]
 CompressionMethod = Literal["uniform", "stratified", "merge"]
-COMPRESSION_METHODS: tuple[str, ...] = ("uniform", "stratified", "merge")
+COMPRESSION_METHODS: tuple[str, ...] = get_args(CompressionMethod)
+# Merge threshold when compression_threshold is None.
+DEFAULT_COMPRESSION_THRESHOLD = 1.0
 
 # k-means cells over the bandwidth-scaled marks, one stratification axis.
 _MARK_STRATA = 32
@@ -67,21 +70,26 @@ _LOW_RANK_SHORTLIST = 32
 def validate_compression(
     encoding_compression: str | None,
     n_encoding_kernels: object,
-    compression_threshold: float,
+    compression_threshold: object,
     compression_rank: object = 0,
 ) -> None:
     """Raise ``ValidationError`` for an unknown method or invalid setting.
+
+    A setting the method would ignore is invalid, so a forgotten
+    ``encoding_compression`` cannot silently fit the full dictionary.
 
     Parameters
     ----------
     encoding_compression : str or None
     n_encoding_kernels : object
-        A positive integer for ``"uniform"`` and ``"stratified"``; None for
-        ``"merge"``, whose size follows from the threshold.
-    compression_threshold : float
-        Finite and non-negative for ``"merge"``.
+        A positive integer for ``"uniform"`` and ``"stratified"``; None
+        otherwise (``"merge"`` sizes its dictionary by the threshold).
+    compression_threshold : object
+        None, or for ``"merge"`` a finite, non-negative number.
     compression_rank : object, optional
         A non-negative integer; nonzero only for ``"merge"``. By default 0.
+        Its upper bound depends on each electrode's dimensions, which the fit
+        checks.
     """
     if (
         isinstance(compression_rank, (bool, np.bool_))
@@ -98,7 +106,19 @@ def validate_compression(
             expected="encoding_compression='merge'",
             got=repr(encoding_compression),
         )
+    if compression_threshold is not None and encoding_compression != "merge":
+        raise ValidationError(
+            "compression_threshold applies to merged kernels only",
+            expected="encoding_compression='merge'",
+            got=repr(encoding_compression),
+        )
     if encoding_compression is None:
+        if n_encoding_kernels is not None:
+            raise ValidationError(
+                "n_encoding_kernels needs a subsampling method",
+                expected="encoding_compression='uniform' or 'stratified'",
+                got="encoding_compression=None",
+            )
         return
     if encoding_compression not in COMPRESSION_METHODS:
         raise ValidationError(
@@ -113,7 +133,12 @@ def validate_compression(
                 expected="n_encoding_kernels=None",
                 got=repr(n_encoding_kernels),
             )
-        if not np.isfinite(compression_threshold) or compression_threshold < 0:
+        if compression_threshold is not None and (
+            isinstance(compression_threshold, (bool, np.bool_))
+            or not isinstance(compression_threshold, (int, float, np.number))
+            or not np.isfinite(compression_threshold)
+            or compression_threshold < 0
+        ):
             raise ValidationError(
                 "compression_threshold must be finite and non-negative",
                 got=repr(compression_threshold),
@@ -186,7 +211,7 @@ def compress_encoding_spikes(
     positions: np.ndarray,
     marks: np.ndarray,
     weights: np.ndarray,
-    method: CompressionMethod,
+    method: SubsamplingMethod,
     n_kernels: int,
     position_std: np.ndarray,
     waveform_std: np.ndarray,
@@ -220,6 +245,18 @@ def compress_encoding_spikes(
         Each kept spike's weight divided by its inclusion probability. Kept
         spikes stay in their original order.
     """
+    if method not in get_args(SubsamplingMethod):
+        raise ValidationError(
+            "Unknown subsampling method",
+            expected=f"one of {get_args(SubsamplingMethod)}",
+            got=repr(method),
+        )
+    if n_kernels < 1:
+        raise ValidationError(
+            "The dictionary needs at least one kernel",
+            expected="n_kernels >= 1",
+            got=repr(n_kernels),
+        )
     positions, marks, weights = (np.asarray(a) for a in (positions, marks, weights))
     keep = np.flatnonzero(weights > 0)
     if keep.size > n_kernels:
@@ -227,7 +264,7 @@ def compress_encoding_spikes(
         if method == "uniform":
             probabilities = np.full(keep.size, n_kernels / keep.size)
             kept = rng.choice(keep.size, n_kernels, replace=False)
-        else:
+        else:  # stratified
             strata = _strata(
                 positions[keep], marks[keep], position_std, waveform_std, seed
             )
