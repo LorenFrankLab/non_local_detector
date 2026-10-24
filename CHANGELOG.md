@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Compressed encoding dictionaries for the clusterless KDE
+
+- **Added:** `clusterless_kde` can replace each electrode's encoding spikes with a smaller weighted dictionary of kernels (`encoding_compression`), which bounds its prediction cost. The default (`None`) is unchanged and bit-identical.
+  - `"uniform"`: a uniform random subset of `n_encoding_kernels` spikes.
+  - `"stratified"`: Pareto πps sampling (Rosén 1997) of `n_encoding_kernels` spikes, with inclusion probabilities falling as the inverse square root of the spike's stratum size (position cells two `position_std` wide crossed with 32 k-means cells of the bandwidth-scaled marks), so rare marks and places with few spikes are kept more often.
+  - Kept spikes are weighted by their inverse inclusion probability.
+  - `"merge"`: the kernel compression of Sodkomkham et al. (2016, *Knowledge-Based Systems* 94:1–12), reimplemented from the paper. Spikes are visited once in a seeded random order; each joins the nearest kernel when its Mahalanobis distance, in that kernel's own bandwidths over position and marks, is at most `compression_threshold` (default 1.0), and the merged kernel matches the pair's weight, mean and per-dimension variance. Every kernel then has its own diagonal bandwidth (`encoding_position_stds`, `encoding_waveform_stds` in the encoding model). Nearest-kernel distances grow with the number of mark dimensions, so many-channel marks need larger thresholds than tetrodes: with 32-dimensional marks a threshold of 1 merged nothing in simulation.
+  - Mean rates, exposure and occupancy still use every spike. The ground process uses the dictionary, so the expected count stays the integral of the compressed marked intensity over marks.
+  - `compression_seed` (default 0) seeds the sampling or the merge order.
+  - A setting the chosen method would ignore raises `ValidationError`: `n_encoding_kernels` without `"uniform"` or `"stratified"`, and `compression_threshold` or `compression_rank` without `"merge"`.
+  - `compression_rank` (`"merge"` only, default 0; an addition to the paper's method) gives each merged kernel a low-rank mark covariance, `diag(d) + U U^T` with `U` of that rank (`encoding_mark_factors` in the encoding model), so kernels can follow correlated marks.
+    - **Merging:** each merge moment-matches the joint (position and mark) covariance excess over the base bandwidths and projects it back to the rank, moving the dropped direction's variance to the diagonal, so every dimension's variance is kept exactly. The merge tracks the joint covariance exactly only at a rank of at least the number of position plus mark dimensions. The nearest kernel is chosen by full Mahalanobis distance among the 32 nearest by diagonal distance, computed without cancellation.
+    - **Stored kernels:** each keeps its mark covariance and its position variance; the position-mark covariance is dropped.
+    - **Prediction:** the kernels are evaluated with the Woodbury identity from each pair's feature differences, as the diagonal kernels are, on every GEMM reduction path and in the local likelihood (`use_gemm=False` refuses them). A mark whose distance overflows gets no kernel mass. The working memory stays a few kernel-sized arrays at any rank or feature count.
+    - **Cost:** fitting takes 4–8× as long as a diagonal merge (below).
+    - **float32 limit:** the Woodbury terms cancel along a kernel's long axis, so the log kernel's rounding error grows as `s**2 * eps`, where `s` is the largest singular value of the whitened factor `U / sqrt(d)` (the long axis's length in bandwidths). For 31 features at rank 8 the largest error near each kernel was 15–25 `s**2 * eps`: 0.009 nats at `s` ≈ 60, 0.05 at 170 and 1 at 600. Enable x64 for kernels that elongated.
+- `model_checking.clusterless` does not support merged dictionaries, whose mark CDFs would need per-kernel bandwidths; subsampled ones are supported.
+- Measured on two recordings: 5 blocked time folds each, full detector, held-out marginal log likelihood relative to the full KDE in the same fold, mean ± SD over the folds.
+  - **Tetrodes** (22, 4-D marks, 334k kernels in all):
+    - Merging at threshold 1 keeps 26% of the kernels for −0.5 ± 0.1 nats/s; threshold 1.5 keeps 12% for −3.2 ± 0.6; threshold 2 keeps 7% for −10.1 ± 2.1.
+    - Up to threshold 2, 50%/95% coverage stayed .55/.91 and running decoding error 6.3 cm, as for the full KDE.
+    - Subsampling to 10,000 kernels per tetrode (137k in all) lost 3.5 ± 0.9 (stratified) and 7.8 ± 5.1 (uniform, which also lowered coverage to .51/.89 and raised the error to 7.1 cm).
+  - **31-channel probe shanks** (11, 828k kernels in all): a diagonal merge is not recommended.
+    - At threshold 2.5 it kept 23% of the kernels and the decoding metrics (coverage .36/.79 against .36/.78, error 5.5 cm), but lost 157 ± 3 nats/s, mostly in how well the marks are described.
+    - Subsampling to 10,000 kernels per shank lost 63 ± 3 (stratified) and 77 ± 8 (uniform).
+  - Stratified subsampling beat uniform at every size on both recordings.
+  - **Low-rank merges**, same folds and protocol:
+    - Probe shanks, rank 8: threshold 2.5 keeps 23% of the kernels and gains 16.2 ± 1.4 nats/s (5/5 folds); threshold 3 keeps 10% for −1.3 ± 1.5 (diagonal merge at 3: −282.6 ± 4.7); threshold 4 keeps 2% for −65.3 ± 1.5. Rank 4 at threshold 3 loses 41.8 ± 1.3.
+    - Tetrodes, rank 2: gains at every threshold tried, in 5/5 folds each: +0.3 ± 0.0 (threshold 1, 26% of kernels), +1.4 ± 0.3 (1.5, 12%), +2.7 ± 0.5 (2, 6.5%; diagonal merge −10.1).
+    - The gains over the full KDE come from the mark density: per-kernel covariances smooth correlated marks better than one shared bandwidth.
+    - Bits per spike change the same way: probe shanks 0.217 for the full KDE, 0.246 at rank 8 and threshold 2.5, 0.216 at threshold 3; tetrodes 0.266, and 0.282 at rank 2 and threshold 2.
+    - 95% coverage stayed within 0.76–0.80 and running error within 5.1–5.9 cm on the probe shanks; tetrodes stayed at .91 and 6.3 cm.
+  - **Time on an A100** (fold 0, `block_size=10,000`; two sessions of runs):
+    - Warm prediction on the probe shanks: 4.2–5.0 s for the full KDE, 0.4–0.7 s for diagonal merges and 10,000-kernel subsamples, 2.1 s at rank 8 and threshold 3, and 5.0 s at threshold 2.5, slower than the full KDE.
+    - Warm prediction on tetrodes: 0.43–0.5 s for the full KDE, 0.1–0.2 s for diagonal merges and subsamples, 0.20–0.35 s at rank 2.
+    - A first prediction, dominated by compilation, takes 80–190 s for every variant.
+    - Fitting the probe recording takes 12 s for the full KDE, 62 s for a diagonal merge and about 500 s at rank 8 (8×). Fitting tetrodes takes about 50 s for a diagonal merge and 190 s at rank 2 (3.8×).
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.
