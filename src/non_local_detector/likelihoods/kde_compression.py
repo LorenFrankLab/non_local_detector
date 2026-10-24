@@ -333,6 +333,38 @@ def _merge_scan(samples, weights, base_variance, threshold):
     return means, variances, totals, n_kernels
 
 
+def _low_rank_mahalanobis_squared(offsets, factors, variances):
+    """Squared Mahalanobis distances to kernels of covariance diag(d) + U U^T.
+
+    With ``z = offset / sqrt(d)`` and ``W = U / sqrt(d)``, the distance
+    ``z^T (I + W W^T)^-1 z`` is the minimum over ``y`` of
+    ``|z - W y|**2 + |y|**2``, reached at ``y = (I + W^T W)^-1 W^T z``. Both
+    terms are non-negative, so nothing cancels; Woodbury's
+    ``|z|**2 - |C^-1 W^T z|**2`` cancels for elongated kernels and rounds in
+    float32 to small or negative distances that merge distant spikes.
+
+    Parameters
+    ----------
+    offsets : jnp.ndarray, shape (n_kernels, n_dims)
+    factors : jnp.ndarray, shape (n_kernels, n_dims, rank)
+    variances : jnp.ndarray, shape (n_kernels, n_dims)
+        The diagonal ``d`` of each kernel.
+
+    Returns
+    -------
+    distance_squared : jnp.ndarray, shape (n_kernels,)
+    """
+    scale = jnp.sqrt(variances)
+    z = offsets / scale
+    whitened = factors / scale[..., None]
+    inner = jnp.eye(factors.shape[-1], dtype=offsets.dtype) + jnp.einsum(
+        "cdr,cds->crs", whitened, whitened
+    )
+    y = jnp.linalg.solve(inner, jnp.einsum("cdr,cd->cr", whitened, z)[..., None])
+    residual = z - jnp.einsum("cdr,cr->cd", whitened, y[..., 0])
+    return jnp.sum(residual**2, axis=-1) + jnp.sum(y[..., 0] ** 2, axis=-1)
+
+
 @partial(jax.jit, static_argnames=("rank", "shortlist"))
 def _low_rank_merge_scan(samples, weights, base_variance, threshold, rank, shortlist):
     """Online merge keeping each kernel's excess covariance as diag(e) + U U^T.
@@ -369,29 +401,13 @@ def _low_rank_merge_scan(samples, weights, base_variance, threshold, rank, short
     # A factor of rank >= n_dims keeps every direction of the update.
     n_kept = min(rank, n_dims)
 
-    def mahalanobis_squared(offsets, factors, variances):
-        # (x)^T (D + U U^T)^-1 (x) = x^T D^-1 x - v^T (I + U^T D^-1 U)^-1 v,
-        # v = U^T D^-1 x (Woodbury), for each candidate kernel. The difference
-        # can round below zero in float32 for elongated kernels; a squared
-        # distance is never negative, and a negative one would always merge.
-        scaled = factors / variances[..., None]
-        inner = jnp.eye(rank, dtype=samples.dtype)[None] + jnp.einsum(
-            "cdr,cds->crs", factors, scaled
-        )
-        v = jnp.einsum("cdr,cd->cr", scaled, offsets)
-        return jnp.maximum(
-            jnp.sum(offsets**2 / variances, axis=-1)
-            - jnp.einsum("cr,cr->c", v, jnp.linalg.solve(inner, v[..., None])[..., 0]),
-            0.0,
-        )
-
     def step(carry, sample):
         means, factors, excess, marginal_variances, totals, n_kernels = carry
         x, weight = sample
         diagonal_distance = jnp.sum((x - means) ** 2 / marginal_variances, axis=1)
         diagonal_distance = jnp.where(slots < n_kernels, diagonal_distance, jnp.inf)
         _, candidates = jax.lax.top_k(-diagonal_distance, shortlist)
-        distance_squared = mahalanobis_squared(
+        distance_squared = _low_rank_mahalanobis_squared(
             x - means[candidates],
             factors[candidates],
             base_variance[None] + excess[candidates],

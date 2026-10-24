@@ -1040,6 +1040,43 @@ def test_low_rank_merge_keeps_weight_mean_and_second_moments(session, rank):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("rank", [1, 2, 8])
+@pytest.mark.parametrize("elongation", [1.0, 100.0, 1e4])
+def test_low_rank_merge_distance_is_accurate_for_elongated_kernels(rank, elongation):
+    """float32 squared distances to diag(d) + U U^T kernels match float64.
+
+    Offsets mostly along the factor cancel the most in Woodbury's
+    ``|z|**2 - |C^-1 V^T z|**2``; at whitened factors of 1e4 that form rounds
+    distances of ~100 to 0.
+    """
+    from non_local_detector.likelihoods.kde_compression import (
+        _low_rank_mahalanobis_squared,
+    )
+
+    rng = np.random.default_rng(0)
+    n_kernels, n_dims = 64, 12
+    factors = (
+        rng.normal(size=(n_kernels, n_dims, rank))
+        * elongation
+        * rng.uniform(0.01, 1.0, (n_kernels, 1, rank))
+    )
+    variances = rng.uniform(0.5, 2.0, (n_kernels, n_dims))
+    offsets = np.einsum(
+        "cdr,cr->cd", factors, rng.normal(size=(n_kernels, rank))
+    ) + rng.normal(0.0, 3.0, (n_kernels, n_dims))
+    expected = np.array(
+        [
+            x @ np.linalg.solve(np.diag(d) + u @ u.T, x)
+            for x, u, d in zip(offsets, factors, variances, strict=True)
+        ]
+    )
+    actual = _low_rank_mahalanobis_squared(
+        *(jnp.asarray(a, jnp.float32) for a in (offsets, factors, variances))
+    )
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=2e-3)
+
+
+@pytest.mark.unit
 def test_low_rank_merge_of_two_kernels_matches_their_covariance():
     from non_local_detector.likelihoods.kde_compression import merge_encoding_spikes
 
