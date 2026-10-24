@@ -973,6 +973,62 @@ def test_local_ratio_with_low_rank_kernels(low_rank_kernels):
     np.testing.assert_allclose(np.asarray(ratio), expected, rtol=1e-5, atol=1e-4)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("extreme_mark", [1e30, 3e38])
+def test_low_rank_kernels_of_overflowing_marks_are_background(
+    low_rank_kernels, extreme_mark
+):
+    """A mark whose squared distance overflows has zero kernel mass, not NaN.
+
+    The diagonal part ``-0.5 * |z|**2`` and the low-rank part
+    ``0.5 * |C^-1 V^T z|**2`` both overflow there; their sum must not be
+    ``-inf + inf``.
+    """
+    from non_local_detector.likelihoods.clusterless_kde import mark_projections
+    from non_local_detector.likelihoods.common import local_kde_log_ratio
+
+    k = low_rank_kernels
+    queries = np.array(k["queries"])
+    queries[3, 0] = extreme_mark
+    projections = mark_projections(k["mark_stds"], k["mark_factors"])
+    log_joint = np.asarray(
+        estimate_log_joint_mark_intensity(
+            jnp.asarray(queries, jnp.float32),
+            jnp.asarray(k["marks"], jnp.float32),
+            jnp.asarray(k["mark_stds"], jnp.float32),
+            jnp.ones(len(k["bins"])),
+            1.0,
+            log_kde_distance(
+                jnp.asarray(k["bins"]),
+                jnp.asarray(k["positions"]),
+                jnp.asarray(k["position_stds"]),
+            ),
+            encoding_weights=jnp.asarray(k["weights"]),
+            log_occupancy=jnp.zeros(len(k["bins"])),
+            log_background=jnp.full(len(queries), -30.0),
+            mark_projections=projections,
+        )
+    )
+    assert np.all(np.isfinite(log_joint))
+    np.testing.assert_allclose(log_joint[3], -30.0)
+    ratio = np.asarray(
+        local_kde_log_ratio(
+            jnp.zeros((len(queries), 1)),
+            jnp.asarray(queries, jnp.float32),
+            jnp.asarray(k["positions"]),
+            jnp.asarray(k["marks"]),
+            jnp.asarray(k["position_stds"]),
+            jnp.asarray(k["mark_stds"]),
+            jnp.zeros(len(queries)),
+            jnp.asarray(k["weights"]),
+            4,
+            mark_projections=projections,
+        )
+    )
+    assert ratio[3] == -np.inf
+    assert np.all(np.isfinite(np.delete(ratio, 3)))
+
+
 def _merged_moments(merged):
     """Weighted mean and second moments (position variance, mark matrix) of a merge."""
     weights = merged.weights / merged.weights.sum()

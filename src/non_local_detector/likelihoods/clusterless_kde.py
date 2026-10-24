@@ -52,7 +52,7 @@ from non_local_detector.likelihoods.common import (
     log_density_intensity,
     log_gaussian_pdf,
     log_nonnegative,
-    low_rank_log_kernel_correction,
+    low_rank_log_mark_kernel,
     resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
@@ -493,6 +493,10 @@ def _compute_log_mark_kernel_gemm(
     # Raw ADC marks can be signed/unsigned integers; subtraction must not wrap.
     decoding_features = decoding_features.astype(feature_dtype)
     encoding_features = encoding_features.astype(feature_dtype)
+    if mark_projections is not None:
+        return low_rank_log_mark_kernel(
+            decoding_features, encoding_features, waveform_stds, mark_projections
+        )
 
     def squared_distances(guard_overflow: bool) -> jnp.ndarray:
         sq_dist = jnp.zeros(
@@ -538,10 +542,6 @@ def _compute_log_mark_kernel_gemm(
         None,
     )
     logK_mark = log_norm_const - 0.5 * sq_dist  # (n_enc, n_dec)
-    if mark_projections is not None:
-        logK_mark = logK_mark + low_rank_log_kernel_correction(
-            decoding_features, encoding_features, waveform_stds, mark_projections
-        )
 
     return logK_mark
 
@@ -584,7 +584,7 @@ def mark_projections(
     Computed on the host in float64. With ``V = U / mark_stds`` and
     ``C C^T = I + V^T V``, a kernel's log density is the diagonal kernel's plus
     ``0.5 * |C^-1 V^T z|**2 - log det C``, ``z`` the bandwidth-scaled difference
-    (see ``low_rank_log_kernel_correction``).
+    (see ``low_rank_log_mark_kernel``).
 
     Parameters
     ----------
@@ -1896,7 +1896,7 @@ def fit_clusterless_kde_encoding_model(
         (about 500 s against 62 s for 11 31-channel shanks at rank 8), and each
         prediction evaluates r + 1 terms per feature and kernel instead of
         one. Very elongated kernels lose float32 accuracy (see
-        ``low_rank_log_kernel_correction``).
+        ``low_rank_log_mark_kernel``).
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the

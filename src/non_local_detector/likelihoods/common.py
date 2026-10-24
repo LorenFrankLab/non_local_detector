@@ -2697,25 +2697,26 @@ def log_density_intensity(mean_rate, log_density, log_occupancy):
     return jnp.where(no_support, -jnp.inf, result)
 
 
-def low_rank_log_kernel_correction(
+def low_rank_log_mark_kernel(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
     std: jnp.ndarray,
     mark_projections: tuple[jnp.ndarray, jnp.ndarray],
 ) -> jnp.ndarray:
-    """Log Gaussian kernel with covariance diag(std**2) + U U^T, less the diagonal one.
+    """Log Gaussian kernels with covariance diag(std**2) + U U^T.
 
-    With ``z = (sample - point) / std`` and ``V = U / std``, the kernel's log
-    density is the diagonal kernel's plus ``0.5 * |C^-1 V^T z|**2 - log det C``
-    (Woodbury), where ``C C^T = I + V^T V``. Each pair's features are
-    subtracted before scaling, halved so the subtraction cannot overflow, as
-    the diagonal mark kernels form their distances.
+    With ``z = (sample - point) / std`` and ``V = U / std``, a kernel's log
+    density is the diagonal kernel's normalizer less ``log det C``, minus half
+    the quadratic form ``|z|**2 - |C^-1 V^T z|**2`` (Woodbury), where
+    ``C C^T = I + V^T V``. Each pair's features are subtracted before scaling,
+    halved so the subtraction cannot overflow, as the diagonal mark kernels
+    form their distances. The quadratic form is clamped at zero, so no kernel
+    exceeds its value at its centre, and is ``+inf`` wherever either term
+    overflows, which gives that pair no kernel mass.
 
-    The correction is added to the diagonal kernel's ``-0.5 * |z|**2``, which it
-    largely cancels along a kernel's long axes, so its float32 rounding error
-    grows as about ``|z|**2 * eps``. For 31 features at rank 8 it measured
-    3e-3 nats at whitened factor magnitudes ``|V|`` of 30, 0.04 at 100 and 3.4
-    at 1000. Kernels that elongated need float64 (x64) to stay exact.
+    The two terms cancel along a kernel's long axes, so the float32 rounding
+    error of the log kernel grows in proportion to ``|V|**2 * eps``, ``|V|`` the
+    largest whitened factor entry.
 
     Parameters
     ----------
@@ -2729,21 +2730,33 @@ def low_rank_log_kernel_correction(
 
     Returns
     -------
-    correction : jnp.ndarray, shape (n_samples, n_eval_points)
+    log_kernel : jnp.ndarray, shape (n_samples, n_eval_points)
     """
     projections, half_log_det = mark_projections
     std = jnp.clip(std, min=EPS)
-    projected = jnp.zeros(
-        (projections.shape[1], samples.shape[0], eval_points.shape[0])
-    )
+    n_samples, n_dims = samples.shape
+    squared_norm = jnp.zeros((n_samples, eval_points.shape[0]))
+    projected = jnp.zeros((projections.shape[1], n_samples, eval_points.shape[0]))
     for dim, (eval_dim, sample_dim, dim_std) in enumerate(
         zip(eval_points.T, samples.T, std.T, strict=True)
     ):
         z = 2.0 * (
             (0.5 * sample_dim[:, None] - 0.5 * eval_dim[None, :]) / dim_std[:, None]
         )
+        squared_norm = squared_norm + z**2
         projected = projected + projections[:, :, dim].T[:, :, None] * z[None]
-    return 0.5 * jnp.sum(projected**2, axis=0) - half_log_det[:, None]
+    projected_norm = jnp.sum(projected**2, axis=0)
+    quadratic = jnp.where(
+        jnp.isfinite(projected_norm),
+        jnp.maximum(squared_norm - projected_norm, 0.0),
+        jnp.inf,
+    )
+    log_normalizer = (
+        -0.5 * n_dims * jnp.log(2.0 * jnp.pi)
+        - jnp.sum(jnp.log(std), axis=1)
+        - half_log_det
+    )
+    return log_normalizer[:, None] - 0.5 * quadratic
 
 
 def local_kde_log_ratio(
@@ -2763,7 +2776,7 @@ def local_kde_log_ratio(
     Keeping the mark term separate preserves its normalizer when position log
     densities are large enough that adding it would round it away in float32.
     Evaluation blocking retains the shared KDE kernel-workspace limit.
-    ``mark_projections`` (see ``low_rank_log_kernel_correction``) gives each
+    ``mark_projections`` (see ``low_rank_log_mark_kernel``) gives each
     kernel a low-rank mark covariance on top of its per-sample ``mark_std``.
     """
     n_position_dims = positions.shape[1]
@@ -2784,18 +2797,20 @@ def local_kde_log_ratio(
                 )
                 - safe_occ[None, :]
             )
-            log_marks = _log_kernel_matrix(
-                query[:, n_position_dims:-1],
-                samples[:, n_position_dims:],
-                std[..., n_position_dims:],
-            )
-            if mark_projections is not None:
-                log_marks = log_marks + low_rank_log_kernel_correction(
+            log_marks = (
+                _log_kernel_matrix(
+                    query[:, n_position_dims:-1],
+                    samples[:, n_position_dims:],
+                    std[..., n_position_dims:],
+                )
+                if mark_projections is None
+                else low_rank_log_mark_kernel(
                     query[:, n_position_dims:-1],
                     samples[:, n_position_dims:],
                     std[..., n_position_dims:],
                     mark_projections,
                 )
+            )
             safe_weights = jnp.where(weights > 0.0, weights, 1.0)
             log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)
             ratio = logsumexp(
