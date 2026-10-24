@@ -2181,11 +2181,19 @@ class PerSampleBandwidthKDEModel(KDEModel):
         if samples.ndim == 1:
             samples = jnp.expand_dims(samples, axis=1)
         std = np.asarray(self.std, dtype=float)
-        if std.shape != samples.shape or not np.all(np.isfinite(std) & (std > 0)):
+        if std.shape != samples.shape:
             raise ValidationError(
-                "Per-sample bandwidths must be finite, positive and one row per sample",
+                "Per-sample bandwidths need one row per sample",
                 expected=f"shape {samples.shape}",
                 got=f"shape {std.shape}",
+            )
+        invalid = np.argwhere(~(np.isfinite(std) & (std > 0)))
+        if invalid.size:
+            row, dim = invalid[0]
+            raise ValidationError(
+                "Per-sample bandwidths must be finite and positive",
+                got=f"std[{row}, {dim}] = {std[row, dim]}"
+                + (f" and {len(invalid) - 1} more" if len(invalid) > 1 else ""),
             )
         self.samples_ = samples
         if weights is None:

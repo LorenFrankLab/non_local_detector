@@ -527,6 +527,22 @@ def test_joint_intensity_with_per_kernel_bandwidths(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "std,message",
+    [
+        (np.ones((5, 2)), "one row per sample"),
+        (np.array([[1.0], [1.0], [0.0], [1.0]]), r"std\[2, 0\] = 0\.0"),
+        (np.array([[1.0], [np.nan], [1.0], [1.0]]), r"std\[1, 0\] = nan"),
+    ],
+)
+def test_per_sample_bandwidth_errors_say_which_check_failed(std, message):
+    from non_local_detector.likelihoods.common import PerSampleBandwidthKDEModel
+
+    with pytest.raises(ValidationError, match=message):
+        PerSampleBandwidthKDEModel(std=std).fit(np.zeros((4, 1)))
+
+
+@pytest.mark.unit
 def test_local_ratio_with_per_kernel_bandwidths(heterogeneous_kernels):
     from non_local_detector.likelihoods.common import local_kde_log_ratio
 
