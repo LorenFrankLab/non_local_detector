@@ -1387,6 +1387,84 @@ def _pad_with_last_row(array, n_rows: int) -> np.ndarray:
     return np.concatenate([array, np.repeat(array[-1:], n_rows - len(array), axis=0)])
 
 
+def _validate_kernel_bandwidths(
+    encoding_positions,
+    encoding_features,
+    position_stds,
+    waveform_stds,
+    mark_factors,
+) -> None:
+    """Raise ``ValidationError`` unless each electrode's per-kernel arrays fit it.
+
+    Merged kernels' bandwidths and factors are padded and sliced with the
+    kernels in compiled code, where a row-count mismatch pairs kernels with
+    other kernels' bandwidths without error. Checks shapes only, so it adds no
+    device synchronization.
+
+    Parameters
+    ----------
+    encoding_positions : list of array, each shape (n_kernels, n_position_dims)
+    encoding_features : list of array, each shape (n_kernels, n_features)
+    position_stds : list of array or None
+        Each None or shape (n_kernels, n_position_dims).
+    waveform_stds : list of array or None
+        Each None or shape (n_kernels, n_features); present with
+        ``position_stds``.
+    mark_factors : list of array or None
+        Each None or shape (n_kernels, n_features, rank); needs
+        ``waveform_stds``.
+    """
+    for electrode, (
+        positions,
+        features,
+        position_std,
+        waveform_std,
+        factors,
+    ) in enumerate(
+        zip(
+            encoding_positions,
+            encoding_features,
+            position_stds,
+            waveform_stds,
+            mark_factors,
+            strict=True,
+        )
+    ):
+        if (position_std is None) != (waveform_std is None) or (
+            factors is not None and waveform_std is None
+        ):
+            raise ValidationError(
+                f"Electrode {electrode}: merged kernels need their position and "
+                "waveform bandwidths",
+                expected="encoding_position_stds and encoding_waveform_stds "
+                "together, and with any encoding_mark_factors",
+                got=(
+                    f"position stds {'absent' if position_std is None else 'present'}"
+                    f", waveform stds {'absent' if waveform_std is None else 'present'}"
+                    f", mark factors {'absent' if factors is None else 'present'}"
+                ),
+            )
+        for name, value, expected in (
+            ("encoding_position_stds", position_std, np.shape(positions)),
+            ("encoding_waveform_stds", waveform_std, np.shape(features)),
+        ):
+            if value is not None and np.shape(value) != expected:
+                raise ValidationError(
+                    f"Electrode {electrode}: {name} must have one row per kernel",
+                    expected=f"shape {expected}",
+                    got=f"shape {np.shape(value)}",
+                )
+        if factors is not None and (
+            np.ndim(factors) != 3 or np.shape(factors)[:2] != np.shape(features)
+        ):
+            raise ValidationError(
+                f"Electrode {electrode}: encoding_mark_factors must have one "
+                "(n_features, rank) factor per kernel",
+                expected=f"shape {np.shape(features)} + (rank,)",
+                got=f"shape {np.shape(factors)}",
+            )
+
+
 def _electrode_bandwidths(spike_time_order, shared_std, kernel_stds, n_dims: int):
     """One electrode's kernel bandwidths, aligned with its padded samples.
 
@@ -2312,6 +2390,13 @@ def predict_clusterless_kde_log_likelihood(
         encoding_waveform_stds = [None] * n_electrodes
     if encoding_mark_factors is None:
         encoding_mark_factors = [None] * n_electrodes
+    _validate_kernel_bandwidths(
+        encoding_positions,
+        encoding_spike_waveform_features,
+        encoding_position_stds,
+        encoding_waveform_stds,
+        encoding_mark_factors,
+    )
 
     if is_local:
         log_likelihood = compute_local_log_likelihood(
@@ -2610,6 +2695,13 @@ def compute_local_log_likelihood(
         encoding_waveform_stds = [None] * len(encoding_positions)
     if encoding_mark_factors is None:
         encoding_mark_factors = [None] * len(encoding_positions)
+    _validate_kernel_bandwidths(
+        encoding_positions,
+        encoding_spike_waveform_features,
+        encoding_position_stds,
+        encoding_waveform_stds,
+        encoding_mark_factors,
+    )
 
     interpolated_position, log_occupancy = _prepare_kde_local_inputs(
         occupancy_model,

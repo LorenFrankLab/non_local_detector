@@ -1518,6 +1518,37 @@ def test_compression_rank_is_checked_before_any_electrode_merges(
     assert not merged
 
 
+def _drop_last_row(arrays):
+    return [arrays[0][:-1], *arrays[1:]]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"encoding_position_stds": None},
+        {"encoding_waveform_stds": None, "encoding_mark_factors": None},
+        {"encoding_waveform_stds": None},
+        "encoding_position_stds",
+        "encoding_waveform_stds",
+        "encoding_mark_factors",
+    ],
+)
+def test_prediction_rejects_per_kernel_arrays_that_do_not_fit_the_kernels(
+    low_rank_model, track_environment, edit, is_local
+):
+    """Missing partners, or one row short of the dictionary (an edited model)."""
+    session, encoding = low_rank_model
+    edited = (
+        {**encoding, **edit}
+        if isinstance(edit, dict)
+        else {**encoding, edit: _drop_last_row(encoding[edit])}
+    )
+    with pytest.raises(ValidationError):
+        _predict(edited, session, track_environment, is_local)
+
+
 @pytest.mark.unit
 def test_zero_compression_rank_is_the_diagonal_merge(session, track_environment):
     diagonal = _fit(session, track_environment, encoding_compression="merge")
