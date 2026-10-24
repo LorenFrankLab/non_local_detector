@@ -2752,24 +2752,26 @@ def low_rank_log_mark_kernel(
     """
     projections, half_log_det = mark_projections
     std = jnp.clip(std, min=EPS)
-    n_samples, n_dims = samples.shape
+    n_dims = samples.shape[1]
     # Each feature's halved difference feeds the norm and every projection.
-    # Kept to a subtraction, XLA recomputes it in each consumer's fusion;
-    # scaled by division in each, it kept one (n_samples, n_eval_points)
-    # array per feature alive. So the bandwidths go into the projections.
-    scale = 2.0 / std
-    scaled_projections = projections * scale[:, None, :]
-    squared_norm = jnp.zeros((n_samples, eval_points.shape[0]))
-    projected = jnp.zeros((projections.shape[1], n_samples, eval_points.shape[0]))
+    # XLA fuses all of them into one pass only when each is a multiply-add of
+    # feature-major rows into its own (n_samples, n_eval_points) sum; a
+    # division per consumer, or one (rank, n_samples, n_eval_points) sum,
+    # kept an array per feature alive (up to twice that on JAX 0.12).
+    scale = (2.0 / std).T
+    scaled_projections = jnp.transpose(projections, (1, 2, 0)) * scale[None]
+    squared_norm = 0.0
+    components = [0.0] * projections.shape[1]
     for dim, (eval_dim, sample_dim) in enumerate(
         zip(eval_points.T, samples.T, strict=True)
     ):
         halved = 0.5 * sample_dim[:, None] - 0.5 * eval_dim[None, :]
-        squared_norm = squared_norm + (halved * scale[:, dim, None]) ** 2
-        projected = (
-            projected + scaled_projections[:, :, dim].T[:, :, None] * halved[None]
-        )
-    projected_norm = jnp.sum(projected**2, axis=0)
+        squared_norm = squared_norm + (halved * scale[dim, :, None]) ** 2
+        components = [
+            component + direction[dim, :, None] * halved
+            for component, direction in zip(components, scaled_projections, strict=True)
+        ]
+    projected_norm = sum(component**2 for component in components)
     quadratic = jnp.where(
         jnp.isfinite(projected_norm),
         jnp.maximum(squared_norm - projected_norm, 0.0),
