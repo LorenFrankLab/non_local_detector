@@ -1085,6 +1085,13 @@ def test_joint_intensity_with_low_rank_kernels(
 
 
 @pytest.mark.unit
+def test_low_rank_kernels_need_the_gemm_path(low_rank_kernels):
+    """The linear-space reference path has diagonal kernels only."""
+    with pytest.raises(ValueError, match="use_gemm=True"):
+        _kernel_joint_intensity(low_rank_kernels, -30.0, use_gemm=False)
+
+
+@pytest.mark.unit
 def test_local_ratio_with_low_rank_kernels(low_rank_kernels):
     k = low_rank_kernels
     rng = np.random.default_rng(2)
