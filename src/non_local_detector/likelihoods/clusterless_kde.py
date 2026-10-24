@@ -1968,6 +1968,15 @@ def fit_clusterless_kde_encoding_model(
     warn_if_tracking_is_sparse(support, position, position_std)
     for features in spike_waveform_features:
         validate_bandwidth(waveform_std, features.shape[1], "waveform_std")
+        # Kernel positions have the bandwidth's dimensions. Checked for every
+        # electrode before any merge, which can take minutes.
+        n_joint_dims = n_std_dims + features.shape[1]
+        if encoding_compression == "merge" and compression_rank > n_joint_dims:
+            raise ValidationError(
+                "compression_rank exceeds the kernels' dimensions",
+                expected=f"at most {n_joint_dims} (position plus mark dimensions)",
+                got=repr(compression_rank),
+            )
 
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
@@ -2035,13 +2044,6 @@ def fit_clusterless_kde_encoding_model(
             as_std_array(waveform_std, bounded_features.shape[1])
         )
         if encoding_compression == "merge":
-            n_joint_dims = np.shape(electrode_positions)[1] + bounded_features.shape[1]
-            if compression_rank > n_joint_dims:
-                raise ValidationError(
-                    "compression_rank exceeds the kernels' dimensions",
-                    expected=f"at most {n_joint_dims} (position plus mark dimensions)",
-                    got=repr(compression_rank),
-                )
             merged = merge_encoding_spikes(
                 electrode_positions,
                 bounded_features,

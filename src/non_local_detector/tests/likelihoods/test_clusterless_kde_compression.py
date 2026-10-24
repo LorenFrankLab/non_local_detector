@@ -1490,6 +1490,35 @@ def test_invalid_compression_rank_raises(session, track_environment, params):
 
 
 @pytest.mark.unit
+def test_compression_rank_is_checked_before_any_electrode_merges(
+    session, track_environment, monkeypatch
+):
+    """Rank 4 fits the first electrode's 1 + 4 dimensions, not the second's 1 + 2."""
+    from non_local_detector.likelihoods import clusterless_kde
+
+    merged = []
+    monkeypatch.setattr(
+        clusterless_kde,
+        "merge_encoding_spikes",
+        lambda *args, **kwargs: merged.append(args) or None,
+    )
+    marks = session["spike_waveform_features"][0]
+    two_electrodes = {
+        **session,
+        "spike_times": session["spike_times"] * 2,
+        "spike_waveform_features": [np.concatenate([marks, marks], axis=1), marks],
+    }
+    with pytest.raises(ValidationError, match="compression_rank"):
+        _fit(
+            two_electrodes,
+            track_environment,
+            encoding_compression="merge",
+            compression_rank=4,
+        )
+    assert not merged
+
+
+@pytest.mark.unit
 def test_zero_compression_rank_is_the_diagonal_merge(session, track_environment):
     diagonal = _fit(session, track_environment, encoding_compression="merge")
     rank_zero = _fit(
