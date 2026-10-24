@@ -272,11 +272,11 @@ def compress_encoding_spikes(
                 np.bincount(strata)[strata], n_kernels
             )
             # Pareto sampling: the n_kernels smallest ranking variables.
+            # Probabilities are positive and uniform < 1: no division by zero.
             uniform = rng.random(keep.size)
-            with np.errstate(divide="ignore"):
-                ranking = (uniform * (1.0 - probabilities)) / (
-                    (1.0 - uniform) * probabilities
-                )
+            ranking = (uniform * (1.0 - probabilities)) / (
+                (1.0 - uniform) * probabilities
+            )
             kept = np.argpartition(ranking, n_kernels - 1)[:n_kernels]
         kept = np.sort(kept)
         weights = weights.copy()
