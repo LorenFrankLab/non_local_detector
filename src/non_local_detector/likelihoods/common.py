@@ -1498,14 +1498,18 @@ def _log_kernel_matrix(
     ----------
     eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
     samples : jnp.ndarray, shape (n_samples, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Shared bandwidths, or one row per sample.
 
     Returns
     -------
     log_kernel : jnp.ndarray, shape (n_samples, n_eval_points)
-        ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``.
+        ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``,
+        with ``std[i, d]`` for per-sample bandwidths.
     """
     log_kernel = jnp.zeros((samples.shape[0], eval_points.shape[0]))
+    if jnp.ndim(std) == 2:
+        std = list(jnp.asarray(std).T[:, :, None])
     for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=True):
         log_kernel += log_gaussian_pdf(
             jnp.expand_dims(dim_eval, axis=0),
@@ -1530,8 +1534,9 @@ def kde(
         Evaluation points.
     samples : jnp.ndarray, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
-        Standard deviation of the Gaussian kernel.
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Standard deviation of the Gaussian kernel, shared or one row per
+        sample.
     weights : jnp.ndarray, shape (n_samples,)
         Weights for each sample.
 
@@ -1570,8 +1575,9 @@ def block_kde(
         Evaluation points.
     samples : jnp.ndarray, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
-        Standard deviation of the Gaussian kernel.
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Standard deviation of the Gaussian kernel, shared or one row per
+        sample.
     block_size : int, optional
         Evaluation rows per block, by default 100. Reduced when needed so one
         block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
@@ -1893,7 +1899,7 @@ def log_kde(
     Shapes:
       eval_points: (n_eval, n_dims)
       samples:     (n_samp, n_dims)
-      std:         (n_dims,)
+      std:         (n_dims,), or (n_samp, n_dims) for one row per sample
       weights:     (n_samp,)
     Returns: (n_eval,)
 
@@ -1970,8 +1976,9 @@ def block_log_kde(
         Evaluation points.
     samples : jnp.ndarray, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
-        Standard deviation of the Gaussian kernel.
+    std : jnp.ndarray, shape (n_dims,) or (n_samples, n_dims)
+        Standard deviation of the Gaussian kernel, shared or one row per
+        sample.
     block_size : int, optional
         Evaluation rows per block, by default 100. Reduced when needed so one
         block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
@@ -2134,6 +2141,74 @@ class KDEModel:
             eval_points, self.samples_, std, block_size, self.weights_
         )
         return jnp.where(jnp.sum(self.weights_) > 0.0, values, -jnp.inf)
+
+
+class PerSampleBandwidthKDEModel(KDEModel):
+    """Weighted Gaussian KDE whose samples each have their own diagonal bandwidth.
+
+    The density is ``sum_i w_i N(x; samples_i, diag(std_i**2)) / sum_i w_i``.
+    :func:`kde_log_density` evaluates it through :meth:`predict_log`. Unlike a
+    ``KDEModel``, ``std`` has one row per sample, so code that reads a
+    ``KDEModel``'s ``std`` as one bandwidth per dimension must not be given
+    this model (``kde_log_density`` and ``_kde_log_densities`` take their
+    shared-bandwidth paths only for an exact ``KDEModel``).
+
+    Attributes
+    ----------
+    std : jnp.ndarray, shape (n_samples, n_dims)
+        Finite, positive kernel standard deviations, one row per sample.
+    block_size : int, optional
+        Evaluation points per block; None (default) evaluates all at once.
+    samples_ : jnp.ndarray, shape (n_samples, n_dims)
+    weights_ : jnp.ndarray, shape (n_samples,)
+    """
+
+    def fit(
+        self, samples: jnp.ndarray, weights: jnp.ndarray | None = None
+    ) -> "PerSampleBandwidthKDEModel":
+        """Fit the model.
+
+        Parameters
+        ----------
+        samples : jnp.ndarray, shape (n_samples, n_dims)
+        weights : jnp.ndarray, shape (n_samples,), optional
+            Finite, non-negative sample weights, by default None (uniform).
+
+        Returns
+        -------
+        self : PerSampleBandwidthKDEModel
+
+        Raises
+        ------
+        ValidationError
+            If ``std`` is not finite and positive with shape ``samples.shape``,
+            or ``weights`` is invalid.
+        """
+        samples = jnp.asarray(samples)
+        if samples.ndim == 1:
+            samples = jnp.expand_dims(samples, axis=1)
+        std = np.asarray(self.std, dtype=float)
+        if std.shape != samples.shape:
+            raise ValidationError(
+                "Per-sample bandwidths need one row per sample",
+                expected=f"shape {samples.shape}",
+                got=f"shape {std.shape}",
+            )
+        invalid = np.argwhere(~(np.isfinite(std) & (std > 0)))
+        if invalid.size:
+            row, dim = invalid[0]
+            raise ValidationError(
+                "Per-sample bandwidths must be finite and positive",
+                got=f"std[{row}, {dim}] = {std[row, dim]}"
+                + (f" and {len(invalid) - 1} more" if len(invalid) > 1 else ""),
+            )
+        self.samples_ = samples
+        if weights is None:
+            self.weights_ = jnp.ones((samples.shape[0],))
+        else:
+            validate_weights(weights, samples.shape[0])
+            self.weights_ = jnp.asarray(weights)
+        return self
 
 
 def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
@@ -2637,6 +2712,83 @@ def log_density_intensity(mean_rate, log_density, log_occupancy):
     return jnp.where(no_support, -jnp.inf, result)
 
 
+def low_rank_log_mark_kernel(
+    eval_points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+    mark_projections: tuple[jnp.ndarray, jnp.ndarray],
+) -> jnp.ndarray:
+    """Log Gaussian kernels with covariance diag(std**2) + U U^T.
+
+    With ``z = (sample - point) / std`` and ``V = U / std``, a kernel's log
+    density is the diagonal kernel's normalizer less ``log det C``, minus half
+    the quadratic form ``|z|**2 - |C^-1 V^T z|**2`` (Woodbury), where
+    ``C C^T = I + V^T V``. Each pair's features are subtracted before scaling,
+    halved so the subtraction cannot overflow, as the diagonal mark kernels
+    form their distances. The quadratic form is clamped at zero, so no kernel
+    exceeds its value at its centre, and is ``+inf`` wherever either term
+    overflows, which gives that pair no kernel mass.
+
+    The two terms cancel along a kernel's long axis, so the float32 rounding
+    error of the log kernel grows in proportion to ``s**2 * eps``, ``s`` the
+    largest singular value of ``V`` (the long axis's length in bandwidths).
+    For 31 features at rank 8, the largest error near each kernel measured
+    15-25 ``s**2 * eps``: 0.009 nats at ``s`` of about 60 and 1 nat at 600.
+    Kernels that elongated need float64 (x64) to stay accurate.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_samples, n_dims)
+        Each kernel's diagonal standard deviations; clipped below at ``EPS``.
+    mark_projections : tuple of jnp.ndarray
+        ``(C^-1 V^T, log det C)`` of each kernel, shapes (n_samples, rank,
+        n_dims) and (n_samples,).
+
+    Returns
+    -------
+    log_kernel : jnp.ndarray, shape (n_samples, n_eval_points)
+    """
+    projections, half_log_det = mark_projections
+    std = jnp.clip(std, min=EPS)
+    n_dims = samples.shape[1]
+    # Each feature's halved difference feeds the norm and every projection.
+    # On CPU, XLA fuses all of them into one pass only when each is a
+    # multiply-add of feature-major rows into its own (n_samples,
+    # n_eval_points) sum; a division per consumer, or one (rank, n_samples,
+    # n_eval_points) sum, kept an array per feature alive (up to twice that on
+    # JAX 0.12). On GPU up to rank + 3 such arrays stay alive (JAX 0.9-0.12;
+    # one per feature or more on 0.7). Reductions over broadcast feature
+    # differences keep none on either backend, but took minutes to compile on
+    # GPU with JAX 0.9-0.12.
+    scale = (2.0 / std).T
+    scaled_projections = jnp.transpose(projections, (1, 2, 0)) * scale[None]
+    squared_norm = 0.0
+    components = [0.0] * projections.shape[1]
+    for dim, (eval_dim, sample_dim) in enumerate(
+        zip(eval_points.T, samples.T, strict=True)
+    ):
+        halved = 0.5 * sample_dim[:, None] - 0.5 * eval_dim[None, :]
+        squared_norm = squared_norm + (halved * scale[dim, :, None]) ** 2
+        components = [
+            component + direction[dim, :, None] * halved
+            for component, direction in zip(components, scaled_projections, strict=True)
+        ]
+    projected_norm = sum(component**2 for component in components)
+    quadratic = jnp.where(
+        jnp.isfinite(projected_norm),
+        jnp.maximum(squared_norm - projected_norm, 0.0),
+        jnp.inf,
+    )
+    log_normalizer = (
+        -0.5 * n_dims * jnp.log(2.0 * jnp.pi)
+        - jnp.sum(jnp.log(std), axis=1)
+        - half_log_det
+    )
+    return log_normalizer[:, None] - 0.5 * quadratic
+
+
 def local_kde_log_ratio(
     positions,
     marks,
@@ -2647,17 +2799,21 @@ def local_kde_log_ratio(
     log_occupancy,
     weights,
     block_size,
+    mark_projections=None,
 ):
     """Joint KDE/occupancy ratio, dividing position kernels before adding marks.
 
     Keeping the mark term separate preserves its normalizer when position log
     densities are large enough that adding it would round it away in float32.
     Evaluation blocking retains the shared KDE kernel-workspace limit.
+    ``mark_projections`` (see ``low_rank_log_mark_kernel``) gives each
+    kernel a low-rank mark covariance on top of its per-sample ``mark_std``.
     """
     n_position_dims = positions.shape[1]
     points = jnp.concatenate((positions, marks, log_occupancy[:, None]), axis=1)
     samples = jnp.concatenate((encoding_positions, encoding_marks), axis=1)
-    std = jnp.concatenate((position_std, mark_std))
+    # Shared (n_dims,) bandwidths or one row per sample, (n_samples, n_dims).
+    std = jnp.concatenate((position_std, mark_std), axis=-1)
 
     def kernel(query, samples, std, weights):
         def supported(_):
@@ -2667,14 +2823,23 @@ def local_kde_log_ratio(
                 _log_kernel_matrix(
                     query[:, :n_position_dims],
                     samples[:, :n_position_dims],
-                    std[:n_position_dims],
+                    std[..., :n_position_dims],
                 )
                 - safe_occ[None, :]
             )
-            log_marks = _log_kernel_matrix(
-                query[:, n_position_dims:-1],
-                samples[:, n_position_dims:],
-                std[n_position_dims:],
+            log_marks = (
+                _log_kernel_matrix(
+                    query[:, n_position_dims:-1],
+                    samples[:, n_position_dims:],
+                    std[..., n_position_dims:],
+                )
+                if mark_projections is None
+                else low_rank_log_mark_kernel(
+                    query[:, n_position_dims:-1],
+                    samples[:, n_position_dims:],
+                    std[..., n_position_dims:],
+                    mark_projections,
+                )
             )
             safe_weights = jnp.where(weights > 0.0, weights, 1.0)
             log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)
