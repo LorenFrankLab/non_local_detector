@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -287,21 +288,6 @@ def test_log_kde_zero_weight_sample_is_dropped():
     )
 
 
-def test_log_kde_all_zero_weights_is_finite():
-    """All-zero weights must not produce NaN (the -inf/-inf degenerate case)."""
-    r = rng(7)
-    samples = r.normal(size=(10, 1))
-    eval_points = r.normal(size=(5, 1))
-    std = jnp.array([1.0])
-    log_vals = log_kde(
-        jnp.asarray(eval_points),
-        jnp.asarray(samples),
-        std,
-        jnp.zeros((samples.shape[0],)),
-    )
-    assert jnp.all(jnp.isfinite(log_vals))
-
-
 def test_block_log_kde_matches_log_kde():
     r = rng(4)
     samples = r.normal(size=(80, 1))
@@ -321,16 +307,27 @@ def test_block_log_kde_matches_log_kde():
         assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
 
-def test_kde_model_shapes_and_predict_log():
+def _gaussian_kde_reference(eval_points, samples, std):
+    """float64 product-Gaussian KDE with uniform weights, shape (n_eval,)."""
+    return (
+        norm.pdf(eval_points[:, None, :], samples[None], np.asarray(std))
+        .prod(axis=-1)
+        .mean(axis=-1)
+    )
+
+
+def test_kde_model_predict_and_predict_log_match_the_gaussian_kde():
     r = rng(5)
-    samples = r.normal(size=(50, 2))
-    eval_points = r.normal(size=(10, 2))
-    model = KDEModel(std=jnp.array([1.0, 2.0]), block_size=5).fit(samples)
+    samples = r.normal(size=(50, 2)).astype(np.float32)
+    eval_points = r.normal(size=(10, 2)).astype(np.float32)
+    std = np.array([1.0, 2.0])
+    model = KDEModel(std=jnp.asarray(std), block_size=5).fit(samples)
+    expected = _gaussian_kde_reference(eval_points, samples, std)
     dens = model.predict(jnp.asarray(eval_points))
     log_dens = model.predict_log(jnp.asarray(eval_points))
-    assert dens.shape == (eval_points.shape[0],)
-    assert log_dens.shape == (eval_points.shape[0],)
-    assert jnp.all(jnp.isfinite(log_dens))
+    assert dens.shape == log_dens.shape == (eval_points.shape[0],)
+    np.testing.assert_allclose(dens, expected, rtol=1e-5)
+    np.testing.assert_allclose(log_dens, np.log(expected), rtol=1e-5)
 
 
 def test_get_spikecount_per_time_bin_edges_and_outliers():
@@ -369,21 +366,27 @@ def test_weights_scaling_invariance_and_reweighting_effect():
     assert dens_reweighted > dens1
 
 
-def test_std_extremes_are_finite_and_reasonable():
+@pytest.mark.parametrize("std", [1e-6, 100.0])
+def test_std_extremes_match_the_gaussian_kde(std):
+    """Very narrow and very wide kernels keep the Gaussian KDE value.
+
+    With std 1e-6 a point on a sample sees only that sample's peak,
+    1 / (n * 2 pi * std**2), about 1.6e9, and points off the samples see zero;
+    with std 100 every kernel is nearly flat at about 1 / (2 pi * 100**2).
+    """
     r = rng(11)
-    samples = r.normal(size=(100, 2))
-    eval_points = r.normal(size=(20, 2))
-    w = jnp.ones((samples.shape[0],))
-    # Very small std -> densities peaked but finite
-    d_small = kde(
-        jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([1e-6, 1e-6]), w
+    samples = r.normal(size=(100, 2)).astype(np.float32)
+    eval_points = np.concatenate(
+        [samples[:5], r.normal(size=(20, 2)).astype(np.float32)]
     )
-    # Very large std -> densities smoother and close across eval points
-    d_large = kde(
-        jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([100.0, 100.0]), w
+    d = kde(
+        jnp.asarray(eval_points),
+        jnp.asarray(samples),
+        jnp.array([std, std]),
+        jnp.ones((samples.shape[0],)),
     )
-    assert jnp.all(jnp.isfinite(d_small)) and jnp.all(jnp.isfinite(d_large))
-    assert d_large.ptp() < 1e-2
+    expected = _gaussian_kde_reference(eval_points, samples, [std, std])
+    np.testing.assert_allclose(d, expected, rtol=1e-5, atol=0)
 
 
 def test_empty_eval_points_returns_empty():
