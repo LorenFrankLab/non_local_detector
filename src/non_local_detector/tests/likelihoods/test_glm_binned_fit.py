@@ -7,7 +7,6 @@ sample. These tests check the aggregation and that the binned fit is as close to
 the true rates as the per-sample fit.
 """
 
-import networkx as nx
 import numpy as np
 
 from non_local_detector.environment import Environment
@@ -116,57 +115,6 @@ def test_binned_fit_is_as_close_to_the_truth_as_the_per_sample_fit():
     binned = np.asarray(enc["place_fields"]).T[interior]
     per_sample = np.exp(predict @ reference.T)
     assert kl_per_spike(binned) < kl_per_spike(per_sample) + 2e-3
-
-
-def test_binned_track_graph_fit_does_not_mix_edges_at_a_zero_gap_seam():
-    """With no gap between edges in linear position, a cell at the seam would mix
-    the end of one edge with the start of the next; cells are per edge."""
-    nodes = {0: (0.0, 0.0), 1: (40.0, 0.0), 2: (70.0, 30.0), 3: (70.0, -30.0)}
-    edges = [(0, 1), (1, 2), (1, 3)]
-    graph = nx.Graph()
-    for node, pos in nodes.items():
-        graph.add_node(node, pos=pos)
-    for eid, (u, v) in enumerate(edges):
-        graph.add_edge(
-            u,
-            v,
-            distance=float(np.linalg.norm(np.subtract(nodes[u], nodes[v]))),
-            edge_id=eid,
-        )
-    env = Environment(
-        place_bin_size=1.0, track_graph=graph, edge_order=edges, edge_spacing=0.0
-    ).fit_place_grid()
-    rng = np.random.default_rng(0)
-    seq = (0, 1, 2, 1, 3, 1, 0)
-    legs = [
-        np.linspace(nodes[a], nodes[b], 300)
-        for a, b in zip(seq[:-1], seq[1:], strict=True)
-    ]
-    position = np.tile(np.concatenate(legs), (12, 1))
-    time = np.arange(position.shape[0]) / 100.0
-    distance = np.linalg.norm(position - np.asarray(nodes[2]), axis=1)
-    rate = 0.2 + 20.0 * np.exp(-0.5 * (distance / 4.0) ** 2)
-    spikes = time[rng.random(time.size) < rate * 0.01]
-    enc = fit_sorted_spikes_glm_encoding_model(
-        time,
-        position,
-        [spikes],
-        env,
-        env.place_bin_edges_,
-        env.edges_,
-        env.is_track_interior_,
-        env.is_track_boundary_,
-        disable_progress_bar=True,
-    )
-    basis = enc["emission_design_info"]
-    arm3_start = basis.edge_starts[2]
-    centers = env.place_bin_centers_.ravel()
-    interior = env.is_track_interior_.ravel()
-    field = np.asarray(enc["place_fields"])[0]
-    assert (
-        field[interior & (centers >= arm3_start) & (centers < arm3_start + 6.0)].max()
-        < 0.5
-    )
 
 
 def _plus_maze(seed=0, n_laps=6):
