@@ -122,7 +122,7 @@ class TestGetBinIndSnap:
         assert 0 <= b[0] < env.place_bin_centers_.shape[0]
 
     def test_snaps_2d_environment_with_interior_hole(self):
-        """2D env with an interior hole: gap-bin positions snap by Euclidean distance.
+        """2D env with an interior hole: hole positions snap by Euclidean distance.
 
         Exercises the N-D broadcast path in the snap code where each position
         has shape (2,) and distances are computed across (n_snap, n_interior, 2).
@@ -130,39 +130,33 @@ class TestGetBinIndSnap:
         env = Environment(
             environment_name="open-2d",
             place_bin_size=1.0,
+            position_range=((0.0, 5.0), (0.0, 5.0)),
         )
-        # L-shaped occupancy: the interior of a 5x5 grid has a hole at (2,2)
-        # that never gets visited, which infer_track_interior will mark False.
-        xs = np.concatenate(
-            [
-                np.linspace(0.0, 4.0, 50),
-                np.full(50, 0.5),
-                np.full(50, 4.0),
-                np.linspace(0.0, 4.0, 50),
-            ]
-        )
-        ys = np.concatenate(
-            [
-                np.full(50, 0.5),
-                np.linspace(0.0, 4.0, 50),
-                np.linspace(0.0, 4.0, 50),
-                np.full(50, 4.0),
-            ]
-        )
-        position_2d = np.stack([xs, ys], axis=-1)
-        env = env.fit_place_grid(position_2d, infer_track_interior=True)
+        # A square ring through the outer bin centres of a 5x5 grid. Inferring
+        # the interior closes the hole's corners, leaving a plus-shaped hole
+        # centred on bin (2.5, 2.5) and surrounded by the ring.
+        side = np.linspace(0.5, 4.5, 81)
+        low, high = np.full_like(side, 0.5), np.full_like(side, 4.5)
+        xs = np.concatenate([side, side, low, high])
+        ys = np.concatenate([low, high, side, side])
+        env = env.fit_place_grid(np.stack([xs, ys], axis=-1), infer_track_interior=True)
 
+        centers = env.place_bin_centers_
         is_interior = env.is_track_interior_.ravel()
-        gap_bins = np.where(~is_interior)[0]
-        if len(gap_bins) == 0:
-            pytest.skip("No gap bins in this 2D env; can't test snap")
 
-        # Use the center of the first gap bin as the query
-        gap_center = env.place_bin_centers_[gap_bins[0]]
-        b = env.get_bin_ind(gap_center[np.newaxis])
-        assert b[0] in np.where(is_interior)[0], (
-            f"2D env: gap-bin position {gap_center} returned bin {b[0]}, not interior"
-        )
+        def bin_at(center):
+            return int(np.flatnonzero(np.all(centers == center, axis=1))[0])
+
+        hole = [bin_at(c) for c in ([2.5, 2.5], [2.5, 1.5], [1.5, 2.5])]
+        assert not np.any(is_interior[hole])
+        assert is_interior[bin_at([1.5, 1.5])]
+        assert np.all(is_interior[[bin_at([0.5, 2.5]), bin_at([4.5, 2.5])]])
+
+        # The hole centre and one arm, offset toward the interior bin (1.5, 1.5):
+        # the nearest interior centre, closer than any other by at least 0.15.
+        queries = np.array([[2.4, 2.3], [2.2, 1.6]])
+        b = env.get_bin_ind(queries)
+        np.testing.assert_array_equal(b, [bin_at([1.5, 1.5])] * 2)
 
     def test_snaps_vectorized_mixed_input(self):
         """A batch of positions, some on interior bins, some on gap edges, all snap correctly."""
