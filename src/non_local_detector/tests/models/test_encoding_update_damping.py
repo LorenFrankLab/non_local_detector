@@ -9,6 +9,8 @@ and it must be rejected before the wrapper's initial ``fit`` replaces the
 encoding model.
 """
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -19,7 +21,9 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import ValidationError
 
-REJECTED_DAMPING = [0.5, 1e-6, 1.0, -0.1, np.nan]
+# Every nonzero value takes the same branch. A negative value and NaN are kept
+# because an ``x > 0`` style guard would let them through.
+REJECTED_DAMPING = [0.5, -0.1, np.nan]
 
 
 @pytest.fixture(scope="module")
@@ -50,21 +54,24 @@ def _fit(detector, inputs):
     return detector.fit(**fit_inputs)
 
 
+@pytest.fixture(scope="module")
+def fitted_sorted(sorted_inputs):
+    return _fit(NonLocalSortedSpikesDetector(), sorted_inputs)
+
+
+@pytest.fixture(scope="module")
+def fitted_clusterless(clusterless_inputs):
+    return _fit(NonLocalClusterlessDetector(), clusterless_inputs)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("damping", REJECTED_DAMPING)
-@pytest.mark.parametrize(
-    ("detector_cls", "inputs_fixture"),
-    [
-        (NonLocalSortedSpikesDetector, "sorted_inputs"),
-        (NonLocalClusterlessDetector, "clusterless_inputs"),
-    ],
-)
-def test_nonzero_damping_is_rejected_before_mutation(
-    request, detector_cls, inputs_fixture, damping
-):
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_nonzero_damping_is_rejected_before_mutation(request, family, damping):
     """A rejected value raises ``ValidationError`` and leaves fitted state alone."""
-    inputs = request.getfixturevalue(inputs_fixture)
-    detector = _fit(detector_cls(), inputs)
+    inputs = request.getfixturevalue(f"{family}_inputs")
+    # A copy of the shared fit, since a failing guard would mutate it.
+    detector = copy.deepcopy(request.getfixturevalue(f"fitted_{family}"))
     encoding_model_before = detector.encoding_model_
     state_before = set(vars(detector))
 
@@ -79,12 +86,13 @@ def test_nonzero_damping_is_rejected_before_mutation(
 
 @pytest.mark.unit
 def test_zero_damping_is_accepted(sorted_inputs):
-    """The default (zero) keeps the existing EM path."""
-    detector = NonLocalSortedSpikesDetector()
-    results = detector.estimate_parameters(
-        **sorted_inputs,
-        max_iter=1,
-        estimate_encoding_model=True,
-        encoding_update_damping=0.0,
+    """An explicit zero is accepted and matches EM run without the argument."""
+    results = [
+        NonLocalSortedSpikesDetector().estimate_parameters(
+            **sorted_inputs, max_iter=1, estimate_encoding_model=True, **damping
+        )
+        for damping in ({"encoding_update_damping": 0.0}, {})
+    ]
+    np.testing.assert_array_equal(
+        results[0].acausal_posterior.values, results[1].acausal_posterior.values
     )
-    assert "acausal_state_probabilities" in results
