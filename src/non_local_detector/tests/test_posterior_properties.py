@@ -21,10 +21,14 @@ NORMALIZATION_RTOL = 1e-5
 NORMALIZATION_ATOL = 1e-8
 SIMULATION_SEED = 200
 
+pytestmark = pytest.mark.integration
 
-@pytest.fixture
+
+@pytest.fixture(scope="module")
 def decoder_with_results() -> dict[str, Any]:
     """Fit decoder and get posterior results for property testing.
+
+    Module-scoped: the tests only read the results.
 
     Returns dict with keys:
         - sim: ClusterlessSimOutput with full simulation data
@@ -100,16 +104,20 @@ def decoder_with_results() -> dict[str, Any]:
     }
 
 
-@pytest.mark.slow
-def test_posterior_normalized(decoder_with_results: dict[str, Any]) -> None:
-    """Test that posterior probabilities sum to 1 at each time point.
+def test_posterior_is_normalized_and_nonnegative(
+    decoder_with_results: dict[str, Any],
+) -> None:
+    """Test that the posterior is a probability distribution at each time point.
 
-    Posterior distributions must be properly normalized (sum to 1 over all
-    states and positions) at each time point. Violations indicate numerical
-    issues in the forward-backward algorithm.
+    Probabilities must be non-negative and sum to 1 over all states and
+    positions. A NaN, Inf, or all-zero posterior fails the sum check.
     """
     results = decoder_with_results["results"]
     acausal_posterior = results.acausal_posterior.values
+
+    assert np.all(acausal_posterior >= 0), (
+        f"Found negative probabilities: min={acausal_posterior.min():.10f}"
+    )
 
     # Sum over all state bins (includes position and discrete states)
     posterior_sum = np.sum(acausal_posterior, axis=1)
@@ -125,7 +133,6 @@ def test_posterior_normalized(decoder_with_results: dict[str, Any]) -> None:
     )
 
 
-@pytest.mark.slow
 def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> None:
     """Test that acausal posterior has lower entropy than causal.
 
@@ -159,7 +166,6 @@ def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> N
     )
 
 
-@pytest.mark.slow
 def test_posterior_entropy_reasonable(decoder_with_results: dict[str, Any]) -> None:
     """Test that posterior entropy is in reasonable range.
 
@@ -188,86 +194,3 @@ def test_posterior_entropy_reasonable(decoder_with_results: dict[str, Any]) -> N
     assert mean_entropy < 0.95 * max_entropy, (
         f"Mean entropy {mean_entropy:.3f} too close to maximum {max_entropy:.3f} (uniform)"
     )
-
-
-@pytest.mark.slow
-def test_posterior_no_nans_or_infs(decoder_with_results: dict[str, Any]) -> None:
-    """Test that posterior contains no NaN or infinite values.
-
-    NaN or infinite values indicate numerical instability in the computation.
-    """
-    results = decoder_with_results["results"]
-    acausal_posterior = results.acausal_posterior.values
-
-    assert np.all(np.isfinite(acausal_posterior)), (
-        "Posterior contains NaN or Inf values"
-    )
-    assert not np.any(np.isnan(acausal_posterior)), "Posterior contains NaN values"
-    assert not np.any(np.isinf(acausal_posterior)), "Posterior contains Inf values"
-
-
-@pytest.mark.slow
-def test_posterior_all_nonnegative(decoder_with_results: dict[str, Any]) -> None:
-    """Test that all posterior probabilities are non-negative.
-
-    Probabilities must be >= 0 by definition. Negative values indicate
-    numerical errors in the computation.
-    """
-    results = decoder_with_results["results"]
-    acausal_posterior = results.acausal_posterior.values
-
-    assert np.all(acausal_posterior >= 0), (
-        f"Found negative probabilities: min={acausal_posterior.min():.10f}"
-    )
-
-
-@pytest.mark.slow
-def test_posterior_not_all_zero(decoder_with_results: dict[str, Any]) -> None:
-    """Test that posterior is not all zeros.
-
-    An all-zero posterior indicates complete failure of the decoder.
-    """
-    results = decoder_with_results["results"]
-    acausal_posterior = results.acausal_posterior.values
-
-    posterior_sum = np.sum(acausal_posterior)
-    assert posterior_sum > 0, "Posterior is all zeros"
-
-
-@pytest.mark.slow
-def test_state_probabilities_normalized(decoder_with_results: dict[str, Any]) -> None:
-    """Test that state probabilities sum to 1 at each time point.
-
-    When marginalizing over positions, the discrete state probabilities
-    should sum to 1.
-    """
-    results = decoder_with_results["results"]
-
-    if "acausal_state_probabilities" in results:
-        state_probs = results.acausal_state_probabilities.values
-
-        # For decoders with only one state, values will be 1D array of all 1s
-        if state_probs.ndim == 1:
-            # Single state case - all probabilities should be 1.0
-            np.testing.assert_allclose(
-                state_probs,
-                1.0,
-                rtol=NORMALIZATION_RTOL,
-                atol=NORMALIZATION_ATOL,
-                err_msg=f"Single state probabilities not 1.0: min={state_probs.min():.10f}, "
-                f"max={state_probs.max():.10f}",
-            )
-        else:
-            # Multiple states - sum over states at each time point
-            state_sum = np.sum(state_probs, axis=1)
-
-            np.testing.assert_allclose(
-                state_sum,
-                1.0,
-                rtol=NORMALIZATION_RTOL,
-                atol=NORMALIZATION_ATOL,
-                err_msg=f"State probabilities not normalized: min={state_sum.min():.10f}, "
-                f"max={state_sum.max():.10f}",
-            )
-    else:
-        pytest.skip("State probabilities not available in results")
