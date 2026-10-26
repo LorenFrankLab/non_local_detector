@@ -10,6 +10,8 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     predict_sorted_spikes_kde_log_likelihood,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def kde_fit(simple_1d_environment):

@@ -1051,7 +1051,7 @@ def test_track_graph_fit_linearizes_two_dimensional_position():
     )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_detector_fits_glm_on_a_track_graph():
     """The detector's GLM fit runs with a track graph and 2-D positions."""
     from non_local_detector import NonLocalSortedSpikesDetector

@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import networkx as nx
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from non_local_detector.environment import Environment
@@ -15,6 +16,8 @@ from non_local_detector.likelihoods.diffusion import (
     get_device_basis,
     heat_kernel_apply,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _grid_basis(n=6, rank=None):

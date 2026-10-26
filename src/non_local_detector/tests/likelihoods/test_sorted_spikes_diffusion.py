@@ -1253,7 +1253,7 @@ def test_predict_rejects_population_mismatch(
         )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 @pytest.mark.parametrize("algorithm", ["sorted_spikes_diffusion", "sorted_spikes_mrf"])
 def test_detectors_reject_population_mismatch(env_2d, algorithm):
     """The public decoder and non-local detector raise the package error."""

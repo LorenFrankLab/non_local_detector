@@ -8,6 +8,7 @@ the true rates as the per-sample fit.
 """
 
 import numpy as np
+import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.sorted_spikes_glm import (
@@ -17,6 +18,8 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     log_rate_prior_l2_penalty,
     make_spline_predict_matrix,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_aggregation_preserves_totals_and_weights_positions():
