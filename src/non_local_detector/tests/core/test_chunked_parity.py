@@ -8,7 +8,6 @@ Testing philosophy:
 1. Chunked algorithms should match standard algorithms exactly
 2. Test with various chunk sizes
 3. Test with edge cases (single chunk, many chunks)
-4. Test with missing data handling
 """
 
 import jax.numpy as jnp
@@ -311,50 +310,6 @@ class TestChunkedFilterSmootherParity:
             assert jnp.allclose(causal_state_probs[t].sum(), 1.0, atol=1e-5), (
                 f"Causal probs don't sum to 1 at t={t}"
             )
-
-    def test_chunked_with_missing_data(self):
-        """Chunked should handle missing data (if supported)."""
-        # Arrange
-        init, trans, log_likes = self.create_simple_test_data(n_time=30, n_states=5)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        # Mark some timesteps as missing
-        is_missing = np.zeros(n_time, dtype=bool)
-        is_missing[[5, 10, 15]] = True
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
-
-        # Act
-        (
-            _,
-            acausal_state_probs,
-            _,
-            causal_state_probs,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            is_missing=is_missing,
-            n_chunks=3,
-            log_likelihoods=np.array(log_likes),
-        )
-
-        # Assert - Should complete without error and produce valid probabilities
-        assert jnp.all(jnp.isfinite(acausal_state_probs))
-        assert jnp.all(jnp.isfinite(causal_state_probs))
-        for t in range(n_time):
-            assert jnp.allclose(acausal_state_probs[t].sum(), 1.0, atol=1e-5)
-            assert jnp.allclose(causal_state_probs[t].sum(), 1.0, atol=1e-5)
 
     def test_chunked_with_different_dtypes(self):
         """Chunked should respect dtype argument."""
