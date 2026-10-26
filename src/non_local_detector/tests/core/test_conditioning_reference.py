@@ -36,6 +36,7 @@ from non_local_detector.core import (
     smoother,
     smoother_covariate_dependent,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 # Tolerance for comparing float32 JAX output with the float64 reference.
 RTOL = 1e-5
@@ -803,16 +804,16 @@ class TestDtypes:
 
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
     def test_filter_output_dtype_matches_request(self, dtype):
-        if dtype == jnp.float64 and not jax.config.jax_enable_x64:
-            pytest.skip("float64 requires JAX_ENABLE_X64=1")
         prior, ll = (np.asarray(v, dtype=dtype) for v in CASE_UNREACHABLE_MAXIMUM)
         expected_posterior, expected_evidence = bayes_reference(prior, ll)
 
-        (evidence, _), (posterior, _) = filter(
-            jnp.asarray(prior),
-            jnp.eye(len(prior), dtype=dtype),
-            jnp.asarray(ll[None, :]),
-        )
+        # float64 needs x64 enabled; without it the request is truncated.
+        with precision_mode(dtype == jnp.float64):
+            (evidence, _), (posterior, _) = filter(
+                jnp.asarray(prior),
+                jnp.eye(len(prior), dtype=dtype),
+                jnp.asarray(ll[None, :]),
+            )
 
         assert posterior.dtype == dtype
         assert evidence.dtype == dtype

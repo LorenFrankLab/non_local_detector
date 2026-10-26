@@ -19,6 +19,14 @@ from non_local_detector.core import (
     filter,
     smoother,
 )
+from non_local_detector.tests.conftest import precision_mode
+
+
+@pytest.fixture
+def x64():
+    """Enable float64 for the rest of the test."""
+    with precision_mode(True):
+        yield
 
 
 @pytest.mark.unit
@@ -311,8 +319,12 @@ class TestChunkedFilterSmootherParity:
                 f"Causal probs don't sum to 1 at t={t}"
             )
 
-    def test_chunked_with_different_dtypes(self):
-        """Chunked should respect dtype argument."""
+    def test_chunked_with_different_dtypes(self, x64):
+        """Chunked should compute in the requested dtype.
+
+        Runs with float64 enabled; otherwise a float64 request is silently
+        truncated to float32 and the comparison below is float32 vs float32.
+        """
         # Arrange
         init, trans, log_likes = self.create_simple_test_data(n_time=20, n_states=4)
         n_time, n_states = log_likes.shape
@@ -322,52 +334,29 @@ class TestChunkedFilterSmootherParity:
         def log_likelihood_func(time_idx, *args):
             return log_likes[time_idx]
 
-        # Act - float32
-        (
-            _,
-            acausal_f32,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=2,
-            log_likelihoods=np.array(log_likes),
-            dtype=jnp.float32,
-        )
+        def run(dtype):
+            return chunked_filter_smoother(
+                time=time,
+                state_ind=state_ind,
+                initial_distribution=np.array(init),
+                transition_matrix=np.array(trans),
+                log_likelihood_func=log_likelihood_func,
+                log_likelihood_args=(),
+                n_chunks=2,
+                log_likelihoods=np.array(log_likes),
+                dtype=dtype,
+            )
 
-        # Act - float64
-        (
-            _,
-            acausal_f64,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=2,
-            log_likelihoods=np.array(log_likes),
-            dtype=jnp.float64,
-        )
+        # Act
+        result_f32 = run(jnp.float32)
+        result_f64 = run(jnp.float64)
 
-        # Assert - Results should be similar (within float32 precision)
-        assert jnp.allclose(acausal_f32, acausal_f64, rtol=1e-5, atol=1e-6)
+        # Assert - the acausal, causal and predictive posteriors carry the
+        # requested dtype, and the two runs agree to float32 precision.
+        for index in (0, 6, 7):
+            assert result_f32[index].dtype == np.float32
+            assert result_f64[index].dtype == np.float64
+        assert jnp.allclose(result_f32[0], result_f64[0], rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.unit

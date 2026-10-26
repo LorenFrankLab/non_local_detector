@@ -25,6 +25,7 @@ from non_local_detector.core import (
     chunked_filter_smoother_covariate_dependent,
     row_slice_aware,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 N_TIME = 12
 N_STATES = 3
@@ -322,11 +323,9 @@ def test_positional_dtype_still_selects_the_dtype(driver, problem, dtype):
     slot would otherwise set the accumulation flag instead (a dtype object is
     truthy) and silently keep the computation in float32, so the flag is
     keyword-only and comes last. The float32 case runs everywhere and guards
-    the flag; the float64 case additionally shows the dtype was honoured.
+    the flag; the float64 case (run with x64 enabled) additionally shows the
+    dtype was honoured.
     """
-    if dtype == jnp.float64 and not jax.config.jax_enable_x64:
-        pytest.skip("float64 requires JAX_ENABLE_X64=1")
-
     args = [
         problem["time"],
         problem["state_ind"],
@@ -350,7 +349,8 @@ def test_positional_dtype_still_selects_the_dtype(driver, problem, dtype):
         False,  # cache_log_likelihoods
         dtype,  # dtype, in its pre-existing positional slot
     ]
-    result = driver(*args)
+    with precision_mode(dtype == jnp.float64):
+        result = driver(*args)
 
     assert result[5] is None  # log_likelihoods: accumulation stayed off
     assert result[0].dtype == dtype  # acausal_posterior
