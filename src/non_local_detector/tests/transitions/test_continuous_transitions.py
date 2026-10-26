@@ -13,30 +13,15 @@ from non_local_detector.continuous_state_transitions import (
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ConfigurationError
 
-
-@pytest.fixture
-def make_env_1d():
-    """Factory fixture for creating 1D environments with custom parameters."""
-
-    def _make_env(n_bins=11, name="line"):
-        env = Environment(
-            environment_name=name,
-            place_bin_size=1.0,
-            position_range=((0.0, float(n_bins - 1)),),
-        )
-        pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
-        env = env.fit_place_grid(position=pos, infer_track_interior=False)
-        return env
-
-    return _make_env
+pytestmark = pytest.mark.unit
 
 
 def rows_sum_to_one(mat: np.ndarray, atol=1e-7) -> bool:
     return np.allclose(mat.sum(axis=1), 1.0, atol=atol)
 
 
-def test_random_walk_row_stochastic_and_spread_var(make_env_1d):
-    env = make_env_1d(n_bins=21)
+def test_random_walk_row_stochastic_and_spread_var(simple_1d_environment):
+    env = simple_1d_environment
     envs = (env,)
     rw_tight = RandomWalk(
         environment_name=env.environment_name, movement_var=0.1
@@ -55,8 +40,8 @@ def test_random_walk_row_stochastic_and_spread_var(make_env_1d):
     assert offdiag_wide > offdiag_tight
 
 
-def test_random_walk_with_directional_constraints(make_env_1d):
-    env = make_env_1d(n_bins=15)
+def test_random_walk_with_directional_constraints(simple_1d_environment):
+    env = simple_1d_environment
     envs = (env,)
     base = RandomWalk(
         environment_name=env.environment_name, movement_var=3.0
@@ -79,9 +64,9 @@ def test_random_walk_with_directional_constraints(make_env_1d):
     )
 
 
-def test_random_walk_invalid_direction_raises(make_env_1d):
+def test_random_walk_invalid_direction_raises(simple_1d_environment):
     """Invalid direction string should raise ValueError."""
-    env = make_env_1d(n_bins=11)
+    env = simple_1d_environment
     rw = RandomWalk(
         environment_name=env.environment_name,
         movement_var=3.0,
@@ -91,8 +76,8 @@ def test_random_walk_invalid_direction_raises(make_env_1d):
         rw.make_state_transition((env,))
 
 
-def test_identity_transition_is_identity_masked(make_env_1d):
-    env = make_env_1d(n_bins=10)
+def test_identity_transition_is_identity_masked(simple_1d_environment):
+    env = simple_1d_environment
     envs = (env,)
     tm = Identity(environment_name=env.environment_name).make_state_transition(envs)
     assert tm.shape == (env.place_bin_centers_.shape[0],) * 2
@@ -101,8 +86,8 @@ def test_identity_transition_is_identity_masked(make_env_1d):
     assert np.allclose(tm - np.diag(np.diag(tm)), 0.0)
 
 
-def test_uniform_transition_within_env(make_env_1d):
-    env = make_env_1d(n_bins=12)
+def test_uniform_transition_within_env(simple_1d_environment):
+    env = simple_1d_environment
     envs = (env,)
     tm = Uniform(environment_name=env.environment_name).make_state_transition(envs)
     n = env.place_bin_centers_.shape[0]
@@ -112,9 +97,13 @@ def test_uniform_transition_within_env(make_env_1d):
     assert np.allclose(tm, np.ones((n, n)) / n)
 
 
-def test_uniform_transition_between_envs(make_env_1d):
-    env1 = make_env_1d(n_bins=8, name="env1")
-    env2 = make_env_1d(n_bins=5, name="env2")
+def test_uniform_transition_between_envs(simple_1d_environment):
+    env1 = simple_1d_environment
+    env2 = Environment(
+        environment_name="env2", place_bin_size=1.0, position_range=((0.0, 4.0),)
+    ).fit_place_grid(
+        position=np.linspace(0.0, 4.0, 5)[:, None], infer_track_interior=False
+    )
     envs = (env1, env2)
     tm = Uniform(
         environment_name=env1.environment_name, environment2_name=env2.environment_name
@@ -128,9 +117,9 @@ def test_uniform_transition_between_envs(make_env_1d):
     assert np.allclose(np.unique(tm, axis=1), np.ones((tm.shape[0], 1)) / tm.shape[1])
 
 
-def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
+def test_empirical_movement_row_stochastic_and_locality(simple_1d_environment):
     # Create a simple path that marches right
-    env = make_env_1d(n_bins=11)
+    env = simple_1d_environment
     envs = (env,)
     pos = np.linspace(0.0, 10.0, 51)[:, None]
     # Use empirical transition with provided positions
@@ -145,7 +134,6 @@ def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
     assert nearer >= farther
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("n_dims", [1, 2])
 @pytest.mark.parametrize("explicit_range", [False, True])
 def test_empirical_movement_uses_fitted_edges(n_dims, explicit_range):
@@ -184,7 +172,7 @@ def test_discrete_transition_is_ones():
     assert tm.shape == (1, 1) and np.isclose(tm[0, 0], 1.0)
 
 
-def test_random_walk_inward_no_trackgraphDD_raises(make_env_1d):
+def test_random_walk_inward_no_trackgraphDD_raises(simple_1d_environment):
     """Direction-aware RandomWalk needs an N-D track graph and array distances.
 
     ``_handle_no_track_graph`` previously dereferenced
@@ -192,7 +180,7 @@ def test_random_walk_inward_no_trackgraphDD_raises(make_env_1d):
     checking they were available, raising a confusing ``AttributeError`` /
     ``TypeError``. The precondition is now surfaced as ``ConfigurationError``.
     """
-    env = make_env_1d(n_bins=11)
+    env = simple_1d_environment
     # Simulate an environment whose direction-aware path has nothing to
     # operate on: no N-D track graph and no array-valued distance lookup.
     env.track_graph = None
@@ -212,13 +200,13 @@ def test_random_walk_inward_no_trackgraphDD_raises(make_env_1d):
         rw.make_state_transition((env,))
 
 
-def test_random_walk_direction_without_manifold_distance_raises(make_env_1d):
+def test_random_walk_direction_without_manifold_distance_raises(simple_1d_environment):
     """``direction`` is honored only with ``use_manifold_distance=True`` on an
     N-D grid. With the default ``use_manifold_distance=False`` the directional
     constraint would be silently dropped (a plain random walk), so it must raise
     instead of quietly ignoring the request.
     """
-    env = make_env_1d(n_bins=11)
+    env = simple_1d_environment
     env.track_graph = None
 
     rw = RandomWalk(
