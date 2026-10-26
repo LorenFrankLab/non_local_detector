@@ -29,6 +29,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from non_local_detector.tests.likelihoods.conftest import fit_registered_backends
 
 pytestmark = pytest.mark.unit
 
@@ -329,7 +330,7 @@ def test_sorted_glm_single_spike_per_neuron():
         assert jnp.all(jnp.isfinite(pf))
 
     ll = _predict_sorted_glm(enc, env, spike_times, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 def test_clusterless_kde_single_spike_per_electrode():
@@ -344,17 +345,15 @@ def test_clusterless_kde_single_spike_per_electrode():
 
 
 def test_clusterless_gmm_single_spike_per_electrode():
-    """GMM with single spike needs n_components=1 to avoid singular covariance."""
+    """A one-component GMM fit to one spike per electrode (a covariance from
+    ``reg_covar`` alone) predicts finite log likelihoods."""
     env = _make_env_1d()
-    spike_times = [jnp.array([3.0, 5.0]), jnp.array([7.0, 8.0])]
-    spike_features = [
-        jnp.array([[0.5, -0.5], [0.6, -0.4]]),
-        jnp.array([[1.0, 1.0], [1.1, 0.9]]),
-    ]
+    spike_times = [jnp.array([3.0]), jnp.array([7.0])]
+    spike_features = [jnp.array([[0.5, -0.5]]), jnp.array([[1.0, 1.0]])]
     enc, t, pos = _fit_clusterless_gmm(env, spike_times, spike_features, n_components=1)
 
     ll = _predict_clusterless_gmm(enc, env, spike_times, spike_features, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +412,7 @@ def test_clusterless_kde_very_large_waveform_std():
     )
 
     ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 # ---------------------------------------------------------------------------
@@ -598,59 +597,40 @@ def test_sorted_glm_low_l2_penalty():
 
 
 def test_decode_single_time_bin_all_models():
-    """All models should handle a single decoding time bin."""
+    """Every registered backend decodes one bin spanning the whole recording."""
     env = _make_env_1d()
-    spike_times_sorted = [jnp.array([2.0, 5.0, 8.0]), jnp.array([3.0, 6.0])]
-    spike_times_cl = [jnp.array([2.0, 5.0, 8.0])]
-    spike_features_cl = [jnp.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]])]
+    t = np.linspace(0.0, 10.0, 101)
+    spike_times = [np.array([2.0, 5.0, 8.0]), np.array([3.0, 6.0])]
+    data = {
+        "position_time": t,
+        "position": t[:, None],
+        "environment": env,
+        "encoding_spike_times": spike_times,
+        "encoding_features": [
+            np.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]]),
+            np.array([[0.2, 0.1], [-0.3, 0.4]]),
+        ],
+    }
+    # Five encoding spikes cannot support the default component counts.
+    fit_params = {
+        "clusterless_gmm": {"gmm_components_occupancy": 1, "gmm_components_joint": 1}
+    }
+    n_interior = int(env.is_track_interior_.sum())
 
-    # Sorted KDE
-    enc_kde, t, pos = _fit_sorted_kde(env, spike_times_sorted)
-    t_single = jnp.array([0.0, 10.0])  # 2 edges -> 1 bin
-    ll = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=t_single,
-        position_time=t,
-        position=pos,
-        spike_times=spike_times_sorted,
-        environment=env,
-        marginal_models=enc_kde["marginal_models"],
-        occupancy_model=enc_kde["occupancy_model"],
-        occupancy=enc_kde["occupancy"],
-        mean_rates=jnp.asarray(enc_kde["mean_rates"]),
-        place_fields=enc_kde["place_fields"],
-        no_spike_part_log_likelihood=enc_kde["no_spike_part_log_likelihood"],
-        is_track_interior=enc_kde["is_track_interior"],
-        disable_progress_bar=True,
-        is_local=False,
-    )
-    assert ll.shape[0] == 1
-    assert not jnp.any(jnp.isnan(ll))
-
-    # Clusterless KDE
-    enc_cl, t, pos = _fit_clusterless_kde(env, spike_times_cl, spike_features_cl)
-    ll_cl = predict_clusterless_kde_log_likelihood(
-        time_edges=t_single,
-        position_time=t,
-        position=pos,
-        spike_times=spike_times_cl,
-        spike_waveform_features=spike_features_cl,
-        occupancy=enc_cl["occupancy"],
-        occupancy_model=enc_cl["occupancy_model"],
-        gpi_models=enc_cl["gpi_models"],
-        encoding_spike_waveform_features=enc_cl["encoding_spike_waveform_features"],
-        encoding_positions=enc_cl["encoding_positions"],
-        mark_reference=enc_cl["mark_reference"],
-        environment=env,
-        mean_rates=jnp.asarray(enc_cl["mean_rates"]),
-        summed_ground_process_intensity=enc_cl["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc_cl["position_std"]),
-        waveform_std=jnp.asarray(enc_cl["waveform_std"]),
-        is_local=False,
-        disable_progress_bar=True,
-        block_size=8,
-    )
-    assert ll_cl.shape[0] == 1
-    assert not jnp.any(jnp.isnan(ll_cl))
+    for name, predict, model, is_clusterless in fit_registered_backends(
+        data, fit_params
+    ):
+        args = [t, t[:, None], spike_times]
+        if is_clusterless:
+            args.append(data["encoding_features"])
+        for is_local, n_columns in ((False, n_interior), (True, 1)):
+            ll = np.asarray(
+                predict(
+                    *args, time_edges=np.array([0.0, 10.0]), is_local=is_local, **model
+                )
+            )
+            assert ll.shape == (1, n_columns), (name, is_local)
+            assert np.all(np.isfinite(ll)), (name, is_local)
 
 
 # ---------------------------------------------------------------------------
@@ -692,12 +672,13 @@ def test_clusterless_kde_extreme_waveform():
 
 
 def test_clusterless_gmm_extreme_waveform():
-    """Extreme waveform outliers give a finite, very negative log likelihood.
+    """A 100-sigma outlier waveform gives a finite, unfloored log likelihood.
 
-    A 100-sigma outlier is genuinely ~1e4 nats down the mark tail, and the log
-    intensity is the raw ``log(rate) + log_joint - log_occupancy`` (the former
-    ``LOG_EPS`` clamp on ``log_joint`` inflated such spikes by orders of
-    magnitude). The contract is finiteness and no NaN, not a bound.
+    The outlier is ~1e4 nats down the joint mark tail, so its spike term
+    ``logaddexp(log intensity, log background)`` is the No-Spike background
+    ``log(RATE_EPS_HZ) + log q(mark)``; the mark reference ``q`` puts that
+    far below ``LOG_EPS`` too. A ``LOG_EPS`` floor on the joint log density
+    would instead lift the spike term above ``LOG_EPS``.
     """
     env = _make_env_1d()
     enc_spikes = [jnp.array([2.0, 4.0, 5.0, 6.0, 8.0])]
