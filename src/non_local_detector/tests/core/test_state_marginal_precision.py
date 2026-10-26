@@ -14,6 +14,13 @@ pytestmark = pytest.mark.unit
 @pytest.mark.parametrize("covariate", [False, True])
 @pytest.mark.parametrize("n_chunks", [1, 3])
 def test_state_aggregation_matches_float64_sum_without_tf32(covariate, n_chunks):
+    """State probabilities equal the float64 sum of their state bins.
+
+    The aggregation is a matmul, and CUDA's default TF32 precision visibly
+    changes these sums, so it must run at ``Precision.HIGHEST``. This can only
+    catch a lost precision flag on a GPU: CPU float32 matmuls are full
+    precision either way, so on CPU the test passes without the flag.
+    """
     n_rows, n_bins = 100, 100
     labels = np.r_[0, np.ones(n_bins - 1, dtype=int)]
     prior = np.r_[0.99, np.full(n_bins - 1, 0.01 / (n_bins - 1))].astype(np.float32)
