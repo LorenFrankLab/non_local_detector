@@ -99,6 +99,39 @@ def simulate_sparse_uniform_tracking(
     return time, position, [spike_times], environment
 
 
+def poisson_log_likelihood_reference(place_fields, is_interior, spike_times, edges):
+    """Independent float64 non-local Poisson log likelihood (up to ``-log n!``).
+
+    ``LL[t, j] = sum_k n_tk log(rate_kj dt_t) - dt_t sum_k rate_kj`` with ``rate``
+    the fitted Hz place fields on interior bins. ``edges`` must not coincide with
+    any spike time so ``np.histogram``'s closed last bin cannot differ from the
+    package's half-open bins.
+
+    Parameters
+    ----------
+    place_fields : array, shape (n_neurons, n_total_bins)
+        Fitted full-grid rates in Hz.
+    is_interior : np.ndarray, shape (n_total_bins,)
+        Boolean interior mask; output columns follow its interior order.
+    spike_times : list[np.ndarray]
+        One spike-time array per neuron, in seconds.
+    edges : np.ndarray, shape (n_time_bins + 1,)
+        Decoding time-bin edges in seconds.
+
+    Returns
+    -------
+    log_likelihood : np.ndarray, shape (n_time_bins, n_interior_bins)
+    """
+    rates = np.asarray(place_fields, dtype=np.float64)[:, is_interior]
+    durations = np.diff(edges)
+    counts = np.stack([np.histogram(spikes, edges)[0] for spikes in spike_times])
+    return (
+        counts.T @ np.log(rates)
+        + counts.sum(axis=0)[:, None] * np.log(durations)[:, None]
+        - durations[:, None] * rates.sum(axis=0)
+    )
+
+
 def dot_general_precisions(jaxpr):
     """Precision of every ``dot_general`` in ``jaxpr`` and its nested jaxprs."""
     precisions = []

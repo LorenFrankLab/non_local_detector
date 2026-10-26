@@ -48,6 +48,7 @@ from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
     dot_general_precisions,
     make_2d_env,
     make_two_room_env,
+    poisson_log_likelihood_reference,
     simulate_place_data,
     simulate_sparse_uniform_tracking,
 )
@@ -697,7 +698,8 @@ def test_penalty_zero_is_respected_not_overridden():
 
 
 def test_invariants_place_fields_and_likelihood():
-    """Place fields >= 0 & finite; likelihoods finite; softmax posterior sums to 1."""
+    """Place fields are non-negative and finite, and the non-local likelihood is the
+    Poisson log likelihood of each bin's spike counts under those place fields."""
     env = make_2d_env()
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     encoding = fit_sorted_spikes_mrf_encoding_model(
@@ -711,21 +713,24 @@ def test_invariants_place_fields_and_likelihood():
     assert np.all(place_fields >= 0.0)
     assert np.all(np.isfinite(place_fields))
 
+    # Edges halfway between samples: no spike (all at sample times) sits on an edge.
+    edges = time_edges_from_centers(time[:1000])
     ll = np.asarray(
         predict_sorted_spikes_mrf_log_likelihood(
             time,
             position,
             spike_times,
-            time_edges=time[:100],
+            time_edges=edges,
             is_local=False,
             **encoding,
         )
     )
-    assert np.all(np.isfinite(ll))
-    posterior = np.exp(ll - ll.max(axis=1, keepdims=True))
-    posterior /= posterior.sum(axis=1, keepdims=True)
-    # float32-safe: the likelihood is float32 when JAX x64 is off.
-    np.testing.assert_allclose(posterior.sum(axis=1), 1.0, atol=1e-6)
+    expected = poisson_log_likelihood_reference(
+        place_fields, env.is_track_interior_.ravel(), spike_times, edges
+    )
+    # The window holds spikes, so the count term is exercised, not just -dt * rate.
+    assert sum(np.histogram(spikes, edges)[0].sum() for spikes in spike_times) > 20
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_weighted_fit_mean_rates_match_kde():
