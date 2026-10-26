@@ -1,7 +1,8 @@
-"""Tests for optimized clusterless KDE log-space functions.
+"""Vectorized clusterless KDE kernels and reductions against direct references.
 
-This module tests the vectorized implementations of kde_distance and log_kde_distance
-in clusterless_kde.py to ensure numerical equivalence and stability.
+``kde_distance`` / ``log_kde_distance`` against per-dimension loops, the scaled
+GEMM joint-intensity reduction against a float64-kernel logsumexp oracle, and the
+degeneracy rules of ``_log_joint_from_log_marginal``.
 """
 
 import jax

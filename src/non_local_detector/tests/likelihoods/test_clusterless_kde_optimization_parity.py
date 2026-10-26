@@ -1,4 +1,9 @@
-"""Test that optimized log-space version uses all optimizations correctly."""
+"""Clusterless KDE joint mark intensity agrees across its computation paths.
+
+Decode-spike blocking (including a padded final block), the reference linear
+path, the GEMM path, encoding chunking and streaming give the same intensity,
+also with non-uniform encoding weights; fitting rejects non-positive bandwidths.
+"""
 
 import jax.numpy as jnp
 import numpy as np
