@@ -8,7 +8,8 @@ here; this file covers the remaining public surface:
 - ``get_trajectory_data``
 - ``get_ahead_behind_distance`` (graph-based, signed)
 
-and the ``n_time == 1`` edge case of ``get_map_speed`` (not covered elsewhere).
+and the ``n_time == 1`` and ``n_time == 2`` branches of ``get_map_speed``
+(not covered elsewhere).
 """
 
 import networkx as nx
@@ -17,6 +18,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from non_local_detector.analysis import distance1D
 from non_local_detector.analysis.distance1D import (
     get_ahead_behind_distance,
     get_map_speed,
@@ -372,8 +374,8 @@ class TestGetAheadBehindDistance:
 
 
 @pytest.mark.unit
-class TestGetMapSpeedSingleSample:
-    """The ``n_time == 1`` branch of ``get_map_speed`` (not covered elsewhere)."""
+class TestGetMapSpeedShortSeries:
+    """The ``n_time == 1`` and ``n_time == 2`` branches of ``get_map_speed``."""
 
     def test_single_timestep_returns_nan(self):
         """A single time step has no velocity, so speed is NaN."""
@@ -390,3 +392,30 @@ class TestGetMapSpeedSingleSample:
 
         assert speed.shape == (1,)
         assert np.isnan(speed[0])
+
+    def test_two_timesteps_use_forward_difference(self, monkeypatch):
+        """Two time steps: both entries are the one-step distance / dt.
+
+        The MAP moves from node 0 to node 3 (graph distance 3) in one sample at
+        500 Hz, so the speed is 3 * 500 = 1500 at both samples. Smoothing is
+        replaced by the identity so the unsmoothed values are checked.
+        """
+        monkeypatch.setattr(
+            distance1D,
+            "_gaussian_smooth",
+            lambda data, sigma, sampling_frequency, axis=0, truncate=8: data,
+        )
+        track_graph = _make_positioned_track(4, edge_length=1.0)
+        place_bin_center_ind_to_node = np.array([0, 1, 2, 3])
+        posterior = np.zeros((2, 4))
+        posterior[0, 0] = 1.0
+        posterior[1, 3] = 1.0
+
+        speed = get_map_speed(
+            posterior=posterior,
+            track_graph_with_bin_centers_edges=track_graph,
+            place_bin_center_ind_to_node=place_bin_center_ind_to_node,
+            sampling_frequency=500.0,
+        )
+
+        np.testing.assert_allclose(speed, [1500.0, 1500.0])
