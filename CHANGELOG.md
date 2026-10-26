@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Faster grid setup for Cartesian environments
+
+- **Changed:** `Environment.fit_place_grid` computes the all-pairs bin distances of a Cartesian (non-track-graph) environment with SciPy's compiled Dijkstra instead of NetworkX's pure-Python search. On a laptop, a 100 x 100 bin grid takes 7.4 s instead of 154 s (a ring-shaped track in the same grid: 1.0 s instead of 14.9 s). The distances are bit-identical to before on every grid measured; track-graph environments are unchanged.
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.

@@ -661,17 +661,12 @@ class Environment:
 
             self.track_graphDD = make_nD_track_graph_from_environment(self)
             if compute_all_pairs_distances:
-                node_positions = nx.get_node_attributes(self.track_graphDD, "pos")
-                node_positions = np.asarray(list(node_positions.values()))
-                distance = np.full((len(node_positions), len(node_positions)), np.inf)
-                for to_node_id, from_node_id in nx.shortest_path_length(
-                    self.track_graphDD,
-                    weight="distance",
-                ):
-                    distance[to_node_id, list(from_node_id.keys())] = list(
-                        from_node_id.values()
-                    )
-                self.distance_between_nodes_ = distance
+                # Eager dense matrix, unbounded: max_dense_distance_bytes
+                # applies only to the lazy path.
+                n_nodes = len(self.track_graphDD)
+                self.distance_between_nodes_ = LazyGraphDistances.from_graph(
+                    self.track_graphDD
+                ).to_dense(max_bytes=8 * n_nodes**2)
             else:
                 self.distance_between_nodes_ = LazyGraphDistances.from_graph(
                     self.track_graphDD, max_dense_bytes=max_dense_distance_bytes
