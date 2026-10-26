@@ -14,47 +14,20 @@ import pickle
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.tests.likelihoods.conftest import (
-    ALGORITHMS,
-    fit_registered_backends,
-)
+from non_local_detector.tests.likelihoods.conftest import ALGORITHMS
 
 STALE_GRID = "different environment grid"
 
 
 @pytest.fixture(scope="module")
-def encoding_data():
-    rng = np.random.default_rng(3)
-    position_time = np.arange(0.0, 20.0, 0.01)
-    position = (50.0 + 45.0 * np.sin(2 * np.pi * position_time / 5.0))[:, None]
-    environment = Environment(
-        environment_name="line", place_bin_size=10.0, position_range=((0.0, 100.0),)
-    ).fit_place_grid(position=position, infer_track_interior=False)
-    spike_times, features = [], []
-    for center in (25.0, 75.0):
-        near = np.abs(position[:, 0] - center) < 10.0
-        times = np.sort(rng.choice(position_time[near], 300, replace=False))
-        spike_times.append(times + 0.001)
-        features.append(rng.standard_normal((300, 2)) * 3.0 + center / 5.0)
-    return {
-        "position_time": position_time,
-        "position": position,
-        "environment": environment,
-        "encoding_spike_times": spike_times,
-        "encoding_features": features,
-    }
+def encoding_data(line_backends):
+    return line_backends[0]
 
 
 @pytest.fixture(scope="module")
-def fitted(encoding_data):
-    return {
-        name: (predict, model, is_clusterless)
-        for name, predict, model, is_clusterless in fit_registered_backends(
-            encoding_data
-        )
-    }
+def fitted(line_backends):
+    return line_backends[1]
 
 
 def _predict(predict, model, is_clusterless, encoding_data, *, is_local=False):

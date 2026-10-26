@@ -232,3 +232,49 @@ def realistic_log_background(
         return jnp.zeros(0)
     reference = MarkReference(features.mean(axis=0), features.std(axis=0) + 1.0)
     return jnp.asarray(background_log_intensity(reference, features, log_rate))
+
+
+@pytest.fixture(scope="session")
+def line_backends() -> tuple[dict, dict[str, tuple[Callable, dict, bool]]]:
+    """Every registered backend fit once on a two-unit 0-100 cm line.
+
+    The animal oscillates over 5-95 cm for 20 s at 100 Hz on ten 10 cm bins;
+    unit 0 fires 300 spikes within 10 cm of 25 cm and unit 1 within 10 cm of
+    75 cm, each 1 ms after a position sample. Tests must not mutate the
+    fitted models.
+
+    Returns
+    -------
+    encoding_data : dict
+        The ``fit_registered_backends`` input.
+    fitted : dict[str, tuple[Callable, dict, bool]]
+        ``(predict_func, encoding_model, is_clusterless)`` per backend name.
+    """
+    from non_local_detector.environment import Environment
+
+    rng = np.random.default_rng(3)
+    position_time = np.arange(0.0, 20.0, 0.01)
+    position = (50.0 + 45.0 * np.sin(2 * np.pi * position_time / 5.0))[:, None]
+    environment = Environment(
+        environment_name="line", place_bin_size=10.0, position_range=((0.0, 100.0),)
+    ).fit_place_grid(position=position, infer_track_interior=False)
+    spike_times, features = [], []
+    for center in (25.0, 75.0):
+        near = np.abs(position[:, 0] - center) < 10.0
+        times = np.sort(rng.choice(position_time[near], 300, replace=False))
+        spike_times.append(times + 0.001)
+        features.append(rng.standard_normal((300, 2)) * 3.0 + center / 5.0)
+    encoding_data = {
+        "position_time": position_time,
+        "position": position,
+        "environment": environment,
+        "encoding_spike_times": spike_times,
+        "encoding_features": features,
+    }
+    fitted = {
+        name: (predict, model, is_clusterless)
+        for name, predict, model, is_clusterless in fit_registered_backends(
+            encoding_data
+        )
+    }
+    return encoding_data, fitted
