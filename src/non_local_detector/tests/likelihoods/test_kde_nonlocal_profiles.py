@@ -1,4 +1,13 @@
-import jax.numpy as jnp
+"""Non-local KDE likelihood profiles match independent float64 Gaussian references.
+
+Each encoding model is fit on an animal running 0-10 cm at 1 cm/s, with three
+encoding spikes at known positions. A Gaussian position kernel of unit width
+gives the place field (sorted) or mark intensity (clusterless) as
+``mean_rate * mean_i N(x; x_i, 1) / mean_t N(x; x(t), 1)``, computed here with
+SciPy in float64, so each decoded profile is checked against the encoding
+positions rather than against the fitted model's own arrays.
+"""
+
 import numpy as np
 import pytest
 from scipy.stats import norm
@@ -8,277 +17,178 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import EPS
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
+from non_local_detector.likelihoods.common import LOG_EPS, RATE_REFERENCE_SECONDS
+from non_local_detector.likelihoods.mark_reference import (
+    background_log_intensity,
+    fit_mark_references,
+)
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
 
+pytestmark = pytest.mark.unit
 
-@pytest.fixture
-def make_env_1d():
-    """Factory fixture for creating 1D environments with custom parameters."""
+POSITION_TIME = np.linspace(0.0, 10.0, 201)
+POSITION = POSITION_TIME[:, None]
+POSITION_STD = 1.0
+# Float32 evaluation against the float64 reference: measured at most 2.3e-6
+# (sorted) and 1.4e-5 (clusterless) absolute on log likelihoods of order 1-50.
+# Moving one encoding position by one bin shifts the profiles by O(1).
+REFERENCE_TOLERANCE = {"rtol": 1e-5, "atol": 1e-4}
 
-    def _make_env(n_bins=21, name="line"):
-        env = Environment(
-            environment_name=name,
-            place_bin_size=1.0,
-            position_range=((0.0, float(n_bins - 1)),),
+
+def _line(n_bins: int) -> Environment:
+    """A 1 cm-bin track from 0 to ``n_bins - 1`` cm."""
+    return Environment(
+        environment_name="line",
+        place_bin_size=1.0,
+        position_range=((0.0, float(n_bins - 1)),),
+    ).fit_place_grid(
+        position=np.linspace(0.0, float(n_bins - 1), n_bins)[:, None],
+        infer_track_interior=False,
+    )
+
+
+def _kde_rate(centers, encoding_positions, kernel=None):
+    """Float64 KDE rate in Hz at ``centers``, shape (n_bins,).
+
+    ``kernel`` of shape (n_encoding_spikes,) weights each encoding spike (its
+    mark kernel at the decoding mark); unweighted gives the ground rate.
+    """
+    spatial = norm.pdf(centers[:, None], loc=encoding_positions, scale=POSITION_STD)
+    if kernel is not None:
+        spatial = spatial * kernel
+    occupancy = norm.pdf(centers[:, None], loc=POSITION[:, 0], scale=POSITION_STD)
+    mean_rate = len(encoding_positions) / (
+        len(POSITION_TIME) * (POSITION_TIME[1] - POSITION_TIME[0])
+    )
+    return mean_rate * spatial.mean(axis=1) / occupancy.mean(axis=1)
+
+
+def _interior_centers(environment: Environment) -> np.ndarray:
+    return environment.place_bin_centers_[environment.is_track_interior_.ravel(), 0]
+
+
+def test_sorted_kde_nonlocal_profile_matches_gaussian_reference():
+    """Each row with one spike is ``log(rate * dt) - rate * dt`` at the
+    reference rate, so its argmax is where the reference expects one event."""
+    environment = _line(11)
+    encoding_spike_times = np.array([3.0, 3.1, 2.9])
+    encoding_model = fit_sorted_spikes_kde_encoding_model(
+        position_time=POSITION_TIME,
+        position=POSITION,
+        spike_times=[encoding_spike_times],
+        environment=environment,
+        position_std=POSITION_STD,
+        block_size=32,
+        disable_progress_bar=True,
+    )
+    # One spike per 2 s decoding bin, including the final one.
+    time_edges = np.linspace(0.0, 10.0, 6)
+    log_likelihood = np.asarray(
+        predict_sorted_spikes_kde_log_likelihood(
+            time_edges=time_edges,
+            position_time=POSITION_TIME,
+            position=POSITION,
+            spike_times=[(time_edges[:-1] + time_edges[1:]) / 2.0],
+            environment=environment,
+            marginal_models=encoding_model["marginal_models"],
+            occupancy_model=encoding_model["occupancy_model"],
+            occupancy=encoding_model["occupancy"],
+            mean_rates=encoding_model["mean_rates"],
+            place_fields=encoding_model["place_fields"],
+            no_spike_part_log_likelihood=encoding_model["no_spike_part_log_likelihood"],
+            is_track_interior=encoding_model["is_track_interior"],
+            disable_progress_bar=True,
+            is_local=False,
         )
-        pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
-        env = env.fit_place_grid(position=pos, infer_track_interior=False)
-        return env
-
-    return _make_env
-
-
-def interior_index_for_position(env: Environment, x: float) -> int:
-    centers = env.place_bin_centers_.squeeze()
-    full_idx = int(np.argmin(np.abs(centers - x)))
-    mask = (
-        env.is_track_interior_.ravel()
-        if env.is_track_interior_ is not None
-        else np.ones_like(centers, dtype=bool)
-    )
-    interior_inds = np.flatnonzero(mask)
-    return int(np.where(interior_inds == full_idx)[0][0])
-
-
-@pytest.mark.snapshot
-def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
-    # Environment and simple encoding centered near x=3.0
-    env = make_env_1d(n_bins=11, name="env_sorted_snap")
-    t_pos = np.linspace(0.0, 10.0, 201)
-    pos = np.linspace(0.0, 10.0, 201)[:, None]
-
-    # One neuron: encoding spikes around times mapping to positions near 3.0
-    enc_spike_times = np.array([3.0, 3.1, 2.9])
-    spikes_lists = [enc_spike_times]
-
-    enc = fit_sorted_spikes_kde_encoding_model(
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=[jnp.asarray(s) for s in spikes_lists],
-        environment=env,
-        weights=jnp.ones_like(jnp.asarray(t_pos)),
-        position_std=np.sqrt(1.0),
-        block_size=32,
-        disable_progress_bar=True,
     )
 
-    # Decoding: one spike per time bin to stabilize argmax across time
-    time_edges = np.linspace(0.0, 10.0, 6)
-    time_bin_centers = (time_edges[:-1] + time_edges[1:]) / 2.0
-    dec_spike_times = [jnp.asarray(time_bin_centers)]
+    # The animal runs at 1 cm/s from 0 cm, so each spike time is its position.
+    rate = _kde_rate(_interior_centers(environment), encoding_spike_times)
+    dt = np.diff(time_edges)[0]
+    expected = np.log(rate * dt) - rate * dt
 
-    ll = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=jnp.asarray(time_edges),
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=dec_spike_times,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
-        is_local=False,
+    assert log_likelihood.shape == (len(time_edges) - 1, expected.size)
+    np.testing.assert_allclose(
+        log_likelihood,
+        np.broadcast_to(expected, log_likelihood.shape),
+        **REFERENCE_TOLERANCE,
     )
-
-    # Snapshot: one event scores log(rate_Hz * duration) - rate_Hz * duration
-    interior_mask = enc["is_track_interior"]
-    pf_interior = np.asarray(enc["place_fields"][0])[interior_mask]
-    expected_counts = pf_interior * np.diff(time_edges)[0]
-    expected_scores = np.log(np.clip(expected_counts, EPS, None)) - expected_counts
-    pf_argmax = int(np.argmax(expected_scores))
-    argmax_bins = np.asarray(jnp.argmax(ll, axis=1))
-    # Every decoding bin, including the final one, owns exactly one spike.
-    assert argmax_bins.shape == (len(time_edges) - 1,)
-    assert np.all(argmax_bins == pf_argmax)
+    np.testing.assert_array_equal(log_likelihood.argmax(axis=1), expected.argmax())
 
 
-@pytest.mark.snapshot
-def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
-    # Same setup as above but verify local ranking structure around the mode
-    env = make_env_1d(n_bins=11, name="env_sorted_snap_topk")
-    t_pos = np.linspace(0.0, 10.0, 201)
-    pos = np.linspace(0.0, 10.0, 201)[:, None]
-    enc_spike_times = np.array([3.0, 3.1, 2.9])
-    enc = fit_sorted_spikes_kde_encoding_model(
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=[jnp.asarray(enc_spike_times)],
-        environment=env,
-        weights=jnp.ones_like(jnp.asarray(t_pos)),
-        position_std=np.sqrt(1.0),
-        block_size=32,
-        disable_progress_bar=True,
-    )
-    time_edges = np.linspace(0.0, 10.0, 6)
-    time_bin_centers = (time_edges[:-1] + time_edges[1:]) / 2.0
-    ll = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=jnp.asarray(time_edges),
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=[jnp.asarray(time_bin_centers)],
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
-        is_local=False,
-    )
-    # Top-3 bins use the same physical expected counts as the argmax reference
-    interior_mask = enc["is_track_interior"]
-    pf_interior = np.asarray(enc["place_fields"][0])[interior_mask]
-    expected_counts = pf_interior * np.diff(time_edges)[0]
-    expected_scores = np.log(np.clip(expected_counts, EPS, None)) - expected_counts
-    pf_top3 = set(np.argsort(expected_scores)[-3:])
-    # Every decoding bin, including the final one, owns exactly one spike.
-    assert ll.shape[0] == len(time_edges) - 1
-    for t in range(ll.shape[0]):
-        topk = set(np.asarray(jnp.argsort(ll[t])[::-1][:3]).tolist())
-        assert topk == pf_top3
+def test_clusterless_kde_nonlocal_profile_matches_gaussian_reference():
+    """One spike in a 10 s bin scores ``logaddexp(log(mark intensity * dt),
+    log background) - ground rate * dt`` at every bin.
 
-
-@pytest.mark.snapshot
-def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
-    # Environment and encoding centered near x=7.0
-    env = make_env_1d(n_bins=21, name="env_clusterless_snap")
-    t_pos = np.linspace(0.0, 10.0, 201)
-    pos = np.linspace(0.0, 10.0, 201)[:, None]
-    weights = np.ones_like(t_pos)
-
-    # One electrode: encoding spikes at times near 7.0 with simple 2D waveform features around (0,0)
-    enc_times = [jnp.asarray(np.array([7.0, 7.1, 6.9]))]
-    enc_feats = [
-        jnp.asarray(np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]], dtype=float))
-    ]
-
-    enc = fit_clusterless_kde_encoding_model(
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=enc_times,
-        spike_waveform_features=enc_feats,
-        environment=env,
-        weights=jnp.asarray(weights),
-        position_std=np.sqrt(1.0),
-        waveform_std=0.2,
+    The profile is bimodal: the integrated ground rate penalizes the encoding
+    mode for predicting many more than one event, and far from the encoding
+    spikes the No-Spike background bounds the spike term.
+    """
+    environment = _line(31)
+    waveform_std = 0.25
+    encoding_spike_times = np.array([7.0, 7.1, 6.9])
+    encoding_features = np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]])
+    decoding_features = np.array([[0.02, -0.01]])
+    encoding_model = fit_clusterless_kde_encoding_model(
+        position_time=POSITION_TIME,
+        position=POSITION,
+        spike_times=[encoding_spike_times],
+        spike_waveform_features=[encoding_features],
+        environment=environment,
+        position_std=POSITION_STD,
+        waveform_std=waveform_std,
         block_size=16,
         disable_progress_bar=True,
     )
-
-    # Single decoding time bin and one spike with features near (0,0)
-    time_edges = jnp.asarray(np.array([0.0, 10.0]))
-    dec_times = [jnp.asarray(np.array([5.0]))]
-    dec_feats = [jnp.asarray(np.array([[0.02, -0.01]], dtype=float))]
-
-    ll = predict_clusterless_kde_log_likelihood(
-        time_edges=time_edges,
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=dec_times,
-        spike_waveform_features=dec_feats,
-        occupancy=enc["occupancy"],
-        occupancy_model=enc["occupancy_model"],
-        gpi_models=enc["gpi_models"],
-        encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
-        encoding_positions=enc["encoding_positions"],
-        mark_reference=fit_mark_references(enc_feats, 0.2),
-        environment=env,
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc["position_std"]),
-        waveform_std=jnp.asarray(enc["waveform_std"]),
-        is_local=False,
-        block_size=16,
-        disable_progress_bar=True,
+    mark_reference = fit_mark_references([encoding_features], waveform_std)
+    time_edges = np.array([0.0, 10.0])
+    log_likelihood = np.asarray(
+        predict_clusterless_kde_log_likelihood(
+            time_edges=time_edges,
+            position_time=POSITION_TIME,
+            position=POSITION,
+            spike_times=[np.array([5.0])],
+            spike_waveform_features=[decoding_features],
+            occupancy=encoding_model["occupancy"],
+            occupancy_model=encoding_model["occupancy_model"],
+            gpi_models=encoding_model["gpi_models"],
+            encoding_spike_waveform_features=encoding_model[
+                "encoding_spike_waveform_features"
+            ],
+            encoding_positions=encoding_model["encoding_positions"],
+            mark_reference=mark_reference,
+            environment=environment,
+            mean_rates=encoding_model["mean_rates"],
+            summed_ground_process_intensity=encoding_model[
+                "summed_ground_process_intensity"
+            ],
+            position_std=encoding_model["position_std"],
+            waveform_std=encoding_model["waveform_std"],
+            is_local=False,
+            block_size=16,
+            disable_progress_bar=True,
+        )
     )
 
-    argmax_bin = int(np.asarray(jnp.argmax(ll, axis=1))[0])
-    # Independent float64 Gaussian reference: a single event in a 10-second
-    # bin need not favor the encoding mode because its integrated ground rate
-    # penalizes positions that predict many more than one event.
-    centers = env.place_bin_centers_[env.is_track_interior_.ravel(), 0]
-    encoding_positions = np.array([7.0, 7.1, 6.9])
-    spatial = norm.pdf(centers[:, None], loc=encoding_positions, scale=1.0)
-    mark_density = np.prod(
-        norm.pdf(
-            np.array([0.02, -0.01]),
-            loc=np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]]),
-            scale=0.2,
-        ),
+    centers = _interior_centers(environment)
+    mark_kernel = np.prod(
+        norm.pdf(decoding_features[0], loc=encoding_features, scale=waveform_std),
         axis=1,
     )
-    occupancy = norm.pdf(centers[:, None], loc=pos[:, 0], scale=1.0).mean(axis=1)
-    mean_rate_hz = 3 / (len(t_pos) * (t_pos[1] - t_pos[0]))
-    ground_rate = mean_rate_hz * spatial.mean(axis=1) / occupancy
-    mark_intensity = mean_rate_hz * (spatial * mark_density).mean(axis=1) / occupancy
-    duration = float(time_edges[-1] - time_edges[0])
-    expected_scores = np.log(mark_intensity * duration) - ground_rate * duration
-    assert argmax_bin == int(np.argmax(expected_scores))
-
-
-@pytest.mark.snapshot
-def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot(make_env_1d):
-    # Verify likelihood decays with distance from mode around the center
-    env = make_env_1d(n_bins=31, name="env_clusterless_snap_profile")
-    t_pos = np.linspace(0.0, 10.0, 201)
-    pos = np.linspace(0.0, 10.0, 201)[:, None]
-    weights = np.ones_like(t_pos)
-    enc_times = [jnp.asarray(np.array([7.0, 7.1, 6.9]))]
-    enc_feats = [
-        jnp.asarray(np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]], dtype=float))
-    ]
-    enc = fit_clusterless_kde_encoding_model(
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=enc_times,
-        spike_waveform_features=enc_feats,
-        environment=env,
-        weights=jnp.asarray(weights),
-        position_std=np.sqrt(1.0),
-        waveform_std=0.25,
-        block_size=16,
-        disable_progress_bar=True,
+    ground_rate = _kde_rate(centers, encoding_spike_times)
+    mark_intensity = _kde_rate(centers, encoding_spike_times, mark_kernel)
+    dt = time_edges[1] - time_edges[0]
+    # The background is a rate per RATE_REFERENCE_SECONDS, scaled to the bin.
+    log_background = background_log_intensity(
+        mark_reference[0], decoding_features, LOG_EPS
+    )[0] + np.log(dt / RATE_REFERENCE_SECONDS)
+    expected = (
+        np.logaddexp(np.log(mark_intensity * dt), log_background) - ground_rate * dt
     )
-    time_edges = jnp.asarray(np.array([0.0, 10.0]))
-    dec_times = [jnp.asarray(np.array([5.0]))]
-    dec_feats = [jnp.asarray(np.array([[0.0, 0.0]], dtype=float))]
-    ll = predict_clusterless_kde_log_likelihood(
-        time_edges=time_edges,
-        position_time=jnp.asarray(t_pos),
-        position=jnp.asarray(pos),
-        spike_times=dec_times,
-        spike_waveform_features=dec_feats,
-        occupancy=enc["occupancy"],
-        occupancy_model=enc["occupancy_model"],
-        gpi_models=enc["gpi_models"],
-        encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
-        encoding_positions=enc["encoding_positions"],
-        mark_reference=fit_mark_references(enc_feats, 0.25),
-        environment=env,
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc["position_std"]),
-        waveform_std=jnp.asarray(enc["waveform_std"]),
-        is_local=False,
-        block_size=16,
-        disable_progress_bar=True,
-    )
-    ll0 = np.asarray(ll[0])
-    interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()].squeeze()
-    mode_idx = int(np.argmax(ll0))
-    # Check decay on both sides near the mode (up to 3 steps)
-    for step in range(1, 4):
-        left = max(0, mode_idx - step)
-        right = min(len(interior_centers) - 1, mode_idx + step)
-        assert ll0[mode_idx] >= ll0[left] and ll0[mode_idx] >= ll0[right]
+
+    assert log_likelihood.shape == (1, expected.size)
+    np.testing.assert_allclose(log_likelihood[0], expected, **REFERENCE_TOLERANCE)
+    assert log_likelihood[0].argmax() == expected.argmax()
