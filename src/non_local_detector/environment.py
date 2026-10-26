@@ -661,8 +661,8 @@ class Environment:
 
             self.track_graphDD = make_nD_track_graph_from_environment(self)
             if compute_all_pairs_distances:
-                # SciPy's compiled Dijkstra; NetworkX's pure-Python search took
-                # minutes at 100 x 100 bins. The eager matrix has no byte budget.
+                # Eager dense matrix, unbounded: max_dense_distance_bytes
+                # applies only to the lazy path.
                 n_nodes = len(self.track_graphDD)
                 self.distance_between_nodes_ = LazyGraphDistances.from_graph(
                     self.track_graphDD

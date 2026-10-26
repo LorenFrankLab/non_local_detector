@@ -164,8 +164,9 @@ def test_deferred_environment_matches_topology_and_queries(monkeypatch):
 def test_eager_environment_distances_match_networkx_shortest_paths(position_range):
     """The dense matrix holds every pair's shortest path over the bin graph.
 
-    Diagonal steps make many equal-length paths; the masked slab and corner
-    bins leave isolated exterior bins (zero self-distance, infinite elsewhere).
+    Diagonal steps make many equal-length paths. The masked slab splits the
+    interior into two disconnected components, and the masked corner bins are
+    isolated exterior bins (zero self-distance, infinite elsewhere).
     """
     kwargs = {"place_bin_size": 0.7, "position_range": position_range}
     span = np.array(
