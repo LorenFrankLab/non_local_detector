@@ -568,7 +568,13 @@ def test_backend_rejects_unpaired_feature_rows(
         if extra_rows < 0
         else np.concatenate([features[0], features[0][-1:]])
     )
-    with pytest.raises(ValidationError):
+    # The backends check the pairing either when selecting spikes or when
+    # validating each electrode; both name the expected and given row counts.
+    with pytest.raises(
+        ValidationError,
+        match=rf"Expected: {len(spikes[0])} [^\n]*rows[^\n]*\nGot: "
+        rf"{len(features[0])} rows",
+    ):
         predict(
             edge_case_data["position_time"],
             edge_case_data["position"],
