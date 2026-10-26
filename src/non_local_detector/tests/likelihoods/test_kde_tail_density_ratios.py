@@ -27,6 +27,7 @@ from non_local_detector.likelihoods.common import (
     _kde_log_densities,
     _log_space_kde_log_density,
     _sorted_sample_keys,
+    _true_kde_log_density,
     kde_log_density,
     log_density_intensity,
 )
@@ -254,11 +255,8 @@ def test_sorted_public_local_path_preserves_nan_position_diagnostic():
     assert np.isnan(np.asarray(result)[0, 0])
 
 
-ENTRIES = ["host"]
-
-
-def _true_log_density(entry, points, samples, std, block_size, weights):
-    """True log density through the host entry."""
+def _true_log_density(points, samples, std, block_size, weights):
+    """True log density of a fitted KDEModel."""
     model = KDEModel(std=std, block_size=block_size).fit(samples, weights)
     return kde_log_density(model, points)
 
@@ -274,20 +272,19 @@ def _tail_case(n_dims):
     return points, samples, jnp.full(n_dims, 2.0), weights
 
 
-@pytest.mark.parametrize("entry", ENTRIES)
 @pytest.mark.parametrize("n_dims", [1, 2])
 @pytest.mark.parametrize("block_size", [64, 10_000])
 def test_true_log_density_matches_log_space_evaluation_in_and_beyond_tails(
-    block_size, n_dims, entry
+    block_size, n_dims
 ):
     """The one-pass scaled KDE matches full log-space evaluation everywhere.
 
     Points near the samples are ordinary; the last three lie far in the tail,
-    where the host entry point either scales them exactly (1D) or repairs them
+    where the KDE either scales them exactly (1D) or repairs them
     afterwards in log space.
     """
     points, samples, std, weights = _tail_case(n_dims)
-    actual = _true_log_density(entry, points, samples, std, block_size, weights)
+    actual = _true_log_density(points, samples, std, block_size, weights)
     expected = _log_space_kde_log_density(points, samples, std, block_size, weights)
     assert np.isfinite(expected).all()
     assert (np.asarray(expected[-3:]) < LOG_EPS).all()
@@ -306,23 +303,22 @@ def test_one_dimensional_pass_scales_distant_tails_without_log_space():
     np.testing.assert_allclose(values, expected, rtol=1e-6, atol=2e-5)
 
 
-@pytest.mark.parametrize("entry", ENTRIES)
-def test_true_log_density_matches_log_space_for_extremely_light_neighbors(entry):
+def test_true_log_density_matches_log_space_for_extremely_light_neighbors():
     """A near sample whose weight is 1e-36 of the largest still sets the density.
 
     The scale ignores weights, so the point is flagged and re-evaluated in log
-    space, which offsets by the largest weighted term; every entry agrees.
+    space, which offsets by the largest weighted term.
     """
     samples = jnp.asarray([[0.0], [300.0]])
     weights = jnp.asarray([1e-36, 1.0])
     points = jnp.asarray([[0.0]])
     std = jnp.ones(1)
-    actual = _true_log_density(entry, points, samples, std, 64, weights)
+    actual = _true_log_density(points, samples, std, 64, weights)
     expected = _log_space_kde_log_density(points, samples, std, 64, weights)
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-4)
 
 
-@pytest.mark.parametrize("entry", [*ENTRIES, "predict_log"])
+@pytest.mark.parametrize("entry", ["kde_log_density", "predict_log"])
 def test_true_log_density_keeps_positive_weights_of_any_ratio(entry):
     """A weight 1e-40 of the largest still sets the density where it dominates.
 
@@ -336,13 +332,12 @@ def test_true_log_density_keeps_positive_weights_of_any_ratio(entry):
     if entry == "predict_log":
         actual = KDEModel(std=1.0).fit(samples, weights).predict_log(points)
     else:
-        actual = _true_log_density(entry, points, samples, std, 64, weights)
+        actual = _true_log_density(points, samples, std, 64, weights)
     expected = np.log(1e-30 / (1e-30 + 1e10)) - 0.5 * np.log(2 * np.pi)
     np.testing.assert_allclose(actual, [expected], rtol=1e-6)
 
 
-@pytest.mark.parametrize("entry", ENTRIES)
-def test_true_log_density_recovers_mass_carried_by_terms_below_tiny(entry):
+def test_true_log_density_recovers_mass_carried_by_terms_below_tiny():
     """Terms that each flush below ``tiny`` can still hold most of the mass.
 
     The nearest sample carries a relative weight of 1e-37; a thousand samples
@@ -353,7 +348,7 @@ def test_true_log_density_recovers_mass_carried_by_terms_below_tiny(entry):
     samples = jnp.asarray([[0.0]] + [[13.4]] * 1000)
     weights = jnp.asarray([1e-37] + [1.0] * 1000)
     points = jnp.asarray([[0.0]])
-    actual = _true_log_density(entry, points, samples, jnp.ones(1), 64, weights)
+    actual = _true_log_density(points, samples, jnp.ones(1), 64, weights)
     expected = np.log(
         (1e-37 + 1000 * np.exp(-0.5 * np.float32(13.4) ** 2)) / (1e-37 + 1000)
     ) - 0.5 * np.log(2 * np.pi)
@@ -397,13 +392,12 @@ def test_public_tiled_prediction_keeps_the_rate_for_weights_near_float_max(is_lo
     np.testing.assert_allclose(scores[1], scores[0], rtol=1e-5)
 
 
-@pytest.mark.parametrize("entry", ENTRIES)
-def test_true_log_density_keeps_nan_points_and_samples_visible(entry):
+def test_true_log_density_keeps_nan_points_and_samples_visible():
     """A NaN coordinate yields NaN, as log-space evaluation does."""
     std = jnp.ones(1)
     samples = jnp.asarray([[0.0], [1.0], [2.0]])
     points = jnp.asarray([[np.nan], [0.5]])
-    with_nan_point = _true_log_density(entry, points, samples, std, 64, jnp.ones(3))
+    with_nan_point = _true_log_density(points, samples, std, 64, jnp.ones(3))
     assert np.isnan(with_nan_point[0])
     np.testing.assert_allclose(
         with_nan_point[1],
@@ -411,7 +405,6 @@ def test_true_log_density_keeps_nan_points_and_samples_visible(entry):
         rtol=1e-6,
     )
     with_nan_sample = _true_log_density(
-        entry,
         jnp.asarray([[0.5], [5.0]]),
         samples.at[1].set(np.nan),
         std,
@@ -421,25 +414,31 @@ def test_true_log_density_keeps_nan_points_and_samples_visible(entry):
     assert np.isnan(with_nan_sample).all()
 
 
-@pytest.mark.parametrize("entry", ENTRIES)
-def test_true_log_density_keeps_empty_and_invalid_support(entry):
-    """Zero total weight is no support; a NaN weight stays visible.
+def test_true_log_density_keeps_empty_support_and_rejects_nan_weights():
+    """Zero total weight is no support; ``KDEModel.fit`` rejects a NaN weight."""
+    samples = jnp.zeros((3, 1))
+    points = jnp.asarray([[0.0], [50.0]])
+    std = jnp.ones(1)
+    empty = _true_log_density(points, samples, std, 64, jnp.zeros(3))
+    assert np.isneginf(empty).all()
+    with pytest.raises(ValidationError, match="finite"):
+        _true_log_density(points, samples, std, 64, jnp.asarray([1.0, jnp.nan, 1.0]))
 
-    ``KDEModel.fit`` rejects a NaN weight outright, so only the traced kernel
-    can see one.
+
+def test_unvalidated_true_log_density_keeps_nan_weights_visible():
+    """A NaN weight passed straight to the kernel gives NaN, not a density.
+
+    The local clusterless likelihood evaluates the occupancy density through
+    ``_true_kde_log_density`` without ``KDEModel.fit``'s validation.
     """
     samples = jnp.zeros((3, 1))
     points = jnp.asarray([[0.0], [50.0]])
     std = jnp.ones(1)
-    empty = _true_log_density(entry, points, samples, std, 64, jnp.zeros(3))
-    assert np.isneginf(empty).all()
     nan_weights = jnp.asarray([1.0, jnp.nan, 1.0])
-    if entry == "host":
-        with pytest.raises(ValidationError, match="finite"):
-            _true_log_density(entry, points, samples, std, 64, nan_weights)
-    else:
-        invalid = _true_log_density(entry, points, samples, std, 64, nan_weights)
-        assert np.isnan(invalid).all()
+    assert np.isnan(_true_kde_log_density(points, samples, std, 64, nan_weights)).all()
+    assert np.isneginf(
+        _true_kde_log_density(points, samples, std, 64, jnp.zeros(3))
+    ).all()
 
 
 @pytest.mark.parametrize("n_dims", [1, 2])
