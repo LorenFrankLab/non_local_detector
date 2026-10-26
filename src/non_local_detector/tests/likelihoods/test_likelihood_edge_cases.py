@@ -8,6 +8,8 @@ occupancy, and extreme regularization.
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.special import logsumexp
+from scipy.stats import norm
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_gmm import (
@@ -19,8 +21,15 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import LOG_EPS, RATE_EPS_HZ
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
+from non_local_detector.likelihoods.common import (
+    LOG_EPS,
+    RATE_EPS_HZ,
+    RATE_REFERENCE_SECONDS,
+)
+from non_local_detector.likelihoods.mark_reference import (
+    background_log_intensity,
+    fit_mark_references,
+)
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     predict_sorted_spikes_glm_log_likelihood,
@@ -656,7 +665,13 @@ def test_clusterless_kde_identical_waveforms():
 
 
 def test_clusterless_kde_extreme_waveform():
-    """Extreme waveform outliers should produce finite output, not NaN."""
+    """A 100-sigma outlier waveform gives the float64 log-space likelihood.
+
+    Its mark intensity is ~1e4 nats down, far below what float32 represents,
+    so its spike scores ``logaddexp(log intensity, log background)`` at the
+    No-Spike background; every row also pays the ground rate. Both are
+    computed here in float64 from the encoding positions and marks.
+    """
     env = _make_env_1d()
     enc_spikes = [jnp.array([2.0, 5.0, 8.0])]
     enc_feats = [jnp.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]])]
@@ -665,10 +680,38 @@ def test_clusterless_kde_extreme_waveform():
     # Decode with a 100-sigma outlier waveform
     dec_spikes = [jnp.array([5.0])]
     dec_feats = [jnp.array([[100.0, 100.0]])]
-    ll = _predict_clusterless_kde(enc, env, dec_spikes, dec_feats, t, pos)
+    ll = np.asarray(_predict_clusterless_kde(enc, env, dec_spikes, dec_feats, t, pos))
 
-    assert not jnp.any(jnp.isnan(ll))
-    assert jnp.all(jnp.isfinite(ll))
+    # Unit-width Gaussian kernels (the fit's position and waveform std); the
+    # animal runs at 1 cm/s from 0 cm, so spike times are positions.
+    centers = env.place_bin_centers_[env.is_track_interior_.ravel(), 0]
+    encoding_positions = np.asarray(enc_spikes[0])
+    log_spatial = norm.logpdf(centers[:, None], loc=encoding_positions)
+    log_mark = norm.logpdf(np.asarray(dec_feats[0]), loc=np.asarray(enc_feats[0])).sum(
+        axis=1
+    )
+    occupancy = norm.pdf(centers[:, None], loc=np.asarray(pos)[:, 0]).mean(axis=1)
+    mean_rate = encoding_positions.size / (t.size * float(t[1] - t[0]))
+    log_intensity = (
+        np.log(mean_rate)
+        + logsumexp(log_spatial + log_mark, axis=1)
+        - np.log(encoding_positions.size)
+        - np.log(occupancy)
+    )
+    ground_rate = mean_rate * np.exp(log_spatial).mean(axis=1) / occupancy
+    assert np.all(log_intensity < np.log(np.finfo(np.float32).tiny))
+
+    t_edges = np.linspace(0.0, 10.0, 6)  # the ``_predict_*`` helpers' edges
+    dt = np.diff(t_edges)
+    # The background is a rate per RATE_REFERENCE_SECONDS, scaled to the bin.
+    log_background = background_log_intensity(
+        enc["mark_reference"][0], np.asarray(dec_feats[0]), LOG_EPS
+    )[0] + np.log(dt[2] / RATE_REFERENCE_SECONDS)
+    expected = -dt[:, None] * ground_rate[None, :]
+    expected[2] += np.logaddexp(log_intensity + np.log(dt[2]), log_background)
+
+    assert np.all(np.isfinite(ll))
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-4)
 
 
 def test_clusterless_gmm_extreme_waveform():
