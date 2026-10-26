@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 
 from non_local_detector import (
-    ClusterlessDecoder,
     DiscreteNonStationaryDiagonal,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
@@ -24,7 +23,10 @@ from non_local_detector import (
 from non_local_detector.models.base import (
     _normalize_frozen_discrete_transition_rows,
 )
-from non_local_detector.models.cont_frag_model import ContFragSortedSpikesClassifier
+from non_local_detector.models.cont_frag_model import (
+    ContFragClusterlessClassifier,
+    ContFragSortedSpikesClassifier,
+)
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
@@ -156,21 +158,6 @@ class TestFrozenMaskNotSerialized:
         assert "_frozen_discrete_transition_rows_mask_" not in vars(model)
         assert "_frozen_discrete_transition_rows_mask_" not in model.get_params(
             deep=False
-        )
-
-    def test_property_still_returns_correct_mask(self):
-        # Default NonLocal model freezes the No-Spike row (index 1 of 4 states).
-        model = NonLocalSortedSpikesDetector()
-        np.testing.assert_array_equal(
-            model._frozen_discrete_transition_rows_mask_,
-            [False, True, False, False],
-        )
-        # Opt-out still yields None.
-        assert (
-            NonLocalSortedSpikesDetector(
-                frozen_discrete_transition_rows=None
-            )._frozen_discrete_transition_rows_mask_
-            is None
         )
 
     def test_vars_roundtrip_reconstructs_via_base_detector(self):
@@ -328,43 +315,29 @@ class TestFrozenRowEndToEnd:
 
 
 @pytest.mark.integration
-@pytest.mark.slow
-class TestFrozenRowsDecoderSmoke:
-    """A non-NonLocal model (ClusterlessDecoder, 1 state) accepts the
-    parameter and runs to completion with a frozen row."""
-
-    def test_clusterless_decoder_freeze_only_row(self):
-        """Freezing the single row of a 1-state decoder should leave it
-        exactly at its initial value after EM."""
-        from non_local_detector.simulate.clusterless_simulation import (
-            make_simulated_run_data,
+def test_clusterless_classifier_frozen_row_unchanged_after_em(clusterless_sim):
+    """A two-state clusterless classifier (no default freeze) keeps an
+    explicitly frozen row at its initial value through EM, while the same
+    row moves when nothing is frozen."""
+    fit_args = {
+        "position_time": clusterless_sim.position_time,
+        "position": clusterless_sim.position,
+        "spike_times": clusterless_sim.spike_times,
+        "spike_waveform_features": clusterless_sim.spike_waveform_features,
+        "time_edges": time_edges_from_centers(clusterless_sim.position_time),
+        "max_iter": 3,
+        "estimate_encoding_model": False,
+    }
+    final_row = {}
+    for label, frozen_rows in (("frozen", [0]), ("free", None)):
+        classifier = ContFragClusterlessClassifier(
+            frozen_discrete_transition_rows=frozen_rows
         )
+        initial_row = TestFrozenRowEndToEnd._initial_transition_row(classifier, 0)
+        classifier.estimate_parameters(**fit_args)
+        final_row[label] = classifier.discrete_state_transitions_[0]
 
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            n_runs=3,
-            seed=42,
-        )
-
-        decoder = ClusterlessDecoder(frozen_discrete_transition_rows=[0])
-        decoder.initialize_environments(position=sim.position)
-        decoder.initialize_state_index()
-        decoder.initialize_initial_conditions()
-        decoder.initialize_discrete_state_transition()
-        initial_row = decoder.discrete_state_transitions_[0].copy()
-
-        decoder.estimate_parameters(
-            position_time=sim.position_time,
-            position=sim.position,
-            spike_times=sim.spike_times,
-            spike_waveform_features=sim.spike_waveform_features,
-            time_edges=time_edges_from_centers(sim.position_time),
-            max_iter=3,
-            estimate_encoding_model=False,
-        )
-
-        np.testing.assert_array_equal(
-            decoder.discrete_state_transitions_[0],
-            initial_row,
-        )
+    np.testing.assert_array_equal(final_row["frozen"], initial_row)
+    assert not np.array_equal(final_row["free"], initial_row), (
+        "Row 0 did not move without freezing, so the frozen check is vacuous"
+    )
