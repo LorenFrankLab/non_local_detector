@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Faster compilation of clusterless spike sums on GPU
+
+- **Changed:** off CPU, the deterministic sum of per-spike terms into time bins (`deterministic_segment_sum`, `deterministic_row_add`), used by `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion` and `clusterless_mark_glm`, compiles 10-17x faster on its own (0.19 s instead of 2.0 s at 1,000 spikes per block, 0.20 s instead of 3.5 s at 10,000). It is now a Hillis-Steele segmented scan in a loop instead of `jax.lax.associative_scan`, and a scatter with unique indices adds each time bin's total only to that bin. Before, each block of spikes built an array the size of the whole output.
+  - On an A100, the first non-local prediction call of `clusterless_mark_glm` on fold 0 of a 22-tetrode recording (j16) took 15 s instead of 33 s. On an 11-shank, 26-32 channel recording (RS58) it took 5 s instead of 20-23 s, and later non-local calls took 0.24 s instead of 0.28 s; other later-call times were unchanged.
+  - The first `clusterless_kde` call, at 1,024 / 10,000 spikes per block, took 56 / 34 s instead of 84 / 56 s on j16 and 170 / 154 s instead of 202 / 188 s on RS58; later calls were unchanged.
+  - Results are still bitwise repeatable. They differ from before by float32 rounding: at most 1e-7 of the largest log likelihood on both recordings. CPU likelihood results are unchanged, since CPU keeps its sequential scatter.
+
 ### Faster grid setup for Cartesian environments
 
 - **Changed:** `Environment.fit_place_grid` computes the all-pairs bin distances of a Cartesian (non-track-graph) environment with SciPy's compiled Dijkstra instead of NetworkX's pure-Python search. On a laptop, a 100 x 100 bin grid takes 7.4 s instead of 154 s (a ring-shaped track in the same grid: 1.0 s instead of 14.9 s). The distances are bit-identical to before on every grid measured; track-graph environments are unchanged.
