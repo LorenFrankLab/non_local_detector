@@ -19,13 +19,11 @@ from non_local_detector.models.cont_frag_model import (
     ContFragSortedSpikesClassifier,
 )
 from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING
-from non_local_detector.tests.models.test_failed_calls_preserve_model import (
-    _assert_unchanged,
-    _snapshot,
-)
-from non_local_detector.tests.models.test_rate_units_and_persistence import (
+from non_local_detector.tests.models._helpers import (
     ALGORITHMS,
+    _assert_unchanged,
     _decoder,
+    _snapshot,
 )
 
 

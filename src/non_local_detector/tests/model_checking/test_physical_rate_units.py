@@ -221,7 +221,7 @@ def test_clusterless_rejects_events_outside_or_invalid_for_sampled_support(bad_s
     ],
 )
 def test_fitted_hz_rates_feed_physical_time_checkers(algorithm, frequency):
-    from non_local_detector.tests.models.test_rate_units_and_persistence import _decoder
+    from non_local_detector.tests.models._helpers import _decoder
 
     time = np.arange(frequency) / frequency
     position = np.zeros((frequency, 1))

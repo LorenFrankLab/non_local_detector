@@ -6,58 +6,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from non_local_detector import (
-    ClusterlessDecoder,
-    Environment,
-    SortedSpikesDecoder,
-    Uniform,
-)
 from non_local_detector.exceptions import ValidationError
-
-ALGORITHMS = [
-    "sorted_spikes_kde",
-    "sorted_spikes_glm",
-    "sorted_spikes_diffusion",
-    "sorted_spikes_mrf",
-    "clusterless_kde",
-    "clusterless_gmm",
-    "clusterless_diffusion",
-    "clusterless_mark_glm",
-]
-
-
-def _decoder(algorithm, *, calibration=False):
-    environment = Environment(
-        place_bin_size=1 if calibration else 5,
-        position_range=((-1.5, 1.5),) if calibration else ((40, 60),),
-    )
-    options = {
-        "environments": environment,
-        "continuous_transition_types": [[Uniform()]],
-        "infer_track_interior": False,
-    }
-    params = {"disable_progress_bar": True}
-    if algorithm == "sorted_spikes_glm" and calibration:
-        # Natural cubic knots must fit this small spatial domain.
-        params["emission_knot_spacing"] = 1.0
-    if algorithm == "sorted_spikes_mrf":
-        params["penalty"] = 1.0
-    if algorithm == "clusterless_gmm":
-        params.update(
-            gmm_components_occupancy=1,
-            gmm_components_joint=1,
-        )
-    if algorithm.startswith("sorted"):
-        return SortedSpikesDecoder(
-            sorted_spikes_algorithm=algorithm,
-            sorted_spikes_algorithm_params=params,
-            **options,
-        )
-    return ClusterlessDecoder(
-        clusterless_algorithm=algorithm,
-        clusterless_algorithm_params=params,
-        **options,
-    )
+from non_local_detector.tests.models._helpers import ALGORITHMS, _decoder
 
 
 @pytest.mark.integration

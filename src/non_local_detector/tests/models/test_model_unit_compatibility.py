@@ -21,7 +21,7 @@ from non_local_detector.models.cont_frag_model import (
     ContFragSortedSpikesClassifier,
 )
 from non_local_detector.observation_models import ObservationModel
-from non_local_detector.tests.models.test_failed_calls_preserve_model import (
+from non_local_detector.tests.models._helpers import (
     _assert_unchanged,
     _snapshot,
 )
@@ -351,7 +351,7 @@ def test_direct_predictors_validate_supplied_units_and_default_to_hz(algorithm):
         _CLUSTERLESS_ALGORITHMS,
         _SORTED_SPIKES_ALGORITHMS,
     )
-    from non_local_detector.tests.models.test_rate_units_and_persistence import _decoder
+    from non_local_detector.tests.models._helpers import _decoder
 
     time = np.arange(500) * 0.002
     position = np.zeros((len(time), 1))

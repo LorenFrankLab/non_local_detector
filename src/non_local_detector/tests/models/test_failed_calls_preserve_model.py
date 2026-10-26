@@ -21,6 +21,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.tests.models._helpers import _assert_unchanged, _snapshot
 
 FAMILIES = ["sorted", "clusterless"]
 N_DECODE = 300
@@ -65,25 +66,6 @@ def _fitted(family_data):
     )
     assert hasattr(detector, "log_likelihood_")
     return detector
-
-
-def _snapshot(detector):
-    """Attribute identities of the detector and of each of its environments."""
-    return (
-        dict(vars(detector)),
-        [(env, dict(vars(env))) for env in detector.environments],
-    )
-
-
-def _assert_unchanged(detector, snapshot):
-    detector_state, environment_states = snapshot
-    assert vars(detector).keys() == detector_state.keys()
-    for name, value in detector_state.items():
-        assert vars(detector)[name] is value, name
-    for env, env_state in environment_states:
-        assert vars(env).keys() == env_state.keys()
-        for name, value in env_state.items():
-            assert vars(env)[name] is value, (env.environment_name, name)
 
 
 def _posterior(detector, family_data):
