@@ -107,17 +107,16 @@ def box_with_hole():
     return environment, _fit(data)
 
 
-def _assert_local_equals_nonlocal(fitted, environment, name, held, expected_center):
-    """Hold the animal at ``held``; compare local to the bin at ``expected_center``.
+def _held_decode_inputs(held, is_clusterless):
+    """Decode edges and positional arguments with the animal held at ``held``.
 
-    Tolerance: ``FLOAT32_ROUNDING`` (rtol 1e-6, atol 1e-5). The two paths
-    evaluate the same rates and marks through different float32 reductions
-    (per-row matmuls or scatter-adds): on the 1-D fixture they differ by at
-    most 3.1e-5 absolute on log likelihoods of order 200, 1.7e-7 relative. A
-    misread position or a lost spike moves a log likelihood by O(1), and
-    every non-local row must span more than 0.5 across bins.
+    Returns
+    -------
+    time_edges : np.ndarray, shape (N_DECODE_BINS + 1,)
+    args : list
+        ``position_time``, ``position`` of shape (n_position_time, *held.shape),
+        ``spike_times`` and, for clusterless backends, ``spike_waveform_features``.
     """
-    predict, model, is_clusterless = fitted[name]
     rng = np.random.default_rng(1)
 
     decode_time = 100.0 + np.arange(N_DECODE_BINS) * DECODE_DT
@@ -146,6 +145,21 @@ def _assert_local_equals_nonlocal(fitted, environment, name, held, expected_cent
                 for times, center in zip(spike_times, (5.0, 15.0), strict=True)
             ]
         )
+    return time_edges, args
+
+
+def _assert_local_equals_nonlocal(fitted, environment, name, held, expected_center):
+    """Hold the animal at ``held``; compare local to the bin at ``expected_center``.
+
+    Tolerance: ``FLOAT32_ROUNDING`` (rtol 1e-6, atol 1e-5). The two paths
+    evaluate the same rates and marks through different float32 reductions
+    (per-row matmuls or scatter-adds): on the 1-D fixture they differ by at
+    most 3.1e-5 absolute on log likelihoods of order 200, 1.7e-7 relative. A
+    misread position or a lost spike moves a log likelihood by O(1), and
+    every non-local row must span more than 0.5 across bins.
+    """
+    predict, model, is_clusterless = fitted[name]
+    time_edges, args = _held_decode_inputs(held, is_clusterless)
 
     local = np.asarray(predict(*args, time_edges=time_edges, is_local=True, **model))
     nonlocal_ = np.asarray(
@@ -205,6 +219,28 @@ def test_local_equals_nonlocal_in_a_box_with_a_hole(
     _assert_local_equals_nonlocal(
         fitted, environment, name, np.array(held), np.array(expected_center)
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", ALGORITHMS)
+@pytest.mark.parametrize("storage", ["1-D", "int64", "uint16"])
+def test_local_likelihood_is_invariant_to_position_storage(line, name, storage):
+    """A 1-D or integer position array gives the local row of the same position
+    as float ``(n_time, 1)`` storage, as the fits accept either.
+
+    Tolerance: ``FLOAT32_ROUNDING``; the positions are the same values, and
+    reading them in the integer dtype or as columnless shifts a row by O(1).
+    """
+    predict, model, is_clusterless = line[1][name]
+    time_edges, args = _held_decode_inputs(np.array([25.0]), is_clusterless)
+    expected = np.asarray(predict(*args, time_edges=time_edges, is_local=True, **model))
+
+    position = args[1]
+    args[1] = position[:, 0] if storage == "1-D" else position.astype(storage)
+    actual = np.asarray(predict(*args, time_edges=time_edges, is_local=True, **model))
+
+    assert actual.shape == expected.shape == (N_DECODE_BINS, 1)
+    np.testing.assert_allclose(actual, expected, **FLOAT32_ROUNDING)
 
 
 @pytest.mark.unit

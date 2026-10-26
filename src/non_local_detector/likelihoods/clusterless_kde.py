@@ -2250,6 +2250,7 @@ def compute_local_log_likelihood(
     if encoding_weights is None:
         encoding_weights = [None] * len(encoding_positions)
 
+    position = position if position.ndim > 1 else position[:, np.newaxis]
     interpolated_position, log_occupancy = _prepare_kde_local_inputs(
         occupancy_model,
         position_time,

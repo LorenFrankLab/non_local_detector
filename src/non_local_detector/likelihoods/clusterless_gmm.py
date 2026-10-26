@@ -1261,12 +1261,12 @@ def compute_local_log_likelihood(
     # interpolates with scipy), so converting the recording-length position to a
     # device array would copy the whole recording on every chunk call for an
     # array this path never evaluates on device. The working dtype is the one a
-    # full conversion would have produced (JAX canonicalizes float64 to float32
-    # unless x64 is enabled).
+    # full conversion would have produced: the fit's floating dtype (integer
+    # positions as floats; float64 as float32 unless x64 is enabled).
     position_time = np.asarray(position_time)
     position = np.asarray(position)
     position = position if position.ndim > 1 else position[:, None]
-    working_dtype = jax.dtypes.canonicalize_dtype(position.dtype)
+    working_dtype = _as_jnp(position[:0]).dtype
 
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges

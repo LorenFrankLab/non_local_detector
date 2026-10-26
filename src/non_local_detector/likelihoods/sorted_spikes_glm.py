@@ -1573,6 +1573,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         # The natural spline extrapolates log-rate linearly past its boundary
         # knots (the track-graph basis reads the nearest edge end); off-track
         # positions read the nearest interior bin instead.
+        position = position if position.ndim > 1 else position[:, np.newaxis]
         interpolated_position = snap_off_track_positions(
             get_position_at_time(position_time, position, row_time, environment),
             environment,

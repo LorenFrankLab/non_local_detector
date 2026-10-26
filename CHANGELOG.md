@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Local likelihood position inputs
+
+- **Fixed:** the local `clusterless_gmm` likelihood cast interpolated positions and background log intensities to the position array's dtype, so integer positions truncated them: a background-only spike scored -29 with `int64` positions and +65507 with `uint16`, against -29.57 with floats. Integer positions now compute in the fit's floating dtype.
+- **Fixed:** direct calls to the local `sorted_spikes_glm` and `clusterless_kde` likelihoods raised `ValueError` / `IndexError` for 1-D positions of shape `(n_time,)`, which their fits accept. They now read them as `(n_time, 1)`. The detectors were unaffected: they reshape positions themselves.
+
 ### Faster clusterless KDE likelihood step
 
 - **Changed:** `block_size` in `fit_clusterless_kde_encoding_model`, `predict_clusterless_kde_log_likelihood`, `compute_local_log_likelihood` and `block_estimate_log_joint_mark_intensity` now defaults to 10,000, the detectors' default, instead of 100. Direct calls that relied on the old default change, and so do detectors whose `clusterless_algorithm_params` omit `block_size`: a params dict is used as given, so a missing `block_size` falls back to the function default. On an A100, a full non-local prediction of RS58 fold 0 takes 2.8 s at 10,000 against 9.7 s at 100, and j16 fold 0 takes 0.49 s against 1.37 s (on CPU 7.2 s against 29 s). Peak GPU memory rises from 585 to 784 MB (j16); RS58 stays at about 0.9 GB. Outputs agree across block sizes to float32 rounding (at most 2.4e-4 on log likelihoods).
