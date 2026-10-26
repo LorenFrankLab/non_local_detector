@@ -748,12 +748,14 @@ class TestMultiStepEnumerationReference:
     def test_chunked_drivers_match_enumeration(
         self, path, n_chunks, cache_log_likelihoods
     ):
-        # Missing rows carry no evidence (log-likelihood 0), in both the cached
-        # array and the callback. The callback returns rows by global index,
-        # keeping this independent of the spike-binning code.
+        # Missing rows carry no evidence (log-likelihood 0). The callback
+        # returns rows by global index, keeping this independent of the
+        # spike-binning code, and zeroes the rows the driver marks missing
+        # itself, so a mis-sliced per-chunk mask changes the result.
         n_time = 5
         is_missing = np.zeros(n_time, dtype=bool)
-        is_missing[[1, 3]] = True
+        # Rows 1-2 straddle the first boundary of the three-chunk split.
+        is_missing[[1, 2]] = True
         time = np.arange(n_time)
 
         if path == "stationary":
@@ -764,12 +766,15 @@ class TestMultiStepEnumerationReference:
             initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
                 n_time=n_time
             )
-        ll = ll.copy()
-        ll[is_missing] = 0.0
-        ref = enumerate_reference(initial, expanded, ll)
+        ll_without_missing = ll.copy()
+        ll_without_missing[is_missing] = 0.0
+        ref = enumerate_reference(initial, expanded, ll_without_missing)
 
         def log_likelihood_func(time_idx, is_missing=None):
-            return ll[np.asarray(time_idx, dtype=int)]
+            rows = ll[np.asarray(time_idx, dtype=int)].copy()
+            assert is_missing is not None and len(is_missing) == len(rows)
+            rows[is_missing] = 0.0
+            return rows
 
         common = {
             "time": time,
@@ -779,7 +784,7 @@ class TestMultiStepEnumerationReference:
             "log_likelihood_args": (),
             "is_missing": is_missing,
             "n_chunks": n_chunks,
-            "log_likelihoods": ll if cache_log_likelihoods else None,
+            "log_likelihoods": None,
             "cache_log_likelihoods": cache_log_likelihoods,
         }
         if path == "stationary":
