@@ -3,6 +3,7 @@ import inspect
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.integrate import trapezoid
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -414,6 +415,6 @@ def test_kde_event_intensity_integrates_to_compensator(
         **kwargs,
     )
     intensity = np.exp(np.asarray(events) - np.asarray(empty)) / np.diff(edges)[:, None]
-    integrated = np.trapezoid(intensity, marks, axis=0)
+    integrated = trapezoid(intensity, marks, axis=0)
     ground = -np.asarray(empty)[0] / np.diff(edges)[0]
     np.testing.assert_allclose(integrated, ground, rtol=1e-4, atol=1e-6)

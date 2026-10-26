@@ -29,6 +29,7 @@ import networkx as nx
 import numpy as np
 import pytest
 from scipy import stats
+from scipy.integrate import trapezoid
 from scipy.spatial import cKDTree
 from scipy.special import logsumexp
 
@@ -382,7 +383,7 @@ def test_predicted_intensity_integrates_over_marks_to_the_expected_count():
     silent = predict([np.array([])], [np.zeros((0, 1), np.float32)])
     intensity = np.exp(with_spike - silent - np.log(dt))  # (n_marks, n_bins)
     np.testing.assert_allclose(
-        np.trapezoid(intensity, marks, axis=0),
+        trapezoid(intensity, marks, axis=0),
         np.asarray(enc["summed_ground_process_intensity"]),
         rtol=1e-4,
     )

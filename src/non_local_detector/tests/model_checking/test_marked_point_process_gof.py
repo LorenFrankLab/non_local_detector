@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import stats
+from scipy.integrate import trapezoid
 from scipy.special import logsumexp
 
 from non_local_detector.environment import Environment
@@ -583,7 +584,7 @@ def test_mdci_equals_a_direct_sum_over_bins(recording, fitted, algorithm):
         inside = position_time <= s
         times = np.append(position_time[inside], s)
         last = np.interp(s, position_time, values)
-        return np.trapezoid(np.append(values[inside], last), times)
+        return trapezoid(np.append(values[inside], last), times)
 
     expected_u = np.array(
         [
