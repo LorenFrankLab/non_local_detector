@@ -45,7 +45,7 @@ from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_
 
 PARITY_KWARGS = {"rtol": 1e-5, "atol": 1e-6}
 # 202 bins (203 edges) is not divisible by 5, 6 or 7, so every chunk split below
-# has a ragged final chunk (item 5) as well as uneven boundaries.
+# has a ragged final chunk as well as uneven boundaries.
 N_DECODE = 202
 CHUNK_COUNTS = (5, 6, 7)
 N_SINGLETON = 41
@@ -67,7 +67,7 @@ def boundary_gap_times(time: np.ndarray, n_chunks: int) -> np.ndarray:
 
 
 def boundary_timestamp_times(time: np.ndarray, n_chunks: int) -> np.ndarray:
-    """Chunk-start edges, the edges before them, and both endpoints (item 1).
+    """Chunk-start edges, the edges before them, and both endpoints.
 
     A spike exactly on a chunk-start edge is the case per-chunk binning gets
     wrong: that edge also closes the previous chunk, so binning each chunk
@@ -342,7 +342,7 @@ def covariate_setup(sorted_simulation):
 
 @pytest.fixture(scope="module")
 def delta_kernel_setup(sorted_simulation):
-    """A detector whose likelihood has legitimate ``-inf`` entries (item 9).
+    """A detector whose likelihood has legitimate ``-inf`` entries.
 
     ``local_position_std=0`` makes the Local state's position kernel a delta:
     ``log(n_bins)`` at the animal's bin and ``-inf`` at every other bin. Those
@@ -451,7 +451,7 @@ def test_row_sliced_spike_counts_match_full_time_counts():
 
 
 # ==============================================================================
-# Items 1, 2, 5: boundary timestamps, in-gap spikes, ragged/uneven chunks
+# Boundary timestamps, in-gap spikes, ragged/uneven chunks
 # ==============================================================================
 
 
@@ -483,7 +483,7 @@ def test_clusterless_ragged_chunks_match_unchunked(clusterless_setup, n_chunks):
 
 @pytest.mark.integration
 def test_spikes_only_on_chunk_boundaries_match_unchunked(sorted_setup):
-    """Item 1 in isolation: the ONLY spikes are on boundary timestamps.
+    """Boundary timestamps in isolation: the ONLY spikes are on them.
 
     With every other spike removed the boundary spikes carry all the evidence,
     so an off-by-one row assignment cannot be masked by neighbouring spikes.
@@ -509,7 +509,7 @@ def test_spikes_only_on_chunk_boundaries_match_unchunked(sorted_setup):
 
 
 # ==============================================================================
-# Item 4: singleton chunks (n_chunks == n_bins)
+# Singleton chunks (n_chunks == n_bins)
 # ==============================================================================
 
 
@@ -526,7 +526,7 @@ def test_singleton_chunks_match_unchunked(delta_kernel_setup):
 
 
 # ==============================================================================
-# Item 3: spike-free chunks and spike-free units
+# Spike-free chunks and spike-free units
 # ==============================================================================
 
 
@@ -588,7 +588,7 @@ def test_clusterless_spike_free_chunks_match_unchunked(clusterless_setup):
 
 
 # ==============================================================================
-# Item 7: unsorted decoding spike input through the public path
+# Unsorted decoding spike input through the public path
 # ==============================================================================
 
 
@@ -634,7 +634,7 @@ def test_unsorted_spike_input_matches_unchunked(clusterless_setup):
 
 
 # ==============================================================================
-# Item 8: is_missing straddling chunk boundaries
+# is_missing straddling chunk boundaries
 # ==============================================================================
 
 
@@ -651,7 +651,7 @@ def missing_mask_straddling_boundaries(n_bins: int, n_chunks: int) -> np.ndarray
 @pytest.mark.integration
 @pytest.mark.parametrize("n_chunks", CHUNK_COUNTS)
 def test_is_missing_straddling_boundaries_matches_unchunked(sorted_setup, n_chunks):
-    """Item 8: missing-data runs crossing chunk boundaries, chunked == unchunked."""
+    """Missing-data runs crossing chunk boundaries, chunked == unchunked."""
     detector = sorted_setup["detector"]
     time = sorted_setup["time"]
     is_missing = missing_mask_straddling_boundaries(len(time) - 1, n_chunks)
@@ -672,7 +672,7 @@ def test_is_missing_straddling_boundaries_matches_unchunked(sorted_setup, n_chun
 def test_clusterless_is_missing_straddling_boundaries_matches_unchunked(
     clusterless_setup,
 ):
-    """Item 8 for the clusterless assembly path."""
+    """Missing-data runs crossing chunk boundaries, clusterless assembly path."""
     detector = clusterless_setup["detector"]
     time = clusterless_setup["time"]
     n_chunks = 6
@@ -683,14 +683,14 @@ def test_clusterless_is_missing_straddling_boundaries_matches_unchunked(
 
 
 # ==============================================================================
-# Item 10: the covariate-dependent chunk driver (items 2 and 8)
+# The covariate-dependent chunk driver: in-gap spikes and is_missing
 # ==============================================================================
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("n_chunks", CHUNK_COUNTS)
 def test_covariate_dependent_ragged_chunks_match_unchunked(covariate_setup, n_chunks):
-    """Item 2 and 5 on the covariate-dependent driver."""
+    """In-gap spikes and ragged chunks on the covariate-dependent driver."""
     detector = covariate_setup["detector"]
     kwargs = sorted_predict_kwargs(
         covariate_setup,
@@ -701,7 +701,7 @@ def test_covariate_dependent_ragged_chunks_match_unchunked(covariate_setup, n_ch
 
 @pytest.mark.integration
 def test_covariate_dependent_is_missing_matches_unchunked(covariate_setup):
-    """Item 8 on the covariate-dependent driver."""
+    """Missing-data runs crossing chunk boundaries, covariate-dependent driver."""
     detector = covariate_setup["detector"]
     time = covariate_setup["time"]
     n_chunks = 7
@@ -786,7 +786,7 @@ def test_chunked_estimate_parameters_returns_requested_log_likelihood(
 
 
 # ==============================================================================
-# Item 9: legitimate -inf entries must be preserved, not "made finite"
+# Legitimate -inf entries must be preserved, not "made finite"
 # ==============================================================================
 
 
@@ -814,7 +814,7 @@ def test_delta_local_kernel_has_nonfinite_rows(delta_kernel_setup):
 @pytest.mark.integration
 @pytest.mark.parametrize("n_chunks", [3, 6, N_SINGLETON])
 def test_nonfinite_mask_survives_chunking(delta_kernel_setup, n_chunks):
-    """Item 9: the ``-inf`` mask and the finite values are both reproduced."""
+    """The ``-inf`` mask and the finite values are both reproduced."""
     setup = delta_kernel_setup
     kwargs = sorted_predict_kwargs(setup)
 
