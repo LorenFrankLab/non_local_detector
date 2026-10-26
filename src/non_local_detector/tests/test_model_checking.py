@@ -68,29 +68,6 @@ class TestGetHighestPosteriorThreshold:
 
         np.testing.assert_allclose(threshold, [min(probabilities[:-1])])
 
-    @pytest.mark.integration
-    def test_default_detector_conditional_nonlocal_posterior(self):
-        """The default Local-only initial frame must not break later HPDs."""
-        from non_local_detector import Environment, NonLocalSortedSpikesDetector
-
-        time = np.linspace(0.0, 1.0, 11)
-        position = np.column_stack((10.0 * time, 5.0 * time))
-        spikes = [np.array([0.1, 0.3, 0.6, 0.8])]
-        detector = NonLocalSortedSpikesDetector(
-            environments=Environment(place_bin_size=2.0),
-            infer_track_interior=False,
-        ).fit(time, position, spikes)
-        results = detector.predict(
-            spikes, time_edges=time, position=position, position_time=time
-        )
-
-        posterior = detector.get_conditional_non_local_posterior(results)
-        threshold = get_highest_posterior_threshold(posterior)
-
-        assert np.isnan(threshold[0])
-        assert np.isfinite(threshold[1:]).all()
-        assert (threshold[1:] > 0.0).all()
-
     def test_delta_function_threshold(self):
         """Delta function: threshold should equal the peak value."""
         probs = np.zeros((1, 10))
@@ -133,6 +110,30 @@ class TestGetHighestPosteriorThreshold:
         threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
 
         assert threshold.shape == (5,)
+
+
+@pytest.mark.integration
+def test_default_detector_conditional_nonlocal_posterior():
+    """The default Local-only initial frame must not break later HPDs."""
+    from non_local_detector import Environment, NonLocalSortedSpikesDetector
+
+    time = np.linspace(0.0, 1.0, 11)
+    position = np.column_stack((10.0 * time, 5.0 * time))
+    spikes = [np.array([0.1, 0.3, 0.6, 0.8])]
+    detector = NonLocalSortedSpikesDetector(
+        environments=Environment(place_bin_size=2.0),
+        infer_track_interior=False,
+    ).fit(time, position, spikes)
+    results = detector.predict(
+        spikes, time_edges=time, position=position, position_time=time
+    )
+
+    posterior = detector.get_conditional_non_local_posterior(results)
+    threshold = get_highest_posterior_threshold(posterior)
+
+    assert np.isnan(threshold[0])
+    assert np.isfinite(threshold[1:]).all()
+    assert (threshold[1:] > 0.0).all()
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +521,38 @@ class TestPosteriorConsistencyHPDOverlap:
 
         assert overlap[0] == pytest.approx(0.0)
 
+    def test_nested_regions_use_smaller_region_size(self):
+        """A ⊂ B gives containment 1.0, unlike Jaccard (0.5) or Dice (2/3).
+
+        At 90% coverage the HPD of ``p`` is bins {0, 1} (|A| = 2) and that of
+        ``q`` is bins {0, 1, 2, 3} (|B| = 4).
+        """
+        p = np.zeros((1, 10))
+        p[0, :2] = 0.5
+        q = np.zeros((1, 10))
+        q[0, :4] = 0.25
+
+        overlap = posterior_consistency_hpd_overlap(p, q, coverage=0.9)
+
+        np.testing.assert_allclose(overlap, [1.0])
+
+    def test_partial_overlap_matches_containment_coefficient(self):
+        """|A∩B| / min(|A|, |B|) for A = {0, 1, 2}, B = {2, 3, 4, 5}.
+
+        The intersection is {2}, so containment is 1/3 (Jaccard 1/6, Dice
+        2/7). Swapping the arguments gives the same value.
+        """
+        p = np.zeros((1, 10))
+        p[0, :3] = 1.0 / 3.0
+        q = np.zeros((1, 10))
+        q[0, 2:6] = 0.25
+
+        overlap = posterior_consistency_hpd_overlap(p, q, coverage=0.9)
+        swapped = posterior_consistency_hpd_overlap(q, p, coverage=0.9)
+
+        np.testing.assert_allclose(overlap, [1.0 / 3.0])
+        np.testing.assert_allclose(swapped, [1.0 / 3.0])
+
     def test_overlap_in_unit_range(self):
         """Overlap should be in [0, 1]."""
         rng = np.random.default_rng(42)
@@ -545,7 +578,7 @@ class TestPosteriorConsistencyHPDOverlap:
         """Un-flattened (n_time, n_x, n_y) input must raise rather than run on
         ``axis=1`` and return a wrong-shaped result.
 
-        Uses ``n_time == n_x`` (3, 3, 3): with this shape the pre-fix code's
+        Uses ``n_time == n_x`` (3, 3, 3): with this shape an unguarded
         ``posterior >= threshold[:, None]`` broadcast *succeeds* and the
         function silently returns a wrong-shaped ``(3, 3)`` array — the
         genuinely silent failure the guard prevents (a shape like (2, 3, 3)
