@@ -6,8 +6,10 @@ import numpy as np
 import pytest
 from scipy.special import logsumexp
 
+from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
     _compute_log_mark_kernel_gemm,
+    _repair_flagged_in_groups,
     estimate_log_joint_mark_intensity,
     log_kde_distance,
 )
@@ -183,6 +185,127 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(enc_tile_s
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("group_size", [None, 5], ids=["tile-sized", "small-groups"])
+@pytest.mark.parametrize("enc_tile_size", [None, 64])
+def test_every_spike_is_exact_when_more_spikes_need_repair_than_slots(
+    enc_tile_size, group_size, monkeypatch
+):
+    """Backgrounds far below every intensity flag all spikes for the exact path.
+
+    With more flagged spikes than any repair group or slot count, each one must
+    still match the float64 reduction. Groups of 5, as larger encoding and
+    position tiles get, split the 32 slots over several groups.
+    """
+    if group_size is not None:
+        repair = clusterless_kde._repair_flagged_in_groups
+        monkeypatch.setattr(
+            clusterless_kde,
+            "_repair_flagged_in_groups",
+            lambda values, needs_exact, exact_rows, _: repair(
+                values, needs_exact, exact_rows, group_size
+            ),
+        )
+    decoding, encoding, stds, occupancy, log_position = _place_field_tile(n_dec=90)
+    log_background = np.full(decoding.shape[0], -400.0, np.float32)
+    jax.clear_caches()
+    try:
+        out = np.asarray(
+            estimate_log_joint_mark_intensity(
+                decoding,
+                encoding,
+                stds,
+                occupancy,
+                1.0,
+                log_position,
+                enc_tile_size=enc_tile_size,
+                log_background=log_background,
+            )
+        )
+    finally:
+        # Keep the patched group size out of later tests' compiled reductions.
+        jax.clear_caches()
+    reference = _reference_log_joint(
+        decoding, encoding, stds, occupancy, 1.0, log_position
+    )
+    expected = np.logaddexp(reference, np.asarray(log_background, np.float64)[:, None])
+    above = expected > -300
+    # More spikes with entries to check than the 32 slots, twice over.
+    assert (above.sum(axis=1) > 0).sum() > 64
+    np.testing.assert_allclose(out[above], expected[above], atol=1e-4, rtol=0)
+
+
+def _exact_rows(rows, scale=1.0):
+    """Stand-in exact values that identify their row: ``scale * (1000 + row)``."""
+    return scale * jnp.broadcast_to(1000.0 + rows[:, None], (rows.shape[0], 3))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n", [7, 64, 100])
+@pytest.mark.parametrize("group_size", [1, 3, 5, 32])
+def test_grouped_repair_replaces_exactly_the_flagged_rows(n, group_size):
+    """Every flag pattern, on the slot path or every group, replaces only flagged rows.
+
+    Unflagged rows must keep their bits: unused slots of the last group must
+    not write anywhere.
+    """
+    values = jnp.asarray(np.random.default_rng(0).normal(size=(n, 3)), jnp.float32)
+    repair = jax.jit(
+        lambda needs_exact: _repair_flagged_in_groups(
+            values, needs_exact, _exact_rows, group_size
+        )
+    )
+    rng = np.random.default_rng(1)
+    patterns = {
+        "none": [],
+        "last": [n - 1],
+        "three": rng.choice(n, min(n, 3), replace=False),
+        "beyond-slots": rng.choice(n, min(n, 33), replace=False),
+        "all": np.arange(n),
+    }
+    for name, flagged_rows in patterns.items():
+        needs_exact = np.zeros(n, bool)
+        needs_exact[flagged_rows] = True
+        out = np.asarray(repair(jnp.asarray(needs_exact)))
+        np.testing.assert_array_equal(
+            out[~needs_exact], np.asarray(values)[~needs_exact], err_msg=name
+        )
+        np.testing.assert_array_equal(
+            out[needs_exact],
+            np.asarray(_exact_rows(jnp.flatnonzero(needs_exact))),
+            err_msg=name,
+        )
+
+
+@pytest.mark.unit
+def test_grouped_repair_gradient_through_every_group():
+    """With more flags than slots, gradients reach the exact values of each group.
+
+    Unflagged rows pass their cotangent through; flagged rows take theirs from
+    ``exact_rows`` alone.
+    """
+    n, group_size = 100, 3
+    needs_exact = np.zeros(n, bool)
+    needs_exact[np.random.default_rng(2).choice(n, 40, replace=False)] = True
+    values = jnp.zeros((n, 3), jnp.float32)
+
+    def total(values, scale):
+        repaired = _repair_flagged_in_groups(
+            values,
+            jnp.asarray(needs_exact),
+            lambda rows: _exact_rows(rows, scale),
+            group_size,
+        )
+        return jnp.sum(repaired)
+
+    d_values, d_scale = jax.grad(total, argnums=(0, 1))(values, 1.0)
+    np.testing.assert_array_equal(
+        np.asarray(d_values), np.repeat(~needs_exact[:, None], 3, axis=1)
+    )
+    expected = 3 * np.sum(1000.0 + np.flatnonzero(needs_exact))
+    np.testing.assert_allclose(float(d_scale), expected, rtol=1e-6)
+
+
+@pytest.mark.unit
 def test_mark_kernel_preserves_distances_after_large_translation():
     decoded = jnp.asarray([[1.0]])
     encoded = jnp.asarray([[0.0]])
@@ -345,8 +468,8 @@ def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
 def test_every_spike_flagged_for_exact_repair_matches_reference(n_dec):
     """A background far below the kernels flags every spike for exact repair.
 
-    Eight spikes are repaired individually; a hundred exceed the bounded slots
-    and take the every-row pass. Both must match the float64 reference.
+    Eight spikes fit the bounded slots; a hundred exceed them and are repaired
+    group by group. Both must match the float64 reference.
     """
     decoding, encoding, stds, occupancy, log_position = _place_field_tile(
         n_dec=n_dec, waveform_std=1.0

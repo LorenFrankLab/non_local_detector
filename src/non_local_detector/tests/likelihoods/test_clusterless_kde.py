@@ -1,9 +1,12 @@
+import inspect
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
@@ -13,6 +16,22 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
+from non_local_detector.models.base import _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        clusterless_kde.fit_clusterless_kde_encoding_model,
+        clusterless_kde.predict_clusterless_kde_log_likelihood,
+        clusterless_kde.compute_local_log_likelihood,
+        clusterless_kde.block_estimate_log_joint_mark_intensity,
+    ],
+)
+def test_block_size_default_is_the_detectors(function):
+    """Direct calls block spikes as a detector does: the old 100 was 3-4x slower."""
+    default = inspect.signature(function).parameters["block_size"].default
+    assert default == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS["block_size"]
 
 
 def test_select_spikes_in_rows_right_edge_last_bin():
