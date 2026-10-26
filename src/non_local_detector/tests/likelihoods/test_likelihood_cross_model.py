@@ -2,14 +2,16 @@
 
 Verifies that different likelihood estimators (KDE, GLM, GMM) produce
 consistent results on the same data: correlated place fields, correlated
-log-likelihoods, and agreement on basic directional properties.
+log-likelihoods, and no-spike likelihoods equal to the fitted rates.
 """
 
 import numpy as np
 import pytest
 from scipy import stats
+from scipy.stats import norm
 
 from non_local_detector.environment import Environment
+from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.tests.likelihoods.conftest import (
     ALGORITHMS,
     fit_registered_backends,
@@ -192,20 +194,62 @@ def test_clusterless_kde_vs_gmm_ground_process_correlation(cross_model_data):
 # ---------------------------------------------------------------------------
 
 
+def _mean_rate(data, spike_times):
+    """Spikes per second of tracked time: each sample covers one sample period."""
+    position_time = data["position_time"]
+    return len(spike_times) / (len(position_time) * np.diff(position_time)[0])
+
+
+def _summed_rate(data, name):
+    """Each backend's summed Hz rate at interior bins, not read from the model's
+    own summed array: sorted backends sum their per-neuron place fields;
+    clusterless rates are rebuilt from the encoding spikes (KDE) or each
+    electrode's fitted joint mixture (GMM) in float64, plus the background."""
+    if name.startswith("sorted"):
+        return _place_fields(data, name).sum(axis=0)
+
+    _, model, _ = data["fitted"][name]
+    environment = data["environment"]
+    centers = environment.place_bin_centers_[environment.is_track_interior_.ravel(), 0]
+    position = data["position"][:, 0]
+
+    def mixture_pdf(gmm):
+        """Position marginal (the leading coordinate) of a full-covariance GMM."""
+        means = np.asarray(gmm.means_, dtype=float)[:, 0]
+        stds = np.sqrt(np.asarray(gmm.covariances_, dtype=float)[:, 0, 0])
+        weights = np.asarray(gmm.weights_, dtype=float)
+        return (weights * norm.pdf(centers[:, None], means, stds)).sum(axis=1)
+
+    if name == "clusterless_kde":
+        occupancy = norm.pdf(centers[:, None], position, POSITION_STD).mean(axis=1)
+    else:
+        occupancy = mixture_pdf(model["occupancy_model"])
+    rate = np.full(centers.shape, len(data["encoding_spike_times"]) * RATE_EPS_HZ)
+    for electrode, spike_times in enumerate(data["encoding_spike_times"]):
+        if name == "clusterless_kde":
+            spike_positions = np.interp(spike_times, data["position_time"], position)
+            density = norm.pdf(centers[:, None], spike_positions, POSITION_STD).mean(
+                axis=1
+            )
+        else:
+            density = mixture_pdf(model["joint_models"][electrode])
+        rate += _mean_rate(data, spike_times) * density / occupancy
+    return rate
+
+
 @pytest.mark.parametrize(
     "name",
     ["sorted_spikes_kde", "sorted_spikes_glm", "clusterless_kde", "clusterless_gmm"],
 )
 @pytest.mark.parametrize("bin_width", [0.02, 0.1])
 def test_no_spike_likelihood_matches_expected_counts(cross_model_data, name, bin_width):
-    """No-spike log likelihood is minus the fitted Hz rate times bin duration."""
+    """No-spike log likelihood is minus the summed Hz rate times bin duration.
+
+    Tolerance: float32 rates against float64 references, measured at most
+    2.3e-6 relative.
+    """
     edges = np.linspace(0.0, 1.0, round(1.0 / bin_width) + 1)
-    _, model, is_clusterless = cross_model_data["fitted"][name]
-    if is_clusterless:
-        rates = np.asarray(model["summed_ground_process_intensity"])
-    else:
-        interior = cross_model_data["environment"].is_track_interior_.ravel()
-        rates = np.asarray(model["no_spike_part_log_likelihood"])[interior]
+    rates = _summed_rate(cross_model_data, name)
     assert np.all(np.isfinite(rates))
     assert np.all(rates > 0), "Fixture must have positive rates to detect zero output"
 
@@ -213,7 +257,7 @@ def test_no_spike_likelihood_matches_expected_counts(cross_model_data, name, bin
     expected = -np.diff(edges)[:, None] * rates[None, :]
     assert likelihood.shape == expected.shape
     assert np.all(np.isfinite(likelihood)), "No-spike likelihood must be finite"
-    np.testing.assert_allclose(likelihood, expected, rtol=2e-6, atol=1e-6)
+    np.testing.assert_allclose(likelihood, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("name", ALGORITHMS)
