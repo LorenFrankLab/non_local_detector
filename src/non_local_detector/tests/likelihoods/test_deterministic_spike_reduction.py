@@ -405,17 +405,23 @@ def clusterless_log_likelihood(algorithm):
 def test_clusterless_likelihoods_are_bitwise_repeatable(algorithm, monkeypatch):
     evaluate = clusterless_log_likelihood(algorithm)
     results = {}
-    for path in ("sequential", "segmented_scan"):
-        if path == "segmented_scan":
-            monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
-            jax.clear_caches()
-        repeats = [evaluate() for _ in range(10)]
-        for repeat in repeats[1:]:
-            np.testing.assert_array_equal(
-                repeat.view(np.uint8), repeats[0].view(np.uint8)
-            )
-        results[path] = repeats[0]
-    jax.clear_caches()
+    try:
+        for path in ("sequential", "segmented_scan"):
+            if path == "segmented_scan":
+                monkeypatch.setattr(
+                    common, "_reduces_sequentially", lambda values: False
+                )
+                jax.clear_caches()
+            repeats = [evaluate() for _ in range(10)]
+            for repeat in repeats[1:]:
+                np.testing.assert_array_equal(
+                    repeat.view(np.uint8), repeats[0].view(np.uint8)
+                )
+            results[path] = repeats[0]
+    finally:
+        # The path is chosen at trace time: keep the patched reductions out of
+        # later tests' compiled kernels even when an assertion fails.
+        jax.clear_caches()
     np.testing.assert_allclose(
         results["segmented_scan"], results["sequential"], **FLOAT32_ROUNDING
     )
@@ -432,9 +438,8 @@ def test_deterministic_segment_sum_handles_unsigned_and_narrow_ids(id_dtype):
     np.testing.assert_array_equal(actual, ordered_reference(values, ids, n_segments))
 
 
-def test_concrete_off_cpu_calls_share_bucketed_executables(monkeypatch):
-    monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
-    jax.clear_caches()
+@pytest.mark.parametrize("reduction_path", ["segmented_scan"], indirect=True)
+def test_concrete_off_cpu_calls_share_bucketed_executables(reduction_path):
     rng = np.random.default_rng(7615)
     before = deterministic_segment_sum._cache_size()
     for n_spikes in range(1, 65):
@@ -448,7 +453,6 @@ def test_concrete_off_cpu_calls_share_bucketed_executables(monkeypatch):
         )
     # Spike counts 1..64 pad to the seven powers of two 1, 2, 4, ..., 64.
     assert deterministic_segment_sum._cache_size() - before <= 7
-    jax.clear_caches()
 
 
 @pytest.mark.parametrize("id_dtype", [np.uint8, np.int8])
