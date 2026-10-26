@@ -30,6 +30,27 @@ from non_local_detector.models.cont_frag_model import (
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
+@pytest.fixture(scope="module")
+def em_recording():
+    """First 10,000 samples of five simulated place cells (seed 42).
+
+    Returns ``(speed, position, spike_times, time, is_event)``; spike trains
+    are cut to the same window. Long enough for three EM iterations to move
+    every unfrozen transition row.
+    """
+    speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
+        seed=42, n_neurons=5
+    )
+    n = 10_000
+    return (
+        speed[:n],
+        position[:n],
+        [st[st <= time[n - 1]] for st in spike_times],
+        time[:n],
+        is_event[:n],
+    )
+
+
 @pytest.mark.unit
 class TestNormalizeFrozenRowsHelper:
     """Unit tests for the ``_normalize_frozen_discrete_transition_rows`` helper."""
@@ -173,7 +194,6 @@ class TestFrozenMaskNotSerialized:
 
 
 @pytest.mark.integration
-@pytest.mark.slow
 class TestFrozenRowEndToEnd:
     """Full EM integration: frozen rows must be byte-exact after fitting."""
 
@@ -186,20 +206,11 @@ class TestFrozenRowEndToEnd:
         )
         return initial_matrix[row_idx].copy()
 
-    def test_no_spike_row_unchanged_after_em(self):
+    def test_no_spike_row_unchanged_after_em(self, em_recording):
         """Running EM on a NonLocalSortedSpikesDetector with the default
         frozen No-Spike row must leave that row byte-for-byte unchanged,
         while at least one other row should have been updated."""
-        (
-            _speed,
-            position,
-            spike_times,
-            time,
-            _event_times,
-            _sampling_freq,
-            is_event,
-            _,
-        ) = make_simulated_data(seed=42, n_neurons=5)
+        _, position, spike_times, time, is_event = em_recording
 
         detector = NonLocalSortedSpikesDetector(
             sorted_spikes_algorithm="sorted_spikes_kde",
@@ -232,13 +243,13 @@ class TestFrozenRowEndToEnd:
         )
 
     @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
-    def test_covariate_transition_keeps_frozen_row(self, transition_representation):
+    def test_covariate_transition_keeps_frozen_row(
+        self, em_recording, transition_representation
+    ):
         """With covariate-dependent transitions, a frozen row keeps its
         initial coefficients, so it stays constant over time, while the other
         rows are estimated."""
-        speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
-            seed=42, n_neurons=5
-        )
+        speed, position, spike_times, time, is_event = em_recording
         detector = NonLocalSortedSpikesDetector(
             discrete_transition_type=DiscreteNonStationaryDiagonal(
                 np.array([0.99, 0.98, 0.96, 0.96]), formula="1 + speed"
@@ -276,20 +287,11 @@ class TestFrozenRowEndToEnd:
             initial_coefficients[:, 0],
         )
 
-    def test_opt_out_allows_no_spike_row_to_update(self):
+    def test_opt_out_allows_no_spike_row_to_update(self, em_recording):
         """With frozen_discrete_transition_rows=None, every row is free to
         update during EM. This confirms the opt-out actually disables the
         restore (and is not silently equivalent to freezing)."""
-        (
-            _speed,
-            position,
-            spike_times,
-            time,
-            _event_times,
-            _sampling_freq,
-            is_event,
-            _,
-        ) = make_simulated_data(seed=42, n_neurons=5)
+        _, position, spike_times, time, is_event = em_recording
 
         detector = NonLocalSortedSpikesDetector(
             sorted_spikes_algorithm="sorted_spikes_kde",
