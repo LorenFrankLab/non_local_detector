@@ -884,42 +884,82 @@ def test_local_linear_interpolation_evaluates_point_rate_in_2d():
     np.testing.assert_allclose(ll_local, -x0, rtol=1e-6, atol=1e-6)
 
 
-def test_local_linear_interpolation_falls_back_to_nearest_when_unsafe():
-    """Unsafe interpolation rows fall back to the nearest-bin local likelihood."""
-    env = make_2d_env()
+def _local_log_likelihood(env, position, place_fields, local_interpolation):
+    """Local no-spike log likelihood of a one-neuron ``place_fields`` map.
+
+    With no spikes the local LL is ``-dt * rate``; ``dt = 1`` here, so it is
+    ``-rate`` at each row of ``position``, shape (2, n_position_dims).
+    """
     is_interior = env.is_track_interior_.ravel()
     node_order = np.where(is_interior)[0]
+    time = np.array([0.0, 1.0])
+    return np.asarray(
+        predict_sorted_spikes_diffusion_log_likelihood(
+            time_edges=time_edges_from_centers(time),
+            position_time=time,
+            position=position,
+            spike_times=[np.array([])],
+            environment=env,
+            occupancy=np.ones(node_order.shape[0]),
+            mean_rates=[0.0],
+            place_fields=place_fields,
+            no_spike_part_log_likelihood=place_fields.sum(axis=0),
+            is_track_interior=is_interior,
+            node_order=node_order,
+            bin_sizes=np.ones(node_order.shape[0]),
+            local_interpolation=local_interpolation,
+            disable_progress_bar=True,
+            is_local=True,
+        )
+    )
+
+
+def test_local_linear_interpolation_falls_back_to_nearest_off_grid():
+    """A position outside the grid has no interpolation stencil, so linear local
+    mode falls back to the nearest-bin local likelihood."""
+    env = make_2d_env()
     place_fields = np.arange(env.place_bin_centers_.shape[0], dtype=float)[
         np.newaxis, :
     ]
-    no_spike = place_fields.sum(axis=0)
-    time = np.array([0.0, 1.0])
     position = np.array([[-10.0, -10.0], [-10.0, -10.0]])
-    common_kwargs = {
-        "time_edges": time_edges_from_centers(time),
-        "position_time": time,
-        "position": position,
-        "spike_times": [np.array([])],
-        "environment": env,
-        "occupancy": np.ones(node_order.shape[0]),
-        "mean_rates": [0.0],
-        "place_fields": place_fields,
-        "no_spike_part_log_likelihood": no_spike,
-        "is_track_interior": is_interior,
-        "node_order": node_order,
-        "bin_sizes": np.ones(node_order.shape[0]),
-        "disable_progress_bar": True,
-        "is_local": True,
-    }
 
-    linear_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        **common_kwargs, local_interpolation="linear"
+    np.testing.assert_allclose(
+        _local_log_likelihood(env, position, place_fields, "linear"),
+        _local_log_likelihood(env, position, place_fields, "nearest"),
+        rtol=1e-6,
+        atol=1e-6,
     )
-    nearest_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        **common_kwargs, local_interpolation="nearest"
-    )
+
+
+def test_local_linear_interpolation_falls_back_to_nearest_across_a_wall():
+    """An in-grid position whose stencil includes a non-interior bin (the gap between
+    two rooms) falls back to the nearest bin instead of blending in that bin's rate.
+
+    At x = 15.6 the stencil spans the left room's last column (x = 15) and the
+    first gap column (x = 17). Multilinear interpolation is finite there but would
+    mix in the gap's zero rate; the safe-stencil mask must reject it.
+    """
+    env, _ = make_two_room_env()
+    is_interior = env.is_track_interior_.ravel()
+    # A real fit's layout: distinct positive rates on interior bins, 0 off-track.
+    place_fields = np.where(
+        is_interior, 1.0 + np.arange(is_interior.size, dtype=float), 0.0
+    )[np.newaxis, :]
+    position = np.array([[15.6, 19.0], [15.6, 19.0]])
+    centers = env.place_bin_centers_
+    nearest_bin = env.get_bin_ind(position[:1])[0]
+    assert is_interior[nearest_bin]
+    assert np.allclose(centers[nearest_bin], [15.0, 19.0])
+    gap_bin = np.flatnonzero(np.all(np.isclose(centers, [17.0, 19.0]), axis=1))[0]
+    assert not is_interior[gap_bin]
+
+    linear_ll = _local_log_likelihood(env, position, place_fields, "linear")
+    nearest_ll = _local_log_likelihood(env, position, place_fields, "nearest")
 
     np.testing.assert_allclose(linear_ll, nearest_ll, rtol=1e-6, atol=1e-6)
+    # Interpolating would have given 0.7 * rate(x=15): a different value.
+    blended = 0.7 * place_fields[0, nearest_bin] + 0.3 * place_fields[0, gap_bin]
+    assert not np.isclose(blended, -nearest_ll[0, 0])
 
 
 def test_no_rate_leak_across_impassable_barrier():
