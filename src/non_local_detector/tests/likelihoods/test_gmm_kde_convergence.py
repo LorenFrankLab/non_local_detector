@@ -113,7 +113,7 @@ def test_gmm_max_iter_warning():
     )
     key = jax.random.PRNGKey(0)
 
-    model = GaussianMixtureModel(n_components=3, max_iter=1, tol=1e-20)
+    model = GaussianMixtureModel(n_components=3, max_iter=1, tol=1e-20, random_state=0)
 
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter("always")
@@ -145,7 +145,9 @@ def test_gmm_converged_true_on_well_separated_data():
     )
     key = jax.random.PRNGKey(0)
 
-    model = GaussianMixtureModel(n_components=2, max_iter=200, tol=1e-3, n_init=1)
+    model = GaussianMixtureModel(
+        n_components=2, max_iter=200, tol=1e-3, n_init=1, random_state=0
+    )
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter("always")
         model.fit(X, key)
