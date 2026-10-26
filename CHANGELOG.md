@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The first `clusterless_kde` call, at 1,024 / 10,000 spikes per block, took 56 / 34 s instead of 84 / 56 s on j16 and 170 / 154 s instead of 202 / 188 s on RS58; later calls were unchanged.
   - Results are still bitwise repeatable. They differ from before by float32 rounding: at most 1e-7 of the largest log likelihood on both recordings. CPU likelihood results are unchanged, since CPU keeps its sequential scatter.
 
+### Faster grid setup for Cartesian environments
+
+- **Changed:** `Environment.fit_place_grid` computes the all-pairs bin distances of a Cartesian (non-track-graph) environment with SciPy's compiled Dijkstra instead of NetworkX's pure-Python search. On a laptop, a 100 x 100 bin grid takes 7.4 s instead of 154 s (a ring-shaped track in the same grid: 1.0 s instead of 14.9 s). The distances are bit-identical to before on every grid measured; track-graph environments are unchanged.
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.
