@@ -1373,9 +1373,7 @@ def test_validation_predict_zero_rate_precedence(is_local):
 GEOM_WAVEFORM_STD = 24.0
 
 
-def _fit_diffusion(
-    position_time, position, enc_t, enc_f, env, position_std, sampling_frequency=100
-):
+def _fit_diffusion(position_time, position, enc_t, enc_f, env, position_std):
     return fit_clusterless_diffusion_encoding_model(
         jnp.asarray(position_time),
         jnp.asarray(position),
@@ -1388,9 +1386,7 @@ def _fit_diffusion(
     )
 
 
-def _fit_kde(
-    position_time, position, enc_t, enc_f, env, position_std, sampling_frequency=100
-):
+def _fit_kde(position_time, position, enc_t, enc_f, env, position_std):
     return clusterless_kde.fit_clusterless_kde_encoding_model(
         jnp.asarray(position_time),
         jnp.asarray(position),
@@ -1595,12 +1591,8 @@ def test_geometry_no_barrier_leak():
     enc_f = [rng.normal(0.0, 1.0, size=(int(spike_mask.sum()), 2)).astype(np.float32)]
 
     position_std = 8.0
-    enc_d = _fit_diffusion(
-        time, position, enc_t, enc_f, env, position_std, sampling_frequency
-    )
-    enc_k = _fit_kde(
-        time, position, enc_t, enc_f, env, position_std, sampling_frequency
-    )
+    enc_d = _fit_diffusion(time, position, enc_t, enc_f, env, position_std)
+    enc_k = _fit_kde(time, position, enc_t, enc_f, env, position_std)
 
     # One decode spike, mark = [0, 0] (matches the left-room encoding marks), in a
     # single time bin.
@@ -1691,7 +1683,7 @@ def test_spike_term_is_the_background_where_the_exact_intensity_is_zero():
     spike_mask = rng.random(position.shape[0]) < rate / sampling_frequency
     enc_t = [time[spike_mask]]
     enc_f = [rng.normal(0.0, 1.0, size=(int(spike_mask.sum()), 2)).astype(np.float32)]
-    enc = _fit_diffusion(time, position, enc_t, enc_f, env, 8.0, sampling_frequency)
+    enc = _fit_diffusion(time, position, enc_t, enc_f, env, 8.0)
     ref = training_mark_references(time, enc_t, enc_f, GEOM_WAVEFORM_STD)
 
     decode_center = time[position.shape[0] // 2]
