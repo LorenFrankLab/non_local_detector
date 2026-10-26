@@ -1,9 +1,10 @@
-"""Tests for clusterless GMM likelihood optimization.
+"""Tests for clusterless GMM fitting and prediction.
 
-This module tests the memory optimization changes to predict_clusterless_gmm_log_likelihood,
-specifically:
-1. Blocking parity: Verify blocked processing matches full vmap results
-2. Bin tiling parity: Verify bin tiling matches no tiling
+Covers the memory options of ``predict_clusterless_gmm_log_likelihood``
+(spike blocking and position-bin tiling must not change the result), input
+validation, sparse/empty electrodes, and the GMM fit controls. Tiled versus
+untiled prediction against an analytic reference is covered in
+``likelihoods/test_clusterless_gmm_log_intensity.py``.
 """
 
 import jax.numpy as jnp
@@ -21,6 +22,8 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 )
 from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
+pytestmark = pytest.mark.unit
+
 
 def _mark_reference(position_time, spike_times, spike_features, weights=None):
     """Mark references from the training spikes, as a detector fits them."""
@@ -29,8 +32,7 @@ def _mark_reference(position_time, spike_times, spike_features, weights=None):
     )
 
 
-@pytest.fixture
-def gmm_simulation_data():
+def _make_gmm_simulation_data():
     """Create synthetic data for GMM likelihood testing."""
     rng = np.random.default_rng(42)
 
@@ -80,60 +82,53 @@ def gmm_simulation_data():
     }
 
 
-def test_gmm_blocking_parity(gmm_simulation_data):
-    """Test that blocked processing matches full processing (no blocking).
+@pytest.fixture
+def gmm_simulation_data():
+    """Synthetic data for GMM likelihood testing."""
+    return _make_gmm_simulation_data()
 
-    This verifies that the streaming block optimization doesn't change
-    the numerical results compared to processing all spikes at once.
+
+@pytest.fixture(scope="module")
+def fitted_gmm():
+    """GMM encoding model fitted once on the synthetic data.
+
+    Module-scoped: the tests only predict from it.
     """
-    # Fit the encoding model (use fewer GMM components for small test data)
+    data = _make_gmm_simulation_data()
     encoding_model = fit_clusterless_gmm_encoding_model(
-        gmm_simulation_data["position_time"],
-        gmm_simulation_data["position"],
-        gmm_simulation_data["spike_times"],
-        gmm_simulation_data["spike_features"],
-        gmm_simulation_data["environment"],
+        data["position_time"],
+        data["position"],
+        data["spike_times"],
+        data["spike_features"],
+        data["environment"],
         gmm_components_occupancy=8,
         gmm_components_joint=16,
     )
     mark_reference = _mark_reference(
-        gmm_simulation_data["position_time"],
-        gmm_simulation_data["spike_times"],
-        gmm_simulation_data["spike_features"],
+        data["position_time"], data["spike_times"], data["spike_features"]
     )
+    return data, encoding_model, mark_reference
 
-    # Convert to JAX arrays
-    time = jnp.asarray(gmm_simulation_data["time"])
-    position_time = jnp.asarray(gmm_simulation_data["position_time"])
-    position = jnp.asarray(gmm_simulation_data["position"])
-    spike_times = [jnp.asarray(st) for st in gmm_simulation_data["spike_times"]]
-    spike_features = [jnp.asarray(sf) for sf in gmm_simulation_data["spike_features"]]
 
-    # Predict with no blocking (very large block size)
-    result_no_block = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "spike_block_size": 999999},
+def _predict_gmm(data, encoding_model, mark_reference, **overrides):
+    """Non-local GMM log likelihood with encoding-model overrides."""
+    return predict_clusterless_gmm_log_likelihood(
+        jnp.asarray(data["position_time"]),
+        jnp.asarray(data["position"]),
+        [jnp.asarray(st) for st in data["spike_times"]],
+        [jnp.asarray(sf) for sf in data["spike_features"]],
+        time_edges=jnp.asarray(data["time"]),
+        **{**encoding_model, **overrides},
         mark_reference=mark_reference,
         is_local=False,
     )
 
-    # Predict with blocking
-    result_blocked = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "spike_block_size": 10},
-        mark_reference=mark_reference,
-        is_local=False,
-    )
 
-    # Results should be identical (within numerical precision)
+def test_gmm_blocking_parity(fitted_gmm):
+    """Blocked spike processing matches processing all spikes at once."""
+    result_no_block = _predict_gmm(*fitted_gmm, spike_block_size=999999)
+    result_blocked = _predict_gmm(*fitted_gmm, spike_block_size=10)
+
     assert_allclose(
         result_no_block,
         result_blocked,
@@ -143,127 +138,19 @@ def test_gmm_blocking_parity(gmm_simulation_data):
     )
 
 
-def test_gmm_bin_tiling_parity(gmm_simulation_data):
-    """Test that bin tiling matches no tiling.
-
-    This verifies that tiling over position bins doesn't change the
-    numerical results.
-    """
-    # Fit the encoding model (use fewer GMM components for small test data)
-    encoding_model = fit_clusterless_gmm_encoding_model(
-        gmm_simulation_data["position_time"],
-        gmm_simulation_data["position"],
-        gmm_simulation_data["spike_times"],
-        gmm_simulation_data["spike_features"],
-        gmm_simulation_data["environment"],
-        gmm_components_occupancy=8,
-        gmm_components_joint=16,
-    )
-    mark_reference = _mark_reference(
-        gmm_simulation_data["position_time"],
-        gmm_simulation_data["spike_times"],
-        gmm_simulation_data["spike_features"],
-    )
-
-    # Convert to JAX arrays
-    time = jnp.asarray(gmm_simulation_data["time"])
-    position_time = jnp.asarray(gmm_simulation_data["position_time"])
-    position = jnp.asarray(gmm_simulation_data["position"])
-    spike_times = [jnp.asarray(st) for st in gmm_simulation_data["spike_times"]]
-    spike_features = [jnp.asarray(sf) for sf in gmm_simulation_data["spike_features"]]
-
-    # Predict without bin tiling
-    result_no_tile = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "bin_tile_size": None},
-        mark_reference=mark_reference,
-        is_local=False,
-    )
-
-    # Predict with bin tiling
+def test_gmm_combined_optimizations(fitted_gmm):
+    """Spike blocking and bin tiling together match using neither."""
+    _, encoding_model, _ = fitted_gmm
     bin_tile_size = 3
     assert encoding_model["interior_place_bin_centers"].shape[0] > bin_tile_size
-    result_tiled = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "bin_tile_size": bin_tile_size},
-        mark_reference=mark_reference,
-        is_local=False,
+
+    result_baseline = _predict_gmm(
+        *fitted_gmm, spike_block_size=999999, bin_tile_size=None
+    )
+    result_optimized = _predict_gmm(
+        *fitted_gmm, spike_block_size=10, bin_tile_size=bin_tile_size
     )
 
-    # Results should be identical (within numerical precision)
-    assert_allclose(
-        result_no_tile,
-        result_tiled,
-        rtol=1e-5,
-        atol=1e-6,
-        err_msg="Bin tiling changed results compared to no tiling",
-    )
-
-
-def test_gmm_combined_optimizations(gmm_simulation_data):
-    """Test combining both blocking and bin tiling.
-
-    This verifies that using both optimizations together produces the
-    same results as using neither.
-    """
-    # Fit the encoding model (use fewer GMM components for small test data)
-    encoding_model = fit_clusterless_gmm_encoding_model(
-        gmm_simulation_data["position_time"],
-        gmm_simulation_data["position"],
-        gmm_simulation_data["spike_times"],
-        gmm_simulation_data["spike_features"],
-        gmm_simulation_data["environment"],
-        gmm_components_occupancy=8,
-        gmm_components_joint=16,
-    )
-    mark_reference = _mark_reference(
-        gmm_simulation_data["position_time"],
-        gmm_simulation_data["spike_times"],
-        gmm_simulation_data["spike_features"],
-    )
-
-    # Convert to JAX arrays
-    time = jnp.asarray(gmm_simulation_data["time"])
-    position_time = jnp.asarray(gmm_simulation_data["position_time"])
-    position = jnp.asarray(gmm_simulation_data["position"])
-    spike_times = [jnp.asarray(st) for st in gmm_simulation_data["spike_times"]]
-    spike_features = [jnp.asarray(sf) for sf in gmm_simulation_data["spike_features"]]
-
-    # Predict with neither optimization
-    result_baseline = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "spike_block_size": 999999, "bin_tile_size": None},
-        mark_reference=mark_reference,
-        is_local=False,
-    )
-
-    # Predict with both optimizations
-    bin_tile_size = 3
-    assert encoding_model["interior_place_bin_centers"].shape[0] > bin_tile_size
-    result_optimized = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "spike_block_size": 10, "bin_tile_size": bin_tile_size},
-        mark_reference=mark_reference,
-        is_local=False,
-    )
-
-    # Results should be identical (within numerical precision)
     assert_allclose(
         result_baseline,
         result_optimized,
@@ -274,104 +161,65 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
 
 
 def test_gmm_edge_cases(gmm_simulation_data):
-    """Test edge cases in the optimization.
+    """Few spikes per electrode with ragged spike blocks and bin tiles.
 
-    - Few spikes per electrode
-    - Block size larger than spike count
-    - Bin tile size larger than total bins
+    Five spikes per electrode in blocks of two, and two-bin tiles, leave a
+    partial final block and tile; both must match processing all spikes and
+    bins at once.
     """
-    # Create minimal data (need at least 3 spikes for 2 GMM components)
-    minimal_data = {
+    # Need at least 3 spikes for 2 GMM components
+    data = {
+        **gmm_simulation_data,
         "time": gmm_simulation_data["time"][:10],
         "position_time": gmm_simulation_data["position_time"][:30],
         "position": gmm_simulation_data["position"][:30],
-        "spike_times": [
-            times[:5] for times in gmm_simulation_data["spike_times"]
-        ],  # 5 spikes each
+        "spike_times": [times[:5] for times in gmm_simulation_data["spike_times"]],
         "spike_features": [
             feats[:5] for feats in gmm_simulation_data["spike_features"]
         ],
     }
-
-    # Fit the encoding model (reuse environment from fixture, use very few components)
     encoding_model = fit_clusterless_gmm_encoding_model(
-        minimal_data["position_time"],
-        minimal_data["position"],
-        minimal_data["spike_times"],
-        minimal_data["spike_features"],
-        gmm_simulation_data["environment"],
+        data["position_time"],
+        data["position"],
+        data["spike_times"],
+        data["spike_features"],
+        data["environment"],
         gmm_components_occupancy=2,
         gmm_components_joint=4,
     )
     mark_reference = _mark_reference(
-        minimal_data["position_time"],
-        minimal_data["spike_times"],
-        minimal_data["spike_features"],
+        data["position_time"], data["spike_times"], data["spike_features"]
     )
+    n_bins = encoding_model["interior_place_bin_centers"].shape[0]
+    assert n_bins % 2 == 1, "an odd bin count leaves a partial final tile"
 
-    # Convert to JAX arrays
-    time = jnp.asarray(minimal_data["time"])
-    position_time = jnp.asarray(minimal_data["position_time"])
-    position = jnp.asarray(minimal_data["position"])
-    spike_times = [jnp.asarray(st) for st in minimal_data["spike_times"]]
-    spike_features = [jnp.asarray(sf) for sf in minimal_data["spike_features"]]
-
-    # Test 1: Block size larger than spike count (should work fine)
-    result_large_block = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "spike_block_size": 1000},
-        mark_reference=mark_reference,
-        is_local=False,
+    # Block size larger than the spike count, no tiling.
+    result_baseline = _predict_gmm(
+        data,
+        encoding_model,
+        mark_reference,
+        spike_block_size=1000,
+        bin_tile_size=None,
     )
-
-    # Test 2: Bin tile size larger than total bins (should work fine)
-    result_large_tile = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "bin_tile_size": 10000},
-        mark_reference=mark_reference,
-        is_local=False,
-    )
-
-    # Test 3: Both combined with single spike
-    result_combined = predict_clusterless_gmm_log_likelihood(
-        position_time,
-        position,
-        spike_times,
-        spike_features,
-        time_edges=time,
-        **{**encoding_model, "spike_block_size": 1000, "bin_tile_size": 10000},
-        mark_reference=mark_reference,
-        is_local=False,
-    )
-
     # One row per decode bin; ``time`` is passed as the decode edges.
-    assert result_large_block.shape[0] == len(time) - 1
-    assert result_large_tile.shape[0] == len(time) - 1
-    assert result_combined.shape[0] == len(time) - 1
+    assert result_baseline.shape == (len(data["time"]) - 1, n_bins)
+    assert np.all(np.isfinite(result_baseline))
 
-    # All should have same shape
-    assert result_large_block.shape == result_large_tile.shape
-    assert result_large_block.shape == result_combined.shape
-
-    # All should be identical
-    assert_allclose(
-        result_large_block,
-        result_large_tile,
-        rtol=1e-5,
-    )
-    assert_allclose(
-        result_large_block,
-        result_combined,
-        rtol=1e-5,
-    )
+    for bin_tile_size in (None, 2):
+        result = _predict_gmm(
+            data,
+            encoding_model,
+            mark_reference,
+            spike_block_size=2,
+            bin_tile_size=bin_tile_size,
+        )
+        assert_allclose(
+            result,
+            result_baseline,
+            rtol=1e-5,
+            atol=1e-6,
+            err_msg=f"spike_block_size=2, bin_tile_size={bin_tile_size}",
+        )
 
 
 def test_gmm_jax_array_inputs(gmm_simulation_data):
