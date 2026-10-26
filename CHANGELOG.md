@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Test suite review
+
+- Tests that could not fail now check what they claim: assertions that never ran, comparisons of a value with itself, expected values read from the model under test, inputs that never reached the named check, and tolerances wider than the effect. Each fixed test was shown to fail when the code it guards is broken.
+- Float64 test cases run under `precision_mode(True)` instead of skipping when `JAX_ENABLE_X64` is unset, and the `figurl_2D` overflow guard runs against a stub `sortingview` instead of skipping when the `viz` extra is missing.
+- A missing golden regression file now fails the test. Set `NLD_REGENERATE_GOLDEN=1` to write new golden files.
+- `ClusterlessSimOutput` moved from `tests/_sim_contract.py` to `non_local_detector.simulate.clusterless_simulation`, so the simulator no longer imports from the test package.
+- Repeated identical fits are shared through fixtures, duplicate and weaker copies of tests are removed, and modules that had no `unit` / `integration` marker now have one.
+
 ### Local likelihood position inputs
 
 - **Fixed:** the local `clusterless_gmm` likelihood cast interpolated positions and background log intensities to the position array's dtype, so integer positions truncated them: a background-only spike scored -29 with `int64` positions and +65507 with `uint16`, against -29.57 with floats. Integer positions now compute in the fit's floating dtype.
