@@ -86,7 +86,8 @@ def fit_predict(simulated_data):
 
 
 def assert_valid_posterior(results, label):
-    """Finite, non-negative posterior and state probabilities summing to 1."""
+    """Finite, non-negative posterior and state probabilities summing to 1,
+    and finite marginal log likelihoods."""
     posterior = results.acausal_posterior.values
     state_probs = results.acausal_state_probabilities.values
     assert np.all(np.isfinite(posterior)), f"{label}: posterior has NaN/Inf"
@@ -96,15 +97,22 @@ def assert_valid_posterior(results, label):
         posterior.sum(axis=1),
         1.0,
         rtol=1e-5,
-        atol=1e-5,
+        atol=1e-6,
         err_msg=f"{label}: posterior sums != 1",
     )
     np.testing.assert_allclose(
         state_probs.sum(axis=1),
         1.0,
         rtol=1e-5,
-        atol=1e-5,
+        atol=1e-6,
         err_msg=f"{label}: state prob sums != 1",
+    )
+    marginal_log_likelihoods = results.attrs.get("marginal_log_likelihoods")
+    assert marginal_log_likelihoods is not None, (
+        f"{label}: missing marginal_log_likelihoods"
+    )
+    assert np.all(np.isfinite(marginal_log_likelihoods)), (
+        f"{label}: marginal log likelihoods are not finite"
     )
 
 
@@ -202,10 +210,13 @@ def test_sharp_sigma_matches_legacy(fit_predict):
     assert legacy_detector.bin_sizes_[0] == 1, "Legacy Local state has one bin"
     assert sharp_detector.bin_sizes_[0] > 1
     assert_valid_posterior(legacy_results, "legacy local")
+    assert_valid_posterior(sharp_results, "sharp sigma")
 
     # Mean occupancy per discrete state should match within 1% relative
     legacy_mean = legacy_results.acausal_state_probabilities.values.mean(axis=0)
     sharp_mean = sharp_results.acausal_state_probabilities.values.mean(axis=0)
+    # The animal is mostly where it is tracked, so Local dominates.
+    assert legacy_mean[0] > 0.7, f"Legacy mean Local probability = {legacy_mean[0]}"
     np.testing.assert_allclose(
         sharp_mean,
         legacy_mean,
@@ -258,10 +269,14 @@ def test_large_sigma_spreads_local_posterior(fit_predict):
 
 
 def test_delta_kernel_fit_predict(fit_predict):
-    """local_position_std=0.0 fits + predicts without NaN/Inf."""
+    """local_position_std=0.0 fits + predicts without NaN/Inf, Local dominant."""
     _, results = fit_predict(local_position_std=0.0)
 
     assert_valid_posterior(results, "delta kernel")
+    mean_state_probs = results.acausal_state_probabilities.values.mean(axis=0)
+    assert np.argmax(mean_state_probs) == 0, (
+        f"Delta-kernel Local state should dominate; mean probs = {mean_state_probs}"
+    )
 
 
 def test_delta_kernel_matches_narrow_gaussian(fit_predict):
