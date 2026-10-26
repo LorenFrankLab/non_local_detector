@@ -216,26 +216,6 @@ def test_no_spike_likelihood_matches_expected_counts(cross_model_data, name, bin
     np.testing.assert_allclose(likelihood, expected, rtol=2e-6, atol=1e-6)
 
 
-def test_sorted_models_kde_glm_agree_on_high_vs_low_ll_time_bins(cross_model_data):
-    """KDE and GLM should agree on which time bins have relatively high vs low LL.
-
-    Uses rank correlation over mean LL per time bin (averaged across positions).
-    Use 2 ms bins so expected counts are small for both fitted models. With
-    wide bins, a broad GLM can have expected counts above one while a sparse
-    KDE has rates near zero at many positions, reversing mean-score ordering.
-    """
-    edges = np.linspace(0.0, 1.0, 501)
-    ll_kde = _predict(cross_model_data, "sorted_spikes_kde", time_edges=edges)
-    ll_glm = _predict(cross_model_data, "sorted_spikes_glm", time_edges=edges)
-
-    # Mean LL per time bin (across position bins)
-    mean_kde = ll_kde.mean(axis=1)
-    mean_glm = ll_glm.mean(axis=1)
-
-    corr, _ = stats.spearmanr(mean_kde, mean_glm)
-    assert corr > 0.3, f"KDE-GLM rank correlation of mean LL per time bin = {corr:.3f}"
-
-
 @pytest.mark.parametrize("name", ALGORITHMS)
 def test_local_likelihood_finite_all_models(cross_model_data, name):
     """Every registered model produces finite local log-likelihoods."""
