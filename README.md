@@ -204,7 +204,7 @@ This project maintains high code quality standards:
 
    ```bash
    # Full quality check (required before committing)
-   ruff check src/ && ruff format --check src/ && black --check src/ && pytest
+   ruff check src/ && ruff format --check src/ && pytest -n auto
 
    # Auto-fix linting issues
    ruff check --fix src/
@@ -236,12 +236,15 @@ This project maintains high code quality standards:
 
 ### CI/CD Pipeline
 
-The project uses GitHub Actions for continuous integration:
+GitHub Actions (`.github/workflows/test_package_build.yml`) runs on every pull request, every push to `main`, and weekly:
 
-- **Quality Gate**: All PRs must pass linting, formatting, and type checking
-- **Multi-Version Testing**: Tests run on Python 3.10, 3.11, and 3.12
-- **Package Building**: Automatic wheel and source distribution building
-- **Coverage Reporting**: Integration with Codecov
+- **Quality gate**: `ruff check` and `ruff format --check` with the ruff version pinned in `uv.lock` (the same version as the pre-commit hook).
+- **Locked tests**: the full suite on Python 3.10–3.13 (Linux) and 3.13 (macOS, Apple silicon), installed from `uv.lock`. On Python 3.10 the lock resolves JAX 0.6.2, the minimum supported release.
+- **Dependency range**: the full suite again at the lowest versions `pyproject.toml` allows (`uv pip install --resolution lowest-direct`) and at the newest releases, ignoring the lock.
+- **Packaging**: the wheel, sdist and git archive are built, installed without the source tree, and smoke-tested with the golden regression tests, which need the packaged data files.
+- **Coverage**: uploaded to Codecov from the Python 3.12 Linux job.
+
+To reproduce the locked test job locally: `uv sync --locked --extra test && uv run pytest -n auto --dist loadfile`.
 
 ## 📚 Documentation
 

@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs; this proposes SHA bumps for new releases.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week after a release before proposing it.
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

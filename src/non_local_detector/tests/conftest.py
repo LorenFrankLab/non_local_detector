@@ -14,6 +14,7 @@ Usage:
     from conftest import assert_probability_distribution
 """
 
+import os
 from contextlib import contextmanager
 
 import jax
@@ -22,8 +23,15 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from hypothesis import settings
 
 from non_local_detector.environment import Environment
+
+# CI sets HYPOTHESIS_PROFILE=ci: no per-example deadline (the first example of a
+# test includes JAX compilation) and derandomized examples, so a CI failure
+# reproduces on rerun.
+settings.register_profile("ci", deadline=None, derandomize=True, print_blob=True)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 # ==============================================================================
 # SYNTHETIC RESULTS BUILDERS

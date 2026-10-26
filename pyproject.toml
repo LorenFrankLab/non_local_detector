@@ -50,6 +50,8 @@ dynamic = ["version"]
 test = [
     "pytest",
     "pytest-cov",
+    "pytest-timeout",
+    "pytest-xdist",
     "hypothesis",
     # Benchmark scripts record memory with psutil; their smoke test runs in CI.
     "psutil",

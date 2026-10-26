@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Test suite review
+### Test suite and CI
 
 - Tests that could not fail now check what they claim: assertions that never ran, comparisons of a value with itself, expected values read from the model under test, inputs that never reached the named check, and tolerances wider than the effect. Each fixed test was shown to fail when the code it guards is broken.
 - Float64 test cases run under `precision_mode(True)` instead of skipping when `JAX_ENABLE_X64` is unset, and the `figurl_2D` overflow guard runs against a stub `sortingview` instead of skipping when the `viz` extra is missing.
 - A missing golden regression file now fails the test. Set `NLD_REGENERATE_GOLDEN=1` to write new golden files.
 - `ClusterlessSimOutput` moved from `tests/_sim_contract.py` to `non_local_detector.simulate.clusterless_simulation`, so the simulator no longer imports from the test package.
 - Repeated identical fits are shared through fixtures, duplicate and weaker copies of tests are removed, and modules that had no `unit` / `integration` marker now have one.
+- **Dependency floors raised** to versions the package works with, found by installing every runtime dependency at its floor and running the tests (now a CI job):
+  - `track_linearization >=2.4.0` (no floor before): releases before 2.3 call `np.warnings`, removed in NumPy 1.24, so the package failed to import.
+  - `patsy >=0.5.2` (was 0.5): earlier releases import `collections.Mapping`, removed in Python 3.10, so the package failed to import.
+  - `threadpoolctl >=3.0` (was 2.0): 2.x raises `AttributeError` reading the OpenBLAS version, which breaks GMM fits.
+  - `xarray >=2024.5` (was 2023.8): earlier releases load a whole lazy result-store array when a padded selection reads only some columns, defeating the `max_read_bytes` guard.
+  - Tests use `scipy.integrate.trapezoid` instead of `np.trapezoid`, which needs NumPy 2.
+- **CI:** tests install from `uv.lock` (Python 3.10–3.13 on Linux, 3.13 on macOS arm64) and run in parallel with `pytest-xdist`, with a 15-minute per-test limit from `pytest-timeout`; both are now in the `test` extra. Separate jobs run at the lowest allowed and the newest dependency versions; a weekly scheduled run catches new upstream releases. The built wheel, sdist and archive run a smoke test instead of the full suite three more times. Pushes to `main` are no longer cancelled by later pushes, every pull request gets CI (including stacked ones), and jobs have timeouts. The non-gating mypy step (1,892 errors) is removed. Ruff is 0.17.2 in `uv.lock` and in pre-commit, matching the version CI checks with. Hypothesis tests run under a `ci` profile (no deadline, derandomized) when `HYPOTHESIS_PROFILE=ci`.
 
 ### Local likelihood position inputs
 
