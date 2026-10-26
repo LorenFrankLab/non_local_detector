@@ -1,8 +1,8 @@
 """Tests for simulator contract compliance.
 
 These tests verify that simulator outputs conform to the ClusterlessSimOutput
-contract defined in tests._sim_contract. They enforce shapes, units, and
-invariants to catch regressions early.
+contract defined in simulate.clusterless_simulation. They enforce shapes,
+units, and invariants to catch regressions early.
 """
 
 import numpy as np
