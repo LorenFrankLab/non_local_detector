@@ -95,9 +95,22 @@ def save_pickle(path: Path, data: Any) -> None:
         pickle.dump(data, f)
 
 
+class _NumpyCompatUnpickler(pickle.Unpickler):
+    """Unpickler that reads NumPy 2 pickles under NumPy 1.x.
+
+    NumPy 2 pickles arrays through ``numpy._core``, a module NumPy 1.x calls
+    ``numpy.core``; the supported range includes NumPy 1.x.
+    """
+
+    def find_class(self, module: str, name: str) -> Any:
+        if module.startswith("numpy._core") and np.__version__.startswith("1."):
+            module = module.replace("numpy._core", "numpy.core", 1)
+        return super().find_class(module, name)
+
+
 def load_pickle(path: Path) -> Any:
     with open(path, "rb") as f:
-        return pickle.load(f)
+        return _NumpyCompatUnpickler(f).load()
 
 
 def compare_golden_arrays(
