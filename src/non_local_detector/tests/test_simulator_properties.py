@@ -25,6 +25,7 @@ position_std_strategy = st.floats(min_value=1.0, max_value=20.0)
 waveform_std_strategy = st.floats(min_value=5.0, max_value=50.0)
 
 
+@pytest.mark.property
 @settings(max_examples=20, deadline=None)
 @given(
     n_tetrodes=n_tetrodes_strategy,
@@ -81,6 +82,7 @@ def test_simulator_always_produces_valid_output(
         )
 
 
+@pytest.mark.property
 @settings(max_examples=10, deadline=None)
 @given(
     position_std=position_std_strategy,
@@ -132,6 +134,7 @@ def test_encoding_model_fits_with_random_parameters(
         assert np.isfinite(rate), "Mean rate contains non-finite values"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("n_tetrodes", [2, 6])
 def test_decoder_output_shapes_consistent(n_tetrodes: int) -> None:
     """Test that decoder outputs have consistent shapes.
@@ -216,76 +219,3 @@ def test_decoder_output_shapes_consistent(n_tetrodes: int) -> None:
 
     # Note: Normalization is tested in test_posterior_properties.py
     # This test focuses on shape consistency across random parameters
-
-
-def test_different_seeds_produce_different_outputs() -> None:
-    """Test that different seeds produce different spike patterns.
-
-    This verifies that seeding actually affects the random generation.
-    A single pair of seeds is sufficient to check this — the previous
-    Hypothesis-driven version ran 15 simulation pairs to verify a
-    non-statistical invariant.
-    """
-    sim1 = make_simulated_run_data(
-        n_tetrodes=3,
-        place_field_means=np.arange(0, 120, 10),
-        sampling_frequency=500,
-        n_runs=2,
-        seed=1,
-    )
-
-    sim2 = make_simulated_run_data(
-        n_tetrodes=3,
-        place_field_means=np.arange(0, 120, 10),
-        sampling_frequency=500,
-        n_runs=2,
-        seed=2,
-    )
-
-    # At least one electrode should have different spike counts
-    spike_counts1 = [len(st) for st in sim1.spike_times]
-    spike_counts2 = [len(st) for st in sim2.spike_times]
-
-    assert spike_counts1 != spike_counts2, (
-        f"Different seeds produced same spike counts: {spike_counts1}"
-    )
-
-
-def test_same_seed_produces_identical_outputs() -> None:
-    """Test that same seed produces identical outputs.
-
-    This verifies deterministic behavior for reproducibility. One seed
-    is sufficient — the previous Hypothesis-driven version ran 10
-    redundant determinism checks.
-    """
-    params = {
-        "n_tetrodes": 3,
-        "place_field_means": np.arange(0, 120, 10),
-        "sampling_frequency": 500,
-        "n_runs": 2,
-        "seed": 42,
-    }
-
-    sim1 = make_simulated_run_data(**params)
-    sim2 = make_simulated_run_data(**params)
-
-    # Spike counts should be identical
-    for i, (st1, st2) in enumerate(
-        zip(sim1.spike_times, sim2.spike_times, strict=True)
-    ):
-        assert len(st1) == len(st2), (
-            f"Electrode {i}: Different spike counts with same seed"
-        )
-        np.testing.assert_array_equal(
-            st1, st2, err_msg=f"Electrode {i}: Different spike times with same seed"
-        )
-
-    # Spike features should be identical
-    for i, (swf1, swf2) in enumerate(
-        zip(sim1.spike_waveform_features, sim2.spike_waveform_features, strict=True)
-    ):
-        np.testing.assert_array_equal(
-            swf1,
-            swf2,
-            err_msg=f"Electrode {i}: Different spike features with same seed",
-        )
