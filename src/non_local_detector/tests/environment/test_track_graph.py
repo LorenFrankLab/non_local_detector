@@ -16,11 +16,14 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     predict_sorted_spikes_kde_log_likelihood,
 )
 
+pytestmark = pytest.mark.unit
 
-def make_line_graph(length=10.0):
+
+def make_line_graph(length=10.0, direction=(1.0, 0.0)):
+    """Straight track from the origin along the unit vector ``direction``."""
     g = nx.Graph()
     g.add_node(0, pos=(0.0, 0.0))
-    g.add_node(1, pos=(float(length), 0.0))
+    g.add_node(1, pos=tuple(float(length) * np.asarray(direction)))
     g.add_edge(0, 1, distance=length)
     # Assign stable edge ids expected by environment utilities
     for eid, e in enumerate(g.edges):
@@ -30,8 +33,8 @@ def make_line_graph(length=10.0):
     return g, edge_order, edge_spacing
 
 
-def make_env_graph(place_bin_size=1.0):
-    g, edge_order, edge_spacing = make_line_graph(10.0)
+def make_env_graph(place_bin_size=1.0, direction=(1.0, 0.0)):
+    g, edge_order, edge_spacing = make_line_graph(10.0, direction)
     env = Environment(
         environment_name="line-graph",
         place_bin_size=place_bin_size,
@@ -67,10 +70,10 @@ def test_get_position_at_time_linearizes_2d_positions_on_graph():
 
 
 def test_sorted_kde_encoding_uses_linearized_positions_when_graph_and_2d():
-    env = make_env_graph(place_bin_size=1.0)
+    # A diagonal track, so the linear position differs from either coordinate.
+    env = make_env_graph(place_bin_size=1.0, direction=(0.6, 0.8))
     t = np.linspace(0.0, 10.0, 101)
-    # Provide 2D positions on the graph so encoding code takes linearization branch
-    pos = np.stack([t, np.zeros_like(t)], axis=1)
+    pos = t[:, None] * np.array([0.6, 0.8])  # 2D positions on the track
     spikes = [np.array([2.0, 5.0]), np.array([8.0])]
     enc = fit_sorted_spikes_kde_encoding_model(
         position_time=t,
@@ -82,7 +85,10 @@ def test_sorted_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         block_size=16,
         disable_progress_bar=True,
     )
-    assert enc["occupancy"].ndim == 1
+    # Linear position is the distance travelled along the track, t.
+    np.testing.assert_allclose(enc["marginal_models"][0].samples_, [[2.0], [5.0]])
+    np.testing.assert_allclose(enc["marginal_models"][1].samples_, [[8.0]])
+    np.testing.assert_allclose(enc["occupancy_model"].samples_, t[:, None], atol=1e-6)
     # Non-local prediction shape sanity
     time_edges = np.linspace(0.0, 10.0, 6)
     ll = predict_sorted_spikes_kde_log_likelihood(
@@ -105,9 +111,10 @@ def test_sorted_kde_encoding_uses_linearized_positions_when_graph_and_2d():
 
 
 def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
-    env = make_env_graph(place_bin_size=1.0)
+    # A diagonal track, so the linear position differs from either coordinate.
+    env = make_env_graph(place_bin_size=1.0, direction=(0.6, 0.8))
     t = np.linspace(0.0, 10.0, 101)
-    pos = np.stack([t, np.zeros_like(t)], axis=1)
+    pos = t[:, None] * np.array([0.6, 0.8])  # 2D positions on the track
     enc_spike_times = [np.array([2.0, 5.0])]
     enc_feats = [np.array([[0.0, 0.0], [1.0, -1.0]], dtype=float)]
     encoding = fit_clusterless_kde_encoding_model(
@@ -122,7 +129,11 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         block_size=8,
         disable_progress_bar=True,
     )
-    assert encoding["occupancy"].ndim == 1
+    # Linear position is the distance travelled along the track, t.
+    np.testing.assert_allclose(encoding["encoding_positions"][0], [[2.0], [5.0]])
+    np.testing.assert_allclose(
+        encoding["occupancy_model"].samples_, t[:, None], atol=1e-6
+    )
     # Non-local predictor shape sanity
     time_edges = np.linspace(0.0, 10.0, 6)
     ll = predict_clusterless_kde_log_likelihood(
@@ -224,15 +235,18 @@ def test_get_distances_to_interior_bins_shape_1d_graph():
 
     n_interior = int(env.is_track_interior_.sum())
     assert distances.shape == (3, n_interior)
-    assert np.all(distances >= 0) or np.any(np.isnan(distances))
+    assert np.all(np.isfinite(distances)) and np.all(distances >= 0)
+    # Zero distance at the bin holding each position: [2, 3), [5, 6), [7, 8).
+    np.testing.assert_array_equal(np.argmin(distances, axis=1), [2, 5, 7])
+    np.testing.assert_array_equal(distances.min(axis=1), 0.0)
 
 
 def test_get_distances_to_interior_bins_1d_graph_values():
     """1D track graph distances are correct for a known linear track.
 
     On a straight line with `place_bin_size=1.0` and track length 10,
-    interior bins are centered at 0.5, 1.5, ..., 9.5. Distance from
-    position 2.5 (≈ bin at 2.5) to bin 5.5 should be ~3.0.
+    interior bins are centered at 0.5, 1.5, ..., 9.5. Position 2.5 is the
+    centre of bin [2, 3), so its distance to bin 5.5 is exactly 3.0.
     """
     env = make_env_graph(place_bin_size=1.0)
     positions = np.array([[2.5]])
@@ -242,8 +256,7 @@ def test_get_distances_to_interior_bins_1d_graph_values():
     # Distance from animal at 2.5 to every interior bin center
     interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()].ravel()
     expected = np.abs(interior_centers - 2.5)
-    # Allow small tolerance for graph linearization approximations
-    np.testing.assert_allclose(distances[0], expected, atol=0.6)
+    np.testing.assert_allclose(distances[0], expected, rtol=0, atol=1e-12)
 
 
 def test_get_distances_to_interior_bins_caches_matrix():
