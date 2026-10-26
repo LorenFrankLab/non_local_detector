@@ -225,9 +225,9 @@ def test_gmm_edge_cases(gmm_simulation_data):
 def test_gmm_jax_array_inputs(gmm_simulation_data):
     """Test that GMM works with JAX arrays as inputs (scipy.interpn compatibility).
 
-    This verifies the fix for the issue where converting position_time to JAX
-    arrays caused scipy.interpolate.interpn to fail with "must be strictly
-    ascending or descending" error.
+    Converting position_time to JAX arrays must not make
+    scipy.interpolate.interpn fail with a "must be strictly ascending or
+    descending" error.
     """
     # Compare array containers with identical represented values. Physical
     # exposure integrates timestamp spacing, so float32 and float64 grids can
