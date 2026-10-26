@@ -2091,9 +2091,10 @@ class TestEstimateStationaryStateTransition:
         acausal_posterior = causal_posterior.copy()
 
         transition_matrix = np.eye(n_states) * 0.9 + 0.025
-        predictive_distribution = np.zeros((n_time, n_states))
-        for t in range(n_time):
-            predictive_distribution[t] = causal_posterior[t] @ transition_matrix
+        # predictive[t] = causal[t - 1] @ T, as core.filter defines it.
+        predictive_distribution = np.vstack(
+            [causal_posterior[:1], causal_posterior[:-1] @ transition_matrix]
+        )
         joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
             causal_posterior=causal_posterior,
             predictive_posterior=predictive_distribution,
@@ -2223,9 +2224,10 @@ class TestPriorWeightScaling:
         acausal_posterior = causal_posterior.copy()
 
         transition_matrix = np.eye(n_states) * 0.8 + 0.2 / n_states
-        predictive_distribution = np.zeros((n_time, n_states))
-        for t in range(n_time):
-            predictive_distribution[t] = causal_posterior[t] @ transition_matrix
+        # predictive[t] = causal[t - 1] @ T, as core.filter defines it.
+        predictive_distribution = np.vstack(
+            [causal_posterior[:1], causal_posterior[:-1] @ transition_matrix]
+        )
         joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
             causal_posterior=causal_posterior,
             predictive_posterior=predictive_distribution,
