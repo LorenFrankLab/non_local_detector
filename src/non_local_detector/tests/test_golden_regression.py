@@ -16,22 +16,24 @@ Each test has two pickle files in ``golden_data/``:
   change (and must be accompanied by the analysis protocol in
   CLAUDE.md).
 
-On the first run (or after deletion) both files are auto-created using
-the existing ``pytest.skip`` pattern. Subsequent runs load the inputs
-from disk, run the decoder on them, and compare the outputs against
-the golden pickle with tight tolerances.
+Each run loads the inputs from disk, runs the decoder on them, and
+compares the outputs against the golden pickle with tight tolerances. A
+missing pickle makes the test FAIL, so a lost file cannot pass CI
+silently. Missing pickles are written (and the comparison skipped) only
+when the ``NLD_REGENERATE_GOLDEN=1`` environment variable is set.
 
 To regenerate after an intentional decoder change:
     rm src/non_local_detector/tests/golden_data/*_golden.pkl
-    uv run pytest src/non_local_detector/tests/test_golden_regression.py
+    NLD_REGENERATE_GOLDEN=1 uv run pytest src/non_local_detector/tests/test_golden_regression.py
 
 To regenerate the pinned inputs as well (e.g., after an intentional
 simulator change you want the tests to track):
     rm src/non_local_detector/tests/golden_data/*_inputs.pkl \\
        src/non_local_detector/tests/golden_data/*_golden.pkl
-    uv run pytest src/non_local_detector/tests/test_golden_regression.py
+    NLD_REGENERATE_GOLDEN=1 uv run pytest src/non_local_detector/tests/test_golden_regression.py
 """
 
+import os
 import pickle
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,7 @@ from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_
 from non_local_detector.time_edges import time_edges_from_centers
 
 GOLDEN_DIR = Path(__file__).parent / "golden_data"
+REGENERATE_ENV_VAR = "NLD_REGENERATE_GOLDEN"
 
 # Seeds for input regeneration only. Once *_inputs.pkl exists these
 # seeds are not consulted; the tests work from the pinned pickle.
@@ -70,6 +73,21 @@ def golden_path() -> Path:
     """Path to golden data directory."""
     GOLDEN_DIR.mkdir(exist_ok=True)
     return GOLDEN_DIR
+
+
+def fail_unless_regenerating(path: Path) -> None:
+    """Fail on a missing golden pickle unless regeneration was requested.
+
+    Parameters
+    ----------
+    path : Path
+        The pickle that does not exist.
+    """
+    if os.environ.get(REGENERATE_ENV_VAR) != "1":
+        pytest.fail(
+            f"{path} is missing. Restore it, or set {REGENERATE_ENV_VAR}=1 to "
+            "regenerate it deliberately (see the module docstring)."
+        )
 
 
 def save_pickle(path: Path, data: Any) -> None:
@@ -100,13 +118,15 @@ def compare_golden_arrays(
 def load_or_create_clusterless_inputs(inputs_file: Path, seed: int) -> dict[str, Any]:
     """Load pinned clusterless simulation inputs, or create them.
 
-    When the pickle is missing this calls ``make_simulated_run_data``
-    with the recorded seed and stores the arrays it produces. All
+    When the pickle is missing (and ``NLD_REGENERATE_GOLDEN=1``) this calls
+    ``make_simulated_run_data`` with the recorded seed and stores the arrays
+    it produces; otherwise a missing pickle fails the test. All
     subsequent runs load from disk regardless of what the simulator
     would produce.
     """
     if inputs_file.exists():
         return load_pickle(inputs_file)
+    fail_unless_regenerating(inputs_file)
     sim = make_simulated_run_data(
         n_tetrodes=4,
         place_field_means=np.arange(0, 160, 10),  # 16 neurons
@@ -130,6 +150,7 @@ def load_or_create_sorted_spikes_inputs(inputs_file: Path, seed: int) -> dict[st
     """Load pinned sorted-spikes simulation inputs, or create them."""
     if inputs_file.exists():
         return load_pickle(inputs_file)
+    fail_unless_regenerating(inputs_file)
     (
         _speed,
         position,
@@ -217,6 +238,7 @@ def test_clusterless_decoder_golden_regression(golden_path: Path) -> None:
 
     golden_file = golden_path / "clusterless_decoder_golden.pkl"
     if not golden_file.exists():
+        fail_unless_regenerating(golden_file)
         save_pickle(golden_file, {"posterior": results.acausal_posterior.values})
         pytest.skip("Golden data created, skipping comparison")
 
@@ -260,6 +282,7 @@ def test_random_walk_transition_golden_regression(golden_path: Path) -> None:
 
     golden_file = golden_path / "random_walk_transition_golden.pkl"
     if not golden_file.exists():
+        fail_unless_regenerating(golden_file)
         save_pickle(golden_file, {"posterior": results.acausal_posterior.values})
         pytest.skip("Golden data created, skipping comparison")
 
@@ -306,6 +329,7 @@ def test_sorted_spikes_decoder_golden_regression(golden_path: Path) -> None:
 
     golden_file = golden_path / "sorted_spikes_decoder_golden.pkl"
     if not golden_file.exists():
+        fail_unless_regenerating(golden_file)
         save_pickle(golden_file, {"posterior": results.acausal_posterior.values})
         pytest.skip("Golden data created, skipping comparison")
 
@@ -379,6 +403,7 @@ def test_nonlocal_detector_golden_regression(golden_path: Path) -> None:
 
     golden_file = golden_path / "nonlocal_detector_golden.pkl"
     if not golden_file.exists():
+        fail_unless_regenerating(golden_file)
         save_pickle(
             golden_file,
             {
