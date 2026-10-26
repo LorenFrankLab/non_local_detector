@@ -243,11 +243,12 @@ def test_group_with_training_exposure_does_not_warn(run_data, kind):
 
 
 @pytest.mark.unit
-def test_uniform_mask_is_unchanged_by_the_fix(run_data):
-    """An all-training mask must reproduce the previous uniform weighting exactly.
+def test_all_ones_weights_match_unweighted_fit(run_data):
+    """All-ones weights give exactly the unweighted (``weights=None``) fit.
 
-    This is what keeps the golden regressions stable: they fit a single group with
-    full coverage, where ``is_group.astype(float)`` is exactly ``ones``.
+    A single group with full training coverage passes
+    ``is_group.astype(float)``, which is all ones, so its encoding model is
+    identical to the unweighted one.
     """
     time, position, spike_times, _ = run_data
     environment = Environment(place_bin_size=4.0).fit_place_grid(position)
