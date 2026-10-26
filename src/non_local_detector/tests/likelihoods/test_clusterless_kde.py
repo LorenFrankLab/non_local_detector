@@ -149,7 +149,7 @@ def test_fit_clusterless_kde_raises_without_place_grid():
     env = Environment(environment_name="nofit")
     t_pos = jnp.linspace(0.0, 10.0, 11)
     pos = jnp.linspace(0.0, 10.0, 11)[:, None]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="fit_place_grid"):
         fit_clusterless_kde_encoding_model(
             position_time=t_pos,
             position=pos,
