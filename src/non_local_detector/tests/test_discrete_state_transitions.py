@@ -24,8 +24,9 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.tests.conftest import assert_stochastic_matrix
 
+pytestmark = pytest.mark.unit
 
-@pytest.mark.unit
+
 class TestCenteredSoftmax:
     """Test centered softmax transformation and its inverse."""
 
@@ -151,7 +152,6 @@ class TestCenteredSoftmax:
         assert jnp.allclose(result, expected_log_softmax)
 
 
-@pytest.mark.unit
 class TestTransitionMatrixConstruction:
     """Test functions for constructing transition matrices."""
 
@@ -357,7 +357,6 @@ class TestDiscreteStationaryCustom:
         assert design is None
 
 
-@pytest.mark.unit
 class TestPredictDiscreteStateTransitions:
     """Test the predict-time covariate transition path."""
 
@@ -413,7 +412,6 @@ class TestPredictDiscreteStateTransitions:
         assert np.max(np.abs(result[1] - result[0])) > 0.05
 
 
-@pytest.mark.unit
 class TestNonStationaryNaNCovariates:
     """Non-stationary transition construction must reject NaN covariates."""
 
@@ -441,7 +439,6 @@ class TestNonStationaryNaNCovariates:
             model.make_state_transition(covariate_data)
 
 
-@pytest.mark.unit
 class TestDefaultCovariateSpline:
     """The default covariate formula places spline knots where the data are
     and accepts covariates outside the fitted range."""
@@ -454,7 +451,8 @@ class TestDefaultCovariateSpline:
         return design_matrix
 
     def test_speed_below_fixed_knots(self):
-        """Speeds that never reach 64 cm/s (issue #54) fit, with full rank."""
+        """Speeds that never reach the largest fixed knot (64 cm/s) fit with
+        full rank."""
         design_matrix = np.asarray(self._design(np.linspace(0.0, 50.0, 1000)))
         assert np.linalg.matrix_rank(design_matrix) == design_matrix.shape[1]
 
