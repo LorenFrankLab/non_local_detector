@@ -1159,9 +1159,9 @@ def _segmented_inclusive_sum(starts: jnp.ndarray, values: jnp.ndarray) -> jnp.nd
 
     A Hillis-Steele scan: step ``k`` adds the partial sum ``2**k`` rows back
     unless a segment start lies between. Its ``ceil(log2 n)`` steps run in a
-    loop, so one step is compiled whatever ``n`` is, and reverse-mode
-    differentiation works. The summation tree has depth ``ceil(log2 n)`` and
-    depends only on the segment layout.
+    loop, so the compiled program holds one step however many run, and
+    reverse-mode differentiation works. The summation tree has depth
+    ``ceil(log2 n)`` and depends only on the segment layout.
 
     Parameters
     ----------
@@ -1250,9 +1250,10 @@ def _scatter_add_segment_totals(
     sums, targets : jnp.ndarray
         From ``_segment_totals``.
     column_start : int or scalar array, optional
-        With a 2-D ``output``, the first column of the tile ``sums`` covers,
-        shifted left like ``dynamic_slice`` if the tile would run past the
-        last column. None adds whole rows.
+        With a 2-D ``output``, the first column of the tile ``sums`` covers.
+        As with ``dynamic_slice``, a negative start counts from the last
+        column and a tile that would run past the last column is shifted
+        left. None adds whole rows.
 
     Returns
     -------
@@ -1262,11 +1263,10 @@ def _scatter_add_segment_totals(
         indices = targets[:, None]
         scatter_dims: tuple[int, ...] = (0,)
     else:
-        column = jnp.clip(
-            jnp.asarray(column_start).astype(targets.dtype),
-            0,
-            output.shape[1] - sums.shape[1],
-        )
+        n_columns = output.shape[1]
+        column = jnp.asarray(column_start).astype(targets.dtype)
+        column = jnp.where(column < 0, column + n_columns, column)
+        column = jnp.clip(column, 0, n_columns - sums.shape[1])
         indices = jnp.stack([targets, jnp.broadcast_to(column, targets.shape)], 1)
         scatter_dims = (0, 1)
     dimension_numbers = jax.lax.ScatterDimensionNumbers(
@@ -1428,10 +1428,12 @@ def deterministic_row_add(
     output : jnp.ndarray, shape (n_rows, n_columns)
         The tile holds ``initial + sum(contributions)``. On CPU each call
         builds an ``(n_rows, tile_columns)`` row-sum temporary. Elsewhere a
-        segmented scan sums each row's contributions, keeping temporaries the
-        size of ``values``, and only the rows they own are updated. As with
-        ``dynamic_slice``, a tile that would run past the last column is
-        shifted left, so callers must pass tiles that fit.
+        segmented scan sums each row's contributions, keeping temporaries
+        about twice the size of ``values`` (measured on XLA:CPU), and only
+        the rows they own are updated. As with ``dynamic_slice``, a negative
+        ``column_start`` counts from the last column and a tile that would
+        run past the last column is shifted left, so callers must pass tiles
+        that fit.
     """
     values = jnp.asarray(values).astype(output.dtype)
     if output.shape[0] == 0 or values.shape[0] == 0 or values.size == 0:

@@ -69,6 +69,12 @@ The earlier [replay report](performance_artifacts/phase7/gpu-replay.json) and
 [gradient controls](performance_artifacts/phase7/gpu-gradient-controls.json)
 measured the serial loop.
 
+These scan timings predate a later change. The scan's steps now run in a loop,
+so one step is compiled (about 0.2 s instead of 2 s per shape at 121,122 rows
+x 158 bins), and a scatter with unique indices adds each row's total. Each
+output element still receives one update, so results stay bitwise repeatable;
+see the CHANGELOG for the A100 measurements.
+
 Older-runtime testing exposed an existing GLM test-oracle error. Its float64
 reference used `EPS`, although both `fe1b2e9` and this branch clip local rates at
 `RATE_EPS_HZ`. Both implementations were bit-identical and agreed with the

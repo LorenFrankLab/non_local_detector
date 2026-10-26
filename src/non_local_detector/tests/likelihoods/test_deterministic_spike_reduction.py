@@ -175,21 +175,23 @@ def test_repeated_unequal_float_rows_are_bitwise_identical(reduction_path):
 
 
 @pytest.mark.parametrize("is_sorted", [True, False])
-@pytest.mark.parametrize("column_start", [2, 5])
+@pytest.mark.parametrize("column_start", [2, 5, -1, -5])
 def test_row_add_adds_owned_row_sums_to_the_initial_tile(
     is_sorted, column_start, reduction_path
 ):
     """Only the tile's owned rows change, by their exact sums; others keep ``output``.
 
-    Integer-valued floats make every summation order exact. A tile starting at
-    column 5 would run past the last column, so it is shifted left to 4.
+    Integer-valued floats make every summation order exact. As with
+    ``dynamic_slice``, a negative start counts from the last column (-5 is
+    column 2), and a tile starting at column 5 or -1 would run past the last
+    column, so it is shifted left to 4.
     """
     ids = np.array([-1, 0, 0, 0, 2, 3, 3, 6, 99], np.int32)
     if not is_sorted:
         ids = ids[np.random.default_rng(7616).permutation(len(ids))]
     values = np.arange(27, dtype=np.float32).reshape(9, 3) - 11
     initial = np.arange(42, dtype=np.float32).reshape(6, 7) * 1000
-    shifted = min(column_start, 7 - 3)
+    shifted = min(column_start % 7, 7 - 3)
     expected = initial.copy()
     expected[:, shifted : shifted + 3] += ordered_reference(values, ids, 6)
     actual = common.deterministic_row_add(
@@ -216,6 +218,61 @@ def test_row_add_adds_owned_row_sums_to_the_initial_tile(
     expected_gradient[owned] = np.asarray(weights)[ids[owned], shifted : shifted + 3]
     np.testing.assert_array_equal(value_gradient, expected_gradient)
     np.testing.assert_array_equal(output_gradient, weights)
+
+
+@pytest.mark.parametrize("n_values", [8, 9, 17, 1025])
+def test_one_segment_spanning_every_row_sums_all_rows(n_values, reduction_path):
+    """A segment as long as the input needs every scan step.
+
+    One step too few would drop the segment's earliest rows. Values ``1..n``
+    keep every float32 partial sum exact.
+    """
+    values = np.arange(1, n_values + 1, dtype=np.float32)[:, None] * [1, -2]
+    values = values.astype(np.float32)
+    ids = jnp.ones(n_values, jnp.int32)
+    expected = np.zeros((3, 2), np.float32)
+    expected[1] = values.sum(axis=0)
+    np.testing.assert_array_equal(
+        deterministic_segment_sum(jnp.asarray(values), ids, 3, True), expected
+    )
+    np.testing.assert_array_equal(
+        common.deterministic_row_add(
+            jnp.zeros((3, 2), jnp.float32),
+            jnp.asarray(values),
+            ids,
+            indices_are_sorted=True,
+        ),
+        expected,
+    )
+
+
+@pytest.mark.parametrize("is_sorted", [True, False])
+def test_segment_totals_target_each_present_segment_once(is_sorted):
+    """Scatter targets are distinct, as the off-CPU ``unique_indices`` promises.
+
+    CPU drops out-of-range updates and applies the rest in order, so repeated
+    targets would not change results there; on an accelerator they are
+    undefined. Each valid id present gets one in-range target, at the row
+    holding its segment's total, and every other row is out of range.
+    """
+    rng = np.random.default_rng(7617)
+    n_segments = 6
+    ids = rng.integers(-2, n_segments + 2, 40).astype(np.int32)
+    if is_sorted:
+        ids = np.sort(ids)
+    values = rng.integers(-5, 6, 40).astype(np.float32)
+    sums, targets = common._segment_totals(
+        jnp.asarray(values), jnp.asarray(ids), n_segments, is_sorted
+    )
+    sums, targets = np.asarray(sums), np.asarray(targets)
+    assert np.unique(targets).size == targets.size
+    in_range = (targets >= 0) & (targets < n_segments)
+    present = np.unique(ids[(ids >= 0) & (ids < n_segments)])
+    np.testing.assert_array_equal(np.sort(targets[in_range]), present)
+    np.testing.assert_array_equal(
+        sums[in_range],
+        ordered_reference(values, ids, n_segments)[targets[in_range]],
+    )
 
 
 def test_large_component_mass_matches_float64_without_sequential_drift():
@@ -412,3 +469,10 @@ def test_bucketed_row_sum_keeps_narrow_ids_valid(id_dtype, is_sorted, reduction_
 def test_row_sum_rejects_mismatched_values_and_ids():
     with pytest.raises(ValueError, match="one row per row id"):
         common.deterministic_row_sum(jnp.ones((5, 2)), np.zeros(4, np.int32), 3)
+
+
+def test_row_add_rejects_mismatched_values_and_ids(reduction_path):
+    with pytest.raises(ValueError, match="one row per row id"):
+        common.deterministic_row_add(
+            jnp.zeros((3, 2)), jnp.ones((5, 2)), np.zeros(4, np.int32)
+        )
