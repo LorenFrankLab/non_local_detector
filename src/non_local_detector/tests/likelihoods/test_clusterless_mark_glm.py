@@ -665,7 +665,13 @@ def test_electrode_without_encoding_spikes_is_background_only(track_1d, is_local
     )
     difference = with_spike - without
     assert np.all(np.isfinite(with_spike))
-    np.testing.assert_allclose(np.ptp(difference, axis=1), 0.0, atol=1e-4)
+    # The spike's bin scores the background beta * q(m) at every position.
+    expected = (
+        LOG_RATE_EPS_HZ
+        + reference[2].log_density(decode_marks[2])[0]
+        + np.log(np.diff(time_edges)[2])
+    )
+    np.testing.assert_allclose(difference[2], expected, rtol=1e-6)
     assert np.all(difference[np.arange(10) != 2] == 0.0)
 
 
