@@ -21,7 +21,7 @@ the absolute-value tests below (uniform and non-uniform ``dV``) pin them.
 """
 
 import warnings
-from functools import partial
+from functools import cache, partial
 
 import jax
 import jax.numpy as jnp
@@ -1752,6 +1752,7 @@ def test_a_far_weak_source_alone_in_its_component_is_not_lost():
     )
 
 
+@cache
 def _two_room_weak_source_model(weak_nats, position_std, corner_only=False):
     """Two disconnected rooms, 16 features, unit mark bandwidth.
 
@@ -1759,6 +1760,9 @@ def _two_room_weak_source_model(weak_nats, position_std, corner_only=False):
     reference); right-room marks lie ``sqrt(2 * weak_nats)`` away in one
     feature, so for a zero query they are ``weak_nats`` weaker than the
     left-room match.
+
+    Cached, since several tests decode the same fit; callers must not mutate
+    the returned environment, arrays or encoding model.
     """
     env, position = _make_two_room_env()
     time = np.arange(position.shape[0]) / 100
