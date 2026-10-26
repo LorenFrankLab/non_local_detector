@@ -1,4 +1,13 @@
-"""Phase 6b/6d acceptance through fitted public detector APIs."""
+"""Physical rate units and model persistence through public decoder APIs.
+
+- Every likelihood backend fits rates in Hz, so an empty bin's log likelihood
+  is minus the rate times the bin width.
+- Serializable backends keep their units and decode results through
+  ``save_model`` / ``load_model``.
+- An encoding entry with missing or unknown units is rejected, before any
+  likelihood work, with a hint to refit; ``estimate_parameters`` refits such a
+  model from the original recording.
+"""
 
 import copy
 
@@ -64,10 +73,7 @@ def test_known_rate_is_calibrated_through_public_fit_and_predict(
 def test_serializable_backend_round_trip_preserves_units_and_predictions(
     algorithm, tmp_path
 ):
-    """All seven currently serializable families keep exact decode results.
-
-    Patsy DesignInfo serialization remains a separately tracked GLM defect.
-    """
+    """Every serializable backend keeps exact decode results and units."""
     time = np.arange(100) * 0.002
     position = (50 + 8 * np.sin(time * 40))[:, None]
     spikes = [np.array([0.021, 0.067, 0.121, 0.167])]
