@@ -5,32 +5,37 @@ consistent results on the same data: correlated place fields, correlated
 log-likelihoods, and agreement on basic directional properties.
 """
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import stats
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.clusterless_gmm import (
-    fit_clusterless_gmm_encoding_model,
-    mark_reference_scale,
-    predict_clusterless_gmm_log_likelihood,
-)
-from non_local_detector.likelihoods.clusterless_kde import (
-    fit_clusterless_kde_encoding_model,
-    predict_clusterless_kde_log_likelihood,
-)
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
-from non_local_detector.likelihoods.sorted_spikes_glm import (
-    fit_sorted_spikes_glm_encoding_model,
-    predict_sorted_spikes_glm_log_likelihood,
-)
-from non_local_detector.likelihoods.sorted_spikes_kde import (
-    fit_sorted_spikes_kde_encoding_model,
-    predict_sorted_spikes_kde_log_likelihood,
+from non_local_detector.tests.likelihoods.conftest import (
+    ALGORITHMS,
+    fit_registered_backends,
 )
 
 pytestmark = pytest.mark.integration
+
+POSITION_STD = np.sqrt(12.5)
+# The KDE and GMM fits compared below; the others mostly use their defaults.
+FIT_PARAMS = {
+    "sorted_spikes_kde": {"position_std": POSITION_STD, "block_size": 16},
+    "clusterless_kde": {
+        "position_std": POSITION_STD,
+        "waveform_std": 1.0,
+        "block_size": 8,
+    },
+    "clusterless_gmm": {
+        "gmm_components_occupancy": 10,
+        "gmm_components_joint": 10,
+        "gmm_random_state": 0,
+    },
+    # Smooth across the 5 cm bins (the default position_std is below one bin).
+    "sorted_spikes_diffusion": {"position_std": 10.0},
+    "clusterless_diffusion": {"position_std": 10.0},
+}
+DECODE_EDGES = np.linspace(0.0, 1.0, 11)
 
 
 # ---------------------------------------------------------------------------
@@ -39,24 +44,20 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
-def cross_model_env():
-    """1D environment for cross-model comparisons."""
-    env = Environment(
+def cross_model_data():
+    """Spike data with clear place fields, and every backend fit to it once.
+
+    3 neurons with place fields centered at positions 25, 50, 75.
+    Position sweeps linearly from 0 to 100 over 200 time steps; each spike
+    is at a position sample's time. Tests must not mutate the fitted models.
+    """
+    environment = Environment(
         environment_name="test",
         place_bin_size=5.0,
         position_range=((0.0, 100.0),),
+    ).fit_place_grid(
+        position=np.linspace(0, 100, 201)[:, None], infer_track_interior=False
     )
-    pos = np.linspace(0, 100, 201)[:, None]
-    return env.fit_place_grid(position=pos, infer_track_interior=False)
-
-
-@pytest.fixture(scope="module")
-def cross_model_data():
-    """Generate spike data with clear place fields for cross-model tests.
-
-    3 neurons with place fields centered at positions 25, 50, 75.
-    Position sweeps linearly from 0 to 100 over 200 time steps.
-    """
     rng = np.random.default_rng(777)
     n_time = 200
     t = np.linspace(0.0, 1.0, n_time)
@@ -70,7 +71,7 @@ def cross_model_data():
         candidate_idx = np.where(near)[0]
         n_spikes = min(20, len(candidate_idx))
         selected = np.sort(rng.choice(candidate_idx, n_spikes, replace=False))
-        spike_times.append(jnp.asarray(t[selected]))
+        spike_times.append(t[selected])
         # Waveform features: 2D, tightly clustered for identifiability
         feats = np.column_stack(
             [
@@ -78,171 +79,45 @@ def cross_model_data():
                 rng.standard_normal(n_spikes) * 0.3 - center / 50.0,
             ]
         ).astype(np.float32)
-        spike_waveform_features.append(jnp.asarray(feats))
+        spike_waveform_features.append(feats)
 
-    return {
-        "position_time": t,
-        "position": pos,
-        "spike_times": [jnp.asarray(st) for st in spike_times],
-        "spike_waveform_features": spike_waveform_features,
-        "sampling_frequency": float(n_time),
-        "n_neurons": 3,
+    # Float32 inputs, the working precision; with float64 inputs one cell's
+    # GLM fit stops just short of its gradient tolerance and warns.
+    data = {
+        "position_time": t.astype(np.float32),
+        "position": pos.astype(np.float32),
+        "environment": environment,
+        "encoding_spike_times": [times.astype(np.float32) for times in spike_times],
+        "encoding_features": spike_waveform_features,
     }
+    data["fitted"] = {
+        name: (predict, model, is_clusterless)
+        for name, predict, model, is_clusterless in fit_registered_backends(
+            data, FIT_PARAMS
+        )
+    }
+    return data
 
 
-# ---------------------------------------------------------------------------
-# Fit helpers
-# ---------------------------------------------------------------------------
+def _predict(data, name, *, time_edges=DECODE_EDGES, empty=False, is_local=False):
+    """Decode the encoding spikes (or none) with backend ``name``."""
+    predict, model, is_clusterless = data["fitted"][name]
+    spike_times = data["encoding_spike_times"]
+    features = data["encoding_features"]
+    if empty:
+        spike_times = [np.array([]) for _ in spike_times]
+        features = [np.zeros((0, 2)) for _ in features]
+    args = [data["position_time"], data["position"], spike_times]
+    if is_clusterless:
+        args.append(features)
+    return np.asarray(predict(*args, time_edges=time_edges, is_local=is_local, **model))
 
 
-def _fit_sorted_kde(env, data):
-    weights = jnp.ones(len(data["position_time"]))
-    enc = fit_sorted_spikes_kde_encoding_model(
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        environment=env,
-        weights=weights,
-        position_std=np.sqrt(12.5),
-        block_size=16,
-        disable_progress_bar=True,
-    )
-    return enc
-
-
-def _fit_sorted_glm(env, data):
-    enc = fit_sorted_spikes_glm_encoding_model(
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        environment=env,
-        place_bin_edges=env.place_bin_edges_,
-        edges=env.edges_,
-        is_track_interior=env.is_track_interior_,
-        is_track_boundary=env.is_track_boundary_,
-        disable_progress_bar=True,
-    )
-    return enc
-
-
-def _predict_sorted_kde(enc, env, data, is_local=False):
-    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
-    return predict_sorted_spikes_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
-        is_local=is_local,
-    )
-
-
-def _predict_sorted_glm(enc, env, data, is_local=False):
-    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
-    return predict_sorted_spikes_glm_log_likelihood(
-        time_edges=t_edges,
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        environment=env,
-        coefficients=enc["coefficients"],
-        emission_design_info=enc["emission_design_info"],
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        is_local=is_local,
-        disable_progress_bar=True,
-    )
-
-
-def _fit_clusterless_kde(env, data):
-    enc = fit_clusterless_kde_encoding_model(
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        spike_waveform_features=data["spike_waveform_features"],
-        environment=env,
-        position_std=np.sqrt(12.5),
-        waveform_std=1.0,
-        block_size=8,
-        disable_progress_bar=True,
-    )
-    enc["mark_reference"] = fit_mark_references(data["spike_waveform_features"], 1.0)
-    return enc
-
-
-def _predict_clusterless_kde(enc, env, data, is_local=False):
-    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
-    return predict_clusterless_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        spike_waveform_features=data["spike_waveform_features"],
-        occupancy=enc["occupancy"],
-        occupancy_model=enc["occupancy_model"],
-        gpi_models=enc["gpi_models"],
-        encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
-        encoding_positions=enc["encoding_positions"],
-        mark_reference=enc["mark_reference"],
-        environment=env,
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc["position_std"]),
-        waveform_std=jnp.asarray(enc["waveform_std"]),
-        is_local=is_local,
-        disable_progress_bar=True,
-        block_size=8,
-    )
-
-
-def _fit_clusterless_gmm(env, data):
-    enc = fit_clusterless_gmm_encoding_model(
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        spike_waveform_features=data["spike_waveform_features"],
-        environment=env,
-        gmm_components_occupancy=10,
-        gmm_components_joint=10,
-        gmm_random_state=0,
-        disable_progress_bar=True,
-    )
-    enc["mark_reference"] = fit_mark_references(
-        data["spike_waveform_features"], mark_reference_scale()
-    )
-    return enc
-
-
-def _predict_clusterless_gmm(enc, env, data, is_local=False):
-    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
-    return predict_clusterless_gmm_log_likelihood(
-        time_edges=t_edges,
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        spike_waveform_features=data["spike_waveform_features"],
-        environment=env,
-        occupancy_model=enc["occupancy_model"],
-        interior_place_bin_centers=enc["interior_place_bin_centers"],
-        log_occupancy=enc["log_occupancy"],
-        gpi_models=enc["gpi_models"],
-        joint_models=enc["joint_models"],
-        mean_rates=enc["mean_rates"],
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        mark_dimensions=enc["mark_dimensions"],
-        mark_reference=enc["mark_reference"],
-        is_local=is_local,
-        disable_progress_bar=True,
-    )
+def _place_fields(data, name):
+    """Interior place fields, shape (n_neurons, n_interior_bins)."""
+    _, model, _ = data["fitted"][name]
+    interior = data["environment"].is_track_interior_.ravel()
+    return np.asarray(model["place_fields"])[:, interior]
 
 
 # ---------------------------------------------------------------------------
@@ -250,24 +125,12 @@ def _predict_clusterless_gmm(enc, env, data, is_local=False):
 # ---------------------------------------------------------------------------
 
 
-def test_sorted_kde_vs_glm_place_field_peak_agreement(
-    cross_model_env, cross_model_data
-):
+def test_sorted_kde_vs_glm_place_field_peak_agreement(cross_model_data):
     """KDE and GLM should agree on where each neuron's place field peaks."""
-    env = cross_model_env
-    data = cross_model_data
+    pf_kde = _place_fields(cross_model_data, "sorted_spikes_kde")
+    pf_glm = _place_fields(cross_model_data, "sorted_spikes_glm")
 
-    enc_kde = _fit_sorted_kde(env, data)
-    enc_glm = _fit_sorted_glm(env, data)
-
-    pf_kde = np.asarray(enc_kde["place_fields"])
-    pf_glm = np.asarray(enc_glm["place_fields"])
-
-    # GLM returns list of arrays, KDE returns 2D array
-    if isinstance(pf_glm, list):
-        pf_glm = np.stack(pf_glm)
-
-    for i in range(data["n_neurons"]):
+    for i in range(pf_kde.shape[0]):
         peak_kde = np.argmax(pf_kde[i])
         peak_glm = np.argmax(pf_glm[i])
         assert abs(int(peak_kde) - int(peak_glm)) <= 2, (
@@ -275,36 +138,20 @@ def test_sorted_kde_vs_glm_place_field_peak_agreement(
         )
 
 
-def test_sorted_kde_vs_glm_place_field_correlation(cross_model_env, cross_model_data):
+def test_sorted_kde_vs_glm_place_field_correlation(cross_model_data):
     """KDE and GLM place fields should be positively correlated per neuron."""
-    env = cross_model_env
-    data = cross_model_data
+    pf_kde = _place_fields(cross_model_data, "sorted_spikes_kde")
+    pf_glm = _place_fields(cross_model_data, "sorted_spikes_glm")
 
-    enc_kde = _fit_sorted_kde(env, data)
-    enc_glm = _fit_sorted_glm(env, data)
-
-    pf_kde = np.asarray(enc_kde["place_fields"])
-    pf_glm = np.asarray(enc_glm["place_fields"])
-    if isinstance(pf_glm, list):
-        pf_glm = np.stack(pf_glm)
-
-    for i in range(data["n_neurons"]):
+    for i in range(pf_kde.shape[0]):
         corr = np.corrcoef(pf_kde[i], pf_glm[i])[0, 1]
         assert corr > 0.5, f"Neuron {i}: KDE-GLM place field correlation = {corr:.3f}"
 
 
-def test_sorted_kde_vs_glm_log_likelihood_correlation(
-    cross_model_env, cross_model_data
-):
+def test_sorted_kde_vs_glm_log_likelihood_correlation(cross_model_data):
     """KDE and GLM log-likelihoods should be positively correlated across positions."""
-    env = cross_model_env
-    data = cross_model_data
-
-    enc_kde = _fit_sorted_kde(env, data)
-    enc_glm = _fit_sorted_glm(env, data)
-
-    ll_kde = np.asarray(_predict_sorted_kde(enc_kde, env, data))
-    ll_glm = np.asarray(_predict_sorted_glm(enc_glm, env, data))
+    ll_kde = _predict(cross_model_data, "sorted_spikes_kde")
+    ll_glm = _predict(cross_model_data, "sorted_spikes_glm")
 
     # Check correlation across position bins for each time step
     correlations = []
@@ -322,18 +169,15 @@ def test_sorted_kde_vs_glm_log_likelihood_correlation(
 # ---------------------------------------------------------------------------
 
 
-def test_clusterless_kde_vs_gmm_ground_process_correlation(
-    cross_model_env, cross_model_data
-):
+def test_clusterless_kde_vs_gmm_ground_process_correlation(cross_model_data):
     """Ground process intensity from KDE and GMM should be correlated."""
-    env = cross_model_env
-    data = cross_model_data
-
-    enc_kde = _fit_clusterless_kde(env, data)
-    enc_gmm = _fit_clusterless_gmm(env, data)
-
-    gpi_kde = np.asarray(enc_kde["summed_ground_process_intensity"])
-    gpi_gmm = np.asarray(enc_gmm["summed_ground_process_intensity"])
+    fitted = cross_model_data["fitted"]
+    gpi_kde = np.asarray(
+        fitted["clusterless_kde"][1]["summed_ground_process_intensity"]
+    )
+    gpi_gmm = np.asarray(
+        fitted["clusterless_gmm"][1]["summed_ground_process_intensity"]
+    )
 
     # Both should have same shape
     assert gpi_kde.shape == gpi_gmm.shape
@@ -349,67 +193,30 @@ def test_clusterless_kde_vs_gmm_ground_process_correlation(
 
 
 @pytest.mark.parametrize(
-    "fit,predict,rate_key",
-    [
-        pytest.param(
-            _fit_sorted_kde,
-            _predict_sorted_kde,
-            "no_spike_part_log_likelihood",
-            id="sorted_kde",
-        ),
-        pytest.param(
-            _fit_sorted_glm,
-            _predict_sorted_glm,
-            "no_spike_part_log_likelihood",
-            id="sorted_glm",
-        ),
-        pytest.param(
-            _fit_clusterless_kde,
-            _predict_clusterless_kde,
-            "summed_ground_process_intensity",
-            id="clusterless_kde",
-        ),
-        pytest.param(
-            _fit_clusterless_gmm,
-            _predict_clusterless_gmm,
-            "summed_ground_process_intensity",
-            id="clusterless_gmm",
-        ),
-    ],
+    "name",
+    ["sorted_spikes_kde", "sorted_spikes_glm", "clusterless_kde", "clusterless_gmm"],
 )
 @pytest.mark.parametrize("bin_width", [0.02, 0.1])
-def test_no_spike_likelihood_matches_expected_counts(
-    cross_model_env, cross_model_data, fit, predict, rate_key, bin_width
-):
+def test_no_spike_likelihood_matches_expected_counts(cross_model_data, name, bin_width):
     """No-spike log likelihood is minus the fitted Hz rate times bin duration."""
-    env = cross_model_env
-    data = cross_model_data
-    encoding = fit(env, data)
     edges = np.linspace(0.0, 1.0, round(1.0 / bin_width) + 1)
-    empty = {
-        **data,
-        "decode_time_edges": edges,
-        "spike_times": [jnp.array([]) for _ in range(data["n_neurons"])],
-        "spike_waveform_features": [
-            jnp.zeros((0, 2)) for _ in range(data["n_neurons"])
-        ],
-    }
-    rates = np.asarray(encoding[rate_key])
-    if rate_key == "no_spike_part_log_likelihood":
-        rates = rates[env.is_track_interior_.ravel()]
+    _, model, is_clusterless = cross_model_data["fitted"][name]
+    if is_clusterless:
+        rates = np.asarray(model["summed_ground_process_intensity"])
+    else:
+        interior = cross_model_data["environment"].is_track_interior_.ravel()
+        rates = np.asarray(model["no_spike_part_log_likelihood"])[interior]
     assert np.all(np.isfinite(rates))
     assert np.all(rates > 0), "Fixture must have positive rates to detect zero output"
 
-    likelihood = np.asarray(predict(encoding, env, empty))
+    likelihood = _predict(cross_model_data, name, time_edges=edges, empty=True)
     expected = -np.diff(edges)[:, None] * rates[None, :]
     assert likelihood.shape == expected.shape
     assert np.all(np.isfinite(likelihood)), "No-spike likelihood must be finite"
     np.testing.assert_allclose(likelihood, expected, rtol=2e-6, atol=1e-6)
 
 
-def test_sorted_models_kde_glm_agree_on_high_vs_low_ll_time_bins(
-    cross_model_env, cross_model_data
-):
+def test_sorted_models_kde_glm_agree_on_high_vs_low_ll_time_bins(cross_model_data):
     """KDE and GLM should agree on which time bins have relatively high vs low LL.
 
     Uses rank correlation over mean LL per time bin (averaged across positions).
@@ -417,14 +224,9 @@ def test_sorted_models_kde_glm_agree_on_high_vs_low_ll_time_bins(
     wide bins, a broad GLM can have expected counts above one while a sparse
     KDE has rates near zero at many positions, reversing mean-score ordering.
     """
-    env = cross_model_env
-    data = {**cross_model_data, "decode_time_edges": np.linspace(0.0, 1.0, 501)}
-
-    enc_kde = _fit_sorted_kde(env, data)
-    enc_glm = _fit_sorted_glm(env, data)
-
-    ll_kde = np.asarray(_predict_sorted_kde(enc_kde, env, data))
-    ll_glm = np.asarray(_predict_sorted_glm(enc_glm, env, data))
+    edges = np.linspace(0.0, 1.0, 501)
+    ll_kde = _predict(cross_model_data, "sorted_spikes_kde", time_edges=edges)
+    ll_glm = _predict(cross_model_data, "sorted_spikes_glm", time_edges=edges)
 
     # Mean LL per time bin (across position bins)
     mean_kde = ll_kde.mean(axis=1)
@@ -434,35 +236,9 @@ def test_sorted_models_kde_glm_agree_on_high_vs_low_ll_time_bins(
     assert corr > 0.3, f"KDE-GLM rank correlation of mean LL per time bin = {corr:.3f}"
 
 
-def test_local_likelihood_finite_all_models(cross_model_env, cross_model_data):
-    """All models should produce finite local log-likelihoods."""
-    env = cross_model_env
-    data = cross_model_data
-
-    # Sorted KDE
-    enc_kde = _fit_sorted_kde(env, data)
-    ll_kde = np.asarray(_predict_sorted_kde(enc_kde, env, data, is_local=True))
-    assert ll_kde.shape[1] == 1
-    assert np.all(np.isfinite(ll_kde))
-
-    # Sorted GLM
-    enc_glm = _fit_sorted_glm(env, data)
-    ll_glm = np.asarray(_predict_sorted_glm(enc_glm, env, data, is_local=True))
-    assert ll_glm.shape[1] == 1
-    assert np.all(np.isfinite(ll_glm))
-
-    # Clusterless KDE
-    enc_cl_kde = _fit_clusterless_kde(env, data)
-    ll_cl_kde = np.asarray(
-        _predict_clusterless_kde(enc_cl_kde, env, data, is_local=True)
-    )
-    assert ll_cl_kde.shape[1] == 1
-    assert np.all(np.isfinite(ll_cl_kde))
-
-    # Clusterless GMM
-    enc_cl_gmm = _fit_clusterless_gmm(env, data)
-    ll_cl_gmm = np.asarray(
-        _predict_clusterless_gmm(enc_cl_gmm, env, data, is_local=True)
-    )
-    assert ll_cl_gmm.shape[1] == 1
-    assert np.all(np.isfinite(ll_cl_gmm))
+@pytest.mark.parametrize("name", ALGORITHMS)
+def test_local_likelihood_finite_all_models(cross_model_data, name):
+    """Every registered model produces finite local log-likelihoods."""
+    ll = _predict(cross_model_data, name, is_local=True)
+    assert ll.shape == (len(DECODE_EDGES) - 1, 1)
+    assert np.all(np.isfinite(ll))
