@@ -1084,9 +1084,8 @@ class TestExpandedTransitionMstepEndToEnd:
         # Source 0 must be actively *not* credited for target bin 2, not merely
         # credited less than source 1. This magnitude guard fails for a
         # source-blind kernel that splits transition credit evenly across
-        # sources (the exact failure mode the deleted aggregate-path negative
-        # control used to catch), whereas the inequality above can hold weakly
-        # even under partial credit bleed.
+        # sources, whereas the inequality above can hold weakly even under
+        # partial credit bleed.
         assert learned_transition[0, 2] < 0.5
         assert_stochastic_matrix(learned_transition)
 
@@ -1956,6 +1955,7 @@ class TestNonStationaryPriorAndConvergence:
         assert not [r for r in caplog.records if "optimization" in r.getMessage()]
         assert bool(estimated.min() > 1e-5) is bounded
 
+    @pytest.mark.slow
     def test_reaches_optimum_on_long_recording(self):
         """On a long recording the returned coefficients are at the optimum of
         the summed objective, not stopped early by a tolerance scaled for a
