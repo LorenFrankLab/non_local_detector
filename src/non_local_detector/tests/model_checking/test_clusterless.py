@@ -84,9 +84,13 @@ class TestIntervalRescalingTransform:
         np.testing.assert_allclose(v, norm.cdf(features[:, [3, 1, 0, 2]]))
 
     def test_n_features_equals_n_time_does_not_silently_broadcast(self):
-        """Equal time and feature counts still evaluate CDFs at observed marks."""
+        """Equal time and feature counts still evaluate CDFs at observed marks.
+
+        Every mark is distinct and the matrix is not symmetric, so a transposed
+        or broadcast mark matrix would give different CDF values.
+        """
         time = np.linspace(0.0, 1.0, 3)
-        features = np.zeros((3, 3))
+        features = np.arange(9.0).reshape(3, 3) / 4.0 - 1.0
         _, v = interval_rescaling_transform(
             time, time, features, np.array([1.0, 2.0, 4.0]), _standard_normal_cdf
         )
