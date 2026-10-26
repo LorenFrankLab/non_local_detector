@@ -816,7 +816,7 @@ def test_zero_effective_weight_returns_eps_place_fields():
     give zero occupancy, so the Poisson exposure is zero and the rate is unidentified.
     The fit must return EPS-floored place fields (matching the diffusion likelihood), not
     the warm-started intercept (~1e-6) that an information-free penalized fit produces.
-    This is the multi-environment / EM zero-mass case flagged in review.
+    Multi-environment fits and EM reach this case when a group has zero posterior mass.
     """
     env = make_2d_env()
     time, position, spike_times = simulate_place_data(env, n_neurons=3)

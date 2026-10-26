@@ -455,12 +455,16 @@ def test_poisson_accumulation_preserves_rate_and_duration_gradients(
 
 
 def per_neuron_jax_reference(position_time, position, spike_times, **arguments):
+    """Sorted KDE log likelihood summed one neuron at a time with ``xlogy``.
+
+    Kept independent of the package's accumulation helper; the local path
+    calls the package predict directly.
+    """
     arguments = arguments | {
         "position_time": position_time,
         "position": position,
         "spike_times": spike_times,
     }
-    """Original arithmetic, kept independent of the accumulation helper."""
     if arguments.get("is_local", False):
         return sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(**arguments)
     edges = arguments["time_edges"]
