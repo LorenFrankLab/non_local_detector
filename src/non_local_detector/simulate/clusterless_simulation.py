@@ -7,8 +7,10 @@ Simulator return contract (decoder-ready):
 - position_time / position: used for local decoding & encoding interpolation
 All times are in SECONDS. No NaNs in marks. Empty electrodes: (0,), (0, n_features).
 
-See tests._sim_contract.ClusterlessSimOutput for the full contract definition.
+See ClusterlessSimOutput for the full contract definition.
 """
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -19,7 +21,55 @@ from non_local_detector.simulate.simulate import (
     simulate_position,
     simulate_time,
 )
-from non_local_detector.tests._sim_contract import ClusterlessSimOutput
+
+
+@dataclass
+class ClusterlessSimOutput:
+    """Standard output format for clusterless simulations.
+
+    This dataclass defines the contract between simulator functions and
+    decoder APIs. All times are in seconds, and spike data is organized
+    per-electrode for direct consumption by likelihood models.
+
+    Attributes
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+        Timestamps for position samples in seconds, monotonically increasing.
+    position : np.ndarray, shape (n_time_position, n_pos_dims)
+        Position coordinates at each position_time.
+    edges : np.ndarray, shape (n_time_bins + 1,)
+        Decoding time bin edges in seconds, monotonically increasing.
+        Defines intervals [edges[i], edges[i+1]) for decoding.
+    spike_times : list of np.ndarray, length n_electrodes
+        Per-electrode spike times in seconds. Each array has shape (n_spikes_e,)
+        and is strictly increasing. Empty electrodes have shape (0,).
+    spike_waveform_features : list of np.ndarray, length n_electrodes
+        Per-electrode spike waveform features. Each array has shape
+        (n_spikes_e, n_features). Empty electrodes have shape (0, n_features).
+    environment : Environment
+        Environment object defining spatial layout and place fields.
+    bin_widths : np.ndarray | None, shape (n_time_bins,), optional
+        Bin widths in seconds, computed as np.diff(edges). Provided for
+        convenience; can be None if not pre-computed.
+
+    Notes
+    -----
+    - All times must be finite (no NaN, no inf).
+    - Spike times must be strictly increasing within each electrode.
+    - Spike waveform features must be finite (no NaN).
+    - Electrode indices match between spike_times and spike_waveform_features.
+    - For empty electrodes, spike_times[e] has shape (0,) and
+      spike_waveform_features[e] has shape (0, n_features).
+    """
+
+    position_time: np.ndarray
+    position: np.ndarray
+    edges: np.ndarray
+    spike_times: list[np.ndarray]
+    spike_waveform_features: list[np.ndarray]
+    environment: Environment
+    bin_widths: np.ndarray | None = None
+
 
 SAMPLING_FREQUENCY = 1000
 TRACK_HEIGHT = 175
