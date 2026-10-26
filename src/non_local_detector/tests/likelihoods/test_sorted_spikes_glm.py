@@ -23,6 +23,9 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     make_spline_predict_matrix,
     predict_sorted_spikes_glm_log_likelihood,
 )
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
+    dot_general_precisions,
+)
 
 
 @pytest.fixture
@@ -1164,11 +1167,7 @@ def test_place_field_rates_request_highest_precision():
     coefficients = jnp.ones((3, 4), jnp.float32)
     with jax.default_matmul_precision("default"):
         traced = jax.make_jaxpr(sorted_spikes_glm._glm_rates)(design, coefficients)
-    from non_local_detector.tests.likelihoods.test_sorted_spikes_mrf import (
-        _dot_general_precisions,
-    )
-
-    precisions = _dot_general_precisions(traced.jaxpr)
+    precisions = dot_general_precisions(traced.jaxpr)
     assert precisions
     assert all(
         precision == (jax.lax.Precision.HIGHEST, jax.lax.Precision.HIGHEST)

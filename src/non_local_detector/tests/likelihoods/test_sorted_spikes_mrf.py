@@ -42,7 +42,8 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
     predict_sorted_spikes_mrf_log_likelihood,
     select_penalty_by_reml,
 )
-from non_local_detector.tests.likelihoods.test_sorted_spikes_diffusion import (
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
+    dot_general_precisions,
     make_2d_env,
     make_two_room_env,
     simulate_place_data,
@@ -235,20 +236,6 @@ def test_population_recovers_distinct_place_fields():
         np.testing.assert_allclose(coeffs[:, neuron], expected, atol=1e-4)
 
 
-def _dot_general_precisions(jaxpr):
-    """Precision of every ``dot_general`` in ``jaxpr`` and its nested jaxprs."""
-    precisions = []
-    for eqn in jaxpr.eqns:
-        if eqn.primitive.name == "dot_general":
-            precisions.append(eqn.params["precision"])
-        for value in eqn.params.values():
-            for sub in value if isinstance(value, (tuple, list)) else (value,):
-                inner = getattr(sub, "jaxpr", sub)
-                if hasattr(inner, "eqns"):
-                    precisions.extend(_dot_general_precisions(inner))
-    return precisions
-
-
 @pytest.mark.unit
 @pytest.mark.parametrize("stage", ["newton", "reml"])
 def test_fit_contractions_request_highest_precision(stage):
@@ -285,7 +272,7 @@ def test_fit_contractions_request_highest_precision(stage):
                 )
             )(jnp.asarray(0.0, dtype))
 
-    precisions = _dot_general_precisions(traced.jaxpr)
+    precisions = dot_general_precisions(traced.jaxpr)
     assert precisions
     highest = (jax.lax.Precision.HIGHEST, jax.lax.Precision.HIGHEST)
     assert all(precision == highest for precision in precisions), precisions
