@@ -33,8 +33,12 @@ from non_local_detector.core import (
     chunked_filter_smoother_covariate_dependent,
     filter,
     filter_covariate_dependent,
+    most_likely_sequence,
+    most_likely_sequence_covariate_dependent,
     smoother,
     smoother_covariate_dependent,
+    viterbi,
+    viterbi_covariate_dependent,
 )
 from non_local_detector.tests.conftest import precision_mode
 
@@ -161,6 +165,46 @@ def enumerate_reference(
         "smoothed": np.exp(smoothed),
         "log_evidence": log_evidence,
     }
+
+
+def enumerate_most_likely_path(
+    initial: np.ndarray, transitions: np.ndarray, log_likelihoods: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Most likely state path by scoring every path in float64 log space.
+
+    Parameters
+    ----------
+    initial : np.ndarray, shape (n_states,)
+    transitions : np.ndarray, shape (n_time, n_states, n_states) or (n_states, n_states)
+        Same convention as :func:`enumerate_reference`.
+    log_likelihoods : np.ndarray, shape (n_time, n_states)
+
+    Returns
+    -------
+    path : np.ndarray, shape (n_time,)
+    margin : float
+        Log-score gap between the best and second-best path, so a caller can
+        check that the optimum is unique.
+    """
+    initial = np.asarray(initial, dtype=np.float64)
+    transitions = np.asarray(transitions, dtype=np.float64)
+    log_likelihoods = np.asarray(log_likelihoods, dtype=np.float64)
+    n_time, n_states = log_likelihoods.shape
+    if transitions.ndim == 2:
+        transitions = np.broadcast_to(transitions, (n_time, n_states, n_states))
+    with np.errstate(divide="ignore"):
+        log_initial = np.log(initial)
+        log_transitions = np.log(transitions)
+
+    paths = np.array(list(itertools.product(range(n_states), repeat=n_time)))
+    steps = np.arange(n_time)
+    scores = (
+        log_initial[paths[:, 0]]
+        + log_likelihoods[steps, paths].sum(axis=1)
+        + log_transitions[steps[:-1], paths[:, :-1], paths[:, 1:]].sum(axis=1)
+    )
+    order = np.argsort(scores)[::-1]
+    return paths[order[0]], float(scores[order[0]] - scores[order[1]])
 
 
 def _tiny_model(seed: int = 0, n_time: int = 5, n_states: int = 3):
@@ -801,6 +845,95 @@ class TestMultiStepEnumerationReference:
         np.testing.assert_allclose(causal, ref["filtered"], atol=1e-5)
         np.testing.assert_allclose(predictive, ref["predicted"], atol=1e-5)
         assert marginal == pytest.approx(ref["log_evidence"], abs=1e-4)
+
+
+@pytest.mark.unit
+class TestViterbiEnumerationReference:
+    """Viterbi paths equal the best path found by scoring every path."""
+
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_stationary_viterbi_matches_enumeration(self, seed):
+        initial, transitions, ll = _tiny_model(seed=seed)
+        expected, margin = enumerate_most_likely_path(initial, transitions[0], ll)
+        assert margin > 1e-3  # the optimum is unique
+
+        path = viterbi(
+            jnp.asarray(initial), jnp.asarray(transitions[0]), jnp.asarray(ll)
+        )
+        driver_path, _ = most_likely_sequence(
+            time=np.arange(len(ll)),
+            initial_distribution=initial,
+            transition_matrix=transitions[0],
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=ll,
+        )
+
+        np.testing.assert_array_equal(np.asarray(path), expected)
+        np.testing.assert_array_equal(driver_path, expected)
+
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_covariate_viterbi_matches_enumeration(self, seed):
+        initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
+            seed=seed
+        )
+        expected, margin = enumerate_most_likely_path(initial, expanded, ll)
+        assert margin > 1e-3  # the optimum is unique
+
+        path = viterbi_covariate_dependent(
+            jnp.asarray(initial),
+            jnp.asarray(discrete),
+            jnp.asarray(continuous),
+            jnp.asarray(state_ind),
+            jnp.asarray(ll),
+        )
+        driver_path, _ = most_likely_sequence_covariate_dependent(
+            time=np.arange(len(ll)),
+            state_ind=state_ind,
+            initial_distribution=initial,
+            discrete_transition_matrix=discrete,
+            continuous_transition_matrix=continuous,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=ll,
+        )
+
+        np.testing.assert_array_equal(np.asarray(path), expected)
+        np.testing.assert_array_equal(driver_path, expected)
+
+    def test_time_varying_transition_changes_the_optimal_path(self):
+        """A forced switch at one step moves the path; a constant matrix does not.
+
+        Two discrete states with one bin each, sticky transitions, and a small
+        likelihood preference for state 0. Only the step-2 transition forces
+        a move to state 1, so the best path is ``0, 0, 0, 1, 1``; with the
+        sticky matrix at every step it stays in state 0. Using the wrong
+        step's matrix, or ignoring the time variation, gives the wrong path.
+        """
+        n_time = 5
+        state_ind = np.array([0, 1])
+        continuous = np.ones((2, 2))
+        sticky = np.array([[0.9, 0.1], [0.1, 0.9]])
+        discrete = np.broadcast_to(sticky, (n_time, 2, 2)).copy()
+        discrete[2] = [[0.01, 0.99], [0.01, 0.99]]
+        initial = np.array([0.5, 0.5])
+        ll = np.column_stack([np.zeros(n_time), np.full(n_time, -0.5)])
+
+        expected, margin = enumerate_most_likely_path(initial, discrete, ll)
+        constant_path, _ = enumerate_most_likely_path(initial, sticky, ll)
+        np.testing.assert_array_equal(expected, [0, 0, 0, 1, 1])
+        np.testing.assert_array_equal(constant_path, np.zeros(n_time))
+        assert margin > 1e-3
+
+        path = viterbi_covariate_dependent(
+            jnp.asarray(initial),
+            jnp.asarray(discrete),
+            jnp.asarray(continuous),
+            jnp.asarray(state_ind),
+            jnp.asarray(ll),
+        )
+
+        np.testing.assert_array_equal(np.asarray(path), expected)
 
 
 @pytest.mark.unit
