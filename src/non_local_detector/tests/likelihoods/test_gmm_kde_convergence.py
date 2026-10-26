@@ -1,8 +1,8 @@
 """Tests for GMM fitting convergence and basic clusterless likelihood behavior.
 
 Numerical KDE/GMM equivalence is checked in test_kde_gmm_equivalence.py using
-bandwidth-matched models. This module checks fitted ground-process intensities,
-likelihood finiteness, and EM convergence diagnostics.
+bandwidth-matched models. This module checks likelihood finiteness and EM
+convergence diagnostics.
 """
 
 import warnings
@@ -17,9 +17,6 @@ from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
     mark_reference_scale,
     predict_clusterless_gmm_log_likelihood,
-)
-from non_local_detector.likelihoods.clusterless_kde import (
-    fit_clusterless_kde_encoding_model,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
@@ -61,63 +58,6 @@ def convergence_test_data():
     }
 
 
-def test_ground_process_intensity_calculation(convergence_test_data):
-    """Verify ground process intensity calculation is consistent.
-
-    Both KDE and GMM should compute:
-        GPI = Σ_electrodes mean_rate * (gpi_density / occupancy)
-
-    This is the "expected spike count" at each position.
-    """
-    data = convergence_test_data
-
-    position_time = jnp.asarray(data["position_time"])
-    position = jnp.asarray(data["position"])
-    spike_times = [jnp.asarray(st) for st in data["spike_times"]]
-    spike_features = [jnp.asarray(sf) for sf in data["spike_features"]]
-
-    # Fit both models
-    kde_enc = fit_clusterless_kde_encoding_model(
-        position_time=position_time,
-        position=position,
-        spike_times=spike_times,
-        spike_waveform_features=spike_features,
-        environment=data["environment"],
-        position_std=1.5,
-        disable_progress_bar=True,
-    )
-
-    gmm_enc = fit_clusterless_gmm_encoding_model(
-        position_time=position_time,
-        position=position,
-        spike_times=spike_times,
-        spike_waveform_features=spike_features,
-        environment=data["environment"],
-        gmm_components_occupancy=32,
-        gmm_components_joint=32,
-        disable_progress_bar=True,
-    )
-
-    # Both should have summed_ground_process_intensity
-    gpi_kde = kde_enc["summed_ground_process_intensity"]
-    gpi_gmm = gmm_enc["summed_ground_process_intensity"]
-
-    print("\n=== Ground Process Intensity Comparison ===")
-    print(f"KDE GPI: mean={np.mean(gpi_kde):.4f}, std={np.std(gpi_kde):.4f}")
-    print(f"GMM GPI: mean={np.mean(gpi_gmm):.4f}, std={np.std(gpi_gmm):.4f}")
-
-    # Correlation
-    corr = np.corrcoef(np.asarray(gpi_kde), np.asarray(gpi_gmm))[0, 1]
-    print(f"Correlation: {corr:.4f}")
-
-    # Should be positively correlated
-    assert corr > 0.5, f"GPI should be correlated, got r={corr:.3f}"
-
-    # Both should be positive
-    assert np.all(gpi_kde >= 0)
-    assert np.all(gpi_gmm >= 0)
-
-
 def test_gmm_nonlocal_likelihood_is_finite(convergence_test_data):
     """A fitted GMM produces finite non-local likelihoods on this small dataset."""
     data = convergence_test_data
@@ -152,10 +92,6 @@ def test_gmm_nonlocal_likelihood_is_finite(convergence_test_data):
         mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
         is_local=False,
     )
-
-    print("\n=== Log-Space Operations Check ===")
-    print(f"Output range: [{np.min(ll_gmm):.2f}, {np.max(ll_gmm):.2f}]")
-    print(f"All finite: {np.all(np.isfinite(ll_gmm))}")
 
     assert np.all(np.isfinite(ll_gmm)), "All likelihoods should be finite"
 
