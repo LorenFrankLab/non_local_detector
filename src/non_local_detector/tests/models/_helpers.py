@@ -3,7 +3,11 @@
 ``_snapshot`` / ``_assert_unchanged`` check that a failed call leaves a fitted
 detector and its environments untouched. ``_decoder`` builds a small one-state
 decoder for any registered likelihood algorithm, listed in ``ALGORITHMS``.
+``make_two_arm_track`` builds a fitted environment with two disconnected arms.
 """
+
+import networkx as nx
+import numpy as np
 
 from non_local_detector import (
     ClusterlessDecoder,
@@ -83,3 +87,35 @@ def _decoder(algorithm, *, calibration=False):
         clusterless_algorithm_params=params,
         **options,
     )
+
+
+def make_two_arm_track():
+    """A fitted 1-D environment of two disconnected 50 cm arms.
+
+    Arm 0 spans linear positions 0-50 and arm 1 spans 60-110, separated by a
+    10 cm gap bin. With 5 cm bins the interior bin centers are 2.5, ..., 47.5
+    on arm 0 and 62.5, ..., 107.5 on arm 1; no graph path joins the arms.
+
+    Returns
+    -------
+    environment : Environment
+    """
+    graph = nx.Graph()
+    graph.add_node(0, pos=(0.0, 0.0))
+    graph.add_node(1, pos=(50.0, 0.0))
+    graph.add_node(2, pos=(60.0, 0.0))
+    graph.add_node(3, pos=(110.0, 0.0))
+    graph.add_edge(0, 1, distance=50.0, edge_id=0)
+    graph.add_edge(2, 3, distance=50.0, edge_id=1)
+
+    environment = Environment(
+        environment_name="",
+        place_bin_size=5.0,
+        track_graph=graph,
+        edge_order=[(0, 1), (2, 3)],
+        edge_spacing=10.0,
+    )
+    position_1d = np.concatenate(
+        [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
+    )
+    return environment.fit_place_grid(position_1d, infer_track_interior=True)
