@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changed:** the KDE mark kernel no longer branches on feature overflow. It subtracts halved features, which cannot overflow, and scales the sum of squares back by 4, which is exact in floating point unless a scaled term is subnormal (below 1e-37). Results are bit-for-bit unchanged on RS58 (10 shanks, 26–33 features). The loop now fuses with the exponentials that consume it and is traced once: the non-local step on RS58 takes 18% less time warm on an A100 (2.97 → 2.45 s at the detector's block size), and its first call compiles in half the time (173 → 87 s summed over shanks).
 - **Changed:** spikes that the KDE's exactness gate sends to the exact reduction are recomputed in groups (up to 32 at a time, as many as fit a temporary of about 4M elements, 16 MiB in float32, and at least one) instead of one by one. A block with more than 32 flagged spikes used to visit every row in turn. On RS58 one shank with 81 flagged spikes ran 5× faster (0.56 → 0.11 s), and the whole step is 1.94 s warm at the detector's block size, against 2.97 s before both changes. Repaired rows match the earlier one-at-a-time reduction to float32 rounding (at most 1.5e-5 on values in the tens); all other rows are bit-for-bit unchanged.
 
+### Faster compilation of clusterless spike sums on GPU
+
+- **Changed:** off CPU, the deterministic sum of per-spike terms into time bins (`deterministic_segment_sum`, `deterministic_row_add`), used by `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion` and `clusterless_mark_glm`, compiles 10-17x faster on its own (0.19 s instead of 2.0 s at 1,000 spikes per block, 0.20 s instead of 3.5 s at 10,000). It is now a Hillis-Steele segmented scan in a loop instead of `jax.lax.associative_scan`, and a scatter with unique indices adds each time bin's total only to that bin. Before, each block of spikes built an array the size of the whole output.
+  - On an A100, the first non-local prediction call of `clusterless_mark_glm` on fold 0 of a 22-tetrode recording (j16) took 15 s instead of 33 s. On an 11-shank, 26-32 channel recording (RS58) it took 5 s instead of 20-23 s, and later non-local calls took 0.24 s instead of 0.28 s; other later-call times were unchanged.
+  - The first `clusterless_kde` call, at 1,024 / 10,000 spikes per block, took 56 / 34 s instead of 84 / 56 s on j16 and 170 / 154 s instead of 202 / 188 s on RS58; later calls were unchanged.
+  - Results are still bitwise repeatable. They differ from before by float32 rounding: at most 1e-7 of the largest log likelihood on both recordings. CPU likelihood results are unchanged, since CPU keeps its sequential scatter.
+
+### Faster grid setup for Cartesian environments
+
+- **Changed:** `Environment.fit_place_grid` computes the all-pairs bin distances of a Cartesian (non-track-graph) environment with SciPy's compiled Dijkstra instead of NetworkX's pure-Python search. On a laptop, a 100 x 100 bin grid takes 7.4 s instead of 154 s (a ring-shaped track in the same grid: 1.0 s instead of 14.9 s). The distances are bit-identical to before on every grid measured; track-graph environments are unchanged.
+
 ### New clusterless likelihood: mark-mixture GLM
 
 - **Added:** `clusterless_mark_glm`, selectable with `clusterless_algorithm="clusterless_mark_glm"`. Each electrode's mark intensity is `lambda(x, m) = sum_k lambda_k(x) N(m; mu_k, Sigma_k)`.
