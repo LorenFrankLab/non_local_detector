@@ -1471,6 +1471,7 @@ def _median_per_timebin_spearman(ll_a, ll_b):
     return float(np.nanmedian(rhos)), len(rhos)
 
 
+@pytest.mark.integration
 def test_agreement_with_kde_simple_geometry():
     """On barrier-free geometry the decoded non-local posterior of
     clusterless_diffusion tracks clusterless_kde by per-time-bin rank correlation.
@@ -1558,6 +1559,7 @@ def _make_two_room_env(seed=0):
     return env, position
 
 
+@pytest.mark.integration
 def test_geometry_no_barrier_leak():
     """THE headline geometry test: a decode spike's mark evidence must not cross an
     impassable barrier.
@@ -2022,6 +2024,7 @@ def test_scorer_workspace_does_not_grow_with_the_square_of_the_bins():
     assert workspace < 256 * 2**20, f"{workspace / 2**20:.0f} MiB"
 
 
+@pytest.mark.integration
 def test_grid_independence():
     """A physical ``position_std`` makes the decoded posterior stable across bin sizes.
 

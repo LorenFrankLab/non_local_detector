@@ -29,6 +29,8 @@ from non_local_detector.models.decoder import ClusterlessDecoder
 from non_local_detector.models.non_local_model import NonLocalClusterlessDetector
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
+pytestmark = pytest.mark.integration
+
 POSITION_STD = 3.0
 WAVEFORM_STD = 24.0
 NORMALIZATION_ATOL = 1e-6
