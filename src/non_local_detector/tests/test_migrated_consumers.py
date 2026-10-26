@@ -55,6 +55,13 @@ def _sources(path):
     return [path.read_text()]
 
 
+def _unique_source(sources, marker):
+    """Return the one code cell/source containing ``marker``."""
+    matches = [source for source in sources if marker in source]
+    assert len(matches) == 1, f"{len(matches)} sources contain {marker!r}"
+    return matches[0]
+
+
 def _calls(path, names):
     for source in _sources(path):
         try:
@@ -352,18 +359,24 @@ def test_real_data_notebook_covariate_plot_uses_aligned_rows():
         plt.close("all")
 
 
-@pytest.mark.parametrize(
-    "cell_index,distance_name", [(42, "cont_dist"), (44, "con_frag_dist")]
-)
+@pytest.mark.parametrize("distance_name", ["cont_dist", "con_frag_dist"])
 def test_real_data_notebook_trajectory_and_distance_plot_use_actual_bins(
-    cell_index, distance_name
+    distance_name,
 ):
     from non_local_detector.analysis import align_tracking_to_results
 
     path = _require_source(
         ROOT / "notebooks/01_models_and_validation/model_checking_real_data.ipynb"
     )
-    cells = json.loads(path.read_text())["cells"]
+    sources = _sources(path)
+    alignment_marker = (
+        "# Keep the measured tracking timeline separate from the decode clock."
+    )
+    alignment_cell = _unique_source(sources, alignment_marker)
+    distance_cell = _unique_source(
+        sources, f"{distance_name} = get_ahead_behind_distance("
+    )
+    plot_cell = _unique_source(sources, f"ax.scatter(\n    {distance_name},")
     camera_time = np.arange(31) / 30
     tracking = pd.DataFrame(
         {
@@ -409,9 +422,7 @@ def test_real_data_notebook_trajectory_and_distance_plot_use_actual_bins(
         "cont_frag_hpd_overlap": np.linspace(1, 0, 500),
     }
     # Execute the notebook's full alignment block with real result coordinates.
-    alignment = "".join(cells[3]["source"]).split(
-        "# Keep the measured tracking timeline separate from the decode clock."
-    )[1]
+    alignment = alignment_cell.split(alignment_marker)[1]
     exec(compile(alignment, str(path), "exec"), namespace)
     valid = namespace["analysis_valid"]
     assert valid.sum() == 499
@@ -422,17 +433,11 @@ def test_real_data_notebook_trajectory_and_distance_plot_use_actual_bins(
             "_get_MAP_estimate_2d_position_edges",
             return_value=(mental, np.tile([0, 1], (valid.sum(), 1))),
         ):
-            exec(
-                compile("".join(cells[cell_index]["source"]), str(path), "exec"),
-                namespace,
-            )
+            exec(compile(distance_cell, str(path), "exec"), namespace)
         distances = namespace[distance_name]
         assert distances.shape == (499,)
         np.testing.assert_allclose(distances, 0.0, atol=1e-12)
-        exec(
-            compile("".join(cells[cell_index + 1]["source"]), str(path), "exec"),
-            namespace,
-        )
+        exec(compile(plot_cell, str(path), "exec"), namespace)
         assert plt.gcf().axes[0].collections[0].get_offsets().shape == (499, 2)
     finally:
         plt.close("all")
