@@ -183,12 +183,11 @@ class TestFrozenMaskNotSerialized:
 
     def test_vars_roundtrip_reconstructs_via_base_detector(self):
         """A ContFrag model's ``vars()`` must reconstruct through the base
-        detector (the Spyglass pattern) now that the mask no longer leaks.
+        detector (the Spyglass pattern): the derived mask is not a keyword.
         """
         from non_local_detector.models.base import SortedSpikesDetector
 
         model = ContFragSortedSpikesClassifier()
-        # Previously raised: unexpected kwarg _frozen_discrete_transition_rows_mask_
         rebuilt = SortedSpikesDetector(**vars(model))
         assert isinstance(rebuilt, SortedSpikesDetector)
 

@@ -95,8 +95,8 @@ class TestNonLocalPenaltyTopology:
 
         Environment.get_bin_ind snaps gap-bin positions to the nearest
         interior bin. The penalty then fires as a Gaussian centered on
-        that snapped bin (suppressing non-local likelihood there), rather
-        than zeroing out as it did before the snap.
+        that snapped bin (suppressing non-local likelihood there) rather
+        than zeroing out.
         """
         env = make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(
@@ -141,10 +141,9 @@ class TestNonLocalPenaltyTopology:
         Without an explicit NaN mask, ``np.searchsorted(nan, ...)`` returns
         an arbitrary end-of-array bin index, then the distance-matrix
         lookup returns finite values, and the penalty would fire at some
-        unrelated location on the track. This was a silent scientific bug
-        introduced when the penalty switched from Euclidean to graph
-        distance (Euclidean propagated NaN; graph distance does not).
-        The penalty must return zero for NaN rows.
+        unrelated location on the track (a Euclidean distance would
+        propagate the NaN; the graph-distance lookup does not). The penalty
+        must return zero for NaN rows.
         """
         env = make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(

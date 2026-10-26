@@ -509,10 +509,9 @@ class TestComputeLocalPositionKernel:
         """Animal at an arm-end linear coord snaps, kernel centers on arm's last bin.
 
         get_linearized_position places an animal at an arm endpoint at the
-        arm's linear length, which equals a gap-bin edge. Prior to the
-        get_bin_ind snap, this fell into the gap bin and triggered a uniform
-        fallback. Now the snap places it on the arm's last interior bin,
-        and the Gaussian concentrates there (not a flat row).
+        arm's linear length, which equals a gap-bin edge. get_bin_ind snaps
+        it to the arm's last interior bin rather than the gap bin, so the
+        Gaussian concentrates there instead of falling back to a flat row.
         """
         import jax.numpy as jnp
 
@@ -522,7 +521,7 @@ class TestComputeLocalPositionKernel:
         detector.environments = (env,)
         detector.initialize_state_index()
 
-        # Position exactly on the arm-A-end edge (the bug case).
+        # Position exactly on the arm-A-end edge.
         is_interior = env.is_track_interior_.ravel()
         first_gap = int(np.where(~is_interior)[0][0])
         arm_end = float(env.edges_[0][first_gap])
@@ -543,7 +542,7 @@ class TestComputeLocalPositionKernel:
         # last interior bin, so adjacent-arm-A bins are weighted more than
         # far-arm-A bins, and unreachable arm-B bins get zero probability.
         assert not np.allclose(lk[0], lk[0, 0], atol=1e-3), (
-            "Kernel is still uniform after snap fix. Expected a Gaussian "
+            "Kernel is uniform. Expected a Gaussian "
             f"centered on the snapped bin. Got: {lk[0]}"
         )
         # Peak should be at the arm-A side of the gap (the snapped bin).
@@ -690,10 +689,10 @@ class TestDeltaKernel:
     def test_delta_kernel_gap_position_snaps_to_nearest_interior(self):
         """Animal in a gap bin snaps to nearest interior bin via get_bin_ind.
 
-        Prior to the get_bin_ind snap fix, positions landing in gap bins
-        (e.g. exactly on an arm-boundary edge, or in the middle of a gap)
-        produced a uniform fallback. Now they snap to the nearest interior
-        bin by position distance, so the delta fires at that snapped bin.
+        Positions landing in gap bins (e.g. exactly on an arm-boundary edge,
+        or in the middle of a gap) snap to the nearest interior bin by
+        position distance instead of falling back to a uniform kernel, so
+        the delta fires at that snapped bin.
         """
         import jax.numpy as jnp
 
@@ -740,7 +739,7 @@ class TestDeltaKernel:
         )
 
     def test_delta_kernel_at_arm_end_edge(self):
-        """The exact float-equality bug case: animal on arm-A end edge snaps to arm A."""
+        """An animal exactly on the arm-A end edge (float equality) snaps to arm A."""
         import jax.numpy as jnp
 
         env = make_two_arm_track()
@@ -749,7 +748,7 @@ class TestDeltaKernel:
         detector.environments = (env,)
         detector.initialize_state_index()
 
-        # Use the exact arm-A-end edge value (the real-data bug case).
+        # Use the exact arm-A-end edge value, as real linearized data can.
         is_interior = env.is_track_interior_.ravel()
         first_gap = int(np.where(~is_interior)[0][0])
         arm_end = float(env.edges_[0][first_gap])
