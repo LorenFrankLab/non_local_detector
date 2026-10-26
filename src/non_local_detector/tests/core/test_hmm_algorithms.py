@@ -204,24 +204,6 @@ class TestFilter:
         assert filtered.shape == (1, 2)
         assert jnp.allclose(filtered[0].sum(), 1.0)
 
-    def test_filter_marginal_likelihood_accumulated(self):
-        """Log marginal likelihood should be sum of per-step marginals."""
-        # Arrange
-        init = jnp.array([0.5, 0.5])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        rng = np.random.default_rng(123)
-        log_likes = jnp.array(rng.standard_normal((10, 2)))
-
-        # Act
-        (log_marginals, _), _ = filter(init, trans, log_likes)
-
-        # Assert
-        # Each element should be a log probability (<=0 in theory, but numerics...)
-        assert jnp.all(jnp.isfinite(log_marginals))
-        # Total log marginal is sum of per-timestep marginals
-        total_log_marginal = log_marginals.sum()
-        assert jnp.isfinite(total_log_marginal)
-
 
 @pytest.mark.unit
 class TestSmoother:
@@ -431,7 +413,7 @@ class TestViterbi:
         assert jnp.mean(states == 0) > 0.7
 
     def test_viterbi_with_single_timestep(self):
-        """Should work with single timestep."""
+        """A single step picks the argmax of log initial + log likelihood."""
         # Arrange
         init = jnp.array([0.3, 0.7])
         trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
@@ -440,11 +422,10 @@ class TestViterbi:
         # Act
         states = viterbi(init, trans, log_likes)
 
-        # Assert
+        # Assert: log 0.3 + 0 = -1.20 beats log 0.7 - 2 = -2.36, so the
+        # likelihood outweighs the higher initial probability of state 1.
         assert states.shape == (1,)
-        # Despite higher init prob for state 1, likelihood favors state 0
-        # Outcome depends on relative strengths, but should be valid
-        assert states[0] in [0, 1]
+        assert int(states[0]) == 0
 
     @pytest.mark.parametrize("n_states", [2, 5, 10])
     def test_viterbi_scales_to_many_states(self, n_states):
@@ -482,28 +463,11 @@ class TestViterbi:
 
 @pytest.mark.unit
 class TestConditionOnDegenerateLikelihoods:
-    """Behaviour of ``_condition_on`` when every state has -inf log-likelihood.
+    """``_condition_on`` when some, but not all, states are impossible.
 
-    A degenerate timestep means no state has any finite evidence; rather than
-    return an all-zero (unnormalized) posterior, the predicted distribution is
-    returned unchanged and ``log_norm`` is set to -inf so callers can detect
-    the situation on the host.
+    The all-impossible, support-mismatch and NaN cases are checked against a
+    float64 reference in ``test_conditioning_reference.py``.
     """
-
-    def test_condition_on_all_inf_falls_back_to_predicted(self):
-        """All -inf log-likelihoods leave predicted probabilities unchanged."""
-        # Arrange
-        probs = jnp.array([0.3, 0.7])
-        ll = jnp.array([-jnp.inf, -jnp.inf])
-
-        # Act
-        new_probs, log_norm = _condition_on(probs, ll)
-
-        # Assert
-        assert jnp.allclose(new_probs, probs, atol=1e-7)
-        assert jnp.isneginf(log_norm)
-        # The predicted distribution is preserved (it already sums to 1).
-        assert jnp.allclose(new_probs.sum(), 1.0, atol=1e-7)
 
     def test_condition_on_partial_inf_still_normalizes(self):
         """A single finite state still yields a valid normalized posterior."""
@@ -521,83 +485,6 @@ class TestConditionOnDegenerateLikelihoods:
         assert float(new_probs[0]) == 0.0
         assert float(new_probs[1]) == pytest.approx(1.0, abs=1e-7)
         assert jnp.isfinite(log_norm)
-
-    def test_condition_on_all_finite_matches_legacy_normalization(self):
-        """Well-behaved input is unchanged from the pre-fallback path."""
-        # Arrange
-        probs = jnp.array([0.4, 0.6])
-        ll = jnp.array([-1.0, -2.0])
-
-        # Act
-        new_probs, log_norm = _condition_on(probs, ll)
-
-        # Assert: reproduce the math by hand.
-        weights = probs * jnp.exp(ll - ll.max())
-        expected_probs = weights / weights.sum()
-        expected_log_norm = jnp.log(weights.sum()) + ll.max()
-        assert jnp.allclose(new_probs, expected_probs, atol=1e-7)
-        assert jnp.isclose(log_norm, expected_log_norm, atol=1e-7)
-
-    def test_condition_on_partial_nan_propagates_not_masked(self):
-        """A NaN in one state must NOT be silently replaced by the prior.
-
-        The degenerate fallback is for *all-impossible* (every state ``-inf``)
-        timesteps only. A NaN log-likelihood signals a bug in the likelihood
-        computation (e.g. a non-converged encoding model), so it must remain
-        visible in the posterior rather than being laundered into the
-        predicted distribution.
-        """
-        # Arrange: state 0 has valid finite evidence, state 1 is NaN.
-        probs = jnp.array([0.4, 0.6])
-        ll = jnp.array([-0.5, jnp.nan])
-
-        # Act
-        new_probs, log_norm = _condition_on(probs, ll)
-
-        # Assert: NaN propagates (not the prior), so the bug stays visible.
-        assert jnp.any(jnp.isnan(new_probs)), (
-            "NaN log-likelihood was silently masked by the predicted prior; "
-            f"got new_probs={new_probs}"
-        )
-        assert not jnp.allclose(new_probs, probs, equal_nan=False)
-
-    def test_condition_on_all_inf_with_nan_elsewhere_is_not_treated_as_degenerate(self):
-        """A mix of ``-inf`` and ``NaN`` is a NaN case, not an all-impossible one."""
-        # Arrange
-        probs = jnp.array([0.5, 0.5])
-        ll = jnp.array([-jnp.inf, jnp.nan])
-
-        # Act
-        new_probs, _ = _condition_on(probs, ll)
-
-        # Assert: NaN dominates -> not the clean prior fallback.
-        assert jnp.any(jnp.isnan(new_probs))
-
-    def test_condition_on_zero_normalizer_from_support_mismatch_falls_back(self):
-        """A zero normalizer with finite evidence must not yield all-zero posterior.
-
-        If the predicted distribution places zero probability on every state
-        that has *finite* log-likelihood, the Bayes update is 0/0. This is not
-        an all-``-inf`` (impossible-data) step -- the likelihood is finite -- so
-        an ``ll_max == -inf`` guard does not fire. Without a normalizer check the
-        posterior silently becomes all zeros and propagates forward as an
-        invalid (non-summing-to-one) distribution. The fallback must instead
-        return the predicted distribution and mark ``log_norm`` as ``-inf``.
-        """
-        # Arrange: all predicted mass on state 0, but only state 1 is possible.
-        probs = jnp.array([1.0, 0.0])
-        ll = jnp.array([-jnp.inf, 0.0])
-
-        # Act
-        new_probs, log_norm = _condition_on(probs, ll)
-
-        # Assert: still a valid distribution, equal to the prediction, and the
-        # step is marked via log_norm = -inf.
-        assert jnp.allclose(new_probs.sum(), 1.0, atol=1e-7), (
-            f"posterior must remain a valid distribution; got {new_probs}"
-        )
-        assert jnp.allclose(new_probs, probs, atol=1e-7)
-        assert jnp.isneginf(log_norm)
 
 
 @pytest.mark.unit
@@ -877,6 +764,7 @@ class TestDegenerateMarginalLikelihoodPropagation:
         assert jnp.allclose(smoothed.sum(axis=-1), 1.0, atol=1e-6)
 
 
+@pytest.mark.unit
 class TestViterbiDegenerateTimestepWarning:
     """The Viterbi drivers emit degeneracy warnings with Viterbi-appropriate
     wording (no posterior / predicted-distribution fallback)."""
@@ -932,6 +820,7 @@ class TestViterbiDegenerateTimestepWarning:
         assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
 
 
+@pytest.mark.unit
 class TestFilterMarginalUnderflowWarning:
     """A -inf marginal with no all-(-inf) step (support mismatch / underflow)
     is surfaced by its own warning."""
