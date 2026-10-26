@@ -1569,78 +1569,62 @@ class TestEstimateNonStationaryStateTransition:
         assert estimated_transition[-2, 0, 0] > estimated_transition[0, 0, 0]
         assert estimated_transition[-2, 1, 1] > estimated_transition[0, 1, 1]
 
+    @staticmethod
+    def _fit(post, dm, concentration, stickiness):
+        """Fit the fixture's responses with the given Dirichlet prior."""
+        _, transition = estimate_non_stationary_state_transition_from_responses(
+            transition_coefficients=dm["transition_coefficients"],
+            design_matrix=dm["design_matrix"][: post["n_time"]],
+            response=_response_from_post(post),
+            concentration=concentration,
+            stickiness=stickiness,
+            transition_regularization=1e-5,
+            maxiter=10,
+        )
+        return transition
+
     def test_with_different_concentrations(self, posterior_data, design_matrix_data):
-        """Test with different concentration (prior strength) values."""
-        post = posterior_data
-        dm = design_matrix_data
-        response = _response_from_post(post)
+        """A larger concentration pulls every row toward uniform relative to
+        the same fit without a prior (concentration=1, stickiness=0)."""
+        post, dm = posterior_data, design_matrix_data
+        n_states = post["n_states"]
 
-        _, trans_weak = estimate_non_stationary_state_transition_from_responses(
-            transition_coefficients=dm["transition_coefficients"],
-            design_matrix=dm["design_matrix"][: post["n_time"]],
-            response=response,
-            concentration=1.0,
-            stickiness=0.0,
-            transition_regularization=1e-5,
-            maxiter=10,
-        )
+        trans_none = self._fit(post, dm, concentration=1.0, stickiness=0.0)
+        trans_strong = self._fit(post, dm, concentration=10.0, stickiness=0.0)
 
-        _, trans_strong = estimate_non_stationary_state_transition_from_responses(
-            transition_coefficients=dm["transition_coefficients"],
-            design_matrix=dm["design_matrix"][: post["n_time"]],
-            response=response,
-            concentration=10.0,
-            stickiness=0.0,
-            transition_regularization=1e-5,
-            maxiter=10,
-        )
-
-        for t in range(min(5, trans_weak.shape[0])):
-            assert_stochastic_matrix(trans_weak[t])
+        for t in range(trans_strong.shape[0]):
             assert_stochastic_matrix(trans_strong[t])
+        # Mean distance from uniform of each row, averaged over time.
+        distance_none = np.abs(trans_none - 1.0 / n_states).mean(axis=(0, 2))
+        distance_strong = np.abs(trans_strong - 1.0 / n_states).mean(axis=(0, 2))
+        assert np.all(distance_strong < distance_none), (
+            distance_strong,
+            distance_none,
+        )
 
     def test_with_diagonal_stickiness(self, posterior_data, design_matrix_data):
-        """Test with diagonal stickiness prior."""
-        post = posterior_data
-        dm = design_matrix_data
-        response = _response_from_post(post)
+        """Stickiness raises every state's time-averaged self-transition
+        probability above the same fit without a prior. The fixture's data
+        are already sticky, so comparing diagonal to off-diagonal would not
+        show the prior's effect."""
+        post, dm = posterior_data, design_matrix_data
+        is_diagonal = np.eye(post["n_states"], dtype=bool)
 
-        _, trans_matrix = estimate_non_stationary_state_transition_from_responses(
-            transition_coefficients=dm["transition_coefficients"],
-            design_matrix=dm["design_matrix"][: post["n_time"]],
-            response=response,
-            concentration=1.0,
-            stickiness=1.0,
-            transition_regularization=1e-5,
-            maxiter=10,
-        )
+        trans_none = self._fit(post, dm, concentration=1.0, stickiness=0.0)
+        trans_sticky = self._fit(post, dm, concentration=1.0, stickiness=1.0)
 
-        # Assert - diagonal should be larger than off-diagonal on average
-        diagonal_mean = np.mean(
-            [
-                trans_matrix[t, i, i]
-                for t in range(trans_matrix.shape[0])
-                for i in range(post["n_states"])
-            ]
-        )
-        off_diagonal_mean = np.mean(
-            [
-                trans_matrix[t, i, j]
-                for t in range(trans_matrix.shape[0])
-                for i in range(post["n_states"])
-                for j in range(post["n_states"])
-                if i != j
-            ]
-        )
+        for t in range(trans_sticky.shape[0]):
+            assert_stochastic_matrix(trans_sticky[t])
+        stay_none = trans_none[:, is_diagonal].mean(axis=0)
+        stay_sticky = trans_sticky[:, is_diagonal].mean(axis=0)
+        assert np.all(stay_sticky > stay_none), (stay_sticky, stay_none)
 
-        assert diagonal_mean > off_diagonal_mean, (
-            "Diagonal stickiness should favor self-transitions"
-        )
-
-    def test_keeps_previous_coefficients_on_optimizer_failure(
+    def test_keeps_previous_coefficients_when_optimizer_result_raises_the_loss(
         self, posterior_data, design_matrix_data
     ):
-        """When optimizer fails, previous coefficients should be retained."""
+        """An optimizer result that raises the M-step loss is discarded and
+        the previous coefficients kept, even when the optimizer reports
+        success: the choice depends on the loss, not on ``success``."""
         post = posterior_data
         dm = design_matrix_data
         n_coeffs = dm["n_coefficients"]
@@ -1651,8 +1635,8 @@ class TestEstimateNonStationaryStateTransition:
         response = _response_from_post(post)
 
         class FakeResult:
-            success = False
-            message = "mock failure"
+            success = True
+            message = "mock result far from the optimum"
             x = np.full(n_coeffs * (n_states - 1), 999.0)
 
         with patch(
