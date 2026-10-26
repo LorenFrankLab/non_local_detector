@@ -5,9 +5,9 @@ log-likelihood must never decrease across iterations. Violation
 indicates a bug in the E-step or M-step.
 
 Tests cover:
-- Clusterless decoder with discrete-only updates
-- Sorted spikes (KDE) encoding update guard integration
-- Sorted spikes (GLM) end-to-end smoke test
+- A four-state sorted-spikes detector with discrete-transition updates
+- The local-mass/ESS guard that skips encoding-model refits
+- Sorted spikes (GLM) encoding refit end-to-end smoke test
 - Surfacing of monotonicity violations and max-iter exits via
   warnings and model attributes (``converged_``, ``n_iter_``,
   ``em_monotonicity_violations_``).
@@ -123,54 +123,77 @@ def test_encoding_refit_is_opt_in():
 class TestEMMonotonicity:
     """EM marginal log-likelihood must be non-decreasing across iterations."""
 
-    def test_clusterless_decoder_em_monotonicity(self, sim):
-        """Fit a ClusterlessDecoder with multiple EM iterations and verify
-        that marginal_log_likelihoods is non-decreasing."""
-
-        decoder = ClusterlessDecoder()
-        results = decoder.estimate_parameters(
-            position_time=sim.position_time,
-            position=sim.position,
-            spike_times=sim.spike_times,
-            spike_waveform_features=sim.spike_waveform_features,
-            time_edges=time_edges_from_centers(sim.position_time),
-            max_iter=5,
-            estimate_encoding_model=False,
+    def test_detector_em_monotonicity_with_transition_updates(self, sorted_sim):
+        """Fit a four-state NonLocalSortedSpikesDetector without a transition
+        prior (so the M-step maximizes the likelihood alone) and verify that
+        marginal_log_likelihoods is non-decreasing while the discrete
+        transitions are actually re-estimated."""
+        detector = NonLocalSortedSpikesDetector(
+            discrete_transition_concentration=1.0,
+            discrete_transition_stickiness=np.zeros(4),
         )
+        initial_transitions, _, _ = (
+            detector.discrete_transition_type.make_state_transition()
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # EM stops at max_iter
+            results = detector.estimate_parameters(
+                **sorted_sim.fit_args,
+                max_iter=5,
+                estimate_encoding_model=False,
+            )
 
         lls = results.attrs["marginal_log_likelihoods"]
-        _assert_monotonic(lls, "ClusterlessDecoder (discrete only)")
+        _assert_monotonic(lls, "NonLocalSortedSpikesDetector (discrete only)")
+        assert detector.em_monotonicity_violations_ == []
+        # The transition M-step ran: the fitted matrix moved off its start.
+        assert (
+            np.max(np.abs(detector.discrete_state_transitions_ - initial_transitions))
+            > 1e-3
+        )
 
 
 @pytest.mark.slow
 @pytest.mark.integration
 class TestEncodingUpdateGuards:
-    """Encoding update guards (ESS/mass, rollback, damping) work correctly."""
+    """Encoding-model refits during EM: the local-mass/ESS guard that skips a
+    refit when the Local state has too little posterior support, an
+    end-to-end GLM refit, and convergence surfacing for a well-behaved fit."""
 
-    def test_sorted_spikes_kde_encoding_with_rollback(self):
-        """NonLocalSortedSpikesDetector with KDE encoding updates should
-        run to completion with rollback guard active."""
-        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
-            make_simulated_data(seed=42, n_neurons=5)
+    @pytest.mark.parametrize(
+        ("min_encoding_local_mass", "refits_every_iteration"),
+        [(1.0, True), (np.inf, False)],
+        ids=["default-threshold", "unreachable-threshold"],
+    )
+    def test_local_mass_guard_skips_encoding_refit(
+        self, monkeypatch, sorted_sim, min_encoding_local_mass, refits_every_iteration
+    ):
+        """With ``estimate_encoding_model=True`` the encoding model is refit
+        once per EM iteration, unless the Local state's posterior mass is
+        below ``min_encoding_local_mass``; an unreachable threshold skips
+        every refit. The refit is replaced by a recorder, so only the guard's
+        decision is under test."""
+        detector = NonLocalSortedSpikesDetector()
+        local_masses = []
+        monkeypatch.setattr(
+            detector,
+            "_refit_encoding_model",
+            lambda weights: local_masses.append(float(np.sum(weights))),
         )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # EM stops at max_iter
+            detector.estimate_parameters(
+                **sorted_sim.fit_args,
+                max_iter=2,
+                estimate_encoding_model=True,
+                min_encoding_local_mass=min_encoding_local_mass,
+            )
 
-        detector = NonLocalSortedSpikesDetector(
-            sorted_spikes_algorithm="sorted_spikes_kde",
-        )
-        results = detector.estimate_parameters(
-            position_time=time,
-            position=position,
-            spike_times=spike_times,
-            time_edges=time_edges_from_centers(time),
-            is_training=~is_event,
-            max_iter=5,
-            estimate_encoding_model=True,
-        )
-
-        lls = results.attrs["marginal_log_likelihoods"]
-        assert len(lls) >= 2, f"Expected at least 2 EM iterations, got {len(lls)}"
-        assert "acausal_posterior" in results
-        assert "acausal_state_probabilities" in results
+        if refits_every_iteration:
+            assert len(local_masses) == detector.n_iter_ == 2
+            assert all(mass >= min_encoding_local_mass for mass in local_masses)
+        else:
+            assert local_masses == []
 
     def test_well_behaved_em_no_warnings(self, sim):
         """A standard converging fit sets ``converged_`` to True, records
@@ -211,23 +234,15 @@ class TestEncodingUpdateGuards:
             f"{[str(w.message) for w in unexpected]}"
         )
 
-    def test_sorted_spikes_glm_encoding_runs_end_to_end(self):
+    def test_sorted_spikes_glm_encoding_runs_end_to_end(self, sorted_sim):
         """NonLocalSortedSpikesDetector with GLM encoding updates should
         run to completion without errors."""
-        speed, position, spike_times, time, event_times, sampling_freq, is_event, _ = (
-            make_simulated_data(seed=42, n_neurons=5)
-        )
-
         detector = NonLocalSortedSpikesDetector(
             sorted_spikes_algorithm="sorted_spikes_glm",
             sorted_spikes_algorithm_params={},
         )
         results = detector.estimate_parameters(
-            position_time=time,
-            position=position,
-            spike_times=spike_times,
-            time_edges=time_edges_from_centers(time),
-            is_training=~is_event,
+            **sorted_sim.fit_args,
             max_iter=3,
             estimate_encoding_model=True,
         )
