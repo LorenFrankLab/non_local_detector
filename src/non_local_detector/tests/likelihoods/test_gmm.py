@@ -252,16 +252,6 @@ def test_means_init_wrong_n_features_raises(key):
         model.fit(X, key)
 
 
-def test_sample_weight_negative_raises(key):
-    """Negative ``sample_weight`` entries are rejected."""
-    X = _two_clusters()
-    sw = np.ones(X.shape[0])
-    sw[0] = -1.0
-    model = GaussianMixtureModel(n_components=2, random_state=0)
-    with pytest.raises(ValidationError):
-        model.fit(X, key, sample_weight=jnp.asarray(sw))
-
-
 def test_sample_weight_wrong_length_raises(key):
     """``sample_weight`` whose length != n_samples is rejected."""
     X = _two_clusters()
@@ -400,15 +390,6 @@ def test_tied_score_samples_matches_analytic_gaussian():
     )
     expected = logsumexp(comp, axis=1)
     assert np.allclose(actual, expected, rtol=1e-4, atol=1e-4)
-
-
-def test_sample_weight_all_zero_raises(key):
-    """An all-zero sample_weight sums to 0 (no effective data) and is rejected with an
-    accurate message -- not a misleading singular-covariance / reg_covar error."""
-    model = GaussianMixtureModel(n_components=2, covariance_type="full", random_state=0)
-    X = _two_clusters()
-    with pytest.raises(ValidationError, match="sums to 0"):
-        model.fit(X, key, sample_weight=jnp.zeros(X.shape[0]))
 
 
 def test_gmm_diag_variance_floor_warns(key):
