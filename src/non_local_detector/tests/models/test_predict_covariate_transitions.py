@@ -5,8 +5,6 @@ Verifies:
 2. Mismatched covariate/decode time lengths raise ValueError
 """
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pytest
 
@@ -50,42 +48,38 @@ class TestPredictDoesNotMutateFittedState:
         # Coefficients should be unchanged
         np.testing.assert_array_equal(coefficients, original_coefficients)
 
-    def test_predict_path_uses_local_variable_not_self(
-        self, nonstationary_transition_artifacts
-    ):
-        """The base.py predict path should pass transitions as a parameter, not mutate self.
 
-        This tests the wiring by patching predict_discrete_state_transitions
-        and verifying _predict receives the result without self being modified.
-        """
-        fitted_transition, coefficients, design_matrix = (
-            nonstationary_transition_artifacts
-        )
+@pytest.mark.unit
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_predict_with_new_covariates_keeps_fitted_transitions(
+    checkpoint_recording, family
+):
+    """``predict`` decodes with transitions predicted from its own covariates
+    and leaves the fitted ``discrete_state_transitions_`` untouched."""
+    model, fit, predict = checkpoint_recording(family)
+    model.discrete_transition_type = DiscreteNonStationaryDiagonal(
+        np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
+    )
+    fit["discrete_transition_covariate_data"] = {"speed": np.linspace(0, 3, 61)}
+    model.fit(**fit)
+    # Give speed a non-zero effect so different covariates give different
+    # transitions.
+    model.discrete_transition_coefficients_[1] = np.arange(12).reshape(4, 3) / 10
+    fitted_transitions = model.discrete_state_transitions_.copy()
+    n_decode = len(predict["time_edges"]) - 1
+    assert fitted_transitions.shape[0] != n_decode
 
-        # Create a mock detector with the minimum attributes needed
-        mock_detector = MagicMock()
-        mock_detector.discrete_transition_coefficients_ = coefficients
-        mock_detector.discrete_transition_design_matrix_ = design_matrix
-        mock_detector.discrete_state_transitions_ = fitted_transition
+    moving = model.predict(
+        **predict,
+        discrete_transition_covariate_data={"speed": np.sin(np.arange(n_decode) / 5)},
+    )
+    still = model.predict(
+        **predict,
+        discrete_transition_covariate_data={"speed": np.zeros(n_decode)},
+    )
 
-        # Store the original fitted value
-        original_transitions = fitted_transition.copy()
-
-        new_covariate_data = {"speed": np.linspace(0, 10, 10)}
-        predicted = predict_discrete_state_transitions(
-            design_matrix, coefficients, new_covariate_data
-        )
-
-        # The predicted transitions should differ from the fitted ones
-        assert predicted.shape[0] == 10  # new time dimension
-        assert fitted_transition.shape[0] == 20  # original time dimension
-
-        # Verify fitted transitions were not modified
-        np.testing.assert_array_equal(
-            fitted_transition,
-            original_transitions,
-            err_msg="Fitted transitions were mutated by predict",
-        )
+    np.testing.assert_array_equal(model.discrete_state_transitions_, fitted_transitions)
+    assert not np.allclose(moving.acausal_posterior, still.acausal_posterior)
 
 
 @pytest.mark.unit
