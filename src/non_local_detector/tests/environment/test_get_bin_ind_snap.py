@@ -45,10 +45,10 @@ class TestGetBinIndSnap:
     def test_snaps_position_at_arm_boundary_edge(self):
         """Position exactly on the arm-A end edge snaps to arm-A's last interior bin.
 
-        This reproduces the real-data bug: get_linearized_position places an
-        animal at the arm endpoint, whose linear coordinate equals a gap-bin
-        edge. np.searchsorted(side="right") then assigns the position to the
-        gap bin. After the fix, it should land on the last arm-A interior bin.
+        get_linearized_position places an animal at the arm endpoint, whose
+        linear coordinate equals a gap-bin edge, and np.searchsorted(side="right")
+        assigns the position to the gap bin; it must instead land on the last
+        arm-A interior bin.
         """
         env = _make_two_arm_track()
         edges = env.edges_[0]

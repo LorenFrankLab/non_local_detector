@@ -1,4 +1,10 @@
-"""A spike's intensity must not depend on other queries in its decode batch."""
+"""Clusterless KDE log joint mark intensity stays exact in deep tails.
+
+Each spike's intensity must match a float64 reference wherever it can change
+the background term, must not depend on the other spikes in its batch, and
+must survive the grouped exact-path repair, encoding and position tiles, and
+mixed precision.
+"""
 
 import jax
 import jax.numpy as jnp
