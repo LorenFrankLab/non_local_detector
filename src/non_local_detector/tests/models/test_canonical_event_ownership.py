@@ -233,11 +233,9 @@ CLUSTERLESS_ALGORITHMS = [
 
 
 @pytest.fixture(scope="module")
-def gapped_clusterless_run():
+def gapped_clusterless_run(clusterless_two_run_sim):
     """Simulated clusterless run with a training mask that has many short gaps."""
-    sim = make_simulated_run_data(
-        n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=2, seed=0
-    )
+    sim = clusterless_two_run_sim
     n = sim.position_time.shape[0]
     is_training = (np.arange(n) // 150) % 4 != 3
     return sim, is_training
@@ -343,12 +341,10 @@ def test_clusterless_group_without_training_coverage(gapped_clusterless_run, alg
         "sorted_spikes_mrf",
     ],
 )
-def test_sorted_group_without_training_coverage(algorithm):
+def test_sorted_group_without_training_coverage(clusterless_sim, algorithm):
     """The sorted family warns for a group with no training samples and still
     decodes a normalized posterior."""
-    sim = make_simulated_run_data(
-        n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=1, seed=0
-    )
+    sim = clusterless_sim
     n = sim.position_time.shape[0]
     is_training = np.arange(n) < n // 2
     spike_times = [t[t < sim.position_time[-1]] for t in sim.spike_times]
