@@ -64,6 +64,22 @@ def run_data():
     }
 
 
+@pytest.fixture(scope="module")
+def fitted_detector(run_data):
+    """A default NonLocalClusterlessDetector fit on the training split.
+
+    Shared by tests that only read it or work on a pickled copy.
+    """
+    return NonLocalClusterlessDetector(
+        clusterless_algorithm_params={"disable_progress_bar": True},
+    ).fit(
+        run_data["train_time"],
+        run_data["train_position"],
+        run_data["train_spikes"],
+        run_data["train_marks"],
+    )
+
+
 def _state_columns(detector, name):
     """Interior likelihood columns belonging to the named state."""
     interior = detector.state_ind_[detector.is_track_interior_state_bins_]
@@ -326,16 +342,8 @@ def test_encoding_refit_keeps_training_reference(run_data):
 
 
 @pytest.mark.integration
-def test_saved_model_without_mark_reference_must_be_refit(run_data):
-    detector = NonLocalClusterlessDetector(
-        clusterless_algorithm_params={"disable_progress_bar": True},
-    ).fit(
-        run_data["train_time"],
-        run_data["train_position"],
-        run_data["train_spikes"],
-        run_data["train_marks"],
-    )
-    legacy = pickle.loads(pickle.dumps(detector))
+def test_saved_model_without_mark_reference_must_be_refit(run_data, fitted_detector):
+    legacy = pickle.loads(pickle.dumps(fitted_detector))
     del legacy.mark_reference_
     with pytest.raises(ValidationError, match="mark reference"):
         legacy.predict(
@@ -417,6 +425,7 @@ def test_mark_term_is_identical_when_rows_are_requested_in_chunks(run_data):
     )
 
 
+@pytest.mark.unit
 def test_fit_mark_references_weighs_spikes_uniformly_by_default():
     rng = np.random.default_rng(5)
     marks = [rng.normal(size=(30, 2)), np.zeros((0, 2))]
@@ -431,6 +440,7 @@ def test_fit_mark_references_weighs_spikes_uniformly_by_default():
     np.testing.assert_allclose(weighted[0].location, marks[0][10:].mean(axis=0))
 
 
+@pytest.mark.unit
 def test_every_clusterless_algorithm_has_a_mark_reference_scale():
     assert set(_CLUSTERLESS_MARK_REFERENCE_SCALES) == set(_CLUSTERLESS_ALGORITHMS)
     scales = _CLUSTERLESS_MARK_REFERENCE_SCALES
@@ -439,16 +449,10 @@ def test_every_clusterless_algorithm_has_a_mark_reference_scale():
     assert scales["clusterless_gmm"](gmm_reg_covar=4.0, waveform_std=7.0) == 2.0
 
 
-def test_detector_alone_holds_the_mark_reference(run_data):
+@pytest.mark.integration
+def test_detector_alone_holds_the_mark_reference(run_data, fitted_detector):
     """Encoding models carry no reference; a saved detector keeps its own."""
-    detector = NonLocalClusterlessDetector(
-        clusterless_algorithm_params={"disable_progress_bar": True},
-    ).fit(
-        run_data["train_time"],
-        run_data["train_position"],
-        run_data["train_spikes"],
-        run_data["train_marks"],
-    )
+    detector = fitted_detector
     assert all(
         "mark_reference" not in model for model in detector.encoding_model_.values()
     )
