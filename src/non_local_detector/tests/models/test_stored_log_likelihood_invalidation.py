@@ -12,6 +12,7 @@ dataset B. Any difference is contamination carried across the call boundary.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
@@ -81,6 +82,18 @@ def run_em(detector, data, max_iter=1, **kwargs):
     )
 
 
+def log_likelihood_of(detector, data):
+    """``detector``'s log likelihood of the spikes in ``data``'s decode window."""
+    return np.asarray(
+        detector.compute_log_likelihood(
+            data["position_time"],
+            data["position"],
+            data["spike_times"],
+            time_edges=data["time_edges"],
+        )
+    )
+
+
 def assert_matches_fresh_run(reused, fresh):
     np.testing.assert_allclose(
         reused.acausal_posterior.to_numpy(),
@@ -110,11 +123,17 @@ def test_second_estimate_parameters_ignores_the_stored_log_likelihood(
 
     detector = make_detector()
     run_em(detector, first, n_chunks=n_chunks, store_log_likelihood=True)
-    assert detector.log_likelihood_ is not None
+    stored = np.asarray(detector.log_likelihood_)
 
     reused = run_em(detector, second, n_chunks=n_chunks, cache_likelihood=False)
-    fresh = run_em(make_detector(), second, n_chunks=n_chunks, cache_likelihood=False)
+    fresh_detector = make_detector()
+    fresh = run_em(fresh_detector, second, n_chunks=n_chunks, cache_likelihood=False)
 
+    # Guard the guard: run A's stored likelihood differs from run B's, so a
+    # leak would change the posterior.
+    assert not np.allclose(
+        stored, log_likelihood_of(fresh_detector, second), **PARITY_KWARGS
+    )
     assert_matches_fresh_run(reused, fresh)
 
 
@@ -192,7 +211,10 @@ def test_predict_ignores_the_stored_log_likelihood(datasets):
 
     detector = make_detector()
     run_em(detector, first, n_chunks=N_CHUNKS, store_log_likelihood=True)
-    assert detector.log_likelihood_ is not None
+    stored = np.asarray(detector.log_likelihood_)
+    # Guard the guard: the stored likelihood of A's spikes differs from this
+    # model's likelihood of B's spikes, so reading it would change the result.
+    assert not np.allclose(stored, log_likelihood_of(detector, second), **PARITY_KWARGS)
 
     predict_kwargs = {
         "spike_times": second["spike_times"],
@@ -212,36 +234,37 @@ def test_predict_ignores_the_stored_log_likelihood(datasets):
 
 @pytest.mark.integration
 @pytest.mark.filterwarnings("ignore:EM did not converge")
-def test_most_likely_sequence_ignores_the_stored_log_likelihood(datasets):
+def test_most_likely_sequence_ignores_the_stored_log_likelihood(datasets, monkeypatch):
     """The Viterbi path must be decoded from the spikes passed to it."""
     first, second = datasets
 
     detector = make_detector()
     run_em(detector, first, n_chunks=1, store_log_likelihood=True)
-    assert detector.log_likelihood_ is not None
+    stored = np.asarray(detector.log_likelihood_)
 
     fresh_detector = make_detector()
     run_em(fresh_detector, first, n_chunks=1)
 
-    args = (
-        second["position_time"],
-        second["position"],
-        second["spike_times"],
-    )
-    reused = detector.most_likely_sequence(
-        args[2],
-        position_time=args[0],
-        position=args[1],
-        time_edges=second["time_edges"],
-    )
-    fresh = fresh_detector.most_likely_sequence(
-        args[2],
-        position_time=args[0],
-        position=args[1],
-        time_edges=second["time_edges"],
-    )
+    def viterbi(model):
+        return model.most_likely_sequence(
+            second["spike_times"],
+            position_time=second["position_time"],
+            position=second["position"],
+            time_edges=second["time_edges"],
+        )
 
-    np.testing.assert_array_equal(reused["state"].to_numpy(), fresh["state"].to_numpy())
+    reused = viterbi(detector)
+    fresh = viterbi(fresh_detector)
+    pd.testing.assert_frame_equal(reused, fresh)
+
+    # Guard the guard: decoding the stored likelihood instead gives a
+    # different path, so the comparison above can detect a leak.
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            fresh_detector, "compute_log_likelihood", lambda *args, **kwargs: stored
+        )
+        stale = viterbi(fresh_detector)
+    assert not stale.equals(fresh)
 
 
 @pytest.mark.integration
