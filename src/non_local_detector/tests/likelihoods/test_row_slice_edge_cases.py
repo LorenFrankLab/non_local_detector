@@ -128,8 +128,8 @@ def spike_placements(time: np.ndarray) -> dict[str, np.ndarray]:
     """Decoding spike placements that hit every boundary case of the edges ``time``.
 
     ``on_timestamps`` puts a spike on every edge, including both endpoints;
-    ``between_timestamps`` puts one strictly inside every bin (the original
-    chunk-boundary defect); ``mixed`` is both; ``duplicates`` repeats ``mixed``
+    ``between_timestamps`` puts one strictly inside every bin, so every chunk
+    boundary falls between spikes; ``mixed`` is both; ``duplicates`` repeats ``mixed``
     three times, since identical spike times must be counted once each, not
     lost or duplicated by the searchsorted range.
     """
@@ -214,8 +214,8 @@ def test_bin_convention():
 def test_every_row_partition_tiles_the_full_counts(spike_kind):
     """Row-partition counts must tile the full counts for every spike placement.
 
-    ``on_timestamps`` is item 1 (spikes exactly on a chunk-start timestamp and on
-    both endpoints); ``between_timestamps`` is the original defect; the
+    ``on_timestamps`` puts spikes exactly on chunk-start timestamps and on both
+    endpoints; ``between_timestamps`` puts them strictly inside the bins; the
     partitions include ragged and irregular chunk sizes and the singleton split.
     """
     time = np.linspace(0.0, 1.0, N_EDGES)
@@ -332,7 +332,7 @@ def test_non_contiguous_row_request_is_rejected():
 
 @pytest.mark.unit
 def test_empty_spike_input_selects_nothing():
-    """Item 3 at the helper: no spikes at all still yields the requested rows."""
+    """No spikes at all still yields the requested rows."""
     time = np.arange(6.0)
     for empty in (np.array([]), np.zeros((0,), dtype=float)):
         selection = select_spikes_in_rows(empty, 1, 4, time_edges=time)
@@ -388,7 +388,7 @@ def test_chunk_local_binning_is_detectably_wrong(spike_kind):
 @pytest.mark.unit
 @pytest.mark.parametrize("shuffled", [False, True])
 def test_selected_features_stay_paired_with_their_spike(shuffled):
-    """Item 7: the one indexer must carry per-spike features with their spike.
+    """The one indexer must carry per-spike features with their spike.
 
     Each spike's "waveform feature" is its own index, so a feature that moved to
     a different spike is detectable, not merely a value that looks plausible.
@@ -658,7 +658,7 @@ def test_zero_row_request_returns_zero_rows(
 def test_irregular_and_ragged_partitions_tile_the_full_result(
     fitted_backends, edge_case_data, algorithm, case
 ):
-    """Items 1-3 and 5: boundary spikes, spike-free chunks, ragged/uneven chunks.
+    """Boundary spikes, spike-free chunks and empty units, ragged/uneven chunks.
 
     ``spike_free_gap`` requests a chunk whose selected-spike count is zero on
     every electrode, i.e. ``segment_sum`` over zero rows.
@@ -717,7 +717,7 @@ def test_irregular_and_ragged_partitions_tile_the_full_result(
 def test_all_units_empty_matches_full_result(
     fitted_backends, edge_case_data, algorithm
 ):
-    """Item 3, hardest form: not one spike on any electrode, chunked or not."""
+    """Not one spike on any electrode, chunked or not."""
     full = call_backend(fitted_backends, edge_case_data, algorithm, "all_units_empty")
     assert np.all(np.isfinite(full))
     assert_fixture_scale(full, algorithm)
@@ -746,7 +746,7 @@ def test_all_units_empty_matches_full_result(
 def test_singleton_row_requests_tile_the_full_result(
     fitted_backends, edge_case_data, algorithm
 ):
-    """Item 4: ``n_chunks == n_bins``, one row per call."""
+    """``n_chunks == n_bins``, one row per call."""
     full = call_backend(fitted_backends, edge_case_data, algorithm, "mixed")
     assert_fixture_scale(full, algorithm)
     tiled = np.concatenate(
@@ -772,7 +772,7 @@ def test_singleton_row_requests_tile_the_full_result(
 def test_shuffled_spike_order_row_slice_parity(
     fitted_backends, edge_case_data, algorithm, is_local, prepared, monkeypatch, request
 ):
-    """Item 7 at the backend: unsorted decoding input, features still paired.
+    """Unsorted decoding input at the backend, features still paired.
 
     The spikes are permuted together with their waveform features, so the set of
     (time, feature) pairs is unchanged: a correct backend must return the same
@@ -901,11 +901,11 @@ ALLOC_ROWS = slice(0, 5)
 ALLOC_N_FEATURES = 4
 ALLOC_SPIKE_COUNTS = (200, 6400)
 # Threshold: a quarter of one float32 copy of the largest feature array. A
-# backend that converts the full array allocates ~one such copy per call (the
-# measured pre-fix growth was 77-90 KiB of a 100 KiB float32 copy); a backend
-# that selects first allocates a fixed few KiB regardless of the total. A
-# quarter therefore sits an order of magnitude above the post-fix noise and
-# well below the defect, so it fails loudly without being flaky.
+# backend that converts the full array allocates ~one such copy per call
+# (measured: 77-90 KiB of a 100 KiB float32 copy); a backend that selects
+# first allocates a fixed few KiB regardless of the total. A quarter therefore
+# sits an order of magnitude above a select-first backend's noise and well
+# below a full conversion, so it fails loudly without being flaky.
 ALLOC_GROWTH_FRACTION = 0.25
 
 # The local paths also take a recording-length ``position`` array, which they
