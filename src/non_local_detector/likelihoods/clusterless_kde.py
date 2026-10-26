@@ -88,12 +88,13 @@ from non_local_detector.time_edges import (
 # Encoding rows per reduction tile. Each tile is one GEMM over the whole query
 # block, so temporaries scale with the tile rather than the encoding count.
 _LOG_REDUCTION_ENCODING_ROWS = 2048
-# Flagged spikes per block whose exact reduction visits only those spikes (the
-# KDE in groups); a block with more flagged spikes visits every row or group.
+# Flagged indices per block repaired on a short path that visits only them;
+# more visit every index (``_repair_flagged``) or every group of flagged
+# indices (``_repair_flagged_in_groups``).
 _EXACT_REPAIR_SLOTS = 32
-# Elements of one exact-repair temporary (encoding tile x flagged spikes x
-# position tile): 16 MiB of float32. It sets how many flagged spikes are
-# reduced together.
+# Target elements of one exact-repair temporary (encoding tile x flagged spikes
+# x position tile), 16 MiB in float32. It sets how many flagged spikes are
+# reduced together, at least one, so larger tiles exceed it.
 _EXACT_REPAIR_ELEMENTS = 1 << 22
 
 
@@ -165,18 +166,24 @@ def _repair_flagged(values, needs_exact: jnp.ndarray, repaired):
 def _repair_flagged_in_groups(values, needs_exact, exact_rows, group_size: int):
     """Replace each flagged row of ``values`` by ``exact_rows`` of it.
 
-    Flagged rows are recomputed ``group_size`` at a time. Nothing runs when no
-    row is flagged; up to ``_EXACT_REPAIR_SLOTS`` flagged rows visit only the
-    groups that cover them, and more visit every group, skipping those past the
-    last flagged row. Static loop bounds keep the repair differentiable.
+    The indices of flagged rows are listed in order and split into groups of
+    ``group_size``, each recomputed by one ``exact_rows`` call. No repair runs
+    when no row is flagged. When the flagged rows fit in the groups covering
+    ``_EXACT_REPAIR_SLOTS`` slots, only those groups are visited; otherwise
+    every group is visited, and groups past the flagged count are skipped.
+    Static loop bounds keep the repair differentiable.
 
     Parameters
     ----------
     values : jnp.ndarray, shape (n, ...)
+        Estimates whose flagged rows are replaced.
     needs_exact : jnp.ndarray of bool, shape (n,)
+        Rows to replace.
     exact_rows : callable
         ``exact_rows(rows) -> (group_size, ...)`` exact values of the given rows.
+        The last group's unused slots pass row 0, whose values are dropped.
     group_size : int
+        Flagged rows recomputed per call (capped at ``n``).
 
     Returns
     -------
@@ -563,7 +570,8 @@ def _compute_log_mark_kernel_gemm(
     # Halved features cannot overflow their subtraction, and a broad sigma can
     # make a finite distance from features whose plain difference overflows.
     # Scaling by a power of two commutes with rounding, so 4 * sum(half^2)
-    # equals sum(difference^2) bit for bit wherever the difference is finite.
+    # equals sum(difference^2) bit for bit wherever the difference is finite
+    # and no scaled term is subnormal (those terms are below 1e-37).
     # One branch-free expression keeps the loop fused with the exponentials
     # that consume it and is traced once.
     half_sq_dist = jnp.zeros(
@@ -876,7 +884,7 @@ def _estimate_with_enc_chunking(
         )
     # A spike's linear estimate is exact above its floor when every kernel peak
     # lies within the scaled GEMM's window of that floor; other spikes are
-    # recomputed exactly, one at a time.
+    # recomputed exactly, in groups.
     needs_exact_row = (
         jnp.max(
             mark_peak
@@ -1025,9 +1033,9 @@ def _estimate_with_enc_chunking(
         )
 
     def exact_rows(rows):
-        # A spike's tile is only encoding x position, so it is reduced by a
-        # direct logsumexp, with no scaling to validate; a group of flagged
-        # spikes is reduced together.
+        # Each flagged spike is reduced by a direct logsumexp over encoding
+        # rows, with no scaling to validate; a group shares one
+        # (encoding, group, position) temporary.
         queries = decoding_spike_waveform_features[rows]
 
         def process_enc_chunk(enc_idx, marginal):
@@ -1821,7 +1829,7 @@ def block_estimate_log_joint_mark_intensity(
         Log-space position kernel. Prevents underflow in multi-dimensional position spaces.
         Can be None if use_streaming=True.
     block_size : int, optional
-        Number of decoding spikes to process per block, by default 10_000.
+        Number of decoding spikes to process per block, by default 10,000.
         Fewer spikes are padded to a power of two (at least 16), so calls
         with nearby spike counts share one compiled reduction.
     use_gemm : bool, optional
@@ -1975,8 +1983,9 @@ def fit_clusterless_kde_encoding_model(
     waveform_std : float, optional
         Gaussian smoothing standard deviation for waveform, by default 24.0
     block_size : int, optional
-        Decoding spikes per block, by default 10_000, as the detectors
-        pass it.
+        Decoding spikes per block, by default 10,000, matching the
+        detectors' default. It is stored with the model and used at
+        prediction.
     enc_tile_size : int, optional
         Encoding samples per reduction tile at predict time (capped at 2048),
         bounding the workspace by the tile rather than the encoding count. By
@@ -2338,8 +2347,8 @@ def predict_clusterless_kde_log_likelihood(
     is_local : bool, optional
         If True, compute the log likelihood at the animal's position, by default False
     block_size : int, optional
-        Decoding spikes per block, by default 10_000, as the detectors
-        pass it.
+        Decoding spikes per block, by default 10,000, matching the
+        detectors' default.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
     enc_tile_size : int | None, optional
@@ -2699,8 +2708,8 @@ def compute_local_log_likelihood(
     waveform_std : jnp.ndarray
         Gaussian smoothing standard deviation for waveform.
     block_size : int, optional
-        Decoding spikes per block, by default 10_000, as the detectors
-        pass it.
+        Decoding spikes per block, by default 10,000, matching the
+        detectors' default.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
     encoding_weights : list[jnp.ndarray] | None, optional

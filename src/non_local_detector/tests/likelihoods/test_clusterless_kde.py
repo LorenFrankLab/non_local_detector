@@ -29,7 +29,7 @@ from non_local_detector.models.base import _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
     ],
 )
 def test_block_size_default_is_the_detectors(function):
-    """Direct calls block spikes as a detector does: smaller blocks were 3-7x slower."""
+    """Direct calls block spikes as a detector does: the old 100 was 3-4x slower."""
     default = inspect.signature(function).parameters["block_size"].default
     assert default == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS["block_size"]
 
