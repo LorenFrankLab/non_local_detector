@@ -24,6 +24,8 @@ from non_local_detector.likelihoods.gmm import (
     _estimate_gaussian_parameters,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def key():

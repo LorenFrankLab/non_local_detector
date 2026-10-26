@@ -21,6 +21,8 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def convergence_test_data():

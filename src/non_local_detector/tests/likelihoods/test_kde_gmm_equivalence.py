@@ -28,6 +28,8 @@ from non_local_detector.likelihoods.gmm import (
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
+pytestmark = pytest.mark.unit
+
 
 def _make_kde_matched_gmm(
     means: np.ndarray,

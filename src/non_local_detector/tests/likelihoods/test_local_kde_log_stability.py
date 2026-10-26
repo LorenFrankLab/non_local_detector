@@ -29,6 +29,8 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def extreme_feature_data():
