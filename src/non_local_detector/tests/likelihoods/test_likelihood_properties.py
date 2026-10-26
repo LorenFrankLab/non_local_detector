@@ -3,7 +3,7 @@
 Uses Hypothesis to verify that likelihood models satisfy key mathematical
 properties for varied random inputs: no NaN in clusterless non-local
 likelihoods, and finite local and non-local likelihoods from one sorted-spikes
-fit.
+fit. Examples are derandomized so every run draws the same inputs.
 """
 
 import jax.numpy as jnp
@@ -244,7 +244,7 @@ class TestLikelihoodNoNaN:
         spikes_per_electrode=st.integers(min_value=5, max_value=10),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=8, deadline=None)
+    @settings(max_examples=8, deadline=None, derandomize=True)
     def test_clusterless_kde_output_no_nan(
         self, n_electrodes, n_time, n_features, spikes_per_electrode, seed
     ):
@@ -261,7 +261,7 @@ class TestLikelihoodNoNaN:
         spikes_per_electrode=st.integers(min_value=8, max_value=12),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=5, deadline=None)
+    @settings(max_examples=5, deadline=None, derandomize=True)
     def test_clusterless_gmm_output_no_nan(
         self, n_electrodes, n_time, n_features, spikes_per_electrode, seed
     ):
@@ -293,7 +293,7 @@ class TestLocalNonlocalFiniteness:
         spikes_per_neuron=st.integers(min_value=3, max_value=10),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=10, deadline=None)
+    @settings(max_examples=10, deadline=None, derandomize=True)
     def test_sorted_kde_likelihoods_finite(
         self, n_neurons, n_time, spikes_per_neuron, seed
     ):
@@ -315,7 +315,7 @@ class TestLocalNonlocalFiniteness:
         spikes_per_neuron=st.integers(min_value=3, max_value=10),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=10, deadline=None)
+    @settings(max_examples=10, deadline=None, derandomize=True)
     def test_sorted_glm_likelihoods_finite(
         self, n_neurons, n_time, spikes_per_neuron, seed
     ):
