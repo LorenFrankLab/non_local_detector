@@ -636,17 +636,7 @@ def test_encoding_fit_solves_all_cells_in_one_call(
 
     monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
     env, data = simple_1d_environment, simple_spike_data
-    encoding = fit_sorted_spikes_glm_encoding_model(
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        environment=env,
-        place_bin_edges=env.place_bin_edges_,
-        edges=env.edges_,
-        is_track_interior=env.is_track_interior_,
-        is_track_boundary=env.is_track_boundary_,
-        disable_progress_bar=True,
-    )
+    encoding = _fit_encoding(env, data)
     n_cells = len(data["spike_times"])
     assert len(calls) == 1 and calls[0][0] == n_cells
     assert encoding["coefficients"].shape[0] == n_cells
@@ -665,17 +655,7 @@ class TestFitGLMEncodingModel:
         data = simple_spike_data
 
         # Act
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Assert
         expected_keys = {
@@ -697,17 +677,7 @@ class TestFitGLMEncodingModel:
         n_neurons = len(data["spike_times"])
 
         # Act
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Assert
         place_fields = encoding["place_fields"]
@@ -726,31 +696,9 @@ class TestFitGLMEncodingModel:
         data = simple_spike_data
 
         # Act with different knot spacings
-        encoding_coarse = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            emission_knot_spacing=30.0,  # Coarse
-            disable_progress_bar=True,
-        )
+        encoding_coarse = _fit_encoding(env, data, emission_knot_spacing=30.0)  # Coarse
 
-        encoding_fine = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            emission_knot_spacing=10.0,  # Fine
-            disable_progress_bar=True,
-        )
+        encoding_fine = _fit_encoding(env, data, emission_knot_spacing=10.0)  # Fine
 
         # Assert - finer spacing should produce more complex model (more coefficients)
         n_coef_coarse = encoding_coarse["coefficients"][0].shape[0]
@@ -770,17 +718,7 @@ class TestPredictGLMLogLikelihood:
         env = simple_1d_environment
         data = simple_spike_data
 
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Create decoding time window
         time = np.linspace(0, 0.5, 10)
@@ -830,17 +768,7 @@ class TestPredictGLMLogLikelihood:
         env = simple_1d_environment
         data = simple_spike_data
 
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         time = np.linspace(0, 0.5, 10)
 
@@ -872,17 +800,7 @@ class TestPredictGLMLogLikelihood:
         env = simple_1d_environment
         data = simple_spike_data
 
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Use time period with no spikes (well beyond data)
         time = np.linspace(10.0, 10.5, 10)
