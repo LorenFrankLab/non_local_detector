@@ -26,6 +26,8 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     predict_sorted_spikes_kde_log_likelihood,
 )
 
+pytestmark = pytest.mark.integration
+
 ROOT = Path(__file__).resolve().parents[3]
 NOTEBOOKS = [
     "notebooks/01_models_and_validation/sorted_spikes_detector_test.ipynb",

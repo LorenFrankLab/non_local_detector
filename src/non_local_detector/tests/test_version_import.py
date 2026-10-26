@@ -1,3 +1,8 @@
+import pytest
+
+pytestmark = pytest.mark.unit
+
+
 def test_version_import():
     import non_local_detector
 
