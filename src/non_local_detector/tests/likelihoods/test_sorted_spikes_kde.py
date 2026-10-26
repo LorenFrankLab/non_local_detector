@@ -11,24 +11,32 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
 )
 
 
-def test_fit_sorted_spikes_kde_encoding_model_minimal(simple_1d_environment):
-    env = simple_1d_environment
-    t = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    # two neurons with a couple spikes each inside [0,10]
-    spikes = [jnp.array([2.0, 5.0, 5.1]), jnp.array([1.5, 7.2])]
-    weights = jnp.ones_like(t)
+@pytest.fixture
+def kde_fit(simple_1d_environment):
+    """Two-neuron KDE encoding on a linear sweep of the 1D environment.
 
-    enc = fit_sorted_spikes_kde_encoding_model(
-        position_time=t,
-        position=pos,
-        spike_times=spikes,
+    Returns ``(env, position_time, position, spike_times, encoding)``.
+    """
+    env = simple_1d_environment
+    position_time = jnp.linspace(0.0, 10.0, 101)
+    position = jnp.linspace(0.0, 10.0, 101)[:, None]
+    # two neurons with a couple spikes each inside [0,10]
+    spike_times = [jnp.array([2.0, 5.0, 5.1]), jnp.array([1.5, 7.2])]
+    encoding = fit_sorted_spikes_kde_encoding_model(
+        position_time=position_time,
+        position=position,
+        spike_times=spike_times,
         environment=env,
-        weights=weights,
+        weights=jnp.ones_like(position_time),
         position_std=np.sqrt(1.0),
         block_size=16,
         disable_progress_bar=True,
     )
+    return env, position_time, position, spike_times, encoding
+
+
+def test_fit_sorted_spikes_kde_encoding_model_minimal(kde_fit):
+    _, _, _, spikes, enc = kde_fit
 
     # keys and shapes
     for key in (
@@ -50,25 +58,8 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal(simple_1d_environment):
     assert jnp.all(pf > 0)
 
 
-def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
-    simple_1d_environment,
-):
-    env = simple_1d_environment
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    spikes = [jnp.array([2.0, 5.0, 5.1]), jnp.array([1.5, 7.2])]
-    weights = jnp.ones_like(t_pos)
-
-    enc = fit_sorted_spikes_kde_encoding_model(
-        position_time=t_pos,
-        position=pos,
-        spike_times=spikes,
-        environment=env,
-        weights=weights,
-        position_std=np.sqrt(1.0),
-        block_size=16,
-        disable_progress_bar=True,
-    )
+def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_fit):
+    env, t_pos, pos, spikes, enc = kde_fit
 
     # decoding over 5 time bins via 6 edges
     t_edges = jnp.linspace(0.0, 10.0, 6)
@@ -133,24 +124,9 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
         )
 
 
-def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environment):
-    env = simple_1d_environment
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
+def test_local_likelihood_zero_spikes_equals_negative_rate_sum(kde_fit):
     # Use some spikes to build encoding, but no spikes in decoding window
-    spikes_enc = [jnp.array([2.0, 5.0, 5.1]), jnp.array([1.5, 7.2])]
-    weights = jnp.ones_like(t_pos)
-
-    enc = fit_sorted_spikes_kde_encoding_model(
-        position_time=t_pos,
-        position=pos,
-        spike_times=spikes_enc,
-        environment=env,
-        weights=weights,
-        position_std=np.sqrt(1.0),
-        block_size=16,
-        disable_progress_bar=True,
-    )
+    env, t_pos, pos, _, enc = kde_fit
 
     # Decoding window with no spikes
     t_edges = jnp.linspace(0.0, 10.0, 6)
@@ -193,23 +169,8 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environ
     assert jnp.allclose(ll_local, expected, rtol=1e-5, atol=1e-6)
 
 
-def test_nonlocal_with_no_spikes_equals_negative_no_spike_part(simple_1d_environment):
-    env = simple_1d_environment
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    spikes_enc = [jnp.array([2.0, 5.0, 5.1]), jnp.array([1.5, 7.2])]
-    weights = jnp.ones_like(t_pos)
-
-    enc = fit_sorted_spikes_kde_encoding_model(
-        position_time=t_pos,
-        position=pos,
-        spike_times=spikes_enc,
-        environment=env,
-        weights=weights,
-        position_std=np.sqrt(1.0),
-        block_size=16,
-        disable_progress_bar=True,
-    )
+def test_nonlocal_with_no_spikes_equals_negative_no_spike_part(kde_fit):
+    env, t_pos, pos, _, enc = kde_fit
 
     t_edges = jnp.linspace(0.0, 10.0, 6)
     empty_spikes = [jnp.array([]), jnp.array([])]
