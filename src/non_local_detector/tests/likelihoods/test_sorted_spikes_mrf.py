@@ -26,8 +26,10 @@ from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
     cached_eigenbasis,
     diffusion_eigenbasis,
+    environment_graph,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    pixellate_interior_fields,
     predict_sorted_spikes_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
@@ -150,20 +152,53 @@ def test_population_fit_matches_per_neuron_reference():
     np.testing.assert_allclose(mu, occupancy[:, None] * np.exp(eta), rtol=1e-5)
 
 
-def test_basis_is_smoothest_modes_and_penalty_is_eigenvalue_ridge():
-    """The design basis columns are the smoothest Laplacian eigenmodes (ascending
-    eigenvalue), and the penalty weights are those eigenvalues (a generalized ridge)."""
-    laplacian = build_laplacian(path_graph(50))
-    penalty_weights, basis = diffusion_eigenbasis(laplacian, rank=10)
+def test_fit_uses_smoothest_eigenmodes_as_basis_and_eigenvalues_as_ridge():
+    """The encoding fit's design is the environment's smoothest Laplacian eigenmodes
+    and its penalty is ``penalty * eigenvalue`` per mode (a generalized ridge).
 
-    # Ascending eigenvalues, first is the (constant) null mode.
-    assert np.all(np.diff(penalty_weights) >= -1e-12)
+    The stored penalty weights are the cached eigenvalues, the interior log fields are
+    ``basis @ coefficients``, and the coefficients equal an independent float64
+    penalized-Poisson fit on the same counts and exposure with that ridge.
+    """
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    rank, penalty = 10, 1.0
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        rank=rank,
+        penalty=penalty,
+    )
+    eigenvalues, basis = cached_eigenbasis(env, rank)
+
+    penalty_weights = np.asarray(encoding["mrf_penalty_weights"])
+    np.testing.assert_array_equal(penalty_weights, eigenvalues)
+    # Smoothest modes first: ascending eigenvalues, starting at the constant null mode.
+    assert np.all(np.diff(penalty_weights) >= 0.0)
     assert penalty_weights[0] < 1e-9
-    # basis columns satisfy L v = d v (they are eigenvectors of the penalty).
-    dense = laplacian.toarray()
-    for mode in range(10):
+
+    coefficients = np.asarray(encoding["mrf_coefficients"])
+    assert coefficients.shape == (rank, len(spike_times))
+    # float32 fit: log fields agree with basis @ coefficients to ~1e-6 (max |log| ~8).
+    np.testing.assert_allclose(
+        np.asarray(encoding["interior_log_place_fields"]),
+        (basis @ coefficients).T,
+        atol=1e-5,
+    )
+
+    _, node_order, _ = environment_graph(env)
+    exposure, spike_counts, _ = pixellate_interior_fields(
+        time, position, spike_times, env, node_order, np.ones_like(time)
+    )
+    for neuron, counts in enumerate(spike_counts):
+        expected = reference_fit_one_neuron(
+            counts, exposure, basis, eigenvalues, penalty
+        )
+        # float32 fit vs float64 reference: coefficients up to ~25, errors ~1e-4.
         np.testing.assert_allclose(
-            dense @ basis[:, mode], penalty_weights[mode] * basis[:, mode], atol=1e-8
+            coefficients[:, neuron], expected, rtol=1e-5, atol=5e-4
         )
 
 
