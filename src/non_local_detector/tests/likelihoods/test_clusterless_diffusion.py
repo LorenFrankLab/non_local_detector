@@ -70,10 +70,10 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
 )
-from non_local_detector.tests.likelihoods.conftest import training_mark_references
-from non_local_detector.tests.likelihoods.test_sorted_spikes_diffusion import (
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
     simulate_sparse_uniform_tracking,
 )
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
 WAVEFORM_STD = 6.0
 POSITION_STD = 1.5
@@ -1540,7 +1540,7 @@ def _make_two_room_env(seed=0):
     """Two rooms x in [2, 16] and x in [24, 38], gap x in (16, 24) four bins wide:
     a disconnected (2-component) manifold graph -- a genuine impassable barrier.
 
-    Mirrors ``make_two_room_env`` in ``test_sorted_spikes_diffusion.py``.
+    Mirrors ``make_two_room_env`` in ``_sorted_spikes_helpers.py``.
     """
     rng = np.random.default_rng(seed)
     left = rng.uniform([2.0, 2.0], [16.0, 38.0], size=(12000, 2))
