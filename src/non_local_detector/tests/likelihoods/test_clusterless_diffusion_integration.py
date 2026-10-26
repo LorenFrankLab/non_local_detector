@@ -257,17 +257,15 @@ def test_refit_requires_encoding_refit() -> None:
         )
     )
     assert np.all(np.isfinite(new_log_likelihood))
-    # Genuinely discriminating (unlike the pre-fix version, where the grid was
-    # bit-identical before/after "refit" so this shape always matched): the
-    # predict output's column count is tied to the device basis's row count,
-    # which is n_interior for whatever grid it was built from. Since
-    # n_interior_original (10) != n_interior_new (20) here, any stale-basis bug
-    # -- e.g. get_device_basis returning the pre-refit eigenvectors, or predict
-    # being called with the un-refit ``encoding_model`` against the rebuilt
-    # environment -- would yield a 10-column result (or a shape-mismatch crash
-    # inside predict, since occupancy/other encoding arrays are also sized to
-    # n_interior_original), not 20. This assertion would then fail instead of
-    # passing vacuously.
+    # The predict output's column count is tied to the device basis's row
+    # count, which is n_interior for whatever grid it was built from. Since
+    # the refit changes the grid (n_interior_original (10) != n_interior_new
+    # (20)), any stale-basis bug -- e.g. get_device_basis returning the
+    # pre-refit eigenvectors, or predict being called with the un-refit
+    # ``encoding_model`` against the rebuilt environment -- would yield a
+    # 10-column result (or a shape-mismatch crash inside predict, since
+    # occupancy/other encoding arrays are also sized to n_interior_original),
+    # not 20.
     assert new_log_likelihood.shape == (len(new_decode_time), n_interior_new)
 
 

@@ -162,9 +162,9 @@ def test_fit_clusterless_kde_raises_without_place_grid():
 def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment):
     """Test that electrodes with different numbers of waveform features work correctly.
 
-    This tests the fix for the bug where scalar waveform_std was expanded based on
-    the first electrode's feature count, causing failures when other electrodes had
-    different numbers of features (e.g., 3 vs 4 features per tetrode).
+    A scalar waveform_std must not be expanded from the first electrode's
+    feature count, which fails when other electrodes have different numbers of
+    features (e.g., 3 vs 4 features per tetrode).
     """
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)

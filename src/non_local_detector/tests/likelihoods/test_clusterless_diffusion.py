@@ -1077,12 +1077,12 @@ def test_local_finite_and_zero_rate():
 
 
 # ----------------------------------------------------------------------------
-# Tier-1 input validation (fit + predict)
+# Input validation (fit + predict)
 # ----------------------------------------------------------------------------
 
 
 def test_validation_fit():
-    """Every Tier-1 fit-time contract raises ValidationError, and the
+    """Every fit-time input contract raises ValidationError, and the
     in-window / out-of-window encoding-feature split matches clusterless_kde."""
     s = _sim(seed=10)
 
@@ -1201,7 +1201,7 @@ def test_validation_fit():
 
 
 def test_validation_predict():
-    """Every Tier-1 predict-time contract raises (DataError for non-finite time
+    """Every predict-time input contract raises (DataError for non-finite time
     edges, ValidationError otherwise), and a non-finite feature on an
     out-of-window decode spike does NOT raise."""
     s = _sim(seed=11)
@@ -1257,7 +1257,7 @@ def test_validation_predict_local():
     """LOCAL-branch mirror of ``test_validation_predict``'s decode-feature checks.
 
     The local path (``clusterless_diffusion.py`` ~523) duplicates the same
-    in-window ``validate_finite(decode_features, ...)`` Tier-1 call as the
+    in-window ``validate_finite(decode_features, ...)`` call as the
     non-local path (~640) by hand, rather than sharing it. Nothing in the
     committed suite calls ``predict_clusterless_diffusion_log_likelihood`` with
     ``is_local=True`` and a non-finite decode feature, so the local branch's
@@ -1293,7 +1293,7 @@ def test_validation_predict_local():
 
 @pytest.mark.parametrize("is_local", [False, True])
 def test_validation_predict_zero_rate_precedence(is_local):
-    """Tier-1 decode-feature validation must run BEFORE the zero-rate ``continue``
+    """Decode-feature validation must run BEFORE the zero-rate ``continue``
     guard, in both predict branches.
 
     ``clusterless_diffusion.py`` slices ``decode_features`` and calls
@@ -1480,7 +1480,7 @@ def test_agreement_with_kde_simple_geometry():
     bandwidth the two algorithms share every input and differ only in the position
     smoother (graph heat kernel vs Euclidean Gaussian), so on a wall-less 1D track
     and a wall-less 2D open field the posteriors must rank-agree. Threshold is the
-    documented floor (median per-time-bin Spearman > 0.6; the Task-0 spike measured
+    documented floor (median per-time-bin Spearman > 0.6; measured agreement is
     ~1.000). Both diffusion and KDE non-local predict return interior bins in the
     same natural (``np.where(is_track_interior)``) order, so the rows compare
     bin-for-bin.
