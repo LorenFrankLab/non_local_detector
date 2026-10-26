@@ -173,7 +173,15 @@ class TestSamplePosterior:
         posterior = xr.DataArray(probs, dims=["time", "position"])
         expected_mean = np.sum(probs[0] * bin_centers)
 
-        samples = sample_posterior(posterior, bin_edges, n_samples=10000)
+        # sample_posterior draws from scipy's global RNG; seed it and restore it.
+        rng_state = np.random.get_state()
+        np.random.seed(0)
+        try:
+            samples = sample_posterior(posterior, bin_edges, n_samples=10000)
+        finally:
+            np.random.set_state(rng_state)
         sample_mean = np.mean(samples)
 
-        assert abs(sample_mean - expected_mean) < 0.05  # ~1.5 SEM for n=10000
+        # Variance = 0.2 (between bins) + 1/12 (uniform within a bin), so the
+        # SEM for n=10000 is about 0.0053 and 0.05 is about 9 SEM.
+        assert abs(sample_mean - expected_mean) < 0.05
