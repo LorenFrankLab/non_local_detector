@@ -19,14 +19,30 @@ from non_local_detector.core import (
     filter,
     smoother,
 )
-from non_local_detector.tests.conftest import precision_mode
+from non_local_detector.tests.conftest import assert_probability_distribution
 
 
-@pytest.fixture
-def x64():
-    """Enable float64 for the rest of the test."""
-    with precision_mode(True):
-        yield
+def run_chunked(init, trans, log_likes, n_chunks, **kwargs):
+    """Run chunked_filter_smoother on precomputed log likelihoods.
+
+    Returns the full 8-tuple from ``chunked_filter_smoother``.
+    """
+    n_time, n_states = log_likes.shape
+
+    def log_likelihood_func(time_idx, *args):
+        return log_likes[time_idx]
+
+    return chunked_filter_smoother(
+        time=np.arange(n_time),
+        state_ind=np.arange(n_states),
+        initial_distribution=np.array(init),
+        transition_matrix=np.array(trans),
+        log_likelihood_func=log_likelihood_func,
+        log_likelihood_args=(),
+        n_chunks=n_chunks,
+        log_likelihoods=np.array(log_likes),
+        **kwargs,
+    )
 
 
 @pytest.mark.unit
@@ -52,272 +68,72 @@ class TestChunkedFilterSmootherParity:
 
         return init, trans, log_likes
 
-    def test_chunked_equals_standard_single_chunk(self):
-        """With n_chunks=1, chunked should exactly match standard."""
+    @pytest.mark.parametrize(
+        ("n_time", "n_states", "n_chunks", "rtol", "atol"),
+        [
+            pytest.param(50, 5, 1, 1e-5, 1e-6, id="single-chunk"),
+            pytest.param(50, 5, 2, 1e-5, 1e-6, id="2-chunks"),
+            pytest.param(50, 5, 5, 1e-5, 1e-6, id="5-chunks"),
+            pytest.param(50, 5, 10, 1e-5, 1e-6, id="10-chunks"),
+            pytest.param(100, 8, 5, 1e-4, 1e-5, id="multiple-chunks"),
+            # n_chunks == n_time: one timestep per chunk
+            pytest.param(20, 3, 20, 1e-4, 1e-5, id="one-step-chunks"),
+        ],
+    )
+    def test_chunked_equals_standard(self, n_time, n_states, n_chunks, rtol, atol):
+        """Chunked filter/smoother should match standard for any chunk count."""
         # Arrange
-        init, trans, log_likes = self.create_simple_test_data(n_time=50, n_states=5)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        # Simple likelihood function that just returns precomputed likelihoods
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
+        init, trans, log_likes = self.create_simple_test_data(
+            n_time=n_time, n_states=n_states
+        )
 
         # Act - Standard version
         (_, (filtered_std, _)) = filter(init, trans, log_likes)
         smoothed_std = smoother(trans, filtered_std)
 
         # Act - Chunked version
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            log_likelihood,
-            causal_state_probabilities,  # causal/filtered probabilities
-            predictive_state_probabilities,  # one-step-ahead predictions
-            _,
-            causal_posterior,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=1,
-            log_likelihoods=np.array(log_likes),
+        _, acausal_state_probs, _, causal_state_probs, *_ = run_chunked(
+            init, trans, log_likes, n_chunks
         )
 
         # Assert - shapes should match exactly (no extra initial row)
-        assert jnp.allclose(
-            smoothed_std, acausal_state_probabilities, rtol=1e-5, atol=1e-6
-        ), "Smoothed posteriors don't match"
-
-        assert jnp.allclose(
-            filtered_std, causal_state_probabilities, rtol=1e-5, atol=1e-6
-        ), "Filtered posteriors don't match"
-
-    def test_chunked_equals_standard_multiple_chunks(self):
-        """With multiple chunks, should still match standard."""
-        # Arrange
-        init, trans, log_likes = self.create_simple_test_data(n_time=100, n_states=8)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
-
-        # Act - Standard version
-        (_, (filtered_std, _)) = filter(init, trans, log_likes)
-        smoothed_std = smoother(trans, filtered_std)
-
-        # Act - Chunked version with 5 chunks
-        (
-            _,
-            acausal_state_probs,
-            _,
-            causal_state_probs,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=5,
-            log_likelihoods=np.array(log_likes),
+        assert jnp.allclose(smoothed_std, acausal_state_probs, rtol=rtol, atol=atol), (
+            f"Smoothed posteriors don't match with n_chunks={n_chunks}"
         )
-
-        # Assert
-        assert jnp.allclose(smoothed_std, acausal_state_probs, rtol=1e-4, atol=1e-5), (
-            "Smoothed posteriors don't match with multiple chunks"
-        )
-
-        assert jnp.allclose(filtered_std, causal_state_probs, rtol=1e-4, atol=1e-5), (
-            "Filtered posteriors don't match with multiple chunks"
-        )
-
-    @pytest.mark.parametrize("n_chunks", [1, 2, 5, 10])
-    def test_chunked_consistent_across_chunk_sizes(self, n_chunks):
-        """Results should be identical regardless of chunk size."""
-        # Arrange
-        init, trans, log_likes = self.create_simple_test_data(n_time=50, n_states=5)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
-
-        # Act - Get reference with n_chunks=1
-        (
-            _,
-            acausal_ref,
-            _,
-            causal_ref,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=1,
-            log_likelihoods=np.array(log_likes),
-        )
-
-        # Act - Test with different n_chunks
-        (
-            _,
-            acausal_test,
-            _,
-            causal_test,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=n_chunks,
-            log_likelihoods=np.array(log_likes),
-        )
-
-        # Assert
-        assert jnp.allclose(acausal_ref, acausal_test, rtol=1e-5, atol=1e-6), (
-            f"Acausal differs for n_chunks={n_chunks}"
-        )
-
-        assert jnp.allclose(causal_ref, causal_test, rtol=1e-5, atol=1e-6), (
-            f"Causal differs for n_chunks={n_chunks}"
+        assert jnp.allclose(filtered_std, causal_state_probs, rtol=rtol, atol=atol), (
+            f"Filtered posteriors don't match with n_chunks={n_chunks}"
         )
 
     def test_chunked_log_likelihood_matches_standard(self):
         """Chunked should return same total log likelihood as standard."""
         # Arrange
         init, trans, log_likes = self.create_simple_test_data(n_time=50, n_states=5)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
 
         # Act - Standard version
         (log_marginals, _), _ = filter(init, trans, log_likes)
         total_log_like_std = log_marginals.sum()
 
         # Act - Chunked version
-        (_, _, log_like_chunked, _, _, _, _, _) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=3,
-            log_likelihoods=np.array(log_likes),
-        )
+        _, _, log_like_chunked, *_ = run_chunked(init, trans, log_likes, n_chunks=3)
 
         # Assert
         assert jnp.allclose(
             total_log_like_std, log_like_chunked, rtol=1e-4, atol=1e-5
         ), f"Log likelihoods don't match: {total_log_like_std} vs {log_like_chunked}"
 
-    def test_chunked_with_very_small_chunks(self):
-        """Should work even with very small chunk sizes."""
-        # Arrange
-        init, trans, log_likes = self.create_simple_test_data(n_time=20, n_states=3)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
-
-        # Act - Standard
-        (_, (filtered_std, _)) = filter(init, trans, log_likes)
-        smoothed_std = smoother(trans, filtered_std)
-
-        # Act - Chunked with n_chunks = n_time (1 timestep per chunk)
-        (
-            _,
-            acausal_chunked,
-            _,
-            causal_chunked,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=n_time,
-            log_likelihoods=np.array(log_likes),
-        )
-
-        # Assert
-        assert jnp.allclose(smoothed_std, acausal_chunked, rtol=1e-4, atol=1e-5)
-        assert jnp.allclose(filtered_std, causal_chunked, rtol=1e-4, atol=1e-5)
-
     def test_chunked_preserves_probability_normalization(self):
         """Chunked results should be valid probability distributions."""
         # Arrange
         init, trans, log_likes = self.create_simple_test_data(n_time=50, n_states=8)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
 
         # Act
-        (
-            _,
-            acausal_state_probs,
-            _,
-            causal_state_probs,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=5,
-            log_likelihoods=np.array(log_likes),
+        _, acausal_state_probs, _, causal_state_probs, *_ = run_chunked(
+            init, trans, log_likes, n_chunks=5
         )
 
         # Assert - All probabilities sum to 1
-        for t in range(n_time):
-            assert jnp.allclose(acausal_state_probs[t].sum(), 1.0, atol=1e-5), (
-                f"Acausal probs don't sum to 1 at t={t}"
-            )
-            assert jnp.allclose(causal_state_probs[t].sum(), 1.0, atol=1e-5), (
-                f"Causal probs don't sum to 1 at t={t}"
-            )
+        assert_probability_distribution(acausal_state_probs, rtol=1e-5, atol=1e-5)
+        assert_probability_distribution(causal_state_probs, rtol=1e-5, atol=1e-5)
 
     def test_chunked_with_different_dtypes(self, x64):
         """Chunked should compute in the requested dtype.
@@ -327,29 +143,10 @@ class TestChunkedFilterSmootherParity:
         """
         # Arrange
         init, trans, log_likes = self.create_simple_test_data(n_time=20, n_states=4)
-        n_time, n_states = log_likes.shape
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
-
-        def run(dtype):
-            return chunked_filter_smoother(
-                time=time,
-                state_ind=state_ind,
-                initial_distribution=np.array(init),
-                transition_matrix=np.array(trans),
-                log_likelihood_func=log_likelihood_func,
-                log_likelihood_args=(),
-                n_chunks=2,
-                log_likelihoods=np.array(log_likes),
-                dtype=dtype,
-            )
 
         # Act
-        result_f32 = run(jnp.float32)
-        result_f64 = run(jnp.float64)
+        result_f32 = run_chunked(init, trans, log_likes, n_chunks=2, dtype=jnp.float32)
+        result_f64 = run_chunked(init, trans, log_likes, n_chunks=2, dtype=jnp.float64)
 
         # Assert - the acausal, causal and predictive posteriors carry the
         # requested dtype, and the two runs agree to float32 precision.
@@ -371,24 +168,10 @@ class TestChunkedEdgeCases:
         init = jnp.ones(n_states) / n_states
         trans = jnp.eye(n_states) * 0.8 + 0.2 / n_states
         log_likes = jnp.zeros((n_time, n_states))
-        time = np.arange(n_time)
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
 
         # Act & Assert - Should raise ValueError
         with pytest.raises(ValueError, match="n_chunks .* cannot exceed n_time"):
-            chunked_filter_smoother(
-                time=time,
-                state_ind=state_ind,
-                initial_distribution=np.array(init),
-                transition_matrix=np.array(trans),
-                log_likelihood_func=log_likelihood_func,
-                log_likelihood_args=(),
-                n_chunks=10,  # More than n_time
-                log_likelihoods=np.array(log_likes),
-            )
+            run_chunked(init, trans, log_likes, n_chunks=10)  # More than n_time
 
     def test_chunked_with_single_timestep(self):
         """Should handle single timestep."""
@@ -397,31 +180,10 @@ class TestChunkedEdgeCases:
         init = jnp.ones(n_states) / n_states
         trans = jnp.eye(n_states) * 0.8 + 0.2 / n_states
         log_likes = jnp.zeros((1, n_states))
-        time = np.array([0])
-        state_ind = np.arange(n_states)
-
-        def log_likelihood_func(time_idx, *args):
-            return log_likes[time_idx]
 
         # Act
-        (
-            _,
-            acausal_state_probs,
-            _,
-            causal_state_probs,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-            _,  # predictive_posterior (not used in this test)
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=1,
-            log_likelihoods=np.array(log_likes),
+        _, acausal_state_probs, _, causal_state_probs, *_ = run_chunked(
+            init, trans, log_likes, n_chunks=1
         )
 
         # Assert

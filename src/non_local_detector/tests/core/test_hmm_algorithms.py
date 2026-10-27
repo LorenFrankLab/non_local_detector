@@ -62,21 +62,6 @@ class TestFilter:
         assert filtered_probs.shape == (10, 2)  # (n_time, n_states)
         assert predicted_probs.shape == (10, 2)  # (n_time, n_states)
 
-    def test_filter_preserves_probability_normalization(self):
-        """Each filtered timestep should sum to 1."""
-        # Arrange
-        init = jnp.array([0.5, 0.5])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        rng = np.random.default_rng(42)
-        log_likes = jnp.array(rng.standard_normal((10, 2)))
-
-        # Act
-        (_, (filtered_probs, _)) = filter(init, trans, log_likes)
-
-        # Assert
-        for t in range(10):
-            assert jnp.allclose(filtered_probs[t].sum(), 1.0), f"Failed at timestep {t}"
-
     def test_filter_with_deterministic_emissions_converges(self):
         """Deterministic observations should converge to single state."""
         # Arrange
@@ -146,8 +131,7 @@ class TestFilter:
         # Assert
         assert filtered.shape == (5, n_states)
         assert jnp.all(jnp.isfinite(filtered))
-        for t in range(5):
-            assert jnp.allclose(filtered[t].sum(), 1.0)
+        np.testing.assert_allclose(filtered.sum(axis=-1), 1.0, rtol=1e-5, atol=1e-8)
 
     def test_filter_handles_sparse_transition_matrix(self):
         """Should handle transition matrices with many zeros."""
@@ -187,8 +171,7 @@ class TestFilter:
 
         # Assert
         assert jnp.all(jnp.isfinite(filtered))
-        for t in range(5):
-            assert jnp.allclose(filtered[t].sum(), 1.0)
+        np.testing.assert_allclose(filtered.sum(axis=-1), 1.0, rtol=1e-5, atol=1e-8)
 
     def test_filter_single_timestep(self):
         """Should work with single timestep."""
@@ -227,37 +210,6 @@ class TestSmoother:
         # Assert
         assert smoothed.shape == filtered.shape
         assert smoothed.shape == (10, 2)
-
-    def test_smoother_preserves_probability_normalization(self):
-        """Each smoothed timestep should sum to 1."""
-        # Arrange
-        init = jnp.array([0.5, 0.5])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        rng = np.random.default_rng(42)
-        log_likes = jnp.array(rng.standard_normal((10, 2)))
-        (_, (filtered, _)) = filter(init, trans, log_likes)
-
-        # Act
-        smoothed = smoother(trans, filtered)
-
-        # Assert
-        for t in range(10):
-            assert jnp.allclose(smoothed[t].sum(), 1.0), f"Failed at timestep {t}"
-
-    def test_smoother_at_final_timestep_equals_filter(self):
-        """At T, smoother and filter should be identical (no future info)."""
-        # Arrange
-        init = jnp.array([0.5, 0.5])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        rng = np.random.default_rng(42)
-        log_likes = jnp.array(rng.standard_normal((10, 2)))
-        (_, (filtered, _)) = filter(init, trans, log_likes)
-
-        # Act
-        smoothed = smoother(trans, filtered)
-
-        # Assert
-        assert jnp.allclose(smoothed[-1], filtered[-1])
 
     def test_smoother_has_higher_certainty_than_filter(self):
         """Smoother should generally have lower entropy (higher certainty)."""
@@ -318,8 +270,7 @@ class TestSmoother:
         # Assert
         assert smoothed.shape == (5, n_states)
         assert jnp.all(jnp.isfinite(smoothed))
-        for t in range(5):
-            assert jnp.allclose(smoothed[t].sum(), 1.0)
+        np.testing.assert_allclose(smoothed.sum(axis=-1), 1.0, rtol=1e-5, atol=1e-8)
 
     def test_smoother_single_timestep(self):
         """Should work with single timestep (equals filter)."""

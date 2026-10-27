@@ -12,12 +12,9 @@ from non_local_detector.continuous_state_transitions import (
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ConfigurationError
+from non_local_detector.tests.conftest import assert_stochastic_matrix
 
 pytestmark = pytest.mark.unit
-
-
-def rows_sum_to_one(mat: np.ndarray, atol=1e-7) -> bool:
-    return np.allclose(mat.sum(axis=1), 1.0, atol=atol)
 
 
 def test_random_walk_row_stochastic_and_spread_var(simple_1d_environment):
@@ -31,8 +28,8 @@ def test_random_walk_row_stochastic_and_spread_var(simple_1d_environment):
     ).make_state_transition(envs)
 
     assert rw_tight.shape == (env.place_bin_centers_.shape[0],) * 2
-    assert rows_sum_to_one(rw_tight) and rows_sum_to_one(rw_wide)
-    assert np.all(rw_tight >= 0.0) and np.all(rw_wide >= 0.0)
+    assert_stochastic_matrix(rw_tight, atol=1e-7)
+    assert_stochastic_matrix(rw_wide, atol=1e-7)
 
     # Off-diagonal mass increases with larger variance
     offdiag_tight = (1.0 - np.diag(rw_tight)).mean()
@@ -81,7 +78,7 @@ def test_identity_transition_is_identity_masked(simple_1d_environment):
     envs = (env,)
     tm = Identity(environment_name=env.environment_name).make_state_transition(envs)
     assert tm.shape == (env.place_bin_centers_.shape[0],) * 2
-    assert rows_sum_to_one(tm)
+    assert_stochastic_matrix(tm, atol=1e-7)
     assert np.allclose(np.diag(tm), 1.0)
     assert np.allclose(tm - np.diag(np.diag(tm)), 0.0)
 
@@ -92,7 +89,7 @@ def test_uniform_transition_within_env(simple_1d_environment):
     tm = Uniform(environment_name=env.environment_name).make_state_transition(envs)
     n = env.place_bin_centers_.shape[0]
     assert tm.shape == (n, n)
-    assert rows_sum_to_one(tm)
+    assert_stochastic_matrix(tm, atol=1e-7)
     # Each row is uniform
     assert np.allclose(tm, np.ones((n, n)) / n)
 
@@ -112,7 +109,8 @@ def test_uniform_transition_between_envs(simple_1d_environment):
         env1.place_bin_centers_.shape[0],
         env2.place_bin_centers_.shape[0],
     )
-    assert rows_sum_to_one(tm)
+    # Rectangular (env1 bins x env2 bins), so check row sums directly.
+    np.testing.assert_allclose(tm.sum(axis=1), 1.0, rtol=1e-5, atol=1e-7)
     # Rows uniform over destination bins
     assert np.allclose(np.unique(tm, axis=1), np.ones((tm.shape[0], 1)) / tm.shape[1])
 
@@ -127,7 +125,7 @@ def test_empirical_movement_row_stochastic_and_locality(simple_1d_environment):
         environment_name=env.environment_name, speedup=1, is_time_reversed=False
     ).make_state_transition(envs, position=pos)
     assert tm.shape == (env.place_bin_centers_.shape[0],) * 2
-    assert rows_sum_to_one(tm, atol=1e-6)
+    assert_stochastic_matrix(tm, atol=1e-6)
     # Empirical movement should favor near-diagonal transitions on average
     nearer = np.mean(np.diag(tm))
     farther = np.mean(tm[:, 0] + tm[:, -1])

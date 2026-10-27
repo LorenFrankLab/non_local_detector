@@ -26,7 +26,7 @@ waveform_std_strategy = st.floats(min_value=5.0, max_value=50.0)
 
 
 @pytest.mark.property
-@settings(max_examples=20, deadline=None)
+@settings(max_examples=20)
 @given(
     n_tetrodes=n_tetrodes_strategy,
     n_runs=n_runs_strategy,
@@ -83,7 +83,7 @@ def test_simulator_always_produces_valid_output(
 
 
 @pytest.mark.property
-@settings(max_examples=10, deadline=None)
+@settings(max_examples=10)
 @given(
     position_std=position_std_strategy,
     waveform_std=waveform_std_strategy,

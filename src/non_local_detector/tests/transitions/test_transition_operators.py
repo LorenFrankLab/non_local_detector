@@ -8,11 +8,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-try:
-    from jax import enable_x64
-except ImportError:
-    from jax.experimental import enable_x64
-
 from non_local_detector.continuous_state_transitions import (
     Discrete,
     EmpiricalMovement,
@@ -26,6 +21,7 @@ from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.models._defaults import _ModelDefaults
 from non_local_detector.models.base import _DetectorBase
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.tests.conftest import precision_mode
 from non_local_detector.transition_operators import (
     DEFAULT_MAX_DENSE_BYTES,
     DenseTransitionBudgetError,
@@ -357,7 +353,7 @@ def product_operator(operator, fused):
 @pytest.mark.parametrize("kind", [Uniform, Identity, Discrete])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_simple_exact_products(kind, dtype):
-    with enable_x64(dtype == np.float64):
+    with precision_mode(dtype == np.float64):
         env = environment((1,) if kind is Discrete else (11,))
         sizes = (len(env.place_bin_centers_),)
         transitions = [[kind()]]
@@ -374,7 +370,7 @@ def test_simple_exact_products(kind, dtype):
 def test_separable_gaussian_products_with_holes_nonzero_mean_and_diagonal_covariance(
     shape, dtype
 ):
-    with enable_x64(dtype == np.float64):
+    with precision_mode(dtype == np.float64):
         env = environment(shape)
         variance = np.linspace(0.8, 2.5, len(shape))
         transitions = [[RandomWalk(movement_var=np.diag(variance), movement_mean=0.25)]]
@@ -414,7 +410,7 @@ def test_empty_destination_and_gaussian_underflow_preserve_zero_rows(kind):
 def test_default_four_state_and_multibin_local_match_original_masks_and_rectangular_blocks(
     local_std, dtype
 ):
-    with enable_x64(dtype == np.float64):
+    with precision_mode(dtype == np.float64):
         env, observations, transitions, sizes, mask = default_layout(local_std)
         dense, state_ind = dense_reference(
             transitions, [env], sizes, observations, local_std
@@ -461,7 +457,7 @@ def pair_reference(continuous, state_ind, weights, filtered, ratio):
 @pytest.mark.parametrize("fused", [False, True])
 def test_pair_products_aggregate_each_state_pair(local_std, dtype, fused):
     """Per-step discrete transition statistics from the structured blocks."""
-    with enable_x64(dtype == np.float64):
+    with precision_mode(dtype == np.float64):
         env, observations, transitions, sizes, mask = default_layout(local_std)
         dense, state_ind = dense_reference(
             transitions, [env], sizes, observations, local_std
@@ -629,7 +625,7 @@ def test_supported_construction_and_pickle_never_call_dense_builders(monkeypatch
 @pytest.mark.unit
 @pytest.mark.parametrize("fused", [False, True])
 def test_runtime_products_and_discrete_weights_have_correct_gradients(fused):
-    with enable_x64(True):
+    with precision_mode(True):
         env, observations, transitions, sizes, mask = default_layout()
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
         operator = product_operator(
@@ -776,7 +772,7 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
         _smoother_impl,
     )
 
-    with enable_x64(dtype == np.float64):
+    with precision_mode(dtype == np.float64):
         env, observations, transitions, sizes, mask = default_layout()
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
         dense = jnp.asarray(dense[np.ix_(mask, mask)], dtype=dtype)
@@ -850,7 +846,7 @@ def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_paramete
 ):
     from non_local_detector.core import _filter_covariate_dependent_impl
 
-    with enable_x64(True):
+    with precision_mode(True):
         env, observations, transitions, sizes, mask = default_layout()
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
         dense = jnp.asarray(dense[np.ix_(mask, mask)])
@@ -892,7 +888,7 @@ def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_paramete
 def test_hmm_boundary_gradients_match_dense_reference(all_impossible, fused):
     from non_local_detector.core import _filter_covariate_dependent_impl
 
-    with enable_x64(True):
+    with precision_mode(True):
         env, observations, transitions, sizes, mask = default_layout()
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
         dense = jnp.asarray(dense[np.ix_(mask, mask)])
@@ -941,7 +937,7 @@ def test_fused_gaussian_blocks_within_budget_are_dense(
         monkeypatch.setattr(
             transition_operators, "_DENSE_GAUSSIAN_BLOCK_BYTES", dense_gaussian_bytes
         )
-    with enable_x64(dtype == np.float64):
+    with precision_mode(dtype == np.float64):
         env = environment((6, 7))
         transitions = [[RandomWalk(movement_var=np.diag([0.9, 1.7]))]]
         sizes = (len(env.place_bin_centers_),)

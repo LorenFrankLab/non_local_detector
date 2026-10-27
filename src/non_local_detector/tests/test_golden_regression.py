@@ -128,6 +128,31 @@ def compare_golden_arrays(
     )
 
 
+def check_golden(
+    golden_file: Path, arrays: dict[str, npt.NDArray[np.floating]]
+) -> None:
+    """Compare outputs against a golden pickle, or create it when regenerating.
+
+    A missing pickle fails the test unless ``NLD_REGENERATE_GOLDEN=1``, in
+    which case ``arrays`` is saved and the comparison is skipped.
+
+    Parameters
+    ----------
+    golden_file : Path
+        The golden pickle for this test.
+    arrays : dict[str, np.ndarray]
+        Decoder outputs keyed by their name in the golden pickle.
+    """
+    if not golden_file.exists():
+        fail_unless_regenerating(golden_file)
+        save_pickle(golden_file, arrays)
+        pytest.skip("Golden data created, skipping comparison")
+
+    golden = load_pickle(golden_file)
+    for name, actual in arrays.items():
+        compare_golden_arrays(actual, golden[name], name)
+
+
 def load_or_create_clusterless_inputs(inputs_file: Path, seed: int) -> dict[str, Any]:
     """Load pinned clusterless simulation inputs, or create them.
 
@@ -219,11 +244,28 @@ def _predict_clusterless_decoder(
 
 
 @pytest.mark.slow
-def test_clusterless_decoder_golden_regression(golden_path: Path) -> None:
-    """ClusterlessDecoder on pinned inputs must produce pinned outputs."""
+@pytest.mark.parametrize(
+    ("name", "seed", "decoder_kwargs"),
+    [
+        pytest.param("clusterless_decoder", CLUSTERLESS_SEED, {}, id="default"),
+        pytest.param(
+            "random_walk_transition",
+            RANDOM_WALK_SEED,
+            {"continuous_transition_types": [[RandomWalk(movement_var=25.0)]]},
+            id="random_walk",
+        ),
+    ],
+)
+def test_clusterless_decoder_golden_regression(
+    golden_path: Path, name: str, seed: int, decoder_kwargs: dict[str, Any]
+) -> None:
+    """ClusterlessDecoder on pinned inputs must produce pinned outputs.
+
+    Covers the default continuous transitions and a RandomWalk transition.
+    """
     inputs = load_or_create_clusterless_inputs(
-        golden_path / "clusterless_decoder_inputs.pkl",
-        seed=CLUSTERLESS_SEED,
+        golden_path / f"{name}_inputs.pkl",
+        seed=seed,
     )
 
     n_encode = int(0.7 * len(inputs["position_time"]))
@@ -237,6 +279,7 @@ def test_clusterless_decoder_golden_regression(golden_path: Path) -> None:
             "waveform_std": 24.0,
             "block_size": 100,
         },
+        **decoder_kwargs,
     )
     decoder.fit(
         inputs["position_time"],
@@ -249,59 +292,9 @@ def test_clusterless_decoder_golden_regression(golden_path: Path) -> None:
     test_end_idx = min(n_encode + 50, len(inputs["position_time"]))
     results = _predict_clusterless_decoder(decoder, inputs, n_encode, test_end_idx)
 
-    golden_file = golden_path / "clusterless_decoder_golden.pkl"
-    if not golden_file.exists():
-        fail_unless_regenerating(golden_file)
-        save_pickle(golden_file, {"posterior": results.acausal_posterior.values})
-        pytest.skip("Golden data created, skipping comparison")
-
-    golden = load_pickle(golden_file)
-    compare_golden_arrays(
-        results.acausal_posterior.values, golden["posterior"], "posterior"
-    )
-
-
-@pytest.mark.slow
-def test_random_walk_transition_golden_regression(golden_path: Path) -> None:
-    """Decoder with RandomWalk continuous transition, input-pinned."""
-    inputs = load_or_create_clusterless_inputs(
-        golden_path / "random_walk_transition_inputs.pkl",
-        seed=RANDOM_WALK_SEED,
-    )
-
-    n_encode = int(0.7 * len(inputs["position_time"]))
-    is_training = np.ones(len(inputs["position_time"]), dtype=bool)
-    is_training[n_encode:] = False
-
-    decoder = ClusterlessDecoder(
-        clusterless_algorithm="clusterless_kde",
-        clusterless_algorithm_params={
-            "position_std": 6.0,
-            "waveform_std": 24.0,
-            "block_size": 100,
-        },
-        continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
-    )
-    decoder.fit(
-        inputs["position_time"],
-        inputs["position"],
-        inputs["spike_times"],
-        inputs["spike_waveform_features"],
-        is_training=is_training,
-    )
-
-    test_end_idx = min(n_encode + 50, len(inputs["position_time"]))
-    results = _predict_clusterless_decoder(decoder, inputs, n_encode, test_end_idx)
-
-    golden_file = golden_path / "random_walk_transition_golden.pkl"
-    if not golden_file.exists():
-        fail_unless_regenerating(golden_file)
-        save_pickle(golden_file, {"posterior": results.acausal_posterior.values})
-        pytest.skip("Golden data created, skipping comparison")
-
-    golden = load_pickle(golden_file)
-    compare_golden_arrays(
-        results.acausal_posterior.values, golden["posterior"], "posterior"
+    check_golden(
+        golden_path / f"{name}_golden.pkl",
+        {"posterior": results.acausal_posterior.values},
     )
 
 
@@ -340,15 +333,9 @@ def test_sorted_spikes_decoder_golden_regression(golden_path: Path) -> None:
         position_time=time_arr[:n_test],
     )
 
-    golden_file = golden_path / "sorted_spikes_decoder_golden.pkl"
-    if not golden_file.exists():
-        fail_unless_regenerating(golden_file)
-        save_pickle(golden_file, {"posterior": results.acausal_posterior.values})
-        pytest.skip("Golden data created, skipping comparison")
-
-    golden = load_pickle(golden_file)
-    compare_golden_arrays(
-        results.acausal_posterior.values, golden["posterior"], "posterior"
+    check_golden(
+        golden_path / "sorted_spikes_decoder_golden.pkl",
+        {"posterior": results.acausal_posterior.values},
     )
 
 
@@ -414,24 +401,10 @@ def test_nonlocal_detector_golden_regression(golden_path: Path) -> None:
         position_time=position_time[test_start_idx:test_end_idx],
     )
 
-    golden_file = golden_path / "nonlocal_detector_golden.pkl"
-    if not golden_file.exists():
-        fail_unless_regenerating(golden_file)
-        save_pickle(
-            golden_file,
-            {
-                "posterior": results.acausal_posterior.values,
-                "state_probs": results.acausal_state_probabilities.values,
-            },
-        )
-        pytest.skip("Golden data created, skipping comparison")
-
-    golden = load_pickle(golden_file)
-    compare_golden_arrays(
-        results.acausal_posterior.values, golden["posterior"], "posterior"
-    )
-    compare_golden_arrays(
-        results.acausal_state_probabilities.values,
-        golden["state_probs"],
-        "state_probs",
+    check_golden(
+        golden_path / "nonlocal_detector_golden.pkl",
+        {
+            "posterior": results.acausal_posterior.values,
+            "state_probs": results.acausal_state_probabilities.values,
+        },
     )
