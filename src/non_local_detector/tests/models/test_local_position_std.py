@@ -20,37 +20,40 @@ from non_local_detector.models import (
 )
 from non_local_detector.tests.models._helpers import make_two_arm_track
 
+DETECTOR_CLASSES = [NonLocalSortedSpikesDetector, NonLocalClusterlessDetector]
+DETECTOR_IDS = ["sorted", "clusterless"]
+
 
 @pytest.mark.unit
 class TestLocalPositionStdValidation:
     """Test local_position_std parameter validation."""
 
-    def test_default_is_none(self):
+    @pytest.mark.parametrize("detector_cls", DETECTOR_CLASSES, ids=DETECTOR_IDS)
+    def test_default_is_none(self, detector_cls):
         """Default local_position_std is None (legacy behavior)."""
-        detector = NonLocalSortedSpikesDetector()
+        detector = detector_cls()
         assert detector.local_position_std is None
 
-    def test_positive_value_accepted(self):
-        """Positive local_position_std values are accepted."""
-        detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
-        assert detector.local_position_std == 5.0
+    # 0.0 is delta-kernel mode
+    @pytest.mark.parametrize("value", [5.0, 0.0], ids=["positive", "zero"])
+    @pytest.mark.parametrize("detector_cls", DETECTOR_CLASSES, ids=DETECTOR_IDS)
+    def test_nonnegative_value_accepted(self, detector_cls, value):
+        """Positive and zero local_position_std values are accepted."""
+        detector = detector_cls(local_position_std=value)
+        assert detector.local_position_std == value
 
     def test_small_positive_value_accepted(self):
         """Small positive local_position_std values are accepted."""
         detector = NonLocalSortedSpikesDetector(local_position_std=0.01)
         assert detector.local_position_std == 0.01
 
-    def test_zero_accepted(self):
-        """local_position_std=0 is accepted (delta-kernel mode)."""
-        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        assert detector.local_position_std == 0.0
-
-    def test_negative_rejected(self):
+    @pytest.mark.parametrize("detector_cls", DETECTOR_CLASSES, ids=DETECTOR_IDS)
+    def test_negative_rejected(self, detector_cls):
         """Negative local_position_std is rejected with ValidationError."""
         with pytest.raises(
             ValidationError, match="local_position_std must be non-negative"
         ):
-            NonLocalSortedSpikesDetector(local_position_std=-1.0)
+            detector_cls(local_position_std=-1.0)
 
     @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
     def test_nonfinite_rejected(self, bad):
@@ -79,28 +82,6 @@ class TestLocalPositionStdValidation:
         f32_min_sigma = float(np.sqrt(np.finfo(np.float32).tiny))
         detector = NonLocalSortedSpikesDetector(local_position_std=f32_min_sigma)
         assert detector.local_position_std == f32_min_sigma
-
-    def test_clusterless_default_is_none(self):
-        """Default local_position_std is None on clusterless detector."""
-        detector = NonLocalClusterlessDetector()
-        assert detector.local_position_std is None
-
-    def test_clusterless_positive_value_accepted(self):
-        """Positive local_position_std accepted on clusterless detector."""
-        detector = NonLocalClusterlessDetector(local_position_std=5.0)
-        assert detector.local_position_std == 5.0
-
-    def test_clusterless_zero_accepted(self):
-        """local_position_std=0 accepted on clusterless detector (delta mode)."""
-        detector = NonLocalClusterlessDetector(local_position_std=0.0)
-        assert detector.local_position_std == 0.0
-
-    def test_clusterless_negative_rejected(self):
-        """Negative local_position_std rejected on clusterless detector."""
-        with pytest.raises(
-            ValidationError, match="local_position_std must be non-negative"
-        ):
-            NonLocalClusterlessDetector(local_position_std=-1.0)
 
 
 @pytest.mark.unit

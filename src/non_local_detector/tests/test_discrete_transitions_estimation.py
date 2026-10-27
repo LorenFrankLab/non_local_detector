@@ -789,96 +789,64 @@ class TestExpandedDiscreteTransitionCounts:
                 state_ind,
             )
 
-    def test_expanded_counts_rejects_broadcastable_transition_shape(self):
-        """Broadcastable expanded transitions should not produce silent counts."""
+    @pytest.mark.parametrize(
+        "estimator, transition_args, match",
+        [
+            # Broadcastable expanded transitions should not produce silent counts
+            (
+                estimate_discrete_transition_counts_from_expanded_posteriors,
+                (np.array([[0.2, 0.3, 0.5]]),),
+                "transition_matrix",
+            ),
+            # Time-varying expanded transitions must match n_time and n_state_bins
+            (
+                estimate_discrete_transition_responses_from_expanded_posteriors,
+                (np.ones((3, 1, 3)) / 3.0,),
+                "transition_matrix",
+            ),
+            # Broadcastable stationary discrete transitions should raise
+            (
+                estimate_discrete_transition_counts_from_factorized_posteriors,
+                (np.eye(3), np.array([[0.2, 0.3, 0.5]])),
+                "discrete_transition_matrix",
+            ),
+            # Time-varying discrete transitions must match n_time and n_states
+            (
+                estimate_discrete_transition_responses_from_factorized_posteriors,
+                (np.eye(3), np.ones((3, 1, 3)) / 3.0),
+                "discrete_transition_matrix",
+            ),
+            # Continuous transitions must match expanded state bins exactly
+            (
+                estimate_discrete_transition_responses_from_factorized_posteriors,
+                (np.array([[0.2, 0.3, 0.5]]), np.eye(3)),
+                "continuous_transition_matrix",
+            ),
+        ],
+        ids=[
+            "expanded-counts-broadcastable-transition",
+            "expanded-responses-bad-time-transition",
+            "factorized-counts-broadcastable-discrete",
+            "factorized-responses-bad-time-discrete",
+            "factorized-responses-bad-continuous",
+        ],
+    )
+    def test_rejects_malformed_transition_shape(
+        self, estimator, transition_args, match
+    ):
+        """Malformed transition shapes should raise instead of broadcasting.
+
+        ``transition_args`` holds the arguments between the posteriors and
+        ``state_ind``: ``(transition_matrix,)`` for the expanded estimators,
+        ``(continuous_transition, discrete_transition)`` for the factorized.
+        """
         causal = np.ones((3, 3)) / 3.0
         predictive = causal.copy()
         acausal = causal.copy()
         state_ind = np.array([0, 1, 2])
-        transition = np.array([[0.2, 0.3, 0.5]])
 
-        with pytest.raises(ValueError, match="transition_matrix"):
-            estimate_discrete_transition_counts_from_expanded_posteriors(
-                causal,
-                predictive,
-                acausal,
-                transition,
-                state_ind,
-            )
-
-    def test_expanded_responses_rejects_bad_time_transition_shape(self):
-        """Time-varying expanded transitions must match n_time and n_state_bins."""
-        causal = np.ones((3, 3)) / 3.0
-        predictive = causal.copy()
-        acausal = causal.copy()
-        state_ind = np.array([0, 1, 2])
-        transition = np.ones((3, 1, 3)) / 3.0
-
-        with pytest.raises(ValueError, match="transition_matrix"):
-            estimate_discrete_transition_responses_from_expanded_posteriors(
-                causal,
-                predictive,
-                acausal,
-                transition,
-                state_ind,
-            )
-
-    def test_factorized_counts_rejects_broadcastable_discrete_transition_shape(self):
-        """Broadcastable stationary discrete transitions should raise."""
-        causal = np.ones((3, 3)) / 3.0
-        predictive = causal.copy()
-        acausal = causal.copy()
-        continuous_transition = np.eye(3)
-        discrete_transition = np.array([[0.2, 0.3, 0.5]])
-        state_ind = np.array([0, 1, 2])
-
-        with pytest.raises(ValueError, match="discrete_transition_matrix"):
-            estimate_discrete_transition_counts_from_factorized_posteriors(
-                causal,
-                predictive,
-                acausal,
-                continuous_transition,
-                discrete_transition,
-                state_ind,
-            )
-
-    def test_factorized_responses_rejects_bad_time_discrete_transition_shape(self):
-        """Time-varying discrete transitions must match n_time and n_states."""
-        causal = np.ones((3, 3)) / 3.0
-        predictive = causal.copy()
-        acausal = causal.copy()
-        continuous_transition = np.eye(3)
-        discrete_transition = np.ones((3, 1, 3)) / 3.0
-        state_ind = np.array([0, 1, 2])
-
-        with pytest.raises(ValueError, match="discrete_transition_matrix"):
-            estimate_discrete_transition_responses_from_factorized_posteriors(
-                causal,
-                predictive,
-                acausal,
-                continuous_transition,
-                discrete_transition,
-                state_ind,
-            )
-
-    def test_factorized_responses_rejects_bad_continuous_transition_shape(self):
-        """Continuous transitions must match expanded state bins exactly."""
-        causal = np.ones((3, 3)) / 3.0
-        predictive = causal.copy()
-        acausal = causal.copy()
-        continuous_transition = np.array([[0.2, 0.3, 0.5]])
-        discrete_transition = np.eye(3)
-        state_ind = np.array([0, 1, 2])
-
-        with pytest.raises(ValueError, match="continuous_transition_matrix"):
-            estimate_discrete_transition_responses_from_factorized_posteriors(
-                causal,
-                predictive,
-                acausal,
-                continuous_transition,
-                discrete_transition,
-                state_ind,
-            )
+        with pytest.raises(ValueError, match=match):
+            estimator(causal, predictive, acausal, *transition_args, state_ind)
 
     def test_zero_predictive_bins_are_finite(self):
         """Zero predictive bins should not create NaN or inf counts."""

@@ -378,6 +378,33 @@ class TestInitializeEnvironmentsFitting:
         assert decoder.environments[0].place_bin_centers_.shape[1] == 1
 
 
+def _n_state_decoder(environment, discrete_initial_conditions):
+    """Build a non-local SortedSpikesDecoder with fitted environments.
+
+    The number of states is ``len(discrete_initial_conditions)``; every
+    state uses a uniform-on-track initial condition, a random-walk
+    transition, and a non-local observation model in ``environment``.
+    """
+    n_states = len(discrete_initial_conditions)
+    decoder = SortedSpikesDecoder(
+        discrete_initial_conditions=discrete_initial_conditions,
+        continuous_initial_conditions_types=["uniform_on_track"] * n_states,
+        continuous_transition_types=["random_walk"] * n_states,
+        discrete_transition_stickiness=0.0,
+        environments=environment,
+        observation_models=tuple(
+            ObservationModel(
+                environment_name=environment.environment_name, is_local=False
+            )
+            for _ in range(n_states)
+        ),
+        state_names=[f"state {i}" for i in range(n_states)],
+    )
+    position = np.linspace(0, 100, 50)[:, np.newaxis]
+    decoder.initialize_environments(position)
+    return decoder
+
+
 @pytest.mark.unit
 class TestInitializeStateIndex:
     """Test initialize_state_index method."""
@@ -385,27 +412,7 @@ class TestInitializeStateIndex:
     def test_initialize_state_index_sets_n_discrete_states(self, simple_1d_environment):
         """Test that initialize_state_index sets n_discrete_states_."""
         # Arrange
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.5, 0.3, 0.2]),
-            continuous_initial_conditions_types=[
-                "uniform_on_track",
-                "uniform_on_track",
-                "uniform_on_track",
-            ],
-            continuous_transition_types=["random_walk", "random_walk", "random_walk"],
-            discrete_transition_stickiness=0.0,
-            environments=simple_1d_environment,
-            observation_models=tuple(
-                ObservationModel(
-                    environment_name=simple_1d_environment.environment_name,
-                    is_local=False,
-                )
-                for _ in range(3)
-            ),
-            state_names=["state 0", "state 1", "state 2"],
-        )
-        position = np.linspace(0, 100, 50)[:, np.newaxis]
-        decoder.initialize_environments(position)
+        decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.3, 0.2]))
 
         # Act
         decoder.initialize_state_index()
@@ -416,26 +423,7 @@ class TestInitializeStateIndex:
     def test_initialize_state_index_sets_state_ind(self, simple_1d_environment):
         """Test that initialize_state_index creates state_ind_ array."""
         # Arrange
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.5, 0.5]),
-            continuous_initial_conditions_types=[
-                "uniform_on_track",
-                "uniform_on_track",
-            ],
-            continuous_transition_types=["random_walk", "random_walk"],
-            discrete_transition_stickiness=0.0,
-            environments=simple_1d_environment,
-            observation_models=tuple(
-                ObservationModel(
-                    environment_name=simple_1d_environment.environment_name,
-                    is_local=False,
-                )
-                for _ in range(2)
-            ),
-            state_names=["state 0", "state 1"],
-        )
-        position = np.linspace(0, 100, 50)[:, np.newaxis]
-        decoder.initialize_environments(position)
+        decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.5]))
 
         # Act
         decoder.initialize_state_index()
@@ -448,26 +436,7 @@ class TestInitializeStateIndex:
     def test_initialize_state_index_sets_bin_sizes(self, simple_1d_environment):
         """Test that initialize_state_index creates bin_sizes_ array."""
         # Arrange
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.5, 0.5]),
-            continuous_initial_conditions_types=[
-                "uniform_on_track",
-                "uniform_on_track",
-            ],
-            continuous_transition_types=["random_walk", "random_walk"],
-            discrete_transition_stickiness=0.0,
-            environments=simple_1d_environment,
-            observation_models=tuple(
-                ObservationModel(
-                    environment_name=simple_1d_environment.environment_name,
-                    is_local=False,
-                )
-                for _ in range(2)
-            ),
-            state_names=["state 0", "state 1"],
-        )
-        position = np.linspace(0, 100, 50)[:, np.newaxis]
-        decoder.initialize_environments(position)
+        decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.5]))
 
         # Act
         decoder.initialize_state_index()
@@ -482,27 +451,7 @@ class TestInitializeStateIndex:
     ):
         """Test that n_state_bins_ equals sum of bin_sizes_."""
         # Arrange
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.5, 0.3, 0.2]),
-            continuous_initial_conditions_types=[
-                "uniform_on_track",
-                "uniform_on_track",
-                "uniform_on_track",
-            ],
-            continuous_transition_types=["random_walk", "random_walk", "random_walk"],
-            discrete_transition_stickiness=0.0,
-            environments=simple_1d_environment,
-            observation_models=tuple(
-                ObservationModel(
-                    environment_name=simple_1d_environment.environment_name,
-                    is_local=False,
-                )
-                for _ in range(3)
-            ),
-            state_names=["state 0", "state 1", "state 2"],
-        )
-        position = np.linspace(0, 100, 50)[:, np.newaxis]
-        decoder.initialize_environments(position)
+        decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.3, 0.2]))
 
         # Act
         decoder.initialize_state_index()
@@ -513,19 +462,7 @@ class TestInitializeStateIndex:
     def test_initialize_state_index_sets_is_track_interior(self, simple_1d_environment):
         """Test that initialize_state_index sets is_track_interior_state_bins_."""
         # Arrange
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([1.0]),
-            continuous_initial_conditions_types=["uniform_on_track"],
-            continuous_transition_types=["random_walk"],
-            discrete_transition_stickiness=0.0,
-            environments=simple_1d_environment,
-            observation_models=ObservationModel(
-                environment_name=simple_1d_environment.environment_name, is_local=False
-            ),
-            state_names=["state 0"],
-        )
-        position = np.linspace(0, 100, 50)[:, np.newaxis]
-        decoder.initialize_environments(position)
+        decoder = _n_state_decoder(simple_1d_environment, np.array([1.0]))
 
         # Act
         decoder.initialize_state_index()
@@ -602,23 +539,18 @@ class TestAlgorithmParamsResolution:
         assert resolved == _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS
         assert resolved is not _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS
 
-    def test_cont_frag_clusterless_default_stores_none(self):
-        """ContFragClusterlessClassifier inherits the same contract."""
-        d = ContFragClusterlessClassifier()
-        assert d.clusterless_algorithm_params is None
-        resolved = d._resolve_clusterless_algorithm_params()
-        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
-
-    def test_multienvironment_clusterless_default_stores_none(self):
-        """MultiEnvironmentClusterlessClassifier inherits the same contract."""
-        d = MultiEnvironmentClusterlessClassifier()
-        assert d.clusterless_algorithm_params is None
-        resolved = d._resolve_clusterless_algorithm_params()
-        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
-
-    def test_non_local_clusterless_default_stores_none(self):
-        """NonLocalClusterlessDetector inherits the same contract."""
-        d = NonLocalClusterlessDetector()
+    @pytest.mark.parametrize(
+        "model_cls",
+        [
+            ContFragClusterlessClassifier,
+            MultiEnvironmentClusterlessClassifier,
+            NonLocalClusterlessDetector,
+        ],
+        ids=lambda cls: cls.__name__,
+    )
+    def test_clusterless_subclass_default_stores_none(self, model_cls):
+        """Clusterless subclasses inherit the same contract."""
+        d = model_cls()
         assert d.clusterless_algorithm_params is None
         resolved = d._resolve_clusterless_algorithm_params()
         assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS

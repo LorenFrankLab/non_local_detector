@@ -74,24 +74,11 @@ class TestMultiEnvironmentDefaults:
         model = MultiEnvironmentSortedSpikesClassifier()
         assert len(model.state_names) == 2
 
-    def test_sorted_spikes_initial_conditions_valid(self):
-        """Initial conditions must be a valid probability distribution."""
-        model = MultiEnvironmentSortedSpikesClassifier()
-        ic = model.discrete_initial_conditions
-        assert np.all(ic >= 0)
-        assert np.isclose(ic.sum(), 1.0)
-
     def test_sorted_spikes_observation_models_have_environment_names(self):
         """Each observation model should reference an environment."""
         model = MultiEnvironmentSortedSpikesClassifier()
         env_names = {obs.environment_name for obs in model.observation_models}
         assert env_names == {"env1", "env2"}
-
-    def test_clusterless_default_construction(self):
-        """Clusterless variant should construct with correct defaults."""
-        model = MultiEnvironmentClusterlessClassifier()
-        assert len(model.state_names) == 2
-        assert np.isclose(model.discrete_initial_conditions.sum(), 1.0)
 
     def test_custom_initial_conditions_override(self):
         """Custom initial conditions should override defaults."""
@@ -111,28 +98,46 @@ class TestNoSpikeContFragDefaults:
         model = NoSpikeContFragSortedSpikesClassifier()
         assert len(model.state_names) == 3
 
-    def test_sorted_spikes_initial_conditions_valid(self):
-        """Initial conditions must be a valid probability distribution."""
-        model = NoSpikeContFragSortedSpikesClassifier()
-        ic = model.discrete_initial_conditions
-        assert np.all(ic >= 0)
-        assert np.isclose(ic.sum(), 1.0)
-
     def test_sorted_spikes_has_no_spike_observation(self):
         """Should have at least one no-spike observation model."""
         model = NoSpikeContFragSortedSpikesClassifier()
         assert any(obs.is_no_spike for obs in model.observation_models)
 
-    def test_clusterless_default_construction(self):
-        """Clusterless variant should construct with correct defaults."""
-        model = NoSpikeContFragClusterlessClassifier()
-        assert len(model.state_names) == 3
-        assert np.isclose(model.discrete_initial_conditions.sum(), 1.0)
-
     def test_clusterless_has_no_spike_observation(self):
         """Clusterless variant should also have a no-spike observation."""
         model = NoSpikeContFragClusterlessClassifier()
         assert any(obs.is_no_spike for obs in model.observation_models)
+
+
+@pytest.mark.unit
+class TestVariantSharedDefaults:
+    """Default checks shared by the multi-environment and no-spike variants."""
+
+    @pytest.mark.parametrize(
+        "model_cls",
+        [MultiEnvironmentSortedSpikesClassifier, NoSpikeContFragSortedSpikesClassifier],
+        ids=lambda cls: cls.__name__,
+    )
+    def test_sorted_spikes_initial_conditions_valid(self, model_cls):
+        """Initial conditions must be a valid probability distribution."""
+        model = model_cls()
+        ic = model.discrete_initial_conditions
+        assert np.all(ic >= 0)
+        assert np.isclose(ic.sum(), 1.0)
+
+    @pytest.mark.parametrize(
+        "model_cls, n_states",
+        [
+            (MultiEnvironmentClusterlessClassifier, 2),
+            (NoSpikeContFragClusterlessClassifier, 3),
+        ],
+        ids=lambda v: v.__name__ if isinstance(v, type) else str(v),
+    )
+    def test_clusterless_default_construction(self, model_cls, n_states):
+        """Clusterless variant should construct with correct defaults."""
+        model = model_cls()
+        assert len(model.state_names) == n_states
+        assert np.isclose(model.discrete_initial_conditions.sum(), 1.0)
 
 
 @pytest.mark.unit
