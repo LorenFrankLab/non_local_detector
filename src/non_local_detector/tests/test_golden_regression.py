@@ -49,6 +49,8 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from non_local_detector.time_edges import time_edges_from_centers
 
+pytestmark = pytest.mark.integration
+
 GOLDEN_DIR = Path(__file__).parent / "golden_data"
 REGENERATE_ENV_VAR = "NLD_REGENERATE_GOLDEN"
 

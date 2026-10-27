@@ -151,6 +151,8 @@ addopts = [
     "--durations=10",
     "-ra",
 ]
+# Per-test limit from pytest-timeout (in the test extra), locally and in CI.
+timeout = 900
 
 # Test markers for selective running
 markers = [

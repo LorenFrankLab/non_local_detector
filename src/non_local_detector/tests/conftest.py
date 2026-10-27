@@ -34,6 +34,19 @@ settings.register_profile("dev", deadline=None)
 settings.register_profile("ci", deadline=None, derandomize=True, print_blob=True)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
+TEST_CATEGORIES = {"unit", "integration", "property", "snapshot"}
+
+
+def pytest_collection_modifyitems(items):
+    """Mark tests without a category marker as unit tests.
+
+    ``-m unit`` / ``-m integration`` would otherwise silently skip them.
+    """
+    for item in items:
+        if not TEST_CATEGORIES & {marker.name for marker in item.iter_markers()}:
+            item.add_marker(pytest.mark.unit)
+
+
 # ==============================================================================
 # SYNTHETIC RESULTS BUILDERS
 # ==============================================================================
