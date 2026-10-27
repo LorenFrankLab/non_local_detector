@@ -27,17 +27,13 @@ from non_local_detector.likelihoods.diffusion import (
     heat_kernel_rank,
     to_density,
 )
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
+    make_2d_env,
+    make_linear_track_env,
+    path_graph,
+)
 
 pytestmark = pytest.mark.unit
-
-
-def path_graph(n_nodes: int, distance: float = 1.0) -> nx.Graph:
-    """1D chain 0-1-...-(n-1) with uniform ``distance`` edge attribute."""
-    graph = nx.Graph()
-    graph.add_nodes_from(range(n_nodes))
-    for node in range(n_nodes - 1):
-        graph.add_edge(node, node + 1, distance=distance)
-    return graph
 
 
 def grid_graph_2d(n_x: int, n_y: int, spacing: float = 1.0) -> nx.Graph:
@@ -754,17 +750,6 @@ def test_to_density_nonuniform_matches_oracle():
 # ==============================================================================
 
 
-def make_2d_env(seed: int = 0) -> Environment:
-    """2D open-field env with an inferred single-block interior (10x10 bins)."""
-    rng = np.random.default_rng(seed)
-    position = rng.uniform(1.0, 49.0, size=(4000, 2))
-    return Environment(
-        environment_name="of",
-        place_bin_size=5.0,
-        position_range=((0.0, 50.0), (0.0, 50.0)),
-    ).fit_place_grid(position, infer_track_interior=True)
-
-
 def make_2d_split_env() -> Environment:
     """2D env with two spatially separated clusters -> two interior components."""
     rng = np.random.default_rng(3)
@@ -776,25 +761,6 @@ def make_2d_split_env() -> Environment:
         place_bin_size=2.0,
         position_range=((0.0, 50.0), (0.0, 50.0)),
     ).fit_place_grid(position, infer_track_interior=True)
-
-
-def make_linear_track_env(edge_spacing: float = 0.25) -> Environment:
-    """Two-edge linearized track sharing a junction node (a continuous line)."""
-    graph = nx.Graph()
-    graph.add_node(0, pos=(0.0, 0.0))
-    graph.add_node(1, pos=(5.0, 0.0))
-    graph.add_node(2, pos=(10.5, 0.0))
-    graph.add_edge(0, 1, distance=5.0)
-    graph.add_edge(1, 2, distance=5.5)
-    for eid, edge in enumerate(graph.edges):
-        graph.edges[edge]["edge_id"] = eid
-    return Environment(
-        environment_name="line2",
-        place_bin_size=1.0,
-        track_graph=graph,
-        edge_order=[(0, 1), (1, 2)],
-        edge_spacing=edge_spacing,
-    ).fit_place_grid()
 
 
 def make_disconnected_track_env() -> Environment:
@@ -862,7 +828,7 @@ def test_environment_graph_nd_roundtrip():
 
 def test_environment_graph_linearized_roundtrip_and_bin_sizes():
     """Linearized adapter: node_order, gap-excluded bin_sizes, and a bump round-trip."""
-    env = make_linear_track_env()
+    env = make_linear_track_env(edge_spacing=0.25)
     graph, node_order, bin_sizes = environment_graph(env)
 
     is_interior = env.is_track_interior_.ravel()

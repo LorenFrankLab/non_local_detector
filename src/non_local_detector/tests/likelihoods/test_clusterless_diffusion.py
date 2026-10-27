@@ -72,9 +72,11 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _interior_bin_indices,
 )
 from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
+    make_two_room_env,
     simulate_sparse_uniform_tracking,
 )
 from non_local_detector.tests.likelihoods.conftest import training_mark_references
+from non_local_detector.tests.models._helpers import make_two_arm_track
 
 WAVEFORM_STD = 6.0
 POSITION_STD = 1.5
@@ -108,34 +110,6 @@ def _make_1d_env(bin_size=1.0, lo=0.0, hi=8.0):
     )
     dummy = np.linspace(lo, hi, 41)[:, None]
     return env.fit_place_grid(position=dummy, infer_track_interior=False)
-
-
-def _disconnected_env():
-    """Two-segment linearized track (edge_spacing > 0) -> a >= 2-component interior
-    graph, so a truncated heat_kernel_rank can drop a component's null mode.
-
-    Mirrors ``test_get_distances_to_interior_bins_gap_position_snaps_to_nearest_interior``
-    in ``tests/environment/test_track_graph.py``.
-    """
-    g = nx.Graph()
-    g.add_node(0, pos=(0.0, 0.0))
-    g.add_node(1, pos=(50.0, 0.0))
-    g.add_node(2, pos=(60.0, 0.0))
-    g.add_node(3, pos=(110.0, 0.0))
-    g.add_edge(0, 1, distance=50.0, edge_id=0)
-    g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-    env = Environment(
-        environment_name="two-segment",
-        place_bin_size=5.0,
-        track_graph=g,
-        edge_order=[(0, 1), (2, 3)],
-        edge_spacing=10.0,
-    )
-    position_1d = np.concatenate(
-        [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-    )
-    return env.fit_place_grid(position_1d, infer_track_interior=True)
 
 
 def _sim(seed=0, hi=8.0, n_pos=200, n_elec=2, n_features=2, weights=None):
@@ -771,41 +745,26 @@ def test_nonlocal_finite_and_zero_rate():
         ), f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
 
 
-def test_block_parity():
-    """A tiny effective block (memory_budget forced small) matches one large block."""
+@pytest.mark.parametrize("is_local", [False, True])
+def test_block_parity(is_local):
+    """A tiny effective block (memory_budget forced small) matches one large block.
+
+    ``memory_budget=1`` forces ``effective_block == 1``. Non-local, that is one
+    decode-time row per block; local, it exercises the per-decode-spike-block
+    slicing (``spike_bins[block]``, ``decode_features[block]``, ``seg[block]``)
+    with ``_sim``'s default 2 electrodes x 12 decode spikes each, so many
+    single-spike blocks per electrode run against one big block."""
     s = _sim(seed=3, hi=10.0)
     enc = _fit(s)
 
-    ll_big = np.asarray(
-        _predict(s, enc)
-    )  # default 512 MiB budget -> block == block_size
-    ll_small = np.asarray(_predict(s, enc, memory_budget=1))  # -> effective_block == 1
+    # Default 512 MiB budget -> one block (block == block_size).
+    ll_big = np.asarray(_predict(s, enc, is_local=is_local))
+    ll_small = np.asarray(_predict(s, enc, is_local=is_local, memory_budget=1))
 
+    n_columns = 1 if is_local else int(s["env"].is_track_interior_.sum())
+    assert ll_big.shape == ll_small.shape == (s["time_edges"].shape[0] - 1, n_columns)
     assert np.allclose(ll_big, ll_small, rtol=1e-5, atol=1e-6), (
         f"block parity failed: max|diff|={np.abs(ll_big - ll_small).max():.3e}"
-    )
-
-
-def test_local_block_parity():
-    """The local branch's per-decode-spike-block loop (``spike_bins[block]``,
-    ``decode_features[block]``, ``seg[block]``) must give the same output whether
-    it runs in one big block or many tiny ones. ``test_block_parity`` only
-    exercises ``is_local=False`` (``_predict`` hardcodes non-local by default), so
-    it never touches this slicing in the local branch. ``_sim``'s default 2
-    electrodes x 12 decode spikes each, combined with ``memory_budget=1`` (forces
-    ``effective_block == 1``, i.e. one spike per block), exercises many
-    single-spike blocks per electrode against one big block."""
-    s = _sim(seed=3, hi=10.0)
-    enc = _fit(s)
-
-    ll_big = np.asarray(_predict(s, enc, is_local=True))  # one block per electrode
-    ll_small = np.asarray(
-        _predict(s, enc, is_local=True, memory_budget=1)
-    )  # one decode spike per block
-
-    assert ll_big.shape == ll_small.shape == (s["time_edges"].shape[0] - 1, 1)
-    assert np.allclose(ll_big, ll_small, rtol=1e-5, atol=1e-6), (
-        f"local block parity failed: max|diff|={np.abs(ll_big - ll_small).max():.3e}"
     )
 
 
@@ -1067,14 +1026,16 @@ def test_local_finite_and_zero_rate():
     local_gpi = gpi[animal_bins]
 
     seg = _decode_bin(dec_times[1], time_edges)
-    for t_bin in seg:
-        # only the zero-rate electrode contributed at this bin -> exactly
-        # LOG_EPS - local_gpi[t_bin]
-        assert np.allclose(
-            ll[t_bin, 0] + np.diff(time_edges)[t_bin] * local_gpi[t_bin],
-            LOG_RATE_EPS_HZ + np.log(np.diff(time_edges)[t_bin]),
-            atol=1e-6,
-        ), f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
+    dt = np.diff(time_edges)[seg]
+    # only the zero-rate electrode contributed at these bins -> exactly
+    # LOG_EPS - local_gpi[t_bin]
+    np.testing.assert_allclose(
+        ll[seg, 0] + dt * local_gpi[seg],
+        LOG_RATE_EPS_HZ + np.log(dt),
+        rtol=1e-5,
+        atol=1e-6,
+        err_msg="zero-rate electrode did not floor to LOG_EPS",
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -1095,7 +1056,7 @@ def test_validation_fit():
     # heat_kernel_rank < n_components: a disconnected (>= 2 component) environment,
     # rank below that count must raise (surfaced via cached_eigenbasis ->
     # _require_rank_covers_components; not re-implemented here, just exercised).
-    disconnected_env = _disconnected_env()
+    disconnected_env = make_two_arm_track()
     n_components = n_connected_components(disconnected_env)
     assert n_components >= 2, "fixture must be graph-disconnected to test this path"
     with pytest.raises(ValidationError):
@@ -1465,7 +1426,7 @@ def _median_per_timebin_spearman(ll_a, ll_b):
         for t in range(ll_a.shape[0])
         if np.ptp(ll_b[t]) > 0
     ]
-    return float(np.nanmedian(rhos)), len(rhos)
+    return float(np.nanmedian(rhos))
 
 
 @pytest.mark.integration
@@ -1498,11 +1459,7 @@ def test_agreement_with_kde_simple_geometry():
     ll_d = _predict_diffusion_nonlocal(time, pt, pos_1d, dt_, df, enc_d, ref)
     ll_k = _predict_kde_nonlocal(time, pt, pos_1d, dt_, df, enc_k, ref)
     assert ll_d.shape == ll_k.shape
-    median_1d, n_1d = _median_per_timebin_spearman(ll_d, ll_k)
-    print(
-        f"[AGREE 1D] median per-timebin Spearman(diffusion, kde)={median_1d:.3f} "
-        f"(n_timebins={n_1d}, n_bins={ll_d.shape[1]})"
-    )
+    median_1d = _median_per_timebin_spearman(ll_d, ll_k)
     assert median_1d > 0.6, (
         f"1D diffusion posterior does not track KDE: median Spearman={median_1d:.3f}"
     )
@@ -1527,33 +1484,10 @@ def test_agreement_with_kde_simple_geometry():
     ll_d = _predict_diffusion_nonlocal(time, pt, pos_2d, dt_, df, enc_d, ref)
     ll_k = _predict_kde_nonlocal(time, pt, pos_2d, dt_, df, enc_k, ref)
     assert ll_d.shape == ll_k.shape
-    median_2d, n_2d = _median_per_timebin_spearman(ll_d, ll_k)
-    print(
-        f"[AGREE 2D] median per-timebin Spearman(diffusion, kde)={median_2d:.3f} "
-        f"(n_timebins={n_2d}, n_bins={ll_d.shape[1]})"
-    )
+    median_2d = _median_per_timebin_spearman(ll_d, ll_k)
     assert median_2d > 0.6, (
         f"2D diffusion posterior does not track KDE: median Spearman={median_2d:.3f}"
     )
-
-
-def _make_two_room_env(seed=0):
-    """Two rooms x in [2, 16] and x in [24, 38], gap x in (16, 24) four bins wide:
-    a disconnected (2-component) manifold graph -- a genuine impassable barrier.
-
-    Mirrors ``make_two_room_env`` in ``_sorted_spikes_helpers.py``.
-    """
-    rng = np.random.default_rng(seed)
-    left = rng.uniform([2.0, 2.0], [16.0, 38.0], size=(12000, 2))
-    right = rng.uniform([24.0, 2.0], [38.0, 38.0], size=(12000, 2))
-    position = np.vstack([left, right])
-    rng.shuffle(position)
-    env = Environment(
-        environment_name="two_rooms",
-        place_bin_size=2.0,
-        position_range=((0.0, 40.0), (0.0, 40.0)),
-    ).fit_place_grid(position, infer_track_interior=True)
-    return env, position
 
 
 @pytest.mark.integration
@@ -1573,7 +1507,7 @@ def test_geometry_no_barrier_leak():
     a material fraction. This is the estimator-level proof that fit -> pixellate ->
     diffuse -> predict respects the barrier where KDE cannot.
     """
-    env, position = _make_two_room_env()
+    env, position = make_two_room_env()
     graph, _, _ = environment_graph(env)
     assert nx.number_connected_components(graph) == 2  # a genuine barrier
 
@@ -1621,13 +1555,6 @@ def test_geometry_no_barrier_leak():
 
     diffusion_leak = _posterior_right_room_mass(ll_d[seg])
     kde_leak = _posterior_right_room_mass(ll_k[seg])
-    print(
-        f"[LEAK] diffusion_leak={diffusion_leak:.3e} kde_leak={kde_leak:.4f} "
-        f"ratio={kde_leak / max(diffusion_leak, 1e-30):.2e} "
-        f"(right_bins={int(right_room.sum())}/{int(interior.sum())}, "
-        f"n_enc_spikes={int(spike_mask.sum())})"
-    )
-
     # Diffusion cannot cross the disconnected component; KDE leaks a material fraction.
     assert diffusion_leak < 0.01, (
         f"diffusion leaked across barrier: {diffusion_leak:.3e}"
@@ -1674,7 +1601,7 @@ def test_spike_term_is_the_background_where_the_exact_intensity_is_zero():
     the same in every right-room bin, not a fraction of the spike's left-room
     peak scaled by each bin's occupancy.
     """
-    env, position = _make_two_room_env()
+    env, position = make_two_room_env()
     sampling_frequency = 100
     time = np.arange(position.shape[0]) / sampling_frequency
     center = np.array([14.0, 20.0])
@@ -1759,7 +1686,7 @@ def _two_room_weak_source_model(weak_nats, position_std, corner_only=False):
     Cached, since several tests decode the same fit; callers must not mutate
     the returned environment, arrays or encoding model.
     """
-    env, position = _make_two_room_env()
+    env, position = make_two_room_env()
     time = np.arange(position.shape[0]) / 100
     rng = np.random.default_rng(5)
     in_left = position[:, 0] < 16.0
@@ -2059,11 +1986,6 @@ def test_grid_independence():
         if np.ptp(post_c[t][nn]) > 0 and np.ptp(post_f[t]) > 0
     ]
     median_rho = float(np.nanmedian(rhos))
-    print(
-        f"[GRID] expected-pos dist median={np.median(dist):.3f} max={dist.max():.3f} "
-        f"(coarse bin=4.0) | resampled per-timebin Spearman median={median_rho:.3f}"
-    )
-
     # Sanity: the expected position genuinely moves, so the agreement is non-vacuous.
     assert np.ptp(exp_f[:, 0]) > 1.0 or np.ptp(exp_f[:, 1]) > 1.0
 

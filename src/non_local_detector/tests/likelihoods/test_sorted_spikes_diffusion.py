@@ -35,7 +35,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
 from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
-    make_2d_env,
+    make_linear_track_env,
     make_two_room_env,
     poisson_log_likelihood_reference,
     simulate_place_data,
@@ -56,16 +56,6 @@ ENCODING_DICT_KEYS = {
     "local_interpolation",
     "disable_progress_bar",
 }
-
-
-@pytest.fixture(scope="module")
-def env_2d():
-    """The 2D open field, built once per module.
-
-    Fits cache eigenbases on the environment, so tests that count eigensolves or
-    inspect those caches build their own environment instead.
-    """
-    return make_2d_env()
 
 
 @pytest.fixture(scope="module")
@@ -386,66 +376,6 @@ def test_predict_signature_matches_encoding_dict(env_2d):
     } <= params
 
 
-def test_predict_shapes_local_and_nonlocal(env_2d, three_neuron_diffusion):
-    """Non-local -> (n_time, n_interior); local -> (n_time, 1); both finite."""
-    env = env_2d
-    time, position, spike_times, encoding = three_neuron_diffusion
-    decode_time = time[:200]
-    decode_time_edges = time_edges_from_centers(decode_time)
-    n_interior = int(env.is_track_interior_.ravel().sum())
-
-    nonlocal_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        time,
-        position,
-        spike_times,
-        time_edges=decode_time_edges,
-        is_local=False,
-        **encoding,
-    )
-    assert nonlocal_ll.shape == (decode_time.shape[0], n_interior)
-    assert np.all(np.isfinite(nonlocal_ll))
-
-    local_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        time,
-        position,
-        spike_times,
-        time_edges=decode_time_edges,
-        is_local=True,
-        **encoding,
-    )
-    assert local_ll.shape == (decode_time.shape[0], 1)
-    assert np.all(np.isfinite(local_ll))
-
-
-def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_diffusion):
-    """Place fields are non-negative and finite, and the non-local likelihood is the
-    Poisson log likelihood of each bin's spike counts under those place fields."""
-    env = env_2d
-    time, position, spike_times, encoding = three_neuron_diffusion
-    place_fields = np.asarray(encoding["place_fields"])
-    assert np.all(place_fields >= 0.0)
-    assert np.all(np.isfinite(place_fields))
-
-    # Edges halfway between samples: no spike (all at sample times) sits on an edge.
-    edges = time_edges_from_centers(time[:1000])
-    ll = np.asarray(
-        predict_sorted_spikes_diffusion_log_likelihood(
-            time,
-            position,
-            spike_times,
-            time_edges=edges,
-            is_local=False,
-            **encoding,
-        )
-    )
-    expected = poisson_log_likelihood_reference(
-        place_fields, env.is_track_interior_.ravel(), spike_times, edges
-    )
-    # The window holds spikes, so the count term is exercised, not just -dt * rate.
-    assert sum(np.histogram(spikes, edges)[0].sum() for spikes in spike_times) > 20
-    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
-
-
 def test_kde_dropin_equivalence_on_wall_less_field():
     """On a wall-less open field with matched bandwidth, diffusion place fields track
     KDE place fields at interior bins away from the boundary (pins units/scale)."""
@@ -527,25 +457,6 @@ def test_nonuniform_weights_parity_with_kde(env_2d):
     assert max(medians) < 0.05
 
 
-def make_linear_track_env():
-    """Two-edge linearized track sharing a junction (a continuous line 0..10.5)."""
-    graph = nx.Graph()
-    graph.add_node(0, pos=(0.0, 0.0))
-    graph.add_node(1, pos=(5.0, 0.0))
-    graph.add_node(2, pos=(10.5, 0.0))
-    graph.add_edge(0, 1, distance=5.0)
-    graph.add_edge(1, 2, distance=5.5)
-    for eid, edge in enumerate(graph.edges):
-        graph.edges[edge]["edge_id"] = eid
-    return Environment(
-        environment_name="line2",
-        place_bin_size=1.0,
-        track_graph=graph,
-        edge_order=[(0, 1), (1, 2)],
-        edge_spacing=0.0,
-    ).fit_place_grid()
-
-
 def simulate_linear_track_data(place_centers=(2.0, 8.0), seed: int = 3):
     """Back-and-forth trajectory on ``make_linear_track_env`` with place cells.
 
@@ -567,7 +478,7 @@ def simulate_linear_track_data(place_centers=(2.0, 8.0), seed: int = 3):
 def test_linearized_track_graph_fit_and_predict():
     """Exercise the linearized (track_graph) branch through the likelihood: fields are
     full-grid, place at the right linear location, and predict runs finite."""
-    env = make_linear_track_env()
+    env = make_linear_track_env(edge_spacing=0.0)
     place_centers = [2.0, 8.0]  # place-cell x-locations on the track
     time, position, spike_times = simulate_linear_track_data(place_centers)
 
@@ -620,7 +531,7 @@ def _fit_linear_track_with_smoothed_fields(position_std: float = 2.0):
     ``smoothed_exposure`` in seconds, shape (n_interior,), and ``smoothed_counts``
     shape (n_interior, n_neurons), both in ``node_order``.
     """
-    env = make_linear_track_env()
+    env = make_linear_track_env(edge_spacing=0.0)
     time, position, spike_times = simulate_linear_track_data()
     graph, node_order, bin_sizes = environment_graph(env)
     # The 5.5-unit edge holds six 0.917-wide bins next to 1.0-wide bins.
@@ -1157,69 +1068,19 @@ def test_less_edge_bias_than_kde():
     assert diffusion_bias < 0.3 * kde_bias
 
 
-@pytest.mark.integration
-def test_end_to_end_sorted_spikes_diffusion_decoder():
-    """A full SortedSpikesDecoder run with the diffusion algorithm decodes a valid
-    posterior (sums to 1, finite) and recovers the trajectory."""
-    from non_local_detector.models import SortedSpikesDecoder
-    from non_local_detector.simulate.sorted_spikes_simulation import (
-        make_simulated_data,
-    )
-
-    (
-        _speed,
-        position,
-        spike_times,
-        time,
-        _event_times,
-        _sampling_frequency,
-        is_event,
-        _place_fields,
-    ) = make_simulated_data(n_neurons=15)
-
-    decoder = SortedSpikesDecoder(
-        sorted_spikes_algorithm="sorted_spikes_diffusion",
-        sorted_spikes_algorithm_params={"position_std": 6.0},
-    ).fit(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        is_training=~is_event,
-    )
-    results = decoder.predict(
-        spike_times=spike_times,
-        time_edges=time_edges_from_centers(time),
-        position=position,
-        position_time=time,
-        save_log_likelihood_to_results=False,
-    )
-
-    posterior = results.acausal_posterior
-    assert posterior.shape[0] == len(time)
-    assert np.all(np.isfinite(posterior.values))
-    np.testing.assert_allclose(posterior.sum("state_bins").values, 1.0, atol=1e-5)
-
-    # Trajectory recovery: the MAP-decoded position tracks the true position.
-    bin_position = np.asarray(posterior["position"].values)
-    decoded_position = bin_position[np.asarray(posterior.values).argmax(axis=1)]
-    corr = np.corrcoef(decoded_position, np.asarray(position).ravel())[0, 1]
-    assert corr > 0.9
-
-
 # ----------------------------------------------------------------------------
 # population validation (shared by sorted_spikes_diffusion and sorted_spikes_mrf)
 # ----------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
-def one_neuron_fit(env_2d, request):
-    """A registered diffusion-family model fit on a single neuron."""
-    env = env_2d
-    time, position, spike_times = simulate_place_data(env, n_neurons=1)
-    fit, predict = _SORTED_SPIKES_ALGORITHMS[request.param]
-    fit_params = (
-        {"position_std": 6.0} if request.param == "sorted_spikes_diffusion" else {}
-    )
+def _fit_population(env, algorithm, n_neurons):
+    """Fit a registered diffusion-family model on ``n_neurons`` place cells.
+
+    Returns ``(predict, encoding, time, position, spike_times)``.
+    """
+    time, position, spike_times = simulate_place_data(env, n_neurons=n_neurons)
+    fit, predict = _SORTED_SPIKES_ALGORITHMS[algorithm]
+    fit_params = {"position_std": 6.0} if algorithm == "sorted_spikes_diffusion" else {}
     encoding = fit(
         position_time=time,
         position=position,
@@ -1228,6 +1089,12 @@ def one_neuron_fit(env_2d, request):
         **fit_params,
     )
     return predict, encoding, time, position, spike_times
+
+
+@pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
+def one_neuron_fit(env_2d, request):
+    """A registered diffusion-family model fit on a single neuron."""
+    return _fit_population(env_2d, request.param, n_neurons=1)
 
 
 @pytest.mark.unit
@@ -1281,20 +1148,124 @@ def test_detectors_reject_population_mismatch(env_2d, algorithm):
 @pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
 def three_neuron_fit(env_2d, request):
     """A registered diffusion-family model fit on three neurons."""
+    return _fit_population(env_2d, request.param, n_neurons=3)
+
+
+def test_predict_shapes_local_and_nonlocal(env_2d, three_neuron_fit):
+    """Non-local -> (n_time, n_interior); local -> (n_time, 1); both finite."""
     env = env_2d
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-    fit, predict = _SORTED_SPIKES_ALGORITHMS[request.param]
-    fit_params = (
-        {"position_std": 6.0} if request.param == "sorted_spikes_diffusion" else {}
+    predict, encoding, time, position, spike_times = three_neuron_fit
+    decode_time = time[:200]
+    decode_time_edges = time_edges_from_centers(decode_time)
+    n_interior = int(env.is_track_interior_.ravel().sum())
+
+    nonlocal_ll = predict(
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=False,
+        **encoding,
     )
-    encoding = fit(
+    assert nonlocal_ll.shape == (decode_time.shape[0], n_interior)
+    assert np.all(np.isfinite(nonlocal_ll))
+
+    local_ll = predict(
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=True,
+        **encoding,
+    )
+    assert local_ll.shape == (decode_time.shape[0], 1)
+    assert np.all(np.isfinite(local_ll))
+
+
+def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_fit):
+    """Place fields are non-negative and finite, and the non-local likelihood is the
+    Poisson log likelihood of each bin's spike counts under those place fields."""
+    env = env_2d
+    predict, encoding, time, position, spike_times = three_neuron_fit
+    place_fields = np.asarray(encoding["place_fields"])
+    assert np.all(place_fields >= 0.0)
+    assert np.all(np.isfinite(place_fields))
+
+    # Edges halfway between samples: no spike (all at sample times) sits on an edge.
+    edges = time_edges_from_centers(time[:1000])
+    ll = np.asarray(
+        predict(
+            time,
+            position,
+            spike_times,
+            time_edges=edges,
+            is_local=False,
+            **encoding,
+        )
+    )
+    expected = poisson_log_likelihood_reference(
+        place_fields, env.is_track_interior_.ravel(), spike_times, edges
+    )
+    # The window holds spikes, so the count term is exercised, not just -dt * rate.
+    assert sum(np.histogram(spikes, edges)[0].sum() for spikes in spike_times) > 20
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "algorithm, algorithm_params",
+    [
+        ("sorted_spikes_diffusion", {"position_std": 6.0}),
+        ("sorted_spikes_mrf", {"rank": 40}),
+    ],
+    ids=["sorted_spikes_diffusion", "sorted_spikes_mrf"],
+)
+def test_end_to_end_sorted_spikes_decoder(algorithm, algorithm_params):
+    """A full SortedSpikesDecoder run decodes a valid posterior (sums to 1, finite)
+    and recovers the trajectory."""
+    from non_local_detector.models import SortedSpikesDecoder
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        make_simulated_data,
+    )
+
+    (
+        _speed,
+        position,
+        spike_times,
+        time,
+        _event_times,
+        _sampling_frequency,
+        is_event,
+        _place_fields,
+    ) = make_simulated_data(n_neurons=15)
+
+    decoder = SortedSpikesDecoder(
+        sorted_spikes_algorithm=algorithm,
+        sorted_spikes_algorithm_params=algorithm_params,
+    ).fit(
         position_time=time,
         position=position,
         spike_times=spike_times,
-        environment=env,
-        **fit_params,
+        is_training=~is_event,
     )
-    return predict, encoding, time, position, spike_times
+    results = decoder.predict(
+        spike_times=spike_times,
+        time_edges=time_edges_from_centers(time),
+        position=position,
+        position_time=time,
+        save_log_likelihood_to_results=False,
+    )
+
+    posterior = results.acausal_posterior
+    assert posterior.shape[0] == len(time)
+    assert np.all(np.isfinite(posterior.values))
+    np.testing.assert_allclose(posterior.sum("state_bins").values, 1.0, atol=1e-5)
+
+    # Trajectory recovery: the MAP-decoded position tracks the true position.
+    bin_position = np.asarray(posterior["position"].values)
+    decoded_position = bin_position[np.asarray(posterior.values).argmax(axis=1)]
+    corr = np.corrcoef(decoded_position, np.asarray(position).ravel())[0, 1]
+    assert corr > 0.9
 
 
 @pytest.mark.unit

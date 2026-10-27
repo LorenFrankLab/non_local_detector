@@ -15,6 +15,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from non_local_detector.tests.models._helpers import make_two_arm_track
 
 pytestmark = pytest.mark.unit
 
@@ -347,25 +348,7 @@ def test_get_distances_to_interior_bins_gap_position_snaps_to_nearest_interior()
     Distances to unreachable interior bins on disconnected arms remain
     as +inf (graph disconnection), but no NaN row is produced.
     """
-    g = nx.Graph()
-    g.add_node(0, pos=(0.0, 0.0))
-    g.add_node(1, pos=(50.0, 0.0))
-    g.add_node(2, pos=(60.0, 0.0))
-    g.add_node(3, pos=(110.0, 0.0))
-    g.add_edge(0, 1, distance=50.0, edge_id=0)
-    g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-    env = Environment(
-        environment_name="two-segment",
-        place_bin_size=5.0,
-        track_graph=g,
-        edge_order=[(0, 1), (2, 3)],
-        edge_spacing=10.0,
-    )
-    position_1d = np.concatenate(
-        [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-    )
-    env = env.fit_place_grid(position_1d, infer_track_interior=True)
+    env = make_two_arm_track()
 
     is_interior = env.is_track_interior_.ravel()
     gap_bins = np.where(~is_interior)[0]
