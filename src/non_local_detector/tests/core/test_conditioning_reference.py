@@ -33,9 +33,14 @@ from non_local_detector.core import (
     chunked_filter_smoother_covariate_dependent,
     filter,
     filter_covariate_dependent,
+    most_likely_sequence,
+    most_likely_sequence_covariate_dependent,
     smoother,
     smoother_covariate_dependent,
+    viterbi,
+    viterbi_covariate_dependent,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 # Tolerance for comparing float32 JAX output with the float64 reference.
 RTOL = 1e-5
@@ -160,6 +165,46 @@ def enumerate_reference(
         "smoothed": np.exp(smoothed),
         "log_evidence": log_evidence,
     }
+
+
+def enumerate_most_likely_path(
+    initial: np.ndarray, transitions: np.ndarray, log_likelihoods: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Most likely state path by scoring every path in float64 log space.
+
+    Parameters
+    ----------
+    initial : np.ndarray, shape (n_states,)
+    transitions : np.ndarray, shape (n_time, n_states, n_states) or (n_states, n_states)
+        Same convention as :func:`enumerate_reference`.
+    log_likelihoods : np.ndarray, shape (n_time, n_states)
+
+    Returns
+    -------
+    path : np.ndarray, shape (n_time,)
+    margin : float
+        Log-score gap between the best and second-best path, so a caller can
+        check that the optimum is unique.
+    """
+    initial = np.asarray(initial, dtype=np.float64)
+    transitions = np.asarray(transitions, dtype=np.float64)
+    log_likelihoods = np.asarray(log_likelihoods, dtype=np.float64)
+    n_time, n_states = log_likelihoods.shape
+    if transitions.ndim == 2:
+        transitions = np.broadcast_to(transitions, (n_time, n_states, n_states))
+    with np.errstate(divide="ignore"):
+        log_initial = np.log(initial)
+        log_transitions = np.log(transitions)
+
+    paths = np.array(list(itertools.product(range(n_states), repeat=n_time)))
+    steps = np.arange(n_time)
+    scores = (
+        log_initial[paths[:, 0]]
+        + log_likelihoods[steps, paths].sum(axis=1)
+        + log_transitions[steps[:-1], paths[:, :-1], paths[:, 1:]].sum(axis=1)
+    )
+    order = np.argsort(scores)[::-1]
+    return paths[order[0]], float(scores[order[0]] - scores[order[1]])
 
 
 def _tiny_model(seed: int = 0, n_time: int = 5, n_states: int = 3):
@@ -747,12 +792,14 @@ class TestMultiStepEnumerationReference:
     def test_chunked_drivers_match_enumeration(
         self, path, n_chunks, cache_log_likelihoods
     ):
-        # Missing rows carry no evidence (log-likelihood 0), in both the cached
-        # array and the callback. The callback returns rows by global index,
-        # keeping this independent of the spike-binning code.
+        # Missing rows carry no evidence (log-likelihood 0). The callback
+        # returns rows by global index, keeping this independent of the
+        # spike-binning code, and zeroes the rows the driver marks missing
+        # itself, so a mis-sliced per-chunk mask changes the result.
         n_time = 5
         is_missing = np.zeros(n_time, dtype=bool)
-        is_missing[[1, 3]] = True
+        # Rows 1-2 straddle the first boundary of the three-chunk split.
+        is_missing[[1, 2]] = True
         time = np.arange(n_time)
 
         if path == "stationary":
@@ -763,12 +810,15 @@ class TestMultiStepEnumerationReference:
             initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
                 n_time=n_time
             )
-        ll = ll.copy()
-        ll[is_missing] = 0.0
-        ref = enumerate_reference(initial, expanded, ll)
+        ll_without_missing = ll.copy()
+        ll_without_missing[is_missing] = 0.0
+        ref = enumerate_reference(initial, expanded, ll_without_missing)
 
         def log_likelihood_func(time_idx, is_missing=None):
-            return ll[np.asarray(time_idx, dtype=int)]
+            rows = ll[np.asarray(time_idx, dtype=int)].copy()
+            assert is_missing is not None and len(is_missing) == len(rows)
+            rows[is_missing] = 0.0
+            return rows
 
         common = {
             "time": time,
@@ -778,7 +828,7 @@ class TestMultiStepEnumerationReference:
             "log_likelihood_args": (),
             "is_missing": is_missing,
             "n_chunks": n_chunks,
-            "log_likelihoods": ll if cache_log_likelihoods else None,
+            "log_likelihoods": None,
             "cache_log_likelihoods": cache_log_likelihoods,
         }
         if path == "stationary":
@@ -798,21 +848,110 @@ class TestMultiStepEnumerationReference:
 
 
 @pytest.mark.unit
+class TestViterbiEnumerationReference:
+    """Viterbi paths equal the best path found by scoring every path."""
+
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_stationary_viterbi_matches_enumeration(self, seed):
+        initial, transitions, ll = _tiny_model(seed=seed)
+        expected, margin = enumerate_most_likely_path(initial, transitions[0], ll)
+        assert margin > 1e-3  # the optimum is unique
+
+        path = viterbi(
+            jnp.asarray(initial), jnp.asarray(transitions[0]), jnp.asarray(ll)
+        )
+        driver_path, _ = most_likely_sequence(
+            time=np.arange(len(ll)),
+            initial_distribution=initial,
+            transition_matrix=transitions[0],
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=ll,
+        )
+
+        np.testing.assert_array_equal(np.asarray(path), expected)
+        np.testing.assert_array_equal(driver_path, expected)
+
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_covariate_viterbi_matches_enumeration(self, seed):
+        initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
+            seed=seed
+        )
+        expected, margin = enumerate_most_likely_path(initial, expanded, ll)
+        assert margin > 1e-3  # the optimum is unique
+
+        path = viterbi_covariate_dependent(
+            jnp.asarray(initial),
+            jnp.asarray(discrete),
+            jnp.asarray(continuous),
+            jnp.asarray(state_ind),
+            jnp.asarray(ll),
+        )
+        driver_path, _ = most_likely_sequence_covariate_dependent(
+            time=np.arange(len(ll)),
+            state_ind=state_ind,
+            initial_distribution=initial,
+            discrete_transition_matrix=discrete,
+            continuous_transition_matrix=continuous,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=ll,
+        )
+
+        np.testing.assert_array_equal(np.asarray(path), expected)
+        np.testing.assert_array_equal(driver_path, expected)
+
+    def test_time_varying_transition_changes_the_optimal_path(self):
+        """A forced switch at one step moves the path; a constant matrix does not.
+
+        Two discrete states with one bin each, sticky transitions, and a small
+        likelihood preference for state 0. Only the step-2 transition forces
+        a move to state 1, so the best path is ``0, 0, 0, 1, 1``; with the
+        sticky matrix at every step it stays in state 0. Using the wrong
+        step's matrix, or ignoring the time variation, gives the wrong path.
+        """
+        n_time = 5
+        state_ind = np.array([0, 1])
+        continuous = np.ones((2, 2))
+        sticky = np.array([[0.9, 0.1], [0.1, 0.9]])
+        discrete = np.broadcast_to(sticky, (n_time, 2, 2)).copy()
+        discrete[2] = [[0.01, 0.99], [0.01, 0.99]]
+        initial = np.array([0.5, 0.5])
+        ll = np.column_stack([np.zeros(n_time), np.full(n_time, -0.5)])
+
+        expected, margin = enumerate_most_likely_path(initial, discrete, ll)
+        constant_path, _ = enumerate_most_likely_path(initial, sticky, ll)
+        np.testing.assert_array_equal(expected, [0, 0, 0, 1, 1])
+        np.testing.assert_array_equal(constant_path, np.zeros(n_time))
+        assert margin > 1e-3
+
+        path = viterbi_covariate_dependent(
+            jnp.asarray(initial),
+            jnp.asarray(discrete),
+            jnp.asarray(continuous),
+            jnp.asarray(state_ind),
+            jnp.asarray(ll),
+        )
+
+        np.testing.assert_array_equal(np.asarray(path), expected)
+
+
+@pytest.mark.unit
 class TestDtypes:
     """Outputs carry the requested dtype; float64 is not silently truncated."""
 
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
     def test_filter_output_dtype_matches_request(self, dtype):
-        if dtype == jnp.float64 and not jax.config.jax_enable_x64:
-            pytest.skip("float64 requires JAX_ENABLE_X64=1")
         prior, ll = (np.asarray(v, dtype=dtype) for v in CASE_UNREACHABLE_MAXIMUM)
         expected_posterior, expected_evidence = bayes_reference(prior, ll)
 
-        (evidence, _), (posterior, _) = filter(
-            jnp.asarray(prior),
-            jnp.eye(len(prior), dtype=dtype),
-            jnp.asarray(ll[None, :]),
-        )
+        # float64 needs x64 enabled; without it the request is truncated.
+        with precision_mode(dtype == jnp.float64):
+            (evidence, _), (posterior, _) = filter(
+                jnp.asarray(prior),
+                jnp.eye(len(prior), dtype=dtype),
+                jnp.asarray(ll[None, :]),
+            )
 
         assert posterior.dtype == dtype
         assert evidence.dtype == dtype

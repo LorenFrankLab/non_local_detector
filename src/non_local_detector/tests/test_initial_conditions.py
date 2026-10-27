@@ -1,35 +1,22 @@
+import warnings
+
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment
+from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.initial_conditions import (
     UniformInitialConditions,
     estimate_initial_conditions,
 )
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from non_local_detector.tests.conftest import assert_probability_distribution
 
 
-@pytest.fixture
-def make_env_1d():
-    """Factory fixture for creating 1D environments with custom parameters."""
-
-    def _make_env(n_bins=11):
-        env = Environment(
-            environment_name="line",
-            place_bin_size=1.0,
-            position_range=((0.0, float(n_bins - 1)),),
-        )
-        pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
-        env = env.fit_place_grid(position=pos, infer_track_interior=False)
-        return env
-
-    return _make_env
-
-
-def test_uniform_initial_conditions_local_and_no_spike(make_env_1d):
+@pytest.mark.unit
+def test_uniform_initial_conditions_local_and_no_spike(simple_1d_environment):
     ic = UniformInitialConditions()
-    envs = (make_env_1d(),)
+    envs = (simple_1d_environment,)
 
     # Local decoding => single-bin initial conditions
     local_obs = ObservationModel(
@@ -47,8 +34,9 @@ def test_uniform_initial_conditions_local_and_no_spike(make_env_1d):
     assert arr2.shape == (1,) and np.isclose(arr2[0], 1.0)
 
 
-def test_uniform_initial_conditions_nonlocal_with_mask(make_env_1d):
-    env = make_env_1d(n_bins=10)
+@pytest.mark.unit
+def test_uniform_initial_conditions_nonlocal_with_mask(simple_1d_environment):
+    env = simple_1d_environment
     # Mask out last two bins
     mask = np.ones(env.centers_shape_, dtype=bool)
     mask[-2:] = False
@@ -65,6 +53,7 @@ def test_uniform_initial_conditions_nonlocal_with_mask(make_env_1d):
     assert np.allclose(arr[:-2], 1.0 / (env.place_bin_centers_.shape[0] - 2))
 
 
+@pytest.mark.unit
 def test_estimate_initial_conditions_returns_first_row():
     post = np.random.default_rng(0).random((7, 5))
     post = post / post.sum(axis=1, keepdims=True)
@@ -73,9 +62,10 @@ def test_estimate_initial_conditions_returns_first_row():
     assert np.allclose(init, post[0])
 
 
-def test_uniform_initial_conditions_no_track_interior(make_env_1d):
+@pytest.mark.unit
+def test_uniform_initial_conditions_no_track_interior(simple_1d_environment):
     """Test when environment has no track interior mask."""
-    env = make_env_1d(n_bins=5)
+    env = simple_1d_environment
     env.is_track_interior_ = None  # No mask
     envs = (env,)
     ic = UniformInitialConditions()
@@ -89,9 +79,10 @@ def test_uniform_initial_conditions_no_track_interior(make_env_1d):
     assert np.isclose(arr[0], 1.0)
 
 
-def test_uniform_initial_conditions_normalization(make_env_1d):
+@pytest.mark.unit
+def test_uniform_initial_conditions_normalization(simple_1d_environment):
     """Test that initial conditions always sum to 1."""
-    env = make_env_1d(n_bins=20)
+    env = simple_1d_environment
     envs = (env,)
     ic = UniformInitialConditions()
     obs = ObservationModel(environment_name=env.environment_name, is_local=False)
@@ -103,72 +94,73 @@ def test_uniform_initial_conditions_normalization(make_env_1d):
     assert_probability_distribution(arr)
 
 
-def test_estimate_initial_conditions_preserves_distribution():
-    """Estimate should preserve the probability distribution at t=0."""
-    # Arrange - create a non-uniform initial distribution
-    post = np.array([[0.7, 0.2, 0.1], [0.5, 0.3, 0.2], [0.4, 0.4, 0.2]])
+@pytest.fixture(scope="module")
+def em_fit_with_unreachable_states():
+    """A detector after one EM step whose discrete initial conditions put zero
+    mass on the No-Spike (1) and Fragmented (3) states, so the smoothed
+    probability of those states at the first time bin is exactly zero.
 
-    # Act
-    init = estimate_initial_conditions(post)
-
-    # Assert
-    assert_probability_distribution(init)
-    assert np.array_equal(init, post[0])
-
-
-@pytest.mark.unit
-class TestContinuousICReparameterization:
-    """Test the safe-denominator pattern used in EM initial condition updates."""
-
-    def test_zero_discrete_ic_produces_zero_not_nan(self):
-        """When discrete IC is zero, continuous IC should be zero, not NaN."""
-        initial_conditions = np.array([0.3, 0.2, 0.1, 0.4])
-        expanded_discrete_ic = np.array([0.5, 0.0, 0.3, 0.0])
-
-        # This is the exact pattern from base.py estimate_parameters
-        is_zero = np.isclose(expanded_discrete_ic, 0.0)
-        safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
-        result = np.where(
-            is_zero,
-            0.0,
-            initial_conditions / safe_discrete_ic,
+    Any ``RuntimeWarning`` (e.g. 0/0 in the continuous IC update) is raised.
+    """
+    _, position, spike_times, time, _, _, _, _ = make_simulated_data(
+        seed=42, n_neurons=5
+    )
+    n_time = 4000
+    time, position = time[:n_time], position[:n_time]
+    detector = NonLocalSortedSpikesDetector(
+        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0])
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # max_iter=1 never converges
+        warnings.simplefilter("error", RuntimeWarning)
+        detector.estimate_parameters(
+            position_time=time,
+            position=position,
+            spike_times=[times[times <= time[-1]] for times in spike_times],
+            time_edges=time_edges_from_centers(time),
+            max_iter=1,
+            estimate_encoding_model=False,
+            estimate_initial_conditions=True,
         )
+    return detector
 
-        assert np.all(np.isfinite(result)), f"Got non-finite values: {result}"
-        assert result[1] == 0.0
-        assert result[3] == 0.0
 
-    def test_nonzero_discrete_ic_divides_correctly(self):
-        """When discrete IC is nonzero, continuous IC = initial / discrete."""
-        initial_conditions = np.array([0.3, 0.2, 0.1, 0.4])
-        expanded_discrete_ic = np.array([0.5, 0.25, 0.3, 0.4])
+@pytest.mark.integration
+class TestContinuousICUpdate:
+    """The EM update of ``continuous_initial_conditions_`` divides the joint
+    initial conditions by the smoothed discrete-state probability at the
+    first time bin, guarding states whose probability is zero."""
 
-        is_zero = np.isclose(expanded_discrete_ic, 0.0)
-        safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
-        result = np.where(
-            is_zero,
-            0.0,
-            initial_conditions / safe_discrete_ic,
+    def test_zero_probability_states_get_zero_not_nan(
+        self, em_fit_with_unreachable_states
+    ):
+        detector = em_fit_with_unreachable_states
+        np.testing.assert_array_equal(
+            detector.discrete_initial_conditions_[[1, 3]], 0.0
         )
+        continuous_ic = detector.continuous_initial_conditions_
+        assert continuous_ic.shape == detector.state_ind_.shape
+        assert np.all(np.isfinite(continuous_ic))
+        is_unreachable = np.isin(detector.state_ind_, [1, 3])
+        np.testing.assert_array_equal(continuous_ic[is_unreachable], 0.0)
 
-        expected = initial_conditions / expanded_discrete_ic
-        np.testing.assert_allclose(result, expected)
-
-    def test_no_runtime_warning_with_zeros(self):
-        """The safe-denominator pattern should not produce RuntimeWarning."""
-        import warnings
-
-        initial_conditions = np.array([0.5, 0.0, 0.5])
-        expanded_discrete_ic = np.array([0.5, 0.0, 0.5])
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            is_zero = np.isclose(expanded_discrete_ic, 0.0)
-            safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
-            result = np.where(
-                is_zero,
-                0.0,
-                initial_conditions / safe_discrete_ic,
+    def test_nonzero_states_are_joint_ic_over_discrete_ic(
+        self, em_fit_with_unreachable_states
+    ):
+        detector = em_fit_with_unreachable_states
+        for state in (0, 2):
+            is_state = detector.state_ind_ == state
+            discrete_ic = detector.discrete_initial_conditions_[state]
+            assert discrete_ic > 0
+            np.testing.assert_allclose(
+                detector.continuous_initial_conditions_[is_state],
+                detector.initial_conditions_[is_state] / discrete_ic,
+                rtol=1e-12,
             )
-
-        assert np.all(np.isfinite(result))
+            # Each reachable state's continuous IC is a distribution over its
+            # own bins.
+            np.testing.assert_allclose(
+                detector.continuous_initial_conditions_[is_state].sum(),
+                1.0,
+                rtol=1e-5,
+            )

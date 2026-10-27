@@ -25,33 +25,8 @@ WAVEFORM_STD = 24.0
 POSITION_TOLERANCE = 10.0
 TOP1_ACCURACY_THRESHOLD = 0.80
 TOP3_ACCURACY_THRESHOLD = 0.90
-DELTA_T_STANDARD_ACCURACY_THRESHOLD = 0.60
-DELTA_T_WIDE_ACCURACY_THRESHOLD = 0.50
-DELTA_T_MAX_DIFFERENCE = 0.30
 
-
-def get_decoded_position_bins(
-    log_likelihood: npt.NDArray[np.floating],
-    place_bin_centers: npt.NDArray[np.floating],
-) -> npt.NDArray[np.floating]:
-    """Get the most likely position bin for each time point.
-
-    Parameters
-    ----------
-    log_likelihood : np.ndarray, shape (n_time, n_position_bins)
-        Log-likelihood values for each time and position bin.
-    place_bin_centers : np.ndarray, shape (n_position_bins, n_pos_dims)
-        Centers of position bins.
-
-    Returns
-    -------
-    decoded_positions : np.ndarray, shape (n_time, n_pos_dims)
-        Most likely position at each time point.
-    """
-    # Get the bin index with highest likelihood at each time
-    max_likelihood_bins = np.argmax(log_likelihood, axis=1)
-    # Return the position at those bins
-    return place_bin_centers[max_likelihood_bins]
+pytestmark = pytest.mark.integration
 
 
 def compute_top_k_accuracy(
@@ -100,9 +75,11 @@ def compute_top_k_accuracy(
     return correct_count / n_time
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def kde_decoding_setup() -> dict[str, Any]:
     """Generate simulated data and encoding model for KDE decoding tests.
+
+    Module-scoped: the tests only read the results.
 
     Returns
     -------
@@ -205,7 +182,6 @@ def kde_decoding_setup() -> dict[str, Any]:
     }
 
 
-@pytest.mark.slow
 def test_nonlocal_kde_top1_accuracy_high(kde_decoding_setup: dict[str, Any]) -> None:
     """Test that KDE can decode position with >80% top-1 accuracy on simulated data.
 
@@ -227,7 +203,6 @@ def test_nonlocal_kde_top1_accuracy_high(kde_decoding_setup: dict[str, Any]) -> 
     )
 
 
-@pytest.mark.slow
 def test_nonlocal_kde_top3_accuracy_very_high(
     kde_decoding_setup: dict[str, Any],
 ) -> None:
@@ -243,150 +218,4 @@ def test_nonlocal_kde_top3_accuracy_very_high(
     assert accuracy >= TOP3_ACCURACY_THRESHOLD, (
         f"Top-3 accuracy {accuracy:.2%} is below threshold {TOP3_ACCURACY_THRESHOLD:.0%}. "
         f"True position should be in top-3 decoded bins most of the time."
-    )
-
-
-@pytest.mark.slow
-def test_delta_t_scaling_normalized() -> None:
-    """Test that bin width doesn't drastically change decoding results.
-
-    When we use different bin widths, the overall decoding accuracy should
-    remain comparable. This tests that the Δt scaling in the likelihood is
-    handled correctly.
-    """
-    # Simulate data
-    n_tetrodes = 3
-    place_field_means = np.arange(0, 120, 10)  # 12 neurons
-    sim = make_simulated_run_data(
-        n_tetrodes=n_tetrodes,
-        place_field_means=place_field_means,
-        sampling_frequency=500,
-        n_runs=2,
-        seed=100,
-    )
-
-    n_encode = int(0.7 * len(sim.position_time))
-
-    # Fit encoding model once
-    encoding_features = [
-        swf[sim.spike_times[i] < sim.position_time[n_encode]]
-        for i, swf in enumerate(sim.spike_waveform_features)
-    ]
-    encoding_model = fit_clusterless_kde_encoding_model(
-        position_time=sim.position_time[:n_encode],
-        position=sim.position[:n_encode],
-        spike_times=[st[st < sim.position_time[n_encode]] for st in sim.spike_times],
-        spike_waveform_features=encoding_features,
-        environment=sim.environment,
-        position_std=6.0,
-        waveform_std=24.0,
-        block_size=100,
-        disable_progress_bar=True,
-    )
-    mark_reference = fit_mark_references(
-        encoding_features, mark_reference_scale(waveform_std=24.0)
-    )
-
-    test_time = sim.position_time[n_encode:]
-
-    # Decode with standard bin width (50 bins)
-    test_edges_standard = np.linspace(test_time[0], test_time[-1], 51)  # 50 bins
-    ll_standard = predict_clusterless_kde_log_likelihood(
-        time_edges=test_edges_standard,
-        position_time=sim.position_time,
-        position=sim.position,
-        spike_times=[
-            st[(st >= test_time[0]) & (st <= test_time[-1])] for st in sim.spike_times
-        ],
-        spike_waveform_features=[
-            swf[
-                (sim.spike_times[i] >= test_time[0])
-                & (sim.spike_times[i] <= test_time[-1])
-            ]
-            for i, swf in enumerate(sim.spike_waveform_features)
-        ],
-        **{
-            k: encoding_model[k]
-            for k in encoding_model
-            if k not in ["environment", "block_size", "disable_progress_bar"]
-        },
-        mark_reference=mark_reference,
-        environment=sim.environment,
-        is_local=False,
-        block_size=100,
-        disable_progress_bar=True,
-    )
-
-    # Decode with wider bins (25 bins)
-    test_edges_wide = np.linspace(test_time[0], test_time[-1], 26)  # 25 bins
-    ll_wide = predict_clusterless_kde_log_likelihood(
-        time_edges=test_edges_wide,
-        position_time=sim.position_time,
-        position=sim.position,
-        spike_times=[
-            st[(st >= test_time[0]) & (st <= test_time[-1])] for st in sim.spike_times
-        ],
-        spike_waveform_features=[
-            swf[
-                (sim.spike_times[i] >= test_time[0])
-                & (sim.spike_times[i] <= test_time[-1])
-            ]
-            for i, swf in enumerate(sim.spike_waveform_features)
-        ],
-        **{
-            k: encoding_model[k]
-            for k in encoding_model
-            if k not in ["environment", "block_size", "disable_progress_bar"]
-        },
-        mark_reference=mark_reference,
-        environment=sim.environment,
-        is_local=False,
-        block_size=100,
-        disable_progress_bar=True,
-    )
-
-    # Get true positions for each bin width
-    test_bin_centers_standard = (test_edges_standard[:-1] + test_edges_standard[1:]) / 2
-    true_positions_standard = np.array(
-        [
-            sim.position[np.argmin(np.abs(sim.position_time - t))]
-            for t in test_bin_centers_standard
-        ]
-    )
-
-    test_bin_centers_wide = (test_edges_wide[:-1] + test_edges_wide[1:]) / 2
-    true_positions_wide = np.array(
-        [
-            sim.position[np.argmin(np.abs(sim.position_time - t))]
-            for t in test_bin_centers_wide
-        ]
-    )
-
-    # Compute accuracy for both bin widths
-    place_bin_centers = sim.environment.place_bin_centers_
-    accuracy_standard = compute_top_k_accuracy(
-        true_positions_standard,
-        ll_standard,
-        place_bin_centers,
-        k=1,
-        position_tolerance=10.0,
-    )
-    accuracy_wide = compute_top_k_accuracy(
-        true_positions_wide, ll_wide, place_bin_centers, k=1, position_tolerance=10.0
-    )
-
-    # Both should have reasonable accuracy
-    assert accuracy_standard >= 0.60, (
-        f"Standard bin width accuracy {accuracy_standard:.2%} is too low"
-    )
-    assert accuracy_wide >= 0.50, (
-        f"Wide bin width accuracy {accuracy_wide:.2%} is too low"
-    )
-
-    # Accuracies should be comparable (within 30 percentage points)
-    accuracy_diff = abs(accuracy_standard - accuracy_wide)
-    assert accuracy_diff <= 0.30, (
-        f"Accuracy difference {accuracy_diff:.2%} is too large. "
-        f"Bin width changes should not drastically affect decoding quality. "
-        f"Standard: {accuracy_standard:.2%}, Wide: {accuracy_wide:.2%}"
     )

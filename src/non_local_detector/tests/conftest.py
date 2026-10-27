@@ -1,9 +1,11 @@
 """Shared test fixtures and utilities for non_local_detector tests.
 
 This module provides:
-1. Environment fixtures for common test scenarios
-2. Test data generators for spike and position data
-3. Assertion helpers for validating probability distributions and HMM outputs
+1. A builder for synthetic decoder results and a JAX precision context manager
+2. Environment fixtures for common test scenarios
+3. Assertion helpers for validating probability distributions and stochastic
+   matrices
+4. Posterior and design-matrix fixtures for transition-estimation tests
 
 Usage:
     pytest automatically discovers fixtures in conftest.py. Import assertion
@@ -12,6 +14,7 @@ Usage:
     from conftest import assert_probability_distribution
 """
 
+import os
 from contextlib import contextmanager
 
 import jax
@@ -20,8 +23,15 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from hypothesis import settings
 
 from non_local_detector.environment import Environment
+
+# CI sets HYPOTHESIS_PROFILE=ci: no per-example deadline (the first example of a
+# test includes JAX compilation) and derandomized examples, so a CI failure
+# reproduces on rerun.
+settings.register_profile("ci", deadline=None, derandomize=True, print_blob=True)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 # ==============================================================================
 # SYNTHETIC RESULTS BUILDERS
@@ -105,7 +115,7 @@ def simple_1d_environment():
     """Simple 1D linear environment with 1.0 bin size, range [0, 10].
 
     Returns:
-        Environment: Fitted environment with 11 position bins.
+        Environment: Fitted environment with 10 position bins.
     """
     env = Environment(
         environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
@@ -115,163 +125,6 @@ def simple_1d_environment():
     env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
     assert env.place_bin_centers_ is not None
     return env
-
-
-@pytest.fixture
-def simple_100_environment():
-    """1D linear environment with 100 position bins, range [0, 100].
-
-    Returns:
-        Environment: Fitted environment with 50 sample positions.
-    """
-    env = Environment(
-        environment_name="line", place_bin_size=5.0, position_range=((0.0, 100.0),)
-    )
-    position = np.linspace(0, 100, 50)[:, None]
-    env = env.fit_place_grid(position, infer_track_interior=False)
-    assert env.place_bin_centers_ is not None
-    return env
-
-
-@pytest.fixture
-def simple_2d_environment():
-    """Simple 2D open field environment with 5.0 bin size.
-
-    Returns:
-        Environment: Fitted 2D environment with 10x10 grid.
-    """
-    env = Environment(
-        environment_name="open_field",
-        place_bin_size=5.0,
-        position_range=((0.0, 50.0), (0.0, 50.0)),
-    )
-    # Create some sample positions in 2D
-    x = np.linspace(0, 50, 20)
-    y = np.linspace(0, 50, 20)
-    xx, yy = np.meshgrid(x, y)
-    position = np.column_stack([xx.ravel(), yy.ravel()])
-    env = env.fit_place_grid(position, infer_track_interior=False)
-    assert env.place_bin_centers_ is not None
-    return env
-
-
-# ==============================================================================
-# HMM TEST DATA FIXTURES
-# ==============================================================================
-
-
-@pytest.fixture
-def simple_hmm_2state():
-    """Simple 2-state HMM parameters for testing.
-
-    Returns:
-        dict: Contains 'init', 'trans', and 'n_states' keys.
-    """
-    return {
-        "init": jnp.array([0.5, 0.5]),
-        "trans": jnp.array([[0.9, 0.1], [0.1, 0.9]]),
-        "n_states": 2,
-    }
-
-
-@pytest.fixture
-def simple_hmm_3state():
-    """Simple 3-state HMM with cyclic transitions.
-
-    Returns:
-        dict: Contains 'init', 'trans', and 'n_states' keys.
-    """
-    return {
-        "init": jnp.array([1.0, 0.0, 0.0]),
-        # Deterministic cycle: 0 -> 1 -> 2 -> 0
-        "trans": jnp.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]),
-        "n_states": 3,
-    }
-
-
-@pytest.fixture
-def random_hmm(request):
-    """Parametrized HMM with random initialization.
-
-    Parameters
-    ----------
-    request : pytest.FixtureRequest
-        Pytest request object. ``request.param`` sets the number of states
-        (defaults to 5).
-
-    Returns
-    -------
-    dict
-        Contains 'init', 'trans', and 'n_states' keys.
-    """
-    n_states = getattr(request, "param", 5)  # Default to 5 states
-    rng = np.random.default_rng(42)
-
-    # Random initial distribution
-    init = rng.random(n_states)
-    init = init / init.sum()
-
-    # Random stochastic matrix
-    trans = rng.random((n_states, n_states))
-    trans = trans / trans.sum(axis=1, keepdims=True)
-
-    return {
-        "init": jnp.asarray(init),
-        "trans": jnp.asarray(trans),
-        "n_states": n_states,
-    }
-
-
-# ==============================================================================
-# SPIKE DATA FIXTURES
-# ==============================================================================
-
-
-@pytest.fixture
-def minimal_spike_data():
-    """Minimal spike data for basic testing.
-
-    Returns
-    -------
-    dict
-        Contains 'spike_times' (list of arrays) and 'time' array.
-    """
-    time = np.linspace(0.0, 10.0, 101)
-    # Two neurons with a few spikes each
-    spike_times = [np.array([2.0, 5.0, 5.1]), np.array([1.5, 7.2])]
-
-    return {"spike_times": spike_times, "time": time}
-
-
-@pytest.fixture
-def synthetic_spike_data():
-    """Synthetic spike data with position-dependent firing.
-
-    Returns
-    -------
-    dict
-        Contains 'spike_times', 'spike_features', 'position', 'time'.
-    """
-    rng = np.random.default_rng(42)
-    n_time = 100
-    n_neurons = 5
-    n_features = 4
-
-    time = np.linspace(0, 10, n_time)
-    position = rng.standard_normal((n_time, 2)) * 50  # 2D position
-
-    # Generate spike times (random uniform)
-    spike_times = [np.sort(rng.uniform(0, 10, 20)) for _ in range(n_neurons)]
-
-    # Generate spike features (e.g., waveform features)
-    spike_features = [rng.standard_normal((len(st), n_features)) for st in spike_times]
-
-    return {
-        "spike_times": spike_times,
-        "spike_features": spike_features,
-        "position": position,
-        "time": time,
-    }
 
 
 # ==============================================================================
@@ -336,157 +189,6 @@ def assert_stochastic_matrix(matrix, rtol=1e-5, atol=1e-6):
     )
 
 
-def assert_all_finite(arr, name="array"):
-    """Assert all values are finite (not NaN or inf).
-
-    Parameters
-    ----------
-    arr : array-like
-        Array to validate (numpy or jax array).
-    name : str, optional
-        Name for error message.
-
-    Raises
-    ------
-    AssertionError
-        If array contains NaN or inf.
-    """
-    # Handle both numpy and jax arrays
-    if hasattr(arr, "shape"):
-        finite_check = np.isfinite if isinstance(arr, np.ndarray) else jnp.isfinite
-        assert np.all(finite_check(arr)), (
-            f"{name} contains NaN or inf values. "
-            f"Min: {np.min(arr)}, Max: {np.max(arr)}, "
-            f"NaNs: {np.sum(np.isnan(arr))}, Infs: {np.sum(np.isinf(arr))}"
-        )
-
-
-def assert_valid_shape(arr, expected_shape, name="array"):
-    """Assert array has expected shape.
-
-    Parameters
-    ----------
-    arr : array-like
-        Array to validate.
-    expected_shape : tuple
-        Expected shape tuple.
-    name : str, optional
-        Name for error message.
-
-    Raises
-    ------
-    AssertionError
-        If shapes don't match.
-    """
-    assert arr.shape == expected_shape, (
-        f"{name} has shape {arr.shape}, expected {expected_shape}"
-    )
-
-
-def assert_non_negative(arr, name="array"):
-    """Assert all values are non-negative.
-
-    Parameters
-    ----------
-    arr : array-like
-        Array to validate.
-    name : str, optional
-        Name for error message.
-
-    Raises
-    ------
-    AssertionError
-        If array contains negative values.
-    """
-    assert np.all(arr >= 0), f"{name} contains negative values. Min: {np.min(arr)}"
-
-
-def assert_in_range(arr, min_val, max_val, name="array"):
-    """Assert all values are in specified range [min_val, max_val].
-
-    Parameters
-    ----------
-    arr : array-like
-        Array to validate.
-    min_val : float
-        Minimum allowed value (inclusive).
-    max_val : float
-        Maximum allowed value (inclusive).
-    name : str, optional
-        Name for error message.
-
-    Raises
-    ------
-    AssertionError
-        If any values are outside range.
-    """
-    assert np.all(arr >= min_val), (
-        f"{name} contains values below {min_val}. Min: {np.min(arr)}"
-    )
-    assert np.all(arr <= max_val), (
-        f"{name} contains values above {max_val}. Max: {np.max(arr)}"
-    )
-
-
-def assert_entropy_decreased(filtered, smoothed, name="entropy"):
-    """Assert smoothed distribution has lower or equal entropy than filtered.
-
-    Entropy should decrease when incorporating future information.
-
-    Parameters
-    ----------
-    filtered : array-like
-        Filtered probability distribution.
-    smoothed : array-like
-        Smoothed probability distribution.
-    name : str, optional
-        Name for error message.
-
-    Raises
-    ------
-    AssertionError
-        If smoothed entropy exceeds filtered entropy.
-    """
-
-    def entropy(p):
-        """Compute Shannon entropy, handling zeros."""
-        return -np.sum(p * np.log(p + 1e-10), axis=-1)
-
-    filtered_entropy = entropy(filtered).mean()
-    smoothed_entropy = entropy(smoothed).mean()
-
-    assert smoothed_entropy <= filtered_entropy + 1e-5, (
-        f"{name}: smoothed entropy ({smoothed_entropy:.6f}) should not exceed "
-        f"filtered entropy ({filtered_entropy:.6f})"
-    )
-
-
-def assert_valid_state_sequence(states, n_states, name="states"):
-    """Assert Viterbi output is a valid state sequence.
-
-    Parameters
-    ----------
-    states : array-like
-        Array of state indices.
-    n_states : int
-        Total number of states.
-    name : str, optional
-        Name for error message.
-
-    Raises
-    ------
-    AssertionError
-        If any state index is invalid.
-    """
-    # Handle both numpy and jax arrays
-    if hasattr(states, "__array__"):
-        states_np = np.asarray(states)
-        assert np.all((states_np >= 0) & (states_np < n_states)), (
-            f"{name} must be in [0, {n_states}), got values in "
-            f"[{np.min(states_np)}, {np.max(states_np)}]"
-        )
-
-
 # ==============================================================================
 # DISCRETE STATE TRANSITION TEST FIXTURES
 # ==============================================================================
@@ -494,35 +196,54 @@ def assert_valid_state_sequence(states, n_states, name="states"):
 
 @pytest.fixture
 def posterior_data():
-    """Generate realistic posterior distributions for EM algorithm testing.
+    """Filtered, predictive and smoothed posteriors of a small sticky HMM.
+
+    A 4-state hidden sequence of 50 steps is sampled from ``transition_matrix``
+    (0.7 on the diagonal) and observed through noisy categorical emissions
+    (the true state is reported with probability 0.6). The posteriors are the
+    float64 outputs of :func:`non_local_detector.core.filter` and
+    :func:`non_local_detector.core.smoother` for that model, so they satisfy
+    ``predictive_distribution[t] = causal_posterior[t - 1] @ transition_matrix``
+    (``predictive_distribution[0]`` is the uniform initial distribution) and
+    ``acausal_posterior`` is the matching smoothed posterior.
 
     Returns
     -------
     dict
-        Contains causal_posterior, acausal_posterior, predictive_distribution,
-        transition_matrix for a 4-state, 50-timestep HMM.
+        ``causal_posterior``, ``predictive_distribution``,
+        ``acausal_posterior`` : ndarray, shape (n_time, n_states)
+        ``transition_matrix`` : ndarray, shape (n_states, n_states)
+        ``n_time``, ``n_states`` : int
     """
+    from non_local_detector.core import filter as hmm_filter
+    from non_local_detector.core import smoother
+
     rng = np.random.default_rng(42)
     n_time, n_states = 50, 4
+    transition_matrix = np.full((n_states, n_states), 0.1)
+    np.fill_diagonal(transition_matrix, 0.7)
+    initial_distribution = np.full(n_states, 1.0 / n_states)
+    emission = np.full((n_states, n_states), 0.4 / (n_states - 1))
+    np.fill_diagonal(emission, 0.6)
 
-    # Generate smooth posteriors that look realistic
-    causal_posterior = rng.dirichlet(np.ones(n_states) * 2, n_time)
-    acausal_posterior = rng.dirichlet(np.ones(n_states) * 2, n_time)
+    states = np.empty(n_time, dtype=int)
+    states[0] = rng.choice(n_states, p=initial_distribution)
+    for t in range(1, n_time):
+        states[t] = rng.choice(n_states, p=transition_matrix[states[t - 1]])
+    observations = np.array([rng.choice(n_states, p=emission[s]) for s in states])
+    # log P(observation_t | state_t = k), shape (n_time, n_states)
+    log_likelihoods = np.log(emission[:, observations].T)
 
-    # Create a reasonable transition matrix
-    transition_matrix = np.array(
-        [
-            [0.7, 0.1, 0.1, 0.1],
-            [0.1, 0.7, 0.1, 0.1],
-            [0.1, 0.1, 0.7, 0.1],
-            [0.1, 0.1, 0.1, 0.7],
-        ]
-    )
-
-    # Compute predictive distribution
-    predictive_distribution = np.zeros((n_time, n_states))
-    for t in range(n_time):
-        predictive_distribution[t] = causal_posterior[t] @ transition_matrix
+    with precision_mode(True):
+        _, (causal_posterior, predictive_distribution) = hmm_filter(
+            jnp.asarray(initial_distribution),
+            jnp.asarray(transition_matrix),
+            jnp.asarray(log_likelihoods),
+        )
+        acausal_posterior = smoother(jnp.asarray(transition_matrix), causal_posterior)
+        causal_posterior = np.asarray(causal_posterior, dtype=np.float64)
+        predictive_distribution = np.asarray(predictive_distribution, dtype=np.float64)
+        acausal_posterior = np.asarray(acausal_posterior, dtype=np.float64)
 
     return {
         "causal_posterior": causal_posterior,

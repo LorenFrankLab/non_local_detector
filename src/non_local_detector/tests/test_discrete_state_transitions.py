@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from patsy import PatsyError, build_design_matrices
+from scipy.special import softmax
 
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
@@ -23,8 +24,9 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.tests.conftest import assert_stochastic_matrix
 
+pytestmark = pytest.mark.unit
 
-@pytest.mark.unit
+
 class TestCenteredSoftmax:
     """Test centered softmax transformation and its inverse."""
 
@@ -150,7 +152,6 @@ class TestCenteredSoftmax:
         assert jnp.allclose(result, expected_log_softmax)
 
 
-@pytest.mark.unit
 class TestTransitionMatrixConstruction:
     """Test functions for constructing transition matrices."""
 
@@ -356,83 +357,61 @@ class TestDiscreteStationaryCustom:
         assert design is None
 
 
-@pytest.mark.unit
 class TestPredictDiscreteStateTransitions:
     """Test the predict-time covariate transition path."""
 
     @pytest.fixture
     def fitted_nonstationary_model(self):
-        """Create a fitted non-stationary transition model with design info."""
-        diag = np.array([0.8, 0.85, 0.9])
+        """Design matrix of a ``1 + speed`` model and coefficients with
+        non-zero speed slopes, so predictions depend on the covariate.
+
+        ``make_state_transition`` only fits the intercept (its slopes are zero),
+        so the slopes are set here as an M-step would.
+        """
         model = DiscreteNonStationaryDiagonal(
-            diagonal_values=diag,
+            diagonal_values=np.array([0.8, 0.85, 0.9]),
             formula="1 + speed",
         )
-        covariate_data = {"speed": np.linspace(0, 10, 20)}
-        transition, coefficients, design_matrix = model.make_state_transition(
-            covariate_data
+        _, coefficients, design_matrix = model.make_state_transition(
+            {"speed": np.linspace(0, 10, 20)}
         )
-        return transition, coefficients, design_matrix
-
-    def test_predict_returns_correct_shape(self, fitted_nonstationary_model):
-        """predict_discrete_state_transitions should return (n_time, n_states, n_states)."""
-        _, coefficients, design_matrix = fitted_nonstationary_model
-        n_states = coefficients.shape[1]
-
-        new_covariate_data = {"speed": np.linspace(0, 10, 15)}
-        result = predict_discrete_state_transitions(
-            design_matrix, coefficients, new_covariate_data
+        coefficients = np.array(coefficients, dtype=np.float64)
+        coefficients[1] = np.random.default_rng(3).normal(
+            0.0, 0.3, coefficients.shape[1:]
         )
+        return coefficients, design_matrix
 
-        assert result.shape == (15, n_states, n_states)
-
-    def test_predict_rows_sum_to_one(self, fitted_nonstationary_model):
-        """Each row of predicted transition matrices should sum to 1."""
-        _, coefficients, design_matrix = fitted_nonstationary_model
-
-        new_covariate_data = {"speed": np.linspace(0, 10, 15)}
-        result = predict_discrete_state_transitions(
-            design_matrix, coefficients, new_covariate_data
-        )
-
-        row_sums = np.array(result.sum(axis=-1))
-        assert np.allclose(row_sums, 1.0, atol=1e-6), (
-            f"Row sums deviate from 1.0: max deviation {np.max(np.abs(row_sums - 1.0))}"
-        )
-
-    def test_predict_values_non_negative(self, fitted_nonstationary_model):
-        """All predicted transition probabilities should be non-negative."""
-        _, coefficients, design_matrix = fitted_nonstationary_model
-
-        new_covariate_data = {"speed": np.linspace(0, 10, 15)}
-        result = predict_discrete_state_transitions(
-            design_matrix, coefficients, new_covariate_data
-        )
-
-        assert np.all(np.array(result) >= 0), "Negative transition probabilities found"
-
-    def test_predict_does_not_crash_with_jax(self, fitted_nonstationary_model):
-        """Regression test: previously crashed with TypeError due to JAX in-place assignment."""
-        _, coefficients, design_matrix = fitted_nonstationary_model
-
-        new_covariate_data = {"speed": np.array([1.0, 5.0, 10.0])}
-        # This should not raise TypeError
-        result = predict_discrete_state_transitions(
-            design_matrix, coefficients, new_covariate_data
-        )
-        assert np.all(np.isfinite(np.array(result)))
-
-    def test_predict_returns_numpy_array(self, fitted_nonstationary_model):
-        """Prediction should convert to NumPy at the module boundary."""
-        _, coefficients, design_matrix = fitted_nonstationary_model
+    def test_predict_matches_softmax_of_design_times_coefficients(
+        self, fitted_nonstationary_model
+    ):
+        """Each predicted row is the softmax of ``[1, speed] @ coefficients``
+        with a zero logit for the reference (last) state, as a NumPy array."""
+        coefficients, design_matrix = fitted_nonstationary_model
+        speed = np.array([0.0, 2.5, 5.0, 10.0, 15.0])
 
         result = predict_discrete_state_transitions(
-            design_matrix, coefficients, {"speed": np.array([1.0, 5.0])}
+            design_matrix, coefficients, {"speed": speed}
         )
+
+        new_design = np.column_stack((np.ones_like(speed), speed))
+        logits = np.einsum("tc,csk->tsk", new_design, coefficients)
+        logits = np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1)
+        expected = softmax(logits, axis=-1)
         assert isinstance(result, np.ndarray)
+        assert result.shape == (speed.size, 3, 3)
+        np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-15)
+
+    def test_predictions_vary_with_the_covariate(self, fitted_nonstationary_model):
+        """Different speeds give different transition matrices."""
+        coefficients, design_matrix = fitted_nonstationary_model
+
+        result = predict_discrete_state_transitions(
+            design_matrix, coefficients, {"speed": np.array([0.0, 10.0])}
+        )
+
+        assert np.max(np.abs(result[1] - result[0])) > 0.05
 
 
-@pytest.mark.unit
 class TestNonStationaryNaNCovariates:
     """Non-stationary transition construction must reject NaN covariates."""
 
@@ -460,7 +439,6 @@ class TestNonStationaryNaNCovariates:
             model.make_state_transition(covariate_data)
 
 
-@pytest.mark.unit
 class TestDefaultCovariateSpline:
     """The default covariate formula places spline knots where the data are
     and accepts covariates outside the fitted range."""
@@ -473,7 +451,8 @@ class TestDefaultCovariateSpline:
         return design_matrix
 
     def test_speed_below_fixed_knots(self):
-        """Speeds that never reach 64 cm/s (issue #54) fit, with full rank."""
+        """Speeds that never reach the largest fixed knot (64 cm/s) fit with
+        full rank."""
         design_matrix = np.asarray(self._design(np.linspace(0.0, 50.0, 1000)))
         assert np.linalg.matrix_rank(design_matrix) == design_matrix.shape[1]
 

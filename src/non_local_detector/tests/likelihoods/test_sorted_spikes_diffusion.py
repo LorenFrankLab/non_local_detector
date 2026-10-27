@@ -34,6 +34,13 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
+    make_2d_env,
+    make_two_room_env,
+    poisson_log_likelihood_reference,
+    simulate_place_data,
+    simulate_sparse_uniform_tracking,
+)
 
 # Encoding-dict keys the fit must return: the KDE parity keys (minus the KDE model
 # objects) plus the diffusion additions node_order / bin_sizes (shared contract).
@@ -51,37 +58,31 @@ ENCODING_DICT_KEYS = {
 }
 
 
-def make_2d_env(seed: int = 0) -> Environment:
-    """2D open field with an inferred interior (padding bins stay non-interior)."""
-    rng = np.random.default_rng(seed)
-    position = rng.uniform(1.0, 49.0, size=(4000, 2))
-    return Environment(
-        environment_name="of",
-        place_bin_size=5.0,
-        position_range=((0.0, 50.0), (0.0, 50.0)),
-    ).fit_place_grid(position, infer_track_interior=True)
+@pytest.fixture(scope="module")
+def env_2d():
+    """The 2D open field, built once per module.
+
+    Fits cache eigenbases on the environment, so tests that count eigensolves or
+    inspect those caches build their own environment instead.
+    """
+    return make_2d_env()
 
 
-def simulate_place_data(env, n_neurons=3, n_time=3000, seed=1, sampling_frequency=100):
-    """A folded random-walk trajectory with Gaussian place-tuned Poisson spikes."""
-    rng = np.random.default_rng(seed)
-    interior = env.place_bin_centers_[env.is_track_interior_.ravel()]
-    lo, hi = interior.min(axis=0), interior.max(axis=0)
-    span = hi - lo
+@pytest.fixture(scope="module")
+def three_neuron_diffusion(env_2d):
+    """Three place cells fit with ``position_std=6.0``; tests must not mutate it.
 
-    time = np.arange(n_time) / sampling_frequency
-    walk = np.cumsum(rng.normal(0.0, 2.0, size=(n_time, lo.size)), axis=0)
-    # Fold the unbounded walk into [lo, hi] with a triangle wave (reflecting walls).
-    position = lo + np.abs((walk % (2 * span)) - span)
-
-    centers = rng.uniform(lo, hi, size=(n_neurons, lo.size))
-    dt = 1.0 / sampling_frequency
-    spike_times = []
-    for center in centers:
-        rate = 40.0 * np.exp(-((position - center) ** 2).sum(axis=1) / (2 * 6.0**2))
-        fired = rng.random(n_time) < rate * dt
-        spike_times.append(time[fired])
-    return time, position, spike_times
+    Returns ``(time, position, spike_times, encoding)``.
+    """
+    time, position, spike_times = simulate_place_data(env_2d, n_neurons=3)
+    encoding = fit_sorted_spikes_diffusion_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env_2d,
+        position_std=6.0,
+    )
+    return time, position, spike_times, encoding
 
 
 def place_field_core_median_rel_errors(env, std, diff_pf, kde_pf):
@@ -108,18 +109,10 @@ def place_field_core_median_rel_errors(env, std, diff_pf, kde_pf):
     return medians
 
 
-def test_fit_encoding_dict_keys_and_full_grid_shapes():
+def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffusion):
     """Fit returns the contract keys; place_fields are FULL-GRID with zeros off-track."""
-    env = make_2d_env()
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-
-    encoding = fit_sorted_spikes_diffusion_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        position_std=6.0,
-    )
+    env = env_2d
+    time, position, spike_times, encoding = three_neuron_diffusion
 
     assert ENCODING_DICT_KEYS <= set(encoding)
 
@@ -143,19 +136,14 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes():
     assert encoding["local_interpolation"] == "linear"
 
 
-def test_fit_caches_interior_log_place_fields_and_predict_uses_them():
+def test_fit_caches_interior_log_place_fields_and_predict_uses_them(
+    env_2d, three_neuron_diffusion
+):
     """The fit precomputes log(interior place fields) so the non-local likelihood does not
     recompute it per call. The cached value equals log(place_fields[:, interior]), and
     predict reads it (zeroing it drops the spike term to -no_spike)."""
-    env = make_2d_env()
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-    encoding = fit_sorted_spikes_diffusion_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        position_std=6.0,
-    )
+    env = env_2d
+    time, position, spike_times, encoding = three_neuron_diffusion
 
     is_interior = env.is_track_interior_.ravel()
     cached = np.asarray(encoding["interior_log_place_fields"])
@@ -180,17 +168,9 @@ def test_fit_caches_interior_log_place_fields_and_predict_uses_them():
     np.testing.assert_allclose(ll, expected_ll, rtol=1e-5)
 
 
-def test_prediction_rebuilds_omitted_interior_log_fields():
+def test_prediction_rebuilds_omitted_interior_log_fields(three_neuron_diffusion):
     """Without the cached interior log fields, prediction rebuilds them."""
-    env = make_2d_env()
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-    encoding = fit_sorted_spikes_diffusion_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        position_std=6.0,
-    )
+    time, position, spike_times, encoding = three_neuron_diffusion
 
     def non_local(model):
         return np.asarray(
@@ -226,9 +206,9 @@ def test_fit_accepts_shared_sorted_spikes_params():
     } <= params
 
 
-def test_fit_rejects_invalid_local_interpolation():
+def test_fit_rejects_invalid_local_interpolation(env_2d):
     """The interpolation mode is validated at fit time before it enters the dict."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=1)
 
     with pytest.raises(ValidationError):
@@ -241,13 +221,13 @@ def test_fit_rejects_invalid_local_interpolation():
         )
 
 
-def test_fit_coerces_scalar_position_std_and_rejects_per_dim():
+def test_fit_coerces_scalar_position_std_and_rejects_per_dim(env_2d):
     """position_std keys the bandwidth-aware rank cache, so a JAX/NumPy scalar or array
     (both unhashable as dict keys) must be coerced to a plain float; a per-dimension
     bandwidth is rejected since the graph heat kernel is isotropic in graph distance."""
     import jax.numpy as jnp
 
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     common = {
         "position_time": time,
@@ -268,10 +248,10 @@ def test_fit_coerces_scalar_position_std_and_rejects_per_dim():
         )
 
 
-def test_fit_truncated_rank_full_grid_and_predict():
+def test_fit_truncated_rank_full_grid_and_predict(env_2d):
     """A truncated-rank fit still yields finite full-grid place fields and a valid
     posterior (exercises pixellate -> truncated diffuse -> to_density through the fit)."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     encoding = fit_sorted_spikes_diffusion_encoding_model(
         position_time=time,
@@ -350,10 +330,10 @@ def test_fit_auto_truncation_is_near_lossless_and_reduces_rank():
     assert np.max(rel) < 1e-3
 
 
-def test_fit_silent_cell_and_zero_neurons():
+def test_fit_silent_cell_and_zero_neurons(env_2d):
     """A silent cell (empty spike train) yields a finite EPS-floored field; zero
     neurons yields an empty full-grid place_fields without crashing."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     n_total = env.place_bin_centers_.shape[0]
     is_interior = env.is_track_interior_.ravel()
@@ -382,9 +362,9 @@ def test_fit_silent_cell_and_zero_neurons():
     assert np.asarray(empty["no_spike_part_log_likelihood"]).shape == (n_total,)
 
 
-def test_predict_signature_matches_encoding_dict():
+def test_predict_signature_matches_encoding_dict(env_2d):
     """Every encoding-dict key is a predict parameter (the base-class splat contract)."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     encoding = fit_sorted_spikes_diffusion_encoding_model(
         position_time=time,
@@ -406,17 +386,10 @@ def test_predict_signature_matches_encoding_dict():
     } <= params
 
 
-def test_predict_shapes_local_and_nonlocal():
+def test_predict_shapes_local_and_nonlocal(env_2d, three_neuron_diffusion):
     """Non-local -> (n_time, n_interior); local -> (n_time, 1); both finite."""
-    env = make_2d_env()
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-    encoding = fit_sorted_spikes_diffusion_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        position_std=6.0,
-    )
+    env = env_2d
+    time, position, spike_times, encoding = three_neuron_diffusion
     decode_time = time[:200]
     decode_time_edges = time_edges_from_centers(decode_time)
     n_interior = int(env.is_track_interior_.ravel().sum())
@@ -444,38 +417,33 @@ def test_predict_shapes_local_and_nonlocal():
     assert np.all(np.isfinite(local_ll))
 
 
-def test_invariants_place_fields_and_likelihood():
-    """Place fields >= 0 & finite; likelihoods finite; softmax posterior sums to 1."""
-    env = make_2d_env()
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-    encoding = fit_sorted_spikes_diffusion_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        position_std=6.0,
-    )
+def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_diffusion):
+    """Place fields are non-negative and finite, and the non-local likelihood is the
+    Poisson log likelihood of each bin's spike counts under those place fields."""
+    env = env_2d
+    time, position, spike_times, encoding = three_neuron_diffusion
     place_fields = np.asarray(encoding["place_fields"])
     assert np.all(place_fields >= 0.0)
     assert np.all(np.isfinite(place_fields))
 
+    # Edges halfway between samples: no spike (all at sample times) sits on an edge.
+    edges = time_edges_from_centers(time[:1000])
     ll = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
             time,
             position,
             spike_times,
-            time_edges=time[:100],
+            time_edges=edges,
             is_local=False,
             **encoding,
         )
     )
-    assert np.all(np.isfinite(ll))
-    # This independent NumPy reference needs float64 reductions: float32
-    # normalization can differ from one by an ULP across supported platforms.
-    reference_ll = ll.astype(np.float64)
-    posterior = np.exp(reference_ll - reference_ll.max(axis=1, keepdims=True))
-    posterior /= posterior.sum(axis=1, keepdims=True)
-    np.testing.assert_allclose(posterior.sum(axis=1), 1.0, atol=1e-10)
+    expected = poisson_log_likelihood_reference(
+        place_fields, env.is_track_interior_.ravel(), spike_times, edges
+    )
+    # The window holds spikes, so the count term is exercised, not just -dt * rate.
+    assert sum(np.histogram(spikes, edges)[0].sum() for spikes in spike_times) > 20
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_kde_dropin_equivalence_on_wall_less_field():
@@ -516,11 +484,11 @@ def test_kde_dropin_equivalence_on_wall_less_field():
     assert max(medians) < 0.05
 
 
-def test_nonuniform_weights_parity_with_kde():
+def test_nonuniform_weights_parity_with_kde(env_2d):
     """Non-uniform (posterior-like) weights: diffusion mean_rates match KDE's, and the
     weighted place fields track KDE's weighted result (spike fields are weighted by
     the interpolated weights, not unweighted counts)."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3, n_time=6000)
     rng = np.random.default_rng(5)
     weights = rng.uniform(0.1, 1.0, size=time.shape[0])
@@ -710,42 +678,6 @@ def test_exposure_weighted_mean_rate_equals_mean_rate_on_unequal_bins():
     np.testing.assert_allclose(weighted_mean, encoding["mean_rates"], rtol=1e-5)
 
 
-def simulate_sparse_uniform_tracking(
-    sampling_frequency: float = 30.0,
-    rate: float = 10.0,
-    duration: float = 600.0,
-    seed: int = 0,
-):
-    """A uniform-rate neuron tracked at 150 units/s on a [0, 100] track.
-
-    The animal bounces between 1.25 and 96.25 at constant speed. At 30 Hz it moves
-    5 units per sample, so with 2.5-unit bins every sample sits on an even bin's
-    center (1.25 + 5k) and the odd bins between them get no tracking sample.
-
-    Returns
-    -------
-    time : np.ndarray, shape (n_time,)
-    position : np.ndarray, shape (n_time, 1)
-    spike_times : list[np.ndarray]
-        One neuron firing as a homogeneous Poisson process at ``rate`` Hz over
-        the encoding support (sample centers plus endpoint half-cells).
-    environment : Environment
-        2.5-unit bins on [0, 100], every bin interior.
-    """
-    rng = np.random.default_rng(seed)
-    dt = 1.0 / sampling_frequency
-    time = np.arange(0.0, duration, dt)
-    span = 95.0
-    phase = (150.0 * time) % (2 * span)
-    position = (1.25 + np.where(phase < span, phase, 2 * span - phase))[:, None]
-    n_spikes = rng.poisson(rate * (time[-1] - time[0] + dt))
-    spike_times = np.sort(rng.uniform(time[0] - dt / 2, time[-1] + dt / 2, n_spikes))
-    environment = Environment(
-        place_bin_size=2.5, position_range=((0.0, 100.0),)
-    ).fit_place_grid(position, infer_track_interior=False)
-    return time, position, [spike_times], environment
-
-
 @pytest.mark.unit
 def test_pixellated_spikes_share_the_exposure_rule_under_sparse_tracking():
     """Spike mass lands only where exposure does, in proportion to it.
@@ -790,9 +722,9 @@ def test_registered_in_sorted_spikes_algorithms():
     assert {"sorted_spikes_kde", "sorted_spikes_glm"} <= set(_SORTED_SPIKES_ALGORITHMS)
 
 
-def test_nonlocal_no_spikes_equals_negative_no_spike_part():
+def test_nonlocal_no_spikes_equals_negative_no_spike_part(env_2d):
     """With no decoding spikes, the non-local LL is exactly -no_spike_part (Poisson)."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     encoding = fit_sorted_spikes_diffusion_encoding_model(
         position_time=time,
@@ -823,9 +755,9 @@ def test_nonlocal_no_spikes_equals_negative_no_spike_part():
     )
 
 
-def test_local_no_spikes_equals_negative_local_rate_sum():
+def test_local_no_spikes_equals_negative_local_rate_sum(env_2d):
     """With no decoding spikes, the local LL is -sum_k place_field_k at the animal's bin."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     encoding = fit_sorted_spikes_diffusion_encoding_model(
         position_time=time,
@@ -944,62 +876,82 @@ def test_local_linear_interpolation_evaluates_point_rate_in_2d():
     np.testing.assert_allclose(ll_local, -x0, rtol=1e-6, atol=1e-6)
 
 
-def test_local_linear_interpolation_falls_back_to_nearest_when_unsafe():
-    """Unsafe interpolation rows fall back to the nearest-bin local likelihood."""
-    env = make_2d_env()
+def _local_log_likelihood(env, position, place_fields, local_interpolation):
+    """Local no-spike log likelihood of a one-neuron ``place_fields`` map.
+
+    With no spikes the local LL is ``-dt * rate``; ``dt = 1`` here, so it is
+    ``-rate`` at each row of ``position``, shape (2, n_position_dims).
+    """
     is_interior = env.is_track_interior_.ravel()
     node_order = np.where(is_interior)[0]
+    time = np.array([0.0, 1.0])
+    return np.asarray(
+        predict_sorted_spikes_diffusion_log_likelihood(
+            time_edges=time_edges_from_centers(time),
+            position_time=time,
+            position=position,
+            spike_times=[np.array([])],
+            environment=env,
+            occupancy=np.ones(node_order.shape[0]),
+            mean_rates=[0.0],
+            place_fields=place_fields,
+            no_spike_part_log_likelihood=place_fields.sum(axis=0),
+            is_track_interior=is_interior,
+            node_order=node_order,
+            bin_sizes=np.ones(node_order.shape[0]),
+            local_interpolation=local_interpolation,
+            disable_progress_bar=True,
+            is_local=True,
+        )
+    )
+
+
+def test_local_linear_interpolation_falls_back_to_nearest_off_grid(env_2d):
+    """A position outside the grid has no interpolation stencil, so linear local
+    mode falls back to the nearest-bin local likelihood."""
+    env = env_2d
     place_fields = np.arange(env.place_bin_centers_.shape[0], dtype=float)[
         np.newaxis, :
     ]
-    no_spike = place_fields.sum(axis=0)
-    time = np.array([0.0, 1.0])
     position = np.array([[-10.0, -10.0], [-10.0, -10.0]])
-    common_kwargs = {
-        "time_edges": time_edges_from_centers(time),
-        "position_time": time,
-        "position": position,
-        "spike_times": [np.array([])],
-        "environment": env,
-        "occupancy": np.ones(node_order.shape[0]),
-        "mean_rates": [0.0],
-        "place_fields": place_fields,
-        "no_spike_part_log_likelihood": no_spike,
-        "is_track_interior": is_interior,
-        "node_order": node_order,
-        "bin_sizes": np.ones(node_order.shape[0]),
-        "disable_progress_bar": True,
-        "is_local": True,
-    }
 
-    linear_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        **common_kwargs, local_interpolation="linear"
+    np.testing.assert_allclose(
+        _local_log_likelihood(env, position, place_fields, "linear"),
+        _local_log_likelihood(env, position, place_fields, "nearest"),
+        rtol=1e-6,
+        atol=1e-6,
     )
-    nearest_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        **common_kwargs, local_interpolation="nearest"
-    )
+
+
+def test_local_linear_interpolation_falls_back_to_nearest_across_a_wall():
+    """An in-grid position whose stencil includes a non-interior bin (the gap between
+    two rooms) falls back to the nearest bin instead of blending in that bin's rate.
+
+    At x = 15.6 the stencil spans the left room's last column (x = 15) and the
+    first gap column (x = 17). Multilinear interpolation is finite there but would
+    mix in the gap's zero rate; the safe-stencil mask must reject it.
+    """
+    env, _ = make_two_room_env()
+    is_interior = env.is_track_interior_.ravel()
+    # A real fit's layout: distinct positive rates on interior bins, 0 off-track.
+    place_fields = np.where(
+        is_interior, 1.0 + np.arange(is_interior.size, dtype=float), 0.0
+    )[np.newaxis, :]
+    position = np.array([[15.6, 19.0], [15.6, 19.0]])
+    centers = env.place_bin_centers_
+    nearest_bin = env.get_bin_ind(position[:1])[0]
+    assert is_interior[nearest_bin]
+    assert np.allclose(centers[nearest_bin], [15.0, 19.0])
+    gap_bin = np.flatnonzero(np.all(np.isclose(centers, [17.0, 19.0]), axis=1))[0]
+    assert not is_interior[gap_bin]
+
+    linear_ll = _local_log_likelihood(env, position, place_fields, "linear")
+    nearest_ll = _local_log_likelihood(env, position, place_fields, "nearest")
 
     np.testing.assert_allclose(linear_ll, nearest_ll, rtol=1e-6, atol=1e-6)
-
-
-def make_two_room_env(seed: int = 0):
-    """Two rooms separated by an impassable gap -> a disconnected manifold graph.
-
-    Left room x in [2, 16], right room x in [24, 38], gap x in (16, 24): four bins
-    wide, wider than ``get_track_interior``'s ``binary_closing`` can bridge, so
-    ``environment_graph`` resolves two connected components (a genuine barrier).
-    """
-    rng = np.random.default_rng(seed)
-    left = rng.uniform([2.0, 2.0], [16.0, 38.0], size=(12000, 2))
-    right = rng.uniform([24.0, 2.0], [38.0, 38.0], size=(12000, 2))
-    position = np.vstack([left, right])
-    rng.shuffle(position)
-    env = Environment(
-        environment_name="two_rooms",
-        place_bin_size=2.0,
-        position_range=((0.0, 40.0), (0.0, 40.0)),
-    ).fit_place_grid(position, infer_track_interior=True)
-    return env, position
+    # Interpolating would have given 0.7 * rate(x=15): a different value.
+    blended = 0.7 * place_fields[0, nearest_bin] + 0.3 * place_fields[0, gap_bin]
+    assert not np.isclose(blended, -nearest_ll[0, 0])
 
 
 def test_no_rate_leak_across_impassable_barrier():
@@ -1260,9 +1212,9 @@ def test_end_to_end_sorted_spikes_diffusion_decoder():
 
 
 @pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
-def one_neuron_fit(request):
+def one_neuron_fit(env_2d, request):
     """A registered diffusion-family model fit on a single neuron."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=1)
     fit, predict = _SORTED_SPIKES_ALGORITHMS[request.param]
     fit_params = (
@@ -1301,16 +1253,16 @@ def test_predict_rejects_population_mismatch(
         )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 @pytest.mark.parametrize("algorithm", ["sorted_spikes_diffusion", "sorted_spikes_mrf"])
-def test_detectors_reject_population_mismatch(algorithm):
+def test_detectors_reject_population_mismatch(env_2d, algorithm):
     """The public decoder and non-local detector raise the package error."""
     from non_local_detector.models import (
         NonLocalSortedSpikesDetector,
         SortedSpikesDecoder,
     )
 
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     for detector_cls in (SortedSpikesDecoder, NonLocalSortedSpikesDetector):
         detector = detector_cls(
@@ -1327,9 +1279,9 @@ def test_detectors_reject_population_mismatch(algorithm):
 
 
 @pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
-def three_neuron_fit(request):
+def three_neuron_fit(env_2d, request):
     """A registered diffusion-family model fit on three neurons."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     fit, predict = _SORTED_SPIKES_ALGORITHMS[request.param]
     fit_params = (

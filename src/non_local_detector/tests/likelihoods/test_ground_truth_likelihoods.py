@@ -35,6 +35,10 @@ from non_local_detector import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _SORTED_SPIKES_ALGORITHMS,
+)
 from non_local_detector.likelihoods.common import DEFAULT_WAVEFORM_STD
 
 pytestmark = [
@@ -61,30 +65,23 @@ MEANS_2D = np.c_[_GRID_X.ravel(), _GRID_Y.ravel()]  # (n_cells, 2)
 SIGMA_2D = np.array([8.0, 6.0])
 PLACE_BIN_SIZE_2D = 3.0
 
-SORTED = (
-    "sorted_spikes_kde",
-    "sorted_spikes_glm",
-    "sorted_spikes_diffusion",
-    "sorted_spikes_mrf",
-)
-CLUSTERLESS = (
-    "clusterless_kde",
-    "clusterless_gmm",
-    "clusterless_diffusion",
-)
-# Mark-kernel bandwidth of each clusterless backend at the detector defaults.
-# A kernel estimate converges to the true mark density convolved with its
-# kernel, so the KDE and diffusion backends are compared in absolute level
-# against an exact likelihood whose mark sd is sqrt(MARK_SD**2 + h**2); the GMM
-# fits the mark clusters themselves.
+SORTED = tuple(sorted(_SORTED_SPIKES_ALGORITHMS))
+CLUSTERLESS = tuple(sorted(_CLUSTERLESS_ALGORITHMS))
+# Mark-kernel bandwidth of each clusterless backend at the detector defaults;
+# every registered clusterless backend needs an entry. A kernel estimate
+# converges to the true mark density convolved with its kernel, so the KDE and
+# diffusion backends are compared in absolute level against an exact
+# likelihood whose mark sd is sqrt(MARK_SD**2 + h**2); the GMM and the mark
+# GLM's mark mixture fit the mark clusters themselves.
 MARK_KERNEL_SD = {
     "clusterless_kde": DEFAULT_WAVEFORM_STD,
     "clusterless_gmm": 0.0,
     "clusterless_diffusion": DEFAULT_WAVEFORM_STD,
+    "clusterless_mark_glm": 0.0,
 }
 
 # Nats per spike; see test_nonlocal_likelihood_tracks_the_exact_likelihood.
-LEVEL_TOLERANCE = {"clusterless_gmm": 1.5}
+LEVEL_TOLERANCE = {"clusterless_gmm": 1.5, "clusterless_mark_glm": 0.75}
 
 
 def _true_rates(x):
@@ -398,20 +395,20 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording, f
     """Held-out non-local log likelihoods follow the exact one from the true rates.
 
     Rows with at least two spikes. Measured median correlations: 0.95 for the
-    GLM and MRF, 0.78-0.79 for the KDE and diffusion variants (their 6 cm
-    position bandwidth smooths the 4 cm fields), 0.69 for the GMM; the most
-    likely bins agree within 2 bins in 97.8-99.6% of rows (GMM: 89% within
-    2, 96% within 3). Against reassigned cells the correlations are below
-    0.15 and agreement within 3 bins below 0.15.
+    GLM, MRF and mark GLM, 0.78-0.79 for the KDE and diffusion variants (their
+    6 cm position bandwidth smooths the 4 cm fields), 0.69 for the GMM; the
+    most likely bins agree within 2 bins in 97.8-99.6% of rows (GMM: 89%
+    within 2, 96% within 3). Against reassigned cells the correlations are
+    below 0.15 and agreement within 3 bins below 0.15.
 
     The correlation ignores a constant per row, so the absolute level is
     checked too: the median per-spike gap in log marginal likelihood. Measured
-    smoothing/fit bias: -0.81 (GMM), within 0.15 for the rest (GLM 0.01; the
-    KDE and diffusion clusterless backends against the kernel-smoothed mark
-    density; against the true one their 24-unit mark kernel costs 2.9 nats
-    per spike in 4-D). The tolerances, 1.5 (GMM) and 0.5 nats, sit above
-    those biases and below the constant errors guarded
-    against: a missing sqrt(2 pi) in one mark dimension (0.92, caught for
+    smoothing/fit bias: -0.81 (GMM), -0.49 (mark GLM), within 0.15 for the
+    rest (GLM 0.01; the KDE and diffusion clusterless backends against the
+    kernel-smoothed mark density; against the true one their 24-unit mark
+    kernel costs 2.9 nats per spike in 4-D). The tolerances, 1.5 (GMM), 0.75
+    (mark GLM) and 0.5 nats, sit above those biases and below the constant
+    errors guarded against: a missing sqrt(2 pi) in one mark dimension (0.92, caught for
     the kernel backends), a mis-scaled rate reference (log 10 = 2.3), a
     missing (2 pi)^2 in a 4-D mark density (3.7), a dropped log(dt) (3.9).
     """
@@ -464,7 +461,7 @@ def test_2d_sorted_place_fields_recover_the_true_fields(algorithm, recording_2d,
 def test_2d_clusterless_ground_process_recovers_the_true_intensity(
     algorithm, recording_2d, fits
 ):
-    """Measured: correlations 0.89-0.92, occupancy-weighted ratios 0.92-0.98."""
+    """Measured: correlations 0.89-0.94, occupancy-weighted ratios 0.92-1.00."""
     train, _, _ = recording_2d
     _, encoding, interior, centers = _cached_fit(
         fits, algorithm, train, PLACE_BIN_SIZE_2D
@@ -485,11 +482,11 @@ def test_2d_nonlocal_likelihood_tracks_the_exact_likelihood(
     """Held-out 2-D non-local log likelihoods follow the exact one.
 
     Measured median correlations: 0.93 (KDE and diffusion), 0.97 (MRF),
-    0.92 (GLM), 0.69 (GMM); most likely bins within 6.5 cm (about two 3 cm
-    bins) in 95% (KDE, diffusion), 93% (GLM), 91% (MRF) and 65% (GMM) of
-    rows. Against reassigned cells: correlations below -0.1 and at most 1.2%
-    of rows within 6.5 cm. Level offsets within 0.21 (GLM -0.01);
-    tolerances as in 1-D.
+    0.92 (GLM, mark GLM), 0.69 (GMM); most likely bins within 6.5 cm (about
+    two 3 cm bins) in 95% (KDE, diffusion), 93% (GLM, mark GLM), 91% (MRF)
+    and 65% (GMM) of rows. Against reassigned cells: correlations below -0.1
+    and at most 1.2% of rows within 6.5 cm. Level offsets within 0.27 (GLM
+    -0.01); tolerances as in 1-D.
     """
     train, test, edges = recording_2d
     model, _, _, centers = _cached_fit(fits, algorithm, train, PLACE_BIN_SIZE_2D)

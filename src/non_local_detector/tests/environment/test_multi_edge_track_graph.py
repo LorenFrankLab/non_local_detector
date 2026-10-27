@@ -1,8 +1,11 @@
 import networkx as nx
 import numpy as np
+import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import get_position_at_time
+
+pytestmark = pytest.mark.unit
 
 
 def make_multi_edge_line_graph():
@@ -22,7 +25,13 @@ def make_multi_edge_line_graph():
     return g, edge_order, edge_spacing
 
 
-def test_linear_position_monotonic_across_multiple_edges():
+def test_linear_position_adds_edge_spacing_after_the_first_edge():
+    """Linear position follows x on the first edge and x + edge_spacing after it.
+
+    The track runs along the x axis with nodes at x = 0, 5 and 10.5, so a point
+    at x on the first edge is x along the track, and a point on the second edge
+    is x plus the gap the edge order inserts before that edge.
+    """
     g, edge_order, edge_spacing = make_multi_edge_line_graph()
     env = Environment(
         environment_name="multi-line",
@@ -35,13 +44,8 @@ def test_linear_position_monotonic_across_multiple_edges():
     # Interpolate 2D positions along 0..10.5
     t = np.linspace(0.0, 10.5, 22)
     pos = np.stack([t, np.zeros_like(t)], axis=1)
-    spikes = np.linspace(0.0, 10.5, 11)
+    spikes = np.linspace(0.0, 10.5, 11)  # none at the shared node x = 5
     lin = get_position_at_time(t, pos, spikes, env)
-    # Monotonic and length roughly equals position + cumulative spacing at the internal edge
-    assert np.all(np.diff(lin.squeeze()) >= 0)
-    # Check that the linear position jumps by ~edge_spacing at the internal boundary index
-    # Find the spike closest to x=5.0 (boundary between edges)
-    boundary_idx = np.argmin(np.abs(spikes - 5.0))
-    # Next increment should be slightly larger due to spacing
-    diffs = np.diff(lin.squeeze())
-    assert diffs[boundary_idx] >= diffs.max() * 0.5  # rough check for a bump
+
+    expected = spikes + edge_spacing * (spikes > 5.0)
+    np.testing.assert_allclose(lin.squeeze(), expected, rtol=0, atol=1e-12)

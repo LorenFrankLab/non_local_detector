@@ -10,7 +10,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.likelihoods.common import _SpikeTimeOrder
-from non_local_detector.tests.models.test_rate_units_and_persistence import (
+from non_local_detector.tests.models._helpers import (
     ALGORITHMS,
     _decoder,
 )

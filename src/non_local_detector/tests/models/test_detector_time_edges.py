@@ -10,6 +10,8 @@ samples, and the bin width learned by ``estimate_parameters`` is enforced when
 the fitted transitions are reused.
 """
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -19,7 +21,7 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.exceptions import DataError, ValidationError
-from non_local_detector.tests.models.test_failed_calls_preserve_model import (
+from non_local_detector.tests.models._helpers import (
     _assert_unchanged,
     _snapshot,
 )
@@ -27,7 +29,7 @@ from non_local_detector.tests.models.test_failed_calls_preserve_model import (
 FAMILIES = ["sorted", "clusterless"]
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def family(request, sorted_sim, clusterless_sim):
     """``(detector class, position_time, fit args, spike args)``."""
     if request.param == "sorted":
@@ -51,11 +53,15 @@ def family(request, sorted_sim, clusterless_sim):
     )
 
 
-def _fitted(family):
+@pytest.fixture(scope="module")
+def fitted(family):
+    """Default detector fitted once per family; tests must not mutate it.
+
+    Decoding only records diagnostics on the detector, so read-only tests
+    share it; tests that patch or may change the detector use a deepcopy.
+    """
     detector_cls, _, fit_args, _ = family
-    detector = detector_cls()
-    detector.fit(**fit_args)
-    return detector
+    return detector_cls().fit(**fit_args)
 
 
 def _decode_args(family, time_edges, **kwargs):
@@ -78,8 +84,8 @@ def _coarse_edges(position_time, factor=4, n_bins=200):
 # ----------------------------------------------------------------- rows
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_predict_returns_one_row_per_bin_at_the_bin_centers(family):
-    detector = _fitted(family)
+def test_predict_returns_one_row_per_bin_at_the_bin_centers(family, fitted):
+    detector = fitted
     edges = _coarse_edges(family[1])
     results = detector.predict(**_decode_args(family, edges))
     centers = edges[:-1] + 0.5 * np.diff(edges)
@@ -92,8 +98,8 @@ def test_predict_returns_one_row_per_bin_at_the_bin_centers(family):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_most_likely_sequence_returns_one_row_per_bin(family):
-    detector = _fitted(family)
+def test_most_likely_sequence_returns_one_row_per_bin(family, fitted):
+    detector = fitted
     edges = _coarse_edges(family[1])
     sequence = detector.most_likely_sequence(**_decode_args(family, edges))
     assert sequence.shape[0] == 200
@@ -104,9 +110,9 @@ def test_most_likely_sequence_returns_one_row_per_bin(family):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_sample_centered_edges_keep_one_row_per_position_sample(family):
+def test_sample_centered_edges_keep_one_row_per_position_sample(family, fitted):
     """``time_edges_from_centers`` reproduces the one-row-per-sample grid."""
-    detector = _fitted(family)
+    detector = fitted
     position_time = family[1][:300]
     results = detector.predict(
         **_decode_args(family, time_edges_from_centers(position_time))
@@ -117,8 +123,8 @@ def test_sample_centered_edges_keep_one_row_per_position_sample(family):
 # ----------------------------------------------------------------- API
 @pytest.mark.unit
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_old_time_argument_is_rejected(family):
-    detector = _fitted(family)
+def test_old_time_argument_is_rejected(family, fitted):
+    detector = fitted
     args = _decode_args(family, _coarse_edges(family[1]))
     edges = args.pop("time_edges")
     with pytest.raises(TypeError):
@@ -152,10 +158,11 @@ def _bad_grids(position_time):
 @pytest.mark.parametrize(
     "grid", ["repeated", "decreasing", "nan", "nonuniform", "single-edge"]
 )
-def test_invalid_edges_fail_before_state_changes(family, grid):
+def test_invalid_edges_fail_before_state_changes(family, fitted, grid):
     _, position_time, fit_args, _ = family
     bad = _bad_grids(position_time)[grid]
-    detector = _fitted(family)
+    # A copy, so a call that wrongly changes state cannot leak into other tests.
+    detector = copy.deepcopy(fitted)
     snapshot = _snapshot(detector)
     with pytest.raises((DataError, ValidationError)):
         detector.predict(**_decode_args(family, bad))
@@ -170,8 +177,8 @@ def test_invalid_edges_fail_before_state_changes(family, grid):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_is_missing_must_have_one_entry_per_bin(family):
-    detector = _fitted(family)
+def test_is_missing_must_have_one_entry_per_bin(family, fitted):
+    detector = fitted
     edges = _coarse_edges(family[1])
     with pytest.raises(ValidationError, match="is_missing"):
         detector.predict(**_decode_args(family, edges, is_missing=np.zeros(201, bool)))
@@ -268,11 +275,11 @@ def test_missing_bins_include_a_nan_read_at_the_closed_final_edge():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", ["clusterless"], indirect=True)
-def test_spike_with_nan_position_in_a_finite_center_bin_is_missing(family):
+def test_spike_with_nan_position_in_a_finite_center_bin_is_missing(family, fitted):
     """A decoding spike at ``t[k] + 0.75 dt`` with ``position[k]`` NaN reads a
     NaN position although its bin's center ``t[k + 1]`` reads a finite one.
     The bin must be missing, or the local likelihood turns the posterior NaN."""
-    detector = _fitted(family)
+    detector = fitted
     position_time = family[1][:300]
     position = family[2]["position"].astype(float)[:300].copy()
     position = position if position.ndim > 1 else position[:, None]
@@ -302,8 +309,8 @@ def test_spike_with_nan_position_in_a_finite_center_bin_is_missing(family):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_bins_touched_by_nan_position_are_missing(family):
-    detector = _fitted(family)
+def test_bins_touched_by_nan_position_are_missing(family, fitted):
+    detector = fitted
     position_time = family[1]
     position = family[2]["position"].astype(float).copy()
     position = position if position.ndim > 1 else position[:, None]
@@ -396,9 +403,11 @@ def test_learned_transitions_require_the_same_bin_width(family):
 # ----------------------------------------------------------------- callbacks
 @pytest.mark.integration
 @pytest.mark.parametrize("family", ["sorted"], indirect=True)
-def test_unmarked_callback_requires_row_slices_for_chunking(family, monkeypatch):
+def test_unmarked_callback_requires_row_slices_for_chunking(
+    family, fitted, monkeypatch
+):
     """Full-grid overrides work; chunking needs explicit global row ownership."""
-    detector = _fitted(family)
+    detector = copy.deepcopy(fitted)
     position_time = family[1]
     edges = _coarse_edges(position_time)
     chunk_starts = [67, 134]  # np.array_split(range(200), 3)
@@ -428,8 +437,8 @@ def test_unmarked_callback_requires_row_slices_for_chunking(family, monkeypatch)
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_chunked_predict_matches_unchunked(family):
-    detector = _fitted(family)
+def test_chunked_predict_matches_unchunked(family, fitted):
+    detector = fitted
     args = _decode_args(
         family, _coarse_edges(family[1]), return_outputs="log_likelihood"
     )
@@ -447,10 +456,10 @@ def test_chunked_predict_matches_unchunked(family):
 @pytest.mark.parametrize("family", ["sorted"], indirect=True)
 @pytest.mark.parametrize("n_chunks", [1, 3])
 def test_callback_returning_the_wrong_row_count_is_rejected(
-    family, monkeypatch, n_chunks
+    family, fitted, monkeypatch, n_chunks
 ):
     """A callback written for one row per edge would be silently misaligned."""
-    detector = _fitted(family)
+    detector = copy.deepcopy(fitted)
     edges = _coarse_edges(family[1])
     original = detector.compute_log_likelihood
 
@@ -466,8 +475,8 @@ def test_callback_returning_the_wrong_row_count_is_rejected(
 # ----------------------------------------------------------------- position
 @pytest.mark.unit
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_position_must_match_position_time(family):
-    detector = _fitted(family)
+def test_position_must_match_position_time(family, fitted):
+    detector = fitted
     edges = _coarse_edges(family[1])
     position = family[2]["position"].astype(float).copy()
     position = position if position.ndim > 1 else position[:, None]
@@ -483,8 +492,8 @@ def test_position_must_match_position_time(family):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", ["sorted"], indirect=True)
-def test_infinite_position_is_missing_like_nan(family):
-    detector = _fitted(family)
+def test_infinite_position_is_missing_like_nan(family, fitted):
+    detector = fitted
     position_time = family[1]
     edges = _coarse_edges(position_time)
     position = family[2]["position"].astype(float).copy()
@@ -616,10 +625,12 @@ def test_missing_bins_match_the_interpolation_oracle(seed):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_most_likely_sequence_marks_nan_position_bins_missing(family, monkeypatch):
+def test_most_likely_sequence_marks_nan_position_bins_missing(
+    family, fitted, monkeypatch
+):
     from non_local_detector.models import base
 
-    detector = _fitted(family)
+    detector = fitted
     position_time = family[1]
     position = family[2]["position"].astype(float).copy()
     position = position if position.ndim > 1 else position[:, None]

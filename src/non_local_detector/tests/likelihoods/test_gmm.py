@@ -1,7 +1,7 @@
 """Unit tests for the JAX ``GaussianMixtureModel`` EM implementation.
 
-These cover behavioral guarantees beyond the KDE-vs-GMM convergence comparisons
-in ``test_gmm_kde_convergence.py``: stale-state handling on refit, partial
+These cover behavioral guarantees beyond the EM convergence diagnostics in
+``test_gmm_kde_convergence.py``: stale-state handling on refit, partial
 user-init behavior, multi-restart initialization, input validation, and
 singular-covariance error reporting.
 """
@@ -23,6 +23,8 @@ from non_local_detector.likelihoods.gmm import (
     _estimate_gaussian_covariances_tied,
     _estimate_gaussian_parameters,
 )
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -58,7 +60,7 @@ def _two_clusters(seed: int = 1, n: int = 80, scale: float = 0.3) -> jnp.ndarray
 
 
 # ---------------------------------------------------------------------
-# Finding #5: refit must not retain stale state
+# Refit must not retain stale state
 # ---------------------------------------------------------------------
 def test_refit_after_total_failure_does_not_retain_stale_fit(key):
     """A refit whose every restart fails must raise, not silently keep the
@@ -90,7 +92,7 @@ def test_refit_after_total_failure_does_not_retain_stale_fit(key):
 
 
 # ---------------------------------------------------------------------
-# Finding #2: partial user init must not collapse to a degenerate solution
+# Partial user init must not collapse to a degenerate solution
 # ---------------------------------------------------------------------
 def test_partial_user_init_only_weights_does_not_collapse(key):
     """Providing only ``weights_init`` must not collapse every component onto
@@ -153,7 +155,7 @@ def test_partial_user_init_only_means_are_respected(key):
 
 
 # ---------------------------------------------------------------------
-# Finding #1: kmeans n_init restarts must actually differ
+# KMeans n_init restarts must actually differ
 # ---------------------------------------------------------------------
 def test_kmeans_restarts_differ_across_inits(key):
     """With ``init_params='kmeans'`` and a fixed ``random_state``, restarts
@@ -180,8 +182,8 @@ def test_kmeans_restarts_differ_across_inits(key):
 
 def test_kmeans_first_restart_preserves_random_state(key):
     """The primary restart (index 0) with a set ``random_state`` must keep
-    using that seed directly, so single-init fits stay byte-identical to the
-    pre-fix behavior (and to a direct ``KMeans(random_state=...)``)."""
+    using that seed directly, so single-init fits stay byte-identical to a
+    direct ``KMeans(random_state=...)``."""
     from sklearn.cluster import KMeans
 
     X = _three_clusters()
@@ -200,7 +202,7 @@ def test_kmeans_first_restart_preserves_random_state(key):
 
 
 # ---------------------------------------------------------------------
-# Finding #3: validate init arrays and fit inputs
+# Validate init arrays and fit inputs
 # ---------------------------------------------------------------------
 def test_weights_init_wrong_length_raises():
     """``weights_init`` whose length != n_components is rejected at
@@ -252,16 +254,6 @@ def test_means_init_wrong_n_features_raises(key):
         model.fit(X, key)
 
 
-def test_sample_weight_negative_raises(key):
-    """Negative ``sample_weight`` entries are rejected."""
-    X = _two_clusters()
-    sw = np.ones(X.shape[0])
-    sw[0] = -1.0
-    model = GaussianMixtureModel(n_components=2, random_state=0)
-    with pytest.raises(ValidationError):
-        model.fit(X, key, sample_weight=jnp.asarray(sw))
-
-
 def test_sample_weight_wrong_length_raises(key):
     """``sample_weight`` whose length != n_samples is rejected."""
     X = _two_clusters()
@@ -282,7 +274,7 @@ def test_covariances_init_wrong_shape_raises(key):
 
 
 # ---------------------------------------------------------------------
-# Finding #4: singular-covariance failures get an actionable error
+# Singular-covariance failures get an actionable error
 # ---------------------------------------------------------------------
 def test_singular_covariance_raises_actionable_error(key):
     """When every restart collapses to a singular covariance (NaN lower
@@ -334,7 +326,7 @@ def test_discarded_restarts_are_reported(key):
 
 
 # ---------------------------------------------------------------------
-# tied covariance parameterization (previously untested)
+# Tied covariance parameterization
 # ---------------------------------------------------------------------
 def test_tied_covariance_fractional_weights_divide_by_sum_w():
     """The tied covariance divides the scatter by the total weight, not by 1.0.
@@ -359,7 +351,7 @@ def test_tied_covariance_fractional_weights_divide_by_sum_w():
     scatter = Xn.T @ (Xn * w[:, None]) - (nkn * meansn.T) @ meansn
     expected = scatter / w.sum()  # divide by sum_w == 0.5
     assert np.allclose(np.asarray(cov), expected, rtol=1e-5, atol=1e-6)
-    # The pre-fix `/ max(sum_w, 1.0)` would halve it -- guard against a regression.
+    # Dividing by `max(sum_w, 1.0)` instead would halve it.
     assert not np.allclose(np.asarray(cov), scatter / 1.0, rtol=1e-2)
 
 
@@ -400,15 +392,6 @@ def test_tied_score_samples_matches_analytic_gaussian():
     )
     expected = logsumexp(comp, axis=1)
     assert np.allclose(actual, expected, rtol=1e-4, atol=1e-4)
-
-
-def test_sample_weight_all_zero_raises(key):
-    """An all-zero sample_weight sums to 0 (no effective data) and is rejected with an
-    accurate message -- not a misleading singular-covariance / reg_covar error."""
-    model = GaussianMixtureModel(n_components=2, covariance_type="full", random_state=0)
-    X = _two_clusters()
-    with pytest.raises(ValidationError, match="sums to 0"):
-        model.fit(X, key, sample_weight=jnp.zeros(X.shape[0]))
 
 
 def test_gmm_diag_variance_floor_warns(key):

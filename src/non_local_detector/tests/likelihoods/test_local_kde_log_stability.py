@@ -8,6 +8,8 @@ values in linear space before taking the log.
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.special import logsumexp
+from scipy.stats import norm
 
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
@@ -17,25 +19,27 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
 )
 from non_local_detector.likelihoods.common import (
-    EPS,
-    block_kde,
+    LOG_EPS,
+    RATE_REFERENCE_SECONDS,
     block_log_kde,
 )
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
+from non_local_detector.likelihoods.mark_reference import (
+    MarkReference,
+    fit_mark_references,
+)
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
 def extreme_feature_data():
-    """Generate synthetic data with extreme waveform features.
+    """Synthetic encoding spikes and decoding spikes with extreme waveform features.
 
-    This creates conditions where linear-space computation would underflow:
-    - High dimensional waveform features (8 dimensions)
-    - Large feature distances (features far from encoding samples)
-    - Small standard deviations (narrow Gaussians)
-
-    These conditions make the product of per-dimension Gaussians extremely small,
-    causing underflow in linear space but handled correctly in log-space.
+    Decoding marks lie about 50 units (about 17 mark bandwidths) from every
+    encoding mark in each of 8 dimensions, so each spike's joint kernel is
+    around exp(-1000): zero in float32 linear space, finite in log space. The
+    decoding spikes are kept out of the encoding fit.
     """
     rng = np.random.default_rng(123)
 
@@ -44,42 +48,29 @@ def extreme_feature_data():
     position_time = np.linspace(0, 5, n_time_pos)
     position = np.linspace(0, 50, n_time_pos)[:, None]  # 1D position
 
-    # Spike data for 2 electrodes
     n_electrodes = 2
-    spike_times = []
-    spike_waveform_features = []
-
+    enc_spike_times, enc_features, dec_spike_times, dec_features = [], [], [], []
     for _i in range(n_electrodes):
-        # Encoding spikes (training data) - moderate features
+        # Encoding spikes (training data) - features centered around 0
         n_enc_spikes = 40
-        enc_spike_times = np.sort(
-            rng.uniform(position_time[0], position_time[-1], n_enc_spikes)
+        enc_spike_times.append(
+            np.sort(rng.uniform(position_time[0], position_time[-1], n_enc_spikes))
         )
-        # Features centered around 0
-        enc_features = rng.standard_normal((n_enc_spikes, 8)) * 5.0
+        enc_features.append(rng.standard_normal((n_enc_spikes, 8)) * 5.0)
 
-        # Decoding spikes (test data) - EXTREME features far from encoding
+        # Decoding spikes (test data) - features shifted far from encoding data
         n_dec_spikes = 20
-        dec_spike_times = np.sort(rng.uniform(2.0, 3.0, n_dec_spikes))
-        # Features shifted far away from encoding data
-        # This creates very small Gaussian values that underflow in linear space
-        dec_features = (
-            rng.standard_normal((n_dec_spikes, 8)) * 5.0 + 50.0
-        )  # Shifted by 50!
-
-        # Combine encoding and decoding for storage
-        all_times = np.concatenate([enc_spike_times, dec_spike_times])
-        all_features = np.concatenate([enc_features, dec_features], axis=0)
-
-        spike_times.append(all_times)
-        spike_waveform_features.append(all_features)
+        dec_spike_times.append(np.sort(rng.uniform(2.0, 3.0, n_dec_spikes)))
+        dec_features.append(rng.standard_normal((n_dec_spikes, 8)) * 5.0 + 50.0)
 
     return {
         "position_time": position_time,
         "position": position,
-        "spike_times": spike_times,
-        "spike_waveform_features": spike_waveform_features,
-        "dec_time_range": (2.0, 3.0),  # Time range where we have extreme features
+        "enc_spike_times": enc_spike_times,
+        "enc_spike_waveform_features": enc_features,
+        "dec_spike_times": dec_spike_times,
+        "dec_spike_waveform_features": dec_features,
+        "dec_time_range": (2.0, 3.0),  # Time range of the decoding spikes
     }
 
 
@@ -95,89 +86,126 @@ def simple_1d_environment():
     return env
 
 
+def _local_ll(
+    data, env, enc_model, time_edges, spike_times, spike_features, mark_reference
+):
+    """Local log likelihood, shape (n_time,)."""
+    return np.asarray(
+        compute_local_log_likelihood(
+            time_edges=time_edges,
+            position_time=data["position_time"],
+            position=data["position"],
+            spike_times=spike_times,
+            spike_waveform_features=spike_features,
+            occupancy_model=enc_model["occupancy_model"],
+            gpi_models=enc_model["gpi_models"],
+            encoding_spike_waveform_features=enc_model[
+                "encoding_spike_waveform_features"
+            ],
+            encoding_positions=enc_model["encoding_positions"],
+            environment=env,
+            mean_rates=jnp.array(enc_model["mean_rates"]),
+            position_std=enc_model["position_std"],
+            waveform_std=enc_model["waveform_std"],
+            mark_reference=mark_reference,
+            block_size=50,
+            disable_progress_bar=True,
+        )
+    )[:, 0]
+
+
 def test_local_likelihood_log_space_prevents_underflow(
     extreme_feature_data, simple_1d_environment
 ):
-    """Test that log-space local likelihood handles extreme features without underflow.
+    """Spike terms whose joint kernel underflows float32 match a float64 reference.
 
-    This test verifies that when decoding spikes have waveform features very far
-    from encoding samples (causing underflow in linear-space computation), the
-    log-space implementation still produces finite, reasonable results.
-
-    The test checks that:
-    1. All likelihood values are finite (no -inf from underflow)
-    2. The expected-counts term dominates (since spike term should be very negative)
-    3. The result is numerically stable across different random seeds
+    Each decoding spike adds ``logaddexp(log intensity, log background)`` to its
+    time bin, where the intensity is ``rate * joint KDE / occupancy`` at the
+    animal's position. Here every joint kernel is around exp(-1000). A mark
+    reference centred far from every mark puts the background near exp(-3900),
+    so each spike term is its log intensity: a kernel lost to underflow would
+    leave the background, thousands of nats away from the reference.
     """
     data = extreme_feature_data
     env = simple_1d_environment
-
-    # Fit encoding model
+    position_std, waveform_std = 6.0, 3.0
     enc_model = fit_clusterless_kde_encoding_model(
         position_time=data["position_time"],
         position=data["position"],
-        spike_times=data["spike_times"],
-        spike_waveform_features=data["spike_waveform_features"],
+        spike_times=data["enc_spike_times"],
+        spike_waveform_features=data["enc_spike_waveform_features"],
         environment=env,
-        position_std=6.0,
-        waveform_std=3.0,  # Small std → narrow Gaussians → more underflow risk
+        position_std=position_std,
+        waveform_std=waveform_std,
         block_size=50,
         disable_progress_bar=True,
     )
-
-    # Decode on time window with extreme features
+    n_electrodes, n_features = len(data["dec_spike_times"]), 8
+    far_reference = [
+        MarkReference(np.full(n_features, -1e30), np.full(n_features, 1e-30))
+    ] * n_electrodes
     dec_start, dec_end = data["dec_time_range"]
-    time = np.linspace(dec_start, dec_end, 10)
+    time_edges = time_edges_from_centers(np.linspace(dec_start, dec_end, 10))
 
-    # Compute local likelihood
-    ll_local = compute_local_log_likelihood(
-        time_edges=time_edges_from_centers(time),
-        position_time=data["position_time"],
-        position=data["position"],
-        spike_times=data["spike_times"],
-        spike_waveform_features=data["spike_waveform_features"],
-        occupancy_model=enc_model["occupancy_model"],
-        gpi_models=enc_model["gpi_models"],
-        encoding_spike_waveform_features=enc_model["encoding_spike_waveform_features"],
-        encoding_positions=enc_model["encoding_positions"],
-        environment=env,
-        mean_rates=jnp.array(enc_model["mean_rates"]),
-        position_std=enc_model["position_std"],
-        waveform_std=enc_model["waveform_std"],
-        mark_reference=fit_mark_references(
-            data["spike_waveform_features"], kernel_scale=3.0
-        ),
-        block_size=50,
-        disable_progress_bar=True,
+    with_spikes = _local_ll(
+        data,
+        env,
+        enc_model,
+        time_edges,
+        data["dec_spike_times"],
+        data["dec_spike_waveform_features"],
+        far_reference,
+    )
+    baseline = _local_ll(
+        data,
+        env,
+        enc_model,
+        time_edges,
+        [np.empty(0)] * n_electrodes,
+        [np.empty((0, n_features))] * n_electrodes,
+        far_reference,
     )
 
-    # 1. All values should be finite (no -inf from underflow)
-    assert np.all(np.isfinite(ll_local)), (
-        f"Local likelihood contains non-finite values: "
-        f"min={np.min(ll_local)}, max={np.max(ll_local)}, "
-        f"n_inf={np.sum(np.isinf(ll_local))}, n_nan={np.sum(np.isnan(ll_local))}"
-    )
+    # float64 reference for the summed spike terms of each time bin.
+    occupancy_model = enc_model["occupancy_model"]
+    occupancy_samples = np.asarray(occupancy_model.samples_, np.float64)[:, 0]
+    occupancy_weights = np.asarray(occupancy_model.weights_, np.float64)
+    occupancy_std = float(np.ravel(occupancy_model.std)[0])
+    expected = np.zeros(time_edges.shape[0] - 1)
+    for electrode in range(n_electrodes):
+        spike_times = data["dec_spike_times"][electrode]
+        marks = data["dec_spike_waveform_features"][electrode]
+        spike_position = np.interp(
+            spike_times, data["position_time"], data["position"][:, 0]
+        )
+        log_occupancy = logsumexp(
+            norm.logpdf(spike_position[:, None], occupancy_samples[None], occupancy_std)
+            + np.log(occupancy_weights),
+            axis=1,
+        ) - np.log(occupancy_weights.sum())
+        encoding_position = np.asarray(
+            enc_model["encoding_positions"][electrode], np.float64
+        )[:, 0]
+        encoding_marks = np.asarray(
+            enc_model["encoding_spike_waveform_features"][electrode], np.float64
+        )
+        log_joint_kernel = norm.logpdf(
+            spike_position[:, None], encoding_position[None], position_std
+        ) + norm.logpdf(marks[:, None, :], encoding_marks[None], waveform_std).sum(-1)
+        assert np.all(log_joint_kernel < -800.0)  # zero in float32 linear space
+        log_intensity = (
+            np.log(enc_model["mean_rates"][electrode] * RATE_REFERENCE_SECONDS)
+            + logsumexp(log_joint_kernel, axis=1)
+            - np.log(encoding_position.shape[0])
+            - log_occupancy
+        )
+        log_background = LOG_EPS + far_reference[electrode].log_density(marks)
+        assert np.all(log_background < log_intensity - 1000.0)
+        rows = np.searchsorted(time_edges, spike_times, side="right") - 1
+        np.add.at(expected, rows, np.logaddexp(log_intensity, log_background))
 
-    # 2. Values should be reasonable (negative, since log-likelihood)
-    # With extreme features far from encoding data, spike contributions should be
-    # very negative, so expected-counts term dominates
-    assert np.all(ll_local < 0), "Log-likelihood should be negative"
-
-    # 3. Should not saturate at LOG_EPS (which would indicate underflow)
-    from non_local_detector.likelihoods.common import LOG_EPS
-
-    # If underflow occurred, many values would equal LOG_EPS
-    n_at_log_eps = np.sum(np.isclose(ll_local, LOG_EPS, rtol=0, atol=1e-10))
-    assert n_at_log_eps == 0, (
-        f"Log-likelihood saturated at LOG_EPS in {n_at_log_eps}/{ll_local.size} values, "
-        f"indicating underflow in linear-space computation"
-    )
-
-    # 4. Verify shape
-    assert ll_local.shape == (
-        len(time),
-        1,
-    ), f"Expected shape ({len(time)}, 1), got {ll_local.shape}"
+    assert np.all(np.isfinite(with_spikes))
+    np.testing.assert_allclose(with_spikes - baseline, expected, rtol=1e-5)
 
 
 def test_local_likelihood_log_space_moderate_features(
@@ -195,14 +223,14 @@ def test_local_likelihood_log_space_moderate_features(
     rng = np.random.default_rng(0)
     moderate_spike_features = [
         rng.standard_normal((len(times), 8)) * 5.0  # No shift, moderate scale
-        for times in data["spike_times"]
+        for times in data["enc_spike_times"]
     ]
 
     # Fit encoding model
     enc_model = fit_clusterless_kde_encoding_model(
         position_time=data["position_time"],
         position=data["position"],
-        spike_times=data["spike_times"],
+        spike_times=data["enc_spike_times"],
         spike_waveform_features=moderate_spike_features,
         environment=env,
         position_std=6.0,
@@ -219,7 +247,7 @@ def test_local_likelihood_log_space_moderate_features(
         time_edges=time_edges_from_centers(time),
         position_time=data["position_time"],
         position=data["position"],
-        spike_times=data["spike_times"],
+        spike_times=data["enc_spike_times"],
         spike_waveform_features=moderate_spike_features,
         occupancy_model=enc_model["occupancy_model"],
         gpi_models=enc_model["gpi_models"],
@@ -240,66 +268,28 @@ def test_local_likelihood_log_space_moderate_features(
     assert ll_local.shape == (len(time), 1), "Shape should be correct"
 
 
-def test_block_log_kde_vs_log_block_kde():
-    """Test that block_log_kde is more accurate than the floored log of block_kde.
+def test_block_log_kde_matches_float64_reference_far_from_samples():
+    """block_log_kde stays finite and accurate where every kernel underflows.
 
-    This directly tests the numerical difference between:
-    1. Linear-space: marginal = block_kde(...); log_marginal = log(max(marginal, EPS))
-    2. Log-space: log_marginal = block_log_kde(...)
-
-    With extreme feature distances, (1) suffers from underflow and produces
-    inaccurate results (clamped to LOG_EPS), while (2) computes accurately.
+    Evaluation points sit about 100 units (100 bandwidths) from every sample in
+    10 dimensions, so each kernel is around exp(-50,000), far below the
+    smallest float32 or float64 number; the log density must still match a
+    float64 log-sum-exp evaluation.
     """
     rng = np.random.default_rng(456)
+    n_eval, n_samples, n_dims = 10, 20, 10
+    eval_points = rng.standard_normal((n_eval, n_dims)) * 5.0 + 100.0
+    samples = rng.standard_normal((n_samples, n_dims)) * 5.0
+    std = np.ones(n_dims)
 
-    # Create test data with VERY extreme feature distances
-    n_eval = 10
-    n_samples = 20
-    n_dims = 10  # High dimensional
+    log_density = np.asarray(block_log_kde(eval_points, samples, std, block_size=5))
 
-    # Evaluation points FAR from samples
-    eval_points = rng.standard_normal((n_eval, n_dims)) * 5.0 + 100.0  # Shifted by 100!
-
-    # Samples centered at origin
-    samples = rng.standard_normal((n_samples, n_dims)) * 5.0  # Near zero
-
-    # Small standard deviations → very narrow Gaussians → underflow in linear space
-    std = np.ones(n_dims) * 1.0
-
-    # Method 1: Linear-space then log (current implementation)
-    marginal_linear = block_kde(eval_points, samples, std, block_size=5)
-    log_marginal_linear = jnp.log(jnp.maximum(marginal_linear, EPS))
-
-    # Method 2: Pure log-space (proposed implementation)
-    log_marginal_log = block_log_kde(eval_points, samples, std, block_size=5)
-
-    # Check that linear-space method has underflow (values exactly at LOG_EPS)
-    from non_local_detector.likelihoods.common import LOG_EPS
-
-    # With extreme distances, marginal_linear should underflow to exactly 0
-    assert np.all(marginal_linear == 0), (
-        f"Expected all marginal_linear values to underflow to 0, "
-        f"but got min={np.min(marginal_linear)}, max={np.max(marginal_linear)}"
-    )
-
-    # Which the EPS floor clamps to exactly LOG_EPS
-    assert np.all(log_marginal_linear == LOG_EPS), (
-        f"Expected all log_marginal_linear values to be clamped to LOG_EPS={LOG_EPS}, "
-        f"but got values: {np.unique(log_marginal_linear)}"
-    )
-
-    # Log-space method should compute much more negative (accurate) values
-    assert np.all(log_marginal_log < LOG_EPS), (
-        f"Log-space values should be more negative than LOG_EPS={LOG_EPS}, "
-        f"but got min={np.min(log_marginal_log)}, max={np.max(log_marginal_log)}"
-    )
-
-    # The difference should be substantial (thousands in log-space)
-    min_diff = np.min(log_marginal_log - LOG_EPS)
-    assert min_diff < -1000, (
-        f"Expected large difference (< -1000) between log-space and clamped linear-space, "
-        f"but got min_diff={min_diff:.2f}"
-    )
+    expected = logsumexp(
+        norm.logpdf(eval_points[:, None, :], samples[None], std).sum(-1), axis=1
+    ) - np.log(n_samples)
+    assert np.all(expected < -1000.0)
+    assert np.all(np.isfinite(log_density))
+    np.testing.assert_allclose(log_density, expected, rtol=1e-5)
 
 
 def test_scaled_gemm_marginal_propagates_nan():

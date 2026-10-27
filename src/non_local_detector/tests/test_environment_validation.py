@@ -317,10 +317,20 @@ class TestFitPlaceGridValidation:
 
     def test_position_nan_is_tolerated(self):
         """Test that NaN positions are tolerated (dropped internally)."""
-        env = Environment()
-        position = np.array([[0, 0], [np.nan, 1], [2, 2]])
-        # NaN rows are dropped by get_grid/get_track_interior internally
-        env.fit_place_grid(position=position)
+        # The NaN row's finite y = 50 lies far outside the other samples, so
+        # the grid only matches the NaN-free grid if the whole row is ignored.
+        position = np.array([[0, 0], [np.nan, 50], [2, 2]])
+        env = Environment().fit_place_grid(position=position)
+        expected = Environment().fit_place_grid(position=position[[0, 2]])
+
+        np.testing.assert_array_equal(
+            env.place_bin_centers_, expected.place_bin_centers_
+        )
+        np.testing.assert_array_equal(
+            env.is_track_interior_, expected.is_track_interior_
+        )
+        for edges, expected_edges in zip(env.edges_, expected.edges_, strict=True):
+            np.testing.assert_array_equal(edges, expected_edges)
 
     def test_position_inf_is_rejected(self):
         """Test that Inf positions are rejected."""

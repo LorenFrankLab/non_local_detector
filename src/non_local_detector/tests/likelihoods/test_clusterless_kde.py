@@ -3,6 +3,7 @@ import inspect
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.integrate import trapezoid
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -149,7 +150,7 @@ def test_fit_clusterless_kde_raises_without_place_grid():
     env = Environment(environment_name="nofit")
     t_pos = jnp.linspace(0.0, 10.0, 11)
     pos = jnp.linspace(0.0, 10.0, 11)[:, None]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="fit_place_grid"):
         fit_clusterless_kde_encoding_model(
             position_time=t_pos,
             position=pos,
@@ -162,9 +163,9 @@ def test_fit_clusterless_kde_raises_without_place_grid():
 def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment):
     """Test that electrodes with different numbers of waveform features work correctly.
 
-    This tests the fix for the bug where scalar waveform_std was expanded based on
-    the first electrode's feature count, causing failures when other electrodes had
-    different numbers of features (e.g., 3 vs 4 features per tetrode).
+    A scalar waveform_std must not be expanded from the first electrode's
+    feature count, which fails when other electrodes have different numbers of
+    features (e.g., 3 vs 4 features per tetrode).
     """
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
@@ -414,6 +415,6 @@ def test_kde_event_intensity_integrates_to_compensator(
         **kwargs,
     )
     intensity = np.exp(np.asarray(events) - np.asarray(empty)) / np.diff(edges)[:, None]
-    integrated = np.trapezoid(intensity, marks, axis=0)
+    integrated = trapezoid(intensity, marks, axis=0)
     ground = -np.asarray(empty)[0] / np.diff(edges)[0]
     np.testing.assert_allclose(integrated, ground, rtol=1e-4, atol=1e-6)

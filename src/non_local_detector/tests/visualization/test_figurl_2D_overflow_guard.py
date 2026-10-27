@@ -10,11 +10,15 @@ true bins onto the same display bin. ``validate_grid_within_uint16`` raises a
 
 These unit tests exercise the guard directly so they run without ``sortingview``
 (the rest of ``figurl_2D`` is import-guarded behind it). The boundary is checked
-against the largest *index* (``n_position_bins - 1`` vs ``uint16`` max), which is
-the off-by-one the guard previously got wrong.
+against the largest *index* (``n_position_bins - 1`` vs ``uint16`` max), not the
+bin count. The wiring test loads ``figurl_2D`` against a stub ``sortingview`` so
+the rendering path is exercised without the optional dependency.
 """
 
+import importlib.util
 import re
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -26,10 +30,7 @@ from non_local_detector.visualization.figurl_2D import (
     validate_grid_within_uint16,
 )
 
-
-def test_uint16_max_constant():
-    """Sanity: the module constant is the documented uint16 maximum (65535)."""
-    assert _UINT16_MAX == 65535
+pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(
@@ -43,9 +44,8 @@ def test_uint16_max_constant():
 def test_grid_at_or_below_uint16_index_capacity_passes(x_count, y_count):
     """Grids whose largest linear index fits in uint16 must NOT trip the guard.
 
-    The 256x256 case is the regression guard for the off-by-one: it has 65536
-    bins (one more than uint16 max) but a maximum index of 65535, which fits.
-    The pre-fix guard (``n_position_bins > 65535``) wrongly rejected it.
+    The 256x256 case has 65536 bins (one more than uint16 max) but a maximum
+    index of 65535, which fits; a guard on the bin count would reject it.
     """
     assert validate_grid_within_uint16(x_count, y_count) == x_count * y_count
 
@@ -79,16 +79,35 @@ def test_error_message_explains_index_vs_count():
     assert re.search(r"index\D+89999", msg)  # max index = 90000 - 1
 
 
-def test_full_path_wiring_with_sortingview():
-    """End-to-end: ``process_decoded_data`` should invoke the guard.
+def _load_figurl_2d_with_stub_sortingview(monkeypatch):
+    """Execute a private copy of ``figurl_2D`` against a stub ``sortingview``.
 
-    Skipped when sortingview is unavailable, but ensures the helper is actually
-    wired into the rendering path (not just importable in isolation).
+    The copy is not registered in ``sys.modules``, so the real module (whose
+    sortingview-dependent functions are absent without the dependency) is left
+    untouched for other tests.
     """
-    pytest.importorskip("sortingview")
+    sortingview = types.ModuleType("sortingview")
+    views = types.ModuleType("sortingview.views")
+    franklab = types.ModuleType("sortingview.views.franklab")
+    # Referenced in return annotations, which are evaluated at definition time.
+    franklab.TrackPositionAnimationV1 = type("TrackPositionAnimationV1", (), {})
+    sortingview.views = views
+    views.franklab = franklab
+    monkeypatch.setitem(sys.modules, "sortingview", sortingview)
+    monkeypatch.setitem(sys.modules, "sortingview.views", views)
+    monkeypatch.setitem(sys.modules, "sortingview.views.franklab", franklab)
+
+    spec = importlib.util.find_spec("non_local_detector.visualization.figurl_2D")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_process_decoded_data_invokes_guard(monkeypatch):
+    """``process_decoded_data`` rejects a grid whose indices overflow uint16."""
     import xarray as xr
 
-    from non_local_detector.visualization.figurl_2D import process_decoded_data
+    figurl_2D = _load_figurl_2d_with_stub_sortingview(monkeypatch)
 
     x_count, y_count = 300, 300
     probs = np.full((1, x_count, y_count), 1.0 / (x_count * y_count), dtype=float)
@@ -102,4 +121,4 @@ def test_full_path_wiring_with_sortingview():
         },
     )
     with pytest.raises(ValueError, match="sortingview"):
-        process_decoded_data(posterior)
+        figurl_2D.process_decoded_data(posterior)

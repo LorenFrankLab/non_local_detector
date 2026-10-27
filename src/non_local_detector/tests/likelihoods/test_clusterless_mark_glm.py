@@ -327,7 +327,7 @@ def test_mark_mixture_with_fewer_effective_spikes_than_dimensions(weights):
     )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_rate_maps_recover_the_units_place_fields(track_1d):
     encoding = track_1d["encoding"]
     centers = track_1d["environment"].place_bin_centers_[
@@ -343,7 +343,7 @@ def test_rate_maps_recover_the_units_place_fields(track_1d):
             assert estimate[peak] == pytest.approx(truth[peak], rel=0.2)
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_nonlocal_matches_a_direct_computation(track_1d):
     """The compiled predict equals the intensity formula evaluated with SciPy,
     including a spike whose mark is far from every component."""
@@ -428,7 +428,7 @@ def _dwell_data(track_1d):
     return position_time, position, time_edges, spike_times, features, columns
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_local_equals_nonlocal_at_the_animals_bin(track_1d):
     position_time, position, time_edges, spike_times, features, columns = _dwell_data(
         track_1d
@@ -458,7 +458,7 @@ def test_local_equals_nonlocal_at_the_animals_bin(track_1d):
     )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 @pytest.mark.parametrize("is_local", [False, True])
 def test_row_slice_equals_the_full_result_sliced(track_1d, is_local):
     position_time, position, time_edges, spike_times, features, _ = _dwell_data(
@@ -488,7 +488,7 @@ def test_row_slice_equals_the_full_result_sliced(track_1d, is_local):
     np.testing.assert_allclose(part, full[5:17], rtol=1e-6, atol=1e-5)
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_hard_zero_weights_equal_fitting_the_subset(track_1d):
     """Zero-weight samples and their spikes are excluded from the mark mixture
     and the rate maps alike."""
@@ -525,7 +525,7 @@ def test_hard_zero_weights_equal_fitting_the_subset(track_1d):
         )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_track_graph_seam_does_not_leak_between_arms():
     """With no gap between edges in linear position, a field at the end of one arm
     stays off the start of the next arm in edge_order, which it does not touch."""
@@ -572,7 +572,7 @@ def test_track_graph_seam_does_not_leak_between_arms():
     assert ground[next_arm].max() < 0.5
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_2d_rate_maps_match_a_sorted_fit_with_the_true_units():
     """On a 2-D random walk, each unit's maps equal the sorted-spikes GLM fit to
     that unit's spikes: separating the units by their marks loses nothing."""
@@ -615,7 +615,7 @@ def test_2d_rate_maps_match_a_sorted_fit_with_the_true_units():
         np.testing.assert_allclose(estimate, expected, rtol=0.02, atol=0.02)
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 @pytest.mark.parametrize("is_local", [False, True])
 def test_electrode_without_encoding_spikes_is_background_only(track_1d, is_local):
     spike_times = [*track_1d["spike_times"], np.zeros(0)]
@@ -665,7 +665,13 @@ def test_electrode_without_encoding_spikes_is_background_only(track_1d, is_local
     )
     difference = with_spike - without
     assert np.all(np.isfinite(with_spike))
-    np.testing.assert_allclose(np.ptp(difference, axis=1), 0.0, atol=1e-4)
+    # The spike's bin scores the background beta * q(m) at every position.
+    expected = (
+        LOG_RATE_EPS_HZ
+        + reference[2].log_density(decode_marks[2])[0]
+        + np.log(np.diff(time_edges)[2])
+    )
+    np.testing.assert_allclose(difference[2], expected, rtol=1e-6)
     assert np.all(difference[np.arange(10) != 2] == 0.0)
 
 
@@ -757,7 +763,7 @@ def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
     )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 @pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("value", [1e20, 1e40])
 def test_mark_beyond_float32_range_is_background_only(track_1d, value, is_local):
@@ -795,7 +801,7 @@ def test_mark_beyond_float32_range_is_background_only(track_1d, value, is_local)
     )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_local_matches_a_direct_computation_for_a_moving_animal(track_1d):
     """While the animal runs, each spike's term uses the position at its own time
     and the expected count the position at its bin's center."""
@@ -853,7 +859,7 @@ def test_local_matches_a_direct_computation_for_a_moving_animal(track_1d):
     np.testing.assert_allclose(result, expected, rtol=1e-5, atol=1e-3)
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_soft_counts_split_each_spike_by_its_sample_shares(monkeypatch, track_1d):
     """Summed over an electrode's components, the soft counts at each sample are
     the weighted events ``EncodingSupport.event_counts`` assigns it."""

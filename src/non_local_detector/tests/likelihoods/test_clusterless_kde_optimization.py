@@ -1,7 +1,8 @@
-"""Tests for optimized clusterless KDE log-space functions.
+"""Vectorized clusterless KDE kernels and reductions against direct references.
 
-This module tests the vectorized implementations of kde_distance and log_kde_distance
-in clusterless_kde.py to ensure numerical equivalence and stability.
+``kde_distance`` / ``log_kde_distance`` against per-dimension loops, the scaled
+GEMM joint-intensity reduction against a float64-kernel logsumexp oracle, and the
+degeneracy rules of ``_log_joint_from_log_marginal``.
 """
 
 import jax
@@ -9,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from non_local_detector.likelihoods.clusterless_kde import (
-    _compute_log_mark_kernel_gemm,
     _estimate_with_enc_chunking,
     _log_joint_from_log_marginal,
     kde_distance,
@@ -83,41 +83,6 @@ class TestKdeDistanceVectorized:
             # Verify
             assert jnp.allclose(distance_opt, distance_ref, rtol=1e-5, atol=1e-8)
 
-    def test_numerical_stability(self):
-        """Optimized version is numerically stable with small std values."""
-        eval_points = jnp.array([[0.0, 0.0], [1.0, 1.0]])
-        samples = jnp.array([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]])
-        std = jnp.array([0.1, 0.1])
-
-        result = kde_distance(eval_points, samples, std)
-
-        # Should be finite and non-negative
-        assert jnp.all(jnp.isfinite(result))
-        assert jnp.all(result >= 0)
-
-    def test_output_shape(self):
-        """Optimized version produces correct output shape."""
-        rng = np.random.default_rng(0)
-        n_eval, n_samples, n_dims = 25, 40, 3
-
-        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
-        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
-        std = jnp.ones(n_dims)
-
-        result = kde_distance(eval_points, samples, std)
-
-        assert result.shape == (n_samples, n_eval)
-
-    def test_positive_output(self):
-        """KDE distance values are non-negative."""
-        eval_points = jnp.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
-        samples = jnp.array([[0.5, 0.5], [1.5, 1.5]])
-        std = jnp.array([1.0, 1.0])
-
-        result = kde_distance(eval_points, samples, std)
-
-        assert jnp.all(result >= 0)
-
 
 class TestLogKdeDistanceVectorized:
     """Tests for optimized log-space KDE distance function."""
@@ -177,104 +142,6 @@ class TestLogKdeDistanceVectorized:
             # Verify
             assert jnp.allclose(log_dist_opt, log_dist_ref, rtol=1e-5, atol=1e-8)
 
-    def test_log_linear_consistency(self):
-        """Log-space and linear-space versions are consistent (log of linear = log version)."""
-        rng = np.random.default_rng(789)
-
-        eval_points = jnp.array(rng.standard_normal((20, 3)))
-        samples = jnp.array(rng.standard_normal((40, 3)))
-        std = jnp.array([1.0, 1.5, 0.8])
-
-        # Linear-space
-        linear_dist = kde_distance(eval_points, samples, std)
-
-        # Log-space
-        log_dist = log_kde_distance(eval_points, samples, std)
-
-        # Should satisfy: log(linear) ≈ log_version
-        log_of_linear = jnp.log(linear_dist)
-
-        assert jnp.allclose(log_of_linear, log_dist, rtol=1e-5, atol=1e-8)
-
-    def test_output_shape(self):
-        """Log optimized version produces correct output shape."""
-        rng = np.random.default_rng(0)
-        n_eval, n_samples, n_dims = 25, 40, 3
-
-        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
-        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
-        std = jnp.ones(n_dims)
-
-        result = log_kde_distance(eval_points, samples, std)
-
-        assert result.shape == (n_samples, n_eval)
-
-    def test_finite_output(self):
-        """Log KDE distance values are finite."""
-        eval_points = jnp.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
-        samples = jnp.array([[0.5, 0.5], [1.5, 1.5]])
-        std = jnp.array([1.0, 1.0])
-
-        result = log_kde_distance(eval_points, samples, std)
-
-        assert jnp.all(jnp.isfinite(result))
-
-
-class TestJitCompiledFunctions:
-    """Tests for JIT-compiled optimized functions."""
-
-    def test_kde_distance_consistency(self):
-        """kde_distance() produces consistent results across multiple calls."""
-        rng = np.random.default_rng(101)
-
-        eval_points = jnp.array(rng.standard_normal((20, 2)))
-        samples = jnp.array(rng.standard_normal((40, 2)))
-        std = jnp.array([1.0, 1.5])
-
-        # Multiple calls should give identical results (JIT caching)
-        result1 = kde_distance(eval_points, samples, std)
-        result2 = kde_distance(eval_points, samples, std)
-
-        # Should be identical
-        assert jnp.allclose(result1, result2, rtol=1e-10, atol=1e-14)
-
-    def test_log_kde_distance_consistency(self):
-        """log_kde_distance() produces consistent results across multiple calls."""
-        rng = np.random.default_rng(202)
-
-        eval_points = jnp.array(rng.standard_normal((20, 2)))
-        samples = jnp.array(rng.standard_normal((40, 2)))
-        std = jnp.array([1.0, 1.5])
-
-        # Multiple calls should give identical results
-        result1 = log_kde_distance(eval_points, samples, std)
-        result2 = log_kde_distance(eval_points, samples, std)
-
-        # Should be identical
-        assert jnp.allclose(result1, result2, rtol=1e-10, atol=1e-14)
-
-    def test_different_dimensions(self):
-        """Optimized functions work for various feature dimensions."""
-        rng = np.random.default_rng(303)
-
-        for n_dims in [2, 4, 6, 8]:
-            eval_points = jnp.array(rng.standard_normal((15, n_dims)))
-            samples = jnp.array(rng.standard_normal((30, n_dims)))
-            std = jnp.ones(n_dims)
-
-            # Both should work without errors
-            result_linear = kde_distance(eval_points, samples, std)
-            result_log = log_kde_distance(eval_points, samples, std)
-
-            # Verify shapes
-            assert result_linear.shape == (30, 15)
-            assert result_log.shape == (30, 15)
-
-            # Verify consistency
-            assert jnp.allclose(
-                jnp.log(result_linear), result_log, rtol=1e-5, atol=1e-8
-            )
-
 
 class TestScaledGemmJointIntensity:
     """The scaled-GEMM reduction matches a logsumexp oracle for any mark dimension.
@@ -315,7 +182,16 @@ class TestScaledGemmJointIntensity:
         dec_wf, enc_wf, wf_std, logK_pos, log_w, occupancy, mean_rate, background
     ):
         """Independent logsumexp oracle for the per-spike terms."""
-        logK_mark = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, wf_std)
+        # Float64 Gaussian mark kernel from each pair's feature difference,
+        # shape (n_enc, n_dec).
+        std = np.asarray(wf_std, dtype=np.float64)
+        z = (
+            np.asarray(enc_wf, dtype=np.float64)[:, None, :]
+            - np.asarray(dec_wf, dtype=np.float64)[None, :, :]
+        ) / std
+        logK_mark = jnp.asarray(
+            -0.5 * np.sum(z**2, axis=-1) - np.sum(np.log(std * np.sqrt(2 * np.pi)))
+        )
 
         def for_one_dec(wf_col):
             return jax.nn.logsumexp(log_w + logK_pos + wf_col[:, None], axis=0)

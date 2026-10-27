@@ -1084,9 +1084,8 @@ class TestExpandedTransitionMstepEndToEnd:
         # Source 0 must be actively *not* credited for target bin 2, not merely
         # credited less than source 1. This magnitude guard fails for a
         # source-blind kernel that splits transition credit evenly across
-        # sources (the exact failure mode the deleted aggregate-path negative
-        # control used to catch), whereas the inequality above can hold weakly
-        # even under partial credit bleed.
+        # sources, whereas the inequality above can hold weakly even under
+        # partial credit bleed.
         assert learned_transition[0, 2] < 0.5
         assert_stochastic_matrix(learned_transition)
 
@@ -1569,78 +1568,62 @@ class TestEstimateNonStationaryStateTransition:
         assert estimated_transition[-2, 0, 0] > estimated_transition[0, 0, 0]
         assert estimated_transition[-2, 1, 1] > estimated_transition[0, 1, 1]
 
+    @staticmethod
+    def _fit(post, dm, concentration, stickiness):
+        """Fit the fixture's responses with the given Dirichlet prior."""
+        _, transition = estimate_non_stationary_state_transition_from_responses(
+            transition_coefficients=dm["transition_coefficients"],
+            design_matrix=dm["design_matrix"][: post["n_time"]],
+            response=_response_from_post(post),
+            concentration=concentration,
+            stickiness=stickiness,
+            transition_regularization=1e-5,
+            maxiter=10,
+        )
+        return transition
+
     def test_with_different_concentrations(self, posterior_data, design_matrix_data):
-        """Test with different concentration (prior strength) values."""
-        post = posterior_data
-        dm = design_matrix_data
-        response = _response_from_post(post)
+        """A larger concentration pulls every row toward uniform relative to
+        the same fit without a prior (concentration=1, stickiness=0)."""
+        post, dm = posterior_data, design_matrix_data
+        n_states = post["n_states"]
 
-        _, trans_weak = estimate_non_stationary_state_transition_from_responses(
-            transition_coefficients=dm["transition_coefficients"],
-            design_matrix=dm["design_matrix"][: post["n_time"]],
-            response=response,
-            concentration=1.0,
-            stickiness=0.0,
-            transition_regularization=1e-5,
-            maxiter=10,
-        )
+        trans_none = self._fit(post, dm, concentration=1.0, stickiness=0.0)
+        trans_strong = self._fit(post, dm, concentration=10.0, stickiness=0.0)
 
-        _, trans_strong = estimate_non_stationary_state_transition_from_responses(
-            transition_coefficients=dm["transition_coefficients"],
-            design_matrix=dm["design_matrix"][: post["n_time"]],
-            response=response,
-            concentration=10.0,
-            stickiness=0.0,
-            transition_regularization=1e-5,
-            maxiter=10,
-        )
-
-        for t in range(min(5, trans_weak.shape[0])):
-            assert_stochastic_matrix(trans_weak[t])
+        for t in range(trans_strong.shape[0]):
             assert_stochastic_matrix(trans_strong[t])
+        # Mean distance from uniform of each row, averaged over time.
+        distance_none = np.abs(trans_none - 1.0 / n_states).mean(axis=(0, 2))
+        distance_strong = np.abs(trans_strong - 1.0 / n_states).mean(axis=(0, 2))
+        assert np.all(distance_strong < distance_none), (
+            distance_strong,
+            distance_none,
+        )
 
     def test_with_diagonal_stickiness(self, posterior_data, design_matrix_data):
-        """Test with diagonal stickiness prior."""
-        post = posterior_data
-        dm = design_matrix_data
-        response = _response_from_post(post)
+        """Stickiness raises every state's time-averaged self-transition
+        probability above the same fit without a prior. The fixture's data
+        are already sticky, so comparing diagonal to off-diagonal would not
+        show the prior's effect."""
+        post, dm = posterior_data, design_matrix_data
+        is_diagonal = np.eye(post["n_states"], dtype=bool)
 
-        _, trans_matrix = estimate_non_stationary_state_transition_from_responses(
-            transition_coefficients=dm["transition_coefficients"],
-            design_matrix=dm["design_matrix"][: post["n_time"]],
-            response=response,
-            concentration=1.0,
-            stickiness=1.0,
-            transition_regularization=1e-5,
-            maxiter=10,
-        )
+        trans_none = self._fit(post, dm, concentration=1.0, stickiness=0.0)
+        trans_sticky = self._fit(post, dm, concentration=1.0, stickiness=1.0)
 
-        # Assert - diagonal should be larger than off-diagonal on average
-        diagonal_mean = np.mean(
-            [
-                trans_matrix[t, i, i]
-                for t in range(trans_matrix.shape[0])
-                for i in range(post["n_states"])
-            ]
-        )
-        off_diagonal_mean = np.mean(
-            [
-                trans_matrix[t, i, j]
-                for t in range(trans_matrix.shape[0])
-                for i in range(post["n_states"])
-                for j in range(post["n_states"])
-                if i != j
-            ]
-        )
+        for t in range(trans_sticky.shape[0]):
+            assert_stochastic_matrix(trans_sticky[t])
+        stay_none = trans_none[:, is_diagonal].mean(axis=0)
+        stay_sticky = trans_sticky[:, is_diagonal].mean(axis=0)
+        assert np.all(stay_sticky > stay_none), (stay_sticky, stay_none)
 
-        assert diagonal_mean > off_diagonal_mean, (
-            "Diagonal stickiness should favor self-transitions"
-        )
-
-    def test_keeps_previous_coefficients_on_optimizer_failure(
+    def test_keeps_previous_coefficients_when_optimizer_result_raises_the_loss(
         self, posterior_data, design_matrix_data
     ):
-        """When optimizer fails, previous coefficients should be retained."""
+        """An optimizer result that raises the M-step loss is discarded and
+        the previous coefficients kept, even when the optimizer reports
+        success: the choice depends on the loss, not on ``success``."""
         post = posterior_data
         dm = design_matrix_data
         n_coeffs = dm["n_coefficients"]
@@ -1651,8 +1634,8 @@ class TestEstimateNonStationaryStateTransition:
         response = _response_from_post(post)
 
         class FakeResult:
-            success = False
-            message = "mock failure"
+            success = True
+            message = "mock result far from the optimum"
             x = np.full(n_coeffs * (n_states - 1), 999.0)
 
         with patch(
@@ -1972,6 +1955,7 @@ class TestNonStationaryPriorAndConvergence:
         assert not [r for r in caplog.records if "optimization" in r.getMessage()]
         assert bool(estimated.min() > 1e-5) is bounded
 
+    @pytest.mark.slow
     def test_reaches_optimum_on_long_recording(self):
         """On a long recording the returned coefficients are at the optimum of
         the summed objective, not stopped early by a tolerance scaled for a
@@ -2033,14 +2017,54 @@ class TestNonStationaryPriorAndConvergence:
             assert gap < 1e-3, f"row {row} stopped {gap:.3g} nats short"
 
 
+def _float64_joint_sum(post):
+    """Writable float64 copy of the fixture's stationary expected counts, so
+    package and closed-form estimates share their inputs exactly."""
+    return np.array(_joint_sum_from_post(post), dtype=np.float64)
+
+
+def _closed_form_stationary_map(joint_sum, concentration, stickiness, prior_weight=0.0):
+    """Stationary MAP transition matrix, computed independently of the package.
+
+    Each row is ``counts + pseudo_counts`` normalized, where the Dirichlet
+    pseudo-counts are ``alpha - 1`` with ``alpha = concentration +
+    stickiness * I``. A row with ``prior_weight > 0`` keeps the direction of
+    ``alpha - 1`` but rescales its total to ``prior_weight`` times that row's
+    expected transition count.
+
+    Parameters
+    ----------
+    joint_sum : np.ndarray, shape (n_states, n_states)
+    concentration : float
+    stickiness : float or np.ndarray, shape (n_states,)
+    prior_weight : float or np.ndarray, shape (n_states,)
+
+    Returns
+    -------
+    transition : np.ndarray, shape (n_states, n_states)
+    """
+    joint_sum = np.asarray(joint_sum, dtype=np.float64)
+    n_states = joint_sum.shape[0]
+    pseudo_counts = (concentration - 1.0) * np.ones((n_states, n_states))
+    pseudo_counts += np.diag(np.broadcast_to(stickiness, (n_states,)))
+    prior_weight = np.broadcast_to(prior_weight, (n_states,))
+    for row in range(n_states):
+        if prior_weight[row] > 0:
+            pseudo_counts[row] *= (
+                prior_weight[row] * joint_sum[row].sum() / pseudo_counts[row].sum()
+            )
+    unnormalized = joint_sum + pseudo_counts
+    return unnormalized / unnormalized.sum(axis=1, keepdims=True)
+
+
 @pytest.mark.unit
 class TestEstimateStationaryStateTransition:
     """Test stationary state transition estimation."""
 
-    def test_returns_stochastic_matrix(self, posterior_data):
-        """Verify output is a valid stochastic matrix."""
-        post = posterior_data
-        joint_sum = _joint_sum_from_post(post)
+    def test_without_prior_is_row_normalized_counts(self, posterior_data):
+        """concentration=1 and stickiness=0 give ``alpha - 1 = 0``: no prior,
+        so the estimate is the maximum-likelihood row-normalized counts."""
+        joint_sum = _float64_joint_sum(posterior_data)
 
         trans_matrix = estimate_stationary_state_transition_from_counts(
             joint_sum,
@@ -2048,40 +2072,56 @@ class TestEstimateStationaryStateTransition:
             stickiness=0.0,
         )
 
-        assert trans_matrix.shape == (post["n_states"], post["n_states"])
-        assert_stochastic_matrix(trans_matrix)
+        assert trans_matrix.shape == joint_sum.shape
+        np.testing.assert_allclose(
+            trans_matrix,
+            _closed_form_stationary_map(joint_sum, 1.0, 0.0),
+            rtol=1e-12,
+        )
 
-    def test_respects_uniform_prior(self, posterior_data):
-        """Test with uniform prior (concentration=1.0)."""
-        post = posterior_data
-        joint_sum = _joint_sum_from_post(post)
+    def test_concentration_keeps_unobserved_transitions_nonzero(self, posterior_data):
+        """With concentration > 1 a transition with zero expected count gets
+        probability ``(concentration - 1) / row total``, not zero."""
+        joint_sum = _float64_joint_sum(posterior_data)
+        joint_sum[0, 3] = 0.0
 
         trans_matrix = estimate_stationary_state_transition_from_counts(
             joint_sum,
-            concentration=1.0,
+            concentration=2.0,
             stickiness=0.0,
         )
 
         assert_stochastic_matrix(trans_matrix)
-        assert np.all(trans_matrix > 1e-6), (
-            "No probability should be exactly zero with uniform prior"
+        assert trans_matrix[0, 3] > 0.0
+        np.testing.assert_allclose(
+            trans_matrix,
+            _closed_form_stationary_map(joint_sum, 2.0, 0.0),
+            rtol=1e-12,
         )
 
     def test_respects_diagonal_prior(self, posterior_data):
-        """Test with diagonal stickiness prior."""
-        post = posterior_data
-        joint_sum = _joint_sum_from_post(post)
+        """Stickiness adds pseudo-counts to the diagonal: the estimate is the
+        closed-form MAP, and every self-transition rises above the no-prior
+        estimate (the fixture's data alone already favor the diagonal)."""
+        joint_sum = _float64_joint_sum(posterior_data)
 
+        no_prior = estimate_stationary_state_transition_from_counts(
+            joint_sum,
+            concentration=1.0,
+            stickiness=0.0,
+        )
         trans_matrix = estimate_stationary_state_transition_from_counts(
             joint_sum,
             concentration=1.0,
             stickiness=2.0,
         )
 
-        assert_stochastic_matrix(trans_matrix)
-        diagonal_mean = np.mean(np.diag(trans_matrix))
-        off_diagonal_mean = np.mean(trans_matrix[~np.eye(post["n_states"], dtype=bool)])
-        assert diagonal_mean > off_diagonal_mean
+        np.testing.assert_allclose(
+            trans_matrix,
+            _closed_form_stationary_map(joint_sum, 1.0, 2.0),
+            rtol=1e-12,
+        )
+        assert np.all(np.diag(trans_matrix) > np.diag(no_prior))
 
     def test_numerical_stability_with_small_probabilities(self):
         """Test with very small posterior probabilities."""
@@ -2091,9 +2131,10 @@ class TestEstimateStationaryStateTransition:
         acausal_posterior = causal_posterior.copy()
 
         transition_matrix = np.eye(n_states) * 0.9 + 0.025
-        predictive_distribution = np.zeros((n_time, n_states))
-        for t in range(n_time):
-            predictive_distribution[t] = causal_posterior[t] @ transition_matrix
+        # predictive[t] = causal[t - 1] @ T, as core.filter defines it.
+        predictive_distribution = np.vstack(
+            [causal_posterior[:1], causal_posterior[:-1] @ transition_matrix]
+        )
         joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
             causal_posterior=causal_posterior,
             predictive_posterior=predictive_distribution,
@@ -2148,17 +2189,24 @@ class TestPriorWeightScaling:
 
         np.testing.assert_allclose(pw_result, legacy_result, atol=1e-12)
 
-    def test_prior_weight_increases_diagonal(self, posterior_data):
-        """prior_weight > 0 with stickiness should increase diagonal relative to MLE."""
-        post = posterior_data
-        joint_sum = _joint_sum_from_post(post)
+    def test_prior_weight_matches_closed_form_adaptive_prior(self, posterior_data):
+        """prior_weight > 0 rescales the sticky pseudo-counts to
+        ``prior_weight`` times each row's expected count: the estimate is the
+        closed-form adaptive MAP, it differs from the fixed-count prior with
+        the same stickiness, and it raises every self-transition above the
+        no-prior estimate."""
+        joint_sum = _float64_joint_sum(posterior_data)
 
-        mle_result = estimate_stationary_state_transition_from_counts(
+        no_prior = estimate_stationary_state_transition_from_counts(
             joint_sum,
             concentration=1.0,
             stickiness=0.0,
         )
-
+        legacy_result = estimate_stationary_state_transition_from_counts(
+            joint_sum,
+            concentration=1.0,
+            stickiness=2.0,
+        )
         pw_result = estimate_stationary_state_transition_from_counts(
             joint_sum,
             concentration=1.0,
@@ -2166,38 +2214,36 @@ class TestPriorWeightScaling:
             prior_weight=0.1,
         )
 
-        assert_stochastic_matrix(pw_result)
-        assert np.mean(np.diag(pw_result)) > np.mean(np.diag(mle_result))
+        np.testing.assert_allclose(
+            pw_result,
+            _closed_form_stationary_map(joint_sum, 1.0, 2.0, prior_weight=0.1),
+            rtol=1e-12,
+        )
+        assert np.max(np.abs(pw_result - legacy_result)) > 1e-3
+        assert np.all(np.diag(pw_result) > np.diag(no_prior))
 
-    def test_prior_weight_approximately_invariant_to_T(self, posterior_data):
-        """Prior effect should be similar regardless of number of time bins.
-
-        With prior_weight, doubling T (by repeating data) should produce
-        approximately the same transition matrix, unlike the fixed-count prior
-        which gets diluted.
-        """
-        post = posterior_data
-        joint_sum_T = _joint_sum_from_post(post)
-        # Doubling the data doubles every count
+    def test_prior_weight_invariant_to_T(self, posterior_data):
+        """Doubling every expected count (as repeating the data would) leaves
+        the adaptive-prior estimate unchanged up to float rounding, while the
+        fixed-count prior is diluted and its estimate moves."""
+        joint_sum_T = _float64_joint_sum(posterior_data)
         joint_sum_2T = 2.0 * joint_sum_T
 
-        result_T = estimate_stationary_state_transition_from_counts(
-            joint_sum_T,
-            concentration=1.0,
-            stickiness=2.0,
-            prior_weight=0.1,
-        )
+        def estimate(joint_sum, prior_weight):
+            return estimate_stationary_state_transition_from_counts(
+                joint_sum,
+                concentration=1.0,
+                stickiness=2.0,
+                prior_weight=prior_weight,
+            )
 
-        result_2T = estimate_stationary_state_transition_from_counts(
-            joint_sum_2T,
-            concentration=1.0,
-            stickiness=2.0,
-            prior_weight=0.1,
+        np.testing.assert_allclose(
+            estimate(joint_sum_T, 0.1), estimate(joint_sum_2T, 0.1), atol=1e-12
         )
-
-        assert_stochastic_matrix(result_T)
-        assert_stochastic_matrix(result_2T)
-        np.testing.assert_allclose(result_T, result_2T, atol=0.05)
+        legacy_change = np.max(
+            np.abs(estimate(joint_sum_T, 0.0) - estimate(joint_sum_2T, 0.0))
+        )
+        assert legacy_change > 1e-2
 
     def test_prior_weight_produces_valid_stochastic_matrix(self, posterior_data):
         """Result should always be a valid stochastic matrix."""
@@ -2223,9 +2269,10 @@ class TestPriorWeightScaling:
         acausal_posterior = causal_posterior.copy()
 
         transition_matrix = np.eye(n_states) * 0.8 + 0.2 / n_states
-        predictive_distribution = np.zeros((n_time, n_states))
-        for t in range(n_time):
-            predictive_distribution[t] = causal_posterior[t] @ transition_matrix
+        # predictive[t] = causal[t - 1] @ T, as core.filter defines it.
+        predictive_distribution = np.vstack(
+            [causal_posterior[:1], causal_posterior[:-1] @ transition_matrix]
+        )
         joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
             causal_posterior=causal_posterior,
             predictive_posterior=predictive_distribution,
@@ -2269,31 +2316,17 @@ class TestPriorWeightScaling:
 
         np.testing.assert_allclose(scalar_result, array_result, atol=1e-12)
 
-    def test_per_state_prior_weight_mixed_modes(self, posterior_data):
-        """Rows with prior_weight=0 use legacy; rows with >0 use data-adaptive."""
-        post = posterior_data
-        n_states = post["n_states"]
-
+    def test_per_state_prior_weight_mixes_legacy_and_adaptive_rows(
+        self, posterior_data
+    ):
+        """A row with prior_weight=0 (here a frozen-like row with 1e6
+        stickiness) uses the fixed-count prior and matches the all-legacy
+        call; rows with prior_weight > 0 use the adaptive prior and differ
+        from the all-legacy call."""
+        n_states = posterior_data["n_states"]
+        joint_sum = _float64_joint_sum(posterior_data)
+        sticky = np.array([1e6] + [2.0] * (n_states - 1))
         prior_weight = np.array([0.0] + [0.1] * (n_states - 1))
-        sticky = np.array([1e6] + [2.0] * (n_states - 1))
-
-        result = estimate_stationary_state_transition_from_counts(
-            _joint_sum_from_post(post),
-            concentration=1.0,
-            stickiness=sticky,
-            prior_weight=prior_weight,
-        )
-
-        assert_stochastic_matrix(result)
-        assert result[0, 0] > 0.99
-
-    def test_per_state_prior_weight_row_0_frozen_matches_legacy(self, posterior_data):
-        """For frozen row (prior_weight=0), result should match pure legacy call."""
-        post = posterior_data
-        n_states = post["n_states"]
-        joint_sum = _joint_sum_from_post(post)
-
-        sticky = np.array([1e6] + [2.0] * (n_states - 1))
 
         legacy = estimate_stationary_state_transition_from_counts(
             joint_sum,
@@ -2305,10 +2338,18 @@ class TestPriorWeightScaling:
             joint_sum,
             concentration=1.0,
             stickiness=sticky,
-            prior_weight=np.array([0.0] + [0.1] * (n_states - 1)),
+            prior_weight=prior_weight,
         )
 
+        assert_stochastic_matrix(mixed)
+        assert mixed[0, 0] > 0.99
         np.testing.assert_allclose(mixed[0], legacy[0], atol=1e-12)
+        np.testing.assert_allclose(
+            mixed,
+            _closed_form_stationary_map(joint_sum, 1.0, sticky, prior_weight),
+            rtol=1e-12,
+        )
+        assert np.all(np.max(np.abs(mixed[1:] - legacy[1:]), axis=1) > 1e-3)
 
     def test_per_state_prior_weight_negative_raises(self, posterior_data):
         """Negative per-state prior_weight should raise ValueError."""

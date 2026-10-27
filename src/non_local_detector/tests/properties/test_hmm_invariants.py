@@ -4,10 +4,6 @@ These tests verify that HMM algorithms (filter, smoother, viterbi) satisfy
 mathematical properties and invariants that should hold for all valid inputs.
 """
 
-# Import custom strategies from probability properties
-import sys
-from pathlib import Path
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -15,10 +11,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from non_local_detector.core import filter, smoother, viterbi
-
-# Add parent directory to import the strategies
-sys.path.insert(0, str(Path(__file__).parent))
-from test_probability_properties import probability_distribution, stochastic_matrix
+from non_local_detector.tests.properties.strategies import (
+    probability_distribution,
+    stochastic_matrix,
+)
 
 
 def entropy(p):

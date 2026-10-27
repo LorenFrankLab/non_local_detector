@@ -333,9 +333,9 @@ class TestGetMapSpeedBoundaryHandling:
 
     The interior speeds use a 2-step central difference on shortest-path
     distance. The first and last samples use one-sided forward/backward
-    differences. The earlier implementation used ``np.insert(speed, -1, ...)``
-    for the trailing sample, which inserts *before* the last element and
-    silently swaps the final two samples.
+    differences. Using ``np.insert(speed, -1, ...)`` for the trailing sample
+    would insert *before* the last element and silently swap the final two
+    samples.
     """
 
     @pytest.mark.parametrize("n_time", [3, 4, 5, 100])
@@ -346,7 +346,7 @@ class TestGetMapSpeedBoundaryHandling:
 
         The final edge is given a distinct weight so the trailing backward
         difference differs from the interior central differences. Without this,
-        a uniform-spacing track hides the pre-fix ``np.insert(speed, -1, ...)``
+        a uniform-spacing track hides an ``np.insert(speed, -1, ...)``
         swap (the two misordered samples would be equal), so the asymmetric
         edge makes the regression observable at every ``n_time``.
         """
@@ -399,7 +399,7 @@ class TestGetMapSpeedBoundaryHandling:
         np.testing.assert_allclose(speed[-1], expected_last, atol=1e-10)
         np.testing.assert_allclose(speed[-1], last_edge_length / dt, atol=1e-10)
 
-        # The pre-fix np.insert(speed, -1, ...) put the *interior* central
+        # np.insert(speed, -1, ...) would put the *interior* central
         # difference at node[-2] into the final slot instead. Assert the
         # trailing sample is NOT that swapped value.
         buggy_last = nx.shortest_path_length(
@@ -409,7 +409,7 @@ class TestGetMapSpeedBoundaryHandling:
             weight="distance",
         ) / (2.0 * dt)
         assert not np.isclose(speed[-1], buggy_last, atol=1e-10), (
-            "Trailing speed matches the pre-fix np.insert(-1) swapped value; "
+            "Trailing speed matches the np.insert(-1) swapped value; "
             "the trailing sample must be appended, not inserted before the last."
         )
 
@@ -467,8 +467,8 @@ class TestAheadBehindDistance2DTrackGraph:
     """The 2D track-graph path of ahead/behind distance and head-direction.
 
     Exercises the ``track_graph`` branch that depends on networkx all-pairs
-    shortest paths, including ``precomputed_distance=True`` (issue #40), and
-    the 1-D heading-angle ``head_direction`` contract (issue #41).
+    shortest paths, including ``precomputed_distance=True``, and the 1-D
+    heading-angle ``head_direction`` contract.
     """
 
     @pytest.fixture(scope="class")
@@ -497,7 +497,7 @@ class TestAheadBehindDistance2DTrackGraph:
     def test_track_graph_without_edges_raises(self, env_2d, call, precomputed_distance):
         """The track graph's nodes are indexed by the environment's bin grid,
         so a track graph without ``edges`` is rejected with a message naming
-        the missing argument (issue #5), not an IndexError or TypeError."""
+        the missing argument, not an IndexError or TypeError."""
         with pytest.raises(ValueError, match="edges"):
             call(
                 np.array([[10.0, 10.0]]),
@@ -509,17 +509,16 @@ class TestAheadBehindDistance2DTrackGraph:
             )
 
     def test_precomputed_distance_does_not_crash_and_matches_per_point(self, env_2d):
-        """``precomputed_distance=True`` crashed under networkx>=3 because the
-        all-pairs ``nx.shortest_path`` result is a generator, not a dict
-        (issue #40). It must now run and agree in magnitude with the
-        per-time-point path.
+        """``precomputed_distance=True`` handles networkx>=3.5, where the
+        all-pairs ``nx.shortest_path`` result is a generator, not a dict, and
+        agrees in magnitude with the per-time-point path.
         """
         env = env_2d
         rng = np.random.default_rng(1)
         n_time = 15
         head_position = rng.random((n_time, 2)) * 100.0
         map_position = rng.random((n_time, 2)) * 100.0
-        # head_direction is a 1-D array of heading angles in radians (issue #41).
+        # head_direction is a 1-D array of heading angles in radians.
         head_direction = rng.uniform(-np.pi, np.pi, size=n_time)
 
         precomputed = get_ahead_behind_distance2D(
@@ -548,7 +547,7 @@ class TestAheadBehindDistance2DTrackGraph:
 
     def test_head_direction_angle_contract(self, env_2d):
         """``head_direction`` is a 1-D angle array; a heading toward the MAP
-        position yields a positive (ahead) signed distance (issue #41).
+        position yields a positive (ahead) signed distance.
         """
         env = env_2d
         n_time = 8
@@ -643,7 +642,7 @@ class TestAheadBehindDistance2DTrackGraph:
         self, env_2d, monkeypatch
     ):
         """The networkx<3.5 dict return shape is handled identically to the
-        >=3.5 generator (issue #40 fallback).
+        >=3.5 generator.
 
         The local networkx is typically >= 3.5 (all-pairs ``nx.shortest_path``
         returns a generator), so the ``.items()`` dict branch is otherwise only

@@ -125,9 +125,19 @@ def test_fitted_workspace_policy_is_carried_to_prediction(
         )
 
 
-@pytest.mark.parametrize("x64", [False, True])
-@pytest.mark.parametrize("weight_kind", ["uniform", "weighted", "zero"])
-@pytest.mark.parametrize("empty_encoding", [False, True])
+@pytest.mark.parametrize(
+    ("x64", "weight_kind", "empty_encoding"),
+    [
+        *[
+            (x64, weight_kind, False)
+            for x64 in (False, True)
+            for weight_kind in ("uniform", "weighted", "zero")
+        ],
+        # Without encoding spikes there are no encoding rows to tile and the
+        # mark-intensity reduction returns early, so one case covers it.
+        (False, "weighted", True),
+    ],
+)
 def test_streamed_fit_and_local_nonlocal_rows_preserve_original_support(
     simple_1d_environment, x64, weight_kind, empty_encoding
 ):

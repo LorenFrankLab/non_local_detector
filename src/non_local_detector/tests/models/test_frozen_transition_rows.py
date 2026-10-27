@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 
 from non_local_detector import (
-    ClusterlessDecoder,
     DiscreteNonStationaryDiagonal,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
@@ -24,8 +23,32 @@ from non_local_detector import (
 from non_local_detector.models.base import (
     _normalize_frozen_discrete_transition_rows,
 )
-from non_local_detector.models.cont_frag_model import ContFragSortedSpikesClassifier
+from non_local_detector.models.cont_frag_model import (
+    ContFragClusterlessClassifier,
+    ContFragSortedSpikesClassifier,
+)
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+
+
+@pytest.fixture(scope="module")
+def em_recording():
+    """First 10,000 samples of five simulated place cells (seed 42).
+
+    Returns ``(speed, position, spike_times, time, is_event)``; spike trains
+    are cut to the same window. Long enough for three EM iterations to move
+    every unfrozen transition row.
+    """
+    speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
+        seed=42, n_neurons=5
+    )
+    n = 10_000
+    return (
+        speed[:n],
+        position[:n],
+        [st[st <= time[n - 1]] for st in spike_times],
+        time[:n],
+        is_event[:n],
+    )
 
 
 @pytest.mark.unit
@@ -158,35 +181,18 @@ class TestFrozenMaskNotSerialized:
             deep=False
         )
 
-    def test_property_still_returns_correct_mask(self):
-        # Default NonLocal model freezes the No-Spike row (index 1 of 4 states).
-        model = NonLocalSortedSpikesDetector()
-        np.testing.assert_array_equal(
-            model._frozen_discrete_transition_rows_mask_,
-            [False, True, False, False],
-        )
-        # Opt-out still yields None.
-        assert (
-            NonLocalSortedSpikesDetector(
-                frozen_discrete_transition_rows=None
-            )._frozen_discrete_transition_rows_mask_
-            is None
-        )
-
     def test_vars_roundtrip_reconstructs_via_base_detector(self):
         """A ContFrag model's ``vars()`` must reconstruct through the base
-        detector (the Spyglass pattern) now that the mask no longer leaks.
+        detector (the Spyglass pattern): the derived mask is not a keyword.
         """
         from non_local_detector.models.base import SortedSpikesDetector
 
         model = ContFragSortedSpikesClassifier()
-        # Previously raised: unexpected kwarg _frozen_discrete_transition_rows_mask_
         rebuilt = SortedSpikesDetector(**vars(model))
         assert isinstance(rebuilt, SortedSpikesDetector)
 
 
 @pytest.mark.integration
-@pytest.mark.slow
 class TestFrozenRowEndToEnd:
     """Full EM integration: frozen rows must be byte-exact after fitting."""
 
@@ -199,20 +205,11 @@ class TestFrozenRowEndToEnd:
         )
         return initial_matrix[row_idx].copy()
 
-    def test_no_spike_row_unchanged_after_em(self):
+    def test_no_spike_row_unchanged_after_em(self, em_recording):
         """Running EM on a NonLocalSortedSpikesDetector with the default
         frozen No-Spike row must leave that row byte-for-byte unchanged,
         while at least one other row should have been updated."""
-        (
-            _speed,
-            position,
-            spike_times,
-            time,
-            _event_times,
-            _sampling_freq,
-            is_event,
-            _,
-        ) = make_simulated_data(seed=42, n_neurons=5)
+        _, position, spike_times, time, is_event = em_recording
 
         detector = NonLocalSortedSpikesDetector(
             sorted_spikes_algorithm="sorted_spikes_kde",
@@ -245,13 +242,13 @@ class TestFrozenRowEndToEnd:
         )
 
     @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
-    def test_covariate_transition_keeps_frozen_row(self, transition_representation):
+    def test_covariate_transition_keeps_frozen_row(
+        self, em_recording, transition_representation
+    ):
         """With covariate-dependent transitions, a frozen row keeps its
         initial coefficients, so it stays constant over time, while the other
         rows are estimated."""
-        speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
-            seed=42, n_neurons=5
-        )
+        speed, position, spike_times, time, is_event = em_recording
         detector = NonLocalSortedSpikesDetector(
             discrete_transition_type=DiscreteNonStationaryDiagonal(
                 np.array([0.99, 0.98, 0.96, 0.96]), formula="1 + speed"
@@ -289,20 +286,11 @@ class TestFrozenRowEndToEnd:
             initial_coefficients[:, 0],
         )
 
-    def test_opt_out_allows_no_spike_row_to_update(self):
+    def test_opt_out_allows_no_spike_row_to_update(self, em_recording):
         """With frozen_discrete_transition_rows=None, every row is free to
         update during EM. This confirms the opt-out actually disables the
         restore (and is not silently equivalent to freezing)."""
-        (
-            _speed,
-            position,
-            spike_times,
-            time,
-            _event_times,
-            _sampling_freq,
-            is_event,
-            _,
-        ) = make_simulated_data(seed=42, n_neurons=5)
+        _, position, spike_times, time, is_event = em_recording
 
         detector = NonLocalSortedSpikesDetector(
             sorted_spikes_algorithm="sorted_spikes_kde",
@@ -328,43 +316,29 @@ class TestFrozenRowEndToEnd:
 
 
 @pytest.mark.integration
-@pytest.mark.slow
-class TestFrozenRowsDecoderSmoke:
-    """A non-NonLocal model (ClusterlessDecoder, 1 state) accepts the
-    parameter and runs to completion with a frozen row."""
-
-    def test_clusterless_decoder_freeze_only_row(self):
-        """Freezing the single row of a 1-state decoder should leave it
-        exactly at its initial value after EM."""
-        from non_local_detector.simulate.clusterless_simulation import (
-            make_simulated_run_data,
+def test_clusterless_classifier_frozen_row_unchanged_after_em(clusterless_sim):
+    """A two-state clusterless classifier (no default freeze) keeps an
+    explicitly frozen row at its initial value through EM, while the same
+    row moves when nothing is frozen."""
+    fit_args = {
+        "position_time": clusterless_sim.position_time,
+        "position": clusterless_sim.position,
+        "spike_times": clusterless_sim.spike_times,
+        "spike_waveform_features": clusterless_sim.spike_waveform_features,
+        "time_edges": time_edges_from_centers(clusterless_sim.position_time),
+        "max_iter": 3,
+        "estimate_encoding_model": False,
+    }
+    final_row = {}
+    for label, frozen_rows in (("frozen", [0]), ("free", None)):
+        classifier = ContFragClusterlessClassifier(
+            frozen_discrete_transition_rows=frozen_rows
         )
+        initial_row = TestFrozenRowEndToEnd._initial_transition_row(classifier, 0)
+        classifier.estimate_parameters(**fit_args)
+        final_row[label] = classifier.discrete_state_transitions_[0]
 
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            n_runs=3,
-            seed=42,
-        )
-
-        decoder = ClusterlessDecoder(frozen_discrete_transition_rows=[0])
-        decoder.initialize_environments(position=sim.position)
-        decoder.initialize_state_index()
-        decoder.initialize_initial_conditions()
-        decoder.initialize_discrete_state_transition()
-        initial_row = decoder.discrete_state_transitions_[0].copy()
-
-        decoder.estimate_parameters(
-            position_time=sim.position_time,
-            position=sim.position,
-            spike_times=sim.spike_times,
-            spike_waveform_features=sim.spike_waveform_features,
-            time_edges=time_edges_from_centers(sim.position_time),
-            max_iter=3,
-            estimate_encoding_model=False,
-        )
-
-        np.testing.assert_array_equal(
-            decoder.discrete_state_transitions_[0],
-            initial_row,
-        )
+    np.testing.assert_array_equal(final_row["frozen"], initial_row)
+    assert not np.array_equal(final_row["free"], initial_row), (
+        "Row 0 did not move without freezing, so the frozen check is vacuous"
+    )

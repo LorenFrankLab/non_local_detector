@@ -1,10 +1,9 @@
-"""Tests for non-local position penalty feature.
+"""Parameter validation for the non-local position penalty.
 
-Covers:
-- Parameter validation (sigma <= 0, negative penalty)
-- Multi-environment penalty correctness
-- Position validation when penalty is enabled
-- Behavioral equivalence when penalty == 0.0
+Covers ``_validate_penalty_params`` directly and through the sorted-spikes and
+clusterless non-local detector constructors (negative penalty, non-positive
+sigma, valid values). The penalty's effect on the posterior is tested in
+test_non_local_penalty_effect.py.
 """
 
 import pytest

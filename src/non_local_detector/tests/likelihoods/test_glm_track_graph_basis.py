@@ -25,6 +25,8 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
 )
 from non_local_detector.time_edges import time_edges_from_centers
 
+pytestmark = pytest.mark.unit
+
 KNOT_SPACING = np.sqrt(12.5) * 2
 
 

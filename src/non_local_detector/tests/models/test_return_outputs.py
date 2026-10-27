@@ -10,36 +10,24 @@ import numpy as np
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
-from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
 @pytest.fixture(scope="module")
-def simple_fitted_detector():
-    """Create a simple fitted detector for testing using simulated data.
+def simple_fitted_detector(sorted_sim):
+    """A detector fit and decoded on the shared 2,000-sample recording.
 
     Module-scoped: tests only call ``detector.predict(...)`` with different
-    ``return_outputs`` flags and do not mutate the detector, so the expensive
-    fit can be shared across the whole module.
+    ``return_outputs`` flags and do not mutate the detector. Which outputs are
+    returned, and their shapes, do not depend on the recording length.
     """
-    # Generate simulated data
-    (
-        speed,
-        position,
-        spike_times,
-        time,
-        event_times,
-        sampling_frequency,
-        is_event,
-        place_fields,
-    ) = make_simulated_data(n_neurons=10)  # Small for speed
-
+    time, position, spike_times = sorted_sim
     detector = NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
             "block_size": int(2**12),
         },
-    ).fit(time, position, spike_times, is_training=~is_event)
+    ).fit(time, position, spike_times)
 
     return detector, spike_times, time, position
 
@@ -48,10 +36,8 @@ def simple_fitted_detector():
 class TestReturnOutputsParameter:
     """Test the return_outputs parameter with various inputs.
 
-    These tests run a full HMM predict against a fitted detector. The fit is
-    shared via a module-scoped fixture, but each ``return_outputs`` variant
-    triggers its own JAX trace, so the tests are inherently integration-scale
-    (~10s each).
+    These tests run a full HMM predict against a fitted detector shared via
+    a module-scoped fixture.
     """
 
     def test_default_returns_smoother_only(self, simple_fitted_detector):
@@ -321,10 +307,10 @@ class TestBackwardCompatibility:
                 save_log_likelihood_to_results=True,
             )
 
-            # Should have issued deprecation warning
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
-            assert "deprecated" in str(w[0].message).lower()
+            # Should have issued one deprecation warning
+            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecations) == 1
+            assert "deprecated" in str(deprecations[0].message).lower()
 
         # Should have log_likelihood in results
         assert "log_likelihood" in results
@@ -344,9 +330,9 @@ class TestBackwardCompatibility:
                 save_causal_posterior_to_results=True,
             )
 
-            # Should have issued deprecation warning
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
+            # Should have issued one deprecation warning
+            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecations) == 1
 
         # Should have causal posterior in results
         assert "causal_posterior" in results
@@ -368,9 +354,9 @@ class TestBackwardCompatibility:
                 save_causal_posterior_to_results=True,
             )
 
-            # Should have issued deprecation warning
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
+            # Should have issued one deprecation warning
+            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecations) == 1
 
         # Should have both outputs
         assert "log_likelihood" in results

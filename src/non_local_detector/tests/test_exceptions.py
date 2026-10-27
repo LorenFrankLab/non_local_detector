@@ -30,17 +30,6 @@ class TestExceptionHierarchy:
         assert issubclass(ConvergenceError, FittingError)
         assert issubclass(ConvergenceError, NonLocalDetectorError)
 
-    def test_can_catch_with_base_exception(self):
-        """Should be able to catch any package exception with base class."""
-        with pytest.raises(NonLocalDetectorError):
-            raise ValidationError("test")
-
-        with pytest.raises(NonLocalDetectorError):
-            raise FittingError("test")
-
-        with pytest.raises(NonLocalDetectorError):
-            raise ConvergenceError("test")
-
 
 @pytest.mark.unit
 class TestValidationError:
@@ -331,36 +320,3 @@ class TestEdgeCases:
         msg = str(error)
         assert "α β γ δ" in msg
         assert "alpha beta gamma delta" in msg
-
-
-@pytest.mark.unit
-class TestExceptionReRaise:
-    """Test that exceptions can be caught and re-raised."""
-
-    def test_catch_and_reraise_validation_error(self):
-        """Test catching and re-raising ValidationError."""
-        with pytest.raises(ValidationError):
-            try:
-                raise ValidationError("Original error")
-            except ValidationError:
-                raise  # Re-raise the same exception
-
-    def test_catch_specific_and_raise_general(self):
-        """Test catching specific exception and raising more general one."""
-        with pytest.raises(NonLocalDetectorError):
-            try:
-                raise ValidationError("Specific error")
-            except ValidationError as e:
-                raise NonLocalDetectorError(f"Wrapped: {e}") from e
-
-    def test_exception_chaining_preserves_original_cause(self):
-        """Test that exception chaining preserves the original exception as __cause__."""
-        with pytest.raises(FittingError) as exc_info:
-            try:
-                raise ValidationError("Input problem")
-            except ValidationError as e:
-                raise FittingError("Fitting failed due to invalid input") from e
-
-        # Check that the original exception is preserved
-        assert exc_info.value.__cause__ is not None
-        assert isinstance(exc_info.value.__cause__, ValidationError)

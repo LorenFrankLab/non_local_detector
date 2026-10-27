@@ -301,12 +301,9 @@ class TestIntegration:
         """Test that 2D initial conditions array raises."""
         from non_local_detector import NonLocalClusterlessDetector
 
-        with pytest.raises(ValidationError) as exc_info:
+        # Shape (4, 1) has one row per state, so it passes the length checks
+        # and reaches the dimensionality check.
+        with pytest.raises(ValidationError, match="must be a 1-dimensional array"):
             NonLocalClusterlessDetector(
-                discrete_initial_conditions=np.array([[0.25, 0.25], [0.25, 0.25]])
+                discrete_initial_conditions=np.full((4, 1), 0.25)
             )
-        # The validation catches this as a mismatch first (2D arrays are seen as having shape[0] rows)
-        # before checking dimensionality, so we get the mismatch error
-        assert "Mismatch" in str(exc_info.value) or "1-dimensional" in str(
-            exc_info.value
-        )

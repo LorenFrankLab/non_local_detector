@@ -17,11 +17,11 @@ encoding count, and ``dV(x) = bin_sizes`` the per-bin measure. There is NO
 per-column normalization to unit integral, and the mark Gaussian normalizer lives
 only in ``kde_distance``. Getting any of those constants wrong yields a
 spatially-constant likelihood error that rank/argmax posterior tests cannot catch;
-the absolute-value and mark-marginal tests below pin them.
+the absolute-value tests below (uniform and non-uniform ``dV``) pin them.
 """
 
 import warnings
-from functools import partial
+from functools import cache, partial
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +29,7 @@ import networkx as nx
 import numpy as np
 import pytest
 from scipy import stats
+from scipy.integrate import trapezoid
 from scipy.spatial import cKDTree
 from scipy.special import logsumexp
 
@@ -70,10 +71,10 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
 )
-from non_local_detector.tests.likelihoods.conftest import training_mark_references
-from non_local_detector.tests.likelihoods.test_sorted_spikes_diffusion import (
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
     simulate_sparse_uniform_tracking,
 )
+from non_local_detector.tests.likelihoods.conftest import training_mark_references
 
 WAVEFORM_STD = 6.0
 POSITION_STD = 1.5
@@ -271,55 +272,6 @@ def test_fit_returns_finite_densities_and_keys():
 # ----------------------------------------------------------------------------
 
 
-def test_mark_marginal_recovery():
-    """Integral over space of p_e recovers the weighted mark marginal.
-
-    sum_x p_e(x, m_j) * dV(x) == sum_i w_i K(m_j, m_i) / sum_i w_i, because the
-    heat kernel conserves mass (sum_x (H D_e)[:, j] == sum_i w_i K) and
-    p_e = (H D_e) / (sum_i w_i * dV). Guards the sum_i w_i / dV normalization
-    the density normalization.
-    """
-    weights = 0.5 + np.linspace(0.0, 1.0, 200)  # smooth, strictly positive, non-uniform
-    s = _sim(seed=1, weights=weights)
-    enc = _fit(s)
-    env = s["env"]
-
-    e = 0
-    enc_bins = jnp.asarray(enc["encoding_bin_indices"][e])
-    enc_marks = jnp.asarray(enc["encoding_marks"][e])
-    w = np.asarray(enc["encoding_weights"][e])
-    w_total = float(enc["weight_total"][e])
-    dV = np.asarray(enc["bin_sizes"])
-    n_bins = dV.shape[0]
-
-    rng = np.random.default_rng(7)
-    dec_marks = jnp.asarray(
-        rng.standard_normal((5, enc_marks.shape[1])).astype(np.float32)
-    )
-
-    wf_std = jnp.full(enc_marks.shape[1], WAVEFORM_STD)
-    K = kde_distance(dec_marks, enc_marks, wf_std)  # (n_enc, n_dec)
-    D = (
-        jnp.zeros((n_bins, dec_marks.shape[0]))
-        .at[enc_bins]
-        .add(jnp.asarray(w)[:, None] * K)
-    )
-    Lam, Q, labels, n_components = get_device_basis(env, enc["resolved_rank"])
-    P = np.asarray(
-        heat_kernel_apply(
-            Lam, Q, enc["position_std"], D, labels, n_components=n_components
-        )
-    )
-    p_e = P / (w_total * dV[:, None])
-
-    lhs = (p_e * dV[:, None]).sum(axis=0)  # sum_x p_e dV  -> (n_dec,)
-    rhs = (w[:, None] * np.asarray(K)).sum(axis=0) / w_total  # sum_i w_i K / sum w_i
-
-    assert np.allclose(lhs, rhs, rtol=1e-3, atol=1e-6), (
-        f"mark-marginal mismatch: max|diff|={np.abs(lhs - rhs).max():.3e}"
-    )
-
-
 @pytest.mark.unit
 @pytest.mark.parametrize(("n_features", "offset"), [(4, 7.2), (16, 3.0)])
 def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
@@ -431,10 +383,93 @@ def test_predicted_intensity_integrates_over_marks_to_the_expected_count():
     silent = predict([np.array([])], [np.zeros((0, 1), np.float32)])
     intensity = np.exp(with_spike - silent - np.log(dt))  # (n_marks, n_bins)
     np.testing.assert_allclose(
-        np.trapezoid(intensity, marks, axis=0),
+        trapezoid(intensity, marks, axis=0),
         np.asarray(enc["summed_ground_process_intensity"]),
         rtol=1e-4,
     )
+
+
+def _hand_log_likelihood(
+    env,
+    position_time,
+    position,
+    weights,
+    enc_times,
+    enc_marks,
+    dec_times,
+    dec_marks,
+    time_edges,
+    position_std,
+    waveform_std,
+    mark_reference,
+):
+    """Independent numpy non-local log-likelihood of one electrode.
+
+    Implements the hand derivation in
+    :func:`test_absolute_log_likelihood_small_fixture` with the FULL heat-kernel
+    basis, so the fit it is compared with must use
+    ``heat_kernel_rank == n_interior_bins``. Position samples must be uniformly
+    spaced (each sample's exposure is ``weight * dt``), and encoding spikes should
+    fall on position samples: each is binned at its interpolated position, while
+    the fit splits a spike between two bracketing samples in different bins.
+
+    Returns
+    -------
+    expected : np.ndarray, shape (n_time_bins, n_interior_bins)
+    enc_bins : np.ndarray, shape (n_enc,)
+        Interior-bin index of each encoding spike.
+    """
+    graph, node_order, bin_sizes = environment_graph(env)
+    n_bins = node_order.shape[0]
+    dV = np.asarray(bin_sizes)
+    eigvals, eigvecs = cached_eigenbasis(env, n_bins)  # full basis
+    labels = connected_component_labels(graph)
+    exposure = weights * (position_time[1] - position_time[0])
+    sum_w_pos = float(exposure.sum())
+
+    # bins of encoding spikes via interpolation (independent of production internals)
+    f2l = _full_to_local(node_order, env.is_track_interior_.ravel().shape[0])
+    enc_pos = get_position_at_time(position_time, position, enc_times, env)
+    enc_bins = _interior_bin_indices(env, enc_pos, f2l)
+    w_enc = interpolate_weights_at_spike_times(enc_times, position_time, weights)
+    w_total = float(w_enc.sum())
+    mean_rate = w_total / sum_w_pos
+
+    # explicit single-normalizer Gaussian mark kernel, (n_enc, n_dec)
+    z = (dec_marks[None, :, :] - enc_marks[:, None, :]) / waveform_std
+    K = (
+        np.exp(-0.5 * (z**2).sum(axis=-1))
+        / (waveform_std * np.sqrt(2.0 * np.pi)) ** (enc_marks.shape[1])
+    )
+
+    D = np.zeros((n_bins, dec_marks.shape[0]))
+    S = np.zeros((n_bins, 1))
+    for i, b in enumerate(enc_bins):
+        D[b] += w_enc[i] * K[i]
+        S[b, 0] += w_enc[i]
+
+    occ_pos = get_position_at_time(position_time, position, position_time, env)
+    occ_bins = _interior_bin_indices(env, occ_pos, f2l)
+    occ_field = np.bincount(occ_bins, weights=exposure, minlength=n_bins)[:, None]
+
+    P = diffuse(eigvals, eigvecs, position_std, D, component_labels=labels)
+    Shat = diffuse(eigvals, eigvecs, position_std, S, component_labels=labels)
+    Ohat = diffuse(eigvals, eigvecs, position_std, occ_field, component_labels=labels)
+
+    pi = np.clip(Ohat[:, 0] / (sum_w_pos * dV), EPS, None)
+    p_e = P / (w_total * dV[:, None])
+    p_gpi = Shat[:, 0] / (w_total * dV)
+    background = LOG_RATE_EPS_HZ + mark_reference.log_density(dec_marks)  # (n_dec,)
+    lc = np.logaddexp(
+        np.log(mean_rate * p_e / pi[:, None]), background[None, :]
+    )  # (n_bins, n_dec)
+    summed_gpi = mean_rate * p_gpi / pi + RATE_EPS_HZ
+
+    dt = np.diff(time_edges)
+    expected = -dt[:, None] * summed_gpi[None, :]
+    for j, t_bin in enumerate(_decode_bin(dec_times, time_edges)):
+        expected[t_bin] += lc[:, j] + np.log(dt[t_bin])
+    return expected, enc_bins
 
 
 def test_absolute_log_likelihood_small_fixture():
@@ -463,10 +498,10 @@ def test_absolute_log_likelihood_small_fixture():
     since weights are non-uniform), /dV, /pi, and *mean_rate.
     """
     env = _make_1d_env(1.0, 0.0, 3.0)
-    graph, node_order, bin_sizes = environment_graph(env)
+    _, node_order, bin_sizes = environment_graph(env)
     n_bins = node_order.shape[0]
     assert n_bins == 3
-    dV = np.asarray(bin_sizes)
+    assert np.allclose(bin_sizes, 1.0)
 
     # position: pos(t) = 0.5 + 2.0 t over t in [0, 1] -> t=0 -> bin0, t=1 -> bin2
     n_pos = 101
@@ -475,8 +510,6 @@ def test_absolute_log_likelihood_small_fixture():
     # Non-uniform ramp whose endpoints (the encoding-spike weights) sum to 3.0 != n_enc
     # (2), so this test also pins /sum_w_i rather than /n_enc.
     weights = np.linspace(0.5, 2.5, n_pos)
-    exposure = weights * (position_time[1] - position_time[0])
-    sum_w_pos = float(exposure.sum())
 
     enc_times = np.array([0.0, 1.0])  # -> positions 0.5, 2.5 -> bins 0, 2
     enc_marks = np.array([[0.3, -0.4], [1.1, 0.7]], dtype=np.float32)
@@ -512,61 +545,23 @@ def test_absolute_log_likelihood_small_fixture():
         )
     )
 
-    # ---- independent numpy hand computation ----
-    eigvals, eigvecs = cached_eigenbasis(env, n_bins)  # full basis
-    labels = connected_component_labels(graph)
-
-    def s_gauss(x, m, sd):
-        return np.exp(-0.5 * ((x - m) / sd) ** 2) / (sd * np.sqrt(2.0 * np.pi))
-
-    # bins of encoding spikes via interpolation (independent of production internals)
-    f2l = _full_to_local(node_order, env.is_track_interior_.ravel().shape[0])
-    enc_pos = get_position_at_time(position_time, position, enc_times, env)
-    enc_bins = _interior_bin_indices(env, enc_pos, f2l)
+    expected, enc_bins = _hand_log_likelihood(
+        env,
+        position_time,
+        position,
+        weights,
+        enc_times,
+        enc_marks,
+        dec_times,
+        dec_marks,
+        time_edges,
+        POSITION_STD,
+        WAVEFORM_STD,
+        reference[0],
+    )
     assert list(enc_bins) == [0, 2]
-    w_enc = interpolate_weights_at_spike_times(enc_times, position_time, weights)
-    w_total = float(w_enc.sum())
-    mean_rate = w_total / sum_w_pos
-
-    n_dec = dec_marks.shape[0]
-    K = np.ones((2, n_dec))  # (n_enc, n_dec), explicit single-normalizer mark kernel
-    for i in range(2):
-        for j in range(n_dec):
-            K[i, j] = s_gauss(dec_marks[j, 0], enc_marks[i, 0], WAVEFORM_STD) * s_gauss(
-                dec_marks[j, 1], enc_marks[i, 1], WAVEFORM_STD
-            )
-
-    D = np.zeros((n_bins, n_dec))
-    S = np.zeros((n_bins, 1))
-    for i, b in enumerate(enc_bins):
-        D[b] += w_enc[i] * K[i]
-        S[b, 0] += w_enc[i]
-
-    occ_pos = get_position_at_time(position_time, position, position_time, env)
-    occ_bins = _interior_bin_indices(env, occ_pos, f2l)
-    occ_field = np.bincount(occ_bins, weights=exposure, minlength=n_bins)[:, None]
-
-    P = diffuse(eigvals, eigvecs, POSITION_STD, D, component_labels=labels)
-    Shat = diffuse(eigvals, eigvecs, POSITION_STD, S, component_labels=labels)
-    Ohat = diffuse(eigvals, eigvecs, POSITION_STD, occ_field, component_labels=labels)
-
-    pi = np.clip(Ohat[:, 0] / (sum_w_pos * dV), EPS, None)
-    p_e = P / (w_total * dV[:, None])
-    p_gpi = Shat[:, 0] / (w_total * dV)
-    background = LOG_RATE_EPS_HZ + reference[0].log_density(dec_marks)  # (n_dec,)
-    lc = np.logaddexp(
-        np.log(mean_rate * p_e / pi[:, None]), background[None, :]
-    )  # (n_bins, n_dec)
-    summed_gpi = mean_rate * p_gpi / pi + RATE_EPS_HZ
-
-    n_time_bins = len(time_edges) - 1
-    expected = -np.diff(time_edges)[:, None] * summed_gpi[None, :]
-    seg = _decode_bin(dec_times, time_edges)
-    assert seg.tolist() == [0, 1]
-    for j, t_bin in enumerate(seg):
-        expected[t_bin] += lc[:, j] + np.log(np.diff(time_edges)[t_bin])
-
-    assert ll.shape == (n_time_bins, n_bins)
+    assert _decode_bin(dec_times, time_edges).tolist() == [0, 1]
+    assert ll.shape == expected.shape == (len(time_edges) - 1, n_bins)
     assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
         f"absolute log-likelihood mismatch: max|diff|={np.abs(ll - expected).max():.3e}"
     )
@@ -1083,12 +1078,12 @@ def test_local_finite_and_zero_rate():
 
 
 # ----------------------------------------------------------------------------
-# Tier-1 input validation (fit + predict)
+# Input validation (fit + predict)
 # ----------------------------------------------------------------------------
 
 
 def test_validation_fit():
-    """Every Tier-1 fit-time contract raises ValidationError, and the
+    """Every fit-time input contract raises ValidationError, and the
     in-window / out-of-window encoding-feature split matches clusterless_kde."""
     s = _sim(seed=10)
 
@@ -1207,7 +1202,7 @@ def test_validation_fit():
 
 
 def test_validation_predict():
-    """Every Tier-1 predict-time contract raises (DataError for non-finite time
+    """Every predict-time input contract raises (DataError for non-finite time
     edges, ValidationError otherwise), and a non-finite feature on an
     out-of-window decode spike does NOT raise."""
     s = _sim(seed=11)
@@ -1263,7 +1258,7 @@ def test_validation_predict_local():
     """LOCAL-branch mirror of ``test_validation_predict``'s decode-feature checks.
 
     The local path (``clusterless_diffusion.py`` ~523) duplicates the same
-    in-window ``validate_finite(decode_features, ...)`` Tier-1 call as the
+    in-window ``validate_finite(decode_features, ...)`` call as the
     non-local path (~640) by hand, rather than sharing it. Nothing in the
     committed suite calls ``predict_clusterless_diffusion_log_likelihood`` with
     ``is_local=True`` and a non-finite decode feature, so the local branch's
@@ -1299,7 +1294,7 @@ def test_validation_predict_local():
 
 @pytest.mark.parametrize("is_local", [False, True])
 def test_validation_predict_zero_rate_precedence(is_local):
-    """Tier-1 decode-feature validation must run BEFORE the zero-rate ``continue``
+    """Decode-feature validation must run BEFORE the zero-rate ``continue``
     guard, in both predict branches.
 
     ``clusterless_diffusion.py`` slices ``decode_features`` and calls
@@ -1379,9 +1374,7 @@ def test_validation_predict_zero_rate_precedence(is_local):
 GEOM_WAVEFORM_STD = 24.0
 
 
-def _fit_diffusion(
-    position_time, position, enc_t, enc_f, env, position_std, sampling_frequency=100
-):
+def _fit_diffusion(position_time, position, enc_t, enc_f, env, position_std):
     return fit_clusterless_diffusion_encoding_model(
         jnp.asarray(position_time),
         jnp.asarray(position),
@@ -1394,9 +1387,7 @@ def _fit_diffusion(
     )
 
 
-def _fit_kde(
-    position_time, position, enc_t, enc_f, env, position_std, sampling_frequency=100
-):
+def _fit_kde(position_time, position, enc_t, enc_f, env, position_std):
     return clusterless_kde.fit_clusterless_kde_encoding_model(
         jnp.asarray(position_time),
         jnp.asarray(position),
@@ -1477,6 +1468,7 @@ def _median_per_timebin_spearman(ll_a, ll_b):
     return float(np.nanmedian(rhos)), len(rhos)
 
 
+@pytest.mark.integration
 def test_agreement_with_kde_simple_geometry():
     """On barrier-free geometry the decoded non-local posterior of
     clusterless_diffusion tracks clusterless_kde by per-time-bin rank correlation.
@@ -1485,7 +1477,7 @@ def test_agreement_with_kde_simple_geometry():
     bandwidth the two algorithms share every input and differ only in the position
     smoother (graph heat kernel vs Euclidean Gaussian), so on a wall-less 1D track
     and a wall-less 2D open field the posteriors must rank-agree. Threshold is the
-    documented floor (median per-time-bin Spearman > 0.6; the Task-0 spike measured
+    documented floor (median per-time-bin Spearman > 0.6; measured agreement is
     ~1.000). Both diffusion and KDE non-local predict return interior bins in the
     same natural (``np.where(is_track_interior)``) order, so the rows compare
     bin-for-bin.
@@ -1549,7 +1541,7 @@ def _make_two_room_env(seed=0):
     """Two rooms x in [2, 16] and x in [24, 38], gap x in (16, 24) four bins wide:
     a disconnected (2-component) manifold graph -- a genuine impassable barrier.
 
-    Mirrors ``make_two_room_env`` in ``test_sorted_spikes_diffusion.py``.
+    Mirrors ``make_two_room_env`` in ``_sorted_spikes_helpers.py``.
     """
     rng = np.random.default_rng(seed)
     left = rng.uniform([2.0, 2.0], [16.0, 38.0], size=(12000, 2))
@@ -1564,6 +1556,7 @@ def _make_two_room_env(seed=0):
     return env, position
 
 
+@pytest.mark.integration
 def test_geometry_no_barrier_leak():
     """THE headline geometry test: a decode spike's mark evidence must not cross an
     impassable barrier.
@@ -1599,12 +1592,8 @@ def test_geometry_no_barrier_leak():
     enc_f = [rng.normal(0.0, 1.0, size=(int(spike_mask.sum()), 2)).astype(np.float32)]
 
     position_std = 8.0
-    enc_d = _fit_diffusion(
-        time, position, enc_t, enc_f, env, position_std, sampling_frequency
-    )
-    enc_k = _fit_kde(
-        time, position, enc_t, enc_f, env, position_std, sampling_frequency
-    )
+    enc_d = _fit_diffusion(time, position, enc_t, enc_f, env, position_std)
+    enc_k = _fit_kde(time, position, enc_t, enc_f, env, position_std)
 
     # One decode spike, mark = [0, 0] (matches the left-room encoding marks), in a
     # single time bin.
@@ -1695,7 +1684,7 @@ def test_spike_term_is_the_background_where_the_exact_intensity_is_zero():
     spike_mask = rng.random(position.shape[0]) < rate / sampling_frequency
     enc_t = [time[spike_mask]]
     enc_f = [rng.normal(0.0, 1.0, size=(int(spike_mask.sum()), 2)).astype(np.float32)]
-    enc = _fit_diffusion(time, position, enc_t, enc_f, env, 8.0, sampling_frequency)
+    enc = _fit_diffusion(time, position, enc_t, enc_f, env, 8.0)
     ref = training_mark_references(time, enc_t, enc_f, GEOM_WAVEFORM_STD)
 
     decode_center = time[position.shape[0] // 2]
@@ -1758,6 +1747,7 @@ def test_a_far_weak_source_alone_in_its_component_is_not_lost():
     )
 
 
+@cache
 def _two_room_weak_source_model(weak_nats, position_std, corner_only=False):
     """Two disconnected rooms, 16 features, unit mark bandwidth.
 
@@ -1765,6 +1755,9 @@ def _two_room_weak_source_model(weak_nats, position_std, corner_only=False):
     reference); right-room marks lie ``sqrt(2 * weak_nats)`` away in one
     feature, so for a zero query they are ``weak_nats`` weaker than the
     left-room match.
+
+    Cached, since several tests decode the same fit; callers must not mutate
+    the returned environment, arrays or encoding model.
     """
     env, position = _make_two_room_env()
     time = np.arange(position.shape[0]) / 100
@@ -2024,6 +2017,7 @@ def test_scorer_workspace_does_not_grow_with_the_square_of_the_bins():
     assert workspace < 256 * 2**20, f"{workspace / 2**20:.0f} MiB"
 
 
+@pytest.mark.integration
 def test_grid_independence():
     """A physical ``position_std`` makes the decoded posterior stable across bin sizes.
 
@@ -2109,28 +2103,22 @@ def _make_nonuniform_dv_env():
     return env.fit_place_grid(position_1d, infer_track_interior=True)
 
 
-def test_nonuniform_dv_density_correctness():
-    """Density correctness on a NON-UNIFORM ``dV`` grid (closes a coverage gap).
+def test_nonuniform_dv_log_likelihood_matches_hand_computation():
+    """Absolute non-local log-likelihood on a NON-UNIFORM ``dV`` grid.
 
-    The mark-marginal recovery ``Sum_x p_e(x, m_j) * dV(x) == Sum_i w_i K / Sum_i w_i``
-    is the property that pins the ``dV`` normalization, but on a uniform grid
-    (``dV == 1.0``) it is a no-op that would pass even if the code dropped ``dV``.
-    Here ``dV`` is genuinely non-uniform (4.4 vs 5.0), so:
-
-    * ``bin_sizes`` must be non-uniform (``ptp > 0``) AND equal the true geometric bin
-      widths recomputed independently from ``place_bin_edges_`` -- a regression that
-      dropped ``dV`` to 1.0 breaks this directly.
-    * The reconstructed density integrated against the INDEPENDENT widths recovers
-      the weighted mark marginal (heat-kernel mass conservation, per-component on
-      this disconnected env). Integrating the density against those independent
-      widths (not the ``dV`` used to build it) is what makes a dropped-``dV``
-      regression fail rather than cancel.
-    * Positive control: integrating against a uniform 1.0 measure does NOT recover
-      the marginal, proving the non-uniform ``dV`` is load-bearing.
+    ``dV`` enters the fit twice -- the occupancy ``pi = H O / (sum w_pos * dV)`` and
+    the intensity scale ``mean_rate / (sum_i w_i * dV * pi)`` -- and the two
+    cancel, so dropping both is invisible. Dropping it from only one rescales
+    the intensity by ``dV`` per bin, which a uniform grid (``dV == 1``, as in
+    :func:`test_absolute_log_likelihood_small_fixture`) cannot detect. Here ``dV``
+    is 5.0 on one segment and 4.4 on the other, so ``bin_sizes`` must equal the
+    geometric bin widths and the predicted log-likelihood must match the
+    independent hand computation.
     """
     env = _make_nonuniform_dv_env()
-    graph, node_order, bin_sizes = environment_graph(env)
+    _, node_order, bin_sizes = environment_graph(env)
     bin_sizes = np.asarray(bin_sizes)
+    n_bins = node_order.shape[0]
     is_interior = env.is_track_interior_.ravel()
     # Independent geometric bin widths straight from the environment grid.
     independent_widths = np.diff(env.place_bin_edges_.ravel())[is_interior]
@@ -2138,11 +2126,6 @@ def test_nonuniform_dv_density_correctness():
     assert np.ptp(bin_sizes) > 0.0, "fixture must have non-uniform dV"
     assert np.allclose(bin_sizes, independent_widths), (
         "bin_sizes must carry the true non-uniform geometry, not a dropped-to-1.0 dV"
-    )
-    print(
-        f"[NONUNIF] bin_sizes ptp={np.ptp(bin_sizes):.3f} "
-        f"min={bin_sizes.min():.3f} max={bin_sizes.max():.3f} "
-        f"n_components={nx.number_connected_components(graph)}"
     )
 
     # Weighted encoding on the track (2D position on y = 0).
@@ -2156,64 +2139,59 @@ def test_nonuniform_dv_density_correctness():
     )
     position = np.column_stack([x, np.zeros_like(x)])
     rng = np.random.default_rng(11)
-    weights = 0.5 + np.linspace(
-        0.0, 1.0, n_pos
-    )  # smooth, strictly positive, non-uniform
-    enc_t = np.sort(rng.uniform(0.0, 1.0, 40))
+    weights = 0.5 + np.linspace(0.0, 1.0, n_pos)  # smooth, strictly positive
+    enc_t = np.sort(rng.choice(position_time, 40, replace=False))  # on samples
     enc_f = rng.standard_normal((enc_t.size, 2)).astype(np.float32)
-    waveform_std = 6.0
+    dec_t = np.sort(rng.uniform(0.0, 1.0, 6))
+    dec_f = rng.standard_normal((dec_t.size, 2)).astype(np.float32)
+    time_edges = np.linspace(0.0, 1.0, 5)
+    position_std = waveform_std = 6.0
     enc = fit_clusterless_diffusion_encoding_model(
         jnp.asarray(position_time),
         jnp.asarray(position),
         [jnp.asarray(enc_t)],
         [jnp.asarray(enc_f)],
         env,
-        position_std=6.0,
+        position_std=position_std,
         waveform_std=waveform_std,
         weights=weights,
+        heat_kernel_rank=n_bins,  # full basis for exact hand math
         disable_progress_bar=True,
     )
-
-    enc_bins = jnp.asarray(enc["encoding_bin_indices"][0])
-    enc_marks = jnp.asarray(enc["encoding_marks"][0])
-    w = np.asarray(enc["encoding_weights"][0])
-    w_total = float(enc["weight_total"][0])
-    dV = np.asarray(enc["bin_sizes"])
-    n_bins = dV.shape[0]
-
-    dec_marks = jnp.asarray(
-        rng.standard_normal((5, enc_marks.shape[1])).astype(np.float32)
+    reference = training_mark_references(
+        position_time, [enc_t], [enc_f], waveform_std, weights
     )
-    K = kde_distance(dec_marks, enc_marks, jnp.full(enc_marks.shape[1], waveform_std))
-    D = (
-        jnp.zeros((n_bins, dec_marks.shape[0]))
-        .at[enc_bins]
-        .add(jnp.asarray(w)[:, None] * K)
-    )
-    Lam, Q, labels, n_components = get_device_basis(env, enc["resolved_rank"])
-    P = np.asarray(
-        heat_kernel_apply(
-            Lam, Q, enc["position_std"], D, labels, n_components=n_components
+    ll = np.asarray(
+        predict_clusterless_diffusion_log_likelihood(
+            position_time,
+            position,
+            [jnp.asarray(dec_t)],
+            [jnp.asarray(dec_f)],
+            time_edges=jnp.asarray(time_edges),
+            is_local=False,
+            mark_reference=reference,
+            **enc,
         )
     )
-    p_e = P / (w_total * dV[:, None])
-    rhs = (w[:, None] * np.asarray(K)).sum(axis=0) / w_total  # weighted mark marginal
-
-    # Integrate the density against the INDEPENDENT widths. With correct dV this
-    # recovers rhs; had dV regressed to 1.0, p_e would be ~4.7x larger and this fails.
-    lhs = (p_e * independent_widths[:, None]).sum(axis=0)
-    assert np.allclose(lhs, rhs, rtol=1e-3, atol=1e-6), (
-        f"non-uniform-dV mark-marginal mismatch: max|diff|={np.abs(lhs - rhs).max():.3e}"
+    expected, _ = _hand_log_likelihood(
+        env,
+        position_time,
+        position,
+        weights,
+        enc_t,
+        enc_f,
+        dec_t,
+        dec_f,
+        time_edges,
+        position_std,
+        waveform_std,
+        reference[0],
     )
 
-    # Positive control: a uniform 1.0 measure must NOT recover the marginal here.
-    lhs_uniform = p_e.sum(axis=0)
-    assert not np.allclose(lhs_uniform, rhs, rtol=1e-3, atol=1e-6), (
-        "uniform-measure integral spuriously matched: fixture is not exercising dV"
-    )
-    print(
-        f"[NONUNIF] mark-marginal max|lhs-rhs|={np.abs(lhs - rhs).max():.3e} "
-        f"| uniform-measure control max|diff|={np.abs(lhs_uniform - rhs).max():.3e}"
+    assert ll.shape == expected.shape == (len(time_edges) - 1, n_bins)
+    assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
+        f"non-uniform-dV log-likelihood mismatch: "
+        f"max|diff|={np.abs(ll - expected).max():.3e}"
     )
 
 

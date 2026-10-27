@@ -26,8 +26,10 @@ from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
     cached_eigenbasis,
     diffusion_eigenbasis,
+    environment_graph,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    pixellate_interior_fields,
     predict_sorted_spikes_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
@@ -42,12 +44,25 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
     predict_sorted_spikes_mrf_log_likelihood,
     select_penalty_by_reml,
 )
-from non_local_detector.tests.likelihoods.test_sorted_spikes_diffusion import (
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
+    dot_general_precisions,
     make_2d_env,
     make_two_room_env,
+    poisson_log_likelihood_reference,
     simulate_place_data,
     simulate_sparse_uniform_tracking,
 )
+
+
+@pytest.fixture(scope="module")
+def env_2d():
+    """The 2D open field, built once per module.
+
+    Fits cache eigenbases on the environment, so tests that count eigensolves or
+    inspect those caches build their own environment instead.
+    """
+    return make_2d_env()
+
 
 ENCODING_DICT_KEYS = {
     "environment",
@@ -149,20 +164,53 @@ def test_population_fit_matches_per_neuron_reference():
     np.testing.assert_allclose(mu, occupancy[:, None] * np.exp(eta), rtol=1e-5)
 
 
-def test_basis_is_smoothest_modes_and_penalty_is_eigenvalue_ridge():
-    """The design basis columns are the smoothest Laplacian eigenmodes (ascending
-    eigenvalue), and the penalty weights are those eigenvalues (a generalized ridge)."""
-    laplacian = build_laplacian(path_graph(50))
-    penalty_weights, basis = diffusion_eigenbasis(laplacian, rank=10)
+def test_fit_uses_smoothest_eigenmodes_as_basis_and_eigenvalues_as_ridge(env_2d):
+    """The encoding fit's design is the environment's smoothest Laplacian eigenmodes
+    and its penalty is ``penalty * eigenvalue`` per mode (a generalized ridge).
 
-    # Ascending eigenvalues, first is the (constant) null mode.
-    assert np.all(np.diff(penalty_weights) >= -1e-12)
+    The stored penalty weights are the cached eigenvalues, the interior log fields are
+    ``basis @ coefficients``, and the coefficients equal an independent float64
+    penalized-Poisson fit on the same counts and exposure with that ridge.
+    """
+    env = env_2d
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    rank, penalty = 10, 1.0
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        rank=rank,
+        penalty=penalty,
+    )
+    eigenvalues, basis = cached_eigenbasis(env, rank)
+
+    penalty_weights = np.asarray(encoding["mrf_penalty_weights"])
+    np.testing.assert_array_equal(penalty_weights, eigenvalues)
+    # Smoothest modes first: ascending eigenvalues, starting at the constant null mode.
+    assert np.all(np.diff(penalty_weights) >= 0.0)
     assert penalty_weights[0] < 1e-9
-    # basis columns satisfy L v = d v (they are eigenvectors of the penalty).
-    dense = laplacian.toarray()
-    for mode in range(10):
+
+    coefficients = np.asarray(encoding["mrf_coefficients"])
+    assert coefficients.shape == (rank, len(spike_times))
+    # float32 fit: log fields agree with basis @ coefficients to ~1e-6 (max |log| ~8).
+    np.testing.assert_allclose(
+        np.asarray(encoding["interior_log_place_fields"]),
+        (basis @ coefficients).T,
+        atol=1e-5,
+    )
+
+    _, node_order, _ = environment_graph(env)
+    exposure, spike_counts, _ = pixellate_interior_fields(
+        time, position, spike_times, env, node_order, np.ones_like(time)
+    )
+    for neuron, counts in enumerate(spike_counts):
+        expected = reference_fit_one_neuron(
+            counts, exposure, basis, eigenvalues, penalty
+        )
+        # float32 fit vs float64 reference: coefficients up to ~25, errors ~1e-4.
         np.testing.assert_allclose(
-            dense @ basis[:, mode], penalty_weights[mode] * basis[:, mode], atol=1e-8
+            coefficients[:, neuron], expected, rtol=1e-5, atol=5e-4
         )
 
 
@@ -235,20 +283,6 @@ def test_population_recovers_distinct_place_fields():
         np.testing.assert_allclose(coeffs[:, neuron], expected, atol=1e-4)
 
 
-def _dot_general_precisions(jaxpr):
-    """Precision of every ``dot_general`` in ``jaxpr`` and its nested jaxprs."""
-    precisions = []
-    for eqn in jaxpr.eqns:
-        if eqn.primitive.name == "dot_general":
-            precisions.append(eqn.params["precision"])
-        for value in eqn.params.values():
-            for sub in value if isinstance(value, (tuple, list)) else (value,):
-                inner = getattr(sub, "jaxpr", sub)
-                if hasattr(inner, "eqns"):
-                    precisions.extend(_dot_general_precisions(inner))
-    return precisions
-
-
 @pytest.mark.unit
 @pytest.mark.parametrize("stage", ["newton", "reml"])
 def test_fit_contractions_request_highest_precision(stage):
@@ -285,7 +319,7 @@ def test_fit_contractions_request_highest_precision(stage):
                 )
             )(jnp.asarray(0.0, dtype))
 
-    precisions = _dot_general_precisions(traced.jaxpr)
+    precisions = dot_general_precisions(traced.jaxpr)
     assert precisions
     highest = (jax.lax.Precision.HIGHEST, jax.lax.Precision.HIGHEST)
     assert all(precision == highest for precision in precisions), precisions
@@ -353,9 +387,9 @@ def test_mrf_penalty_does_not_smooth_across_a_wall():
     assert rate[20:].max() < 0.02 * rate[:20].max()
 
 
-def test_fit_encoding_dict_keys_and_full_grid_shapes():
+def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d):
     """The MRF fit returns the shared encoding contract; place_fields are FULL-GRID."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=4)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,
@@ -391,9 +425,9 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes():
     )
 
 
-def test_fixed_penalty_solver_controls_are_reported():
+def test_fixed_penalty_solver_controls_are_reported(env_2d):
     """Caller-supplied solver controls are honored and reported in the encoding."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,
@@ -418,7 +452,7 @@ def test_fixed_penalty_solver_controls_are_reported():
     assert encoding["mrf_log_penalty_bounds"] == (-4.0, 2.0)
 
 
-def test_mrf_nonconvergence_warns():
+def test_mrf_nonconvergence_warns(env_2d):
     """A penalized-Poisson fit that does not converge in max_iter warns.
 
     REML total failure already raises; the softer (and more common) Newton/IRLS
@@ -426,7 +460,7 @@ def test_mrf_nonconvergence_warns():
     encoding dict but nothing surfaced it. `max_iter=1` with a tight tolerance
     forces a non-converged fit.
     """
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     with pytest.warns(UserWarning, match="did not converge"):
         fit_sorted_spikes_mrf_encoding_model(
@@ -442,7 +476,7 @@ def test_mrf_nonconvergence_warns():
         )
 
 
-def test_mrf_auto_rank_cap_warns(monkeypatch):
+def test_mrf_auto_rank_cap_warns(env_2d, monkeypatch):
     """An auto-selected rank capped below the interior-bin count warns.
 
     On a fine grid the default cap drops the highest-frequency eigenmodes; this
@@ -452,7 +486,7 @@ def test_mrf_auto_rank_cap_warns(monkeypatch):
     import non_local_detector.likelihoods.sorted_spikes_mrf as mrf_module
 
     monkeypatch.setattr(mrf_module, "_DEFAULT_MAX_RANK", 4)
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     with pytest.warns(UserWarning, match="auto-capped"):
         fit_sorted_spikes_mrf_encoding_model(
@@ -465,9 +499,9 @@ def test_mrf_auto_rank_cap_warns(monkeypatch):
         )
 
 
-def test_fit_rejects_invalid_weights():
+def test_fit_rejects_invalid_weights(env_2d):
     """Weights feed both occupancy and spike counts, so invalid values fail early."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=1)
     bad_weights = [
         np.ones(time.shape[0] - 1),
@@ -502,9 +536,9 @@ def test_fit_rejects_invalid_weights():
         {"local_interpolation": "cubic"},
     ],
 )
-def test_fit_rejects_invalid_mrf_controls(kwargs):
+def test_fit_rejects_invalid_mrf_controls(env_2d, kwargs):
     """MRF-specific controls have explicit validation and clear failures."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=1)
     fit_kwargs = {"rank": 10, **kwargs}
 
@@ -617,9 +651,9 @@ def test_low_penalty_full_rank_tracks_saturated_ratio():
     assert corr > 0.95
 
 
-def test_fit_empty_spike_times_returns_empty_place_fields():
+def test_fit_empty_spike_times_returns_empty_place_fields(env_2d):
     """Zero neurons (spike_times=[]) must not crash and yields empty place fields."""
-    env = make_2d_env()
+    env = env_2d
     time, position, _ = simulate_place_data(env, n_neurons=1)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,
@@ -654,9 +688,9 @@ def test_reml_helpers_handle_zero_neurons():
     assert np.isfinite(penalty) and np.isfinite(objective)
 
 
-def test_penalty_zero_is_respected_not_overridden():
+def test_penalty_zero_is_respected_not_overridden(env_2d):
     """An explicit penalty=0.0 (unpenalized) must not be silently replaced by 1.0."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
 
     def fit(penalty):
@@ -674,9 +708,10 @@ def test_penalty_zero_is_respected_not_overridden():
     assert not np.allclose(fit(0.0), fit(1.0))
 
 
-def test_invariants_place_fields_and_likelihood():
-    """Place fields >= 0 & finite; likelihoods finite; softmax posterior sums to 1."""
-    env = make_2d_env()
+def test_invariants_place_fields_and_likelihood(env_2d):
+    """Place fields are non-negative and finite, and the non-local likelihood is the
+    Poisson log likelihood of each bin's spike counts under those place fields."""
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,
@@ -689,27 +724,30 @@ def test_invariants_place_fields_and_likelihood():
     assert np.all(place_fields >= 0.0)
     assert np.all(np.isfinite(place_fields))
 
+    # Edges halfway between samples: no spike (all at sample times) sits on an edge.
+    edges = time_edges_from_centers(time[:1000])
     ll = np.asarray(
         predict_sorted_spikes_mrf_log_likelihood(
             time,
             position,
             spike_times,
-            time_edges=time[:100],
+            time_edges=edges,
             is_local=False,
             **encoding,
         )
     )
-    assert np.all(np.isfinite(ll))
-    posterior = np.exp(ll - ll.max(axis=1, keepdims=True))
-    posterior /= posterior.sum(axis=1, keepdims=True)
-    # float32-safe: the likelihood is float32 when JAX x64 is off.
-    np.testing.assert_allclose(posterior.sum(axis=1), 1.0, atol=1e-6)
+    expected = poisson_log_likelihood_reference(
+        place_fields, env.is_track_interior_.ravel(), spike_times, edges
+    )
+    # The window holds spikes, so the count term is exercised, not just -dt * rate.
+    assert sum(np.histogram(spikes, edges)[0].sum() for spikes in spike_times) > 20
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
 
 
-def test_weighted_fit_mean_rates_match_kde():
+def test_weighted_fit_mean_rates_match_kde(env_2d):
     """Non-uniform (posterior-like) weights: MRF mean_rates match KDE's, confirming
     the weighted occupancy/spike pixellation feeding the exposure offset is correct."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3, n_time=6000)
     rng = np.random.default_rng(5)
     weights = rng.uniform(0.1, 1.0, size=time.shape[0])
@@ -735,7 +773,7 @@ def test_weighted_fit_mean_rates_match_kde():
     )
 
 
-def test_weighted_place_fields_match_subset_fit():
+def test_weighted_place_fields_match_subset_fit(env_2d):
     """Binary weights == subsetting: fitting with weights=1 on a contiguous block and 0
     elsewhere gives the same place fields as fitting on just that block. This is the
     load-bearing weighted check for the MRF fit -- it verifies the weighted occupancy
@@ -743,7 +781,7 @@ def test_weighted_place_fields_match_subset_fit():
     test above) depends only on the weighted spike sum and so cannot catch a spatial
     weighting bug in the pixellation or the exposure offset.
     """
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3, n_time=6000)
     cut = int(0.6 * time.shape[0])
     weights = np.zeros(time.shape[0])
@@ -784,14 +822,14 @@ def test_weighted_place_fields_match_subset_fit():
         assert rel < 0.01
 
 
-def test_zero_effective_weight_returns_eps_place_fields():
+def test_zero_effective_weight_returns_eps_place_fields(env_2d):
     """All-zero weights (or an encoding group / environment with zero posterior mass)
     give zero occupancy, so the Poisson exposure is zero and the rate is unidentified.
     The fit must return EPS-floored place fields (matching the diffusion likelihood), not
     the warm-started intercept (~1e-6) that an information-free penalized fit produces.
-    This is the multi-environment / EM zero-mass case flagged in review.
+    Multi-environment fits and EM reach this case when a group has zero posterior mass.
     """
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,
@@ -962,10 +1000,10 @@ def test_default_rank_covers_disconnected_components(monkeypatch):
     assert encoding["mrf_rank"] >= 2  # kept both components' null modes
 
 
-def test_fit_with_default_rank_is_valid():
+def test_fit_with_default_rank_is_valid(env_2d):
     """The out-of-the-box default (rank omitted -> reduced-rank + REML) produces a
     valid encoding: contract keys, finite positive interior place fields."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,
@@ -981,11 +1019,11 @@ def test_fit_with_default_rank_is_valid():
     assert np.all(place_fields[:, ~is_interior] == 0.0)
 
 
-def test_reported_rank_is_actual_basis_rank_when_capped():
+def test_reported_rank_is_actual_basis_rank_when_capped(env_2d):
     """A rank request larger than the number of interior bins is capped by the
     eigenbasis; mrf_rank must report the actual rank used (== coefficient rows),
     not the oversized request."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     n_interior = int(env.is_track_interior_.sum())
 
@@ -1015,9 +1053,9 @@ def test_registered_and_predict_shared_with_diffusion():
     )
 
 
-def test_predict_shapes_local_and_nonlocal():
+def test_predict_shapes_local_and_nonlocal(env_2d):
     """Non-local -> (n_time, n_interior); local -> (n_time, 1); both finite."""
-    env = make_2d_env()
+    env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=3)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         position_time=time,

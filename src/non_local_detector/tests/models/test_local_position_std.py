@@ -18,6 +18,7 @@ from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.tests.models._helpers import make_two_arm_track
 
 
 @pytest.mark.unit
@@ -106,7 +107,7 @@ class TestLocalPositionStdValidation:
 class TestMultiBinLocalStateIndex:
     """Test initialize_state_index with multi-bin local."""
 
-    def test_legacy_local_gets_one_bin(self, simple_1d_environment):
+    def test_legacy_local_gets_one_bin(self):
         """Legacy local_position_std=None gives local state 1 bin."""
         detector = NonLocalSortedSpikesDetector()
         position = np.linspace(0, 10, 11)[:, np.newaxis]
@@ -117,7 +118,7 @@ class TestMultiBinLocalStateIndex:
         # state 1 = No-Spike (1 bin), states 2,3 = Non-Local (spatial bins)
         assert detector.bin_sizes_[0] == 1
 
-    def test_multibin_local_gets_spatial_bins(self, simple_1d_environment):
+    def test_multibin_local_gets_spatial_bins(self):
         """Multi-bin local (local_position_std set) gets same bins as non-local."""
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
@@ -131,7 +132,7 @@ class TestMultiBinLocalStateIndex:
         assert local_bins == nonlocal_bins
         assert local_bins > 1
 
-    def test_multibin_local_state_ind_correct(self, simple_1d_environment):
+    def test_multibin_local_state_ind_correct(self):
         """Multi-bin local state_ind_ maps all local bins to state 0."""
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
@@ -142,7 +143,7 @@ class TestMultiBinLocalStateIndex:
         # First n_local_bins entries in state_ind_ should all be 0 (local state)
         assert np.all(detector.state_ind_[:n_local_bins] == 0)
 
-    def test_multibin_local_has_interior_mask(self, simple_1d_environment):
+    def test_multibin_local_has_interior_mask(self):
         """Multi-bin local state gets correct track interior mask."""
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
@@ -162,15 +163,17 @@ class TestMultiBinLocalInitialConditions:
     """Test initialize_initial_conditions with multi-bin local."""
 
     def test_legacy_local_initial_conditions_unchanged(self):
-        """Legacy local_position_std=None gives 1-element initial conditions for local."""
+        """Legacy local_position_std=None gives the Local state initial condition [1.0]."""
         detector = NonLocalSortedSpikesDetector()
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector.initialize_environments(position)
         detector.initialize_state_index()
         detector.initialize_initial_conditions()
 
-        # Local state (state 0) should have 1 bin
-        assert detector.bin_sizes_[0] == 1
+        # The single Local bin carries all of the Local state's mass.
+        np.testing.assert_array_equal(
+            detector.continuous_initial_conditions_[detector.state_ind_ == 0], [1.0]
+        )
 
     def test_multibin_local_gets_uniform_initial_conditions(self):
         """Multi-bin local gets uniform initial conditions over all bins."""
@@ -229,24 +232,37 @@ class TestMultiBinLocalContinuousTransitions:
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         _init_detector_transitions(detector, position)
 
-        # The Local->Local transition should now be a proper spatial transition
-        # (not a 1x1 identity). Check it's stochastic.
+        # The Local->Local Discrete() becomes Uniform() over the Local bins
+        # (all interior on this open-field grid).
         n_local_bins = detector.bin_sizes_[0]
         local_mask = detector.state_ind_ == 0
         block = detector.continuous_state_transitions_[np.ix_(local_mask, local_mask)]
         assert block.shape == (n_local_bins, n_local_bins)
-        # Each row should sum to approximately 1 (stochastic)
-        row_sums = block.sum(axis=1)
-        np.testing.assert_allclose(row_sums, 1.0, atol=1e-10)
+        np.testing.assert_allclose(block, 1.0 / n_local_bins, rtol=1e-12)
 
     def test_nonlocal_discrete_transitions_unaffected(self):
         """Non-local Discrete() transitions are not affected by local_position_std."""
-        detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
+        detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         _init_detector_transitions(detector, position)
+        legacy = NonLocalSortedSpikesDetector()
+        _init_detector_transitions(legacy, position)
 
-        # No-Spike state (state 1) should still have 1 bin
-        assert detector.bin_sizes_[1] == 1
+        # States 1 (No-Spike), 2 and 3 (Non-Local) do not involve the Local
+        # state, so every block among them matches the legacy detector.
+        def block(model, from_state, to_state):
+            return model.continuous_state_transitions_[
+                np.ix_(model.state_ind_ == from_state, model.state_ind_ == to_state)
+            ]
+
+        np.testing.assert_array_equal(block(detector, 1, 1), [[1.0]])
+        for from_state in (1, 2, 3):
+            for to_state in (1, 2, 3):
+                np.testing.assert_array_equal(
+                    block(detector, from_state, to_state),
+                    block(legacy, from_state, to_state),
+                    err_msg=f"block ({from_state}, {to_state})",
+                )
 
     def test_legacy_discrete_transition_unchanged(self):
         """Legacy local_position_std=None keeps Discrete() as 1x1 identity."""
@@ -493,39 +509,19 @@ class TestComputeLocalPositionKernel:
         """Animal at an arm-end linear coord snaps, kernel centers on arm's last bin.
 
         get_linearized_position places an animal at an arm endpoint at the
-        arm's linear length, which equals a gap-bin edge. Prior to the
-        get_bin_ind snap, this fell into the gap bin and triggered a uniform
-        fallback. Now the snap places it on the arm's last interior bin,
-        and the Gaussian concentrates there (not a flat row).
+        arm's linear length, which equals a gap-bin edge. get_bin_ind snaps
+        it to the arm's last interior bin rather than the gap bin, so the
+        Gaussian concentrates there instead of falling back to a flat row.
         """
         import jax.numpy as jnp
-        import networkx as nx
 
-        from non_local_detector.environment import Environment
-
-        track_graph = nx.Graph()
-        track_graph.add_node(0, pos=(0.0, 0.0))
-        track_graph.add_node(1, pos=(50.0, 0.0))
-        track_graph.add_node(2, pos=(60.0, 0.0))
-        track_graph.add_node(3, pos=(110.0, 0.0))
-        track_graph.add_edge(0, 1, distance=50.0, edge_id=0)
-        track_graph.add_edge(2, 3, distance=50.0, edge_id=1)
-
-        env = Environment(
-            environment_name="",
-            place_bin_size=5.0,
-            track_graph=track_graph,
-            edge_order=[(0, 1), (2, 3)],
-            edge_spacing=10.0,
-        )
-        position_1d = np.concatenate([np.linspace(0, 50, 25), np.linspace(60, 110, 25)])
-        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+        env = make_two_arm_track()
 
         detector = NonLocalSortedSpikesDetector(local_position_std=10.0)
         detector.environments = (env,)
         detector.initialize_state_index()
 
-        # Position exactly on the arm-A-end edge (the bug case).
+        # Position exactly on the arm-A-end edge.
         is_interior = env.is_track_interior_.ravel()
         first_gap = int(np.where(~is_interior)[0][0])
         arm_end = float(env.edges_[0][first_gap])
@@ -546,7 +542,7 @@ class TestComputeLocalPositionKernel:
         # last interior bin, so adjacent-arm-A bins are weighted more than
         # far-arm-A bins, and unreachable arm-B bins get zero probability.
         assert not np.allclose(lk[0], lk[0, 0], atol=1e-3), (
-            "Kernel is still uniform after snap fix. Expected a Gaussian "
+            "Kernel is uniform. Expected a Gaussian "
             f"centered on the snapped bin. Got: {lk[0]}"
         )
         # Peak should be at the arm-A side of the gap (the snapped bin).
@@ -693,35 +689,14 @@ class TestDeltaKernel:
     def test_delta_kernel_gap_position_snaps_to_nearest_interior(self):
         """Animal in a gap bin snaps to nearest interior bin via get_bin_ind.
 
-        Prior to the get_bin_ind snap fix, positions landing in gap bins
-        (e.g. exactly on an arm-boundary edge, or in the middle of a gap)
-        produced a uniform fallback. Now they snap to the nearest interior
-        bin by position distance, so the delta fires at that snapped bin.
+        Positions landing in gap bins (e.g. exactly on an arm-boundary edge,
+        or in the middle of a gap) snap to the nearest interior bin by
+        position distance instead of falling back to a uniform kernel, so
+        the delta fires at that snapped bin.
         """
         import jax.numpy as jnp
-        import networkx as nx
 
-        from non_local_detector.environment import Environment
-
-        g = nx.Graph()
-        g.add_node(0, pos=(0.0, 0.0))
-        g.add_node(1, pos=(50.0, 0.0))
-        g.add_node(2, pos=(60.0, 0.0))
-        g.add_node(3, pos=(110.0, 0.0))
-        g.add_edge(0, 1, distance=50.0, edge_id=0)
-        g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-        env = Environment(
-            environment_name="",
-            place_bin_size=5.0,
-            track_graph=g,
-            edge_order=[(0, 1), (2, 3)],
-            edge_spacing=10.0,
-        )
-        position_1d = np.concatenate(
-            [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-        )
-        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+        env = make_two_arm_track()
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
         detector.environments = (env,)
@@ -764,37 +739,16 @@ class TestDeltaKernel:
         )
 
     def test_delta_kernel_at_arm_end_edge(self):
-        """The exact float-equality bug case: animal on arm-A end edge snaps to arm A."""
+        """An animal exactly on the arm-A end edge (float equality) snaps to arm A."""
         import jax.numpy as jnp
-        import networkx as nx
 
-        from non_local_detector.environment import Environment
-
-        g = nx.Graph()
-        g.add_node(0, pos=(0.0, 0.0))
-        g.add_node(1, pos=(50.0, 0.0))
-        g.add_node(2, pos=(60.0, 0.0))
-        g.add_node(3, pos=(110.0, 0.0))
-        g.add_edge(0, 1, distance=50.0, edge_id=0)
-        g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-        env = Environment(
-            environment_name="",
-            place_bin_size=5.0,
-            track_graph=g,
-            edge_order=[(0, 1), (2, 3)],
-            edge_spacing=10.0,
-        )
-        position_1d = np.concatenate(
-            [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-        )
-        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+        env = make_two_arm_track()
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
         detector.environments = (env,)
         detector.initialize_state_index()
 
-        # Use the exact arm-A-end edge value (the real-data bug case).
+        # Use the exact arm-A-end edge value, as real linearized data can.
         is_interior = env.is_track_interior_.ravel()
         first_gap = int(np.where(~is_interior)[0][0])
         arm_end = float(env.edges_[0][first_gap])

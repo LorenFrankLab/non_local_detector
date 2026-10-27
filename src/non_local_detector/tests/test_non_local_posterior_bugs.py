@@ -1,13 +1,11 @@
-"""Tests for get_conditional_non_local_posterior bugs and position_time validation.
+"""Tests for get_conditional_non_local_posterior and position_time validation.
 
-Bug 1: Hard-coded state names ("Non-Local Continuous", "Non-Local Fragmented")
-       break when callers use custom state_names= override.
-
-Bug 2: .sum("position") fails for 2D environments where the coordinate
-       levels are x_position/y_position, not "position".
-
-Bug 3: predict() does not validate position_time when position is provided,
-       leading to confusing low-level errors instead of a clear ValidationError.
+- The non-local states are selected by position (third and fourth state), so
+  custom ``state_names`` work.
+- Marginalization covers every position level, so 2D environments
+  (``x_position``/``y_position``) work.
+- ``predict()`` raises a clear ValidationError when ``position`` is given
+  without ``position_time``.
 """
 
 import numpy as np
@@ -20,6 +18,8 @@ from non_local_detector.models.non_local_model import (
 )
 from non_local_detector.tests.conftest import make_state_bins_results
 from non_local_detector.time_edges import time_edges_from_centers
+
+pytestmark = pytest.mark.unit
 
 
 def _make_results_dataset_1d(state_names, n_time=10, n_bins_per_state=5):
@@ -43,41 +43,54 @@ def _make_results_dataset_2d(state_names, n_time=10, n_bins_per_state=4):
     )
 
 
+def _expected_conditional_non_local(results):
+    """Hand-compute (P[state 2] + P[state 3]) / sum over position bins.
+
+    Parameters
+    ----------
+    results : xr.Dataset
+        Output of ``make_state_bins_results`` with four equally sized state
+        blocks along ``state_bins``.
+
+    Returns
+    -------
+    expected : np.ndarray, shape (n_time, n_bins_per_state)
+    """
+    posterior = results.acausal_posterior.values
+    n_time = posterior.shape[0]
+    per_state = posterior.reshape(n_time, 4, -1)
+    non_local = per_state[:, 2] + per_state[:, 3]
+    return non_local / non_local.sum(axis=1, keepdims=True)
+
+
+def _assert_matches_expected(posterior, results):
+    """Assert the conditional posterior equals the hand-computed one."""
+    assert posterior.dims[0] == "time"
+    values = posterior.values.reshape(posterior.shape[0], -1)
+    np.testing.assert_allclose(
+        values, _expected_conditional_non_local(results), rtol=1e-12
+    )
+
+
 # ============================================================
-# Bug 1: custom state names
+# Custom state names
 # ============================================================
 
 
 class TestCustomStateNames:
-    """get_conditional_non_local_posterior must work with custom state_names."""
+    """The third and fourth states are the non-local ones, whatever their names."""
 
     CUSTOM_NAMES = ["Here", "Quiet", "Replay-Smooth", "Replay-Jump"]
 
-    def test_sorted_spikes_custom_names(self):
+    @pytest.mark.parametrize(
+        "detector_cls", [NonLocalSortedSpikesDetector, NonLocalClusterlessDetector]
+    )
+    def test_custom_names(self, detector_cls):
         results = _make_results_dataset_1d(self.CUSTOM_NAMES)
-        # Should NOT raise KeyError
-        posterior = NonLocalSortedSpikesDetector.get_conditional_non_local_posterior(
-            results
-        )
-        assert posterior is not None
-        # Should be normalised over position for each time step
-        # After sel(state=...) on 1D, the position dim replaces state_bins
-        non_time_dims = [d for d in posterior.dims if d != "time"]
-        sums = posterior.sum(non_time_dims).values
-        np.testing.assert_allclose(sums, 1.0, atol=1e-10)
+        posterior = detector_cls.get_conditional_non_local_posterior(results)
+        _assert_matches_expected(posterior, results)
 
-    def test_clusterless_custom_names(self):
-        results = _make_results_dataset_1d(self.CUSTOM_NAMES)
-        posterior = NonLocalClusterlessDetector.get_conditional_non_local_posterior(
-            results
-        )
-        assert posterior is not None
-        non_time_dims = [d for d in posterior.dims if d != "time"]
-        sums = posterior.sum(non_time_dims).values
-        np.testing.assert_allclose(sums, 1.0, atol=1e-10)
-
-    def test_default_names_still_work(self):
-        """Verify the fix doesn't break the default state names."""
+    def test_default_names(self):
         default_names = [
             "Local",
             "No-Spike",
@@ -88,19 +101,16 @@ class TestCustomStateNames:
         posterior = NonLocalSortedSpikesDetector.get_conditional_non_local_posterior(
             results
         )
-        assert posterior is not None
-        non_time_dims = [d for d in posterior.dims if d != "time"]
-        sums = posterior.sum(non_time_dims).values
-        np.testing.assert_allclose(sums, 1.0, atol=1e-10)
+        _assert_matches_expected(posterior, results)
 
 
 # ============================================================
-# Bug 2: 2D position
+# 2D position
 # ============================================================
 
 
 class TestTwoDimensionalPosition:
-    """get_conditional_non_local_posterior must work with 2D environments."""
+    """The conditional posterior marginalizes over x/y position levels in 2D."""
 
     DEFAULT_NAMES = [
         "Local",
@@ -109,38 +119,21 @@ class TestTwoDimensionalPosition:
         "Non-Local Fragmented",
     ]
 
-    def test_sorted_spikes_2d(self):
+    @pytest.mark.parametrize(
+        "detector_cls", [NonLocalSortedSpikesDetector, NonLocalClusterlessDetector]
+    )
+    def test_2d(self, detector_cls):
         results = _make_results_dataset_2d(self.DEFAULT_NAMES)
-        # Should NOT raise ValueError about 'position' dimension
-        posterior = NonLocalSortedSpikesDetector.get_conditional_non_local_posterior(
-            results
-        )
-        assert posterior is not None
-        non_time_dims = [d for d in posterior.dims if d != "time"]
-        sums = posterior.sum(non_time_dims).values
-        np.testing.assert_allclose(sums, 1.0, atol=1e-10)
-
-    def test_clusterless_2d(self):
-        results = _make_results_dataset_2d(self.DEFAULT_NAMES)
-        posterior = NonLocalClusterlessDetector.get_conditional_non_local_posterior(
-            results
-        )
-        assert posterior is not None
-        non_time_dims = [d for d in posterior.dims if d != "time"]
-        sums = posterior.sum(non_time_dims).values
-        np.testing.assert_allclose(sums, 1.0, atol=1e-10)
+        posterior = detector_cls.get_conditional_non_local_posterior(results)
+        _assert_matches_expected(posterior, results)
 
     def test_2d_with_custom_names(self):
-        """Both bugs combined: custom names + 2D."""
-        custom = ["A", "B", "C", "D"]
-        results = _make_results_dataset_2d(custom)
+        """Custom state names and a 2D environment together."""
+        results = _make_results_dataset_2d(["A", "B", "C", "D"])
         posterior = NonLocalClusterlessDetector.get_conditional_non_local_posterior(
             results
         )
-        assert posterior is not None
-        non_time_dims = [d for d in posterior.dims if d != "time"]
-        sums = posterior.sum(non_time_dims).values
-        np.testing.assert_allclose(sums, 1.0, atol=1e-10)
+        _assert_matches_expected(posterior, results)
 
 
 # ============================================================
@@ -163,7 +156,7 @@ class TestStateCountGuard:
 
 
 # ============================================================
-# Bug 3: position_time validation
+# position_time validation
 # ============================================================
 
 

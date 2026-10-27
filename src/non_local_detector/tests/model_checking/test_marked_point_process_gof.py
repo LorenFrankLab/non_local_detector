@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import stats
+from scipy.integrate import trapezoid
 from scipy.special import logsumexp
 
 from non_local_detector.environment import Environment
@@ -39,8 +40,6 @@ from non_local_detector.model_checking.clusterless import (
     pearson_chi_squared_test,
 )
 from non_local_detector.tests.conftest import precision_mode
-
-pytestmark = pytest.mark.unit
 
 ALGORITHMS = [
     "clusterless_kde",
@@ -265,6 +264,7 @@ def _simulate(algorithm, model, environment, rng, duration=250.0):
     return position_time, position, spike_times, marks
 
 
+@pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
@@ -291,6 +291,7 @@ def test_transforms_are_uniform_for_data_from_the_fitted_model(
     assert result.p_value.min() > 1e-3, result
 
 
+@pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
@@ -313,6 +314,7 @@ def test_transforms_reject_shifted_marks(recording, fitted, algorithm, transform
     assert ks_uniformity_test(v).p_value[0] < 1e-6
 
 
+@pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_ircm_rejects_a_doubled_rate(recording, fitted, algorithm):
@@ -333,6 +335,7 @@ def test_ircm_rejects_a_doubled_rate(recording, fitted, algorithm):
     assert ks_uniformity_test(u[:, None]).p_value[0] < 1e-6
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_feature_order_reorders_the_sequential_conditionals(
     recording, fitted, algorithm
@@ -360,17 +363,20 @@ def test_feature_order_reorders_the_sequential_conditionals(
     assert np.all((backward >= 0) & (backward <= 1))
 
 
-def test_transforms_reject_an_unknown_algorithm(recording, fitted):
-    environment, time, position, spike_times, marks = recording
+@pytest.mark.unit
+@pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
+def test_transforms_reject_an_unknown_algorithm(transform):
+    """The algorithm name is checked before the encoding model is read."""
+    time = np.linspace(0.0, 1.0, 11)
     with pytest.raises(ValueError, match="algorithm"):
-        ircm_transform(
-            fitted["clusterless_kde"],
+        transform(
+            {},
             "sorted_spikes_kde",
             0,
             time,
-            position,
-            spike_times[:5],
-            marks[:5],
+            np.linspace(0.0, 10.0, 11)[:, None],
+            np.array([0.25, 0.75]),
+            np.zeros((2, 2)),
         )
 
 
@@ -379,6 +385,7 @@ def test_transforms_reject_an_unknown_algorithm(recording, fitted):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("n_dims", [1, 3])
 def test_uniformity_tests_accept_uniform_samples(n_dims):
     samples = np.random.default_rng(0).uniform(size=(800, n_dims))
@@ -390,6 +397,7 @@ def test_uniformity_tests_accept_uniform_samples(n_dims):
     assert result.p_value > 0.01
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("n_dims", [1, 3])
 def test_uniformity_tests_reject_nonuniform_samples(n_dims):
     samples = np.random.default_rng(0).beta(2.0, 2.0, size=(800, n_dims))
@@ -401,6 +409,7 @@ def test_uniformity_tests_reject_nonuniform_samples(n_dims):
     assert result.p_value <= 0.01
 
 
+@pytest.mark.unit
 def test_multivariate_ks_detects_dependence_with_uniform_marginals():
     """Coordinates that are each uniform but dependent are not uniform jointly."""
     rng = np.random.default_rng(2)
@@ -411,6 +420,7 @@ def test_multivariate_ks_detects_dependence_with_uniform_marginals():
     assert result.p_value <= 0.01
 
 
+@pytest.mark.unit
 def test_pearson_chi_squared_counts_equal_volume_cells():
     """Cells are equal sub-cubes, and the expected count per cell is n / M."""
     samples = np.array([[0.1, 0.1], [0.1, 0.9], [0.9, 0.1], [0.9, 0.9]] * 10)
@@ -421,6 +431,7 @@ def test_pearson_chi_squared_counts_equal_volume_cells():
     assert skewed.statistic == pytest.approx(120.0)
 
 
+@pytest.mark.unit
 def test_ks_uniformity_test_reports_each_coordinate():
     rng = np.random.default_rng(3)
     samples = np.column_stack((rng.uniform(size=2000), rng.beta(2, 2, size=2000)))
@@ -432,6 +443,7 @@ def test_ks_uniformity_test_reports_each_coordinate():
     )
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "bad", [np.array([[0.5, 1.2]]), np.array([[np.nan, 0.5]]), np.ones(3)]
 )
@@ -498,6 +510,7 @@ def _expected_conditional_cdfs(algorithm, model, environment, positions, marks):
     return _mixture_cdfs(weights, centers, covariances, marks)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_ircm_mark_cdfs_equal_the_models_conditional_mixture(
     recording, fitted, algorithm
@@ -534,6 +547,7 @@ def _ground_and_components_at_bins(algorithm, model, environment, bin_centers):
     return ground, weights, centers, covs
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_mdci_equals_a_direct_sum_over_bins(recording, fitted, algorithm):
     """u and v from lambda(b, m) = Lambda(b) f(m | b) summed over visited bins.
@@ -570,7 +584,7 @@ def test_mdci_equals_a_direct_sum_over_bins(recording, fitted, algorithm):
         inside = position_time <= s
         times = np.append(position_time[inside], s)
         last = np.interp(s, position_time, values)
-        return np.trapezoid(np.append(values[inside], last), times)
+        return trapezoid(np.append(values[inside], last), times)
 
     expected_u = np.array(
         [
@@ -649,6 +663,7 @@ def separated():
     return environment, models
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_mdci_in_one_bin_equals_the_conditional_at_that_bin(separated, algorithm):
     """With all time in one bin, f(m) is f(m | bin) and u is the elapsed fraction.
@@ -675,6 +690,7 @@ def test_mdci_in_one_bin_equals_the_conditional_at_that_bin(separated, algorithm
     np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_transforms_reject_missing_positions(separated, algorithm, transform):
@@ -695,6 +711,7 @@ def test_transforms_reject_missing_positions(separated, algorithm, transform):
         )
 
 
+@pytest.mark.unit
 def test_log_matmul_exp_keeps_products_of_separated_factors():
     """Each factor's large entry meets the other's small one."""
     log_a = np.array([[0.0, -1000.0], [0.0, -1.0]])
@@ -704,6 +721,7 @@ def test_log_matmul_exp_keeps_products_of_separated_factors():
     np.testing.assert_allclose(expected[0, 0], -1000.0 + np.log(2.0), rtol=1e-14)
 
 
+@pytest.mark.unit
 def test_diffusion_mdci_keeps_marks_far_from_every_reachable_spike():
     """Heat is exactly zero between the two segments of this track.
 
@@ -745,6 +763,7 @@ def test_diffusion_mdci_keeps_marks_far_from_every_reachable_spike():
     np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
 
 
+@pytest.mark.unit
 def test_gaussian_log_kernel_subtracts_before_squaring():
     """A common offset of 1e8 leaves log kernels unchanged.
 
@@ -767,6 +786,7 @@ def test_gaussian_log_kernel_subtracts_before_squaring():
     )
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
 def test_kde_transforms_are_invariant_to_a_common_mark_offset(transform):
     """Translating every mark by 1e8 does not change the model or the points.

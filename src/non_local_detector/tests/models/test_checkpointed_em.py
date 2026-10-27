@@ -101,10 +101,26 @@ def _assert_same_fit(structured, dense, rtol=1e-5, atol=1e-6):
         )
 
 
+@pytest.fixture(scope="module")
+def dense_fit():
+    """Dense-EM reference fit of ``_recording(family)`` with ``_fit`` defaults.
+
+    Returns a function of ``family`` that fits once per family and returns
+    the cached ``(results, fitted)`` pair; callers must not mutate it.
+    """
+    cache = {}
+
+    def get(family):
+        if family not in cache:
+            cache[family] = _fit(*_recording(family), transition_representation="dense")
+        return cache[family]
+
+    return get
+
+
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
-def test_checkpointed_em_matches_dense_em(family, monkeypatch):
-    model, data = _recording(family)
-    dense = _fit(model, data)
+def test_checkpointed_em_matches_dense_em(family, monkeypatch, dense_fit):
+    dense = dense_fit(family)
 
     from non_local_detector import checkpointed_inference
 
@@ -539,10 +555,9 @@ def _uses_operator(model):
     return getattr(model, "_continuous_transition_operator_", None) is not None
 
 
-def test_auto_em_uses_dense_em_for_a_small_state_space():
+def test_auto_em_uses_dense_em_for_a_small_state_space(dense_fit):
     """Dense EM is faster where its transition matrix is small."""
-    model, data = _recording("sorted")
-    dense = _fit(model, data)
+    dense = dense_fit("sorted")
     model, data = _recording("sorted")
     auto = _fit(model, data, transition_representation="auto")
     assert not _uses_operator(model)
@@ -557,7 +572,7 @@ def test_auto_em_uses_dense_em_for_a_small_state_space():
 @pytest.mark.parametrize(
     "reason", ["large_transition", "dense_does_not_fit", "checkpoint_option"]
 )
-def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path):
+def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path, dense_fit):
     from non_local_detector.models import base
 
     kwargs = {}
@@ -567,8 +582,7 @@ def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path):
         monkeypatch.setattr(base, "_device_memory_limit", lambda: 1)
     else:
         kwargs["result_path"] = tmp_path / "store"
-    model, data = _recording("sorted")
-    dense = _fit(model, data)
+    dense = dense_fit("sorted")
     model, data = _recording("sorted")
     auto = _fit(model, data, transition_representation="auto", **kwargs)
     assert _uses_operator(model)

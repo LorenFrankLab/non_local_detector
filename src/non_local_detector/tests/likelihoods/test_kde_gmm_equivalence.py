@@ -18,7 +18,6 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
-    kde_distance,
     mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
@@ -28,6 +27,8 @@ from non_local_detector.likelihoods.gmm import (
     _compute_precision_cholesky,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
+
+pytestmark = pytest.mark.unit
 
 
 def _make_kde_matched_gmm(
@@ -99,12 +100,13 @@ def equivalence_data():
     }
 
 
-def test_kde_gmm_density_equivalence(equivalence_data):
-    """Verify that a bandwidth-matched GMM produces the same density as KDE.
+def test_kde_gmm_occupancy_equivalence(equivalence_data):
+    """A bandwidth-matched GMM gives the KDE occupancy density.
 
-    Constructs a GMM with one component per training spike, centered at the
-    spike's (position, waveform) with covariance matching the KDE bandwidth.
-    The GMM joint density should equal the KDE marginal density.
+    Constructs a GMM with one component per position sample, with covariance
+    matching the KDE position bandwidth; its density at the interior bins must
+    equal the fitted KDE occupancy. The joint mark density is compared through
+    the production estimators in test_kde_gmm_full_likelihood_equivalence.
     """
     data = equivalence_data
     position_std = 1.5
@@ -131,27 +133,6 @@ def test_kde_gmm_density_equivalence(equivalence_data):
     is_track_interior = env.is_track_interior_.ravel()
     interior_bins = env.place_bin_centers_[is_track_interior]
 
-    # Get the encoding positions and features for the single electrode
-    enc_positions = kde_enc["encoding_positions"][0]  # (n_spikes, 1)
-    enc_features = kde_enc["encoding_spike_waveform_features"][0]  # (n_spikes, 2)
-
-    # Construct joint samples: [position, waveform_features]
-    joint_means = jnp.concatenate(
-        [enc_positions, enc_features], axis=1
-    )  # (n_spikes, 3)
-    n_mark_dims = enc_features.shape[1]
-
-    # Bandwidth vector: [position_std, waveform_std, waveform_std]
-    bandwidths = jnp.concatenate(
-        [
-            jnp.asarray(kde_enc["position_std"]),
-            jnp.full(n_mark_dims, waveform_std),
-        ]
-    )
-
-    # Build bandwidth-matched joint GMM (one component per spike)
-    joint_gmm = _make_kde_matched_gmm(np.asarray(joint_means), np.asarray(bandwidths))
-
     # Build occupancy GMM from ALL position samples (not just spike positions),
     # matching how KDE fits occupancy on the full position trajectory
     occ_gmm = _make_kde_matched_gmm(
@@ -170,39 +151,6 @@ def test_kde_gmm_density_equivalence(equivalence_data):
         atol=1e-6,
         err_msg="GMM occupancy density does not match KDE occupancy",
     )
-
-    # Evaluate joint density at a few test points: pick first 5 decoding spikes
-    test_features = spike_features_jnp[0][:5]  # (5, 2)
-
-    # For each test spike, evaluate joint density at all position bins
-    for i in range(test_features.shape[0]):
-        mark = jnp.tile(test_features[i], (interior_bins.shape[0], 1))  # (n_bins, 2)
-        eval_points = jnp.concatenate([interior_bins, mark], axis=1)  # (n_bins, 3)
-
-        # GMM joint density
-        log_joint_gmm = _gmm_logp(joint_gmm, eval_points)
-
-        # KDE: marginal_density = (1/N) * Σ_i K_mark(m, m_i) * K_pos(x, x_i)
-        # This is what estimate_log_joint_mark_intensity computes before the
-        # mean_rate/occupancy division
-        pos_distance = kde_distance(
-            interior_bins, enc_positions, kde_enc["position_std"]
-        )  # (n_spikes, n_bins)
-        mark_distance = kde_distance(
-            test_features[i : i + 1], enc_features, jnp.full(n_mark_dims, waveform_std)
-        )  # (n_spikes, 1)
-
-        n_enc = enc_positions.shape[0]
-        marginal_density = (mark_distance.T @ pos_distance / n_enc).squeeze()
-        log_kde_density = jnp.log(marginal_density)
-
-        np.testing.assert_allclose(
-            np.asarray(log_joint_gmm),
-            np.asarray(log_kde_density),
-            rtol=1e-4,
-            atol=1e-4,
-            err_msg=f"Joint density mismatch for test spike {i}",
-        )
 
 
 @pytest.mark.parametrize("is_local", [False, True], ids=["nonlocal", "local"])

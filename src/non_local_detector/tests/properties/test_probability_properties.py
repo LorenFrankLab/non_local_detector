@@ -12,38 +12,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from non_local_detector.continuous_state_transitions import RandomWalk
 from non_local_detector.core import (
     _condition_on,
     _divide_safe,
     _normalize,
     _safe_log,
 )
-from non_local_detector.models.decoder import ClusterlessDecoder
-from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
-from non_local_detector.time_edges import time_edges_from_centers
-
-
-# Custom strategies for probability distributions
-@st.composite
-def probability_distribution(draw, min_size=2, max_size=20):
-    """Generate valid probability distributions.
-
-    Returns an array of positive values that sum to 1.
-    """
-    size = draw(st.integers(min_value=min_size, max_value=max_size))
-    # Generate positive values
-    values = draw(
-        npst.arrays(
-            dtype=np.float64,
-            shape=(size,),
-            elements=st.floats(
-                min_value=0.01, max_value=1e3, allow_nan=False, allow_infinity=False
-            ),
-        )
-    )
-    # Normalize to sum to 1
-    return values / values.sum()
+from non_local_detector.tests.properties.strategies import probability_distribution
 
 
 @st.composite
@@ -65,26 +40,6 @@ def positive_array(draw, min_size=2, max_size=20):
             ),
         )
     )
-
-
-@st.composite
-def stochastic_matrix(draw, min_size=2, max_size=10):
-    """Generate valid stochastic (row-normalized) matrices.
-
-    Each row sums to 1, representing valid transition probabilities.
-    """
-    size = draw(st.integers(min_value=min_size, max_value=max_size))
-    matrix = draw(
-        npst.arrays(
-            dtype=np.float64,
-            shape=(size, size),
-            elements=st.floats(
-                min_value=0.01, max_value=1e3, allow_nan=False, allow_infinity=False
-            ),
-        )
-    )
-    # Row-normalize
-    return matrix / matrix.sum(axis=1, keepdims=True)
 
 
 @pytest.mark.property
@@ -137,23 +92,6 @@ class TestProbabilityProperties:
         assert jnp.allclose(posterior.sum(), 1.0, rtol=1e-5)
         assert jnp.all(posterior >= 0)
         assert jnp.all(posterior <= 1)
-
-    @given(st.integers(min_value=2, max_value=10))
-    def test_transition_preserves_probability_property(self, n_states):
-        """Property: transition always produces valid distribution."""
-        # Generate matching sized distributions and matrices
-        rng = np.random.default_rng(0)
-        dist = rng.random(n_states)
-        dist = dist / dist.sum()
-
-        trans_matrix = rng.random((n_states, n_states))
-        trans_matrix = trans_matrix / trans_matrix.sum(axis=1, keepdims=True)
-
-        next_dist = jnp.dot(jnp.asarray(dist), jnp.asarray(trans_matrix))
-
-        assert jnp.allclose(next_dist.sum(), 1.0, rtol=1e-5)
-        assert jnp.all(next_dist >= 0)
-        assert jnp.all(next_dist <= 1)
 
     def test_safe_log_zeros_produce_neg_inf(self):
         """_safe_log(0) must return -inf, not NaN."""
@@ -251,102 +189,3 @@ class TestProbabilityProperties:
         assert jnp.allclose(
             normalized_original, normalized_scaled, rtol=1e-4, atol=1e-7
         )
-
-    # The three decoder invariant checks below used to be three separate
-    # Hypothesis tests, each running a full decoder fit+predict for every
-    # example. With ``max_examples=10`` that was 30 fit+predict cycles
-    # across the three tests, and each first example paid full JAX JIT
-    # compile time (~3s on a laptop, ~5-9s on CI), which raced the
-    # ``deadline=5000`` ceiling and caused FlakyFailure on slower runners.
-    #
-    # Hypothesis's shrinking machinery adds no value here: the strategy
-    # was just ``integers(42, 9999)``, which is "parameterized testing
-    # dressed up as property-based". Collapse the three tests into one
-    # parameterized pytest test that fits the decoder **once per seed**
-    # and checks all three invariants on that single fit. Each of the N
-    # seeds exercises a different simulated trajectory but reuses the
-    # warm JAX caches, so the whole collapsed suite runs in roughly the
-    # time of a single old example. N=5 is plenty of diversity for
-    # invariant checking.
-    @pytest.mark.slow
-    @pytest.mark.parametrize("seed", [42, 137, 1234, 5678, 9999])
-    def test_decoder_posterior_invariants(self, seed: int) -> None:
-        """Decoder posteriors satisfy probability invariants for any seed.
-
-        Checks on a single ClusterlessDecoder fit+predict:
-          - posterior sums to 1.0 across the state_bins axis,
-          - all values in [0, 1],
-          - log(posterior) is finite or -inf (never NaN).
-
-        Re-fitting per seed exercises the simulator + decoder over a
-        spread of trajectories; all three invariants are checked on
-        each fit so a single decoder run yields three assertions.
-        """
-        # NOTE: n_runs must be >= 3 to create proper 2D position data.
-        # NOTE: Need substantial data for RandomWalk to build proper
-        #       position bins.
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),  # 4 neurons
-            sampling_frequency=500,
-            n_runs=3,
-            seed=seed,
-        )
-
-        n_encode = int(0.7 * len(sim.position_time))
-        is_training = np.ones(len(sim.position_time), dtype=bool)
-        is_training[n_encode:] = False
-
-        decoder = ClusterlessDecoder(
-            clusterless_algorithm="clusterless_kde",
-            clusterless_algorithm_params={
-                "position_std": 6.0,
-                "waveform_std": 24.0,
-                "block_size": 50,
-            },
-            continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
-        )
-        decoder.fit(
-            sim.position_time,
-            sim.position,
-            sim.spike_times,
-            sim.spike_waveform_features,
-            is_training=is_training,
-        )
-
-        test_start_idx = n_encode
-        test_end_idx = min(n_encode + 10, len(sim.position_time))
-        test_start_t = sim.position_time[test_start_idx]
-        test_end_t = sim.position_time[test_end_idx]
-        results = decoder.predict(
-            spike_times=[
-                st[(st >= test_start_t) & (st < test_end_t)] for st in sim.spike_times
-            ],
-            spike_waveform_features=[
-                wf[(st >= test_start_t) & (st < test_end_t)]
-                for st, wf in zip(
-                    sim.spike_times, sim.spike_waveform_features, strict=False
-                )
-            ],
-            time_edges=time_edges_from_centers(
-                sim.position_time[test_start_idx:test_end_idx]
-            ),
-            position=sim.position[test_start_idx:test_end_idx],
-            position_time=sim.position_time[test_start_idx:test_end_idx],
-        )
-
-        posterior = results.acausal_posterior.values
-
-        # Invariant 1: posteriors sum to 1 across state_bins.
-        posterior_sums = results.acausal_posterior.sum(dim="state_bins")
-        assert np.allclose(posterior_sums.values, 1.0, atol=1e-10)
-
-        # Invariant 2: posteriors are in [0, 1].
-        assert np.all(posterior >= 0.0)
-        assert np.all(posterior <= 1.0)
-
-        # Invariant 3: log(posterior) must not contain NaN.
-        # (The +1e-300 avoids log(0); result is always finite or -inf
-        # given posterior ∈ [0, 1], so only the NaN check is meaningful.)
-        log_posterior = np.log(posterior + 1e-300)  # avoid log(0)
-        assert not np.any(np.isnan(log_posterior))

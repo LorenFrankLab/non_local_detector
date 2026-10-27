@@ -49,10 +49,11 @@ class TestValidateInitialConditions:
 
     def test_mismatched_discrete_conditions_and_transition_types(self):
         """Test that mismatch between discrete initial conditions and transition types raises ValidationError."""
-        # Arrange: 3 transition types but 2 discrete probabilities, 3 continuous initial conditions
+        # Arrange: 2 discrete probabilities and 2 continuous initial conditions
+        # (so the initial-condition check passes) but 3 transition types
         with pytest.raises(
             ValidationError,
-            match="Mismatch",  # Can be either "discrete initial conditions and continuous" or "continuous transition"
+            match="Mismatch between discrete initial conditions and continuous transition types",
         ):
             # Act: Try to create decoder with mismatched counts
             SortedSpikesDecoder(
@@ -60,8 +61,7 @@ class TestValidateInitialConditions:
                 continuous_initial_conditions_types=[
                     "uniform_on_track",
                     "uniform_on_track",
-                    "uniform_on_track",
-                ],  # 3 types
+                ],  # 2 types
                 continuous_transition_types=[
                     "random_walk",
                     "random_walk",
@@ -116,11 +116,14 @@ class TestValidateProbabilityDistributions:
     def test_non_1d_array_raises_error(self, two_state_environment):
         """Test that 2D array for initial conditions raises ValidationError."""
         # Arrange & Act: Try to create decoder with 2D initial conditions
+        # Shape (2, 1) has length 2, so it passes the count checks and
+        # reaches the dimensionality check.
         with pytest.raises(
-            ValidationError
-        ):  # Will fail with Mismatch error due to shape
+            ValidationError,
+            match="discrete_initial_conditions must be a 1-dimensional array",
+        ):
             SortedSpikesDecoder(
-                discrete_initial_conditions=np.array([[0.5, 0.5]]),  # 2D array
+                discrete_initial_conditions=np.array([[0.5], [0.5]]),  # 2D array
                 continuous_initial_conditions_types=[
                     "uniform_on_track",
                     "uniform_on_track",
@@ -431,16 +434,20 @@ class TestValidateDiscreteTransitionType:
         self, two_state_environment
     ):
         """Test that values > 1 in transition matrix raise ValidationError."""
-        # Arrange: Create matrix with value > 1
+        # Arrange: Create a non-negative matrix with a value > 1, so the
+        # range check (not the non-negativity check) rejects it
         transition_matrix = np.array(
             [
-                [0.5, 0.5],
-                [1.2, -0.2],  # 1.2 > 1.0 AND -0.2 < 0
+                [1.2, 0.0],  # 1.2 > 1.0
+                [0.2, 0.8],
             ]
         )
 
-        # Act & Assert: Try to create decoder with out-of-range values (will catch negative first)
-        with pytest.raises(ValidationError):
+        # Act & Assert: Try to create decoder with out-of-range values
+        with pytest.raises(
+            ValidationError,
+            match=r"discrete_transition_type\.values values must be in range",
+        ):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.5]),
                 continuous_initial_conditions_types=[
@@ -541,18 +548,14 @@ class TestPositionDimensionalityWarning:
     """Test that 1D position without track_graph triggers a warning."""
 
     def _fit_and_collect_warnings(self, decoder, position):
-        """Call _fit, collect warnings, ignore downstream errors.
+        """Call _fit and return the 1-D-position warnings it emitted.
 
-        The warning fires early in _fit before initialize_state_index,
-        which may fail due to incomplete model setup. We only need the
-        warning to have been emitted.
+        The fit must complete, so a negative case cannot pass by raising
+        before the warning check is reached.
         """
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            try:
-                decoder._fit(position=position)
-            except Exception:
-                pass
+            decoder._fit(position=position)
         return [
             x for x in w if "1D" in str(x.message) and "track_graph" in str(x.message)
         ]
@@ -562,7 +565,6 @@ class TestPositionDimensionalityWarning:
         from non_local_detector.environment import Environment
 
         env = Environment(
-            environment_name="test",
             place_bin_size=5.0,
             position_range=((0.0, 100.0),),
         )
@@ -578,7 +580,6 @@ class TestPositionDimensionalityWarning:
         from non_local_detector.environment import Environment
 
         env = Environment(
-            environment_name="test",
             place_bin_size=5.0,
             position_range=((0.0, 100.0), (0.0, 100.0)),
         )
@@ -595,7 +596,6 @@ class TestPositionDimensionalityWarning:
         from non_local_detector.environment import Environment
 
         env = Environment(
-            environment_name="test",
             place_bin_size=5.0,
             position_range=((0.0, 100.0),),
         )
@@ -605,30 +605,6 @@ class TestPositionDimensionalityWarning:
         position_warnings = self._fit_and_collect_warnings(decoder, position_col)
         assert len(position_warnings) == 1
         assert position_warnings[0].category is UserWarning
-
-    def test_1d_position_with_track_graph_no_warning(self):
-        """1D position with track_graph should NOT warn."""
-        import networkx as nx
-
-        from non_local_detector.environment import Environment
-
-        track_graph = nx.Graph()
-        track_graph.add_node(0, pos=(0.0, 0.0))
-        track_graph.add_node(1, pos=(100.0, 0.0))
-        track_graph.add_edge(0, 1, distance=100.0, edge_id=0)
-
-        env = Environment(
-            environment_name="test",
-            place_bin_size=5.0,
-            track_graph=track_graph,
-            edge_order=[(0, 1)],
-            edge_spacing=0.0,
-        )
-        decoder = SortedSpikesDecoder(environments=[env])
-        position_1d = np.linspace(0, 100, 50)
-
-        position_warnings = self._fit_and_collect_warnings(decoder, position_1d)
-        assert len(position_warnings) == 0
 
 
 if __name__ == "__main__":

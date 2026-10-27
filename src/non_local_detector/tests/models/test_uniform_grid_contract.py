@@ -12,7 +12,7 @@ from non_local_detector import (
     Uniform,
 )
 from non_local_detector.exceptions import DataError, ValidationError
-from non_local_detector.tests.models.test_failed_calls_preserve_model import (
+from non_local_detector.tests.models._helpers import (
     _assert_unchanged,
     _snapshot,
 )

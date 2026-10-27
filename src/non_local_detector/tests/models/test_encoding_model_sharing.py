@@ -8,7 +8,11 @@ encoding key — the default non-local config is exactly such a case. The
 encoding-fit loops deduplicate by that key, so the number of fitted encoding
 models (and each model's value) must be unchanged: one model per distinct
 ``(environment_name, encoding_group)`` pair, never one per observation-model
-entry. See PR #34.
+entry.
+
+``encoding_model_`` is a dict keyed by that pair, so a loop that refit the
+same key would still leave one entry per key; the tests therefore count the
+calls to the registered fit function.
 """
 
 import numpy as np
@@ -19,13 +23,28 @@ from non_local_detector import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _SORTED_SPIKES_ALGORITHMS,
+)
 from non_local_detector.observation_models import ObservationModel
-from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
-from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
 def _distinct_encoding_keys(observation_models):
     return {(o.environment_name, o.encoding_group) for o in observation_models}
+
+
+def _count_fits(monkeypatch, registry, name):
+    """Wrap a registered encoding fit; return a list that grows per call."""
+    calls: list[str] = []
+    fit, predict = registry[name]
+
+    def record(**kwargs):
+        calls.append(kwargs["environment"].environment_name)
+        return fit(**kwargs)
+
+    monkeypatch.setitem(registry, name, (record, predict))
+    return calls
 
 
 @pytest.mark.unit
@@ -53,19 +72,17 @@ def test_default_nonlocal_obs_models_expand_under_unique():
 
 
 @pytest.mark.unit
-def test_nonlocal_clusterless_fits_one_encoding_model_per_env_group():
-    """Fitting a default ``NonLocalClusterlessDetector`` yields exactly one
+def test_nonlocal_clusterless_fits_one_encoding_model_per_env_group(
+    monkeypatch, clusterless_two_run_sim
+):
+    """Fitting a default ``NonLocalClusterlessDetector`` fits exactly one
     encoding model per distinct ``(environment_name, encoding_group)`` pair,
     not one per observation-model entry.
 
     ``fit`` builds ``encoding_model_`` without running EM, so this is fast.
     """
-    sim = make_simulated_run_data(
-        n_tetrodes=2,
-        place_field_means=np.arange(0, 80, 20),
-        n_runs=2,
-        seed=0,
-    )
+    sim = clusterless_two_run_sim
+    calls = _count_fits(monkeypatch, _CLUSTERLESS_ALGORITHMS, "clusterless_kde")
 
     detector = NonLocalClusterlessDetector()
     detector.fit(
@@ -76,12 +93,12 @@ def test_nonlocal_clusterless_fits_one_encoding_model_per_env_group():
     )
 
     expected_keys = _distinct_encoding_keys(detector.observation_models)
-    assert len(detector.encoding_model_) == len(expected_keys)
+    assert len(calls) == len(expected_keys)
     assert set(detector.encoding_model_) == expected_keys
 
 
 @pytest.mark.unit
-def test_distinct_encoding_groups_fit_separate_models():
+def test_distinct_encoding_groups_fit_separate_models(clusterless_two_run_sim):
     """Two distinct encoding groups produce two separate encoding models.
 
     This is the adversarial guard for the dedup *key*: the loops skip repeated
@@ -91,12 +108,7 @@ def test_distinct_encoding_groups_fit_separate_models():
     leave a single encoding model — caught here. The count-only tests above do
     not catch this because the default config has a single encoding key.
     """
-    sim = make_simulated_run_data(
-        n_tetrodes=2,
-        place_field_means=np.arange(0, 80, 20),
-        n_runs=2,
-        seed=0,
-    )
+    sim = clusterless_two_run_sim
 
     detector = ClusterlessDecoder()
     # Fit once to initialize the environment grid (and the default single-group
@@ -133,18 +145,12 @@ def test_distinct_encoding_groups_fit_separate_models():
 
 
 @pytest.mark.unit
-def test_nonlocal_sorted_spikes_fits_one_encoding_model_per_env_group():
+def test_nonlocal_sorted_spikes_fits_one_encoding_model_per_env_group(
+    monkeypatch, sorted_sim
+):
     """Same encoding-model-sharing invariant for the sorted-spikes path."""
-    (
-        _speed,
-        position,
-        spike_times,
-        time,
-        _event_times,
-        _sampling_freq,
-        _is_event,
-        _,
-    ) = make_simulated_data(seed=0, n_neurons=4)
+    time, position, spike_times = sorted_sim
+    calls = _count_fits(monkeypatch, _SORTED_SPIKES_ALGORITHMS, "sorted_spikes_kde")
 
     detector = NonLocalSortedSpikesDetector(sorted_spikes_algorithm="sorted_spikes_kde")
     detector.fit(
@@ -154,5 +160,5 @@ def test_nonlocal_sorted_spikes_fits_one_encoding_model_per_env_group():
     )
 
     expected_keys = _distinct_encoding_keys(detector.observation_models)
-    assert len(detector.encoding_model_) == len(expected_keys)
+    assert len(calls) == len(expected_keys)
     assert set(detector.encoding_model_) == expected_keys

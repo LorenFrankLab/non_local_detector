@@ -16,6 +16,14 @@ def clusterless_sim():
 
 
 @pytest.fixture(scope="session")
+def clusterless_two_run_sim():
+    """Two runs of two tetrodes on a linear track."""
+    return make_simulated_run_data(
+        n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=2, seed=0
+    )
+
+
+@pytest.fixture(scope="session")
 def sorted_sim():
     """First 2,000 samples of three simulated place cells.
 

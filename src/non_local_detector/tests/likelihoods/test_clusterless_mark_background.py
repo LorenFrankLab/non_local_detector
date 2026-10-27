@@ -19,6 +19,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
 )
+from non_local_detector.likelihoods.clusterless_mark_glm import MarkMixture
 from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -28,15 +29,19 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 from non_local_detector.tests.likelihoods.conftest import training_mark_references
 from non_local_detector.time_edges import time_edges_from_centers
 
-# Each algorithm, plus the tiled / streamed prediction paths that score spikes
-# with separate kernels.
+# Every registered algorithm, plus the tiled / streamed prediction paths that
+# score spikes with separate kernels.
+_TILED_PREDICT_OVERRIDES = {
+    "clusterless_gmm": [{"bin_tile_size": 7}],
+    "clusterless_kde": [
+        {"enc_tile_size": 64, "use_streaming": True},
+        {"pos_tile_size": 9},
+    ],
+}
 VARIANTS = [
-    ("clusterless_gmm", {}),
-    ("clusterless_gmm", {"bin_tile_size": 7}),
-    ("clusterless_kde", {}),
-    ("clusterless_kde", {"enc_tile_size": 64, "use_streaming": True}),
-    ("clusterless_kde", {"pos_tile_size": 9}),
-    ("clusterless_diffusion", {}),
+    (name, overrides)
+    for name in sorted(_CLUSTERLESS_ALGORITHMS)
+    for overrides in [{}, *_TILED_PREDICT_OVERRIDES.get(name, [])]
 ]
 VARIANT_IDS = [
     name + ("-" + "-".join(overrides) if overrides else "")
@@ -157,15 +162,40 @@ def _transform_gmm(gmm, n_position_dims):
     return transformed
 
 
+def _transform_mark_mixture(mixture):
+    """The same fitted mark mixture expressed in transformed mark units."""
+    if mixture is None:
+        return None
+    # Scores use (m - mu) @ L, so m' = m * s + c needs L' = L / s (row-wise).
+    return MarkMixture(
+        mixture.weights,
+        mixture.means * SCALE + OFFSET,
+        mixture.precisions_cholesky / SCALE[None, :, None],
+    )
+
+
 def _transformed_model(run_data, variant, model):
-    marks = [m * SCALE + OFFSET for m in run_data["train_marks"]]
-    if variant[0] != "clusterless_gmm":
-        return _fit(run_data, variant, marks, SCALE)
+    """``model`` expressed in the transformed mark units.
+
+    The kernel models are refitted on transformed marks with the bandwidth
+    scaled alike. The mixture models are transformed analytically instead:
+    their fits (k-means initialization, isotropic covariance regularization)
+    are not equivariant to an anisotropic change of units.
+    """
+    algorithm = variant[0]
     transformed = dict(model)
-    n_position_dims = run_data["train_position"].reshape(N_TRAIN, -1).shape[1]
-    transformed["joint_models"] = [
-        _transform_gmm(g, n_position_dims) for g in model["joint_models"]
-    ]
+    if algorithm == "clusterless_gmm":
+        n_position_dims = run_data["train_position"].reshape(N_TRAIN, -1).shape[1]
+        transformed["joint_models"] = [
+            _transform_gmm(g, n_position_dims) for g in model["joint_models"]
+        ]
+    elif algorithm == "clusterless_mark_glm":
+        transformed["mark_mixtures"] = [
+            _transform_mark_mixture(m) for m in model["mark_mixtures"]
+        ]
+    else:
+        marks = [m * SCALE + OFFSET for m in run_data["train_marks"]]
+        return _fit(run_data, variant, marks, SCALE)
     transformed["mark_reference"] = [
         _transform_reference(r) for r in model["mark_reference"]
     ]
@@ -297,38 +327,6 @@ def test_zero_rate_electrode_scores_background(run_data, algorithm, has_referenc
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
-def test_zero_rate_compensator_adds_background_rate_for_every_electrode(
-    run_data, algorithm
-):
-    """With no encoding spikes anywhere, each silent bin scores -dt * n_e * beta."""
-    n_electrodes = len(run_data["train_spikes"])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)  # empty-electrode warnings
-        model = _fit(
-            run_data,
-            algorithm,
-            [np.zeros((0, 4))] * n_electrodes,
-            spikes=[np.array([])] * n_electrodes,
-        )
-    for is_local in (False, True):
-        silent = _predict(
-            run_data,
-            algorithm,
-            model,
-            [np.zeros((0, 4))] * n_electrodes,
-            is_local,
-            [np.array([])] * n_electrodes,
-        )
-        dt = np.diff(time_edges_from_centers(run_data["test_time"]))
-        np.testing.assert_allclose(
-            silent,
-            np.broadcast_to(-dt[:, None] * n_electrodes * RATE_EPS_HZ, silent.shape),
-            rtol=1e-6,
-        )
-
-
-@pytest.mark.integration
 def test_diffusion_unvisited_bins_score_only_the_background():
     """Bins the animal never visited carry no encoding evidence.
 
@@ -420,7 +418,7 @@ def test_diffusion_model_checking_follows_the_decoder_in_unresolved_bins():
     assert np.all(electrode.ground_intensity(centers[~unresolved]) >= 0.0)
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 @pytest.mark.parametrize("is_local", [False, True], ids=["nonlocal", "local"])
 def test_gmm_rate_below_the_background_still_sets_its_intensity(run_data, is_local):
     """GMM has no rate floor, like KDE and diffusion.
@@ -451,31 +449,30 @@ def test_gmm_rate_below_the_background_still_sets_its_intensity(run_data, is_loc
     assert np.max(higher - lower) > 1e-2
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+@pytest.mark.integration
 @pytest.mark.parametrize("is_local", [False, True], ids=["nonlocal", "local"])
+@pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
 def test_predict_adds_the_background_rate_that_fits_leave_out(
     run_data, algorithm, is_local
 ):
     """Fitted ground intensities hold only the encoding model; predict adds
-    each electrode's background rate ``RATE_EPS_HZ`` once, on every path."""
+    each electrode's background rate ``RATE_EPS_HZ`` once, on every path.
+
+    With no encoding spikes on any electrode the fitted ground intensity is
+    zero, and each silent bin scores ``-dt * n_e * beta``.
+    """
     n_electrodes = len(run_data["train_spikes"])
     no_spikes = [np.array([]) for _ in range(n_electrodes)]
     no_marks = [np.zeros((0, f.shape[1])) for f in run_data["train_marks"]]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # zero-rate electrodes
-        model = _fit(run_data, (algorithm, {}), marks=no_marks, spikes=no_spikes)
+        model = _fit(run_data, algorithm, marks=no_marks, spikes=no_spikes)
     np.testing.assert_array_equal(
         np.asarray(model["summed_ground_process_intensity"]), 0.0
     )
 
     log_likelihood = _predict(
-        run_data,
-        (algorithm, {}),
-        {**model, "mark_reference": [None] * n_electrodes},
-        no_marks,
-        is_local,
-        spikes=no_spikes,
+        run_data, algorithm, model, no_marks, is_local, spikes=no_spikes
     )
     durations = np.diff(time_edges_from_centers(run_data["test_time"]))
     np.testing.assert_allclose(

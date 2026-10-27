@@ -28,6 +28,10 @@ FIT_PARAMS = {
     "sorted_spikes_diffusion": {"position_std": 10.0},
     "clusterless_diffusion": {"position_std": 10.0},
 }
+# Local paths that read the animal's bin, not its continuous position. Flooring
+# never moves a position across the fixtures' integer 10 cm bin edges, so
+# truncation leaves their rows unchanged.
+NEAREST_BIN_LOCAL_LOOKUP = {"clusterless_diffusion"}
 
 
 def _encoding_data(position_time, position, environment, field_centers, seed=3):
@@ -221,6 +225,19 @@ def test_local_equals_nonlocal_in_a_box_with_a_hole(
     )
 
 
+def _moving_integer_decode_inputs(is_clusterless):
+    """Decode inputs with the animal stepping 1 cm per sample through 20-34 cm.
+
+    The 15 position samples are integer-valued and spaced 28.6 ms apart, so
+    the spike times and the 20 ms bin centres fall between samples and read
+    fractional interpolated positions.
+    """
+    time_edges, args = _held_decode_inputs(np.array([25.0]), is_clusterless)
+    args[0] = np.linspace(time_edges[0] - 0.1, time_edges[-1] + 0.1, 15)
+    args[1] = 20.0 + np.arange(15.0)[:, None]
+    return time_edges, args
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("name", ALGORITHMS)
 @pytest.mark.parametrize("storage", ["1-D", "int64", "uint16"])
@@ -228,14 +245,28 @@ def test_local_likelihood_is_invariant_to_position_storage(line, name, storage):
     """A 1-D or integer position array gives the local row of the same position
     as float ``(n_time, 1)`` storage, as the fits accept either.
 
+    The integer-valued positions move between samples, so a path that reads
+    interpolated positions in the integer dtype truncates them.
+
     Tolerance: ``FLOAT32_ROUNDING``; the positions are the same values, and
     reading them in the integer dtype or as columnless shifts a row by O(1).
     """
     predict, model, is_clusterless = line[1][name]
-    time_edges, args = _held_decode_inputs(np.array([25.0]), is_clusterless)
+    time_edges, args = _moving_integer_decode_inputs(is_clusterless)
+    position_time, position = args[0], args[1]
     expected = np.asarray(predict(*args, time_edges=time_edges, is_local=True, **model))
 
-    position = args[1]
+    if name not in NEAREST_BIN_LOCAL_LOOKUP:
+        # Truncating the interpolated positions must change the row, or the
+        # integer cases cannot detect it: sample the floored position finely.
+        floored_time = np.linspace(position_time[0], position_time[-1], 20_001)
+        floored = np.floor(np.interp(floored_time, position_time, position[:, 0]))
+        floored_args = [floored_time, floored[:, None], *args[2:]]
+        truncated = np.asarray(
+            predict(*floored_args, time_edges=time_edges, is_local=True, **model)
+        )
+        assert np.abs(truncated - expected).max() > 1e-2
+
     args[1] = position[:, 0] if storage == "1-D" else position.astype(storage)
     actual = np.asarray(predict(*args, time_edges=time_edges, is_local=True, **model))
 

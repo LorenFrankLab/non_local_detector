@@ -1,7 +1,7 @@
 """Detectors with covariate-dependent transitions can be saved and copied.
 
 patsy design matrices cannot be pickled, so the fitted covariates are kept
-and the design matrix is rebuilt on load (issue #50).
+and the design matrix is rebuilt on load.
 """
 
 import copy

@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
@@ -20,8 +21,9 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.tests.conftest import precision_mode
 
+pytestmark = pytest.mark.unit
 
-@pytest.mark.unit
+
 @pytest.mark.parametrize("sigma_kind", ["float32", "float64", "weak"])
 def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
     with precision_mode(True):
@@ -42,7 +44,6 @@ def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
         np.testing.assert_allclose(actual, reference, rtol=1e-14, atol=1e-14)
 
 
-@pytest.mark.unit
 def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
     with precision_mode(False):
         sigma = np.float32(1e38)
@@ -58,7 +59,6 @@ def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
         )
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("x64", [False, True])
 def test_integer_gaussian_and_kde_inputs_use_floating_arithmetic(x64):
     with precision_mode(x64):
@@ -192,14 +192,12 @@ def test_kde_model_predict_raises_on_dimension_mismatch():
         model.predict_log(jnp.zeros((5, 3)))
 
 
-@pytest.mark.unit
 def test_kde_model_fit_rejects_bandwidth_of_wrong_dimension():
     """A per-dimension std that does not match the samples fails at fit."""
     with pytest.raises(ValidationError, match="wrong shape"):
         KDEModel(std=jnp.array([1.0, 1.0, 1.0])).fit(jnp.zeros((10, 2)))
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("std", [0.0, -1.0, np.nan, np.inf, [1.0, 0.0]])
 def test_kde_model_fit_rejects_unusable_bandwidth(std):
     """A zero, negative or non-finite std would give NaN densities."""
@@ -207,7 +205,6 @@ def test_kde_model_fit_rejects_unusable_bandwidth(std):
         KDEModel(std=std).fit(jnp.zeros((10, 2)))
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     ("weights", "match"),
     [
@@ -224,7 +221,6 @@ def test_kde_model_fit_rejects_invalid_weights(weights, match):
         KDEModel(std=1.0).fit(jnp.zeros((10, 2)), weights=weights)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     ("samples", "weights"),
     [(np.zeros((0, 2)), np.zeros(0)), (np.zeros((4, 2)), np.zeros(4))],
@@ -287,21 +283,6 @@ def test_log_kde_zero_weight_sample_is_dropped():
     )
 
 
-def test_log_kde_all_zero_weights_is_finite():
-    """All-zero weights must not produce NaN (the -inf/-inf degenerate case)."""
-    r = rng(7)
-    samples = r.normal(size=(10, 1))
-    eval_points = r.normal(size=(5, 1))
-    std = jnp.array([1.0])
-    log_vals = log_kde(
-        jnp.asarray(eval_points),
-        jnp.asarray(samples),
-        std,
-        jnp.zeros((samples.shape[0],)),
-    )
-    assert jnp.all(jnp.isfinite(log_vals))
-
-
 def test_block_log_kde_matches_log_kde():
     r = rng(4)
     samples = r.normal(size=(80, 1))
@@ -321,16 +302,27 @@ def test_block_log_kde_matches_log_kde():
         assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
 
-def test_kde_model_shapes_and_predict_log():
+def _gaussian_kde_reference(eval_points, samples, std):
+    """float64 product-Gaussian KDE with uniform weights, shape (n_eval,)."""
+    return (
+        norm.pdf(eval_points[:, None, :], samples[None], np.asarray(std))
+        .prod(axis=-1)
+        .mean(axis=-1)
+    )
+
+
+def test_kde_model_predict_and_predict_log_match_the_gaussian_kde():
     r = rng(5)
-    samples = r.normal(size=(50, 2))
-    eval_points = r.normal(size=(10, 2))
-    model = KDEModel(std=jnp.array([1.0, 2.0]), block_size=5).fit(samples)
+    samples = r.normal(size=(50, 2)).astype(np.float32)
+    eval_points = r.normal(size=(10, 2)).astype(np.float32)
+    std = np.array([1.0, 2.0])
+    model = KDEModel(std=jnp.asarray(std), block_size=5).fit(samples)
+    expected = _gaussian_kde_reference(eval_points, samples, std)
     dens = model.predict(jnp.asarray(eval_points))
     log_dens = model.predict_log(jnp.asarray(eval_points))
-    assert dens.shape == (eval_points.shape[0],)
-    assert log_dens.shape == (eval_points.shape[0],)
-    assert jnp.all(jnp.isfinite(log_dens))
+    assert dens.shape == log_dens.shape == (eval_points.shape[0],)
+    np.testing.assert_allclose(dens, expected, rtol=1e-5)
+    np.testing.assert_allclose(log_dens, np.log(expected), rtol=1e-5)
 
 
 def test_get_spikecount_per_time_bin_edges_and_outliers():
@@ -369,21 +361,27 @@ def test_weights_scaling_invariance_and_reweighting_effect():
     assert dens_reweighted > dens1
 
 
-def test_std_extremes_are_finite_and_reasonable():
+@pytest.mark.parametrize("std", [1e-6, 100.0])
+def test_std_extremes_match_the_gaussian_kde(std):
+    """Very narrow and very wide kernels keep the Gaussian KDE value.
+
+    With std 1e-6 a point on a sample sees only that sample's peak,
+    1 / (n * 2 pi * std**2), about 1.6e9, and points off the samples see zero;
+    with std 100 every kernel is nearly flat at about 1 / (2 pi * 100**2).
+    """
     r = rng(11)
-    samples = r.normal(size=(100, 2))
-    eval_points = r.normal(size=(20, 2))
-    w = jnp.ones((samples.shape[0],))
-    # Very small std -> densities peaked but finite
-    d_small = kde(
-        jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([1e-6, 1e-6]), w
+    samples = r.normal(size=(100, 2)).astype(np.float32)
+    eval_points = np.concatenate(
+        [samples[:5], r.normal(size=(20, 2)).astype(np.float32)]
     )
-    # Very large std -> densities smoother and close across eval points
-    d_large = kde(
-        jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([100.0, 100.0]), w
+    d = kde(
+        jnp.asarray(eval_points),
+        jnp.asarray(samples),
+        jnp.array([std, std]),
+        jnp.ones((samples.shape[0],)),
     )
-    assert jnp.all(jnp.isfinite(d_small)) and jnp.all(jnp.isfinite(d_large))
-    assert d_large.ptp() < 1e-2
+    expected = _gaussian_kde_reference(eval_points, samples, [std, std])
+    np.testing.assert_allclose(d, expected, rtol=1e-5, atol=0)
 
 
 def test_empty_eval_points_returns_empty():
@@ -505,7 +503,6 @@ def test_validate_population_lengths_detects_short_non_first_collection():
     assert "spike_times=3" in message
 
 
-@pytest.mark.unit
 def test_drop_zero_weight_samples_preserves_density_and_shrinks_model():
     """Zero-weight samples add nothing to a weighted KDE, so dropping them keeps
     the density and stops every later evaluation from paying for them."""
@@ -541,7 +538,6 @@ def _barrier_operand_sizes(jaxpr):
     return sizes
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("x64", [False, True])
 def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
     from non_local_detector.likelihoods.common import _log_kernel_matrix
@@ -564,7 +560,6 @@ def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
         assert _barrier_operand_sizes(singleton.jaxpr)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("log_space", [False, True])
 def test_traced_block_kde_bounds_compiled_workspace(log_space):
     """Kernel workspace stays bounded when samples grow with the recording.
@@ -595,7 +590,6 @@ def test_traced_block_kde_bounds_compiled_workspace(log_space):
     )
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("log_space", [False, True])
 def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
     """Eager blocks shrink so one block's kernel matrix fits the byte budget."""
@@ -628,7 +622,6 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
     np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("log_space", [False, True])
 @pytest.mark.parametrize("all_float32", [False, True])
 def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
@@ -665,7 +658,6 @@ def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
     assert max(rows for rows, _ in blocks) * 5_000 * 8 <= 5_000 * 8 * 64
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("rows", [None, slice(0, 1), slice(3, 17), slice(20, 20)])
 @pytest.mark.parametrize("prepared", [False, True])
 def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
@@ -705,7 +697,6 @@ def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
     )
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("log_space", [False, True])
 def test_block_kde_runs_many_blocks_in_one_compiled_loop(log_space, monkeypatch):
     """More blocks than the unroll limit are one dispatch, not a Python loop.

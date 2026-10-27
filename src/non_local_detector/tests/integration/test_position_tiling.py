@@ -1,4 +1,4 @@
-"""Test position tiling correctness and memory efficiency."""
+"""Position tiling (``pos_tile_size``) of the GEMM KDE path matches the untiled result."""
 
 import jax.numpy as jnp
 import numpy as np
@@ -8,6 +8,8 @@ from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity as estimate_log,
 )
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -46,7 +48,6 @@ def tiling_test_data():
     }
 
 
-@pytest.mark.integration
 def test_log_space_no_tiling_vs_tiling(tiling_test_data):
     """Test that log-space tiled computation matches non-tiled."""
     # No tiling (default)
@@ -82,7 +83,6 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
     )
 
 
-@pytest.mark.integration
 def test_various_tile_sizes(tiling_test_data):
     """Test that various tile sizes all produce same result."""
     # Reference (no tiling)
@@ -120,7 +120,6 @@ def test_various_tile_sizes(tiling_test_data):
         )
 
 
-@pytest.mark.integration
 def test_tiling_edge_cases():
     """Test tiling with edge cases."""
     rng = np.random.default_rng(123)
@@ -186,42 +185,32 @@ def test_tiling_edge_cases():
     assert np.allclose(reference, result_tile_3, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.integration
-def test_tiling_gemm_vs_loop(tiling_test_data):
-    """Test that tiling works with both GEMM and loop methods."""
-    # GEMM with tiling
+def test_tiled_gemm_matches_linear_reference(tiling_test_data):
+    """The position-tiled GEMM path matches the linear-space reference.
+
+    ``pos_tile_size`` only applies to the GEMM path, so the reference
+    (``use_gemm=False``) is untiled. These marks are close enough that the
+    reference does not underflow.
+    """
+    log_background = realistic_log_background(tiling_test_data["decoding_features"])
+    args = (
+        tiling_test_data["decoding_features"],
+        tiling_test_data["encoding_features"],
+        tiling_test_data["waveform_stds"],
+        tiling_test_data["occupancy"],
+        tiling_test_data["mean_rate"],
+        tiling_test_data["log_position_distance"],
+    )
     result_gemm_tiled = estimate_log(
-        tiling_test_data["decoding_features"],
-        tiling_test_data["encoding_features"],
-        tiling_test_data["waveform_stds"],
-        tiling_test_data["occupancy"],
-        tiling_test_data["mean_rate"],
-        tiling_test_data["log_position_distance"],
-        use_gemm=True,
-        pos_tile_size=100,
-        log_background=realistic_log_background(tiling_test_data["decoding_features"]),
+        *args, use_gemm=True, pos_tile_size=100, log_background=log_background
     )
+    result_linear = estimate_log(*args, use_gemm=False, log_background=log_background)
 
-    # Loop with tiling
-    result_loop_tiled = estimate_log(
-        tiling_test_data["decoding_features"],
-        tiling_test_data["encoding_features"],
-        tiling_test_data["waveform_stds"],
-        tiling_test_data["occupancy"],
-        tiling_test_data["mean_rate"],
-        tiling_test_data["log_position_distance"],
-        use_gemm=False,
-        pos_tile_size=100,
-        log_background=realistic_log_background(tiling_test_data["decoding_features"]),
-    )
-
-    # Should produce same result (both methods are equivalent)
-    assert np.allclose(result_gemm_tiled, result_loop_tiled, rtol=1e-5, atol=1e-6)
+    assert np.allclose(result_gemm_tiled, result_linear, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.integration
 def test_tiling_very_large_grid():
-    """Test that tiling enables computation on very large position grids."""
+    """Ten position tiles over a 5000-bin grid match the untiled result."""
     rng = np.random.default_rng(456)
 
     n_enc = 100
@@ -244,42 +233,27 @@ def test_tiling_very_large_grid():
     )
     mean_rate = 5.0
 
-    # With tiling (should complete without OOM)
-    result = estimate_log(
+    args = (
         decoding_features,
         encoding_features,
         waveform_stds,
         occupancy,
         mean_rate,
         log_position_distance,
+    )
+    log_background = realistic_log_background(decoding_features)
+    reference = estimate_log(
+        *args, use_gemm=True, pos_tile_size=None, log_background=log_background
+    )
+    result = estimate_log(
+        *args,
         use_gemm=True,
         pos_tile_size=500,  # Process 500 positions at a time
-        log_background=realistic_log_background(decoding_features),
+        log_background=log_background,
     )
 
     assert result.shape == (n_dec, n_pos)
     assert jnp.all(jnp.isfinite(result))
-
-
-@pytest.mark.integration
-def test_tiling_memory_estimation():
-    """Verify memory scaling with tiling."""
-    n_enc = 1000
-    n_pos = 2000
-    tile_size = 200
-
-    # Memory without tiling: O(n_enc * n_pos) = 1000 * 2000 * 4 bytes = 8 MB
-    memory_no_tile_mb = (n_enc * n_pos * 4) / 1e6
-
-    # Memory with tiling: O(n_enc * tile_size) = 1000 * 200 * 4 bytes = 0.8 MB
-    memory_with_tile_mb = (n_enc * tile_size * 4) / 1e6
-
-    # Ratio
-    memory_reduction = memory_no_tile_mb / memory_with_tile_mb
-
-    # Should be 10× reduction
-    assert np.isclose(memory_reduction, 10.0, rtol=0.01)
-
-    print(f"Memory without tiling: {memory_no_tile_mb:.2f} MB")
-    print(f"Memory with tiling (tile_size={tile_size}): {memory_with_tile_mb:.2f} MB")
-    print(f"Memory reduction: {memory_reduction:.1f}×")
+    assert np.allclose(result, reference, rtol=1e-5, atol=1e-6), (
+        f"max diff = {np.abs(result - reference).max()}"
+    )

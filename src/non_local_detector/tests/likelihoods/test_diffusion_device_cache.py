@@ -4,16 +4,20 @@ import jax
 import jax.numpy as jnp
 import networkx as nx
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
+    cached_eigenbasis,
     diffuse,
     diffusion_eigenbasis,
     get_device_basis,
     heat_kernel_apply,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _grid_basis(n=6, rank=None):
@@ -91,9 +95,7 @@ def _fitted_env():
 
 def test_get_device_basis_hit_and_device_arrays():
     env = _fitted_env()
-    _, vecs = __import__(
-        "non_local_detector.likelihoods.diffusion", fromlist=["cached_eigenbasis"]
-    ).cached_eigenbasis(env, None)
+    _, vecs = cached_eigenbasis(env, None)
     rank = vecs.shape[1]
     b1 = get_device_basis(env, rank)
     b2 = get_device_basis(env, rank)
@@ -103,14 +105,7 @@ def test_get_device_basis_hit_and_device_arrays():
 
 def test_device_cache_invalidated_on_refit():
     env = _fitted_env()
-    get_device_basis(
-        env,
-        __import__(
-            "non_local_detector.likelihoods.diffusion", fromlist=["cached_eigenbasis"]
-        )
-        .cached_eigenbasis(env, None)[1]
-        .shape[1],
-    )
+    get_device_basis(env, cached_eigenbasis(env, None)[1].shape[1])
     assert hasattr(env, "_diffusion_device_basis_")
     env.fit_place_grid(
         position=np.linspace(0, 20, 80)[:, None], infer_track_interior=True
@@ -120,14 +115,7 @@ def test_device_cache_invalidated_on_refit():
 
 def test_device_cache_excluded_from_pickle():
     env = _fitted_env()
-    get_device_basis(
-        env,
-        __import__(
-            "non_local_detector.likelihoods.diffusion", fromlist=["cached_eigenbasis"]
-        )
-        .cached_eigenbasis(env, None)[1]
-        .shape[1],
-    )
+    get_device_basis(env, cached_eigenbasis(env, None)[1].shape[1])
     blob = pickle.dumps(env)  # must not raise on the JAX Device key
     env2 = pickle.loads(blob)
     assert not hasattr(env2, "_diffusion_device_basis_")

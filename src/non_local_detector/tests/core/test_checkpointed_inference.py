@@ -1011,8 +1011,11 @@ def test_million_row_streaming_accumulator(chunk_size):
 
 
 @pytest.mark.parametrize("chunk_size", [256, 16384])
-def test_million_row_full_driver(chunk_size):
-    n_rows = 1_800_000
+def test_long_recording_full_driver(chunk_size):
+    # A float32 running total over these 400,000 rows drifts by about 7 units
+    # (645 at 1.8 million rows); 256-row chunks give 1,563 cross-chunk
+    # additions. More rows only add per-chunk overhead.
+    n_rows = 400_000
     increment = np.float32(-0.02)
     result = checkpointed_forward_backward(
         np.arange(n_rows + 1, dtype=float) * 0.002,

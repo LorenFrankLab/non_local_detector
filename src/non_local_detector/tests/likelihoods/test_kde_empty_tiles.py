@@ -13,8 +13,11 @@ from non_local_detector.tests.likelihoods.conftest import realistic_log_backgrou
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("tile_size", [None, 4])
+@pytest.mark.parametrize(
+    "tile_size, streaming",
+    [(None, False), (4, False), (4, True)],
+    ids=["untiled", "tiled", "streamed"],
+)
 @pytest.mark.parametrize("empty_tile", [0, 1, 2, "all"])
 def test_empty_encoding_tiles_match_independent_density_and_gradient(
     streaming, tile_size, empty_tile
@@ -43,7 +46,7 @@ def test_empty_encoding_tiles_match_independent_density_and_gradient(
             0.7,
             log_pos,
             enc_tile_size=tile_size,
-            use_streaming=streaming and tile_size is not None,
+            use_streaming=streaming,
             encoding_positions=pos,
             position_eval_points=bins,
             position_std=jnp.ones(1),

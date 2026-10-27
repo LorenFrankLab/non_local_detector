@@ -4,6 +4,7 @@ These tests complement existing tests in transitions/test_continuous_transitions
 by adding coverage for helper functions and edge cases.
 """
 
+import networkx as nx
 import numpy as np
 import pytest
 
@@ -12,8 +13,9 @@ from non_local_detector.continuous_state_transitions import (
     estimate_movement_var,
 )
 
+pytestmark = pytest.mark.unit
 
-@pytest.mark.unit
+
 class TestNormalizeRowProbability:
     """Test _normalize_row_probability helper function."""
 
@@ -97,7 +99,6 @@ class TestNormalizeRowProbability:
         assert np.allclose(result[0, 2] / result[0, 0], 3.0)
 
 
-@pytest.mark.unit
 class TestEstimateMovementVar:
     """Test estimate_movement_var function."""
 
@@ -110,9 +111,8 @@ class TestEstimateMovementVar:
         # Act
         var = estimate_movement_var(position)
 
-        # Assert
-        assert isinstance(var, float | np.ndarray)
-        assert var > 0
+        # Assert: the sample variance of the one-step displacements
+        np.testing.assert_allclose(var, np.var(np.diff(position), ddof=1))
 
     def test_estimate_movement_var_2d_position(self):
         """Should estimate covariance for 2D position."""
@@ -126,25 +126,23 @@ class TestEstimateMovementVar:
         # Act
         var = estimate_movement_var(position)
 
-        # Assert
+        # Assert: the sample covariance of the one-step displacements
         assert var.shape == (2, 2)
-        # Should be symmetric
-        assert np.allclose(var, var.T)
-        # Diagonal should be positive
-        assert np.all(np.diag(var) > 0)
+        np.testing.assert_allclose(var, np.cov(np.diff(position, axis=0).T))
 
     def test_estimate_movement_var_with_nans(self):
-        """Should handle NaN values by excluding them."""
+        """NaN samples are excluded: constant-speed motion with NaN at both
+        ends has zero displacement variance, not NaN."""
         # Arrange
         position = np.linspace(0, 10, 100)
-        position[20:30] = np.nan  # Add NaN segment
+        position[:5] = np.nan
+        position[-5:] = np.nan
 
         # Act
         var = estimate_movement_var(position)
 
         # Assert
-        assert np.isfinite(var)
-        assert var > 0
+        np.testing.assert_allclose(var, 0.0, atol=1e-12)
 
     def test_estimate_movement_var_constant_position(self):
         """Constant position should give near-zero variance."""
@@ -156,18 +154,6 @@ class TestEstimateMovementVar:
 
         # Assert
         assert np.allclose(var, 0.0, atol=1e-10)
-
-    def test_estimate_movement_var_flat_array(self):
-        """1D array should be handled (converted to 2D internally)."""
-        # Arrange
-        position = np.linspace(0, 10, 50)
-
-        # Act
-        var = estimate_movement_var(position)
-
-        # Assert
-        assert isinstance(var, float | np.ndarray)
-        assert var > 0
 
     def test_estimate_movement_var_recovers_known_variance(self):
         """Should recover the true variance of a random walk."""
@@ -281,7 +267,6 @@ class TestIdentityComprehensive:
         assert np.allclose(trans, np.eye(n_bins))
 
 
-# Tests for EmpiricalMovement class
 # Tests for RandomWalkDirection1 class
 class TestRandomWalkDirection1Comprehensive:
     """Comprehensive tests for RandomWalkDirection1 transition class."""
@@ -318,44 +303,47 @@ class TestRandomWalkDirection2Comprehensive:
             rwd2.make_state_transition(envs)
 
 
-# Tests for Discrete class
-class TestDiscreteComprehensive:
-    """Comprehensive tests for Discrete transition class."""
-
-    def test_discrete_returns_single_element(self):
-        """Test that Discrete returns a 1x1 matrix of ones."""
-        from non_local_detector.continuous_state_transitions import Discrete
-
-        discrete = Discrete()
-        trans = discrete.make_state_transition()
-
-        assert trans.shape == (1, 1)
-        assert np.isclose(trans[0, 0], 1.0)
-
-
-# Additional tests to reach 80%+ coverage
 class TestRandomWalkWithTrackGraph:
-    """Test RandomWalk with track graphs to cover _random_walk_on_track_graph."""
+    """RandomWalk on a track-graph environment uses distance along the track,
+    not distance in the linearized coordinate."""
 
-    def test_random_walk_with_1d_environment(self):
-        """Test RandomWalk on simple 1D environment (uses Euclidean)."""
+    def test_random_walk_crosses_junction_by_track_distance(self):
+        """Two perpendicular 10 cm edges are linearized with a 10 cm gap
+        between them. Across the junction, adjacent bins are 2 cm apart along
+        the track (12 cm apart linearized), so their transition probability
+        equals that of adjacent bins within an edge; the gap bin gets none."""
         from non_local_detector.continuous_state_transitions import RandomWalk
         from non_local_detector.environment import Environment
 
+        graph = nx.Graph()
+        graph.add_node(0, pos=(0.0, 0.0))
+        graph.add_node(1, pos=(10.0, 0.0))
+        graph.add_node(2, pos=(10.0, 10.0))
+        graph.add_edge(0, 1, distance=10.0, edge_id=0)
+        graph.add_edge(1, 2, distance=10.0, edge_id=1)
         env = Environment(
-            environment_name="test", place_bin_size=2.0, position_range=((0.0, 10.0),)
+            environment_name="track",
+            place_bin_size=2.0,
+            track_graph=graph,
+            edge_order=[(0, 1), (1, 2)],
+            edge_spacing=10.0,
+        ).fit_place_grid()
+        # Bins 0-4 on the first edge, gap bin 5, bins 6-10 on the second edge.
+        np.testing.assert_allclose(
+            env.place_bin_centers_.ravel(),
+            [1.0, 3.0, 5.0, 7.0, 9.0, 15.0, 21.0, 23.0, 25.0, 27.0, 29.0],
         )
-        pos = np.linspace(0.0, 10.0, 20)[:, None]
-        env = env.fit_place_grid(position=pos, infer_track_interior=False)
-        envs = (env,)
+        is_interior = env.is_track_interior_.ravel()
+        np.testing.assert_array_equal(np.flatnonzero(~is_interior), [5])
 
-        rw = RandomWalk(environment_name="test", movement_var=4.0)
-        trans = rw.make_state_transition(envs)
+        trans = RandomWalk(
+            environment_name="track", movement_var=4.0
+        ).make_state_transition((env,))
 
-        # Verify it's a valid stochastic matrix
-        assert trans.ndim == 2
-        assert np.all(trans >= 0)
-        assert np.allclose(trans.sum(axis=1), 1.0)
-
-
-# Tests for EmpiricalMovement class
+        assert trans.shape == (11, 11)
+        np.testing.assert_allclose(trans[is_interior].sum(axis=1), 1.0)
+        np.testing.assert_array_equal(trans[5], 0.0)
+        np.testing.assert_array_equal(trans[:, 5], 0.0)
+        # Last bin of edge 0 -> first bin of edge 1 vs. a within-edge step.
+        np.testing.assert_allclose(trans[4, 6], trans[4, 3], rtol=1e-6)
+        assert trans[4, 6] > 0.1

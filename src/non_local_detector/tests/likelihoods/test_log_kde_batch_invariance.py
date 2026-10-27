@@ -1,4 +1,10 @@
-"""A spike's intensity must not depend on other queries in its decode batch."""
+"""Clusterless KDE log joint mark intensity stays exact in deep tails.
+
+Each spike's intensity must match a float64 reference wherever it can change
+the background term, must not depend on the other spikes in its batch, and
+must survive the grouped exact-path repair, encoding and position tiles, and
+mixed precision.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -151,13 +157,21 @@ def test_opposing_mark_and_position_support_preserves_joint_density(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("enc_tile_size", [None, 64])
-def test_estimates_are_exact_wherever_they_change_the_background_term(enc_tile_size):
+@pytest.mark.parametrize(
+    "enc_tile_size, pos_tile_size",
+    [(None, None), (64, None), (64, 70)],
+    ids=["untiled", "encoding-tiles", "encoding-and-position-tiles"],
+)
+def test_estimates_are_exact_wherever_they_change_the_background_term(
+    enc_tile_size, pos_tile_size
+):
     """Each term is ``logaddexp(log joint, log background)``, exact to float32.
 
     The fixture has spatial and mark tails hundreds of nats deep, so many
     intensities are far below the spike's background (where they need not be
-    exact) while the rest must match a float64 brute-force reduction.
+    exact) while the rest must match a float64 brute-force reduction. Tiles of
+    64 of the 400 encoding spikes and 70 of the 300 bins leave partial last
+    tiles.
     """
     decoding, encoding, stds, occupancy, log_position = _place_field_tile()
     log_background = realistic_log_background(decoding)
@@ -170,6 +184,7 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(enc_tile_s
             1.0,
             log_position,
             enc_tile_size=enc_tile_size,
+            pos_tile_size=pos_tile_size,
             log_background=log_background,
         )
     )

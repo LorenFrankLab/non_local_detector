@@ -1,8 +1,8 @@
 """Tests for simulator contract compliance.
 
 These tests verify that simulator outputs conform to the ClusterlessSimOutput
-contract defined in tests._sim_contract. They enforce shapes, units, and
-invariants to catch regressions early.
+contract defined in simulate.clusterless_simulation. They enforce shapes,
+units, and invariants to catch regressions early.
 """
 
 import numpy as np
@@ -10,6 +10,8 @@ import pytest
 
 from non_local_detector.simulate import simulate_poisson_spikes
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+
+pytestmark = pytest.mark.unit
 
 
 def test_shapes_and_lengths_per_electrode() -> None:
@@ -117,44 +119,34 @@ def test_no_nans_finite_features() -> None:
 
 
 def test_optional_empty_electrode() -> None:
-    """Verify that empty electrodes have correct shapes."""
-    # Use very short duration to potentially get empty electrodes
+    """A silent electrode yields times of shape (0,) and features of shape (0, 4)."""
+    # A 20 ms recording with one neuron per tetrode (peak rate 100 Hz) leaves
+    # some electrodes without spikes; seed 3 gives spike counts [1, 1, 0, 1].
     sim = make_simulated_run_data(
-        n_tetrodes=4, sampling_frequency=1000, n_runs=1, seed=3
+        n_tetrodes=4,
+        place_field_means=np.array([0.0, 10.0, 20.0, 30.0]),
+        sampling_frequency=1000,
+        n_runs=1,
+        track_height=1.0,
+        running_speed=100.0,
+        seed=3,
     )
+
+    spike_counts = [times.size for times in sim.spike_times]
+    assert 0 in spike_counts, f"Expected at least one empty electrode: {spike_counts}"
+    assert any(count > 0 for count in spike_counts), spike_counts
 
     for i, (times, features) in enumerate(
         zip(sim.spike_times, sim.spike_waveform_features, strict=True)
     ):
-        if times.size == 0:
-            # Empty electrode
-            assert times.shape == (0,), f"Electrode {i}: empty times must be shape (0,)"
-            assert features.shape[0] == 0, (
-                f"Electrode {i}: empty features must have 0 rows"
-            )
-            assert features.shape[1] == 4, (
-                f"Electrode {i}: empty features must still have 4 columns"
-            )
-            assert features.shape == (
-                0,
-                4,
-            ), f"Electrode {i}: empty features must be shape (0, 4)"
-
-
-def test_bin_widths_consistency() -> None:
-    """Verify bin_widths matches np.diff(edges)."""
-    sim = make_simulated_run_data(
-        n_tetrodes=2, sampling_frequency=500, n_runs=1, seed=4
-    )
-
-    if sim.bin_widths is not None:
-        expected_bin_widths = np.diff(sim.edges)
-        np.testing.assert_allclose(
-            sim.bin_widths,
-            expected_bin_widths,
-            rtol=1e-10,
-            err_msg="bin_widths must equal np.diff(edges)",
+        if times.size > 0:
+            continue
+        assert times.shape == (0,), f"Electrode {i}: empty times must be shape (0,)"
+        assert features.shape == (0, 4), (
+            f"Electrode {i}: empty features must be shape (0, 4)"
         )
+        assert np.issubdtype(times.dtype, np.floating)
+        assert np.issubdtype(features.dtype, np.floating)
 
 
 def test_environment_fitted() -> None:

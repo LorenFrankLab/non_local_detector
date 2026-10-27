@@ -110,8 +110,8 @@ class TestInitializeEnvironments:
 
         # Assert
         assert len(decoder.environments) == 2
-        # Environments are converted to tuple or kept as list depending on implementation
-        assert isinstance(decoder.environments, tuple | list)
+        assert decoder.environments[0] is env1
+        assert decoder.environments[1] is env2
 
 
 @pytest.mark.unit
@@ -119,29 +119,27 @@ class TestInitializeObservationModels:
     """Test _initialize_observation_models method."""
 
     def test_initialize_observation_models_with_none(self, simple_1d_environment):
-        """Test that None creates default observation models.
+        """Test that None creates one default observation model per state.
 
-        When observation_models=None, SortedSpikesDecoder creates one observation
-        model that gets replicated based on the number of continuous transition types.
+        When observation_models=None, one observation model on the first
+        environment is replicated for each continuous transition type. The
+        public model classes substitute their own defaults for None before
+        reaching this method, so it is called directly.
         """
-        # Arrange & Act
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.5, 0.5]),
-            continuous_initial_conditions_types=[
-                "uniform_on_track",
-                "uniform_on_track",
-            ],
-            continuous_transition_types=["random_walk", "random_walk"],
-            discrete_transition_stickiness=0.0,
-            environments=simple_1d_environment,
-            observation_models=None,
-            state_names=["state 0", "state 1"],
+        # Arrange
+        decoder = SortedSpikesDecoder(environments=simple_1d_environment)
+
+        # Act
+        observation_models = decoder._initialize_observation_models(
+            None, ["random_walk", "random_walk"], (simple_1d_environment,)
         )
 
-        # Assert - Default observation models are created
-        assert len(decoder.observation_models) >= 1
+        # Assert - One default observation model per continuous transition type
+        assert len(observation_models) == 2
         assert all(
-            isinstance(om, ObservationModel) for om in decoder.observation_models
+            isinstance(om, ObservationModel)
+            and om.environment_name == simple_1d_environment.environment_name
+            for om in observation_models
         )
 
     def test_initialize_observation_models_with_single_model(
@@ -320,11 +318,14 @@ class TestInitializeEnvironmentsFitting:
         assert decoder.environments[0].place_bin_centers_ is not None
         assert decoder.environments[1].place_bin_centers_ is not None
 
-    def test_initialize_environments_linearizes_2d_position_with_track_graph(self):
-        """Test that initialize_environments linearizes 2D positions when track_graph is provided.
+    def test_initialize_environments_linearizes_2d_position_with_track_graph(
+        self, monkeypatch
+    ):
+        """initialize_environments linearizes 2D positions on a track graph.
 
-        This tests line 490 in base.py where get_linearized_position is called
-        to convert 2D positions to 1D when a track_graph is present.
+        The track-graph place grid is built from the graph alone, so the
+        test records the position handed to ``fit_place_grid`` and checks
+        that it is the 1D linear position, not the raw 2D input.
         """
         # Arrange: Create a simple line graph
         g = nx.Graph()
@@ -357,16 +358,24 @@ class TestInitializeEnvironmentsFitting:
             [np.linspace(0, 10, 50), np.zeros(50)], axis=1
         )  # (50, 2)
 
-        # Act - This should trigger the linearization path (line 490)
+        received = []
+        fit_place_grid = env.fit_place_grid
+
+        def spy(position, **kwargs):
+            received.append(np.asarray(position))
+            return fit_place_grid(position, **kwargs)
+
+        monkeypatch.setattr(env, "fit_place_grid", spy)
+
+        # Act
         decoder.initialize_environments(position_2d)
 
-        # Assert
-        assert decoder.environments[0].place_bin_centers_ is not None
-        # Should be linearized to 1D
+        # Assert: the grid was fit on the linear position, which for a
+        # straight edge from (0, 0) to (10, 0) equals the x coordinate
+        assert len(received) == 1
+        assert received[0].squeeze().ndim == 1
+        np.testing.assert_allclose(received[0].squeeze(), position_2d[:, 0])
         assert decoder.environments[0].place_bin_centers_.shape[1] == 1
-        # Centers should be monotonically increasing for a simple line
-        centers = decoder.environments[0].place_bin_centers_.squeeze()
-        assert np.all(np.diff(centers) > 0)
 
 
 @pytest.mark.unit
@@ -551,12 +560,20 @@ class TestAlgorithmParamsResolution:
         assert d_sorted.sorted_spikes_algorithm_params is None
 
     def test_resolver_returns_default_copy_for_none(self):
-        """The resolver returns a fresh dict equal to the module default."""
+        """The resolver returns a fresh dict equal to the module default.
+
+        Mutating the returned dict must not change the module-level
+        default or later resolver calls.
+        """
+        original = dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
         d = ClusterlessDecoder()
         resolved = d._resolve_clusterless_algorithm_params()
         assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
         # Fresh copy, not a reference to the module-level constant
         assert resolved is not _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+        resolved["block_size"] = 5
+        assert _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS == original
+        assert d._resolve_clusterless_algorithm_params() == original
 
     def test_resolver_returns_distinct_dicts_across_instances(self):
         """Two ClusterlessDecoder instances' resolvers return distinct dicts."""
@@ -577,24 +594,6 @@ class TestAlgorithmParamsResolution:
         resolved = d._resolve_clusterless_algorithm_params()
         assert resolved is not params
         assert resolved == params
-
-    def test_mutating_default_constant_does_not_leak(self):
-        """Mutating the module-level constant must not poison resolvers.
-
-        This is the actual bug Group 4b fixed: the original mutable
-        default kwarg caused every detector to share one dict instance
-        with the module-level constant. The resolver copy prevents that.
-        """
-        # Capture pristine state
-        original = dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
-        d = ClusterlessDecoder()
-        resolved = d._resolve_clusterless_algorithm_params()
-        # Mutating the resolver's return value
-        resolved["block_size"] = 5
-        # ... does not poison the module-level constant
-        assert _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS == original
-        # ... and a fresh resolver call sees the pristine default
-        assert d._resolve_clusterless_algorithm_params()["block_size"] == 10_000
 
     def test_sorted_spikes_resolver_returns_default_copy_for_none(self):
         """Same resolver contract for sorted-spikes params."""

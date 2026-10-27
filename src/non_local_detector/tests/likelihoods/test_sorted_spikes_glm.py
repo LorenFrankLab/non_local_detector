@@ -23,6 +23,9 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     make_spline_predict_matrix,
     predict_sorted_spikes_glm_log_likelihood,
 )
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
+    dot_general_precisions,
+)
 
 
 @pytest.fixture
@@ -259,7 +262,7 @@ class TestPoissonRegression:
         np.testing.assert_allclose(predicted_rate, 2.0, rtol=1e-5, atol=0.0)
 
     def test_fit_poisson_regression_with_uniform_spikes(self):
-        """Should handle uniform spike distribution."""
+        """A spatially uniform count gives an intercept-only fit at that rate."""
         # Arrange
         rng = np.random.default_rng(0)
         n_time = 100
@@ -273,10 +276,11 @@ class TestPoissonRegression:
         coefficients = fit_poisson_regression(design_matrix, spikes, weights)
 
         # Assert
-        # With uniform data, spatial coefficients should be near zero
-        # (only intercept should be significant)
-        assert jnp.all(jnp.isfinite(coefficients))
-        assert np.abs(coefficients[1:]).max() < np.abs(coefficients[0])
+        # Constant counts of 5 per unit exposure, with the penalty only on the
+        # non-intercept terms: the optimum is exactly beta = (log 5, 0, ..., 0).
+        coefficients = np.asarray(coefficients)
+        np.testing.assert_allclose(coefficients[1:], 0.0, atol=1e-3)
+        np.testing.assert_allclose(np.exp(coefficients[0]), 5.0, rtol=1e-4)
 
     def test_fit_poisson_regression_respects_weights(self):
         """Weighting should affect fit."""
@@ -633,17 +637,7 @@ def test_encoding_fit_solves_all_cells_in_one_call(
 
     monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
     env, data = simple_1d_environment, simple_spike_data
-    encoding = fit_sorted_spikes_glm_encoding_model(
-        position_time=jnp.asarray(data["position_time"]),
-        position=jnp.asarray(data["position"]),
-        spike_times=data["spike_times"],
-        environment=env,
-        place_bin_edges=env.place_bin_edges_,
-        edges=env.edges_,
-        is_track_interior=env.is_track_interior_,
-        is_track_boundary=env.is_track_boundary_,
-        disable_progress_bar=True,
-    )
+    encoding = _fit_encoding(env, data)
     n_cells = len(data["spike_times"])
     assert len(calls) == 1 and calls[0][0] == n_cells
     assert encoding["coefficients"].shape[0] == n_cells
@@ -662,17 +656,7 @@ class TestFitGLMEncodingModel:
         data = simple_spike_data
 
         # Act
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Assert
         expected_keys = {
@@ -694,17 +678,7 @@ class TestFitGLMEncodingModel:
         n_neurons = len(data["spike_times"])
 
         # Act
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Assert
         place_fields = encoding["place_fields"]
@@ -723,36 +697,13 @@ class TestFitGLMEncodingModel:
         data = simple_spike_data
 
         # Act with different knot spacings
-        encoding_coarse = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            emission_knot_spacing=30.0,  # Coarse
-            disable_progress_bar=True,
-        )
+        encoding_coarse = _fit_encoding(env, data, emission_knot_spacing=30.0)
+        encoding_fine = _fit_encoding(env, data, emission_knot_spacing=10.0)
 
-        encoding_fine = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            emission_knot_spacing=10.0,  # Fine
-            disable_progress_bar=True,
-        )
-
-        # Assert - finer spacing should produce more complex model (more coefficients)
+        # Assert - finer spacing puts more knots on the track: more coefficients
         n_coef_coarse = encoding_coarse["coefficients"][0].shape[0]
         n_coef_fine = encoding_fine["coefficients"][0].shape[0]
-        assert n_coef_fine >= n_coef_coarse
+        assert n_coef_fine > n_coef_coarse
 
 
 @pytest.mark.unit
@@ -767,17 +718,7 @@ class TestPredictGLMLogLikelihood:
         env = simple_1d_environment
         data = simple_spike_data
 
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Create decoding time window
         time = np.linspace(0, 0.5, 10)
@@ -827,17 +768,7 @@ class TestPredictGLMLogLikelihood:
         env = simple_1d_environment
         data = simple_spike_data
 
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         time = np.linspace(0, 0.5, 10)
 
@@ -864,29 +795,20 @@ class TestPredictGLMLogLikelihood:
     def test_predict_glm_log_likelihood_with_no_spikes(
         self, simple_1d_environment, simple_spike_data
     ):
-        """Should handle time periods with no spikes."""
+        """With no spikes, the non-local LL is -duration * the summed place fields."""
         # Arrange
         env = simple_1d_environment
         data = simple_spike_data
 
-        encoding = fit_sorted_spikes_glm_encoding_model(
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            environment=env,
-            place_bin_edges=env.place_bin_edges_,
-            edges=env.edges_,
-            is_track_interior=env.is_track_interior_,
-            is_track_boundary=env.is_track_boundary_,
-            disable_progress_bar=True,
-        )
+        encoding = _fit_encoding(env, data)
 
         # Use time period with no spikes (well beyond data)
         time = np.linspace(10.0, 10.5, 10)
+        time_edges = jnp.asarray(time_edges_from_centers(time))
 
         # Act
         log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            time_edges=jnp.asarray(time_edges_from_centers(time)),
+            time_edges=time_edges,
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
@@ -900,9 +822,15 @@ class TestPredictGLMLogLikelihood:
             disable_progress_bar=True,
         )
 
-        # Assert - should still produce valid likelihoods (negative due to Poisson)
-        assert jnp.all(jnp.isfinite(log_likelihood))
-        assert jnp.all(log_likelihood < 0)  # Log likelihood should be negative
+        # Assert - with no spikes each bin's LL is -duration * summed rate
+        durations = np.diff(np.asarray(time_edges, dtype=np.float64))
+        interior = np.asarray(encoding["is_track_interior"])
+        expected = (
+            -durations[:, None]
+            * np.asarray(encoding["no_spike_part_log_likelihood"])[interior]
+        )
+        assert np.all(expected < 0)
+        np.testing.assert_allclose(log_likelihood, expected, rtol=1e-5, atol=1e-6)
 
 
 def _fit_glm(
@@ -1123,7 +1051,7 @@ def test_track_graph_fit_linearizes_two_dimensional_position():
     )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_detector_fits_glm_on_a_track_graph():
     """The detector's GLM fit runs with a track graph and 2-D positions."""
     from non_local_detector import NonLocalSortedSpikesDetector
@@ -1164,11 +1092,7 @@ def test_place_field_rates_request_highest_precision():
     coefficients = jnp.ones((3, 4), jnp.float32)
     with jax.default_matmul_precision("default"):
         traced = jax.make_jaxpr(sorted_spikes_glm._glm_rates)(design, coefficients)
-    from non_local_detector.tests.likelihoods.test_sorted_spikes_mrf import (
-        _dot_general_precisions,
-    )
-
-    precisions = _dot_general_precisions(traced.jaxpr)
+    precisions = dot_general_precisions(traced.jaxpr)
     assert precisions
     assert all(
         precision == (jax.lax.Precision.HIGHEST, jax.lax.Precision.HIGHEST)

@@ -168,9 +168,12 @@ def test_all_fitted_rates_are_hz_and_empty_bins_use_seconds(sampling_frequency):
         if clusterless:
             args.append([np.empty((0, 1))])
         actual = np.asarray(predict(*args, time_edges=edges, **model))
+        # Sorted backends: the per-neuron place fields, not the fit's own sum.
         ground = model.get("summed_ground_process_intensity")
         if ground is None:
-            ground = model["no_spike_part_log_likelihood"][model["is_track_interior"]]
+            ground = np.asarray(model["place_fields"])[
+                :, model["is_track_interior"]
+            ].sum(axis=0)
         np.testing.assert_allclose(
             actual,
             -np.diff(edges)[:, None] * np.asarray(ground),

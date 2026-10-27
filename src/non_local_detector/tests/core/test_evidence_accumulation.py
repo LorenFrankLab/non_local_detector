@@ -4,7 +4,9 @@ The reference is a model whose evidence is known exactly: two bins with a
 uniform transition keep every prediction at exactly [0.5, 0.5], and equal
 log likelihoods in both bins make each row's normalizer exactly that row's log
 likelihood. The total is then the float64 sum of the inputs, which a float32
-running total over a million rows misses by several units.
+running total over these 200,000 rows misses by about 13 units (713 at a
+million rows). Fewer rows would still fail the 1e-12 tolerance but no longer
+show a drift of the size that misleads EM convergence checks.
 """
 
 import numpy as np
@@ -17,7 +19,7 @@ from non_local_detector.core import (
 
 pytestmark = pytest.mark.unit
 
-N_TIME = 1_000_000
+N_TIME = 200_000
 
 
 @pytest.fixture(scope="module")
@@ -77,6 +79,6 @@ def test_checkpointed_evidence_is_the_float64_sum(exact_evidence_model):
         lambda edges, **kwargs: log_likelihoods[kwargs["row_slice"]],
         transition_matrix=uniform,
         state_ind=state_ind,
-        chunk_size=250_000,
+        chunk_size=N_TIME // 4,
     )
     np.testing.assert_allclose(result.marginal_log_likelihood, expected, rtol=1e-12)

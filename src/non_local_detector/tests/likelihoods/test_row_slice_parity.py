@@ -167,7 +167,7 @@ def test_row_partition_tiles_full_time_result(
     full = np.asarray(
         predict_func(*args, **encoding_model, is_local=is_local, time_edges=time)
     )
-    chunks = np.array_split(np.arange(len(time)), N_PARTITIONS)
+    chunks = np.array_split(np.arange(len(time) - 1), N_PARTITIONS)
     tiled = np.concatenate(
         [
             np.asarray(
@@ -278,7 +278,7 @@ def test_no_spike_row_slice_matches_full_time(decode_data):
             spike_times, time_edges=time, row_slice=ROW_SLICE
         )
     )
-    chunks = np.array_split(np.arange(len(time)), N_PARTITIONS)
+    chunks = np.array_split(np.arange(len(time) - 1), N_PARTITIONS)
     tiled = np.concatenate(
         [
             np.asarray(

@@ -6,15 +6,19 @@ on:
       - main
       - maint/*
     tags:
-      - "*"
+      - "v*"
+  # Every pull request, including ones stacked on another feature branch.
   pull_request:
-    branches:
-      - main
-      - maint/*
+  # Weekly run so a new release of a dependency surfaces even without a push.
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
 
+# Cancel superseded runs of a pull request; let every push to main or a tag
+# finish so each merged commit gets a complete result.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -23,86 +27,131 @@ defaults:
   run:
     shell: bash
 
+env:
+  FORCE_COLOR: "1"
+  # Derandomized examples and no per-example deadline (tests/conftest.py).
+  HYPOTHESIS_PROFILE: ci
+  UV_VERSION: "0.13.5"
+
 jobs:
   quality:
     name: Code Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.12"
-          cache: pip
-      - name: Install dependencies
-        run: pip install -e .[dev]
+      # --locked fails if uv.lock is out of date with pyproject.toml, and pins
+      # ruff to the version pre-commit uses.
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
       - name: Run ruff linting
-        run: ruff check src/ --output-format=github
+        run: uv run --no-sync ruff check src/ --output-format=github
       - name: Run ruff formatting check
-        run: ruff format --check src/
-      - name: Run mypy type checking
-        run: mypy src/non_local_detector/
-        continue-on-error: true  # Start lenient, can remove later
+        run: uv run --no-sync ruff format --check src/
 
   test:
-    name: Test Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    name: Test Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+            coverage: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
-          cache: pip
-      - name: Install dependencies
-        run: pip install -e .[test]
+      # The versions developers test against locally. On Python 3.10 the lock
+      # resolves JAX 0.6.2, the minimum supported release.
+      - name: Install locked dependencies
+        run: uv sync --locked --extra test
       - name: Run tests
-        run: pytest -v --cov=non_local_detector --cov-report=xml
+        run: >-
+          uv run --no-sync pytest --timeout=900
+          ${{ matrix.coverage && '--cov=non_local_detector --cov-report=xml' || '' }}
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
+        if: matrix.coverage
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-        continue-on-error: true
+          fail_ci_if_error: false
 
-  test-minimum-jax:
-    name: Test minimum JAX (0.6.2)
+  test-lowest:
+    name: Test lowest supported dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.10"
-          cache: pip
-      - name: Install minimum JAX
-        run: pip install -e .[test] "jax==0.6.2" "jaxlib==0.6.2"
-      - name: Run prediction, gradient and numerical compatibility tests
-        run: >-
-          pytest -v
-          src/non_local_detector/tests/likelihoods/test_local_poisson_accumulation.py
-          src/non_local_detector/tests/likelihoods/test_kde_common.py
-          src/non_local_detector/tests/likelihoods/test_deterministic_spike_reduction.py
-          src/non_local_detector/tests/models/test_checkpointed_prediction.py
-          src/non_local_detector/tests/core/test_checkpointed_inference.py
-          src/non_local_detector/tests/transitions/test_transition_operators.py
-          src/non_local_detector/tests/models/test_prediction_precision_benchmark.py
+          activate-environment: true
+      # Every runtime dependency at the floor declared in pyproject.toml; the
+      # test tools have no floors, so they install at their newest versions.
+      - name: Install lowest runtime dependencies
+        run: |
+          uv pip install --resolution lowest-direct -e .
+          uv pip install -e ".[test]"
+          uv pip list
+      - name: Run tests
+        run: pytest --timeout=900
+
+  test-latest:
+    name: Test latest dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      # Ignore uv.lock and resolve the newest releases, so an upstream change
+      # shows up here before the lock is updated.
+      - name: Install latest dependencies
+        run: |
+          uv sync --upgrade --extra test
+          uv pip list
+      - name: Run tests
+        run: uv run --no-sync pytest --timeout=900
 
   build:
     runs-on: ubuntu-latest
-    needs: [quality, test, test-minimum-jax]
+    needs: [quality, test, test-lowest]
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          # hatch-vcs derives the version from git history and tags.
           fetch-depth: 0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.12"
-          cache: pip
-      - run: pip install build twine
       - name: Build sdist and wheel
-        run: python -m build
-      - run: twine check dist/*
+        run: uv build
+      - run: uvx twine check --strict dist/*
       - name: Upload sdist and wheel artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
@@ -116,10 +165,14 @@ jobs:
           name: archive
           path: archive/
 
+  # Install each artifact the way a user would and check that it imports and
+  # ships its data files. The code itself is tested by the jobs above.
   test-package:
     runs-on: ubuntu-latest
     needs: [build]
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         package: ['wheel', 'sdist', 'archive']
     steps:
@@ -155,14 +208,20 @@ jobs:
         if: matrix.package == 'archive'
         run: pip install archive/archive.tgz
       - name: Install test extras
-        run: pip install non_local_detector[test]
-      - name: Run tests
-        run: pytest -v --pyargs non_local_detector
+        run: pip install "non_local_detector[test]"
+      # The golden regression tests load the packaged pickles and run every
+      # decoder end to end; a missing data file fails them.
+      - name: Run installed-package smoke tests
+        run: >-
+          pytest -p no:cacheprovider --pyargs
+          non_local_detector.tests.test_version_import
+          non_local_detector.tests.test_golden_regression
 
   publish:
     runs-on: ubuntu-latest
     needs: [test-package]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 10
     permissions:
       id-token: write  # Required for PyPI trusted publishing
     steps:

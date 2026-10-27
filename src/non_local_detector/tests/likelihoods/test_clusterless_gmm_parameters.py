@@ -98,11 +98,11 @@ def test_detector_tiling_parameters_reach_predict(sim, monkeypatch):
         )
         return np.asarray(results.acausal_posterior), decoder
 
-    untiled, _ = decode({})
-    assert tile_shapes == []
     monkeypatch.setattr(
         clusterless_gmm, "_accumulate_log_likelihood_block", record_tile
     )
+    untiled, _ = decode({})
+    assert tile_shapes == [], "the default predict path was tiled"
     tiled, decoder = decode(
         {"spike_block_size": spike_block_size, "bin_tile_size": bin_tile_size}
     )

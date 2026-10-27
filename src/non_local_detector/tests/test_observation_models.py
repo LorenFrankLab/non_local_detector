@@ -1,14 +1,17 @@
 """Tests for the ObservationModel dataclass equality semantics."""
 
+import pytest
+
 from non_local_detector.observation_models import ObservationModel
+
+pytestmark = pytest.mark.unit
 
 
 def test_observation_model_eq_all_fields():
     """ObservationModel equality compares all four fields, not just (env, group).
 
-    Before the custom ``__eq__`` was removed, two models that differed only in
-    ``is_local`` or ``is_no_spike`` were considered equal, silently merging
-    distinct decoding states.
+    Two models that differ only in ``is_local`` or ``is_no_spike`` must not
+    compare equal; that would silently merge distinct decoding states.
     """
     a = ObservationModel("a", 1, is_local=True)
     b = ObservationModel("a", 1, is_local=False)

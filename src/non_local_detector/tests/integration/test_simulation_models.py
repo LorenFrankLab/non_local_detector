@@ -14,8 +14,10 @@ from non_local_detector.models import (
 )
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
+pytestmark = pytest.mark.integration
 
-@pytest.fixture
+
+@pytest.fixture(scope="module")
 def simulated_data():
     """Generate simulated data for testing.
 
@@ -44,22 +46,29 @@ def simulated_data():
     }
 
 
-@pytest.mark.integration
-def test_nonlocal_sorted_spikes_detector(simulated_data):
-    """Test NonLocalSortedSpikesDetector fit and predict."""
-    time = simulated_data["time"]
-    position = simulated_data["position"]
-    spike_times = simulated_data["spike_times"]
-    is_event = simulated_data["is_event"]
-
-    # Fit detector on non-event periods
-    detector = NonLocalSortedSpikesDetector(
+@pytest.fixture(scope="module")
+def nonlocal_detector(simulated_data):
+    """NonLocalSortedSpikesDetector fitted on non-event periods; read-only."""
+    return NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
             "block_size": int(2**12),
         },
-    ).fit(time, position, spike_times, is_training=~is_event)
+    ).fit(
+        simulated_data["time"],
+        simulated_data["position"],
+        simulated_data["spike_times"],
+        is_training=~simulated_data["is_event"],
+    )
+
+
+def test_nonlocal_sorted_spikes_detector(simulated_data, nonlocal_detector):
+    """Test NonLocalSortedSpikesDetector fit and predict."""
+    time = simulated_data["time"]
+    position = simulated_data["position"]
+    spike_times = simulated_data["spike_times"]
+    detector = nonlocal_detector
 
     # Predict
     results = detector.predict(
@@ -101,7 +110,6 @@ def test_nonlocal_sorted_spikes_detector(simulated_data):
     assert len(detector.encoding_model_) > 0, "Encoding model is empty"
 
 
-@pytest.mark.integration
 def test_contfrag_sorted_spikes_classifier(simulated_data):
     """Test ContFragSortedSpikesClassifier fit and predict."""
     time = simulated_data["time"]
@@ -180,7 +188,6 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
     )
 
 
-@pytest.mark.integration
 def test_sorted_spikes_decoder(simulated_data):
     """Test SortedSpikesDecoder fit and predict."""
     time = simulated_data["time"]
@@ -264,35 +271,43 @@ def test_sorted_spikes_decoder(simulated_data):
     )
 
 
-@pytest.mark.integration
-def test_models_handle_missing_data(simulated_data):
-    """Test that models handle missing data (no spikes in some time bins) gracefully."""
-    time = simulated_data["time"]
-    position = simulated_data["position"]
-    spike_times = simulated_data["spike_times"]
-    is_event = simulated_data["is_event"]
+def test_silent_period_shifts_mass_to_no_spike_state(simulated_data, nonlocal_detector):
+    """Bins with no spikes from any neuron are attributed to the No-Spike state.
 
-    # Use only a subset of spike trains (simulate missing neurons)
-    spike_times_subset = spike_times[:5]  # Only first 5 neurons
+    Every spike in a 1 s window during running is removed, so those bins are
+    empty for all 30 neurons. Over a 6 s decode window, the No-Spike
+    probability must rise inside the silent second (about 0.59 on average)
+    well above its level elsewhere (about 0.11), and the posterior stays valid.
+    """
+    window = slice(15_000, 24_000)  # 10-16 s
+    time = simulated_data["time"][window]
+    silent_start, silent_stop = 12.0, 13.0
+    silenced = [
+        spikes[(spikes < silent_start) | (spikes >= silent_stop)]
+        for spikes in simulated_data["spike_times"]
+    ]
+    # Premise: the silent window really removed spikes.
+    assert sum(len(s) for s in simulated_data["spike_times"]) > sum(
+        len(s) for s in silenced
+    )
 
-    # Fit and predict with subset
-    detector = NonLocalSortedSpikesDetector(
-        sorted_spikes_algorithm="sorted_spikes_kde",
-        sorted_spikes_algorithm_params={
-            "position_std": 6.0,
-            "block_size": int(2**12),
-        },
-    ).fit(time, position, spike_times_subset, is_training=~is_event)
-
-    results = detector.predict(
-        spike_times=spike_times_subset,
+    results = nonlocal_detector.predict(
+        spike_times=silenced,
         time_edges=time_edges_from_centers(time),
-        position=position,
+        position=simulated_data["position"][window],
         position_time=time,
         save_log_likelihood_to_results=False,
     )
 
-    # Should still produce valid results
-    assert results.acausal_posterior.shape[0] == len(time)
-    state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
-    assert np.allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-6)
+    state_probs = results.acausal_state_probabilities
+    assert np.all(np.isfinite(results.acausal_posterior.values))
+    np.testing.assert_allclose(state_probs.sum(axis=1), 1.0, rtol=1e-5, atol=1e-6)
+
+    no_spike = state_probs.sel(states="No-Spike").values
+    is_silent = (time >= silent_start) & (time < silent_stop)
+    silent_mean = no_spike[is_silent].mean()
+    other_mean = no_spike[~is_silent].mean()
+    assert silent_mean > 0.4, f"No-Spike mean in silent window = {silent_mean:.3f}"
+    assert silent_mean > 3 * other_mean, (
+        f"No-Spike mean: silent {silent_mean:.3f} vs elsewhere {other_mean:.3f}"
+    )

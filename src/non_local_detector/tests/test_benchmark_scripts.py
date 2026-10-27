@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.integration
+# Each case spawns a fresh interpreter that imports JAX (2-4 s); the 22 cases
+# take about 35 s together.
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 BENCHMARKS = Path(__file__).resolve().parents[3] / "benchmarks"
 SCRIPTS = sorted(BENCHMARKS.glob("*.py")) if BENCHMARKS.is_dir() else []

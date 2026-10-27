@@ -8,35 +8,11 @@ they are close in Euclidean/linearized coordinates.
 """
 
 import jax.numpy as jnp
-import networkx as nx
 import numpy as np
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector
-from non_local_detector.environment import Environment
-
-
-def _make_two_arm_track():
-    """Two-segment track with a gap between arms (edge_spacing > 0)."""
-    g = nx.Graph()
-    g.add_node(0, pos=(0.0, 0.0))
-    g.add_node(1, pos=(50.0, 0.0))
-    g.add_node(2, pos=(60.0, 0.0))
-    g.add_node(3, pos=(110.0, 0.0))
-    g.add_edge(0, 1, distance=50.0, edge_id=0)
-    g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-    env = Environment(
-        environment_name="",
-        place_bin_size=5.0,
-        track_graph=g,
-        edge_order=[(0, 1), (2, 3)],
-        edge_spacing=10.0,
-    )
-    position_1d = np.concatenate(
-        [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-    )
-    return env.fit_place_grid(position_1d, infer_track_interior=True)
+from non_local_detector.tests.models._helpers import make_two_arm_track
 
 
 @pytest.mark.unit
@@ -45,7 +21,7 @@ class TestNonLocalPenaltyTopology:
 
     def test_penalty_shape(self):
         """Penalty returns (n_time, n_interior_bins)."""
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=1.0,
@@ -68,24 +44,25 @@ class TestNonLocalPenaltyTopology:
         assert penalty.shape == (1, n_interior)
 
     def test_penalty_uses_graph_distance_on_two_arm_track(self):
-        """On a two-arm track, penalty respects graph distance, not linearized.
+        """Across a gap between disconnected arms the penalty is zero.
 
-        With the animal on arm 0 (position 25, firmly inside an
-        interior bin) and the penalty sigma narrow (5 cm), bins across
-        the gap on arm 1 should be far in graph space so the penalty
-        there is weak compared to the animal's own bin.
+        The animal sits in arm 0's last bin (47.5) and arm 1's first bin
+        (62.5) is only 15 cm away in linearized coordinates, so a penalty on
+        that coordinate would be about 0.75 of the peak with sigma = 20 cm.
+        No graph path joins the arms, so the graph-distance penalty there is 0.
         """
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
+        penalty_std = 20.0
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=10.0,
-            non_local_penalty_std=5.0,
+            non_local_penalty_std=penalty_std,
         )
 
         time = np.array([0.5])
         position_time = np.array([0.0, 1.0])
-        # Animal firmly on arm 0 → maps to bin center 27.5 (interior)
-        animal_position = np.array([[25.0], [25.0]])
+        animal_bin_center, arm1_bin_center = 47.5, 62.5
+        animal_position = np.array([[animal_bin_center], [animal_bin_center]])
 
         penalty = detector._compute_non_local_position_penalty(
             jnp.array(time),
@@ -95,35 +72,33 @@ class TestNonLocalPenaltyTopology:
         )
         penalty_np = np.asarray(penalty)
 
-        # Penalty is indexed over interior bins. The animal maps to the
-        # interior bin with center 27.5; find its index and the index
-        # of a bin on arm 1 (e.g., center 62.5).
+        # Penalty is indexed over interior bins.
         is_interior = env.is_track_interior_.ravel()
         interior_centers = env.place_bin_centers_[is_interior].ravel()
+        animal_bin_idx = int(np.flatnonzero(interior_centers == animal_bin_center)[0])
+        arm1_bin_idx = int(np.flatnonzero(interior_centers == arm1_bin_center)[0])
 
-        animal_bin_idx = np.argmin(np.abs(interior_centers - 27.5))
-        arm1_bin_idx = np.argmin(np.abs(interior_centers - 62.5))
-
-        assert penalty_np[0, animal_bin_idx] < -5.0, (
-            "Penalty should be strong near the animal's bin, got "
-            f"{penalty_np[0, animal_bin_idx]:.3f}"
+        peak = penalty_np[0, animal_bin_idx]
+        np.testing.assert_allclose(peak, -10.0, rtol=1e-6)
+        # A penalty on the linearized coordinate would be large here, so a
+        # zero penalty distinguishes graph distance from linear distance.
+        linear_penalty = peak * np.exp(
+            -0.5 * (arm1_bin_center - animal_bin_center) ** 2 / penalty_std**2
         )
-        # Arm-1 bin is >35 cm from animal in graph distance (≥ 5 cm to
-        # end of arm 0 + gap + into arm 1 ≥ 35cm), so penalty should be
-        # essentially zero compared to the near-animal magnitude.
-        assert abs(penalty_np[0, arm1_bin_idx]) < 0.1 * abs(
-            penalty_np[0, animal_bin_idx]
-        ), "Penalty at arm-1 bin should be much weaker than at animal bin"
+        assert abs(linear_penalty) > 0.5 * abs(peak)
+        assert penalty_np[0, arm1_bin_idx] == 0.0
+        # Every arm-1 bin is unreachable from arm 0.
+        np.testing.assert_array_equal(penalty_np[0, interior_centers > 60.0], 0.0)
 
     def test_penalty_finite_when_animal_in_gap_bin(self):
         """Gap-bin animal position snaps to nearest interior; penalty is finite.
 
         Environment.get_bin_ind snaps gap-bin positions to the nearest
         interior bin. The penalty then fires as a Gaussian centered on
-        that snapped bin (suppressing non-local likelihood there), rather
-        than zeroing out as it did before the snap.
+        that snapped bin (suppressing non-local likelihood there) rather
+        than zeroing out.
         """
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=10.0,
@@ -166,12 +141,11 @@ class TestNonLocalPenaltyTopology:
         Without an explicit NaN mask, ``np.searchsorted(nan, ...)`` returns
         an arbitrary end-of-array bin index, then the distance-matrix
         lookup returns finite values, and the penalty would fire at some
-        unrelated location on the track. This was a silent scientific bug
-        introduced when the penalty switched from Euclidean to graph
-        distance (Euclidean propagated NaN; graph distance does not).
-        The penalty must return zero for NaN rows.
+        unrelated location on the track (a Euclidean distance would
+        propagate the NaN; the graph-distance lookup does not). The penalty
+        must return zero for NaN rows.
         """
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=10.0,
@@ -207,7 +181,7 @@ class TestNonLocalPenaltyTopology:
 
     def test_penalty_zero_when_disabled(self):
         """With non_local_position_penalty=0, penalty is identically zero."""
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=0.0,
@@ -234,7 +208,7 @@ class TestNonLocalPenaltyTopology:
         Within a single arm of the track, the penalty at the animal's bin
         is the strongest and monotonically weakens as distance grows.
         """
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=10.0,

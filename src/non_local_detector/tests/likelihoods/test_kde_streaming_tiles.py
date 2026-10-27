@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from scipy.stats import norm
 
-import non_local_detector.likelihoods.clusterless_kde as log_kde
+from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     log_kde_distance,
@@ -199,7 +199,7 @@ def test_float32_inputs_match_the_untiled_dtype_under_x64():
 
 def test_position_kernels_are_bounded_by_tiles_not_full_encoding(monkeypatch):
     calls = []
-    original = log_kde.log_kde_distance_streaming
+    original = clusterless_kde.log_kde_distance_streaming
 
     def record(points, samples, std):
         calls.append((len(samples), len(points)))
@@ -210,15 +210,15 @@ def test_position_kernels_are_bounded_by_tiles_not_full_encoding(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("streaming built the full encoding x position kernel")
 
-    monkeypatch.setattr(log_kde, "log_kde_distance_streaming", record)
-    monkeypatch.setattr(log_kde, "log_kde_distance", forbidden)
+    monkeypatch.setattr(clusterless_kde, "log_kde_distance_streaming", record)
+    monkeypatch.setattr(clusterless_kde, "log_kde_distance", forbidden)
     # Trace afresh so the patched kernels are the ones compiled.
-    log_kde.estimate_log_joint_mark_intensity.clear_cache()
+    clusterless_kde.estimate_log_joint_mark_intensity.clear_cache()
     values = joint_inputs(23, 49, 37, "weighted")
     actual = streamed_joint(
         values, encoding_tile_size=8, position_tile_size=7, block_size=5
     )
     actual.block_until_ready()
-    log_kde.estimate_log_joint_mark_intensity.clear_cache()
+    clusterless_kde.estimate_log_joint_mark_intensity.clear_cache()
     assert calls
     assert actual.shape == (23, 37)

@@ -103,25 +103,33 @@ def test_viterbi_accepts_same_position_free_call_as_predict(recording):
 
 
 @pytest.mark.integration
-def test_clusterless_diffusion_masks_missing_tracking_for_local_prediction():
+@pytest.mark.parametrize(
+    "missing_during_fit", [False, True], ids=["tracked-fit", "gapped-fit"]
+)
+def test_clusterless_diffusion_masks_missing_tracking_for_local_prediction(
+    missing_during_fit,
+):
+    """Bins without tracking get a zero Local log likelihood, whether or not
+    the encoding fit saw the same tracking gap."""
     from non_local_detector import NonLocalClusterlessDetector
 
     time = np.arange(100) * 0.002
     position = (5 + 4 * np.sin(time * 30))[:, None]
+    gapped_position = position.copy()
+    gapped_position[40:45] = np.nan
     spikes = [np.array([0.021, 0.067, 0.121])]
     features = [np.zeros((3, 1))]
     detector = NonLocalClusterlessDetector(
         environments=Environment(place_bin_size=2, position_range=((0, 10),)),
         infer_track_interior=False,
         clusterless_algorithm="clusterless_diffusion",
-    ).fit(time, position, spikes, features)
-    position[40:45] = np.nan
+    ).fit(time, gapped_position if missing_during_fit else position, spikes, features)
     result = detector.predict(
         spikes,
         features,
         time_edges=np.arange(101) * 0.002,
         position_time=time,
-        position=position,
+        position=gapped_position,
         return_outputs="log_likelihood",
     )
     assert result.is_missing.any()
@@ -282,34 +290,3 @@ def test_fit_keeps_missing_tracking_gaps_and_endpoint_support():
     model = next(iter(detector.encoding_model_.values()))
     assert model["encoding_exposure_seconds"] == 4.0
     np.testing.assert_allclose(model["mean_rates"], [1.0])
-
-
-@pytest.mark.integration
-def test_clusterless_diffusion_fits_missing_encoding_tracking_and_masks_local_decode():
-    from non_local_detector import NonLocalClusterlessDetector
-
-    time = np.arange(100) * 0.002
-    position = (5 + 4 * np.sin(time * 30))[:, None]
-    position[40:45] = np.nan
-    spikes = [np.array([0.021, 0.067, 0.121])]
-    features = [np.zeros((3, 1))]
-    detector = NonLocalClusterlessDetector(
-        environments=Environment(place_bin_size=2, position_range=((0, 10),)),
-        infer_track_interior=False,
-        clusterless_algorithm="clusterless_diffusion",
-    ).fit(time, position, spikes, features)
-    result = detector.predict(
-        spikes,
-        features,
-        time_edges=np.arange(101) * 0.002,
-        position_time=time,
-        position=position,
-        return_outputs="log_likelihood",
-    )
-    assert result.is_missing.any()
-    missing_ll = (
-        result.log_likelihood.sel(time=result.time[result.is_missing])
-        .dropna("state_bins")
-        .to_numpy()
-    )
-    np.testing.assert_array_equal(missing_ll, np.zeros_like(missing_ll))

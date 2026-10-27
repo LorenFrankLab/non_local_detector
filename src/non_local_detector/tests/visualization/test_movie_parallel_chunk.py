@@ -1,13 +1,12 @@
-"""Regression test for the parallel-chunk firing-rate panel (issue #42).
+"""Regression test for the parallel-chunk firing-rate panel.
 
 ``create_parallel_video`` renders contiguous frame ranges in separate worker
 processes; each worker calls the setup function once and then renders its own
-*global* frame indices. The bottom multiunit panel's axis limits were gated on
-``frame_idx == 0``, so only the worker owning the first chunk set them — every
-later chunk left ``ax1`` at default limits and drew the firing-rate line
-off-screen. The fix initializes the limits on the first frame each worker
-renders (mirroring the mesh pattern), so a non-zero starting frame must still
-set ``ax1``'s limits.
+*global* frame indices. Gating the bottom multiunit panel's axis limits on
+``frame_idx == 0`` would leave every chunk but the first at default limits,
+drawing the firing-rate line off-screen. The limits are initialized on the
+first frame each worker renders (mirroring the mesh pattern), so a non-zero
+starting frame must still set ``ax1``'s limits.
 """
 
 import matplotlib

@@ -193,9 +193,10 @@ class TestTrialGrouping:
     def test_per_trial_isis_concatenated(self):
         """ISIs are computed per trial then concatenated.
 
-        With one spike per trial, the first ISI of each trial is measured from
-        the trial start, so the number of returned ISIs equals the total spike
-        count (no ISI bridges across the trial boundary).
+        The first ISI of each trial is measured from the trial start, so with a
+        constant intensity of 0.5 per bin both trials give integrated ISIs of
+        0.5 * 3 and 0.5 * 4; an ISI bridging the boundary would give
+        0.5 * (13 - 7) for trial 1's first spike.
         """
         n_time = 20
         ci = np.full(n_time, 0.5)
@@ -207,7 +208,7 @@ class TestTrialGrouping:
             ci, is_spike, trial_id=trial_id, adjust_for_short_trials=False
         )
         u = tr.uniform_rescaled_ISIs()
-        assert u.shape == (4,)
+        np.testing.assert_allclose(u, -np.expm1(-np.array([1.5, 2.0, 1.5, 2.0])))
 
 
 # ---------------------------------------------------------------------------

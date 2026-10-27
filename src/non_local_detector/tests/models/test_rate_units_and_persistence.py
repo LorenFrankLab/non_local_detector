@@ -1,4 +1,13 @@
-"""Phase 6b/6d acceptance through fitted public detector APIs."""
+"""Physical rate units and model persistence through public decoder APIs.
+
+- Every likelihood backend fits rates in Hz, so an empty bin's log likelihood
+  is minus the rate times the bin width.
+- Serializable backends keep their units and decode results through
+  ``save_model`` / ``load_model``.
+- An encoding entry with missing or unknown units is rejected, before any
+  likelihood work, with a hint to refit; ``estimate_parameters`` refits such a
+  model from the original recording.
+"""
 
 import copy
 
@@ -6,58 +15,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from non_local_detector import (
-    ClusterlessDecoder,
-    Environment,
-    SortedSpikesDecoder,
-    Uniform,
-)
 from non_local_detector.exceptions import ValidationError
-
-ALGORITHMS = [
-    "sorted_spikes_kde",
-    "sorted_spikes_glm",
-    "sorted_spikes_diffusion",
-    "sorted_spikes_mrf",
-    "clusterless_kde",
-    "clusterless_gmm",
-    "clusterless_diffusion",
-    "clusterless_mark_glm",
-]
-
-
-def _decoder(algorithm, *, calibration=False):
-    environment = Environment(
-        place_bin_size=1 if calibration else 5,
-        position_range=((-1.5, 1.5),) if calibration else ((40, 60),),
-    )
-    options = {
-        "environments": environment,
-        "continuous_transition_types": [[Uniform()]],
-        "infer_track_interior": False,
-    }
-    params = {"disable_progress_bar": True}
-    if algorithm == "sorted_spikes_glm" and calibration:
-        # Natural cubic knots must fit this small spatial domain.
-        params["emission_knot_spacing"] = 1.0
-    if algorithm == "sorted_spikes_mrf":
-        params["penalty"] = 1.0
-    if algorithm == "clusterless_gmm":
-        params.update(
-            gmm_components_occupancy=1,
-            gmm_components_joint=1,
-        )
-    if algorithm.startswith("sorted"):
-        return SortedSpikesDecoder(
-            sorted_spikes_algorithm=algorithm,
-            sorted_spikes_algorithm_params=params,
-            **options,
-        )
-    return ClusterlessDecoder(
-        clusterless_algorithm=algorithm,
-        clusterless_algorithm_params=params,
-        **options,
-    )
+from non_local_detector.tests.models._helpers import ALGORITHMS, _decoder
 
 
 @pytest.mark.integration
@@ -114,10 +73,7 @@ def test_known_rate_is_calibrated_through_public_fit_and_predict(
 def test_serializable_backend_round_trip_preserves_units_and_predictions(
     algorithm, tmp_path
 ):
-    """All seven currently serializable families keep exact decode results.
-
-    Patsy DesignInfo serialization remains a separately tracked GLM defect.
-    """
+    """Every serializable backend keeps exact decode results and units."""
     time = np.arange(100) * 0.002
     position = (50 + 8 * np.sin(time * 40))[:, None]
     spikes = [np.array([0.021, 0.067, 0.121, 0.167])]

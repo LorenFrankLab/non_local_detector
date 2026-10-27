@@ -28,6 +28,8 @@ from non_local_detector.likelihoods.diffusion import (
     to_density,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def path_graph(n_nodes: int, distance: float = 1.0) -> nx.Graph:
     """1D chain 0-1-...-(n-1) with uniform ``distance`` edge attribute."""
@@ -418,11 +420,13 @@ def test_heat_kernel_rank_retains_all_zero_modes_on_disconnected_graph():
     graph = nx.disjoint_union(path_graph(40), path_graph(40))
     L = build_laplacian(graph)
     n_components = 2
-    rank = heat_kernel_rank(L, sigma=8.0)  # heavy smoothing -> aggressive truncation
-    if rank is not None:
-        assert rank >= n_components
-        eigvals, _ = diffusion_eigenbasis(L, rank=rank)
-        assert np.count_nonzero(eigvals < 1e-9) == n_components
+    # sigma = 20 on two 40-bin chains needs ~8 modes, below the dense cap (16 of 80
+    # bins), so the resolver truncates rather than returning None.
+    rank = heat_kernel_rank(L, sigma=20.0)
+    assert rank is not None
+    assert n_components <= rank < L.shape[0]
+    eigvals, _ = diffusion_eigenbasis(L, rank=rank)
+    assert np.count_nonzero(eigvals < 1e-9) == n_components
 
 
 @pytest.mark.parametrize("bad_tol", [0.0, -1e-3, 1.0, 2.0])
@@ -683,7 +687,6 @@ def test_to_density_divides_mass_fractions_by_bin_volume():
     np.testing.assert_allclose(uniform.ravel(), smoothed[:, 0] / smoothed[:, 0].sum())
 
 
-@pytest.mark.unit
 def test_to_density_equal_volumes_match_volume_weighted_normalization():
     """With equal volumes, mass and volume-weighted normalization agree to rounding.
 

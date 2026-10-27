@@ -8,6 +8,8 @@ detector and its environments. Successful calls still store and replace their
 outputs.
 """
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -21,12 +23,13 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.tests.models._helpers import _assert_unchanged, _snapshot
 
 FAMILIES = ["sorted", "clusterless"]
 N_DECODE = 300
 
 
-@pytest.fixture
+@pytest.fixture(scope="module", params=FAMILIES)
 def family_data(request, sorted_sim, clusterless_sim):
     """``(detector class, fit arguments, predict arguments)`` for a family."""
     if request.param == "sorted":
@@ -52,8 +55,15 @@ def family_data(request, sorted_sim, clusterless_sim):
     return NonLocalClusterlessDetector, fit_args, predict_args
 
 
-def _fitted(family_data):
-    """A detector fit by EM that stores its log likelihood."""
+@pytest.fixture(scope="module")
+def fitted(family_data):
+    """``(detector, posterior)``: a detector fit by EM that stores its log
+    likelihood, and its decoded posterior.
+
+    Shared across the module; tests that call the detector work on a deep
+    copy. Decoding first also sets predict's transient attributes, so a copy's
+    snapshot already includes them.
+    """
     detector_cls, fit_args, _ = family_data
     detector = detector_cls()
     detector.estimate_parameters(
@@ -64,26 +74,7 @@ def _fitted(family_data):
         store_log_likelihood=True,
     )
     assert hasattr(detector, "log_likelihood_")
-    return detector
-
-
-def _snapshot(detector):
-    """Attribute identities of the detector and of each of its environments."""
-    return (
-        dict(vars(detector)),
-        [(env, dict(vars(env))) for env in detector.environments],
-    )
-
-
-def _assert_unchanged(detector, snapshot):
-    detector_state, environment_states = snapshot
-    assert vars(detector).keys() == detector_state.keys()
-    for name, value in detector_state.items():
-        assert vars(detector)[name] is value, name
-    for env, env_state in environment_states:
-        assert vars(env).keys() == env_state.keys()
-        for name, value in env_state.items():
-            assert vars(env)[name] is value, (env.environment_name, name)
+    return detector, _posterior(detector, family_data)
 
 
 def _posterior(detector, family_data):
@@ -104,7 +95,6 @@ def _refit_changes_state(fit_args):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("family_data", FAMILIES, indirect=True)
 @pytest.mark.parametrize(
     ("bad_arguments", "error"),
     [
@@ -134,11 +124,10 @@ def _refit_changes_state(fit_args):
     ],
 )
 def test_invalid_estimation_arguments_fail_before_fitting(
-    family_data, bad_arguments, error
+    family_data, fitted, bad_arguments, error
 ):
-    detector = _fitted(family_data)
-    # predict sets transient attributes, so take the reference first.
-    posterior_before = _posterior(detector, family_data)
+    reference, posterior_before = fitted
+    detector = copy.deepcopy(reference)
     snapshot = _snapshot(detector)
     _, fit_args, _ = family_data
     refit_args, is_training = _refit_changes_state(fit_args)
@@ -168,11 +157,9 @@ def test_invalid_estimation_arguments_fail_before_fitting(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("family_data", FAMILIES, indirect=True)
-def test_failed_encoding_refit_keeps_model_and_stored_likelihood(family_data):
-    detector = _fitted(family_data)
-    # predict sets transient attributes, so take the reference first.
-    posterior_before = _posterior(detector, family_data)
+def test_failed_encoding_refit_keeps_model_and_stored_likelihood(family_data, fitted):
+    reference, posterior_before = fitted
+    detector = copy.deepcopy(reference)
     snapshot = _snapshot(detector)
     _, fit_args, _ = family_data
     bad_weights = np.ones(fit_args["position_time"].shape[0])
@@ -186,14 +173,14 @@ def test_failed_encoding_refit_keeps_model_and_stored_likelihood(family_data):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("family_data", FAMILIES, indirect=True)
-def test_fit_failing_after_rebuilding_state_restores_detector(family_data, monkeypatch):
+def test_fit_failing_after_rebuilding_state_restores_detector(
+    family_data, fitted, monkeypatch
+):
     """The encoding fit fails after ``fit`` has rebuilt the environments for new
     position data; the detector, its environments, and its posterior are
     restored."""
-    detector = _fitted(family_data)
-    # predict sets transient attributes, so take the reference first.
-    posterior_before = _posterior(detector, family_data)
+    reference, posterior_before = fitted
+    detector = copy.deepcopy(reference)
     snapshot = _snapshot(detector)
     detector_cls, fit_args, _ = family_data
     registry, name = (
@@ -216,12 +203,11 @@ def test_fit_failing_after_rebuilding_state_restores_detector(family_data, monke
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("family_data", FAMILIES, indirect=True)
-def test_successful_calls_store_and_replace_outputs(family_data):
+def test_successful_calls_store_and_replace_outputs(family_data, fitted):
     """After a failed call, successful calls still produce their outputs: an
     encoding refit replaces the model and drops the stale stored likelihood,
     and estimation stores a new one."""
-    detector = _fitted(family_data)
+    detector = copy.deepcopy(fitted[0])
     _, fit_args, _ = family_data
     bad_weights = np.full(fit_args["position_time"].shape[0], -1.0)
     with pytest.raises(ValidationError):
