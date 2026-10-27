@@ -40,7 +40,7 @@ State transition models and spike-timing based decoding approaches.
 
 | Notebook | Description |
 |----------|-------------|
-| `nonstationary_discrete_transitions.ipynb` | Non-stationary discrete state transition matrix testing |
+| `nonstationary_discrete_transitions.ipynb` | Speed-dependent discrete transitions on a simulation with known truth: boundary quantiles, REML smoothness, interval bands, and a held-out comparison with stationary transitions |
 | `spike_time_decoding_v1.ipynb` | Spike time-based decoding approach (version 1) |
 | `spike_time_decoding_v2.ipynb` | Spike time-based decoding approach (version 2) |
 | `spike_times_test.ipynb` | General spike timing tests |
