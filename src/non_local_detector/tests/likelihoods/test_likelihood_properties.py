@@ -244,7 +244,7 @@ class TestLikelihoodNoNaN:
         spikes_per_electrode=st.integers(min_value=5, max_value=10),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=8, deadline=None, derandomize=True)
+    @settings(max_examples=8, derandomize=True)
     def test_clusterless_kde_output_no_nan(
         self, n_electrodes, n_time, n_features, spikes_per_electrode, seed
     ):
@@ -261,7 +261,7 @@ class TestLikelihoodNoNaN:
         spikes_per_electrode=st.integers(min_value=8, max_value=12),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=5, deadline=None, derandomize=True)
+    @settings(max_examples=5, derandomize=True)
     def test_clusterless_gmm_output_no_nan(
         self, n_electrodes, n_time, n_features, spikes_per_electrode, seed
     ):
@@ -287,46 +287,30 @@ class TestLocalNonlocalFiniteness:
     local against the non-local bin where the animal sits at a bin centre.
     """
 
+    @pytest.mark.parametrize(
+        "fit, predict",
+        [
+            (_fit_sorted_kde, _predict_sorted_kde),
+            (_fit_sorted_glm, _predict_sorted_glm),
+        ],
+        ids=["kde", "glm"],
+    )
     @given(
         n_neurons=st.integers(min_value=1, max_value=3),
         n_time=st.integers(min_value=30, max_value=50),
         spikes_per_neuron=st.integers(min_value=3, max_value=10),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=10, deadline=None, derandomize=True)
-    def test_sorted_kde_likelihoods_finite(
-        self, n_neurons, n_time, spikes_per_neuron, seed
+    @settings(max_examples=10, derandomize=True)
+    def test_sorted_likelihoods_finite(
+        self, fit, predict, n_neurons, n_time, spikes_per_neuron, seed
     ):
         t, pos, spikes = _make_sorted_spike_data(
             seed, n_neurons, n_time, spikes_per_neuron
         )
-        enc = _fit_sorted_kde(ENV, t, pos, spikes)
-        ll_nonlocal = _predict_sorted_kde(enc, ENV, t, pos, spikes)
-        ll_local = _predict_sorted_kde(enc, ENV, t, pos, spikes, is_local=True)
+        enc = fit(ENV, t, pos, spikes)
+        ll_nonlocal = predict(enc, ENV, t, pos, spikes)
+        ll_local = predict(enc, ENV, t, pos, spikes, is_local=True)
 
-        assert jnp.all(jnp.isfinite(ll_local)), (
-            f"Local KDE LL contains NaN/Inf: {ll_local}"
-        )
-        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local KDE LL contains NaN/Inf"
-
-    @given(
-        n_neurons=st.integers(min_value=1, max_value=3),
-        n_time=st.integers(min_value=30, max_value=50),
-        spikes_per_neuron=st.integers(min_value=3, max_value=10),
-        seed=st.integers(min_value=0, max_value=1000),
-    )
-    @settings(max_examples=10, deadline=None, derandomize=True)
-    def test_sorted_glm_likelihoods_finite(
-        self, n_neurons, n_time, spikes_per_neuron, seed
-    ):
-        t, pos, spikes = _make_sorted_spike_data(
-            seed, n_neurons, n_time, spikes_per_neuron
-        )
-        enc = _fit_sorted_glm(ENV, t, pos, spikes)
-        ll_nonlocal = _predict_sorted_glm(enc, ENV, t, pos, spikes)
-        ll_local = _predict_sorted_glm(enc, ENV, t, pos, spikes, is_local=True)
-
-        assert jnp.all(jnp.isfinite(ll_local)), (
-            f"Local GLM LL contains NaN/Inf: {ll_local}"
-        )
-        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local GLM LL contains NaN/Inf"
+        assert jnp.all(jnp.isfinite(ll_local)), f"Local LL contains NaN/Inf: {ll_local}"
+        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local LL contains NaN/Inf"

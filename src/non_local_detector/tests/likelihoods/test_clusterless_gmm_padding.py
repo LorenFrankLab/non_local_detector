@@ -27,9 +27,15 @@ from non_local_detector.likelihoods.mark_reference import (
     background_log_intensity,
 )
 from non_local_detector.tests.conftest import precision_mode
-from non_local_detector.tests.likelihoods.conftest import training_mark_references
+from non_local_detector.tests.likelihoods.conftest import (
+    tolerance,
+    training_mark_references,
+)
 
 pytestmark = pytest.mark.unit
+
+# float32 bound for the padded kernels against the per-electrode formulation.
+PER_ELECTRODE_FLOAT32 = {"rtol": 1e-5, "atol": 1e-4}
 
 GMM_COMPONENTS = {
     "gmm_components_occupancy": 4,
@@ -230,10 +236,9 @@ def test_padded_kernels_match_the_per_electrode_formulation(recording, is_local,
         assert actual.shape == expected.shape
         assert actual.dtype == (jnp.float64 if x64 else jnp.float32)
         assert np.all(np.isfinite(actual))
-        tolerance = (
-            {"rtol": 1e-10, "atol": 1e-10} if x64 else {"rtol": 1e-5, "atol": 1e-4}
+        np.testing.assert_allclose(
+            actual, expected, **tolerance(x64, PER_ELECTRODE_FLOAT32)
         )
-        np.testing.assert_allclose(actual, expected, **tolerance)
 
 
 def test_non_local_block_size_does_not_change_the_result(recording):

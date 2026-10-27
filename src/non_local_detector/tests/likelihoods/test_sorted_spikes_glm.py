@@ -29,7 +29,7 @@ from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
 
 
 @pytest.fixture
-def simple_1d_environment():
+def line_env_100cm():
     """Create a simple 1D linear environment for testing."""
     env = Environment(
         environment_name="test_track",
@@ -579,7 +579,7 @@ class TestLogRatePrior:
     def test_prior_sets_the_log_rate_sd_at_the_bins(
         self,
         monkeypatch,
-        simple_1d_environment,
+        line_env_100cm,
         simple_spike_data,
         kwargs,
         prior_std,
@@ -589,7 +589,7 @@ class TestLogRatePrior:
         log-rate deviation from baseline has the prior variance on average
         over the interior bins, whatever the knot spacing."""
         penalties = _spy_l2_penalty(monkeypatch)
-        env = simple_1d_environment
+        env = line_env_100cm
         encoding = _fit_encoding(
             env, simple_spike_data, emission_knot_spacing=knot_spacing, **kwargs
         )
@@ -606,26 +606,26 @@ class TestLogRatePrior:
         assert sorted_spikes_glm.log_rate_prior_l2_penalty(np.ones((5, 1))) == 0.0
 
     def test_explicit_l2_penalty_overrides_the_prior(
-        self, monkeypatch, simple_1d_environment, simple_spike_data
+        self, monkeypatch, line_env_100cm, simple_spike_data
     ):
         penalties = _spy_l2_penalty(monkeypatch)
-        _fit_encoding(simple_1d_environment, simple_spike_data, l2_penalty=0.3)
+        _fit_encoding(line_env_100cm, simple_spike_data, l2_penalty=0.3)
         assert penalties == [0.3]
 
     @pytest.mark.parametrize("prior_std", [0.0, -1.0, np.inf, np.nan])
     def test_invalid_prior_std_raises(
-        self, simple_1d_environment, simple_spike_data, prior_std
+        self, line_env_100cm, simple_spike_data, prior_std
     ):
         with pytest.raises(ValidationError, match="log_rate_prior_std"):
             _fit_encoding(
-                simple_1d_environment,
+                line_env_100cm,
                 simple_spike_data,
                 log_rate_prior_std=prior_std,
             )
 
 
 def test_encoding_fit_solves_all_cells_in_one_call(
-    monkeypatch, simple_1d_environment, simple_spike_data
+    monkeypatch, line_env_100cm, simple_spike_data
 ):
     calls = []
 
@@ -636,7 +636,7 @@ def test_encoding_fit_solves_all_cells_in_one_call(
         )
 
     monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
-    env, data = simple_1d_environment, simple_spike_data
+    env, data = line_env_100cm, simple_spike_data
     encoding = _fit_encoding(env, data)
     n_cells = len(data["spike_times"])
     assert len(calls) == 1 and calls[0][0] == n_cells
@@ -648,11 +648,11 @@ class TestFitGLMEncodingModel:
     """Test full GLM encoding model fitting."""
 
     def test_fit_glm_encoding_model_returns_expected_keys(
-        self, simple_1d_environment, simple_spike_data
+        self, line_env_100cm, simple_spike_data
     ):
         """Should return dictionary with all expected keys."""
         # Arrange
-        env = simple_1d_environment
+        env = line_env_100cm
         data = simple_spike_data
 
         # Act
@@ -669,11 +669,11 @@ class TestFitGLMEncodingModel:
         assert expected_keys.issubset(encoding.keys())
 
     def test_fit_glm_encoding_model_place_fields_shape(
-        self, simple_1d_environment, simple_spike_data
+        self, line_env_100cm, simple_spike_data
     ):
         """Place fields should have correct shape."""
         # Arrange
-        env = simple_1d_environment
+        env = line_env_100cm
         data = simple_spike_data
         n_neurons = len(data["spike_times"])
 
@@ -689,11 +689,11 @@ class TestFitGLMEncodingModel:
             assert jnp.all(pf >= 0)  # Rates should be non-negative
 
     def test_fit_glm_encoding_model_with_custom_knot_spacing(
-        self, simple_1d_environment, simple_spike_data
+        self, line_env_100cm, simple_spike_data
     ):
         """Should respect custom knot spacing parameter."""
         # Arrange
-        env = simple_1d_environment
+        env = line_env_100cm
         data = simple_spike_data
 
         # Act with different knot spacings
@@ -711,11 +711,11 @@ class TestPredictGLMLogLikelihood:
     """Test GLM log-likelihood prediction."""
 
     def test_predict_glm_log_likelihood_nonlocal_returns_correct_shape(
-        self, simple_1d_environment, simple_spike_data
+        self, line_env_100cm, simple_spike_data
     ):
         """Non-local prediction should return likelihood for all bins."""
         # Arrange
-        env = simple_1d_environment
+        env = line_env_100cm
         data = simple_spike_data
 
         encoding = _fit_encoding(env, data)
@@ -761,11 +761,11 @@ class TestPredictGLMLogLikelihood:
             )
 
     def test_predict_glm_log_likelihood_local_returns_correct_shape(
-        self, simple_1d_environment, simple_spike_data
+        self, line_env_100cm, simple_spike_data
     ):
         """Local prediction should return likelihood only at current position."""
         # Arrange
-        env = simple_1d_environment
+        env = line_env_100cm
         data = simple_spike_data
 
         encoding = _fit_encoding(env, data)
@@ -793,11 +793,11 @@ class TestPredictGLMLogLikelihood:
         assert jnp.all(jnp.isfinite(log_likelihood))
 
     def test_predict_glm_log_likelihood_with_no_spikes(
-        self, simple_1d_environment, simple_spike_data
+        self, line_env_100cm, simple_spike_data
     ):
         """With no spikes, the non-local LL is -duration * the summed place fields."""
         # Arrange
-        env = simple_1d_environment
+        env = line_env_100cm
         data = simple_spike_data
 
         encoding = _fit_encoding(env, data)
@@ -899,7 +899,7 @@ class TestWeightedEventOwnership:
         )
 
     def test_mask_transition_events_stay_on_exposed_rows(
-        self, monkeypatch, simple_1d_environment
+        self, monkeypatch, line_env_100cm
     ):
         """Mask ``[1, 1, 0, 1, 1]``. Spikes at 1.1 and 1.9 carry 0.9 and 0.1 and
         stay on row 1. The spike at 2.5 carries 0.5 and goes to row 3 (row 2 has
@@ -912,9 +912,7 @@ class TestWeightedEventOwnership:
         position = np.linspace(10.0, 90.0, 5)[:, None]
         spike_times = [np.array([1.1, 1.9, 2.5, 3.0])]
 
-        encoding = _fit_glm(
-            simple_1d_environment, position_time, position, spike_times, mask
-        )
+        encoding = _fit_glm(line_env_100cm, position_time, position, spike_times, mask)
 
         ((event_counts, exposure),) = captured
         np.testing.assert_allclose(event_counts, [0.0, 1.0, 0.0, 1.5, 0.0])
@@ -926,7 +924,7 @@ class TestWeightedEventOwnership:
         assert np.all(np.isfinite(log_likelihood))
 
     def test_event_mass_matches_interpolated_weights_and_exposure_support(
-        self, monkeypatch, simple_1d_environment
+        self, monkeypatch, line_env_100cm
     ):
         """For jittered samples, fractional weights, and a mask with gaps, each
         spike's interpolated weight is conserved and no unexposed row gets
@@ -940,7 +938,7 @@ class TestWeightedEventOwnership:
         spike_times = np.sort(rng.uniform(position_time[0], position_time[-1], 400))
 
         encoding = _fit_glm(
-            simple_1d_environment,
+            line_env_100cm,
             position_time,
             position,
             [spike_times],
@@ -958,7 +956,7 @@ class TestWeightedEventOwnership:
         assert np.all(np.isfinite(encoding["place_fields"]))
 
     def test_unit_weights_split_each_spike_between_bracketing_samples(
-        self, monkeypatch, simple_1d_environment
+        self, monkeypatch, line_env_100cm
     ):
         """Interior events split linearly; endpoint half-cell events belong
         entirely to their nearest endpoint sample."""
@@ -967,7 +965,7 @@ class TestWeightedEventOwnership:
         spike_times = [np.array([-0.5, 0.25, 1.0, 3.75, 4.0, 4.5])]
 
         _fit_glm(
-            simple_1d_environment,
+            line_env_100cm,
             position_time,
             np.linspace(10.0, 90.0, 5)[:, None],
             spike_times,

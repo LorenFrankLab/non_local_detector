@@ -22,8 +22,12 @@ from non_local_detector.likelihoods.common import (
     get_spikecount_per_time_bin,
 )
 from non_local_detector.tests.conftest import precision_mode
+from non_local_detector.tests.likelihoods.conftest import tolerance
 
 pytestmark = pytest.mark.unit
+
+# float32 bound for the compiled local KDE against its eager per-model sum.
+LOCAL_KDE_FLOAT32 = {"rtol": 1e-6, "atol": 1e-10}
 
 
 def spikes(population):
@@ -377,11 +381,15 @@ def test_no_spike_dispatch_does_not_scale_with_population(monkeypatch):
         return original(*args)
 
     monkeypatch.setattr(jax.scipy.special, "xlogy", record)
+    # Compile with the spy and drop those kernels afterwards.
     jax.clear_caches()
-    actual = no_spike.predict_no_spike_log_likelihood(
-        spikes(64), time_edges=np.arange(18) * 0.002
-    )
-    jax.block_until_ready(actual)
+    try:
+        actual = no_spike.predict_no_spike_log_likelihood(
+            spikes(64), time_edges=np.arange(18) * 0.002
+        )
+        jax.block_until_ready(actual)
+    finally:
+        jax.clear_caches()
     assert len(calls) <= 1
 
 
@@ -446,5 +454,5 @@ def test_compiled_local_kde_preserves_each_model_and_addition_order(x64, n_rows,
         )
         # Float32 allows compiled-versus-eager rounding (see above).
         np.testing.assert_allclose(
-            actual, expected, rtol=1e-10 if x64 else 1e-6, atol=1e-10
+            actual, expected, **tolerance(x64, LOCAL_KDE_FLOAT32)
         )

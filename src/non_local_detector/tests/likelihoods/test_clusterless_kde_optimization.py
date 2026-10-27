@@ -8,6 +8,7 @@ degeneracy rules of ``_log_joint_from_log_marginal``.
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from non_local_detector.likelihoods.clusterless_kde import (
     _estimate_with_enc_chunking,
@@ -27,21 +28,16 @@ from non_local_detector.likelihoods.mark_reference import MarkReference
 class TestKdeDistanceVectorized:
     """Tests for optimized linear-space KDE distance function."""
 
-    def test_numerical_equivalence_2d(self):
-        """Optimized version matches manual loop computation for 2D features."""
+    @pytest.mark.parametrize("n_dims", [2, 4, 8, 10])
+    def test_numerical_equivalence(self, n_dims):
+        """Optimized version matches manual loop computation."""
         rng = np.random.default_rng(42)
-
-        # Test data
-        n_eval = 50
-        n_samples = 100
-        n_dims = 2
-
-        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
-        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
-        std = jnp.array([1.0, 1.5])
+        eval_points = jnp.array(rng.standard_normal((30, n_dims)))
+        samples = jnp.array(rng.standard_normal((50, n_dims)))
+        std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
 
         # Reference: manual loop computation
-        distance_ref = jnp.ones((n_samples, n_eval))
+        distance_ref = jnp.ones((samples.shape[0], eval_points.shape[0]))
         for dim_eval, dim_samp, dim_std in zip(
             eval_points.T, samples.T, std, strict=False
         ):
@@ -57,50 +53,20 @@ class TestKdeDistanceVectorized:
         # Verify numerical equivalence
         assert jnp.allclose(distance_opt, distance_ref, rtol=1e-5, atol=1e-8)
 
-    def test_numerical_equivalence_high_dim(self):
-        """Vectorized version works for high-dimensional features (4D, 8D, 10D)."""
-        rng = np.random.default_rng(123)
-
-        for n_dims in [4, 8, 10]:
-            eval_points = jnp.array(rng.standard_normal((30, n_dims)))
-            samples = jnp.array(rng.standard_normal((50, n_dims)))
-            std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
-
-            # Reference
-            distance_ref = jnp.ones((samples.shape[0], eval_points.shape[0]))
-            for dim_eval, dim_samp, dim_std in zip(
-                eval_points.T, samples.T, std, strict=False
-            ):
-                distance_ref *= gaussian_pdf(
-                    jnp.expand_dims(dim_eval, axis=0),
-                    jnp.expand_dims(dim_samp, axis=1),
-                    dim_std,
-                )
-
-            # Test
-            distance_opt = kde_distance(eval_points, samples, std)
-
-            # Verify
-            assert jnp.allclose(distance_opt, distance_ref, rtol=1e-5, atol=1e-8)
-
 
 class TestLogKdeDistanceVectorized:
     """Tests for optimized log-space KDE distance function."""
 
-    def test_numerical_equivalence_2d(self):
-        """Optimized log version matches manual loop computation for 2D features."""
+    @pytest.mark.parametrize("n_dims", [2, 4, 8, 10])
+    def test_numerical_equivalence(self, n_dims):
+        """Optimized log version matches manual loop computation."""
         rng = np.random.default_rng(42)
-
-        n_eval = 50
-        n_samples = 100
-        n_dims = 2
-
-        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
-        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
-        std = jnp.array([1.0, 1.5])
+        eval_points = jnp.array(rng.standard_normal((30, n_dims)))
+        samples = jnp.array(rng.standard_normal((50, n_dims)))
+        std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
 
         # Reference: manual loop computation
-        log_dist_ref = jnp.zeros((n_samples, n_eval))
+        log_dist_ref = jnp.zeros((samples.shape[0], eval_points.shape[0]))
         for dim_eval, dim_samp, dim_std in zip(
             eval_points.T, samples.T, std, strict=False
         ):
@@ -115,32 +81,6 @@ class TestLogKdeDistanceVectorized:
 
         # Verify numerical equivalence
         assert jnp.allclose(log_dist_opt, log_dist_ref, rtol=1e-5, atol=1e-8)
-
-    def test_numerical_equivalence_high_dim(self):
-        """Optimized log version works for high-dimensional features."""
-        rng = np.random.default_rng(456)
-
-        for n_dims in [4, 8, 10]:
-            eval_points = jnp.array(rng.standard_normal((30, n_dims)))
-            samples = jnp.array(rng.standard_normal((50, n_dims)))
-            std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
-
-            # Reference
-            log_dist_ref = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-            for dim_eval, dim_samp, dim_std in zip(
-                eval_points.T, samples.T, std, strict=False
-            ):
-                log_dist_ref += log_gaussian_pdf(
-                    jnp.expand_dims(dim_eval, axis=0),
-                    jnp.expand_dims(dim_samp, axis=1),
-                    dim_std,
-                )
-
-            # Test
-            log_dist_opt = log_kde_distance(eval_points, samples, std)
-
-            # Verify
-            assert jnp.allclose(log_dist_opt, log_dist_ref, rtol=1e-5, atol=1e-8)
 
 
 class TestScaledGemmJointIntensity:
@@ -226,20 +166,19 @@ class TestScaledGemmJointIntensity:
         max_diff = float(jnp.max(jnp.abs(result - reference)))
         assert max_diff < 1e-4, f"max abs diff {max_diff:.2e}"
 
-    def test_matches_logsumexp_4d(self):
-        self._assert_matches(np.random.default_rng(42), 500, 50, 100, 4)
-
-    def test_matches_logsumexp_8d(self):
-        """At 8 features many intensities sit far below LOG_EPS; they still count."""
-        self._assert_matches(np.random.default_rng(42), 500, 50, 100, 8)
+    # At 8 features many intensities sit far below LOG_EPS; they still count.
+    # Feature count does not select an approximation: 9D is exact too.
+    @pytest.mark.parametrize(
+        "seed, n_enc, n_dec, n_pos, n_wf",
+        [(42, 500, 50, 100, 4), (42, 500, 50, 100, 8), (900, 1000, 100, 200, 9)],
+        ids=["4d", "8d", "9d"],
+    )
+    def test_matches_logsumexp(self, seed, n_enc, n_dec, n_pos, n_wf):
+        self._assert_matches(np.random.default_rng(seed), n_enc, n_dec, n_pos, n_wf)
 
     def test_matches_across_multiple_seeds(self):
         for seed in range(5):
             self._assert_matches(np.random.default_rng(seed * 100), 1000, 100, 200, 4)
-
-    def test_matches_logsumexp_9d(self):
-        """Feature count does not select an approximation: 9D is exact too."""
-        self._assert_matches(np.random.default_rng(900), 1000, 100, 200, 9)
 
     def test_output_shape_and_finite(self):
         rng = np.random.default_rng(42)

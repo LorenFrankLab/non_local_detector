@@ -35,9 +35,15 @@ from non_local_detector.likelihoods.mark_reference import (
     background_log_intensity,
 )
 from non_local_detector.tests.conftest import precision_mode
-from non_local_detector.tests.likelihoods.conftest import training_mark_references
+from non_local_detector.tests.likelihoods.conftest import (
+    tolerance,
+    training_mark_references,
+)
 
 pytestmark = pytest.mark.unit
+
+# float32 bound for the padded kernels against the per-electrode formulation.
+PER_ELECTRODE_FLOAT32 = {"rtol": 1e-5, "atol": 1e-4}
 
 
 def fit_encoding(position_time, spike_times, spike_waveform_features, **params):
@@ -250,10 +256,9 @@ def test_padded_kernels_match_the_per_electrode_formulation(recording, is_local,
         assert actual.shape == expected.shape
         assert actual.dtype == (jnp.float64 if x64 else jnp.float32)
         assert np.all(np.isfinite(actual))
-        tolerance = (
-            {"rtol": 1e-10, "atol": 1e-10} if x64 else {"rtol": 1e-5, "atol": 1e-4}
+        np.testing.assert_allclose(
+            actual, expected, **tolerance(x64, PER_ELECTRODE_FLOAT32)
         )
-        np.testing.assert_allclose(actual, expected, **tolerance)
 
 
 @pytest.mark.parametrize("is_local", [False, True])
@@ -289,7 +294,7 @@ def test_degenerate_electrodes_match_the_per_electrode_formulation(is_local):
     actual = predict(recording, is_local, slice(0, 2000))
     expected = reference(recording, is_local, slice(0, 2000))
     assert np.all(np.isfinite(actual))
-    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-4)
+    np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
 
 
 def test_high_dimensional_marks_use_the_logsumexp_path():
@@ -299,7 +304,7 @@ def test_high_dimensional_marks_use_the_logsumexp_path():
         actual = predict(recording, is_local, slice(0, 2000))
         expected = reference(recording, is_local, slice(0, 2000))
         assert np.all(np.isfinite(actual))
-        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-4)
+        np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
 
 
 def test_ragged_final_encoding_tile_counts_each_sample_once():
@@ -341,7 +346,7 @@ def test_ragged_final_encoding_tile_counts_each_sample_once():
     actual = predict(recording, False, slice(0, 1000))
     expected = reference(recording, False, slice(0, 1000))
     assert np.all(np.isfinite(actual))
-    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-4)
+    np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
 
 
 def test_electrodes_with_nearby_sizes_share_compiled_kernels():

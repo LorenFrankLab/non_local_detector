@@ -25,6 +25,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.tests.conftest import precision_mode
 from non_local_detector.tests.likelihoods.conftest import (
     FLOAT32_ROUNDING,
     training_mark_references,
@@ -506,12 +507,7 @@ def test_gmm_component_counts_use_the_fitted_array_dtype(simple_1d_environment):
     spikes = [np.array([2.0, 4.0, 6.0, 9.0])]
     feats = [np.array([[0.0, 0.0], [0.2, 0.1], [1.0, -1.0], [-0.3, 0.4]])]
     weights = np.where(t_pos < 8.0, 1.0, 1e-9)
-    if hasattr(jax, "enable_x64"):
-        enable_x64 = jax.enable_x64
-    else:
-        from jax.experimental import enable_x64
-
-    with enable_x64(True), warnings.catch_warnings():
+    with precision_mode(True), warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)  # no "reduced" warning
         encoding = fit_clusterless_gmm_encoding_model(
             position_time=t_pos,

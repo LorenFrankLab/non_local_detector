@@ -168,7 +168,7 @@ def test_streamed_fit_and_local_nonlocal_rows_preserve_original_support(
             assert type(tiled) is type(original)
             np.testing.assert_array_equal(tiled.samples_, original.samples_)
             np.testing.assert_array_equal(tiled.weights_, original.weights_)
-        tiled_tolerance = tolerance(True) if x64 else TILED_FLOAT32
+        tiled_tolerance = tolerance(x64, TILED_FLOAT32)
         for is_local in [False, True]:
             expected = predict(reference, values, is_local)
             actual = predict(encoding, values, is_local)
