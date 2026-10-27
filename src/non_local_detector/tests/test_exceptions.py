@@ -32,13 +32,93 @@ class TestExceptionHierarchy:
 
 
 @pytest.mark.unit
+class TestCommonMessageFormatting:
+    """Test message formatting shared by every exception class."""
+
+    @pytest.mark.parametrize(
+        "exc_cls, message",
+        [
+            (ValidationError, "Something went wrong"),
+            (FittingError, "Model fitting failed"),
+            (ConfigurationError, "Invalid configuration"),
+            (ConvergenceError, "Failed to converge"),
+            (DataError, "Found NaN values"),
+        ],
+        ids=[
+            "ValidationError",
+            "FittingError",
+            "ConfigurationError",
+            "ConvergenceError",
+            "DataError",
+        ],
+    )
+    def test_formats_simple_message_correctly(self, exc_cls, message):
+        """Test that an exception with just a message produces clean output."""
+        error = exc_cls(message)
+        assert str(error) == message
+
+    @pytest.mark.parametrize(
+        "exc_cls, message, kwargs, expected",
+        [
+            (
+                ValidationError,
+                "Invalid value",
+                {"expected": "x > 0", "got": "x = -1", "hint": "Use positive values"},
+                ["Hint: Use positive values"],
+            ),
+            (
+                FittingError,
+                "Model fitting failed",
+                {"hint": "Try increasing max_iterations"},
+                ["Hint: Try increasing max_iterations"],
+            ),
+            (
+                ConfigurationError,
+                "Incompatible parameters",
+                {"hint": "Use either A or B, not both"},
+                ["Hint: Use either A or B, not both"],
+            ),
+            (
+                ConvergenceError,
+                "Failed to converge",
+                {
+                    "iterations": 1000,
+                    "hint": "Try increasing max_iterations or relaxing tolerance",
+                },
+                ["Hint: Try increasing max_iterations or relaxing tolerance"],
+            ),
+            (
+                DataError,
+                "Found NaN values",
+                {
+                    "data_name": "spike_times",
+                    "hint": "Use np.nan_to_num() to replace NaN values",
+                },
+                [
+                    "data: spike_times",
+                    "Hint: Use np.nan_to_num() to replace NaN values",
+                ],
+            ),
+        ],
+        ids=[
+            "ValidationError",
+            "FittingError",
+            "ConfigurationError",
+            "ConvergenceError",
+            "DataError",
+        ],
+    )
+    def test_message_with_hint(self, exc_cls, message, kwargs, expected):
+        """Test that the hint (and any other field) appears in the message."""
+        msg = str(exc_cls(message, **kwargs))
+        assert message in msg
+        for line in expected:
+            assert line in msg
+
+
+@pytest.mark.unit
 class TestValidationError:
     """Test ValidationError message formatting."""
-
-    def test_validation_error_formats_simple_message_correctly(self):
-        """Test ValidationError with just a message produces clean output."""
-        error = ValidationError("Something went wrong")
-        assert str(error) == "Something went wrong"
 
     def test_message_with_expected_and_got(self):
         """Test ValidationError with expected and got parameters."""
@@ -47,17 +127,6 @@ class TestValidationError:
         assert "Invalid value" in msg
         assert "Expected: x > 0" in msg
         assert "Got: x = -1" in msg
-
-    def test_message_with_hint(self):
-        """Test ValidationError with hint parameter."""
-        error = ValidationError(
-            "Invalid value",
-            expected="x > 0",
-            got="x = -1",
-            hint="Use positive values",
-        )
-        msg = str(error)
-        assert "Hint: Use positive values" in msg
 
     def test_message_with_example(self):
         """Test ValidationError with example parameter."""
@@ -106,52 +175,8 @@ class TestValidationError:
 
 
 @pytest.mark.unit
-class TestFittingError:
-    """Test FittingError message formatting."""
-
-    def test_fitting_error_formats_simple_message_correctly(self):
-        """Test FittingError with just a message produces clean output."""
-        error = FittingError("Model fitting failed")
-        assert str(error) == "Model fitting failed"
-
-    def test_message_with_hint(self):
-        """Test FittingError with hint parameter."""
-        error = FittingError(
-            "Model fitting failed", hint="Try increasing max_iterations"
-        )
-        msg = str(error)
-        assert "Model fitting failed" in msg
-        assert "Hint: Try increasing max_iterations" in msg
-
-
-@pytest.mark.unit
-class TestConfigurationError:
-    """Test ConfigurationError message formatting."""
-
-    def test_configuration_error_formats_simple_message_correctly(self):
-        """Test ConfigurationError with just a message produces clean output."""
-        error = ConfigurationError("Invalid configuration")
-        assert str(error) == "Invalid configuration"
-
-    def test_message_with_hint(self):
-        """Test ConfigurationError with hint parameter."""
-        error = ConfigurationError(
-            "Incompatible parameters",
-            hint="Use either A or B, not both",
-        )
-        msg = str(error)
-        assert "Incompatible parameters" in msg
-        assert "Hint: Use either A or B, not both" in msg
-
-
-@pytest.mark.unit
 class TestConvergenceError:
     """Test ConvergenceError message formatting."""
-
-    def test_convergence_error_formats_simple_message_correctly(self):
-        """Test ConvergenceError with just a message produces clean output."""
-        error = ConvergenceError("Failed to converge")
-        assert str(error) == "Failed to converge"
 
     def test_message_with_iterations(self):
         """Test ConvergenceError with iterations parameter."""
@@ -175,25 +200,10 @@ class TestConvergenceError:
         assert "iterations: 1000" in msg
         assert "tolerance: 0.0001" in msg
 
-    def test_message_with_hint(self):
-        """Test ConvergenceError with hint parameter."""
-        error = ConvergenceError(
-            "Failed to converge",
-            iterations=1000,
-            hint="Try increasing max_iterations or relaxing tolerance",
-        )
-        msg = str(error)
-        assert "Hint: Try increasing max_iterations or relaxing tolerance" in msg
-
 
 @pytest.mark.unit
 class TestDataError:
     """Test DataError message formatting."""
-
-    def test_data_error_formats_simple_message_correctly(self):
-        """Test DataError with just a message produces clean output."""
-        error = DataError("Found NaN values")
-        assert str(error) == "Found NaN values"
 
     def test_message_with_data_name(self):
         """Test DataError with data_name parameter."""
@@ -201,18 +211,6 @@ class TestDataError:
         msg = str(error)
         assert "Found NaN values" in msg
         assert "data: spike_times" in msg
-
-    def test_message_with_hint(self):
-        """Test DataError with hint parameter."""
-        error = DataError(
-            "Found NaN values",
-            data_name="spike_times",
-            hint="Use np.nan_to_num() to replace NaN values",
-        )
-        msg = str(error)
-        assert "Found NaN values" in msg
-        assert "data: spike_times" in msg
-        assert "Hint: Use np.nan_to_num() to replace NaN values" in msg
 
 
 @pytest.mark.unit

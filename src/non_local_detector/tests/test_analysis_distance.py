@@ -567,14 +567,22 @@ class TestAheadBehindDistance2DTrackGraph:
         assert ahead_behind.shape == (n_time,)
         assert np.all(ahead_behind > 0)
 
-    def test_precomputed_direction_disconnected_graph_is_nan(self):
+    @pytest.mark.parametrize(
+        "precomputed_distance", [True, False], ids=["precomputed", "nonprecomputed"]
+    )
+    def test_direction_disconnected_graph_is_nan(self, precomputed_distance):
         """An unreachable head/MAP pair on a disconnected track graph must give
-        NaN, not a silently-wrong heading.
+        NaN, not a silently-wrong heading or a crash.
 
-        The precomputed path initializes ``first_node_on_path`` to ``-1`` and
+        Precomputed: the path initializes ``first_node_on_path`` to ``-1`` and
         only fills reachable pairs, so an unreachable pair previously indexed
         ``node_positions[-1]`` (the last node) and produced a plausible but
-        wrong ``arctan2`` direction. It must now be NaN.
+        wrong ``arctan2`` direction.
+
+        Non-precomputed: ``nx.shortest_path(source, target)`` raises
+        ``nx.NetworkXNoPath`` for a disconnected head/MAP pair. Pre-fix only
+        ``IndexError`` was caught, so it crashed; it must now warn and return
+        NaN, matching the precomputed branch and ``get_2D_distance``.
         """
         rng = np.random.default_rng(0)
         # Two dense clusters separated by a wide empty gap -> the bins between
@@ -597,45 +605,12 @@ class TestAheadBehindDistance2DTrackGraph:
             map_estimate,
             env.track_graphDD,
             env.edges_,
-            precomputed_distance=True,
+            precomputed_distance=precomputed_distance,
         )
         assert np.isnan(direction).all(), (
-            "unreachable head/MAP pair must yield NaN direction, not a "
-            f"node_positions[-1] sentinel heading; got {direction}"
-        )
-
-    def test_nonprecomputed_direction_disconnected_graph_is_nan(self):
-        """The non-precomputed branch must also NaN unreachable pairs, not crash.
-
-        ``precomputed_distance=False`` calls ``nx.shortest_path(source, target)``,
-        which raises ``nx.NetworkXNoPath`` for a disconnected head/MAP pair. Pre-
-        fix only ``IndexError`` was caught, so it crashed; it must now warn and
-        return NaN, matching the precomputed branch and ``get_2D_distance``.
-        """
-        rng = np.random.default_rng(0)
-        cluster_a = rng.random((400, 2)) * 20.0
-        cluster_b = rng.random((400, 2)) * 20.0 + 200.0
-        from non_local_detector.environment import Environment
-
-        env = Environment(place_bin_size=10.0)
-        env.fit_place_grid(np.vstack([cluster_a, cluster_b]))
-        assert nx.number_connected_components(env.track_graphDD) > 1, (
-            "test setup requires a disconnected track graph"
-        )
-
-        head_position = np.array([[10.0, 10.0]])  # in cluster A
-        map_estimate = np.array([[210.0, 210.0]])  # in cluster B (unreachable)
-
-        direction = get_map_estimate_direction_from_track_graph(
-            head_position,
-            map_estimate,
-            env.track_graphDD,
-            env.edges_,
-            precomputed_distance=False,
-        )
-        assert np.isnan(direction).all(), (
-            "unreachable head/MAP pair on the non-precomputed path must yield "
-            f"NaN, not raise or emit a wrong heading; got {direction}"
+            "unreachable head/MAP pair must yield NaN direction, not raise or "
+            f"emit a wrong (e.g. node_positions[-1] sentinel) heading; "
+            f"got {direction}"
         )
 
     def test_precomputed_distance_dict_branch_matches_generator(

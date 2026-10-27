@@ -64,8 +64,8 @@ class TestCenteredSoftmax:
 
         # Assert
         assert result.shape == (2, 3)  # Adds one column
-        for i in range(2):
-            assert np.allclose(result[i].sum(), 1.0)
+        # Same tolerances as np.allclose's defaults
+        np.testing.assert_allclose(result.sum(axis=-1), 1.0, rtol=1e-5, atol=1e-8)
 
     def test_centered_softmax_inverse_recovers_original(self):
         """Inverse should recover original values (up to constant)."""
@@ -80,26 +80,22 @@ class TestCenteredSoftmax:
         expected_ratio = np.exp(result)
         assert np.allclose(expected_ratio, [2.0, 3.0, 4.0])
 
-    def test_centered_softmax_inverse_with_zero_entry(self):
+    @pytest.mark.parametrize(
+        "y",
+        [
+            # A zero probability (e.g., impossible transition)
+            np.asarray([0.5, 0.0, 0.3, 0.2]),
+            # Zero in the last entry, which is the centering denominator
+            np.asarray([0.5, 0.3, 0.2, 0.0]),
+        ],
+        ids=["zero-entry", "zero-last-entry"],
+    )
+    def test_centered_softmax_inverse_with_zero_entry(self, y):
         """Zero entries should produce finite output, not -inf or NaN."""
-        # Arrange - row with a zero probability (e.g., impossible transition)
-        y = np.asarray([0.5, 0.0, 0.3, 0.2])
-
         # Act
         result = centered_softmax_inverse(y)
 
-        # Assert - all values should be finite (no -inf from log(0))
-        assert np.all(np.isfinite(result)), f"Got non-finite values: {result}"
-
-    def test_centered_softmax_inverse_with_zero_last_entry(self):
-        """Zero in the last (centering) entry should produce finite output."""
-        # Arrange - the last entry is used as the centering denominator
-        y = np.asarray([0.5, 0.3, 0.2, 0.0])
-
-        # Act
-        result = centered_softmax_inverse(y)
-
-        # Assert - should be finite (clipped to tiny before log)
+        # Assert - all values should be finite (clipped to tiny before log)
         assert np.all(np.isfinite(result)), f"Got non-finite values: {result}"
 
     def test_centered_softmax_inverse_with_zero_preserves_dtype(self):
@@ -183,9 +179,8 @@ class TestTransitionMatrixConstruction:
         # Assert
         assert trans.shape == (n_states, n_states)
         assert_stochastic_matrix(trans)
-        # Check diagonal values
-        for i in range(n_states):
-            assert np.allclose(trans[i, i], diag[i])
+        # Check diagonal values (same tolerances as np.allclose's defaults)
+        np.testing.assert_allclose(np.diag(trans), diag, rtol=1e-5, atol=1e-8)
 
     def test_make_transition_from_diag_extreme_values(self):
         """Handle extreme diagonal values (0 and 1)."""

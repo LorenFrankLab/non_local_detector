@@ -158,8 +158,8 @@ def test_penalty_and_kernel_simultaneous(fit_predict):
 
 @pytest.fixture(scope="module")
 def clusterless_simulated_data():
-    """Generate clusterless simulated data for testing."""
-    sim = make_simulated_run_data(n_tetrodes=5, seed=42)
+    """Clusterless simulated data for testing: three runs (70 s)."""
+    sim = make_simulated_run_data(n_tetrodes=5, n_runs=3, seed=42)
     return sim
 
 
@@ -181,7 +181,7 @@ def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
         sim.spike_waveform_features,
     )
 
-    # Decode the first 20 s (20,000 bins) of the 350 s recording.
+    # Decode the first 20 s (20,000 bins) of the 70 s recording.
     results = detector.predict(
         spike_times=sim.spike_times,
         spike_waveform_features=sim.spike_waveform_features,

@@ -244,43 +244,28 @@ class TestReturnOutputsParameter:
         assert "predictive_state_probabilities" not in results
         assert "predictive_posterior" not in results
 
-    def test_invalid_string_raises_error(self, simple_fitted_detector):
-        """Test that invalid return_outputs string raises ValueError."""
+    @pytest.mark.parametrize(
+        "return_outputs, exc, match",
+        [
+            ("invalid_option", ValueError, "Invalid return_outputs"),
+            ({"filter", "invalid_option"}, ValueError, "Invalid outputs"),
+            (123, TypeError, "return_outputs must be"),
+        ],
+        ids=["invalid-string", "invalid-set-element", "invalid-type"],
+    )
+    def test_invalid_return_outputs_raises_error(
+        self, simple_fitted_detector, return_outputs, exc, match
+    ):
+        """Test that an invalid return_outputs string, element, or type raises."""
         detector, spike_times, time, position = simple_fitted_detector
 
-        with pytest.raises(ValueError, match="Invalid return_outputs"):
+        with pytest.raises(exc, match=match):
             detector.predict(
                 spike_times=spike_times,
                 time_edges=time_edges_from_centers(time),
                 position=position,
                 position_time=time,
-                return_outputs="invalid_option",
-            )
-
-    def test_invalid_set_element_raises_error(self, simple_fitted_detector):
-        """Test that invalid element in set raises ValueError."""
-        detector, spike_times, time, position = simple_fitted_detector
-
-        with pytest.raises(ValueError, match="Invalid outputs"):
-            detector.predict(
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                position=position,
-                position_time=time,
-                return_outputs={"filter", "invalid_option"},
-            )
-
-    def test_invalid_type_raises_error(self, simple_fitted_detector):
-        """Test that invalid type for return_outputs raises TypeError."""
-        detector, spike_times, time, position = simple_fitted_detector
-
-        with pytest.raises(TypeError, match="return_outputs must be"):
-            detector.predict(
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                position=position,
-                position_time=time,
-                return_outputs=123,  # Invalid type
+                return_outputs=return_outputs,
             )
 
 

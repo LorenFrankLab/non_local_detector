@@ -9,7 +9,7 @@ import hypothesis.extra.numpy as npst
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from non_local_detector.core import (
@@ -62,23 +62,12 @@ class TestProbabilityProperties:
     @given(probability_distribution())
     def test_normalize_preserves_proportions(self, dist):
         """Property: normalization preserves relative proportions."""
-        # Skip if values are too similar (would cause numerical issues in ratio)
-        if np.std(dist) < 1e-10:
-            return
-
         normalized, _ = _normalize(jnp.asarray(dist))
 
-        # Check that ratios are preserved for distinct elements
-        # Find two distinct elements
-        sorted_indices = np.argsort(dist)
-        if len(sorted_indices) >= 2:
-            i, j = sorted_indices[0], sorted_indices[-1]
-            if dist[j] > dist[i] * 1.01:  # At least 1% different
-                original_ratio = dist[j] / (dist[i] + 1e-10)
-                normalized_ratio = normalized[j] / (normalized[i] + 1e-10)
-                assert jnp.allclose(original_ratio, normalized_ratio, rtol=1e-4)
+        # Elementwise rtol is half the 1e-4 ratio tolerance, since a ratio of
+        # two elements compounds both elements' relative errors.
+        np.testing.assert_allclose(normalized, dist / dist.sum(), rtol=5e-5)
 
-    @settings(deadline=None)  # JAX JIT compilation can exceed any fixed deadline on CI
     @given(probability_distribution(), st.integers(min_value=0, max_value=1000000))
     def test_condition_on_preserves_probability_property(self, prior, seed):
         """Property: conditioning always produces valid distribution."""

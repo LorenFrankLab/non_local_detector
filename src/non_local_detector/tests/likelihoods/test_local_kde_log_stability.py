@@ -75,7 +75,7 @@ def extreme_feature_data():
 
 
 @pytest.fixture
-def simple_1d_environment():
+def line_env_50cm():
     """Create a simple 1D environment for testing."""
     env = Environment(
         environment_name="line", place_bin_size=5.0, position_range=((0.0, 50.0),)
@@ -115,7 +115,7 @@ def _local_ll(
 
 
 def test_local_likelihood_log_space_prevents_underflow(
-    extreme_feature_data, simple_1d_environment
+    extreme_feature_data, line_env_50cm
 ):
     """Spike terms whose joint kernel underflows float32 match a float64 reference.
 
@@ -127,7 +127,7 @@ def test_local_likelihood_log_space_prevents_underflow(
     leave the background, thousands of nats away from the reference.
     """
     data = extreme_feature_data
-    env = simple_1d_environment
+    env = line_env_50cm
     position_std, waveform_std = 6.0, 3.0
     enc_model = fit_clusterless_kde_encoding_model(
         position_time=data["position_time"],
@@ -209,7 +209,7 @@ def test_local_likelihood_log_space_prevents_underflow(
 
 
 def test_local_likelihood_log_space_moderate_features(
-    extreme_feature_data, simple_1d_environment
+    extreme_feature_data, line_env_50cm
 ):
     """Test that log-space local likelihood works correctly with moderate features.
 
@@ -217,7 +217,7 @@ def test_local_likelihood_log_space_moderate_features(
     normal cases where linear-space would have worked fine.
     """
     data = extreme_feature_data
-    env = simple_1d_environment
+    env = line_env_50cm
 
     # Modify data to have moderate features (not extreme)
     rng = np.random.default_rng(0)
@@ -366,7 +366,7 @@ def test_scaled_gemm_all_zero_weights_score_the_background_not_nan(enc_tile_size
     )
 
 
-def test_log_fit_validates_features_after_windowing(simple_1d_environment):
+def test_log_fit_validates_features_after_windowing(line_env_50cm):
     """clusterless_kde fit: finiteness is checked on in-window spikes only.
 
     A NaN feature on a spike outside the encoding interval is clipped out before
@@ -374,7 +374,7 @@ def test_log_fit_validates_features_after_windowing(simple_1d_environment):
     raises."""
     from non_local_detector.exceptions import ValidationError
 
-    env = simple_1d_environment
+    env = line_env_50cm
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 50.0, 101)[:, None]
 

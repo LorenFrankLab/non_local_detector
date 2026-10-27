@@ -92,15 +92,7 @@ def test_sorted_kde_nonlocal_profile_matches_gaussian_reference():
             position_time=POSITION_TIME,
             position=POSITION,
             spike_times=[(time_edges[:-1] + time_edges[1:]) / 2.0],
-            environment=environment,
-            marginal_models=encoding_model["marginal_models"],
-            occupancy_model=encoding_model["occupancy_model"],
-            occupancy=encoding_model["occupancy"],
-            mean_rates=encoding_model["mean_rates"],
-            place_fields=encoding_model["place_fields"],
-            no_spike_part_log_likelihood=encoding_model["no_spike_part_log_likelihood"],
-            is_track_interior=encoding_model["is_track_interior"],
-            disable_progress_bar=True,
+            **encoding_model,
             is_local=False,
         )
     )
@@ -152,24 +144,9 @@ def test_clusterless_kde_nonlocal_profile_matches_gaussian_reference():
             position=POSITION,
             spike_times=[np.array([5.0])],
             spike_waveform_features=[decoding_features],
-            occupancy=encoding_model["occupancy"],
-            occupancy_model=encoding_model["occupancy_model"],
-            gpi_models=encoding_model["gpi_models"],
-            encoding_spike_waveform_features=encoding_model[
-                "encoding_spike_waveform_features"
-            ],
-            encoding_positions=encoding_model["encoding_positions"],
+            **encoding_model,
             mark_reference=mark_reference,
-            environment=environment,
-            mean_rates=encoding_model["mean_rates"],
-            summed_ground_process_intensity=encoding_model[
-                "summed_ground_process_intensity"
-            ],
-            position_std=encoding_model["position_std"],
-            waveform_std=encoding_model["waveform_std"],
             is_local=False,
-            block_size=16,
-            disable_progress_bar=True,
         )
     )
 

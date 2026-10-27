@@ -9,6 +9,7 @@ Unix-epoch grids pass and real irregularity is still detected.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector
@@ -76,7 +77,6 @@ def test_single_bin_and_integer_edges_are_valid():
 @pytest.mark.unit
 def test_array_likes_are_accepted():
     """Sequences and pandas indexes (e.g. a position index) are converted."""
-    pd = pytest.importorskip("pandas")
     np.testing.assert_array_equal(validate_time_edges([0.0, 0.5, 1.0]), [0, 0.5, 1])
     np.testing.assert_array_equal(
         validate_time_edges(pd.Index([0.0, 0.5, 1.0])), [0, 0.5, 1]

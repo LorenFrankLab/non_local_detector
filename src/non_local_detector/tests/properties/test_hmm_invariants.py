@@ -7,20 +7,15 @@ mathematical properties and invariants that should hold for all valid inputs.
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from non_local_detector.core import filter, smoother, viterbi
+from non_local_detector.tests.conftest import assert_probability_distribution
 from non_local_detector.tests.properties.strategies import (
     probability_distribution,
     stochastic_matrix,
 )
-
-
-def entropy(p):
-    """Compute Shannon entropy of probability distribution."""
-    # Avoid log(0) by adding small epsilon
-    return -jnp.sum(p * jnp.log(p + 1e-10), axis=-1)
 
 
 @pytest.mark.property
@@ -48,10 +43,7 @@ class TestHMMInvariants:
         )
 
         # Check all timesteps are valid probability distributions
-        for t in range(n_timesteps):
-            assert jnp.allclose(filtered[t].sum(), 1.0, rtol=1e-5)
-            assert jnp.all(filtered[t] >= 0)
-            assert jnp.all(filtered[t] <= 1)
+        assert_probability_distribution(filtered, rtol=1e-5, atol=1e-8)
 
     @pytest.mark.parametrize("n_states", [2, 5])
     @pytest.mark.parametrize("n_timesteps", [1, 10, 15])
@@ -124,7 +116,6 @@ class TestHMMInvariants:
             predicted = predicted / predicted.sum()
             assert jnp.allclose(filtered[t], predicted, rtol=1e-4)
 
-    @settings(deadline=None)  # JAX JIT compilation can exceed any fixed deadline
     @given(
         stochastic_matrix(min_size=2, max_size=5),
         st.integers(min_value=2, max_value=10),  # Need at least 2 timesteps
@@ -175,7 +166,8 @@ class TestHMMInvariants:
         assert jnp.isfinite(total_log_likelihood)
 
     @pytest.mark.parametrize("n_states", [2, 3, 5])
-    def test_smoother_preserves_probability_normalization(self, n_states):
+    @pytest.mark.parametrize("n_timesteps", [5, 10])
+    def test_smoother_preserves_probability_normalization(self, n_states, n_timesteps):
         """Property: smoother output should always be normalized probability distributions."""
         rng = np.random.default_rng(0)
         init = rng.random(n_states)
@@ -184,7 +176,7 @@ class TestHMMInvariants:
         trans = rng.random((n_states, n_states))
         trans = trans / trans.sum(axis=1, keepdims=True)
 
-        log_likes = rng.standard_normal((5, n_states))
+        log_likes = rng.standard_normal((n_timesteps, n_states))
 
         (_, (filtered, _)) = filter(
             jnp.asarray(init), jnp.asarray(trans), jnp.asarray(log_likes)
@@ -192,12 +184,8 @@ class TestHMMInvariants:
         smoothed = smoother(jnp.asarray(trans), filtered)
 
         # Check all timesteps are valid probability distributions
-        for t in range(len(smoothed)):
-            assert jnp.allclose(smoothed[t].sum(), 1.0, rtol=1e-5)
-            assert jnp.all(smoothed[t] >= 0)
-            assert jnp.all(smoothed[t] <= 1)
+        assert_probability_distribution(smoothed, rtol=1e-5, atol=1e-8)
 
-    @settings(deadline=None)  # JAX JIT compilation can exceed any fixed deadline
     @given(
         st.integers(min_value=3, max_value=5),
         st.data(),

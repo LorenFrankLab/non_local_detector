@@ -106,33 +106,19 @@ class TestNormalize:
         assert jnp.allclose(normalized[1] / normalized[0], 2.0)
         assert jnp.allclose(normalized[2] / normalized[0], 3.0)
 
-    def test_normalize_2d_array_axis0(self):
-        """Normalize 2D array along axis 0 (columns sum to 1)."""
+    @pytest.mark.parametrize(("axis", "const_shape"), [(0, (3,)), (1, (2,))])
+    def test_normalize_2d_array(self, axis, const_shape):
+        """Normalize 2D array along axis 0 (columns) or 1 (rows) to sum to 1."""
         # Arrange
         arr = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
 
         # Act
-        normalized, const = _normalize(arr, axis=0)
+        normalized, const = _normalize(arr, axis=axis)
 
         # Assert
-        col_sums = normalized.sum(axis=0)
-        assert jnp.allclose(col_sums, 1.0)
-        # const shape: squeeze axis 0 from (2, 3) -> (3,)
-        assert const.shape == (3,)
-
-    def test_normalize_2d_array_axis1(self):
-        """Normalize 2D array along axis 1 (rows sum to 1)."""
-        # Arrange
-        arr = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-
-        # Act
-        normalized, const = _normalize(arr, axis=1)
-
-        # Assert
-        row_sums = normalized.sum(axis=1)
-        assert jnp.allclose(row_sums, 1.0)
-        # const shape: squeeze axis 1 from (2, 3) -> (2,)
-        assert const.shape == (2,)
+        assert jnp.allclose(normalized.sum(axis=axis), 1.0)
+        # const shape: the normalized axis is squeezed from (2, 3)
+        assert const.shape == const_shape
 
     def test_normalize_single_element(self):
         """Single element should normalize to 1.0."""

@@ -27,11 +27,25 @@ from hypothesis import settings
 
 from non_local_detector.environment import Environment
 
-# CI sets HYPOTHESIS_PROFILE=ci: no per-example deadline (the first example of a
-# test includes JAX compilation) and derandomized examples, so a CI failure
-# reproduces on rerun.
+# No per-example deadline: the first example of a test includes JAX compilation.
+# CI sets HYPOTHESIS_PROFILE=ci, which also derandomizes examples so a CI
+# failure reproduces on rerun.
+settings.register_profile("dev", deadline=None)
 settings.register_profile("ci", deadline=None, derandomize=True, print_blob=True)
-settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
+
+TEST_CATEGORIES = {"unit", "integration", "property", "snapshot"}
+
+
+def pytest_collection_modifyitems(items):
+    """Mark tests without a category marker as unit tests.
+
+    ``-m unit`` / ``-m integration`` would otherwise silently skip them.
+    """
+    for item in items:
+        if not TEST_CATEGORIES & {marker.name for marker in item.iter_markers()}:
+            item.add_marker(pytest.mark.unit)
+
 
 # ==============================================================================
 # SYNTHETIC RESULTS BUILDERS
@@ -47,6 +61,13 @@ def precision_mode(x64: bool):
         yield
     finally:
         jax.config.update("jax_enable_x64", previous)
+
+
+@pytest.fixture
+def x64():
+    """Enable float64 for the rest of the test."""
+    with precision_mode(True):
+        yield
 
 
 def make_state_bins_results(

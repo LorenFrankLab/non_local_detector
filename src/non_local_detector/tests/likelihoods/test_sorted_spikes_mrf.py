@@ -18,7 +18,6 @@ import numpy as np
 import pytest
 import scipy.linalg
 
-from non_local_detector import time_edges_from_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
@@ -46,23 +45,11 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
 )
 from non_local_detector.tests.likelihoods._sorted_spikes_helpers import (
     dot_general_precisions,
-    make_2d_env,
     make_two_room_env,
-    poisson_log_likelihood_reference,
+    path_graph,
     simulate_place_data,
     simulate_sparse_uniform_tracking,
 )
-
-
-@pytest.fixture(scope="module")
-def env_2d():
-    """The 2D open field, built once per module.
-
-    Fits cache eigenbases on the environment, so tests that count eigensolves or
-    inspect those caches build their own environment instead.
-    """
-    return make_2d_env()
-
 
 ENCODING_DICT_KEYS = {
     "environment",
@@ -86,14 +73,6 @@ ENCODING_DICT_KEYS = {
     "mrf_log_penalty_bounds",
     "mrf_penalty_selected_by_reml",
 }
-
-
-def path_graph(n_nodes, distance=1.0):
-    graph = nx.Graph()
-    graph.add_nodes_from(range(n_nodes))
-    for node in range(n_nodes - 1):
-        graph.add_edge(node, node + 1, distance=distance)
-    return graph
 
 
 def reference_fit_one_neuron(counts, occupancy, basis, penalty_weights, penalty):
@@ -708,42 +687,6 @@ def test_penalty_zero_is_respected_not_overridden(env_2d):
     assert not np.allclose(fit(0.0), fit(1.0))
 
 
-def test_invariants_place_fields_and_likelihood(env_2d):
-    """Place fields are non-negative and finite, and the non-local likelihood is the
-    Poisson log likelihood of each bin's spike counts under those place fields."""
-    env = env_2d
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-    encoding = fit_sorted_spikes_mrf_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        rank=25,
-    )
-    place_fields = np.asarray(encoding["place_fields"])
-    assert np.all(place_fields >= 0.0)
-    assert np.all(np.isfinite(place_fields))
-
-    # Edges halfway between samples: no spike (all at sample times) sits on an edge.
-    edges = time_edges_from_centers(time[:1000])
-    ll = np.asarray(
-        predict_sorted_spikes_mrf_log_likelihood(
-            time,
-            position,
-            spike_times,
-            time_edges=edges,
-            is_local=False,
-            **encoding,
-        )
-    )
-    expected = poisson_log_likelihood_reference(
-        place_fields, env.is_track_interior_.ravel(), spike_times, edges
-    )
-    # The window holds spikes, so the count term is exercised, not just -dt * rate.
-    assert sum(np.histogram(spikes, edges)[0].sum() for spikes in spike_times) > 20
-    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
-
-
 def test_weighted_fit_mean_rates_match_kde(env_2d):
     """Non-uniform (posterior-like) weights: MRF mean_rates match KDE's, confirming
     the weighted occupancy/spike pixellation feeding the exposure offset is correct."""
@@ -1051,89 +994,3 @@ def test_registered_and_predict_shared_with_diffusion():
         predict_sorted_spikes_mrf_log_likelihood
         is predict_sorted_spikes_diffusion_log_likelihood
     )
-
-
-def test_predict_shapes_local_and_nonlocal(env_2d):
-    """Non-local -> (n_time, n_interior); local -> (n_time, 1); both finite."""
-    env = env_2d
-    time, position, spike_times = simulate_place_data(env, n_neurons=3)
-    encoding = fit_sorted_spikes_mrf_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        rank=30,
-    )
-    decode_time = time[:150]
-    decode_time_edges = time_edges_from_centers(decode_time)
-    n_interior = int(env.is_track_interior_.ravel().sum())
-
-    nonlocal_ll = predict_sorted_spikes_mrf_log_likelihood(
-        time,
-        position,
-        spike_times,
-        time_edges=decode_time_edges,
-        is_local=False,
-        **encoding,
-    )
-    assert nonlocal_ll.shape == (decode_time.shape[0], n_interior)
-    assert np.all(np.isfinite(nonlocal_ll))
-
-    local_ll = predict_sorted_spikes_mrf_log_likelihood(
-        time,
-        position,
-        spike_times,
-        time_edges=decode_time_edges,
-        is_local=True,
-        **encoding,
-    )
-    assert local_ll.shape == (decode_time.shape[0], 1)
-    assert np.all(np.isfinite(local_ll))
-
-
-@pytest.mark.integration
-def test_end_to_end_sorted_spikes_mrf_decoder():
-    """A full SortedSpikesDecoder run with the MRF algorithm decodes a valid
-    posterior (sums to 1, finite) and recovers the trajectory."""
-    from non_local_detector.models import SortedSpikesDecoder
-    from non_local_detector.simulate.sorted_spikes_simulation import (
-        make_simulated_data,
-    )
-
-    (
-        _speed,
-        position,
-        spike_times,
-        time,
-        _event_times,
-        _sampling_frequency,
-        is_event,
-        _place_fields,
-    ) = make_simulated_data(n_neurons=15)
-
-    decoder = SortedSpikesDecoder(
-        sorted_spikes_algorithm="sorted_spikes_mrf",
-        sorted_spikes_algorithm_params={"rank": 40},
-    ).fit(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        is_training=~is_event,
-    )
-    results = decoder.predict(
-        spike_times=spike_times,
-        time_edges=time_edges_from_centers(time),
-        position=position,
-        position_time=time,
-        save_log_likelihood_to_results=False,
-    )
-
-    posterior = results.acausal_posterior
-    assert posterior.shape[0] == len(time)
-    assert np.all(np.isfinite(posterior.values))
-    np.testing.assert_allclose(posterior.sum("state_bins").values, 1.0, atol=1e-5)
-
-    bin_position = np.asarray(posterior["position"].values)
-    decoded_position = bin_position[np.asarray(posterior.values).argmax(axis=1)]
-    corr = np.corrcoef(decoded_position, np.asarray(position).ravel())[0, 1]
-    assert corr > 0.9

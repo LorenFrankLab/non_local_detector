@@ -1197,13 +1197,13 @@ CHECK_SKIP_MARKER = "SKIP EnvironmentUnavailable"
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("axis_type", ["Auto", "Explicit"])
-def test_sharded_jax_inputs_do_not_materialize_the_recording(axis_type):
+def test_sharded_jax_inputs_do_not_materialize_the_recording():
     """A chunk call on SHARDED ``jax.Array`` inputs must not gather the inputs.
 
     Runs in a subprocess because ``XLA_FLAGS`` has to be set before JAX is
     imported and this process has already imported it. The child checks every
-    clusterless backend and both ``is_local`` values, on both mesh axis types:
+    clusterless backend and both ``is_local`` values, on both mesh axis types
+    (one mesh each, in the same child; its output names the failing case):
     under ``Auto`` the selection stays on device (nothing recording-length
     reaches the host); under ``Explicit`` JAX refuses a gather whose output
     sharding it cannot infer, so the documented fallback gathers first — it must
@@ -1211,7 +1211,7 @@ def test_sharded_jax_inputs_do_not_materialize_the_recording(axis_type):
     """
     script = Path(__file__).with_name("_sharded_jax_input_check.py")
     result = subprocess.run(
-        [sys.executable, str(script), "2", axis_type],
+        [sys.executable, str(script), "2", "Auto,Explicit"],
         capture_output=True,
         text=True,
         timeout=900,

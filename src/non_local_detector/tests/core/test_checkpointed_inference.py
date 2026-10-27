@@ -18,16 +18,8 @@ from non_local_detector.discrete_state_transitions import (
     estimate_discrete_transition_responses_from_factorized_posteriors,
 )
 from non_local_detector.result_store import open_result_store
-from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture
-def x64():
-    """Enable float64 for the rest of the test."""
-    with precision_mode(True):
-        yield
 
 
 def problem(covariate=False, n_time=13):

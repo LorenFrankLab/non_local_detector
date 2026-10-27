@@ -15,6 +15,10 @@ from non_local_detector import (
     Uniform,
 )
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _SORTED_SPIKES_ALGORITHMS,
+)
 from non_local_detector.likelihoods.mark_reference import REFERENCE_DEGREES_OF_FREEDOM
 from non_local_detector.models.cont_frag_model import (
     ContFragClusterlessClassifier,
@@ -121,10 +125,6 @@ def _call_model(detector, entry, time, position, spike_args):
 def test_later_active_entry_rejected_before_any_backend_or_hmm_work(
     multi_entry_recording, monkeypatch, entry, corruption
 ):
-    from non_local_detector.likelihoods import (
-        _CLUSTERLESS_ALGORITHMS,
-        _SORTED_SPIKES_ALGORITHMS,
-    )
     from non_local_detector.models import base
 
     fitted, time, position, spike_args, _, later_key, _ = multi_entry_recording
@@ -336,21 +336,9 @@ def test_missing_encoding_container_cannot_bypass_concrete_model_guard(
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "algorithm",
-    [
-        "sorted_spikes_kde",
-        "sorted_spikes_glm",
-        "sorted_spikes_diffusion",
-        "sorted_spikes_mrf",
-        "clusterless_kde",
-        "clusterless_gmm",
-        "clusterless_diffusion",
-    ],
+    [*_SORTED_SPIKES_ALGORITHMS, *_CLUSTERLESS_ALGORITHMS],
 )
 def test_direct_predictors_validate_supplied_units_and_default_to_hz(algorithm):
-    from non_local_detector.likelihoods import (
-        _CLUSTERLESS_ALGORITHMS,
-        _SORTED_SPIKES_ALGORITHMS,
-    )
     from non_local_detector.tests.models._helpers import _decoder
 
     time = np.arange(500) * 0.002

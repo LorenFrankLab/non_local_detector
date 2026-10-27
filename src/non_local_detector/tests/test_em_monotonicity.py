@@ -46,18 +46,25 @@ def sim():
 
 @pytest.fixture(scope="module")
 def sorted_sim():
-    """Five-neuron sorted-spikes recording: its speed and the EM fit arguments."""
+    """Five-neuron sorted-spikes recording: its speed and the EM fit arguments.
+
+    The first 10,000 samples of the seed-42 simulation, with spike trains cut
+    to the same window. Long enough that the discrete transitions move, and that the default
+    stickiness lowers the marginal log-likelihood within four EM iterations.
+    """
     speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
         seed=42, n_neurons=5
     )
+    n = 10_000
+    time = time[:n]
     return SimpleNamespace(
-        speed=speed,
+        speed=speed[:n],
         fit_args={
             "position_time": time,
-            "position": position,
-            "spike_times": spike_times,
+            "position": position[:n],
+            "spike_times": [st[st <= time[-1]] for st in spike_times],
             "time_edges": time_edges_from_centers(time),
-            "is_training": ~is_event,
+            "is_training": ~is_event[:n],
         },
     )
 
@@ -540,7 +547,7 @@ class TestEMMonitorsMapObjective:
             warnings.simplefilter("always")
             results = detector.estimate_parameters(
                 **sorted_sim.fit_args,
-                max_iter=10,
+                max_iter=4,
                 tolerance=1e-14,
                 estimate_encoding_model=False,
                 transition_representation=transition_representation,
@@ -568,7 +575,7 @@ class TestEMMonitorsMapObjective:
             results = detector.estimate_parameters(
                 **sorted_sim.fit_args,
                 discrete_transition_covariate_data={"speed": sorted_sim.speed},
-                max_iter=10,
+                max_iter=4,
                 tolerance=1e-14,
                 estimate_encoding_model=False,
                 transition_representation=transition_representation,

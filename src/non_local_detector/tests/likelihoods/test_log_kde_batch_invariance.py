@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
     log_kde_distance,
 )
+from non_local_detector.tests.conftest import precision_mode
 from non_local_detector.tests.likelihoods.conftest import realistic_log_background
 
 # Below ``log_background + log(eps)`` an intensity cannot change a float32 term.
@@ -401,14 +402,6 @@ def test_large_encoding_sets_keep_compiled_kernel_workspace_bounded(encoding_cou
     assert workspace <= 32 * 2**20, f"{workspace / 2**20:.1f} MiB"
 
 
-def _enable_x64():
-    if hasattr(jax, "enable_x64"):
-        return jax.enable_x64(True)
-    from jax.experimental import enable_x64
-
-    return enable_x64(True)
-
-
 @pytest.mark.unit
 @pytest.mark.parametrize("use_streaming", [False, True])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
@@ -430,7 +423,7 @@ def test_reduction_dtypes_stay_consistent_with_x64_enabled(dtype, use_streaming)
     )
     log_background = np.array(realistic_log_background(decoding))
 
-    with _enable_x64():
+    with precision_mode(True):
         streaming = {
             "use_streaming": True,
             "encoding_positions": jnp.asarray(encoding_positions, dtype),
@@ -464,7 +457,7 @@ def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
     log_intensity = -gap - n_features * np.log(std * np.sqrt(2 * np.pi)) - np.log(1e-14)
     log_background = np.asarray(realistic_log_background(np.zeros((1, n_features))))
     expected = np.logaddexp(log_intensity, float(log_background[0]))
-    with _enable_x64():
+    with precision_mode(True):
         out = estimate_log_joint_mark_intensity(
             jnp.zeros((1, n_features), jnp.float32),
             jnp.asarray(encoded),

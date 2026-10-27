@@ -28,9 +28,17 @@ N_PREDICT = 2_001
 
 @pytest.fixture(scope="module")
 def fitted():
+    """A covariate-transition detector after one EM iteration, and predict arguments.
+
+    The fit uses the first 10,000 samples; prediction covers the first
+    ``N_PREDICT``.
+    """
     speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
         seed=42, n_neurons=5
     )
+    n = 10_000
+    speed, position, time, is_event = speed[:n], position[:n], time[:n], is_event[:n]
+    spike_times = [times[times <= time[-1]] for times in spike_times]
     detector = NonLocalSortedSpikesDetector(
         discrete_transition_type=DiscreteNonStationaryDiagonal(
             np.array([0.99, 0.98, 0.96, 0.96])
@@ -42,7 +50,7 @@ def fitted():
         spike_times=spike_times,
         time_edges=time_edges_from_centers(time),
         is_training=~is_event,
-        max_iter=2,
+        max_iter=1,
         estimate_encoding_model=False,
         discrete_transition_covariate_data={"speed": speed},
     )

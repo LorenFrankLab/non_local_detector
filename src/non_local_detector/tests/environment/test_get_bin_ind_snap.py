@@ -13,29 +13,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
-
-
-def _make_two_arm_track():
-    """Two-segment linearized track with a gap (edge_spacing > 0)."""
-    g = nx.Graph()
-    g.add_node(0, pos=(0.0, 0.0))
-    g.add_node(1, pos=(50.0, 0.0))
-    g.add_node(2, pos=(60.0, 0.0))
-    g.add_node(3, pos=(110.0, 0.0))
-    g.add_edge(0, 1, distance=50.0, edge_id=0)
-    g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-    env = Environment(
-        environment_name="two-arm",
-        place_bin_size=5.0,
-        track_graph=g,
-        edge_order=[(0, 1), (2, 3)],
-        edge_spacing=10.0,
-    )
-    position_1d = np.concatenate(
-        [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-    )
-    return env.fit_place_grid(position_1d, infer_track_interior=True)
+from non_local_detector.tests.models._helpers import make_two_arm_track
 
 
 @pytest.mark.unit
@@ -50,7 +28,7 @@ class TestGetBinIndSnap:
         assigns the position to the gap bin; it must instead land on the last
         arm-A interior bin.
         """
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         edges = env.edges_[0]
         interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
 
@@ -75,7 +53,7 @@ class TestGetBinIndSnap:
 
     def test_snaps_position_in_middle_of_gap(self):
         """Position in the middle of a gap bin snaps to a flanking interior bin."""
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         is_interior = env.is_track_interior_.ravel()
         gap_bins = np.where(~is_interior)[0]
         gap_center = env.place_bin_centers_[gap_bins[0], 0]
@@ -87,7 +65,7 @@ class TestGetBinIndSnap:
 
     def test_preserves_interior_bin_assignment(self):
         """Position already on an interior bin is returned unchanged."""
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         is_interior = env.is_track_interior_.ravel()
         interior_bin_indices = np.where(is_interior)[0]
         # Use the center of the first interior bin.
@@ -160,7 +138,7 @@ class TestGetBinIndSnap:
 
     def test_snaps_vectorized_mixed_input(self):
         """A batch of positions, some on interior bins, some on gap edges, all snap correctly."""
-        env = _make_two_arm_track()
+        env = make_two_arm_track()
         edges = env.edges_[0]
         is_interior = env.is_track_interior_.ravel()
         interior_bin_indices = np.where(is_interior)[0]

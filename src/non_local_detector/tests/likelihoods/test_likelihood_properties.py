@@ -97,21 +97,13 @@ def _fit_sorted_kde(env, t, pos, spike_times):
     )
 
 
-def _predict_sorted_kde(enc, env, t, pos, spike_times, is_local=False):
+def _predict_sorted_kde(enc, t, pos, spike_times, is_local=False):
     return predict_sorted_spikes_kde_log_likelihood(
         time_edges=jnp.linspace(0.0, 1.0, 6),
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=is_local,
     )
 
@@ -130,20 +122,14 @@ def _fit_sorted_glm(env, t, pos, spike_times):
     )
 
 
-def _predict_sorted_glm(enc, env, t, pos, spike_times, is_local=False):
+def _predict_sorted_glm(enc, t, pos, spike_times, is_local=False):
     return predict_sorted_spikes_glm_log_likelihood(
         time_edges=jnp.linspace(0.0, 1.0, 6),
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
-        environment=env,
-        coefficients=enc["coefficients"],
-        emission_design_info=enc["emission_design_info"],
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
+        **enc,
         is_local=is_local,
-        disable_progress_bar=True,
     )
 
 
@@ -168,20 +154,9 @@ def _fit_predict_clusterless_kde(
         position=jnp.asarray(pos),
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        occupancy=enc["occupancy"],
-        occupancy_model=enc["occupancy_model"],
-        gpi_models=enc["gpi_models"],
-        encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
-        encoding_positions=enc["encoding_positions"],
+        **enc,
         mark_reference=fit_mark_references(spike_features, 1.0),
-        environment=env,
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc["position_std"]),
-        waveform_std=jnp.asarray(enc["waveform_std"]),
         is_local=is_local,
-        disable_progress_bar=True,
-        block_size=8,
     )
     return enc, ll
 
@@ -207,18 +182,9 @@ def _fit_predict_clusterless_gmm(
         position=jnp.asarray(pos),
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        environment=env,
-        occupancy_model=enc["occupancy_model"],
-        interior_place_bin_centers=enc["interior_place_bin_centers"],
-        log_occupancy=enc["log_occupancy"],
-        gpi_models=enc["gpi_models"],
-        joint_models=enc["joint_models"],
-        mean_rates=enc["mean_rates"],
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        mark_dimensions=enc["mark_dimensions"],
+        **enc,
         mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
         is_local=is_local,
-        disable_progress_bar=True,
     )
     return enc, ll
 
@@ -244,7 +210,7 @@ class TestLikelihoodNoNaN:
         spikes_per_electrode=st.integers(min_value=5, max_value=10),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=8, deadline=None, derandomize=True)
+    @settings(max_examples=8, derandomize=True)
     def test_clusterless_kde_output_no_nan(
         self, n_electrodes, n_time, n_features, spikes_per_electrode, seed
     ):
@@ -261,7 +227,7 @@ class TestLikelihoodNoNaN:
         spikes_per_electrode=st.integers(min_value=8, max_value=12),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=5, deadline=None, derandomize=True)
+    @settings(max_examples=5, derandomize=True)
     def test_clusterless_gmm_output_no_nan(
         self, n_electrodes, n_time, n_features, spikes_per_electrode, seed
     ):
@@ -287,46 +253,30 @@ class TestLocalNonlocalFiniteness:
     local against the non-local bin where the animal sits at a bin centre.
     """
 
+    @pytest.mark.parametrize(
+        "fit, predict",
+        [
+            (_fit_sorted_kde, _predict_sorted_kde),
+            (_fit_sorted_glm, _predict_sorted_glm),
+        ],
+        ids=["kde", "glm"],
+    )
     @given(
         n_neurons=st.integers(min_value=1, max_value=3),
         n_time=st.integers(min_value=30, max_value=50),
         spikes_per_neuron=st.integers(min_value=3, max_value=10),
         seed=st.integers(min_value=0, max_value=1000),
     )
-    @settings(max_examples=10, deadline=None, derandomize=True)
-    def test_sorted_kde_likelihoods_finite(
-        self, n_neurons, n_time, spikes_per_neuron, seed
+    @settings(max_examples=10, derandomize=True)
+    def test_sorted_likelihoods_finite(
+        self, fit, predict, n_neurons, n_time, spikes_per_neuron, seed
     ):
         t, pos, spikes = _make_sorted_spike_data(
             seed, n_neurons, n_time, spikes_per_neuron
         )
-        enc = _fit_sorted_kde(ENV, t, pos, spikes)
-        ll_nonlocal = _predict_sorted_kde(enc, ENV, t, pos, spikes)
-        ll_local = _predict_sorted_kde(enc, ENV, t, pos, spikes, is_local=True)
+        enc = fit(ENV, t, pos, spikes)
+        ll_nonlocal = predict(enc, t, pos, spikes)
+        ll_local = predict(enc, t, pos, spikes, is_local=True)
 
-        assert jnp.all(jnp.isfinite(ll_local)), (
-            f"Local KDE LL contains NaN/Inf: {ll_local}"
-        )
-        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local KDE LL contains NaN/Inf"
-
-    @given(
-        n_neurons=st.integers(min_value=1, max_value=3),
-        n_time=st.integers(min_value=30, max_value=50),
-        spikes_per_neuron=st.integers(min_value=3, max_value=10),
-        seed=st.integers(min_value=0, max_value=1000),
-    )
-    @settings(max_examples=10, deadline=None, derandomize=True)
-    def test_sorted_glm_likelihoods_finite(
-        self, n_neurons, n_time, spikes_per_neuron, seed
-    ):
-        t, pos, spikes = _make_sorted_spike_data(
-            seed, n_neurons, n_time, spikes_per_neuron
-        )
-        enc = _fit_sorted_glm(ENV, t, pos, spikes)
-        ll_nonlocal = _predict_sorted_glm(enc, ENV, t, pos, spikes)
-        ll_local = _predict_sorted_glm(enc, ENV, t, pos, spikes, is_local=True)
-
-        assert jnp.all(jnp.isfinite(ll_local)), (
-            f"Local GLM LL contains NaN/Inf: {ll_local}"
-        )
-        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local GLM LL contains NaN/Inf"
+        assert jnp.all(jnp.isfinite(ll_local)), f"Local LL contains NaN/Inf: {ll_local}"
+        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local LL contains NaN/Inf"

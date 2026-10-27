@@ -5,9 +5,19 @@ trains, and several modules check the precision of traced matmuls. Keeping these
 helpers here lets the test modules share them without importing one another.
 """
 
+import networkx as nx
 import numpy as np
 
 from non_local_detector.environment import Environment
+
+
+def path_graph(n_nodes: int, distance: float = 1.0) -> nx.Graph:
+    """1D chain 0-1-...-(n-1) with uniform ``distance`` edge attribute."""
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n_nodes))
+    for node in range(n_nodes - 1):
+        graph.add_edge(node, node + 1, distance=distance)
+    return graph
 
 
 def make_2d_env(seed: int = 0) -> Environment:
@@ -19,6 +29,25 @@ def make_2d_env(seed: int = 0) -> Environment:
         place_bin_size=5.0,
         position_range=((0.0, 50.0), (0.0, 50.0)),
     ).fit_place_grid(position, infer_track_interior=True)
+
+
+def make_linear_track_env(edge_spacing: float) -> Environment:
+    """Two-edge linearized track sharing a junction node (a continuous line 0..10.5)."""
+    graph = nx.Graph()
+    graph.add_node(0, pos=(0.0, 0.0))
+    graph.add_node(1, pos=(5.0, 0.0))
+    graph.add_node(2, pos=(10.5, 0.0))
+    graph.add_edge(0, 1, distance=5.0)
+    graph.add_edge(1, 2, distance=5.5)
+    for eid, edge in enumerate(graph.edges):
+        graph.edges[edge]["edge_id"] = eid
+    return Environment(
+        environment_name="line2",
+        place_bin_size=1.0,
+        track_graph=graph,
+        edge_order=[(0, 1), (1, 2)],
+        edge_spacing=edge_spacing,
+    ).fit_place_grid()
 
 
 def simulate_place_data(env, n_neurons=3, n_time=3000, seed=1, sampling_frequency=100):

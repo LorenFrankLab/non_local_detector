@@ -25,6 +25,7 @@ from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
 )
+from non_local_detector.tests.likelihoods._sorted_spikes_helpers import make_2d_env
 
 ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 
@@ -66,9 +67,21 @@ def reduction_path(request, monkeypatch):
         yield request.param
 
 
-def tolerance(x64: bool) -> dict[str, float]:
-    """Float64 references at 1e-10; float32 at the rounding bound above."""
-    return {"rtol": 1e-10, "atol": 1e-10} if x64 else FLOAT32_ROUNDING
+def tolerance(
+    x64: bool, float32: dict[str, float] = FLOAT32_ROUNDING
+) -> dict[str, float]:
+    """Float64 references at 1e-10; float32 at ``float32`` (the bound above)."""
+    return {"rtol": 1e-10, "atol": 1e-10} if x64 else float32
+
+
+@pytest.fixture(scope="module")
+def env_2d():
+    """The 2D open field, built once per module.
+
+    Fits cache eigenbases on the environment, so tests that count eigensolves or
+    inspect those caches build their own environment instead.
+    """
+    return make_2d_env()
 
 
 def parity_kwargs(algorithm: str, *, is_local: bool = False) -> dict[str, float]:

@@ -117,7 +117,7 @@ class TestSamplePosterior:
         """Bin width changes the within-bin density, not the bin's mass."""
         from scipy.stats import rv_histogram  # type: ignore[import-untyped]
 
-        def draw_quantiles(distribution, size):
+        def draw_quantiles(distribution, size, random_state=None):
             return distribution.ppf((np.arange(size) + 0.5) / size)
 
         monkeypatch.setattr(rv_histogram, "rvs", draw_quantiles)
@@ -138,7 +138,7 @@ class TestSamplePosterior:
         probs[0, peak_idx] = 1.0
         posterior = xr.DataArray(probs, dims=["time", "position"])
 
-        samples = sample_posterior(posterior, bin_edges, n_samples=100)
+        samples = sample_posterior(posterior, bin_edges, n_samples=100, rng=0)
 
         assert samples.shape == (1, 100)
         assert np.all(samples >= bin_edges[peak_idx])
@@ -150,7 +150,7 @@ class TestSamplePosterior:
         probs = np.array([[0.2, 0.2, 0.2, 0.2, 0.2]])
         posterior = xr.DataArray(probs, dims=["time", "position"])
 
-        samples = sample_posterior(posterior, bin_edges, n_samples=500)
+        samples = sample_posterior(posterior, bin_edges, n_samples=500, rng=0)
 
         assert np.all(samples >= bin_edges[0])
         assert np.all(samples <= bin_edges[-1])
@@ -161,7 +161,7 @@ class TestSamplePosterior:
         probs = np.array([[0.5, 0.3, 0.2], [0.1, 0.1, 0.8]])
         posterior = xr.DataArray(probs, dims=["time", "position"])
 
-        samples = sample_posterior(posterior, bin_edges, n_samples=50)
+        samples = sample_posterior(posterior, bin_edges, n_samples=50, rng=0)
 
         assert samples.shape == (2, 50)
 
@@ -173,15 +173,40 @@ class TestSamplePosterior:
         posterior = xr.DataArray(probs, dims=["time", "position"])
         expected_mean = np.sum(probs[0] * bin_centers)
 
-        # sample_posterior draws from scipy's global RNG; seed it and restore it.
-        rng_state = np.random.get_state()
-        np.random.seed(0)
-        try:
-            samples = sample_posterior(posterior, bin_edges, n_samples=10000)
-        finally:
-            np.random.set_state(rng_state)
+        samples = sample_posterior(posterior, bin_edges, n_samples=10000, rng=0)
         sample_mean = np.mean(samples)
 
         # Variance = 0.2 (between bins) + 1/12 (uniform within a bin), so the
         # SEM for n=10000 is about 0.0053 and 0.05 is about 9 SEM.
         assert abs(sample_mean - expected_mean) < 0.05
+
+    def test_rng_seed_reproduces_samples(self):
+        """The same seed or an equally seeded Generator gives the same samples."""
+        bin_edges = np.arange(0.0, 4.0)
+        posterior = xr.DataArray(
+            [[0.5, 0.3, 0.2], [0.1, 0.1, 0.8]], dims=["time", "position"]
+        )
+
+        first = sample_posterior(posterior, bin_edges, n_samples=50, rng=3)
+
+        np.testing.assert_array_equal(
+            first, sample_posterior(posterior, bin_edges, n_samples=50, rng=3)
+        )
+        np.testing.assert_array_equal(
+            first,
+            sample_posterior(
+                posterior, bin_edges, n_samples=50, rng=np.random.default_rng(3)
+            ),
+        )
+        assert not np.array_equal(
+            first, sample_posterior(posterior, bin_edges, n_samples=50, rng=4)
+        )
+
+    def test_int_seed_draws_each_time_point_independently(self):
+        """An int seed must not restart the stream at every time point."""
+        bin_edges = np.arange(0.0, 4.0)
+        posterior = xr.DataArray(np.full((2, 3), 1.0 / 3.0), dims=["time", "position"])
+
+        samples = sample_posterior(posterior, bin_edges, n_samples=50, rng=0)
+
+        assert not np.array_equal(samples[0], samples[1])
