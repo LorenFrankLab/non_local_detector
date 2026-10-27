@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass
 from functools import partial
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -14,8 +15,11 @@ from patsy import (  # type: ignore[import-untyped]
     stateful_transform,
 )
 from patsy.splines import BS  # type: ignore[import-untyped]
-from scipy.optimize import minimize  # type: ignore[import-untyped]
-from scipy.special import softmax, xlogy  # type: ignore[import-untyped]
+from scipy.interpolate import BSpline  # type: ignore[import-untyped]
+from scipy.linalg import cho_factor, cho_solve  # type: ignore[import-untyped]
+from scipy.optimize import minimize, minimize_scalar  # type: ignore[import-untyped]
+from scipy.special import expit, logit, softmax, xlogy  # type: ignore[import-untyped]  # type: ignore[import-untyped]
+from scipy.stats import norm  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -915,6 +919,37 @@ def get_transition_prior(
     return np.maximum(concentration * np.ones((n_states,)) + stickiness_arr, 1e-10)
 
 
+class CovariateTransitionFit(NamedTuple):
+    """A covariate-dependent discrete transition fit by
+    :func:`_fit_covariate_transition`.
+
+    Attributes
+    ----------
+    coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+    transition : np.ndarray, shape (n_time, n_states, n_states)
+    smoothness : np.ndarray, shape (n_states,)
+        Curvature-penalty strength of each row.
+    covariance : np.ndarray, shape (n_states, n_parameters, n_parameters)
+        Laplace (posterior) covariance of each row's flattened coefficients,
+        ``n_parameters = n_coefficients * (n_states - 1)``: the inverse
+        Hessian of the row's penalized loss at the fit. Zero for frozen rows.
+    """
+
+    coefficients: np.ndarray
+    transition: np.ndarray
+    smoothness: np.ndarray
+    covariance: np.ndarray
+
+
+# REML searches the curvature-penalty strength over this grid of log10
+# strengths, then refines the best grid point within one decade to this
+# log10 tolerance. Above 1e6 the fitted curve is already its linear limit
+# (transitions move by < 0.002) and the row's Hessian has condition numbers
+# above 1e13, so its log-determinant, and the LAML, are numerical noise.
+_REML_LOG10_GRID = np.arange(-4.0, 6.5, 1.0)
+_REML_LOG10_TOLERANCE = 0.02
+
+
 def estimate_non_stationary_state_transition_from_responses(
     transition_coefficients: np.ndarray,
     design_matrix: np.ndarray,
@@ -926,13 +961,16 @@ def estimate_non_stationary_state_transition_from_responses(
     maxiter: int | None = 100,
     disp: bool = False,
     frozen_rows: np.ndarray | None = None,
+    smoothness: float | np.ndarray | str = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate a non-stationary transition model from expected counts.
 
     Each row maximizes its expected complete-data log-likelihood, summed over
     time bins, plus a Dirichlet prior counted once per row (as for stationary
-    transitions, so ``stickiness`` means the same pseudo-counts for both) and
-    an L2 penalty, in float64. See :func:`dirichlet_neg_log_likelihood`.
+    transitions, so ``stickiness`` means the same pseudo-counts for both), an
+    L2 penalty and an optional curvature penalty, in float64. See
+    :func:`dirichlet_neg_log_likelihood`.
 
     Parameters
     ----------
@@ -961,6 +999,13 @@ def estimate_non_stationary_state_transition_from_responses(
     frozen_rows : np.ndarray of bool, shape (n_states,), optional
         Rows that keep their ``transition_coefficients`` instead of being
         estimated. None (default) estimates every row.
+    smoothness : float, np.ndarray of shape (n_states,), or "reml", optional
+        Strength of the curvature penalty on the ``quantile_bs`` terms, by
+        default 0.0 (none). "reml" chooses each row's strength by maximizing
+        its Laplace approximate marginal likelihood.
+    smoothness_matrix : np.ndarray, shape (n_coefficients, n_coefficients), optional
+        Curvature penalty from :func:`_smoothness_matrix`, needed when
+        ``smoothness`` is not 0.
 
     Returns
     -------
@@ -969,10 +1014,115 @@ def estimate_non_stationary_state_transition_from_responses(
     estimated_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
         Resulting non-stationary transition matrix.
     """
+    fit = _fit_covariate_transition(
+        transition_coefficients,
+        design_matrix,
+        response,
+        concentration=concentration,
+        stickiness=stickiness,
+        transition_regularization=transition_regularization,
+        smoothness=smoothness,
+        smoothness_matrix=smoothness_matrix,
+        optimization_method=optimization_method,
+        maxiter=maxiter,
+        disp=disp,
+        frozen_rows=frozen_rows,
+    )
+    return fit.coefficients, fit.transition
+
+
+def _row_smoothness(
+    smoothness: float | np.ndarray | str,
+    initial_smoothness: np.ndarray | None,
+    smoothness_matrix: np.ndarray | None,
+    n_states: int,
+) -> tuple[np.ndarray, bool]:
+    """Validated per-row curvature-penalty strengths to start from.
+
+    Returns
+    -------
+    smoothness : np.ndarray, shape (n_states,)
+        The fixed strengths, or the REML starting strengths
+        (``initial_smoothness``, else 1).
+    estimate : bool
+        Whether REML estimates the strengths.
+    """
+    estimate = isinstance(smoothness, str)
+    if estimate and smoothness != "reml":
+        raise ValueError(
+            f'smoothness must be a float >= 0 or "reml", got {smoothness!r}.'
+        )
+    if estimate:
+        values = (
+            np.ones(n_states)
+            if initial_smoothness is None
+            else np.asarray(initial_smoothness, dtype=np.float64)
+        )
+    else:
+        values = np.asarray(smoothness, dtype=np.float64)
+    values = np.broadcast_to(values, (n_states,)).astype(np.float64)
+    if np.any(~np.isfinite(values) | (values < 0.0)):
+        raise ValueError(f"smoothness must be finite and >= 0, got {values}.")
+    if (estimate or np.any(values > 0.0)) and (
+        smoothness_matrix is None or not np.any(smoothness_matrix)
+    ):
+        raise ValueError(
+            "A smoothness penalty needs a quantile_bs term in the transition "
+            "formula, e.g. '1 + quantile_bs(speed)'."
+        )
+    return values, estimate
+
+
+def _fit_covariate_transition(
+    transition_coefficients: np.ndarray,
+    design_matrix: np.ndarray,
+    response: np.ndarray,
+    concentration: float = 1.0,
+    stickiness: float | np.ndarray = 0.0,
+    transition_regularization: float = 0.1,
+    smoothness: float | np.ndarray | str = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
+    initial_smoothness: np.ndarray | None = None,
+    optimization_method: str = "trust-exact",
+    maxiter: int | None = 100,
+    disp: bool = False,
+    frozen_rows: np.ndarray | None = None,
+) -> CovariateTransitionFit:
+    """Fit a covariate-dependent transition, its smoothness and covariance.
+
+    With ``smoothness="reml"``, each row's curvature-penalty strength
+    maximizes the row's Laplace approximate marginal likelihood (LAML, the
+    REML criterion of Wood, 2011, J. R. Stat. Soc. B 73:3 for non-Gaussian
+    models) ``-L(beta) + log|Q|_+ / 2 - log|A| / 2``, with ``beta`` the
+    penalized fit, ``L`` the penalized loss, ``Q`` the prior precision (twice
+    the penalty) and ``A`` the Hessian of ``L``, given the E-step's expected
+    transitions. The LAML can have more than one local maximum (the L2
+    penalty and the curvature penalty both shrink the curve), so the
+    strength is searched over a grid of decades and then refined. The L2
+    penalty stays fixed and keeps rare transitions from running off along the
+    curvature penalty's unpenalized linear trends.
+
+    Parameters
+    ----------
+    transition_coefficients, design_matrix, response, concentration, stickiness,
+    transition_regularization, optimization_method, maxiter, disp, frozen_rows,
+    smoothness, smoothness_matrix
+        As in :func:`estimate_non_stationary_state_transition_from_responses`.
+    initial_smoothness : np.ndarray, shape (n_states,), optional
+        Starting strengths for REML (e.g. the previous EM iteration's), by
+        default 1. The strengths of frozen rows. Ignored for fixed
+        ``smoothness``.
+
+    Returns
+    -------
+    fit : CovariateTransitionFit
+    """
     n_coefficients, n_states = transition_coefficients.shape[:2]
     estimated_transition_coefficients = np.zeros(
         (n_coefficients, n_states, (n_states - 1))
     )
+    n_parameters = n_coefficients * (n_states - 1)
+    covariance = np.zeros((n_states, n_parameters, n_parameters))
 
     design_matrix = np.asarray(design_matrix, dtype=np.float64)
     n_time = design_matrix.shape[0]
@@ -980,6 +1130,9 @@ def estimate_non_stationary_state_transition_from_responses(
 
     alpha = get_transition_prior(concentration, stickiness, n_states)
     _assert_map_compatible_alpha(alpha)
+    row_smoothness, estimate_smoothness = _row_smoothness(
+        smoothness, initial_smoothness, smoothness_matrix, n_states
+    )
 
     options: dict = {}
     if maxiter is not None:
@@ -994,21 +1147,67 @@ def estimate_non_stationary_state_transition_from_responses(
         options["ftol"] = 0.0
         options["gtol"] = 1e-7
 
+    def penalty(strength: float) -> np.ndarray:
+        return _penalty_matrix(
+            n_coefficients, transition_regularization, strength, smoothness_matrix
+        )
+
     with _float64_jax():
         # Every row's fit shares the design matrix's blocks.
         design_blocks = _transition_blocks(design_matrix[:-1])
         for from_state, row_alpha in enumerate(alpha):
-            if frozen_rows is not None and frozen_rows[from_state]:
-                row_coefficients = transition_coefficients[:, from_state, :]
-            else:
-                row_coefficients = _fit_covariate_row(
-                    transition_coefficients[:, from_state, :],
-                    *_row_problem(design_blocks, response[:, from_state, :], row_alpha),
-                    transition_regularization,
-                    optimization_method,
-                    options,
-                    from_state,
+            row_coefficients = transition_coefficients[:, from_state, :]
+            if frozen_rows is None or not frozen_rows[from_state]:
+                blocks, prior_per_bin = _row_problem(
+                    design_blocks, response[:, from_state, :], row_alpha
                 )
+
+                def fit_row(
+                    start: np.ndarray,
+                    strength: float,
+                    blocks: list = blocks,
+                    prior_per_bin: jnp.ndarray = prior_per_bin,
+                    from_state: int = from_state,
+                ) -> np.ndarray:
+                    return _fit_covariate_row(
+                        start,
+                        blocks,
+                        prior_per_bin,
+                        penalty(strength),
+                        optimization_method,
+                        options,
+                        from_state,
+                    )
+
+                strength = row_smoothness[from_state]
+                if estimate_smoothness and blocks:
+                    fitted, strength = _reml_row(
+                        row_coefficients,
+                        fit_row,
+                        blocks,
+                        prior_per_bin,
+                        penalty,
+                        np.asarray(smoothness_matrix, dtype=np.float64),
+                        transition_regularization > 0.0,
+                    )
+                    # The search's fits each start from a neighbouring one,
+                    # so check the result against the row's start too.
+                    if _blocked_loss(
+                        fitted, blocks, prior_per_bin, penalty(strength)
+                    ) > _blocked_loss(
+                        row_coefficients, blocks, prior_per_bin, penalty(strength)
+                    ):
+                        fitted = row_coefficients
+                else:
+                    fitted = fit_row(row_coefficients, strength)
+                row_coefficients = np.reshape(fitted, row_coefficients.shape)
+                row_smoothness[from_state] = strength
+                if blocks:
+                    covariance[from_state] = _inverse_symmetric(
+                        _blocked_hessian(
+                            row_coefficients, blocks, prior_per_bin, penalty(strength)
+                        )
+                    )
             estimated_transition_coefficients[:, from_state, :] = row_coefficients
             device_coefficients = jnp.asarray(row_coefficients, dtype=jnp.float64)
             for start in range(0, n_time, _COVARIATE_BLOCK_ROWS):
@@ -1020,14 +1219,114 @@ def estimate_non_stationary_state_transition_from_responses(
                     )
                 )
 
-    return estimated_transition_coefficients, estimated_transition_matrix
+    return CovariateTransitionFit(
+        estimated_transition_coefficients,
+        estimated_transition_matrix,
+        row_smoothness,
+        covariance,
+    )
+
+
+def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
+    """Inverse of a symmetric positive (semi)definite matrix; the
+    pseudo-inverse if it is singular."""
+    try:
+        factor = cho_factor(matrix)
+    except np.linalg.LinAlgError:
+        return np.linalg.pinv(matrix, hermitian=True)
+    return cho_solve(factor, np.eye(matrix.shape[0]))
+
+
+def _reml_row(
+    coefficients: np.ndarray,
+    fit_row,
+    blocks: list,
+    prior_per_bin: jnp.ndarray,
+    penalty,
+    smoothness_matrix: np.ndarray,
+    has_ridge: bool,
+) -> tuple[np.ndarray, float]:
+    """One row's curvature-penalty strength maximizing its LAML.
+
+    Call with JAX in float64. See :func:`_fit_covariate_transition`.
+
+    Parameters
+    ----------
+    coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+        Starting coefficients.
+    fit_row : callable
+        ``fit_row(start, strength)`` fits the row's coefficients.
+    blocks, prior_per_bin
+        From :func:`_row_problem`.
+    penalty : callable
+        ``penalty(strength)``, the row's :func:`_penalty_matrix`.
+    smoothness_matrix : np.ndarray, shape (n_coefficients, n_coefficients)
+    has_ridge : bool
+        Whether the L2 penalty is positive, which makes every coefficient but
+        the intercept penalized.
+
+    Returns
+    -------
+    coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+        The fit at the returned strength.
+    strength : float
+    """
+    n_coefficients = smoothness_matrix.shape[0]
+    n_free = np.size(coefficients) // n_coefficients
+    # The number of penalized directions of one logit, which the strength
+    # does not change: all but the intercept with an L2 penalty, else the
+    # curvature penalty's rank.
+    eigenvalues = np.linalg.eigvalsh(smoothness_matrix)
+    rank = (
+        n_coefficients - 1
+        if has_ridge
+        else int(np.sum(eigenvalues > 1e-9 * eigenvalues.max()))
+    )
+    fits: dict[float, tuple[np.ndarray, float]] = {}
+
+    def laml(log10_strength: float, start: np.ndarray) -> float:
+        strength = 10.0**log10_strength
+        beta = np.reshape(fit_row(start, strength), (n_coefficients, n_free))
+        row_penalty = penalty(strength)
+        log_pdet = n_free * np.sum(
+            np.log(np.linalg.eigvalsh(2.0 * row_penalty)[-rank:])
+        )
+        _, log_det = np.linalg.slogdet(
+            _blocked_hessian(beta, blocks, prior_per_bin, row_penalty)
+        )
+        value = (
+            -_blocked_loss(beta, blocks, prior_per_bin, row_penalty)
+            + 0.5 * log_pdet
+            - 0.5 * log_det
+        )
+        fits[log10_strength] = (beta, value)
+        return value
+
+    # Strongest first: each fit starts from the next-smoother one.
+    start = np.reshape(coefficients, (n_coefficients, n_free))
+    for log10_strength in _REML_LOG10_GRID[::-1]:
+        laml(log10_strength, start)
+        start = fits[log10_strength][0]
+    best = max(fits, key=lambda key: fits[key][1])
+    best_start = fits[best][0]
+    minimize_scalar(
+        lambda log10_strength: -laml(log10_strength, best_start),
+        bounds=(
+            max(best - 1.0, _REML_LOG10_GRID[0]),
+            min(best + 1.0, _REML_LOG10_GRID[-1]),
+        ),
+        method="bounded",
+        options={"xatol": _REML_LOG10_TOLERANCE},
+    )
+    best = max(fits, key=lambda key: fits[key][1])
+    return fits[best][0], float(10.0**best)
 
 
 def _fit_covariate_row(
     initial_coefficients: np.ndarray,
     blocks: list,
     prior_per_bin: jnp.ndarray,
-    l2_penalty: float,
+    penalty: np.ndarray,
     optimization_method: str,
     options: dict,
     from_state: int,
@@ -1040,7 +1339,8 @@ def _fit_covariate_row(
     initial_coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
     blocks, prior_per_bin
         From :func:`_row_problem`.
-    l2_penalty : float
+    penalty : np.ndarray, shape (n_coefficients, n_coefficients)
+        From :func:`_penalty_matrix`.
     optimization_method : str
     options : dict
         Options for `scipy.optimize.minimize`.
@@ -1057,7 +1357,7 @@ def _fit_covariate_row(
     x0 = np.asarray(initial_coefficients, dtype=np.float64).ravel()
     if not blocks or x0.size == 0:
         return initial_coefficients
-    args = (blocks, prior_per_bin, l2_penalty)
+    args = (blocks, prior_per_bin, penalty)
     minimize_kwargs = {
         "fun": _blocked_loss_and_gradient,
         "x0": x0,
@@ -1082,7 +1382,7 @@ def _fit_covariate_row(
             result.message,
         )
         return initial_coefficients
-    if not result.success:
+    if not result.success and _newton_decrement(result.x, *args) > 1e-6:
         logger.warning(
             "Transition optimization did not report convergence for state %d: "
             "%s. Using improved coefficients.",
@@ -1090,6 +1390,22 @@ def _fit_covariate_row(
             result.message,
         )
     return result.x.reshape(np.shape(initial_coefficients))
+
+
+def _newton_decrement(coefficients: np.ndarray, *args) -> float:
+    """Loss decrease a Newton step predicts, ``g @ inv(H) @ g / 2``.
+
+    Near the optimum of a badly conditioned row (strong penalties give
+    condition numbers of 1e10) the gradient stalls well above scipy's
+    tolerance while the remaining decrease is negligible; this measures the
+    latter. ``inf`` if the Hessian is singular. Call with JAX in float64.
+    """
+    _, gradient = _blocked_loss_and_gradient(coefficients, *args)
+    try:
+        step = np.linalg.solve(_blocked_hessian(coefficients, *args), gradient)
+    except np.linalg.LinAlgError:
+        return np.inf
+    return float(gradient @ step) / 2.0
 
 
 def _row_prior_weights(prior_weight: float | np.ndarray, n_states: int) -> np.ndarray:
@@ -1300,39 +1616,74 @@ def _row_problem(
     return blocks, jnp.asarray(prior_per_bin, dtype=jnp.float64)
 
 
+def _penalty_matrix(
+    n_coefficients: int,
+    l2_penalty: float,
+    smoothness: float = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
+) -> np.ndarray:
+    """Quadratic penalty on one row's coefficients, per free logit.
+
+    ``l2_penalty`` on every coefficient but the intercept (the first) plus
+    ``smoothness`` times the curvature penalty of the ``quantile_bs`` terms.
+
+    Parameters
+    ----------
+    n_coefficients : int
+    l2_penalty : float
+    smoothness : float, optional
+    smoothness_matrix : np.ndarray, shape (n_coefficients, n_coefficients), optional
+        From :func:`_smoothness_matrix`; None adds no curvature penalty.
+
+    Returns
+    -------
+    penalty : np.ndarray, shape (n_coefficients, n_coefficients)
+        The row's penalty is ``sum_k beta[:, k] @ penalty @ beta[:, k]`` over
+        its ``n_states - 1`` logits.
+    """
+    penalty = np.diag(np.r_[0.0, np.full(n_coefficients - 1, float(l2_penalty))])
+    if smoothness_matrix is not None and smoothness != 0.0:
+        penalty = penalty + float(smoothness) * np.asarray(
+            smoothness_matrix, dtype=np.float64
+        )
+    return penalty
+
+
+def _penalty_value(coefficients: np.ndarray, penalty: np.ndarray) -> float:
+    """``sum_k beta[:, k] @ penalty @ beta[:, k]`` of flattened coefficients."""
+    beta = np.reshape(coefficients, (penalty.shape[0], -1))
+    return float(np.sum(beta * (penalty @ beta)))
+
+
 def _blocked_loss(
     coefficients: np.ndarray,
     blocks: list,
     prior_per_bin: jnp.ndarray,
-    l2_penalty: float,
+    penalty: np.ndarray,
 ) -> float:
     """:func:`dirichlet_neg_log_likelihood` over blocks of transitions.
 
-    Call with JAX in float64.
+    Call with JAX in float64. ``penalty`` is from :func:`_penalty_matrix`.
     """
-    coefficients = np.asarray(coefficients, dtype=np.float64)
-    n_free = prior_per_bin.shape[0] - 1
+    coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
     device_coefficients = jnp.asarray(coefficients)
     loss = sum(
         _jit_block_loss(device_coefficients, design, response, prior_per_bin)
         for design, response in blocks
     )
-    # The flattened coefficients start with the intercept's n_free entries,
-    # which are not penalized.
-    return float(loss) + l2_penalty * float(np.sum(coefficients[n_free:] ** 2))
+    return float(loss) + _penalty_value(coefficients, penalty)
 
 
 def _blocked_loss_and_gradient(
     coefficients: np.ndarray,
     blocks: list,
     prior_per_bin: jnp.ndarray,
-    l2_penalty: float,
+    penalty: np.ndarray,
 ) -> tuple[float, np.ndarray]:
     """:func:`dirichlet_neg_log_likelihood` and its gradient over blocks of
     transitions, for scipy. Call with JAX in float64."""
-    coefficients = np.asarray(coefficients, dtype=np.float64)
-    n_free = prior_per_bin.shape[0] - 1
+    coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
     device_coefficients = jnp.asarray(coefficients)
     device_loss, device_gradient = jnp.zeros(()), jnp.zeros(coefficients.shape)
@@ -1343,8 +1694,9 @@ def _blocked_loss_and_gradient(
         device_loss = device_loss + block_loss
         device_gradient = device_gradient + block_gradient
     gradient = np.array(device_gradient, dtype=np.float64)
-    loss = float(device_loss) + l2_penalty * float(np.sum(coefficients[n_free:] ** 2))
-    gradient[n_free:] += 2.0 * l2_penalty * coefficients[n_free:]
+    loss = float(device_loss) + _penalty_value(coefficients, penalty)
+    beta = coefficients.reshape((penalty.shape[0], -1))
+    gradient += (2.0 * penalty @ beta).ravel()
     return loss, gradient
 
 
@@ -1352,12 +1704,11 @@ def _blocked_hessian(
     coefficients: np.ndarray,
     blocks: list,
     prior_per_bin: jnp.ndarray,
-    l2_penalty: float,
+    penalty: np.ndarray,
 ) -> np.ndarray:
     """:func:`dirichlet_neg_log_likelihood`'s Hessian over blocks of
     transitions, for scipy. Call with JAX in float64."""
-    coefficients = np.asarray(coefficients, dtype=np.float64)
-    n_free = prior_per_bin.shape[0] - 1
+    coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
     device_coefficients = jnp.asarray(coefficients)
     device_hessian = jnp.zeros((coefficients.size, coefficients.size))
@@ -1366,9 +1717,10 @@ def _blocked_hessian(
             device_coefficients, design, response, prior_per_bin
         )
     hessian = np.array(device_hessian, dtype=np.float64)
-    penalized = np.arange(n_free, coefficients.size)
-    hessian[penalized, penalized] += 2.0 * l2_penalty
-    return hessian
+    # Flattened coefficients are ordered (coefficient, logit), so each logit
+    # gets its own copy of the penalty.
+    n_free = coefficients.size // penalty.shape[0]
+    return hessian + np.kron(2.0 * penalty, np.eye(n_free))
 
 
 def dirichlet_neg_log_likelihood(
@@ -1377,14 +1729,18 @@ def dirichlet_neg_log_likelihood(
     response: np.ndarray,
     alpha: float | np.ndarray = 1.0,
     l2_penalty: float = 0.1,
+    smoothness: float = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
 ) -> float:
     """Negative log posterior of one covariate-dependent transition row.
 
-    ``-sum_t (r_t + (alpha - 1) / n) . log p_t + l2_penalty * |beta[1:]|^2``,
-    summed over the ``n`` time bins: the expected complete-data
-    log-likelihood of the row plus a Dirichlet prior counted once, as for a
-    stationary row, and an L2 penalty. Evaluated with JAX in float64 over
-    blocks of ``_COVARIATE_BLOCK_ROWS`` time bins, as the M-step evaluates it.
+    ``-sum_t (r_t + (alpha - 1) / n) . log p_t + l2_penalty * |beta[1:]|^2
+    + smoothness * sum_k beta[:, k] @ S @ beta[:, k]``, summed over the ``n``
+    time bins: the expected complete-data log-likelihood of the row plus a
+    Dirichlet prior counted once, as for a stationary row, an L2 penalty and
+    a curvature penalty ``S`` on the ``quantile_bs`` terms. Evaluated with
+    JAX in float64 over blocks of ``_COVARIATE_BLOCK_ROWS`` time bins, as the
+    M-step evaluates it.
 
     Parameters
     ----------
@@ -1403,6 +1759,11 @@ def dirichlet_neg_log_likelihood(
         (``coefficients[0]``), as produced by patsy ``"1 + ..."`` formulas.
         A ``"0 + ..."`` formula or hand-built design matrix without a leading
         intercept column would penalize the wrong rows.
+    smoothness : float, optional
+        Strength of the curvature penalty, by default 0.0.
+    smoothness_matrix : np.ndarray, shape (n_coefficients, n_coefficients), optional
+        Curvature penalty from :func:`_smoothness_matrix`; None (default)
+        adds none.
 
     Returns
     -------
@@ -1412,7 +1773,9 @@ def dirichlet_neg_log_likelihood(
         return _blocked_loss(
             coefficients,
             *_row_problem(_transition_blocks(design_matrix), response, alpha),
-            l2_penalty,
+            _penalty_matrix(
+                np.shape(design_matrix)[1], l2_penalty, smoothness, smoothness_matrix
+            ),
         )
 
 
@@ -1422,12 +1785,14 @@ def dirichlet_gradient(
     response: np.ndarray,
     alpha: float | np.ndarray = 1.0,
     l2_penalty: float = 0.1,
+    smoothness: float = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
 ) -> np.ndarray:
     """Gradient of :func:`dirichlet_neg_log_likelihood`.
 
     Parameters
     ----------
-    coefficients, design_matrix, response, alpha, l2_penalty
+    coefficients, design_matrix, response, alpha, l2_penalty, smoothness, smoothness_matrix
         As in :func:`dirichlet_neg_log_likelihood`.
 
     Returns
@@ -1438,7 +1803,9 @@ def dirichlet_gradient(
         return _blocked_loss_and_gradient(
             coefficients,
             *_row_problem(_transition_blocks(design_matrix), response, alpha),
-            l2_penalty,
+            _penalty_matrix(
+                np.shape(design_matrix)[1], l2_penalty, smoothness, smoothness_matrix
+            ),
         )[1]
 
 
@@ -1448,12 +1815,14 @@ def dirichlet_hessian(
     response: np.ndarray,
     alpha: float | np.ndarray = 1.0,
     l2_penalty: float = 0.1,
+    smoothness: float = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
 ) -> np.ndarray:
     """Hessian of :func:`dirichlet_neg_log_likelihood`.
 
     Parameters
     ----------
-    coefficients, design_matrix, response, alpha, l2_penalty
+    coefficients, design_matrix, response, alpha, l2_penalty, smoothness, smoothness_matrix
         As in :func:`dirichlet_neg_log_likelihood`.
 
     Returns
@@ -1466,7 +1835,9 @@ def dirichlet_hessian(
         return _blocked_hessian(
             coefficients,
             *_row_problem(_transition_blocks(design_matrix), response, alpha),
-            l2_penalty,
+            _penalty_matrix(
+                np.shape(design_matrix)[1], l2_penalty, smoothness, smoothness_matrix
+            ),
         )
 
 
@@ -1562,6 +1933,8 @@ def _transition_log_prior(
     transition_regularization: float,
     transition_prior_weight: float | np.ndarray = 0.0,
     free_rows: np.ndarray | None = None,
+    smoothness: float | np.ndarray = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
 ) -> float:
     """Log prior of discrete transition parameters, as the M-step weighs it.
 
@@ -1573,7 +1946,8 @@ def _transition_log_prior(
     Stationary: ``sum_ij c_ij log A_ij`` with the pseudo-counts ``c`` the
     stationary M-step adds once per row. Covariate-dependent:
     ``sum_ij (alpha_ij - 1) mean_t log A_t,ij - lambda * |beta_i[1:]|^2``
-    over the ``n_time - 1`` transitions, the prior and penalty terms of
+    ``- smoothness_i * sum_k beta_i[:, k] @ S @ beta_i[:, k]`` over the
+    ``n_time - 1`` transitions, the prior and penalty terms of
     :func:`dirichlet_neg_log_likelihood`, negated.
 
     Parameters
@@ -1597,6 +1971,11 @@ def _transition_log_prior(
     free_rows : np.ndarray of bool, shape (n_states,), optional
         Rows the M-step estimates. Frozen rows are constant and left out.
         All rows by default.
+    smoothness : float or np.ndarray, shape (n_states,), optional
+        Curvature-penalty strength of each covariate-dependent row, by
+        default 0.0.
+    smoothness_matrix : np.ndarray, shape (n_coefficients, n_coefficients), optional
+        From :func:`_smoothness_matrix`; None adds no curvature penalty.
 
     Returns
     -------
@@ -1622,10 +2001,22 @@ def _transition_log_prior(
         free_states = np.flatnonzero(rows)
         prior_per_bin = (alpha - 1.0) / n_samples
         # Minus the M-step's loss with no expected transitions: its prior and
-        # penalty alone, with one block of the design matrix on the device at
-        # a time.
-        log_prior = -transition_regularization * float(
-            np.sum(coefficients[1:, free_states] ** 2)
+        # penalties alone, with one block of the design matrix on the device
+        # at a time.
+        row_smoothness = np.broadcast_to(
+            np.asarray(smoothness, dtype=np.float64), (n_states,)
+        )
+        log_prior = -sum(
+            _penalty_value(
+                coefficients[:, row],
+                _penalty_matrix(
+                    coefficients.shape[0],
+                    transition_regularization,
+                    row_smoothness[row],
+                    smoothness_matrix,
+                ),
+            )
+            for row in free_states
         )
         with _float64_jax():
             for start in range(0, n_samples, _COVARIATE_BLOCK_ROWS):
@@ -1672,7 +2063,10 @@ def _discrete_transition_from_statistics(
     transition_regularization: float,
     transition_prior_weight: float | np.ndarray = 0.0,
     frozen_rows: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray | None]:
+    smoothness: float | np.ndarray | str = 0.0,
+    smoothness_matrix: np.ndarray | None = None,
+    initial_smoothness: np.ndarray | None = None,
+) -> "_DiscreteTransitionMStep":
     """Discrete transition M-step from expected transition statistics.
 
     Parameters
@@ -1696,11 +2090,13 @@ def _discrete_transition_from_statistics(
     frozen_rows : np.ndarray of bool, shape (n_states,), optional
         Covariate-dependent rows that keep their coefficients. Stationary
         frozen rows are restored by the caller.
+    smoothness, smoothness_matrix, initial_smoothness
+        Curvature penalty of a covariate transition, as in
+        :func:`_fit_covariate_transition`. Ignored for a stationary one.
 
     Returns
     -------
-    estimated_discrete_transition : np.ndarray
-    estimated_discrete_transition_coefficients : np.ndarray | None
+    m_step : _DiscreteTransitionMStep
 
     Raises
     ------
@@ -1722,17 +2118,20 @@ def _discrete_transition_from_statistics(
     if _is_nonstationary(
         discrete_transition_coefficients, discrete_transition_design_matrix
     ):
-        (
-            discrete_transition_coefficients,
-            discrete_transition,
-        ) = estimate_non_stationary_state_transition_from_responses(
+        fit = _fit_covariate_transition(
             discrete_transition_coefficients,
             discrete_transition_design_matrix,
             statistics,
             concentration=transition_concentration,
             stickiness=transition_stickiness,
             transition_regularization=transition_regularization,
+            smoothness=smoothness,
+            smoothness_matrix=smoothness_matrix,
+            initial_smoothness=initial_smoothness,
             frozen_rows=frozen_rows,
+        )
+        return _DiscreteTransitionMStep(
+            fit.transition, fit.coefficients, fit.smoothness, fit.covariance
         )
     else:
         if (
@@ -1749,49 +2148,158 @@ def _discrete_transition_from_statistics(
             prior_weight=transition_prior_weight,
         )
 
-    return discrete_transition, discrete_transition_coefficients
+    return _DiscreteTransitionMStep(
+        discrete_transition, discrete_transition_coefficients
+    )
+
+
+class _DiscreteTransitionMStep(NamedTuple):
+    """Output of :func:`_discrete_transition_from_statistics`.
+
+    ``smoothness`` and ``covariance`` are those of
+    :class:`CovariateTransitionFit`, and None for a stationary transition.
+    """
+
+    transition: np.ndarray
+    coefficients: np.ndarray | None
+    smoothness: np.ndarray | None = None
+    covariance: np.ndarray | None = None
 
 
 class _QuantileBSpline:
     """Patsy stateful transform: a B-spline with knots at data quantiles.
 
-    Interior knots sit at quantiles of the distinct fitted values, so ties
-    (e.g. many zero speeds at rest) do not stack knots and every basis
-    column has data. New values are clipped to the fitted range, so a
-    covariate beyond it takes the boundary's value instead of raising.
+    The boundaries sit at the ``lower_quantile`` and ``upper_quantile`` of
+    the fitted values (by default their range), and interior knots at
+    quantiles of the distinct fitted values between them, so ties (e.g. many
+    zero speeds at rest) do not stack knots and every basis column has data.
+    Values beyond the boundaries, fitted or new, are clipped to them: they
+    take the boundary's value instead of raising. An upper boundary below the
+    maximum keeps a sparse tail (e.g. the fastest 1% of speeds) from bending
+    the last spline segment.
     """
 
     def __init__(self) -> None:
         self._chunks: list[np.ndarray] = []
 
-    def memorize_chunk(self, x, n_knots: int = 5, degree: int = 3) -> None:
+    def memorize_chunk(
+        self,
+        x,
+        n_knots: int = 5,
+        degree: int = 3,
+        lower_quantile: float = 0.0,
+        upper_quantile: float = 1.0,
+    ) -> None:
+        if not 0.0 <= lower_quantile < upper_quantile <= 1.0:
+            raise ValueError(
+                "quantile_bs needs 0 <= lower_quantile < upper_quantile <= 1, got "
+                f"lower_quantile={lower_quantile}, upper_quantile={upper_quantile}."
+            )
         self._n_knots, self._degree = n_knots, degree
+        self._quantiles = (lower_quantile, upper_quantile)
         self._chunks.append(np.ravel(np.asarray(x, dtype=float)))
 
     def memorize_finish(self) -> None:
-        distinct = np.unique(np.concatenate(self._chunks))
+        values = np.concatenate(self._chunks)
         del self._chunks
+        self._lower, self._upper = np.quantile(values, self._quantiles)
+        distinct = np.unique(values[(values >= self._lower) & (values <= self._upper)])
         if distinct.size < 2:
             raise ValueError("quantile_bs needs at least two distinct values.")
-        self._lower, self._upper = distinct[0], distinct[-1]
         knots = np.unique(
             np.quantile(distinct, np.linspace(0, 1, self._n_knots + 2)[1:-1])
         )
-        knots = knots[(knots > self._lower) & (knots < self._upper)]
+        self._interior_knots = knots[(knots > self._lower) & (knots < self._upper)]
         self._spline = BS()
         self._spline.memorize_chunk(
             distinct,
-            knots=knots,
+            knots=self._interior_knots,
             degree=self._degree,
             lower_bound=self._lower,
             upper_bound=self._upper,
         )
         self._spline.memorize_finish()
 
-    def transform(self, x, n_knots: int = 5, degree: int = 3) -> np.ndarray:
+    def transform(
+        self,
+        x,
+        n_knots: int = 5,
+        degree: int = 3,
+        lower_quantile: float = 0.0,
+        upper_quantile: float = 1.0,
+    ) -> np.ndarray:
         return self._spline.transform(
             np.clip(np.asarray(x, dtype=float), self._lower, self._upper)
         )
+
+    def curvature_penalty(self) -> np.ndarray:
+        """Integrated squared second derivative of the basis.
+
+        ``beta @ penalty @ beta`` is ``integral_0^1 f''(u)^2 du`` for the
+        spline ``f`` with coefficients ``beta`` on this transform's columns,
+        with the covariate rescaled to ``u`` in [0, 1] between the
+        boundaries, so the penalty does not depend on the covariate's units.
+
+        Returns
+        -------
+        penalty : np.ndarray, shape (n_columns, n_columns)
+        """
+        knots = np.asarray(self._spline._all_knots, dtype=np.float64)
+        degree = self._degree
+        n_basis = knots.size - degree - 1
+        width = self._upper - self._lower
+        if degree < 2:
+            return np.zeros((n_basis - 1, n_basis - 1))
+        second = BSpline(knots, np.eye(n_basis), degree).derivative(2)
+        # The second derivatives are polynomials of degree - 2 between knots,
+        # so `degree` Gauss-Legendre points per interval integrate their
+        # products exactly.
+        nodes, weights = np.polynomial.legendre.leggauss(degree)
+        breaks = np.unique(knots)
+        left, right = breaks[:-1], breaks[1:]
+        points = (left[:, None] + right[:, None]) / 2 + (right - left)[
+            :, None
+        ] / 2 * nodes
+        point_weights = (right - left)[:, None] / 2 * weights
+        values = second(points.ravel())
+        penalty = (values * point_weights.ravel()[:, None]).T @ values
+        # d2f/du2 = width**2 d2f/dx2 and du = dx / width. patsy's bs drops the
+        # first basis column, whose effect the intercept absorbs.
+        return width**3 * penalty[1:, 1:]
+
+
+def _smoothness_matrix(design_info) -> np.ndarray:
+    """Curvature penalty of every ``quantile_bs`` term of a design.
+
+    Parameters
+    ----------
+    design_info : patsy.DesignInfo
+        ``design_info`` of a transition design matrix.
+
+    Returns
+    -------
+    penalty : np.ndarray, shape (n_coefficients, n_coefficients)
+        Each ``quantile_bs`` main-effect term's
+        :meth:`_QuantileBSpline.curvature_penalty` on its columns; zero
+        elsewhere, including interactions.
+    """
+    n_columns = len(design_info.column_names)
+    penalty = np.zeros((n_columns, n_columns))
+    for term, columns in design_info.term_slices.items():
+        if len(term.factors) != 1:
+            continue
+        state = getattr(design_info.factor_infos[term.factors[0]], "state", {})
+        splines = [
+            transform
+            for transform in state.get("transforms", {}).values()
+            if isinstance(transform, _QuantileBSpline)
+        ]
+        if len(splines) != 1:
+            continue
+        term_penalty = splines[0].curvature_penalty()
+        if term_penalty.shape == (columns.stop - columns.start,) * 2:
+            penalty[columns, columns] = term_penalty
+    return penalty
 
 
 # Usable in transition formulas, e.g. "1 + quantile_bs(speed, n_knots=5)".
@@ -1882,10 +2390,21 @@ class DiscreteNonStationaryDiagonal:
         (``quantile_bs``); speeds beyond the fitted range take the
         boundary's value. Pass explicit knots with e.g.
         ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``.
+    smoothness : float or "reml", optional
+        Strength of a penalty on the curvature of every ``quantile_bs`` term,
+        ``integral f''(u)^2 du`` with the covariate rescaled to [0, 1] between
+        the spline's boundaries; by default 0.0 (none). "reml" chooses each
+        row's strength in every EM M-step by maximizing its Laplace
+        approximate marginal likelihood. A smoothness penalty needs a
+        ``quantile_bs`` term in ``formula``.
     """
 
     diagonal_values: np.ndarray
     formula: str = "1 + quantile_bs(speed)"
+    smoothness: float | str = 0.0
+
+    def __post_init__(self) -> None:
+        _row_smoothness(self.smoothness, None, np.ones((1, 1)), 1)
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict
@@ -1919,6 +2438,12 @@ class DiscreteNonStationaryDiagonal:
         )
         if discrete_transition_design_matrix.shape[0] == 0:
             raise ValueError("No covariate data provided for the transition matrix.")
+        _row_smoothness(
+            self.smoothness,
+            None,
+            _smoothness_matrix(discrete_transition_design_matrix.design_info),
+            1,
+        )
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape
 
@@ -1958,10 +2483,21 @@ class DiscreteNonStationaryCustom:
         (``quantile_bs``); speeds beyond the fitted range take the
         boundary's value. Pass explicit knots with e.g.
         ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``.
+    smoothness : float or "reml", optional
+        Strength of a penalty on the curvature of every ``quantile_bs`` term,
+        ``integral f''(u)^2 du`` with the covariate rescaled to [0, 1] between
+        the spline's boundaries; by default 0.0 (none). "reml" chooses each
+        row's strength in every EM M-step by maximizing its Laplace
+        approximate marginal likelihood. A smoothness penalty needs a
+        ``quantile_bs`` term in ``formula``.
     """
 
     values: np.ndarray
     formula: str = "1 + quantile_bs(speed)"
+    smoothness: float | str = 0.0
+
+    def __post_init__(self) -> None:
+        _row_smoothness(self.smoothness, None, np.ones((1, 1)), 1)
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict | None
@@ -1995,6 +2531,12 @@ class DiscreteNonStationaryCustom:
         )
         if discrete_transition_design_matrix.shape[0] == 0:
             raise ValueError("No covariate data provided for the transition matrix.")
+        _row_smoothness(
+            self.smoothness,
+            None,
+            _smoothness_matrix(discrete_transition_design_matrix.design_info),
+            1,
+        )
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape
 
@@ -2060,3 +2602,74 @@ def predict_discrete_state_transitions(
             for from_state in range(n_states)
         ]
         return np.asarray(jnp.stack(rows, axis=1))
+
+
+def predict_discrete_state_transition_intervals(
+    discrete_transition_design_matrix: DesignMatrix,
+    discrete_transition_coefficients: np.ndarray,
+    discrete_transition_coefficient_covariance: np.ndarray,
+    discrete_transition_covariate_data: pd.DataFrame | dict,
+    coverage: float = 0.95,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pointwise intervals of covariate-dependent transition probabilities.
+
+    Each probability's interval is the delta-method normal interval of its
+    log-odds, mapped back, so it stays inside (0, 1). The covariance is the
+    Laplace covariance of the last M-step, which treats that M-step's
+    expected transitions as known, so the intervals leave out the
+    uncertainty in which state the animal was in.
+
+    Parameters
+    ----------
+    discrete_transition_design_matrix : patsy.DesignMatrix
+        Original design matrix used for fitting (contains design_info).
+    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Fitted regression coefficients.
+    discrete_transition_coefficient_covariance : np.ndarray, shape (n_states, n_parameters, n_parameters)
+        Covariance of each row's flattened coefficients,
+        ``n_parameters = n_coefficients * (n_states - 1)``, e.g. a detector's
+        ``discrete_transition_coefficient_covariance_``.
+    discrete_transition_covariate_data : pd.DataFrame or dict
+        Covariate data to evaluate the intervals at.
+    coverage : float, optional
+        Pointwise coverage, by default 0.95.
+
+    Returns
+    -------
+    lower, upper : np.ndarray, shape (n_new_time, n_states, n_states)
+    """
+    if not 0.0 < coverage < 1.0:
+        raise ValueError(f"coverage must be in (0, 1), got {coverage}.")
+    design_matrix = np.asarray(
+        build_design_matrices(
+            [discrete_transition_design_matrix.design_info],
+            discrete_transition_covariate_data,
+        )[0],
+        dtype=np.float64,
+    )
+    coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)
+    n_coefficients, n_states, n_free = coefficients.shape
+    probabilities = predict_discrete_state_transitions(
+        discrete_transition_design_matrix,
+        coefficients,
+        discrete_transition_covariate_data,
+    )
+    tiny = np.finfo(np.float64).tiny
+    probabilities = np.clip(probabilities, tiny, 1.0 - np.finfo(np.float64).eps)
+    covariance = np.asarray(
+        discrete_transition_coefficient_covariance, dtype=np.float64
+    ).reshape(n_states, n_coefficients, n_free, n_coefficients, n_free)
+    # Covariance of each row's free logits at each time.
+    logit_covariance = np.einsum(
+        "tc,scjdk,td->tsjk", design_matrix, covariance, design_matrix
+    )
+    # d logit(p_k) / d z_j = (1[k == j] - p_j) / (1 - p_k); the last state's
+    # logit is fixed at 0.
+    indicator = np.eye(n_states)[:, :n_free]
+    gradient = (indicator - probabilities[:, :, np.newaxis, :n_free]) / (
+        1.0 - probabilities[..., np.newaxis]
+    )
+    variance = np.einsum("tskj,tsjl,tskl->tsk", gradient, logit_covariance, gradient)
+    half_width = norm.ppf(0.5 + coverage / 2.0) * np.sqrt(np.maximum(variance, 0.0))
+    center = logit(probabilities)
+    return expit(center - half_width), expit(center + half_width)

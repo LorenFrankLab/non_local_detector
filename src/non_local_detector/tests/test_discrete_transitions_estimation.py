@@ -18,6 +18,7 @@ from scipy.optimize import minimize
 from scipy.special import logsumexp, softmax, xlogy
 
 from non_local_detector.discrete_state_transitions import (
+    CovariateTransitionFit,
     DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
@@ -1201,6 +1202,60 @@ class TestExpandedTransitionMstepEndToEnd:
 
         assert error < 0.10
 
+    def test_reml_smoothed_detector_is_monotone_and_recovers_transitions(self):
+        """EM with REML-chosen smoothness never lowers its penalized
+        log-likelihood, recovers the covariate dependence, and leaves each
+        row's smoothness and coefficient covariance on the detector."""
+        rng = np.random.default_rng(14)
+        n_time, n_states, n_bins = 900, 3, 2
+        covariate, _, true_transition = _nonstationary_transition_parameters(n_time)
+        initial_conditions, _, continuous_transition_blocks = _expanded_hmm_parameters()
+        states, bins = _simulate_nonstationary_expanded_hmm(
+            rng, initial_conditions, true_transition, continuous_transition_blocks
+        )
+        detector = _FixedLikelihoodDetector(
+            _log_likelihoods_from_expanded_states(
+                states, bins, n_states, n_bins, off_target_log_likelihood=-12.0
+            ),
+            discrete_initial_conditions=initial_conditions,
+            discrete_transition_type=DiscreteNonStationaryCustom(
+                values=np.full((n_states, n_states), 1.0 / n_states),
+                formula="1 + quantile_bs(covariate, n_knots=6)",
+                smoothness="reml",
+            ),
+            continuous_transition_blocks=continuous_transition_blocks,
+        )
+        detector._fit(
+            position=np.array([[0.25], [1.25]]),
+            discrete_transition_covariate_data={"covariate": covariate},
+        )
+        detector.estimate_parameters(
+            time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
+            estimate_initial_conditions=False,
+            estimate_discrete_transition=True,
+            estimate_encoding_model=False,
+            max_iter=4,
+            tolerance=0.0,
+        )
+
+        assert detector.em_monotonicity_violations_ == []
+        assert detector.discrete_transition_smoothness_.shape == (n_states,)
+        assert np.all(detector.discrete_transition_smoothness_ > 0.0)
+        n_coefficients, _, n_free = detector.discrete_transition_coefficients_.shape
+        n_parameters = n_coefficients * n_free
+        covariance = detector.discrete_transition_coefficient_covariance_
+        assert covariance.shape == (n_states, n_parameters, n_parameters)
+        np.testing.assert_allclose(covariance, covariance.transpose(0, 2, 1))
+        assert np.all(np.linalg.eigvalsh(covariance) > 0.0)
+        error = _low_high_covariate_transition_error(
+            detector.discrete_state_transitions_, true_transition, covariate
+        )
+        assert error < 0.10
+
+        grid = {"covariate": np.linspace(-1.0, 1.0, 9)}
+        transitions, lower, upper = detector.discrete_transition_intervals(grid)
+        assert np.all((lower <= transitions) & (transitions <= upper))
+
 
 def _noisy_expanded_hmm_observations(
     seed: int, n_time: int, emission_sharpness: float
@@ -2369,7 +2424,7 @@ class TestDiscreteTransitionMStep:
             discrete_transition_coefficients=None,
             discrete_transition_design_matrix=None,
         )
-        new_trans, _ = _discrete_transition_from_statistics(
+        new_trans, *_ = _discrete_transition_from_statistics(
             statistics,
             None,
             None,
@@ -2428,7 +2483,7 @@ class TestDiscreteTransitionMStep:
             discrete_transition_coefficients=None,
             discrete_transition_design_matrix=None,
         )
-        new_trans, _ = _discrete_transition_from_statistics(
+        new_trans, *_ = _discrete_transition_from_statistics(
             statistics,
             None,
             None,
@@ -2459,7 +2514,7 @@ class TestDiscreteTransitionMStep:
             discrete_transition_coefficients=dm["transition_coefficients"],
             discrete_transition_design_matrix=dm["design_matrix"][:n_time],
         )
-        new_trans, new_coeffs = _discrete_transition_from_statistics(
+        new_trans, new_coeffs, *_ = _discrete_transition_from_statistics(
             statistics,
             dm["transition_coefficients"],
             dm["design_matrix"][:n_time],
@@ -2516,19 +2571,23 @@ class TestDiscreteTransitionMStep:
         design_matrix = np.ones((2, 1))
         captured = {}
 
-        def fake_from_responses(
+        def fake_fit(
             transition_coefficients,
             design_matrix,
             response,
             **kwargs,
         ):
             captured["response"] = response
-            return transition_coefficients, np.tile(np.eye(3), (2, 1, 1))
+            return CovariateTransitionFit(
+                transition_coefficients,
+                np.tile(np.eye(3), (2, 1, 1)),
+                np.zeros(3),
+                np.zeros((3, 2, 2)),
+            )
 
         with patch(
-            "non_local_detector.discrete_state_transitions."
-            "estimate_non_stationary_state_transition_from_responses",
-            side_effect=fake_from_responses,
+            "non_local_detector.discrete_state_transitions._fit_covariate_transition",
+            side_effect=fake_fit,
         ):
             statistics = _discrete_transition_statistics(
                 causal_posterior=causal_posterior,
@@ -2540,7 +2599,7 @@ class TestDiscreteTransitionMStep:
                 discrete_transition_coefficients=transition_coefficients,
                 discrete_transition_design_matrix=design_matrix,
             )
-            new_trans, new_coeffs = _discrete_transition_from_statistics(
+            new_trans, new_coeffs, *_ = _discrete_transition_from_statistics(
                 statistics,
                 transition_coefficients,
                 design_matrix,
