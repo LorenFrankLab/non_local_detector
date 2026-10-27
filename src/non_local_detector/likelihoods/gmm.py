@@ -170,8 +170,9 @@ def _estimate_gaussian_covariances_tied(
     # Guard division by zero with a tiny floor rather than 1.0: for legitimate
     # fractional sample weights whose total is < 1, dividing by 1.0 would bias
     # the covariance downward; eps only intervenes when there is effectively no
-    # weight at all.
-    eps = 10 * jnp.finfo(X.dtype).eps
+    # weight at all. Cast: under NumPy 1.x, 10 * a float32 eps is a float64
+    # scalar, which would promote the covariance to float64 under x64.
+    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)
     covariance = covariance_sum / jnp.maximum(sum_w, eps)
     # Symmetrize covariance for numerical stability (ensure exact symmetry)
     covariance = (covariance + covariance.T) * 0.5
@@ -403,7 +404,8 @@ def _estimate_gaussian_parameters(
     else:
         resp = resp_unweighted * sample_weight[:, None]
 
-    eps = 10 * jnp.finfo(X.dtype).eps
+    # Cast: under NumPy 1.x, 10 * a float32 eps is a float64 scalar.
+    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)
     nk = resp.sum(axis=0) + eps  # (K,)
     means = (
         jnp.matmul(resp.T, X, precision=jax.lax.Precision.HIGHEST) / nk[:, jnp.newaxis]
