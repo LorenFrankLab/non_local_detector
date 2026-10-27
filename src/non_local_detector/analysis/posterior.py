@@ -35,7 +35,10 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
 
 
 def sample_posterior(
-    posterior: xr.DataArray, place_bin_edges: np.ndarray, n_samples: int = 1000
+    posterior: xr.DataArray,
+    place_bin_edges: np.ndarray,
+    n_samples: int = 1000,
+    rng: np.random.Generator | int | None = None,
 ) -> np.ndarray:
     """Generate random samples from the posterior distribution.
 
@@ -53,6 +56,9 @@ def sample_posterior(
         more element than the number of position bins.
     n_samples : int, optional
         Number of random samples to generate at each time point, by default 1000.
+    rng : numpy.random.Generator or int, optional
+        Generator, or seed for one, that draws all time points' samples. By
+        default the samples come from NumPy's global random state.
 
     Returns
     -------
@@ -69,10 +75,13 @@ def sample_posterior(
 
     place_bin_edges = place_bin_edges.squeeze()
     n_time = posterior.shape[0]
+    # One generator for every time point: reseeding each draw with the same int
+    # would give every time point the same uniform variates.
+    random_state = None if rng is None else np.random.default_rng(rng)
 
     posterior_samples = [
         rv_histogram((posterior[time_ind], place_bin_edges), density=False).rvs(
-            size=n_samples
+            size=n_samples, random_state=random_state
         )
         for time_ind in range(n_time)
     ]

@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed:** `GaussianMixtureModel.fit` (and so `clusterless_gmm`) raised `TypeError` from its EM `while_loop` for float32 data with `jax_enable_x64` under NumPy 1.x. Its zero-weight floor `10 * finfo(dtype).eps` is a float64 scalar under NumPy 1.x, which promoted the covariances and component counts to float64. The floor is now cast to the data dtype. Under NumPy 2 fits are bit-identical (weights, means, covariances and lower bounds over all covariance types, float32 and float64, x64 on and off, with and without sample weights).
 - The unit and physical-rate checks of each backend's direct predictor now run on every registered backend, which adds `clusterless_mark_glm`.
 
+### Reproducible posterior samples
+
+- `sample_posterior` takes an `rng` argument (a `numpy.random.Generator` or an integer seed) that draws every time point's samples. Without it, samples still come from NumPy's global random state.
+
 ### Local likelihood position inputs
 
 - **Fixed:** the local `clusterless_gmm` likelihood cast interpolated positions and background log intensities to the position array's dtype, so integer positions truncated them: a background-only spike scored -29 with `int64` positions and +65507 with `uint16`, against -29.57 with floats. Integer positions now compute in the fit's floating dtype.
