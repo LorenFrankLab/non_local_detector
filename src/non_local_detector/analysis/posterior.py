@@ -58,7 +58,7 @@ def sample_posterior(
         Number of random samples to generate at each time point, by default 1000.
     rng : numpy.random.Generator or int, optional
         Generator, or seed for one, that draws all time points' samples. By
-        default the samples come from NumPy's global random state.
+        default a fresh, unseeded generator.
 
     Returns
     -------
@@ -77,11 +77,11 @@ def sample_posterior(
     n_time = posterior.shape[0]
     # One generator for every time point: reseeding each draw with the same int
     # would give every time point the same uniform variates.
-    random_state = None if rng is None else np.random.default_rng(rng)
+    rng = np.random.default_rng(rng)
 
     posterior_samples = [
         rv_histogram((posterior[time_ind], place_bin_edges), density=False).rvs(
-            size=n_samples, random_state=random_state
+            size=n_samples, random_state=rng
         )
         for time_ind in range(n_time)
     ]

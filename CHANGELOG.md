@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Reproducible posterior samples
 
-- `sample_posterior` takes an `rng` argument (a `numpy.random.Generator` or an integer seed) that draws every time point's samples. Without it, samples still come from NumPy's global random state.
+- `sample_posterior` takes an `rng` argument (a `numpy.random.Generator` or an integer seed) that draws every time point's samples. Without it, samples come from a fresh unseeded generator, so `np.random.seed` no longer makes them reproducible; pass `rng` instead.
 
 ### Local likelihood position inputs
 
