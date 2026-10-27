@@ -8,6 +8,8 @@ the rate or the marks are misspecified. The simulators compute the model's
 intensities independently of the code under test.
 """
 
+import functools
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -221,19 +223,27 @@ def _diffusion_components(model, environment, positions):
     return kernel / kernel.sum(axis=1, keepdims=True), centers
 
 
-def _simulate(algorithm, model, environment, rng, duration=250.0):
+def _held_out_trajectory(duration):
+    return _trajectory(duration, 1.3)
+
+
+def _ground_intensity(algorithm, model, environment, position):
+    """The fitted model's ground intensity at the position samples."""
+    if algorithm == "clusterless_gmm":
+        return _gmm_ground(model, position)
+    if algorithm == "clusterless_diffusion":
+        return _diffusion_ground(model, environment, position)
+    return _kde_ground(model, position)
+
+
+def _simulate(algorithm, model, environment, ground, rng, duration):
     """Held-out spikes drawn by thinning from the fitted model's own intensity.
 
-    The ground intensity is evaluated at the position samples and interpolated
-    linearly in time, as the transforms integrate it.
+    ``ground`` is the ground intensity at the samples of
+    ``_held_out_trajectory(duration)``; it is interpolated linearly in time, as
+    the transforms integrate it.
     """
-    position_time, position = _trajectory(duration, 1.3)
-    if algorithm == "clusterless_gmm":
-        ground = _gmm_ground(model, position)
-    elif algorithm == "clusterless_diffusion":
-        ground = _diffusion_ground(model, environment, position)
-    else:
-        ground = _kde_ground(model, position)
+    position_time, position = _held_out_trajectory(duration)
     dt = 1e-3
     fine_time = np.arange(position_time[0], position_time[-1], dt)
     fine_ground = np.interp(fine_time, position_time, ground)
@@ -264,19 +274,49 @@ def _simulate(algorithm, model, environment, rng, duration=250.0):
     return position_time, position, spike_times, marks
 
 
+@pytest.fixture(scope="module")
+def simulate(recording, fitted):
+    """Held-out data from the fitted model, simulated once per distinct call.
+
+    Call as ``simulate(algorithm, seed, duration=250.0)``. The ground intensity (a dense KDE for ``clusterless_kde``) depends only on
+    the algorithm and duration, and the IRCM and MDCI cases share seeds, so
+    both are cached for the module. The returned arrays are read-only, so no
+    test can change another's data.
+    """
+    environment = recording[0]
+
+    @functools.cache
+    def ground(algorithm, duration):
+        _, position = _held_out_trajectory(duration)
+        return _ground_intensity(algorithm, fitted[algorithm], environment, position)
+
+    @functools.cache
+    def simulate(algorithm, seed, duration=250.0):
+        data = _simulate(
+            algorithm,
+            fitted[algorithm],
+            environment,
+            ground(algorithm, duration),
+            np.random.default_rng(seed),
+            duration,
+        )
+        for array in data:
+            array.flags.writeable = False
+        return data
+
+    return simulate
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
 def test_transforms_are_uniform_for_data_from_the_fitted_model(
-    recording, fitted, algorithm, transform
+    simulate, fitted, algorithm, transform
 ):
     """Spikes simulated from the fitted model map to uniform coordinates."""
-    environment = recording[0]
     model = fitted[algorithm]
-    position_time, position, spike_times, marks = _simulate(
-        algorithm, model, environment, np.random.default_rng(11)
-    )
+    position_time, position, spike_times, marks = simulate(algorithm, 11)
     u, v = transform(
         model,
         algorithm,
@@ -295,13 +335,10 @@ def test_transforms_are_uniform_for_data_from_the_fitted_model(
 @pytest.mark.slow
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
-def test_transforms_reject_shifted_marks(recording, fitted, algorithm, transform):
+def test_transforms_reject_shifted_marks(simulate, fitted, algorithm, transform):
     """Marks displaced by 1.5 bandwidths are not uniform under the model."""
-    environment = recording[0]
     model = fitted[algorithm]
-    position_time, position, spike_times, marks = _simulate(
-        algorithm, model, environment, np.random.default_rng(12)
-    )
+    position_time, position, spike_times, marks = simulate(algorithm, 12)
     _, v = transform(
         model,
         algorithm,
@@ -317,13 +354,10 @@ def test_transforms_reject_shifted_marks(recording, fitted, algorithm, transform
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_ircm_rejects_a_doubled_rate(recording, fitted, algorithm):
+def test_ircm_rejects_a_doubled_rate(simulate, fitted, algorithm):
     """Rescaled intervals detect a model whose rate is twice the data's."""
-    environment = recording[0]
     model = fitted[algorithm]
-    position_time, position, spike_times, marks = _simulate(
-        algorithm, model, environment, np.random.default_rng(13)
-    )
+    position_time, position, spike_times, marks = simulate(algorithm, 13)
     doubled = {**model, "mean_rates": [2.0 * rate for rate in model["mean_rates"]]}
     if algorithm == "clusterless_diffusion":
         doubled["summed_ground_process_intensity"] = 2.0 * np.asarray(
@@ -338,14 +372,11 @@ def test_ircm_rejects_a_doubled_rate(recording, fitted, algorithm):
 @pytest.mark.unit
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_feature_order_reorders_the_sequential_conditionals(
-    recording, fitted, algorithm
+    simulate, fitted, algorithm
 ):
     """The first transformed mark is conditioned on no other mark feature."""
-    environment = recording[0]
     model = fitted[algorithm]
-    position_time, position, spike_times, marks = _simulate(
-        algorithm, model, environment, np.random.default_rng(14), duration=40.0
-    )
+    position_time, position, spike_times, marks = simulate(algorithm, 14, duration=40.0)
     _, forward = ircm_transform(
         model, algorithm, 0, position_time, position, spike_times, marks
     )

@@ -696,7 +696,7 @@ def test_decoder_decodes_a_simulated_run():
     )
     from non_local_detector.time_edges import time_edges_from_centers
 
-    sim = make_simulated_run_data()
+    sim = make_simulated_run_data(n_runs=3)
     time, position = sim.position_time, sim.position
     train = np.arange(len(time)) < int(0.7 * len(time))
     decoder = ClusterlessDecoder(clusterless_algorithm="clusterless_mark_glm").fit(
