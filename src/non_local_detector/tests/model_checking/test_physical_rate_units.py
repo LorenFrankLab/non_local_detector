@@ -5,6 +5,10 @@ import pytest
 from scipy.integrate import cumulative_trapezoid
 from scipy.stats import expon
 
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _SORTED_SPIKES_ALGORITHMS,
+)
 from non_local_detector.model_checking.clusterless import (
     _compute_rescaled_isi,
     interval_rescaling_transform,
@@ -210,15 +214,7 @@ def test_clusterless_rejects_events_outside_or_invalid_for_sampled_support(bad_s
 @pytest.mark.parametrize("frequency", [30, 500])
 @pytest.mark.parametrize(
     "algorithm",
-    [
-        "sorted_spikes_kde",
-        "sorted_spikes_glm",
-        "sorted_spikes_diffusion",
-        "sorted_spikes_mrf",
-        "clusterless_kde",
-        "clusterless_gmm",
-        "clusterless_diffusion",
-    ],
+    [*_SORTED_SPIKES_ALGORITHMS, *_CLUSTERLESS_ALGORITHMS],
 )
 def test_fitted_hz_rates_feed_physical_time_checkers(algorithm, frequency):
     from non_local_detector.tests.models._helpers import _decoder
