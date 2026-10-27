@@ -204,7 +204,7 @@ This project maintains high code quality standards:
 
    ```bash
    # Full quality check (required before committing)
-   ruff check src/ && ruff format --check src/ && pytest -n auto
+   ruff check src/ && ruff format --check src/ && pytest
 
    # Auto-fix linting issues
    ruff check --fix src/
@@ -244,7 +244,7 @@ GitHub Actions (`.github/workflows/test_package_build.yml`) runs on every pull r
 - **Packaging**: the wheel, sdist and git archive are built, installed without the source tree, and smoke-tested with the golden regression tests, which need the packaged data files.
 - **Coverage**: uploaded to Codecov from the Python 3.12 Linux job.
 
-To reproduce the locked test job locally: `uv sync --locked --extra test && uv run pytest -n auto --dist loadfile`.
+To reproduce the locked test job locally: `uv sync --locked --extra test && uv run pytest`.
 
 ## 📚 Documentation
 
