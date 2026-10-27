@@ -14,8 +14,6 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.tests.conftest import precision_mode
 from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING
 
-pytestmark = pytest.mark.unit
-
 
 def dtype_precision(dtype):
     """``precision_mode`` with x64 enabled for 64-bit dtypes."""
