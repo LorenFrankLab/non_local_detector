@@ -729,14 +729,8 @@ class TestPredictGLMLogLikelihood:
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
-            environment=env,
-            coefficients=encoding["coefficients"],
-            emission_design_info=encoding["emission_design_info"],
-            place_fields=encoding["place_fields"],
-            no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
-            is_track_interior=encoding["is_track_interior"],
+            **encoding,
             is_local=False,
-            disable_progress_bar=True,
         )
 
         # Assert
@@ -750,14 +744,8 @@ class TestPredictGLMLogLikelihood:
                 position_time=jnp.asarray(data["position_time"]),
                 position=jnp.asarray(data["position"]),
                 spike_times=data["spike_times"][:-1],
-                environment=env,
-                coefficients=encoding["coefficients"],
-                emission_design_info=encoding["emission_design_info"],
-                place_fields=encoding["place_fields"],
-                no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
-                is_track_interior=encoding["is_track_interior"],
+                **encoding,
                 is_local=False,
-                disable_progress_bar=True,
             )
 
     def test_predict_glm_log_likelihood_local_returns_correct_shape(
@@ -778,14 +766,8 @@ class TestPredictGLMLogLikelihood:
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
-            environment=env,
-            coefficients=encoding["coefficients"],
-            emission_design_info=encoding["emission_design_info"],
-            place_fields=encoding["place_fields"],
-            no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
-            is_track_interior=encoding["is_track_interior"],
+            **encoding,
             is_local=True,
-            disable_progress_bar=True,
         )
 
         # Assert
@@ -812,14 +794,8 @@ class TestPredictGLMLogLikelihood:
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
-            environment=env,
-            coefficients=encoding["coefficients"],
-            emission_design_info=encoding["emission_design_info"],
-            place_fields=encoding["place_fields"],
-            no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
-            is_track_interior=encoding["is_track_interior"],
+            **encoding,
             is_local=False,
-            disable_progress_bar=True,
         )
 
         # Assert - with no spikes each bin's LL is -duration * summed rate

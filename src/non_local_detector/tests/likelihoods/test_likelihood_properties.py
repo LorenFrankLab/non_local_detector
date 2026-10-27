@@ -97,21 +97,13 @@ def _fit_sorted_kde(env, t, pos, spike_times):
     )
 
 
-def _predict_sorted_kde(enc, env, t, pos, spike_times, is_local=False):
+def _predict_sorted_kde(enc, t, pos, spike_times, is_local=False):
     return predict_sorted_spikes_kde_log_likelihood(
         time_edges=jnp.linspace(0.0, 1.0, 6),
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=is_local,
     )
 
@@ -130,20 +122,14 @@ def _fit_sorted_glm(env, t, pos, spike_times):
     )
 
 
-def _predict_sorted_glm(enc, env, t, pos, spike_times, is_local=False):
+def _predict_sorted_glm(enc, t, pos, spike_times, is_local=False):
     return predict_sorted_spikes_glm_log_likelihood(
         time_edges=jnp.linspace(0.0, 1.0, 6),
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
-        environment=env,
-        coefficients=enc["coefficients"],
-        emission_design_info=enc["emission_design_info"],
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
+        **enc,
         is_local=is_local,
-        disable_progress_bar=True,
     )
 
 
@@ -168,20 +154,9 @@ def _fit_predict_clusterless_kde(
         position=jnp.asarray(pos),
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        occupancy=enc["occupancy"],
-        occupancy_model=enc["occupancy_model"],
-        gpi_models=enc["gpi_models"],
-        encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
-        encoding_positions=enc["encoding_positions"],
+        **enc,
         mark_reference=fit_mark_references(spike_features, 1.0),
-        environment=env,
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc["position_std"]),
-        waveform_std=jnp.asarray(enc["waveform_std"]),
         is_local=is_local,
-        disable_progress_bar=True,
-        block_size=8,
     )
     return enc, ll
 
@@ -207,18 +182,9 @@ def _fit_predict_clusterless_gmm(
         position=jnp.asarray(pos),
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        environment=env,
-        occupancy_model=enc["occupancy_model"],
-        interior_place_bin_centers=enc["interior_place_bin_centers"],
-        log_occupancy=enc["log_occupancy"],
-        gpi_models=enc["gpi_models"],
-        joint_models=enc["joint_models"],
-        mean_rates=enc["mean_rates"],
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        mark_dimensions=enc["mark_dimensions"],
+        **enc,
         mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
         is_local=is_local,
-        disable_progress_bar=True,
     )
     return enc, ll
 
@@ -309,8 +275,8 @@ class TestLocalNonlocalFiniteness:
             seed, n_neurons, n_time, spikes_per_neuron
         )
         enc = fit(ENV, t, pos, spikes)
-        ll_nonlocal = predict(enc, ENV, t, pos, spikes)
-        ll_local = predict(enc, ENV, t, pos, spikes, is_local=True)
+        ll_nonlocal = predict(enc, t, pos, spikes)
+        ll_local = predict(enc, t, pos, spikes, is_local=True)
 
         assert jnp.all(jnp.isfinite(ll_local)), f"Local LL contains NaN/Inf: {ll_local}"
         assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local LL contains NaN/Inf"

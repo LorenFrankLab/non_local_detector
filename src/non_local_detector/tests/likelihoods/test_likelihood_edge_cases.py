@@ -85,15 +85,7 @@ def _predict_sorted_kde(enc, env, spike_times, t_pos, pos, n_decode=6, is_local=
         position_time=t_pos,
         position=pos,
         spike_times=spike_times,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=is_local,
     )
 
@@ -124,14 +116,8 @@ def _predict_sorted_glm(enc, env, spike_times, t_pos, pos, n_decode=6, is_local=
         position_time=t_pos,
         position=pos,
         spike_times=spike_times,
-        environment=env,
-        coefficients=enc["coefficients"],
-        emission_design_info=enc["emission_design_info"],
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
+        **enc,
         is_local=is_local,
-        disable_progress_bar=True,
     )
 
 
@@ -167,20 +153,8 @@ def _predict_clusterless_kde(
         position=pos,
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        occupancy=enc["occupancy"],
-        occupancy_model=enc["occupancy_model"],
-        gpi_models=enc["gpi_models"],
-        encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
-        encoding_positions=enc["encoding_positions"],
-        mark_reference=enc["mark_reference"],
-        environment=env,
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc["position_std"]),
-        waveform_std=jnp.asarray(enc["waveform_std"]),
+        **enc,
         is_local=is_local,
-        disable_progress_bar=True,
-        block_size=8,
     )
 
 
@@ -214,18 +188,8 @@ def _predict_clusterless_gmm(
         position=pos,
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        environment=env,
-        occupancy_model=enc["occupancy_model"],
-        interior_place_bin_centers=enc["interior_place_bin_centers"],
-        log_occupancy=enc["log_occupancy"],
-        gpi_models=enc["gpi_models"],
-        joint_models=enc["joint_models"],
-        mean_rates=enc["mean_rates"],
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        mark_dimensions=enc["mark_dimensions"],
-        mark_reference=enc["mark_reference"],
+        **enc,
         is_local=is_local,
-        disable_progress_bar=True,
     )
 
 
@@ -472,15 +436,7 @@ def test_sorted_kde_partial_occupancy():
         position_time=t,
         position=pos,
         spike_times=spike_times,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=False,
     )
 
@@ -520,20 +476,9 @@ def test_clusterless_kde_partial_occupancy():
         position=pos,
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        occupancy=enc["occupancy"],
-        occupancy_model=enc["occupancy_model"],
-        gpi_models=enc["gpi_models"],
-        encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
-        encoding_positions=enc["encoding_positions"],
+        **enc,
         mark_reference=fit_mark_references(spike_features, 1.0),
-        environment=env,
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        summed_ground_process_intensity=enc["summed_ground_process_intensity"],
-        position_std=jnp.asarray(enc["position_std"]),
-        waveform_std=jnp.asarray(enc["waveform_std"]),
         is_local=False,
-        disable_progress_bar=True,
-        block_size=8,
     )
 
     assert not jnp.any(jnp.isnan(ll))

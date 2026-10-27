@@ -97,15 +97,7 @@ def test_sorted_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         position_time=t,
         position=pos,
         spike_times=spikes,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=np.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=False,
     )
     assert ll.shape[0] == time_edges.shape[0] - 1 and ll.ndim == 2
@@ -143,22 +135,11 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         position=pos,
         spike_times=[np.array([2.1])],
         spike_waveform_features=[np.array([[0.1, 0.0]], dtype=float)],
-        occupancy=encoding["occupancy"],
-        occupancy_model=encoding["occupancy_model"],
-        gpi_models=encoding["gpi_models"],
-        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
-        encoding_positions=encoding["encoding_positions"],
-        environment=env,
-        mean_rates=np.asarray(encoding["mean_rates"]),
-        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
-        position_std=encoding["position_std"],
-        waveform_std=encoding["waveform_std"],
+        **encoding,
         mark_reference=fit_mark_references(
             enc_feats, mark_reference_scale(waveform_std=encoding["waveform_std"])
         ),
         is_local=False,
-        block_size=8,
-        disable_progress_bar=True,
     )
     assert ll.shape[0] == time_edges.shape[0] - 1 and ll.ndim == 2
 

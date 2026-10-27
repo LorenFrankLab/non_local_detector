@@ -61,7 +61,7 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal(kde_fit):
 
 
 def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_fit):
-    env, t_pos, pos, spikes, enc = kde_fit
+    _, t_pos, pos, spikes, enc = kde_fit
 
     # decoding over 5 time bins via 6 edges
     t_edges = jnp.linspace(0.0, 10.0, 6)
@@ -72,15 +72,7 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_
         position_time=t_pos,
         position=pos,
         spike_times=spikes,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=False,
     )
     assert ll.shape[0] == t_edges.shape[0] - 1
@@ -93,15 +85,7 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_
         position_time=t_pos,
         position=pos,
         spike_times=spikes,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=True,
     )
     assert ll_local.shape == (t_edges.shape[0] - 1, 1)
@@ -113,15 +97,7 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_
             position_time=t_pos,
             position=pos,
             spike_times=spikes[:-1],
-            environment=env,
-            marginal_models=enc["marginal_models"],
-            occupancy_model=enc["occupancy_model"],
-            occupancy=enc["occupancy"],
-            mean_rates=jnp.asarray(enc["mean_rates"]),
-            place_fields=enc["place_fields"],
-            no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-            is_track_interior=enc["is_track_interior"],
-            disable_progress_bar=True,
+            **enc,
             is_local=False,
         )
 
@@ -138,15 +114,7 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum(kde_fit):
         position_time=t_pos,
         position=pos,
         spike_times=empty_spikes,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=True,
     )
 
@@ -177,7 +145,7 @@ def test_nonlocal_with_no_spikes_equals_negative_summed_rates(kde_fit):
     The expected value is summed from ``place_fields``, not read from the stored
     ``no_spike_part_log_likelihood``, so an error in the fit-time sum fails.
     """
-    env, t_pos, pos, _, enc = kde_fit
+    _, t_pos, pos, _, enc = kde_fit
 
     t_edges = jnp.linspace(0.0, 10.0, 6)
     empty_spikes = [jnp.array([]), jnp.array([])]
@@ -186,15 +154,7 @@ def test_nonlocal_with_no_spikes_equals_negative_summed_rates(kde_fit):
         position_time=t_pos,
         position=pos,
         spike_times=empty_spikes,
-        environment=env,
-        marginal_models=enc["marginal_models"],
-        occupancy_model=enc["occupancy_model"],
-        occupancy=enc["occupancy"],
-        mean_rates=jnp.asarray(enc["mean_rates"]),
-        place_fields=enc["place_fields"],
-        no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
-        is_track_interior=enc["is_track_interior"],
-        disable_progress_bar=True,
+        **enc,
         is_local=False,
     )
     summed_rates = np.asarray(enc["place_fields"]).sum(axis=0)

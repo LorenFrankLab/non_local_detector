@@ -88,20 +88,9 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         position=pos,
         spike_times=dec_spike_times,
         spike_waveform_features=dec_feats,
-        occupancy=encoding["occupancy"],
-        occupancy_model=encoding["occupancy_model"],
-        gpi_models=encoding["gpi_models"],
-        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
-        encoding_positions=encoding["encoding_positions"],
-        environment=env,
-        mean_rates=jnp.asarray(encoding["mean_rates"]),
-        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
-        position_std=jnp.asarray(encoding["position_std"]),
-        waveform_std=jnp.asarray(encoding["waveform_std"]),
+        **encoding,
         mark_reference=mark_reference,
         is_local=False,
-        block_size=8,
-        disable_progress_bar=True,
     )
     # shape: (n_bins, n_interior_bins), one row per decode bin
     assert ll_nonlocal.shape[0] == t_edges.shape[0] - 1
@@ -114,20 +103,9 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         position=pos,
         spike_times=dec_spike_times,
         spike_waveform_features=dec_feats,
-        occupancy=encoding["occupancy"],
-        occupancy_model=encoding["occupancy_model"],
-        gpi_models=encoding["gpi_models"],
-        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
-        encoding_positions=encoding["encoding_positions"],
-        environment=env,
-        mean_rates=jnp.asarray(encoding["mean_rates"]),
-        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
-        position_std=jnp.asarray(encoding["position_std"]),
-        waveform_std=jnp.asarray(encoding["waveform_std"]),
+        **encoding,
         mark_reference=mark_reference,
         is_local=True,
-        block_size=8,
-        disable_progress_bar=True,
     )
     assert ll_local.shape == (t_edges.shape[0] - 1, 1)
     assert jnp.all(jnp.isfinite(ll_local))
@@ -230,20 +208,9 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         position=pos,
         spike_times=dec_spike_times,
         spike_waveform_features=dec_feats,
-        occupancy=encoding["occupancy"],
-        occupancy_model=encoding["occupancy_model"],
-        gpi_models=encoding["gpi_models"],
-        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
-        encoding_positions=encoding["encoding_positions"],
-        environment=env,
-        mean_rates=jnp.asarray(encoding["mean_rates"]),
-        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
-        position_std=jnp.asarray(encoding["position_std"]),
-        waveform_std=encoding["waveform_std"],  # Still scalar from fit
+        **encoding,
         mark_reference=mark_reference,
         is_local=False,
-        block_size=8,
-        disable_progress_bar=True,
     )
 
     assert ll_nonlocal.shape[0] == t_edges.shape[0] - 1
@@ -257,20 +224,9 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         position=pos,
         spike_times=dec_spike_times,
         spike_waveform_features=dec_feats,
-        occupancy=encoding["occupancy"],
-        occupancy_model=encoding["occupancy_model"],
-        gpi_models=encoding["gpi_models"],
-        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
-        encoding_positions=encoding["encoding_positions"],
-        environment=env,
-        mean_rates=jnp.asarray(encoding["mean_rates"]),
-        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
-        position_std=jnp.asarray(encoding["position_std"]),
-        waveform_std=encoding["waveform_std"],
+        **encoding,
         mark_reference=mark_reference,
         is_local=True,
-        block_size=8,
-        disable_progress_bar=True,
     )
 
     assert ll_local.shape == (t_edges.shape[0] - 1, 1)

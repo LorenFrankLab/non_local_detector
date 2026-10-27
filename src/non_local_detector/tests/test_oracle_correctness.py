@@ -143,24 +143,9 @@ def kde_decoding_setup() -> dict[str, Any]:
             ]
             for i, swf in enumerate(sim.spike_waveform_features)
         ],
-        occupancy=encoding_model["occupancy"],
-        occupancy_model=encoding_model["occupancy_model"],
-        gpi_models=encoding_model["gpi_models"],
-        encoding_spike_waveform_features=encoding_model[
-            "encoding_spike_waveform_features"
-        ],
-        encoding_positions=encoding_model["encoding_positions"],
-        environment=sim.environment,
-        mean_rates=encoding_model["mean_rates"],
-        summed_ground_process_intensity=encoding_model[
-            "summed_ground_process_intensity"
-        ],
-        position_std=encoding_model["position_std"],
-        waveform_std=encoding_model["waveform_std"],
+        **encoding_model,
         mark_reference=mark_reference,
         is_local=False,
-        block_size=100,
-        disable_progress_bar=True,
     )
 
     # Get true positions at test time bin centers

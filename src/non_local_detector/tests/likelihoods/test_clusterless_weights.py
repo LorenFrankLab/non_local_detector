@@ -44,7 +44,7 @@ def _mark_reference(encoding, t_pos, spike_times, feats, weights=None):
 
 
 def _predict_nonlocal(
-    env, encoding, mark_reference, t_pos, pos, dec_spike_times, dec_feats, t_edges
+    encoding, mark_reference, t_pos, pos, dec_spike_times, dec_feats, t_edges
 ):
     return np.asarray(
         predict_clusterless_kde_log_likelihood(
@@ -53,23 +53,9 @@ def _predict_nonlocal(
             position=pos,
             spike_times=dec_spike_times,
             spike_waveform_features=dec_feats,
-            occupancy=encoding["occupancy"],
-            occupancy_model=encoding["occupancy_model"],
-            gpi_models=encoding["gpi_models"],
-            encoding_spike_waveform_features=encoding[
-                "encoding_spike_waveform_features"
-            ],
-            encoding_positions=encoding["encoding_positions"],
+            **encoding,
             mark_reference=mark_reference,
-            encoding_weights=encoding["encoding_weights"],
-            environment=env,
-            mean_rates=jnp.asarray(encoding["mean_rates"]),
-            summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
-            position_std=jnp.asarray(encoding["position_std"]),
-            waveform_std=jnp.asarray(encoding["waveform_std"]),
             is_local=False,
-            block_size=16,
-            disable_progress_bar=True,
         )
     )
 
@@ -144,7 +130,6 @@ def test_binary_weights_match_subset_fit_clusterless_kde(simple_1d_environment):
     dec_feats = [jnp.array([[0.1, 0.05], [0.9, -0.8]], dtype=float)]
 
     ll_weighted = _predict_nonlocal(
-        env,
         weighted,
         _mark_reference(weighted, t_pos, [all_spike_times], [all_feats], weights),
         t_pos,
@@ -154,7 +139,6 @@ def test_binary_weights_match_subset_fit_clusterless_kde(simple_1d_environment):
         t_edges,
     )
     ll_subset = _predict_nonlocal(
-        env,
         subset,
         _mark_reference(
             subset, t_pos[block], [all_spike_times[in_block]], [all_feats[in_block]]
