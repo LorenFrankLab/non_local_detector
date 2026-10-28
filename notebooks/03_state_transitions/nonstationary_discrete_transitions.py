@@ -142,7 +142,6 @@ spike_times = [
 fraction = np.bincount(states, minlength=4) / n_time
 for name, value in zip(STATE_NAMES, fraction, strict=True):
     print(f"{name:22s} {value:.3f} of the time")
-print(f"99th percentile of speed: {np.quantile(speed, 0.99):.1f} cm/s")
 
 # %% [markdown]
 # ## Fit on the first half
@@ -194,10 +193,16 @@ for name, detector in models.items():
     print(f"{name}: {detector.n_iter_} EM iterations, converged={detector.converged_}")
 
 speed_dependent = models["speed-dependent"]
-print(
-    "REML smoothness per row:",
-    np.array2string(speed_dependent.discrete_transition_smoothness_, precision=3),
-)
+for state, (strength,) in zip(
+    STATE_NAMES, speed_dependent.discrete_transition_smoothness_, strict=True
+):
+    print(f"REML smoothness of the {state} row: {strength:.3g}")
+
+# %% [markdown]
+# REML chooses one smoothness per row. Near 0 the row's curve is barely
+# penalized (the data pin it down); at its maximum, 1e6, the curve is
+# nearly constant. The No-Spike row is frozen by default, so it keeps its
+# starting value, 1.
 
 # %% [markdown]
 # ## Fitted transition curves against the truth
