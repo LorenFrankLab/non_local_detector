@@ -26,12 +26,18 @@ pytestmark = pytest.mark.integration
 N_PREDICT = 2_001
 
 
-@pytest.fixture(scope="module")
-def fitted():
+CYCLIC_FORMULA = (
+    "1 + quantile_bs(speed) + cyclic_bs(phase, lower=0.0, upper=6.283185307179586)"
+)
+
+
+@pytest.fixture(scope="module", params=[None, CYCLIC_FORMULA], ids=["speed", "cyclic"])
+def fitted(request):
     """A covariate-transition detector after one EM iteration, and predict arguments.
 
     The fit uses the first 10,000 samples; prediction covers the first
-    ``N_PREDICT``.
+    ``N_PREDICT``. The cyclic case adds an 8 Hz phase as a ``cyclic_bs``
+    term.
     """
     speed, position, spike_times, time, _, _, is_event, _ = make_simulated_data(
         seed=42, n_neurons=5
@@ -39,11 +45,13 @@ def fitted():
     n = 10_000
     speed, position, time, is_event = speed[:n], position[:n], time[:n], is_event[:n]
     spike_times = [times[times <= time[-1]] for times in spike_times]
+    formula = {} if request.param is None else {"formula": request.param}
     detector = NonLocalSortedSpikesDetector(
         discrete_transition_type=DiscreteNonStationaryDiagonal(
-            np.array([0.99, 0.98, 0.96, 0.96])
+            np.array([0.99, 0.98, 0.96, 0.96]), **formula
         ),
     )
+    phase = np.mod(2 * np.pi * 8.0 * time, 2 * np.pi)
     detector.estimate_parameters(
         position_time=time,
         position=position,
@@ -52,7 +60,7 @@ def fitted():
         is_training=~is_event,
         max_iter=1,
         estimate_encoding_model=False,
-        discrete_transition_covariate_data={"speed": speed},
+        discrete_transition_covariate_data={"speed": speed, "phase": phase},
     )
     predict_data = {
         "position_time": time[:N_PREDICT],
@@ -61,7 +69,8 @@ def fitted():
         "time_edges": time_edges_from_centers(time[:N_PREDICT]),
         # Speeds beyond the fitted range exercise the rebuilt spline state.
         "discrete_transition_covariate_data": {
-            "speed": np.linspace(0, 2 * speed.max(), N_PREDICT)
+            "speed": np.linspace(0, 2 * speed.max(), N_PREDICT),
+            "phase": np.linspace(-np.pi, 3 * np.pi, N_PREDICT),
         },
     }
     return detector, predict_data

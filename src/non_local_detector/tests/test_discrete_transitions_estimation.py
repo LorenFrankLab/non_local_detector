@@ -1202,10 +1202,25 @@ class TestExpandedTransitionMstepEndToEnd:
 
         assert error < 0.10
 
-    def test_reml_smoothed_detector_is_monotone_and_recovers_transitions(self):
+    @pytest.mark.parametrize(
+        ("formula", "n_terms"),
+        [
+            ("1 + quantile_bs(covariate, n_knots=6)", 1),
+            # A cyclic covariate the transitions do not depend on.
+            (
+                "1 + quantile_bs(covariate, n_knots=6)"
+                " + cyclic_bs(phase, lower=0.0, upper=6.283185307179586)",
+                2,
+            ),
+        ],
+    )
+    def test_reml_smoothed_detector_is_monotone_and_recovers_transitions(
+        self, formula, n_terms
+    ):
         """EM with REML-chosen smoothness never lowers its penalized
         log-likelihood, recovers the covariate dependence, and leaves each
-        row's smoothness and coefficient covariance on the detector."""
+        row's smoothness for each spline term and its coefficient covariance
+        on the detector."""
         rng = np.random.default_rng(14)
         n_time, n_states, n_bins = 900, 3, 2
         covariate, _, true_transition = _nonstationary_transition_parameters(n_time)
@@ -1220,14 +1235,15 @@ class TestExpandedTransitionMstepEndToEnd:
             discrete_initial_conditions=initial_conditions,
             discrete_transition_type=DiscreteNonStationaryCustom(
                 values=np.full((n_states, n_states), 1.0 / n_states),
-                formula="1 + quantile_bs(covariate, n_knots=6)",
+                formula=formula,
                 smoothness="reml",
             ),
             continuous_transition_blocks=continuous_transition_blocks,
         )
+        phase = np.random.default_rng(15).uniform(0.0, 2.0 * np.pi, n_time)
         detector._fit(
             position=np.array([[0.25], [1.25]]),
-            discrete_transition_covariate_data={"covariate": covariate},
+            discrete_transition_covariate_data={"covariate": covariate, "phase": phase},
         )
         detector.estimate_parameters(
             time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
@@ -1239,7 +1255,7 @@ class TestExpandedTransitionMstepEndToEnd:
         )
 
         assert detector.em_monotonicity_violations_ == []
-        assert detector.discrete_transition_smoothness_.shape == (n_states,)
+        assert detector.discrete_transition_smoothness_.shape == (n_states, n_terms)
         assert np.all(detector.discrete_transition_smoothness_ > 0.0)
         n_coefficients, _, n_free = detector.discrete_transition_coefficients_.shape
         n_parameters = n_coefficients * n_free
@@ -1252,7 +1268,7 @@ class TestExpandedTransitionMstepEndToEnd:
         )
         assert error < 0.10
 
-        grid = {"covariate": np.linspace(-1.0, 1.0, 9)}
+        grid = {"covariate": np.linspace(-1.0, 1.0, 9), "phase": np.zeros(9)}
         transitions, lower, upper = detector.discrete_transition_intervals(grid)
         assert np.all((lower <= transitions) & (transitions <= upper))
 

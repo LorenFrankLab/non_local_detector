@@ -2433,13 +2433,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         discrete_transition_design_matrix_ : patsy.DesignMatrix or None
             Design matrix information for covariate-dependent transitions.
         discrete_transition_smoothness_matrix_ : np.ndarray or None
-            Curvature penalty of the formula's ``quantile_bs`` terms, shape
-            (n_coefficients, n_coefficients), for covariate-dependent
-            transitions.
+            Curvature penalty of each of the formula's ``quantile_bs`` and
+            ``cyclic_bs`` terms, shape (n_terms, n_coefficients,
+            n_coefficients), for covariate-dependent transitions.
         discrete_transition_smoothness_ : np.ndarray or None
-            Curvature-penalty strength of each row, shape (n_states,), for
-            covariate-dependent transitions. With ``smoothness="reml"`` the
-            strengths REML chose in the last EM M-step.
+            Curvature-penalty strength of each row for each spline term,
+            shape (n_states, n_terms), for covariate-dependent transitions.
+            With ``smoothness="reml"`` the strengths REML chose in the last
+            EM M-step.
         discrete_transition_coefficient_covariance_ : np.ndarray or None
             Laplace covariance of each row's flattened coefficients, shape
             (n_states, n_parameters, n_parameters), from the last EM M-step
@@ -2459,8 +2460,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             if self.discrete_transition_design_matrix_ is None
             else copy.deepcopy(covariate_data)
         )
-        # Curvature penalty of the formula's quantile_bs terms, the strength
-        # of each row's penalty (fixed, or REML's starting value until an
+        # Curvature penalty of each of the formula's spline terms, the
+        # strengths of each row's penalties (fixed, or REML's starting value until an
         # M-step chooses it) and, once an M-step has fit them, the Laplace
         # covariance of each row's coefficients.
         self.discrete_transition_coefficient_covariance_ = None
