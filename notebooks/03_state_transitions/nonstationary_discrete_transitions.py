@@ -245,11 +245,14 @@ rug.set_yticks([])
 # the curves are flat by construction. The summed Local → non-local curve
 # has no interval because the intervals are for single transitions.
 #
-# The true curves change between 0 and 10 cm/s, but `quantile_bs` places its
-# knots at quantiles of speed, and most samples are at running speeds, so
-# the spline is smoother than the truth near zero. The intervals describe
-# the uncertainty of the coefficients, not this basis bias, so they can miss
-# the truth where the basis is too coarse.
+# The true curves change between 0 and 10 cm/s, but this simulated animal
+# goes straight from a standstill (speed 0) to running: fewer than 0.1% of
+# samples fall between 2 and 10 cm/s (the histogram in the middle panel).
+# Nothing constrains the fit in that gap, so the smoothness penalty draws it
+# nearly straight, and the intervals, which describe the uncertainty of the
+# coefficients given that penalty, do not contain the truth there. Real speed
+# estimates fill this range, and with them the same fit is within about 10%
+# of the curve's range near rest.
 
 # %% [markdown]
 # ## Held-out prediction
