@@ -11,8 +11,7 @@ this data.
 Detector-level interval coverage is not asserted: the Laplace intervals
 condition on the E-step's expected transitions and on REML's chosen
 smoothness, so on these recordings the 95% intervals contained the true
-curve at 54-93% of grid points (seeds 1-5; seed 2's REML drew the
-Non-Local Continuous row nearly straight). Coverage with known states is
+curve at 57-93% of grid points (seeds 1-5). Coverage with known states is
 tested in ``test_covariate_transition_smoothing.py``.
 """
 
@@ -35,7 +34,7 @@ from non_local_detector.discrete_state_transitions import (
 SAMPLING_FREQUENCY = 500.0
 TRACK_LENGTH = 180.0
 N_STATES = 4
-FORMULA = "1 + quantile_bs(speed, upper_quantile=0.99)"
+FORMULA = "1 + quantile_bs(speed)"
 
 
 def _true_transition(speed: np.ndarray) -> np.ndarray:
@@ -218,8 +217,8 @@ class TestSpeedDependentTransitionRecovery:
 
     @pytest.mark.parametrize(
         ("curve", "tolerance"),
-        # About twice the worst EM-oracle gap over seeds 1-5 (0.0024, 0.0127,
-        # 0.0125).
+        # About twice the worst EM-oracle gap over seeds 1-5 (0.0022, 0.0108,
+        # 0.0098).
         [
             ("enter_non_local", 0.005),
             ("non_local_stay", 0.025),
