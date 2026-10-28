@@ -43,6 +43,7 @@
 # %%
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 
 from non_local_detector import (
     DiscreteNonStationaryCustom,
@@ -58,10 +59,14 @@ SMOOTHNESS = "reml"
 # %% [markdown]
 # ## Simulate a recording with known speed-dependent transitions
 #
-# The animal runs laps on a 180 cm track at ~30 cm/s (one lap in ten is a
-# ~70 cm/s sprint) and pauses 1-6 s at each end. Thirty speed samples are
-# tracking glitches of 300-1500 cm/s. At rest the animal enters non-local
-# states five times as often, and Non-Local Continuous events last longer.
+# The animal runs laps on a 180 cm track, speeding up from a standstill to
+# ~30 cm/s (one lap in ten is a ~70 cm/s sprint) and slowing down again,
+# then pauses 1-6 s at each end. The observed speed carries smoothed
+# tracking noise (SD 1.5 cm/s), so, as in real recordings, it is never
+# exactly 0 and every speed between rest and running is visited. Thirty
+# speed samples are tracking glitches of 300-1500 cm/s. The true transitions
+# depend on the observed speed: at rest the animal enters non-local states
+# five times as often, and Non-Local Continuous events last longer.
 # 40 place cells fire from the position the current state represents: the
 # animal's position (Local), nothing (No-Spike), a random walk (Non-Local
 # Continuous) or a random position (Non-Local Fragmented).
@@ -92,24 +97,24 @@ rng = np.random.default_rng(0)
 n_time = int(16 * 60 * SAMPLING_FREQUENCY)
 time = np.arange(n_time) / SAMPLING_FREQUENCY
 
-position = np.empty(n_time)
-x, direction, pause, lap_speed = 0.0, 1, 0, 30.0
-for index in range(n_time):
-    if pause > 0:
-        pause -= 1
-    else:
-        x += direction * rng.gamma(8.0, lap_speed / 8.0) / SAMPLING_FREQUENCY
-        if x >= TRACK_LENGTH or x <= 0:
-            x = np.clip(x, 0, TRACK_LENGTH)
-            direction *= -1
-            pause = int(rng.uniform(1, 6) * SAMPLING_FREQUENCY)
-            lap_speed = 70.0 if rng.uniform() < 0.1 else 30.0
-    position[index] = x
-true_speed = np.abs(np.gradient(position, time))
-speed = true_speed.copy()
+# Each lap's speed follows a half sine from 0 up to its peak and back.
+segments = []
+direction = 1.0
+while sum(map(len, segments)) < n_time:
+    peak = (70.0 if rng.uniform() < 0.1 else 30.0) * rng.uniform(0.8, 1.2)
+    # A half-sine speed profile covers 2 * peak * T / pi in T seconds.
+    lap_s = np.pi * TRACK_LENGTH / (2 * peak)
+    n_lap = int(lap_s * SAMPLING_FREQUENCY)
+    segments.append(direction * peak * np.sin(np.pi * np.arange(n_lap) / n_lap))
+    segments.append(np.zeros(int(rng.uniform(1, 6) * SAMPLING_FREQUENCY)))
+    direction *= -1
+velocity = np.concatenate(segments)[:n_time]
+position = np.clip(np.cumsum(velocity) / SAMPLING_FREQUENCY, 0, TRACK_LENGTH)
+noise = gaussian_filter1d(rng.normal(size=n_time), 0.1 * SAMPLING_FREQUENCY)
+speed = np.abs(velocity + noise * 1.5 / noise.std())
 speed[rng.choice(n_time, 30, replace=False)] = rng.uniform(300, 1500, 30)
 
-transition = true_transition(true_speed)
+transition = true_transition(speed)
 states = np.zeros(n_time, dtype=int)
 represented = position.copy()
 draws = rng.uniform(size=n_time)
@@ -139,7 +144,7 @@ spike_times = [
 fraction = np.bincount(states, minlength=4) / n_time
 for name, value in zip(STATE_NAMES, fraction, strict=True):
     print(f"{name:22s} {value:.3f} of the time")
-print(f"99th percentile of speed: {np.quantile(true_speed, 0.99):.1f} cm/s")
+print(f"99th percentile of speed: {np.quantile(speed, 0.99):.1f} cm/s")
 
 # %% [markdown]
 # ## Fit on the first half
@@ -208,7 +213,7 @@ print(
 # staying, so its curve sits below the truth by design.
 
 # %%
-grid = np.linspace(0.0, np.quantile(true_speed, 0.999), 200)
+grid = np.linspace(0.0, np.quantile(speed, 0.999), 200)
 fitted, lower, upper = speed_dependent.discrete_transition_intervals(
     {"speed": grid}, coverage=0.95
 )
@@ -233,11 +238,11 @@ for ax, (title, pairs) in zip(axes, panels, strict=True):
     ax.plot(grid, total(fitted), label="speed-dependent fit")
     ax.plot(grid, total(truth), "k--", label="truth")
     ax.axhline(total(stationary), color="gray", lw=1, label="stationary fit")
-    ax.axvline(np.quantile(true_speed[train], 0.99), color="gray", ls=":", lw=1)
+    ax.axvline(np.quantile(speed[train], 0.99), color="gray", ls=":", lw=1)
     ax.set(title=title, xlabel="speed (cm/s)", ylabel="probability per 2 ms bin")
 axes[0].legend(fontsize=8)
 rug = axes[1].twinx()
-rug.hist(true_speed[train], bins=80, range=(0, grid[-1]), color="gray", alpha=0.2)
+rug.hist(speed[train], bins=80, range=(0, grid[-1]), color="gray", alpha=0.2)
 rug.set_yticks([])
 
 # %% [markdown]
@@ -245,14 +250,13 @@ rug.set_yticks([])
 # the curves are flat by construction. The summed Local → non-local curve
 # has no interval because the intervals are for single transitions.
 #
-# The true curves change between 0 and 10 cm/s, but this simulated animal
-# goes straight from a standstill (speed 0) to running: fewer than 0.1% of
-# samples fall between 2 and 10 cm/s (the histogram in the middle panel).
-# Nothing constrains the fit in that gap, so the smoothness penalty draws it
-# nearly straight, and the intervals, which describe the uncertainty of the
-# coefficients given that penalty, do not contain the truth there. Real speed
-# estimates fill this range, and with them the same fit is within about 10%
-# of the curve's range near rest.
+# The Non-Local Continuous curves sit about 0.01 from the truth between 5
+# and 25 cm/s, mostly outside their intervals. The same spline and REML
+# smoothness fit directly to the simulated states, which EM does not see,
+# stay within 0.006 of the truth (about two standard errors for the
+# 2,500-5,000 Non-Local Continuous samples in each speed band), with 5 or 10
+# knots. So most of the gap is EM's uncertainty about which state the
+# animal was in, which the intervals leave out.
 
 # %% [markdown]
 # ## Held-out prediction
