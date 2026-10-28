@@ -946,7 +946,11 @@ class CovariateTransitionFit(NamedTuple):
 # log10 tolerance. Above 1e6 the fitted curve is already its linear limit
 # (transitions move by < 0.002) and the row's Hessian has condition numbers
 # above 1e13, so its log-determinant, and the LAML, are numerical noise.
+# When the grid's weakest strength scores best, the search continues a
+# decade at a time down to the floor; with the L2 penalty the LAML levels off
+# as the strength goes to 0.
 _REML_LOG10_GRID = np.arange(-4.0, 6.5, 1.0)
+_REML_LOG10_FLOOR = -12.0
 _REML_LOG10_TOLERANCE = 0.02
 
 
@@ -1308,11 +1312,20 @@ def _reml_row(
         laml(log10_strength, start)
         start = fits[log10_strength][0]
     best = max(fits, key=lambda key: fits[key][1])
+    # The penalty is on the covariate rescaled between the spline's
+    # boundaries, so a boundary far beyond the data (e.g. set by tracking
+    # glitches) makes even the grid's weakest strength over-smooth them:
+    # follow the LAML down while it keeps rising.
+    lowest = _REML_LOG10_GRID[0]
+    while best == lowest and lowest > _REML_LOG10_FLOOR:
+        lowest -= 1.0
+        laml(lowest, fits[lowest + 1.0][0])
+        best = max(fits, key=lambda key: fits[key][1])
     best_start = fits[best][0]
     minimize_scalar(
         lambda log10_strength: -laml(log10_strength, best_start),
         bounds=(
-            max(best - 1.0, _REML_LOG10_GRID[0]),
+            max(best - 1.0, lowest),
             min(best + 1.0, _REML_LOG10_GRID[-1]),
         ),
         method="bounded",

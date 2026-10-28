@@ -321,6 +321,64 @@ class TestRemlSmoothness:
                 f"{grid[int(np.argmax(grid_scores))]:.3g}"
             )
 
+    def test_reml_searches_below_its_grid_when_glitches_stretch_the_spline(self):
+        """Tracking glitches far above the data stretch the spline's range,
+        so the data fill a sliver of it and even the grid's weakest strength
+        over-smooths them. REML follows the LAML below its grid."""
+        rng = np.random.default_rng(8)
+        speed = _speeds(rng, 6_000)
+        speed[rng.choice(speed.size, 5, replace=False)] = 1_500.0
+        design = _design(speed)
+        response = _sampled_responses(rng, _true_transition(np.minimum(speed, 200.0)))
+        design_matrix = np.asarray(design, dtype=float)
+        penalty = _smoothness_matrix(design.design_info)
+        start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
+
+        fit = _fit_covariate_transition(
+            start,
+            design_matrix,
+            response,
+            smoothness="reml",
+            smoothness_matrix=penalty,
+        )
+
+        grid = np.logspace(-10, 6, 33)
+        grid_fits = [
+            _fit_covariate_transition(
+                start,
+                design_matrix,
+                response,
+                smoothness=value,
+                smoothness_matrix=penalty,
+            )
+            for value in grid
+        ]
+        for row in range(N_STATES):
+            grid_scores = [
+                _laml(
+                    design_matrix[:-1],
+                    response[:, row],
+                    grid_fit.coefficients[:, row],
+                    value,
+                    penalty,
+                    0.1,
+                )
+                for value, grid_fit in zip(grid, grid_fits, strict=True)
+            ]
+            reml_score = _laml(
+                design_matrix[:-1],
+                response[:, row],
+                fit.coefficients[:, row],
+                fit.smoothness[row],
+                penalty,
+                0.1,
+            )
+            assert reml_score >= max(grid_scores) - 0.05, (
+                f"row {row}: REML strength {fit.smoothness[row]:.3g} scores "
+                f"{reml_score:.3f}, grid best {max(grid_scores):.3f} at "
+                f"{grid[int(np.argmax(grid_scores))]:.3g}"
+            )
+
     def test_reml_smooths_a_linear_truth_more_than_a_wiggly_one(self):
         rng = np.random.default_rng(9)
         speed = _speeds(rng, 8_000)
