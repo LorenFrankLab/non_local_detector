@@ -946,11 +946,13 @@ class CovariateTransitionFit(NamedTuple):
 # log10 tolerance. Above 1e6 the fitted curve is already its linear limit
 # (transitions move by < 0.002) and the row's Hessian has condition numbers
 # above 1e13, so its log-determinant, and the LAML, are numerical noise.
-# When the grid's weakest strength scores best, the search continues a
-# decade at a time down to the floor; with the L2 penalty the LAML levels off
-# as the strength goes to 0.
-_REML_LOG10_GRID = np.arange(-4.0, 6.5, 1.0)
+# The grid reaches 1e-12 because the penalty is on the covariate rescaled
+# between the spline's boundaries: a boundary far beyond the data (e.g. set
+# by tracking glitches) moves the useful strengths down by decades, and the
+# LAML can have maxima there and near 1 (0.2 nats apart in one test).
+# Per-term searches around a current value scan down to the floor too.
 _REML_LOG10_FLOOR = -12.0
+_REML_LOG10_GRID = np.arange(_REML_LOG10_FLOOR, 6.5, 1.0)
 _REML_LOG10_TOLERANCE = 0.02
 # With several spline terms, REML then refines each term's strength in turn,
 # in at most this many sweeps over the terms.
@@ -1351,8 +1353,14 @@ def _max_transition_change(
 
 
 def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
-    """Inverse of a symmetric positive (semi)definite matrix; the
-    pseudo-inverse if it is singular."""
+    """Inverse of a symmetric positive definite matrix; NaN if it is
+    singular.
+
+    A singular penalized Hessian leaves some direction of the coefficients
+    unidentified (e.g. a row without expected transitions and with a flat
+    prior), so its covariance is unknown; a pseudo-inverse would give that
+    direction zero variance and the intervals false certainty.
+    """
     if matrix.shape[0] == 0:
         # A single state has no free coefficients (scipy < 1.13's LAPACK
         # wrappers reject empty matrices).
@@ -1360,7 +1368,7 @@ def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
     try:
         factor = cho_factor(matrix)
     except np.linalg.LinAlgError:
-        return np.linalg.pinv(matrix, hermitian=True)
+        return np.full_like(matrix, np.nan)
     return cho_solve(factor, np.eye(matrix.shape[0]))
 
 
@@ -1408,13 +1416,15 @@ def _reml_row(
     n_terms, n_coefficients = penalties.shape[:2]
     n_free = np.size(coefficients) // n_coefficients
     # The number of penalized directions of one logit, which the strengths
-    # do not change: all but the intercept with an L2 penalty, else the
-    # curvature penalties' joint rank.
-    eigenvalues = np.linalg.eigvalsh(penalties.sum(axis=0))
+    # do not change: all but the intercept with an L2 penalty, else the sum
+    # of the terms' curvature-penalty ranks (they sit on disjoint columns).
+    # A term's null directions are round-off (about 1e-20 of its largest
+    # eigenvalue) while a range stretched by outliers leaves genuine ones
+    # below 1e-11, so each rank uses LAPACK's tolerance, not a fixed cutoff.
     rank = (
         n_coefficients - 1
         if has_ridge
-        else int(np.sum(eigenvalues > 1e-9 * eigenvalues.max()))
+        else int(sum(np.linalg.matrix_rank(term, hermitian=True) for term in penalties))
     )
     fits: dict[tuple, tuple[np.ndarray, float]] = {}
 
@@ -1468,14 +1478,14 @@ def _reml_row(
             # (searched first), whose curve is flattest.
             return best()
 
-        # The penalty is on the covariate rescaled between the spline's
-        # boundaries, so a boundary far beyond the data (e.g. set by tracking
-        # glitches) makes even the grid's weakest strength over-smooth them:
-        # follow the LAML down while it keeps rising.
+        # When the weakest strength searched scores best, scan every decade
+        # to the floor: the LAML can dip and rise again (a 0.2-nat dip hid a
+        # maximum 13 nats higher three decades down).
         lowest = float(np.min(grid))
-        while best() == lowest and lowest > _REML_LOG10_FLOOR:
-            above, lowest = lowest, lowest - 1.0
-            score(lowest, fits[scores[above]][0])
+        if best() == lowest:
+            while lowest > _REML_LOG10_FLOOR:
+                above, lowest = lowest, lowest - 1.0
+                score(lowest, fits[scores[above]][0])
         best_start = fits[scores[best()]][0]
         minimize_scalar(
             lambda x: -score(x, best_start),
@@ -2983,6 +2993,9 @@ def predict_discrete_state_transition_intervals(
     Returns
     -------
     lower, upper : np.ndarray, shape (n_new_time, n_states, n_states)
+        NaN for rows whose covariance is NaN: their coefficients are not
+        identified (e.g. a state without expected transitions and with a flat
+        prior), so their uncertainty is unknown.
     """
     if not 0.0 < coverage < 1.0:
         raise ValueError(f"coverage must be in (0, 1), got {coverage}.")
