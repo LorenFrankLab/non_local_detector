@@ -29,16 +29,14 @@
 # 1. the fitted transition curves, with 95% intervals, against the truth, and
 # 2. how well each model predicts the held-out second half.
 #
-# The speed-dependent model uses the options that make the fitted curves
-# reliable where data are sparse:
+# The speed-dependent model uses
 #
-# - `quantile_bs(speed, upper_quantile=0.99)`: a cubic B-spline of speed whose
-#   upper boundary sits at the 99th percentile of the fitted speeds, so the
-#   fastest 1% (and tracking glitches) take the boundary's value instead of
-#   bending the last spline segment.
+# - `quantile_bs(speed)`: a cubic B-spline of speed with knots at quantiles
+#   of the fitted speeds, so they sit where the data are, and
 # - `smoothness="reml"`: a penalty on the curvature of the spline whose
 #   strength is chosen for each row in every EM M-step by maximizing its
-#   Laplace approximate marginal likelihood (REML).
+#   Laplace approximate marginal likelihood (REML), so each curve is only as
+#   wiggly as the data support.
 
 # %%
 import matplotlib.pyplot as plt
@@ -53,7 +51,7 @@ from non_local_detector import (
 )
 from non_local_detector.models._defaults import _ModelDefaults
 
-FORMULA = "1 + quantile_bs(speed, upper_quantile=0.99)"
+FORMULA = "1 + quantile_bs(speed)"
 SMOOTHNESS = "reml"
 
 # %% [markdown]
@@ -238,7 +236,6 @@ for ax, (title, pairs) in zip(axes, panels, strict=True):
     ax.plot(grid, total(fitted), label="speed-dependent fit")
     ax.plot(grid, total(truth), "k--", label="truth")
     ax.axhline(total(stationary), color="gray", lw=1, label="stationary fit")
-    ax.axvline(np.quantile(speed[train], 0.99), color="gray", ls=":", lw=1)
     ax.set(title=title, xlabel="speed (cm/s)", ylabel="probability per 2 ms bin")
 axes[0].legend(fontsize=8)
 rug = axes[1].twinx()
@@ -246,12 +243,11 @@ rug.hist(speed[train], bins=80, range=(0, grid[-1]), color="gray", alpha=0.2)
 rug.set_yticks([])
 
 # %% [markdown]
-# The dotted line marks the 99th percentile of the fitted speeds: beyond it
-# the curves are flat by construction. The summed Local → non-local curve
-# has no interval because the intervals are for single transitions.
+# The summed Local → non-local curve has no interval because the intervals
+# are for single transitions.
 #
-# The Non-Local Continuous curves sit about 0.01 from the truth between 5
-# and 25 cm/s, mostly outside their intervals. The same spline and REML
+# Above 5 cm/s the Non-Local Continuous curves sit 0.005-0.01 from the
+# truth, partly outside their intervals. The same spline and REML
 # smoothness fit directly to the simulated states, which EM does not see,
 # stay within 0.006 of the truth (about two standard errors for the
 # 2,500-5,000 Non-Local Continuous samples in each speed band), with 5 or 10
