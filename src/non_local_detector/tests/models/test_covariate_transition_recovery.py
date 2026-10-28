@@ -2,21 +2,23 @@
 
 Simulates the four-state non-local model with sorted spikes from Gaussian
 place fields and speed-dependent true transitions (non-local events more
-likely at rest), with laps, pauses at zero speed and tracking glitches in the
-speed covariate. EM fits the transitions with the encoding model fixed and no
+likely at rest), with laps that speed up and slow down gradually, pauses,
+tracking noise and glitches in the speed covariate. EM fits the transitions with the encoding model fixed and no
 transition prior, and is compared with an oracle: the same basis and penalty
 fit directly to the true state sequence, the best this basis can do with
 this data.
 
 Detector-level interval coverage is not asserted: the Laplace intervals
-condition on the E-step's expected transitions and leave out basis bias, so
-on these recordings the 95% intervals contained the true curve at only
-43-78% of grid points (seeds 1-5). Coverage with known states is tested in
-``test_covariate_transition_smoothing.py``.
+condition on the E-step's expected transitions and on REML's chosen
+smoothness, so on these recordings the 95% intervals contained the true
+curve at 54-93% of grid points (seeds 1-5; seed 2's REML drew the
+Non-Local Continuous row nearly straight). Coverage with known states is
+tested in ``test_covariate_transition_smoothing.py``.
 """
 
 import numpy as np
 import pytest
+from scipy.ndimage import gaussian_filter1d
 
 from non_local_detector import (
     DiscreteNonStationaryCustom,
@@ -53,30 +55,46 @@ def _true_transition(speed: np.ndarray) -> np.ndarray:
     return transition
 
 
-def _simulate(seed: int, duration_s: float) -> dict:
-    """Laps with pauses, sprints and speed glitches; spikes from the true
-    states. Spikes are jittered within their sample-centred decode bin."""
-    rng = np.random.default_rng(seed)
+def _simulate_laps(
+    rng: np.random.Generator, duration_s: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Laps with gradual speed changes, pauses and tracking noise.
+
+    Each lap's speed follows a half sine from 0 up to a peak (about 30 cm/s,
+    one lap in ten about 70 cm/s) and back, so every speed in between is
+    visited, as in real recordings; the animal then pauses 1-6 s. Observed
+    speed adds smoothed tracking noise (SD 1.5 cm/s, 100 ms smoothing), so it
+    is never exactly 0. Returns time, position and speed, each (n_time,).
+    """
     n_time = int(duration_s * SAMPLING_FREQUENCY)
+    segments = []
+    direction = 1.0
+    while sum(map(len, segments)) < n_time:
+        peak = (70.0 if rng.uniform() < 0.1 else 30.0) * rng.uniform(0.8, 1.2)
+        # A half-sine speed profile covers 2 * peak * T / pi in T seconds.
+        lap_s = np.pi * TRACK_LENGTH / (2 * peak)
+        n_lap = int(lap_s * SAMPLING_FREQUENCY)
+        segments.append(direction * peak * np.sin(np.pi * np.arange(n_lap) / n_lap))
+        segments.append(np.zeros(int(rng.uniform(1, 6) * SAMPLING_FREQUENCY)))
+        direction *= -1
+    velocity = np.concatenate(segments)[:n_time]
     time = np.arange(n_time) / SAMPLING_FREQUENCY
-    position = np.empty(n_time)
-    x, direction, pause, lap_speed = 0.0, 1, 0, 30.0
-    for index in range(n_time):
-        if pause > 0:
-            pause -= 1
-        else:
-            x += direction * rng.gamma(8.0, lap_speed / 8.0) / SAMPLING_FREQUENCY
-            if x >= TRACK_LENGTH or x <= 0:
-                x = np.clip(x, 0, TRACK_LENGTH)
-                direction *= -1
-                pause = int(rng.uniform(1, 6) * SAMPLING_FREQUENCY)
-                lap_speed = 70.0 if rng.uniform() < 0.1 else 30.0
-        position[index] = x
-    true_speed = np.abs(np.gradient(position, time))
-    speed = true_speed.copy()
+    position = np.clip(np.cumsum(velocity) / SAMPLING_FREQUENCY, 0, TRACK_LENGTH)
+    noise = gaussian_filter1d(rng.normal(size=n_time), 0.1 * SAMPLING_FREQUENCY)
+    speed = np.abs(velocity + noise * 1.5 / noise.std())
+    return time, position, speed
+
+
+def _simulate(seed: int, duration_s: float) -> dict:
+    """Laps (see ``_simulate_laps``) with speed glitches; states from the true
+    transitions at the observed speed; spikes from the true states, jittered
+    within their sample-centred decode bin."""
+    rng = np.random.default_rng(seed)
+    time, position, speed = _simulate_laps(rng, duration_s)
+    n_time = time.size
     speed[rng.choice(n_time, 10, replace=False)] = rng.uniform(300, 1500, 10)
 
-    transition = _true_transition(true_speed)
+    transition = _true_transition(speed)
     states = np.zeros(n_time, dtype=int)
     represented = position.copy()
     draws = rng.uniform(size=n_time)
@@ -104,7 +122,6 @@ def _simulate(seed: int, duration_s: float) -> dict:
         "time": time,
         "position": position,
         "speed": speed,
-        "true_speed": true_speed,
         "states": states,
         "spike_times": spike_times,
     }
@@ -159,7 +176,7 @@ def _fit_recovery(seed: int, duration_s: float, formula: str = FORMULA) -> dict:
         smoothness_matrix=_smoothness_matrix(design.design_info),
     )
 
-    lower, upper = np.quantile(data["true_speed"], [0.05, 0.95])
+    lower, upper = np.quantile(data["speed"], [0.05, 0.95])
     grid = {"speed": np.linspace(lower, upper, 50)}
     return {
         "detector": detector,
@@ -201,12 +218,12 @@ class TestSpeedDependentTransitionRecovery:
 
     @pytest.mark.parametrize(
         ("curve", "tolerance"),
-        # About twice the worst EM-oracle gap over seeds 1-5 (0.0016, 0.017,
-        # 0.018).
+        # About twice the worst EM-oracle gap over seeds 1-5 (0.0024, 0.0127,
+        # 0.0125).
         [
-            ("enter_non_local", 0.004),
-            ("non_local_stay", 0.035),
-            ("non_local_to_local", 0.035),
+            ("enter_non_local", 0.005),
+            ("non_local_stay", 0.025),
+            ("non_local_to_local", 0.025),
         ],
     )
     def test_em_matches_the_oracle(self, recovery, curve, tolerance):
