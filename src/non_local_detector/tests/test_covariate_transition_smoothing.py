@@ -1,8 +1,9 @@
 """Tests for smoothing and uncertainty of covariate-dependent transitions.
 
-Covers the ``quantile_bs`` boundary quantiles, the curvature (smoothness)
-penalty on ``quantile_bs`` terms, REML selection of its strength, and the
-Laplace covariance and intervals of the fitted transition curves.
+Covers the ``quantile_bs`` boundary quantiles, the periodic ``cyclic_bs``
+basis, the curvature (smoothness) penalty on each spline term, REML selection
+of each term's strength, and the Laplace covariance and intervals of the
+fitted transition curves.
 """
 
 import numpy as np
@@ -15,6 +16,7 @@ from non_local_detector.discrete_state_transitions import (
     _fit_covariate_transition,
     _smoothness_matrix,
     _transition_log_prior,
+    cyclic_bs,  # noqa: F401  (used inside patsy formulas)
     dirichlet_gradient,
     dirichlet_hessian,
     dirichlet_neg_log_likelihood,
@@ -137,7 +139,7 @@ class TestCurvaturePenalty:
             dmatrix(design.design_info, {"speed": grid}), dtype=float
         )
         u = (grid - spline._lower) / (spline._upper - spline._lower)
-        penalty = _smoothness_matrix(design.design_info)
+        (penalty,) = _smoothness_matrix(design.design_info)
 
         for target, expected in ((u**2, 4.0), (3.0 * u - 1.0, 0.0), (u**3, 12.0)):
             coefficients, *_ = np.linalg.lstsq(grid_design, target, rcond=None)
@@ -150,7 +152,7 @@ class TestCurvaturePenalty:
         rng = np.random.default_rng(5)
         speed = _speeds(rng, 2_000)
         design = _design(speed, "1 + np.log1p(speed) + quantile_bs(speed, n_knots=4)")
-        penalty = _smoothness_matrix(design.design_info)
+        (penalty,) = _smoothness_matrix(design.design_info)
         spline_columns = design.design_info.term_name_slices[
             "quantile_bs(speed, n_knots=4)"
         ]
@@ -167,9 +169,170 @@ class TestCurvaturePenalty:
     def test_formula_without_quantile_bs_has_no_penalty(self):
         speed = _speeds(np.random.default_rng(6), 200)
         design = _design(speed, "1 + speed")
-        np.testing.assert_array_equal(
-            _smoothness_matrix(design.design_info), np.zeros((2, 2))
+        assert _smoothness_matrix(design.design_info).shape == (0, 2, 2)
+
+
+PERIOD = 2.0 * np.pi
+CYCLIC = f"cyclic_bs(phase, lower=0.0, upper={PERIOD!r}, n_knots=8)"
+
+
+def _cyclic_design(phase: np.ndarray, term: str = CYCLIC):
+    return dmatrix(f"1 + {term}", {"phase": phase}, NA_action="raise")
+
+
+@pytest.mark.unit
+class TestCyclicBSpline:
+    """``cyclic_bs`` is a periodic cubic B-spline over ``[lower, upper)``
+    with knots at quantiles of the fitted values."""
+
+    def test_curve_is_periodic_with_continuous_curvature(self):
+        """Values outside the period wrap, and a curve and its first two
+        derivatives join smoothly across ``lower`` / ``upper``."""
+        rng = np.random.default_rng(30)
+        design = _cyclic_design(rng.uniform(0, PERIOD, 2_000))
+        coefficients = rng.normal(0.0, 1.0, design.shape[1])
+
+        def curve(x):
+            return np.asarray(dmatrix(design.design_info, {"phase": x})) @ coefficients
+
+        x = np.linspace(0.0, PERIOD, 50, endpoint=False)
+        np.testing.assert_allclose(curve(x + PERIOD), curve(x), atol=1e-12)
+        np.testing.assert_allclose(curve(x - PERIOD), curve(x), atol=1e-12)
+
+        step = 1e-3
+        across = np.arange(-300, 301) * step  # spans the wrap at 0
+        second = np.gradient(np.gradient(curve(across), step), step)[2:-2]
+        assert np.max(np.abs(np.diff(second))) < 0.05 * np.max(np.abs(second))
+
+    def test_penalty_is_the_integrated_squared_second_derivative(self):
+        """sin(2 pi u) on u in [0, 1) has curvature integral (2 pi)^4 / 2;
+        a constant (the intercept) costs nothing."""
+        rng = np.random.default_rng(31)
+        design = _cyclic_design(
+            rng.uniform(0, PERIOD, 5_000),
+            f"cyclic_bs(phase, lower=0.0, upper={PERIOD!r}, n_knots=30)",
         )
+        grid = np.linspace(0.0, PERIOD, 4_001)
+        grid_design = np.asarray(dmatrix(design.design_info, {"phase": grid}))
+        (penalty,) = _smoothness_matrix(design.design_info)
+
+        coefficients, *_ = np.linalg.lstsq(grid_design, np.sin(grid) + 2.0, rcond=None)
+        np.testing.assert_allclose(
+            grid_design @ coefficients, np.sin(grid) + 2.0, atol=1e-4
+        )
+        assert coefficients @ penalty @ coefficients == pytest.approx(
+            (2 * np.pi) ** 4 / 2, rel=1e-3
+        )
+        assert penalty[0] == pytest.approx(np.zeros(design.shape[1]))
+
+    def test_columns_and_intercept_are_full_rank(self):
+        design = _cyclic_design(np.random.default_rng(32).uniform(0, PERIOD, 1_000))
+        assert np.linalg.matrix_rank(np.asarray(design)) == design.shape[1]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        ["lower=1.0, upper=1.0", "lower=0.0, upper=6.0, n_knots=3"],
+    )
+    def test_invalid_arguments_raise(self, kwargs):
+        phase = np.random.default_rng(33).uniform(0, 6, 500)
+        with pytest.raises(PatsyError, match="cyclic_bs"):
+            _cyclic_design(phase, f"cyclic_bs(phase, {kwargs})")
+
+    def test_too_few_distinct_values_raise(self):
+        with pytest.raises(ValueError, match="distinct"):
+            _cyclic_design(np.repeat([0.0, 1.0, 2.0], 50))
+
+
+def _two_term_problem(seed: int, n_time: int = 8_000):
+    """Responses whose logits are linear in speed and wiggly in phase."""
+    rng = np.random.default_rng(seed)
+    speed = _speeds(rng, n_time)
+    phase = rng.uniform(0, PERIOD, n_time)
+    design = dmatrix(
+        f"1 + quantile_bs(speed, n_knots=6) + {CYCLIC}",
+        {"speed": speed, "phase": phase},
+        NA_action="raise",
+    )
+    logits = np.zeros((n_time, N_STATES, N_STATES))
+    logits[:, np.arange(N_STATES), np.arange(N_STATES)] = 2.5
+    logits[:, :, 0] += (speed / 40.0)[:, None] + 1.2 * np.sin(2.0 * phase)[:, None]
+    return design, _sampled_responses(rng, softmax(logits, axis=-1))
+
+
+@pytest.mark.unit
+class TestPerTermSmoothness:
+    def test_each_spline_term_gets_its_own_penalty(self):
+        design, _ = _two_term_problem(seed=34, n_time=2_000)
+        penalties = _smoothness_matrix(design.design_info)
+        slices = list(design.design_info.term_slices.values())[1:]
+
+        assert penalties.shape == (2, design.shape[1], design.shape[1])
+        for penalty, columns in zip(penalties, slices, strict=True):
+            outside = np.ones(design.shape[1], dtype=bool)
+            outside[columns] = False
+            assert np.all(penalty[outside] == 0.0)
+            assert np.all(penalty[:, outside] == 0.0)
+            assert np.any(penalty[columns, columns] != 0.0)
+
+    def test_reml_smooths_the_linear_term_more_than_the_wiggly_one(self):
+        """Each row's strengths follow its own terms: a linear effect of
+        speed is smoothed far more than a wiggly effect of phase, and the
+        per-term strengths score at least as well as one shared strength."""
+        design, response = _two_term_problem(seed=35)
+        design_matrix = np.asarray(design, dtype=float)
+        penalties = _smoothness_matrix(design.design_info)
+        start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
+
+        fit = _fit_covariate_transition(
+            start,
+            design_matrix,
+            response,
+            smoothness="reml",
+            smoothness_matrix=penalties,
+        )
+
+        assert fit.smoothness.shape == (N_STATES, 2)
+        assert np.all(fit.smoothness[:, 0] > 10.0 * fit.smoothness[:, 1])
+        for row in range(N_STATES):
+            per_term = _laml(
+                design_matrix[:-1],
+                response[:, row],
+                fit.coefficients[:, row],
+                fit.smoothness[row],
+                penalties,
+                0.1,
+            )
+            for shared in fit.smoothness[row]:
+                shared_fit = _fit_covariate_transition(
+                    start,
+                    design_matrix,
+                    response,
+                    smoothness=shared,
+                    smoothness_matrix=penalties,
+                )
+                assert (
+                    per_term
+                    >= _laml(
+                        design_matrix[:-1],
+                        response[:, row],
+                        shared_fit.coefficients[:, row],
+                        shared,
+                        penalties,
+                        0.1,
+                    )
+                    - 1e-6
+                )
+
+    def test_fixed_smoothness_applies_to_every_term(self):
+        design, response = _two_term_problem(seed=36, n_time=1_000)
+        fit = _fit_covariate_transition(
+            np.zeros((design.shape[1], N_STATES, N_STATES - 1)),
+            np.asarray(design, dtype=float),
+            response,
+            smoothness=0.3,
+            smoothness_matrix=_smoothness_matrix(design.design_info),
+        )
+        np.testing.assert_array_equal(fit.smoothness, np.full((N_STATES, 2), 0.3))
 
 
 def _row_problem(seed: int = 7, n_time: int = 6_000):
@@ -225,7 +388,7 @@ class TestSmoothedRowObjective:
     def test_smoothness_adds_its_quadratic_form_per_logit(self):
         rng, _, design, _, response = _row_problem(n_time=300)
         design_matrix = np.asarray(design, dtype=float)
-        penalty = _smoothness_matrix(design.design_info)
+        (penalty,) = _smoothness_matrix(design.design_info)
         coefficients = rng.normal(0.0, 0.3, (design.shape[1], N_STATES - 1))
         args = (coefficients.ravel(), design_matrix[:-1], response[:, 0])
 
@@ -244,6 +407,8 @@ def _laml(design_matrix, response, coefficients, smoothness, penalty, l2_penalty
 
     ``-L(beta) + 0.5 log|Q|_+ - 0.5 log|A|`` with ``L`` the penalized loss,
     ``Q`` the prior precision (twice the penalty) and ``A`` the loss Hessian.
+    ``penalty`` is one term's matrix or a stack of them, and ``smoothness``
+    one strength or one per term.
     """
     kwargs = {
         "l2_penalty": l2_penalty,
@@ -254,8 +419,12 @@ def _laml(design_matrix, response, coefficients, smoothness, penalty, l2_penalty
     loss = dirichlet_neg_log_likelihood(flat, design_matrix, response, **kwargs)
     hessian = dirichlet_hessian(flat, design_matrix, response, **kwargs)
     n_coefficients = design_matrix.shape[1]
+    penalties = np.reshape(penalty, (-1, n_coefficients, n_coefficients))
+    strengths = np.broadcast_to(smoothness, (penalties.shape[0],))
+    curvature = np.tensordot(strengths, penalties, axes=1)
+    penalty = penalties.sum(axis=0)
     ridge = np.diag(np.r_[0.0, np.full(n_coefficients - 1, l2_penalty)])
-    precision = 2.0 * np.kron(ridge + smoothness * penalty, np.eye(N_STATES - 1))
+    precision = 2.0 * np.kron(ridge + curvature, np.eye(N_STATES - 1))
     # The pseudo-determinant over the penalized directions, whose number the
     # strength does not change: every coefficient but the intercepts with an
     # L2 penalty, else the curvature penalty's null space is unpenalized too.
