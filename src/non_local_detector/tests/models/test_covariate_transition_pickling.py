@@ -152,3 +152,35 @@ def test_round_trip_ignores_later_changes_to_the_covariates(container, round_tri
     covariates["speed"] *= 2.0
 
     np.testing.assert_array_equal(predict(round_trip(detector)), expected)
+
+
+def test_detectors_pickled_before_smoothing_load_unsmoothed(fitted):
+    """A detector saved before transition smoothing existed (no penalty
+    attributes, a transition type without ``smoothness``) loads as an
+    unsmoothed fit without a covariance and predicts as before."""
+    detector, predict_data = fitted
+    state = dict(copy.deepcopy(detector).__getstate__())
+    for name in (
+        "discrete_transition_smoothness_matrix_",
+        "discrete_transition_smoothness_",
+        "discrete_transition_coefficient_covariance_",
+    ):
+        del state[name]
+    del vars(state["discrete_transition_type"])["smoothness"]
+
+    restored = type(detector).__new__(type(detector))
+    restored.__setstate__(state)
+
+    np.testing.assert_array_equal(
+        restored.discrete_transition_smoothness_matrix_,
+        detector.discrete_transition_smoothness_matrix_,
+    )
+    np.testing.assert_array_equal(
+        restored.discrete_transition_smoothness_,
+        np.zeros_like(detector.discrete_transition_smoothness_),
+    )
+    assert restored.discrete_transition_coefficient_covariance_ is None
+    np.testing.assert_array_equal(
+        _state_probabilities(restored, predict_data),
+        _state_probabilities(detector, predict_data),
+    )
