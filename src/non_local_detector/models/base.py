@@ -4066,7 +4066,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 advice = "Consider increasing max_iter or relaxing tolerance."
             warnings.warn(
                 f"EM did not converge after max_iter={max_iter} iterations "
-                f"(final penalized log-likelihood change={objective_change:.3e}, "
+                f"(final penalized log-likelihood change per time bin="
+                f"{objective_change / (len(time_edges) - 1):.3e}, "
                 f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
                 f"{advice}",
                 UserWarning,
