@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### EM convergence judged by gain per time bin
+
+- **Changed:** EM's `tolerance` is now the penalized log-likelihood's gain per time bin, in nats (default `1e-5`), instead of its change relative to the objective's magnitude (default `1e-4`). The magnitude is set by the spike or mark likelihood, and shifts with mark or rate units, not by how much EM is still improving the fit. The same relative tolerance therefore stopped clusterless fits early: RS58 (31 channels, about 188 nats per bin) stopped after 2-3 iterations while still gaining 1,840 nats per iteration, and j16 sorted (about 5 nats per bin) after 6. The gain per bin follows nearly the same curve on every recording tested. **Default fits now run more iterations.** On held-out halves of 5 real recordings (20 fits, stationary and speed-dependent transitions), the old default stopped after a median of 4 iterations and scored a median 185 nats (worst 1,068) below 20 iterations. The new default stops after a median of 12 iterations and scores a median 6 nats (worst 47) below 20 iterations. On L14, where held-out likelihood peaks at iterations 4-8 and then falls, the new default scores 8-46 nats above 20 iterations; the old default scored 72-100 above on one half and 199-349 below on the other. Pass a larger `tolerance` to stop sooner. `check_converged` takes `n_time_bins`. Monotonicity checks are unchanged. With `discrete_transition_prior_weight > 0`, EM still also requires the last M-step to move every transition probability by less than 1e-4. That threshold is now fixed instead of being `tolerance`, because it is a probability, not nats per bin.
+
 ### Test suite and CI
 
 - Tests that could not fail now check what they claim: assertions that never ran, comparisons of a value with itself, expected values read from the model under test, inputs that never reached the named check, and tolerances wider than the effect. Each fixed test was shown to fail when the code it guards is broken.

@@ -1918,15 +1918,17 @@ EM_MONOTONICITY_SLACK = 10 * float(np.finfo(np.float32).eps)
 def check_converged(
     log_likelihood: float,
     previous_log_likelihood: float,
-    tolerance: float = 1e-4,
+    tolerance: float = 1e-5,
+    n_time_bins: int = 1,
 ) -> tuple[bool, bool]:
     """Check EM convergence and monotonicity from two objective values.
 
-    EM has converged when the objective no longer decreases and its relative
-    change, ``|f(t) - f(t-1)| / avg`` with ``avg = (|f(t)| + |f(t-1)|) / 2``,
-    falls below ``tolerance``. A decrease larger than float rounding
-    (``EM_MONOTONICITY_SLACK`` relative) is a monotonicity violation and never
-    counts as convergence, however small it is relative to ``tolerance``.
+    EM has converged when the objective no longer decreases and its change
+    per time bin, ``|f(t) - f(t-1)| / n_time_bins``, falls below
+    ``tolerance`` nats. A decrease larger than float rounding
+    (``EM_MONOTONICITY_SLACK`` relative to the objective's magnitude) is a
+    monotonicity violation and never counts as convergence, however small it
+    is.
 
     Parameters
     ----------
@@ -1936,13 +1938,16 @@ def check_converged(
     previous_log_likelihood : float
         Previous objective.
     tolerance : float, optional
-        Relative-change threshold for convergence, by default 1e-4.
+        Convergence threshold on the objective's gain, in nats per time bin,
+        by default 1e-5.
+    n_time_bins : int, optional
+        Number of time bins the objective sums over, by default 1.
 
     Returns
     -------
     is_converged : bool
-        True if the objective did not decrease and its relative change is
-        below ``tolerance``. False while the objective stays ``-inf``.
+        True if the objective did not decrease and its change per time bin
+        is below ``tolerance``. False while the objective stays ``-inf``.
     is_increasing : bool
         True if the objective did not decrease by more than float rounding.
 
@@ -1951,19 +1956,22 @@ def check_converged(
     previous_log_likelihood = float(previous_log_likelihood)
     if not (np.isfinite(log_likelihood) and np.isfinite(previous_log_likelihood)):
         # A -inf objective (an impossible timestep, or a prior on a zero
-        # transition) has no relative change: compare the values directly,
+        # transition) has no finite change: compare the values directly,
         # without a NaN ratio. -inf after -inf is no decrease, but leaves no
         # change to judge convergence by; NaN is never an increase.
         return False, bool(log_likelihood >= previous_log_likelihood)
 
-    # Relative, not absolute: the objective is a sum over time bins, so its
-    # magnitude, and the size of a negligible change, scales with recording
-    # length.
+    change = log_likelihood - previous_log_likelihood
+    # Rounding error scales with the objective's magnitude, so the
+    # monotonicity slack is relative to it.
     avg_log_likelihood = (
         abs(log_likelihood) + abs(previous_log_likelihood) + np.spacing(1)
     ) / 2
-    relative_change = (log_likelihood - previous_log_likelihood) / avg_log_likelihood
-    is_increasing = bool(relative_change >= -EM_MONOTONICITY_SLACK)
-    is_converged = is_increasing and bool(abs(relative_change) < tolerance)
+    is_increasing = bool(change / avg_log_likelihood >= -EM_MONOTONICITY_SLACK)
+    # Convergence is judged per time bin, not relative to the objective: the
+    # objective's magnitude is set by the spike or mark likelihood (and shifts
+    # with mark or rate units), not by how much EM is still improving the fit,
+    # while the gain per bin does not depend on recording length.
+    is_converged = is_increasing and bool(abs(change) / n_time_bins < tolerance)
 
     return is_converged, is_increasing

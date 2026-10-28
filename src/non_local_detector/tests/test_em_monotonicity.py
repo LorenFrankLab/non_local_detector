@@ -305,9 +305,9 @@ class TestEMConvergenceSurfacing:
 
         call_count = {"n": 0}
 
-        def fake_check_converged(curr, prev, tolerance):
+        def fake_check_converged(curr, prev, tolerance, **kwargs):
             call_count["n"] += 1
-            is_converged, _ = _real_check_converged(curr, prev, tolerance)
+            is_converged, _ = _real_check_converged(curr, prev, tolerance, **kwargs)
             # Report a non-monotonic step on the first comparison
             # (i.e., when n_iter==2 in the EM loop). Subsequent comparisons
             # report monotonic so the loop is allowed to converge.
@@ -477,7 +477,9 @@ class TestEMConvergenceSurfacing:
         # Every objective check passes, so only the transition change can
         # keep EM going.
         monkeypatch.setattr(
-            base_module, "check_converged", lambda curr, prev, tolerance: (True, True)
+            base_module,
+            "check_converged",
+            lambda curr, prev, tolerance, **kwargs: (True, True),
         )
         detector = NonLocalSortedSpikesDetector(
             discrete_transition_prior_weight=prior_weight
