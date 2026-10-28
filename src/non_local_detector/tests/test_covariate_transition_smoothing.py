@@ -6,6 +6,8 @@ of each term's strength, and the Laplace covariance and intervals of the
 fitted transition curves.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 from patsy import PatsyError, dmatrix
@@ -14,6 +16,7 @@ from scipy.special import softmax
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     _fit_covariate_transition,
+    _max_transition_change,
     _smoothness_matrix,
     _transition_log_prior,
     cyclic_bs,  # noqa: F401  (used inside patsy formulas)
@@ -713,6 +716,8 @@ class TestLaplaceIntervals:
         sampled_lower, sampled_upper = np.quantile(sampled, [0.05, 0.95], axis=0)
         width = sampled_upper - sampled_lower
 
+        # The sampled quantiles carry Monte Carlo error of a few percent
+        # of the widest interval.
         np.testing.assert_allclose(lower, sampled_lower, atol=0.1 * width.max())
         np.testing.assert_allclose(upper, sampled_upper, atol=0.1 * width.max())
 
@@ -762,6 +767,7 @@ class TestLaplaceIntervals:
             truth = _true_transition(new["speed"])
             covered.append((lower <= truth) & (truth <= upper))
 
+        # Measured 0.878 with REML and 0.897 without smoothing.
         assert 0.84 <= np.mean(covered) <= 0.97
 
 
@@ -824,3 +830,90 @@ class TestTransitionTypeSmoothness:
         )
         with pytest.raises(ValueError, match="quantile_bs"):
             model.make_state_transition({"speed": np.linspace(0, 10, 50)})
+
+    @pytest.mark.parametrize("smoothness", ["reml", 0.5])
+    def test_smoothness_without_an_intercept_raises(self, smoothness):
+        model = DiscreteNonStationaryCustom(
+            values=np.full((N_STATES, N_STATES), 1.0 / N_STATES),
+            formula="0 + quantile_bs(speed)",
+            smoothness=smoothness,
+        )
+        with pytest.raises(ValueError, match="intercept"):
+            model.make_state_transition({"speed": np.linspace(0, 10, 50)})
+
+    def test_no_intercept_is_allowed_without_smoothness(self):
+        model = DiscreteNonStationaryCustom(
+            values=np.full((N_STATES, N_STATES), 1.0 / N_STATES),
+            formula="0 + quantile_bs(speed)",
+        )
+        model.make_state_transition({"speed": np.linspace(0, 10, 50)})
+
+
+@pytest.mark.unit
+class TestSplineEdgeCases:
+    @pytest.mark.parametrize(
+        ("formula", "column"),
+        [
+            ("1 + quantile_bs(x)", "x"),
+            (f"1 + cyclic_bs(x, lower=0.0, upper={PERIOD!r})", "x"),
+        ],
+    )
+    def test_missing_covariates_follow_the_na_action(self, formula, column):
+        """NaN covariates do not reach knot placement: patsy's NA_action
+        decides, so "raise" names the missing values and "drop" fits the
+        rest."""
+        x = np.random.default_rng(37).uniform(0.0, 6.0, 500)
+        x[[10, 200]] = np.nan
+        with pytest.raises(PatsyError, match="missing"):
+            dmatrix(formula, {column: x}, NA_action="raise")
+        dropped = dmatrix(formula, {column: x}, NA_action="drop")
+        assert dropped.shape[0] == 498
+        assert np.all(np.isfinite(np.asarray(dropped)))
+
+    def test_linear_cyclic_spline_has_no_curvature_penalty(self):
+        design = _cyclic_design(
+            np.random.default_rng(38).uniform(0, PERIOD, 500),
+            f"cyclic_bs(phase, lower=0.0, upper={PERIOD!r}, degree=1)",
+        )
+        (penalty,) = _smoothness_matrix(design.design_info)
+        assert not np.any(penalty)
+
+    def test_reml_row_without_transitions_keeps_the_strongest_smoothing(self):
+        """A row with no expected transitions has a singular Hessian and no
+        Laplace approximation: REML keeps the strongest smoothing, quietly,
+        and the other rows are fit as usual."""
+        _, _, design, _, response = _row_problem(n_time=1_500)
+        response = response.copy()
+        response[:, 1] = 0.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            fit = _fit_covariate_transition(
+                np.zeros((design.shape[1], N_STATES, N_STATES - 1)),
+                np.asarray(design, dtype=float),
+                response,
+                smoothness="reml",
+                smoothness_matrix=_smoothness_matrix(design.design_info),
+            )
+        assert fit.smoothness[1] == pytest.approx([1e6])
+        assert np.all(fit.smoothness[[0, 2]] < 1e6)
+        assert np.all(np.isfinite(fit.transition))
+
+
+@pytest.mark.unit
+def test_max_transition_change_matches_the_full_transitions():
+    rng, _, design, _, _ = _row_problem(n_time=3_000)
+    old = rng.normal(0.0, 0.5, (design.shape[1], N_STATES, N_STATES - 1))
+    new = old + rng.normal(0.0, 0.05, old.shape)
+    old_transitions = _transitions_on_design(np.asarray(design), old)
+    new_transitions = _transitions_on_design(np.asarray(design), new)
+
+    assert _max_transition_change(np.asarray(design), old, new) == pytest.approx(
+        np.max(np.abs(new_transitions - old_transitions)), rel=1e-12
+    )
+
+
+def _transitions_on_design(design_matrix, coefficients):
+    """Covariate transitions from a design matrix, shape (n_time, n_states, n_states)."""
+    logits = np.einsum("tc,crk->trk", design_matrix, coefficients)
+    logits = np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1)
+    return softmax(logits, axis=-1)

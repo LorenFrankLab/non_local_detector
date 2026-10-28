@@ -7,6 +7,7 @@ Tests the core EM algorithm functions:
 """
 
 import inspect
+import warnings
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1221,38 +1222,9 @@ class TestExpandedTransitionMstepEndToEnd:
         log-likelihood, recovers the covariate dependence, and leaves each
         row's smoothness for each spline term and its coefficient covariance
         on the detector."""
-        rng = np.random.default_rng(14)
-        n_time, n_states, n_bins = 900, 3, 2
-        covariate, _, true_transition = _nonstationary_transition_parameters(n_time)
-        initial_conditions, _, continuous_transition_blocks = _expanded_hmm_parameters()
-        states, bins = _simulate_nonstationary_expanded_hmm(
-            rng, initial_conditions, true_transition, continuous_transition_blocks
-        )
-        detector = _FixedLikelihoodDetector(
-            _log_likelihoods_from_expanded_states(
-                states, bins, n_states, n_bins, off_target_log_likelihood=-12.0
-            ),
-            discrete_initial_conditions=initial_conditions,
-            discrete_transition_type=DiscreteNonStationaryCustom(
-                values=np.full((n_states, n_states), 1.0 / n_states),
-                formula=formula,
-                smoothness="reml",
-            ),
-            continuous_transition_blocks=continuous_transition_blocks,
-        )
-        phase = np.random.default_rng(15).uniform(0.0, 2.0 * np.pi, n_time)
-        detector._fit(
-            position=np.array([[0.25], [1.25]]),
-            discrete_transition_covariate_data={"covariate": covariate, "phase": phase},
-        )
-        detector.estimate_parameters(
-            time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
-            estimate_initial_conditions=False,
-            estimate_discrete_transition=True,
-            estimate_encoding_model=False,
-            max_iter=4,
-            tolerance=0.0,
-        )
+        n_states = 3
+        detector, covariate, true_transition = _reml_detector(formula)
+        _estimate_transitions(detector, max_iter=4)
 
         assert detector.em_monotonicity_violations_ == []
         assert detector.discrete_transition_smoothness_.shape == (n_states, n_terms)
@@ -1271,6 +1243,156 @@ class TestExpandedTransitionMstepEndToEnd:
         grid = {"covariate": np.linspace(-1.0, 1.0, 9), "phase": np.zeros(9)}
         transitions, lower, upper = detector.discrete_transition_intervals(grid)
         assert np.all((lower <= transitions) & (transitions <= upper))
+
+
+def _reml_detector(
+    formula: str = "1 + quantile_bs(covariate, n_knots=6)", **attributes
+) -> tuple:
+    """A fixed-likelihood detector with REML-smoothed covariate transitions,
+    fit but not yet estimated, its covariate and the true transitions.
+
+    ``attributes`` are set on the detector before it is fit. The covariate
+    data also hold a random ``phase`` the transitions do not depend on.
+    """
+    rng = np.random.default_rng(14)
+    n_time, n_states, n_bins = 900, 3, 2
+    covariate, _, true_transition = _nonstationary_transition_parameters(n_time)
+    initial_conditions, _, continuous_transition_blocks = _expanded_hmm_parameters()
+    states, bins = _simulate_nonstationary_expanded_hmm(
+        rng, initial_conditions, true_transition, continuous_transition_blocks
+    )
+    detector = _FixedLikelihoodDetector(
+        _log_likelihoods_from_expanded_states(
+            states, bins, n_states, n_bins, off_target_log_likelihood=-12.0
+        ),
+        discrete_initial_conditions=initial_conditions,
+        discrete_transition_type=DiscreteNonStationaryCustom(
+            values=np.full((n_states, n_states), 1.0 / n_states),
+            formula=formula,
+            smoothness="reml",
+        ),
+        continuous_transition_blocks=continuous_transition_blocks,
+    )
+    for name, value in attributes.items():
+        setattr(detector, name, value)
+    phase = np.random.default_rng(15).uniform(0.0, 2.0 * np.pi, n_time)
+    detector._fit(
+        position=np.array([[0.25], [1.25]]),
+        discrete_transition_covariate_data={"covariate": covariate, "phase": phase},
+    )
+    return detector, covariate, true_transition
+
+
+def _estimate_transitions(detector, **kwargs):
+    """EM on the discrete transitions alone."""
+    n_time = detector._fixed_log_likelihoods.shape[0]
+    kwargs = {"max_iter": 4, "tolerance": 0.0, **kwargs}
+    return detector.estimate_parameters(
+        time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
+        estimate_initial_conditions=False,
+        estimate_discrete_transition=True,
+        estimate_encoding_model=False,
+        **kwargs,
+    )
+
+
+class TestRemlInsideEM:
+    """EM's bookkeeping when REML changes the prior inside each M-step."""
+
+    def test_each_check_uses_the_m_steps_new_smoothness(self, monkeypatch):
+        """The previous objective of every check is the earlier E-step's
+        marginal log-likelihood plus the log prior of the M-step's input
+        coefficients under that M-step's strengths, here forced to jump by
+        decades."""
+        from non_local_detector.models import base as base_module
+
+        real_m_step = base_module._discrete_transition_from_statistics
+        m_steps = []
+
+        def jumping_m_step(statistics, coefficients, *args, **kwargs):
+            m_step = real_m_step(statistics, coefficients, *args, **kwargs)
+            m_step = m_step._replace(
+                smoothness=m_step.smoothness * 10.0 ** (2 * len(m_steps))
+            )
+            m_steps.append((statistics, coefficients, m_step.smoothness))
+            return m_step
+
+        monkeypatch.setattr(
+            base_module, "_discrete_transition_from_statistics", jumping_m_step
+        )
+        detector, _, _ = _reml_detector()
+        results = _estimate_transitions(detector, max_iter=3)
+
+        marginal = np.ravel(results.attrs["marginal_log_likelihoods"])
+        previous = np.asarray(results.attrs["em_previous_objectives"])
+        for k, (statistics, coefficients, smoothness) in enumerate(m_steps):
+            expected = marginal[k] + _transition_log_prior(
+                statistics,
+                None,
+                coefficients,
+                detector.discrete_transition_design_matrix_,
+                detector.discrete_transition_concentration,
+                detector.discrete_transition_stickiness,
+                detector.discrete_transition_regularization,
+                smoothness=smoothness,
+                smoothness_matrix=detector.discrete_transition_smoothness_matrix_,
+            )
+            np.testing.assert_allclose(previous[k], expected, rtol=1e-12)
+
+    @pytest.mark.parametrize(("change", "converges"), [(0.0, True), (1.0, False)])
+    def test_convergence_also_needs_the_transitions_to_settle(
+        self, monkeypatch, change, converges
+    ):
+        """REML changes the prior every M-step, so a flat objective is not
+        enough: EM also needs the transitions to have stopped moving."""
+        from non_local_detector.models import base as base_module
+
+        monkeypatch.setattr(base_module, "_max_transition_change", lambda *args: change)
+        detector, _, _ = _reml_detector()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _estimate_transitions(detector, max_iter=4, tolerance=1.0)
+
+        assert detector.converged_ is converges
+        assert detector.n_iter_ == (2 if converges else 4)
+        if not converges:
+            assert any(
+                "move every transition probability" in str(w.message) for w in caught
+            )
+
+
+class TestTransitionIntervals:
+    def test_stationary_transitions_have_no_intervals(self):
+        initial_conditions, discrete_transition, blocks = _expanded_hmm_parameters()
+        detector = _FixedLikelihoodDetector(
+            np.zeros((50, 6)),
+            discrete_initial_conditions=initial_conditions,
+            discrete_transition=discrete_transition,
+            continuous_transition_blocks=blocks,
+        )
+        detector._fit(position=np.array([[0.25], [1.25]]))
+        with pytest.raises(ValueError, match="do not depend on covariates"):
+            detector.discrete_transition_intervals({"covariate": np.zeros(3)})
+
+    def test_intervals_need_an_m_step(self):
+        detector, _, _ = _reml_detector()
+        _estimate_transitions(detector, max_iter=0)
+        with pytest.raises(ValueError, match="max_iter >= 1"):
+            detector.discrete_transition_intervals(
+                {"covariate": np.zeros(3), "phase": np.zeros(3)}
+            )
+
+    def test_frozen_rows_have_zero_width_intervals(self):
+        detector, _, _ = _reml_detector(
+            frozen_discrete_transition_rows=[False, True, False]
+        )
+        _estimate_transitions(detector, max_iter=2)
+        grid = {"covariate": np.linspace(-1.0, 1.0, 5), "phase": np.zeros(5)}
+        transitions, lower, upper = detector.discrete_transition_intervals(grid)
+
+        np.testing.assert_allclose(lower[:, 1], transitions[:, 1], atol=1e-12)
+        np.testing.assert_allclose(upper[:, 1], transitions[:, 1], atol=1e-12)
+        assert np.all(upper[:, 0] - lower[:, 0] > 0.0)
 
 
 def _noisy_expanded_hmm_observations(
