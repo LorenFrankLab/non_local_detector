@@ -2536,7 +2536,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             (delta-method) intervals. The intervals treat the last M-step's
             expected transitions and smoothness as known, so they leave out
             the uncertainty in which state the animal was in. Frozen rows are
-            not estimated and have zero-width intervals. See
+            not estimated and have zero-width intervals; rows whose
+            coefficients are not identified (e.g. a state without expected
+            transitions) have NaN intervals. See
             :func:`~non_local_detector.discrete_state_transitions.predict_discrete_state_transition_intervals`.
 
         Raises

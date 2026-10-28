@@ -474,7 +474,7 @@ class TestRemlSmoothness:
             )
 
         # REML's search range; above it the LAML is numerical noise.
-        grid = np.logspace(-4, 6, 41)
+        grid = np.logspace(-12, 6, 37)
         grid_fits = [
             _fit_covariate_transition(
                 start, design_matrix, response, smoothness=value, **common
@@ -488,18 +488,27 @@ class TestRemlSmoothness:
             ]
             reml_score = score(row, fit.smoothness[row], fit.coefficients)
             assert reml_score >= max(grid_scores) - 0.05, (
-                f"row {row}: REML strength {fit.smoothness[row]:.3g} scores "
+                f"row {row}: REML strength {fit.smoothness[row, 0]:.3g} scores "
                 f"{reml_score:.3f}, grid best {max(grid_scores):.3f} at "
                 f"{grid[int(np.argmax(grid_scores))]:.3g}"
             )
 
-    def test_reml_searches_below_its_grid_when_glitches_stretch_the_spline(self):
+    @pytest.mark.parametrize(
+        ("glitch", "ridge"),
+        # Without the L2 penalty the LAML counts the curvature penalty's own
+        # rank, whose smallest genuine eigenvalues are 1e-12 of the largest
+        # here (the null direction's are round-off, 1e-23).
+        [(1_500.0, 0.1), (20_000.0, 0.0)],
+    )
+    def test_reml_searches_below_its_grid_when_glitches_stretch_the_spline(
+        self, glitch, ridge
+    ):
         """Tracking glitches far above the data stretch the spline's range,
         so the data fill a sliver of it and even the grid's weakest strength
         over-smooths them. REML follows the LAML below its grid."""
         rng = np.random.default_rng(8)
         speed = _speeds(rng, 6_000)
-        speed[rng.choice(speed.size, 5, replace=False)] = 1_500.0
+        speed[rng.choice(speed.size, 5, replace=False)] = glitch
         design = _design(speed)
         response = _sampled_responses(rng, _true_transition(np.minimum(speed, 200.0)))
         design_matrix = np.asarray(design, dtype=float)
@@ -510,16 +519,18 @@ class TestRemlSmoothness:
             start,
             design_matrix,
             response,
+            transition_regularization=ridge,
             smoothness="reml",
             smoothness_matrix=penalty,
         )
 
-        grid = np.logspace(-10, 6, 33)
+        grid = np.logspace(-12, 6, 37)
         grid_fits = [
             _fit_covariate_transition(
                 start,
                 design_matrix,
                 response,
+                transition_regularization=ridge,
                 smoothness=value,
                 smoothness_matrix=penalty,
             )
@@ -533,7 +544,7 @@ class TestRemlSmoothness:
                     grid_fit.coefficients[:, row],
                     value,
                     penalty,
-                    0.1,
+                    ridge,
                 )
                 for value, grid_fit in zip(grid, grid_fits, strict=True)
             ]
@@ -543,10 +554,10 @@ class TestRemlSmoothness:
                 fit.coefficients[:, row],
                 fit.smoothness[row],
                 penalty,
-                0.1,
+                ridge,
             )
             assert reml_score >= max(grid_scores) - 0.05, (
-                f"row {row}: REML strength {fit.smoothness[row]:.3g} scores "
+                f"row {row}: REML strength {fit.smoothness[row, 0]:.3g} scores "
                 f"{reml_score:.3f}, grid best {max(grid_scores):.3f} at "
                 f"{grid[int(np.argmax(grid_scores))]:.3g}"
             )
@@ -897,6 +908,32 @@ class TestSplineEdgeCases:
         assert fit.smoothness[1] == pytest.approx([1e6])
         assert np.all(fit.smoothness[[0, 2]] < 1e6)
         assert np.all(np.isfinite(fit.transition))
+
+
+@pytest.mark.unit
+def test_a_row_without_transitions_has_no_intervals():
+    """A row never visited, with a flat prior, has an unidentified intercept:
+    its intervals are unavailable (NaN), not zero-width."""
+    _, _, design, _, response = _row_problem(n_time=1_500)
+    response = response.copy()
+    response[:, 1] = 0.0
+    fit = _fit_covariate_transition(
+        np.zeros((design.shape[1], N_STATES, N_STATES - 1)),
+        np.asarray(design, dtype=float),
+        response,
+        smoothness="reml",
+        smoothness_matrix=_smoothness_matrix(design.design_info),
+    )
+    lower, upper = predict_discrete_state_transition_intervals(
+        design,
+        fit.coefficients,
+        fit.covariance,
+        {"speed": np.array([0.0, 20.0, 60.0])},
+    )
+
+    assert np.all(np.isnan(fit.covariance[1]))
+    assert np.all(np.isnan(lower[:, 1]) & np.isnan(upper[:, 1]))
+    assert np.all(upper[:, [0, 2]] - lower[:, [0, 2]] > 0.0)
 
 
 @pytest.mark.unit
