@@ -455,6 +455,12 @@ _DENSE_EM_WORKING_ARRAYS = 8
 # 8.9 s; 1 MiB blocks took 3.8 s, 4-16 MiB 4.4 s and 64 MiB 5.7 s.
 _MASKED_POSTERIOR_BLOCK_BYTES = 2**20
 
+# With a prior that changes each E-step (data-adaptive pseudo-counts), EM
+# also requires the last M-step to move every transition probability by
+# less than this. It is a probability, so it is separate from ``tolerance``
+# (nats per time bin); 1e-4 was its value when the two were one setting.
+_TRANSITION_CHANGE_TOLERANCE = 1e-4
+
 
 def _device_memory_limit() -> int | None:
     """Bytes JAX may allocate on the default device, or None if unknown (CPU)."""
@@ -3492,7 +3498,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
         max_iter: int = 20,
-        tolerance: float = 1e-4,
+        tolerance: float = 1e-5,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
@@ -3533,12 +3539,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
-            Convergence tolerance for the EM algorithm, by default 1e-4. EM
-            stops when the penalized log-likelihood (marginal log-likelihood
-            plus the discrete-transition log prior) changes by less than this
-            fraction of its magnitude without decreasing. With
+            Convergence tolerance for the EM algorithm, in nats per time
+            bin, by default 1e-5. EM stops when the penalized log-likelihood
+            (marginal log-likelihood plus the discrete-transition log prior)
+            rises by less than ``tolerance`` times the number of time bins in
+            one iteration, without decreasing. With
             ``discrete_transition_prior_weight > 0`` the last M-step must also
-            change every transition probability by less than ``tolerance``.
+            change every transition probability by less than 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -3614,8 +3621,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             quantity EM's convergence and monotonicity checks use. Each check
             compares two E-steps under the prior of the M-step between them:
             ``check_converged(em_objectives[k + 1], em_previous_objectives[k],
-            tolerance)`` reproduces it, with ``attrs["em_previous_objectives"]``
-            the earlier E-step's objective under that prior. With
+            tolerance, n_time_bins)`` reproduces it, with
+            ``attrs["em_previous_objectives"]`` the earlier E-step's objective
+            under that prior. With
             ``discrete_transition_prior_weight > 0`` the prior changes with
             each E-step, so ``em_previous_objectives[k]`` can differ from
             ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
@@ -3974,13 +3982,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             if n_iter > 1:
                 objective_change = objectives[-1] - previous_objectives[-1]
                 objective_converged, is_increasing = check_converged(
-                    objectives[-1], previous_objectives[-1], tolerance
+                    objectives[-1],
+                    previous_objectives[-1],
+                    tolerance,
+                    n_time_bins=len(time_edges) - 1,
                 )
                 # A data-adaptive prior changes with every E-step, so a flat
                 # objective alone does not mean the transitions have settled:
-                # the last M-step must also have moved them by < tolerance.
+                # the last M-step must also have moved them by
+                # < _TRANSITION_CHANGE_TOLERANCE.
                 converged = objective_converged and (
-                    not prior_tracks_counts or transition_change < tolerance
+                    not prior_tracks_counts
+                    or transition_change < _TRANSITION_CHANGE_TOLERANCE
                 )
 
                 if not is_increasing:
@@ -4045,14 +4058,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "The penalized log-likelihood changed by less than "
                     "tolerance, but with discrete_transition_prior_weight > 0 "
                     "the last M-step must also move every transition "
-                    f"probability by less than tolerance, and it moved one by "
+                    "probability by less than "
+                    f"{_TRANSITION_CHANGE_TOLERANCE:g}, and it moved one by "
                     f"{transition_change:.3e}; consider increasing max_iter."
                 )
             else:
                 advice = "Consider increasing max_iter or relaxing tolerance."
             warnings.warn(
                 f"EM did not converge after max_iter={max_iter} iterations "
-                f"(final penalized log-likelihood change={objective_change:.3e}, "
+                f"(final penalized log-likelihood change per time bin="
+                f"{objective_change / (len(time_edges) - 1):.3e}, "
                 f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
                 f"{advice}",
                 UserWarning,
@@ -4171,7 +4186,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         final_is_increasing = True
         if n_iter > 0:
             _, final_is_increasing = check_converged(
-                final_objective, previous_objectives[-1], tolerance
+                final_objective,
+                previous_objectives[-1],
+                tolerance,
+                n_time_bins=len(time_edges) - 1,
             )
             if not final_is_increasing:
                 self.em_monotonicity_violations_.append(n_iter + 1)
@@ -5884,7 +5902,7 @@ class ClusterlessDetector(_DetectorBase):
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
         max_iter: int = 20,
-        tolerance: float = 1e-4,
+        tolerance: float = 1e-5,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
@@ -5941,12 +5959,13 @@ class ClusterlessDetector(_DetectorBase):
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
-            Convergence tolerance for the EM algorithm, by default 1e-4. EM
-            stops when the penalized log-likelihood (marginal log-likelihood
-            plus the discrete-transition log prior) changes by less than this
-            fraction of its magnitude without decreasing. With
+            Convergence tolerance for the EM algorithm, in nats per time
+            bin, by default 1e-5. EM stops when the penalized log-likelihood
+            (marginal log-likelihood plus the discrete-transition log prior)
+            rises by less than ``tolerance`` times the number of time bins in
+            one iteration, without decreasing. With
             ``discrete_transition_prior_weight > 0`` the last M-step must also
-            change every transition probability by less than ``tolerance``.
+            change every transition probability by less than 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -7090,7 +7109,7 @@ class SortedSpikesDetector(_DetectorBase):
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
         max_iter: int = 20,
-        tolerance: float = 1e-4,
+        tolerance: float = 1e-5,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
@@ -7149,12 +7168,13 @@ class SortedSpikesDetector(_DetectorBase):
         max_iter : int, optional
             Maximuim number of EM iterations, by default 20
         tolerance : float, optional
-            Convergence tolerance for EM, by default 0.0001. EM
-            stops when the penalized log-likelihood (marginal log-likelihood
-            plus the discrete-transition log prior) changes by less than this
-            fraction of its magnitude without decreasing. With
+            Convergence tolerance for EM, in nats per time bin, by default
+            1e-5. EM stops when the penalized log-likelihood (marginal
+            log-likelihood plus the discrete-transition log prior) rises by
+            less than ``tolerance`` times the number of time bins in one
+            iteration, without decreasing. With
             ``discrete_transition_prior_weight > 0`` the last M-step must also
-            change every transition probability by less than ``tolerance``.
+            change every transition probability by less than 1e-4.
         cache_likelihood : bool, optional
             Store the likelihood for faster iterations, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
