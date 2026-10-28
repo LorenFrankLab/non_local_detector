@@ -917,3 +917,32 @@ def _transitions_on_design(design_matrix, coefficients):
     logits = np.einsum("tc,crk->trk", design_matrix, coefficients)
     logits = np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1)
     return softmax(logits, axis=-1)
+
+
+@pytest.mark.unit
+def test_a_failing_newton_optimizer_falls_back_to_gradient_steps(monkeypatch):
+    """If trust-exact raises (as scipy 1.12's can on a badly conditioned
+    Hessian), the row is refit with L-BFGS-B instead of failing the M-step."""
+    from non_local_detector import discrete_state_transitions as module
+
+    real_minimize = module.minimize
+    methods = []
+
+    def flaky_minimize(*args, **kwargs):
+        methods.append(kwargs["method"])
+        if kwargs["method"] == "trust-exact":
+            raise ValueError("array must not contain infs or NaNs")
+        return real_minimize(*args, **kwargs)
+
+    monkeypatch.setattr(module, "minimize", flaky_minimize)
+    _, _, design, truth, response = _row_problem(n_time=2_000)
+    fit = _fit_covariate_transition(
+        np.zeros((design.shape[1], N_STATES, N_STATES - 1)),
+        np.asarray(design, dtype=float),
+        response,
+        smoothness=1.0,
+        smoothness_matrix=_smoothness_matrix(design.design_info),
+    )
+
+    assert methods == ["trust-exact", "L-BFGS-B"] * N_STATES
+    assert np.sqrt(np.mean((fit.transition - truth) ** 2)) < 0.05

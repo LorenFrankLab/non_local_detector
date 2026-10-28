@@ -1353,6 +1353,10 @@ def _max_transition_change(
 def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
     """Inverse of a symmetric positive (semi)definite matrix; the
     pseudo-inverse if it is singular."""
+    if matrix.shape[0] == 0:
+        # A single state has no free coefficients (scipy < 1.13's LAPACK
+        # wrappers reject empty matrices).
+        return np.zeros_like(matrix)
     try:
         factor = cho_factor(matrix)
     except np.linalg.LinAlgError:
@@ -1563,7 +1567,31 @@ def _fit_covariate_row(
     }
     if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
         minimize_kwargs["hess"] = _blocked_hessian
-    result = minimize(**minimize_kwargs)
+    try:
+        result = minimize(**minimize_kwargs)
+    except (ValueError, np.linalg.LinAlgError) as error:
+        # trust-exact's subproblem can fail on a badly conditioned Hessian
+        # (seen with scipy 1.12 at strong curvature penalties): fall back to
+        # gradient steps, which the loss check below still guards.
+        if warn:
+            logger.warning(
+                "%s failed for state %d (%s); retrying with L-BFGS-B.",
+                optimization_method,
+                from_state,
+                error,
+            )
+        minimize_kwargs.pop("hess", None)
+        result = minimize(
+            **{
+                **minimize_kwargs,
+                "method": "L-BFGS-B",
+                "options": {
+                    "maxiter": options.get("maxiter", 100),
+                    "ftol": 0.0,
+                    "gtol": 1e-7,
+                },
+            }
+        )
 
     # EM never lowers its penalized log-likelihood only if no M-step raises
     # its own loss, so the optimizer's coefficients replace the previous ones
