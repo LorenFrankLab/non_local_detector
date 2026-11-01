@@ -384,6 +384,40 @@ def _row_problem(seed: int = 7, n_time: int = 6_000):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("n_states", [2, 4])
+def test_block_hessian_matches_automatic_differentiation(n_states):
+    """The closed-form Hessian of a block's multinomial-logit loss equals
+    JAX's automatic Hessian, for soft responses and nonzero pseudo-counts."""
+    import jax
+    import jax.numpy as jnp
+
+    from non_local_detector.discrete_state_transitions import (
+        _block_hessian,
+        _block_loss,
+        _float64_jax,
+    )
+
+    rng = np.random.default_rng(3)
+    n_time, n_coefficients = 500, 7
+    with _float64_jax():
+        design = jnp.asarray(
+            np.c_[np.ones(n_time), rng.normal(size=(n_time, n_coefficients - 1))]
+        )
+        response = jnp.asarray(rng.dirichlet(np.ones(n_states), n_time))
+        prior_per_bin = jnp.asarray(rng.uniform(0.0, 1e-3, n_states))
+        coefficients = jnp.asarray(
+            rng.normal(0.0, 0.5, n_coefficients * (n_states - 1))
+        )
+        args = (coefficients, design, response, prior_per_bin)
+        np.testing.assert_allclose(
+            _block_hessian(*args),
+            jax.hessian(_block_loss)(*args),
+            rtol=1e-10,
+            atol=1e-10,
+        )
+
+
+@pytest.mark.unit
 class TestSmoothedRowObjective:
     def test_gradient_and_hessian_match_finite_differences(self):
         rng, _, design, _, response = _row_problem(n_time=400)
