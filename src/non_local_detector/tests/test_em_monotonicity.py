@@ -130,6 +130,49 @@ def test_encoding_refit_is_opt_in():
 class TestEMMonotonicity:
     """EM marginal log-likelihood must be non-decreasing across iterations."""
 
+    @pytest.mark.parametrize("representation", ["dense", "structured"])
+    def test_convergence_is_judged_per_observed_time_bin(
+        self, monkeypatch, sorted_sim, representation
+    ):
+        """Both EM paths pass ``check_converged`` the number of decoded time
+        bins not marked missing (a missing bin adds nothing to the objective),
+        and the max_iter warning reports the change per such bin, the units of
+        ``tolerance``."""
+        from non_local_detector.models import base as base_module
+
+        is_missing = np.zeros(len(sorted_sim.fit_args["time_edges"]) - 1, dtype=bool)
+        is_missing[:1_000] = True
+        n_observed_bins = int(np.count_nonzero(~is_missing))
+        calls = []
+
+        def spy(current, previous, tolerance, *, n_time_bins):
+            calls.append(n_time_bins)
+            return check_converged(
+                current, previous, tolerance, n_time_bins=n_time_bins
+            )
+
+        monkeypatch.setattr(base_module, "check_converged", spy)
+        detector = NonLocalSortedSpikesDetector()
+        with pytest.warns(UserWarning, match="did not converge") as caught:
+            results = detector.estimate_parameters(
+                **sorted_sim.fit_args,
+                is_missing=is_missing,
+                max_iter=2,
+                tolerance=0.0,
+                estimate_encoding_model=False,
+                transition_representation=representation,
+            )
+
+        # One in-loop check and the final E-step's.
+        assert calls == [n_observed_bins] * 2
+        objectives = np.asarray(results.attrs["em_objectives"])
+        previous = np.asarray(results.attrs["em_previous_objectives"])
+        per_bin = (objectives[1] - previous[0]) / n_observed_bins
+        (message,) = [
+            str(w.message) for w in caught if "did not converge" in str(w.message)
+        ]
+        assert f"change per time bin={per_bin:.3e}" in message
+
     def test_detector_em_monotonicity_with_transition_updates(self, sorted_sim):
         """Fit a four-state NonLocalSortedSpikesDetector without a transition
         prior (so the M-step maximizes the likelihood alone) and verify that
@@ -305,9 +348,9 @@ class TestEMConvergenceSurfacing:
 
         call_count = {"n": 0}
 
-        def fake_check_converged(curr, prev, tolerance):
+        def fake_check_converged(curr, prev, tolerance, **kwargs):
             call_count["n"] += 1
-            is_converged, _ = _real_check_converged(curr, prev, tolerance)
+            is_converged, _ = _real_check_converged(curr, prev, tolerance, **kwargs)
             # Report a non-monotonic step on the first comparison
             # (i.e., when n_iter==2 in the EM loop). Subsequent comparisons
             # report monotonic so the loop is allowed to converge.
@@ -347,8 +390,8 @@ class TestEMConvergenceSurfacing:
         when the loop met its tolerance."""
 
         decoder = ClusterlessDecoder()
-        # A tolerance any increase meets ends the loop at iteration 2, so the
-        # final E-step is the third.
+        # An infinite tolerance (nats per time bin) is met by any increase, so
+        # the loop ends at iteration 2 and the final E-step is the third.
         _shift_marginal(monkeypatch, decoder, lambda n: -1000.0 if n == 3 else 0.0)
 
         with warnings.catch_warnings(record=True) as caught:
@@ -360,7 +403,7 @@ class TestEMConvergenceSurfacing:
                 spike_waveform_features=sim.spike_waveform_features,
                 time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=20,
-                tolerance=1.0,
+                tolerance=np.inf,
                 estimate_encoding_model=False,
             )
 
@@ -477,7 +520,9 @@ class TestEMConvergenceSurfacing:
         # Every objective check passes, so only the transition change can
         # keep EM going.
         monkeypatch.setattr(
-            base_module, "check_converged", lambda curr, prev, tolerance: (True, True)
+            base_module,
+            "check_converged",
+            lambda curr, prev, tolerance, **kwargs: (True, True),
         )
         detector = NonLocalSortedSpikesDetector(
             discrete_transition_prior_weight=prior_weight
@@ -632,7 +677,12 @@ class TestEMMonitorsMapObjective:
         assert previous.shape == (detector.n_iter_,)
         assert objectives.shape == (detector.n_iter_ + 1,)
         increasing = [
-            check_converged(current, earlier, tolerance)[1]
+            check_converged(
+                current,
+                earlier,
+                tolerance,
+                n_time_bins=len(sorted_sim.fit_args["time_edges"]) - 1,
+            )[1]
             for current, earlier in zip(objectives[1:], previous, strict=True)
         ]
         assert detector.em_monotonicity_violations_ == [4]

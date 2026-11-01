@@ -476,10 +476,10 @@ class TestConditionOn:
 class TestCheckConverged:
     """``check_converged`` returns (is_converged, is_increasing).
 
-    Both flags must be scale-invariant: they are defined relative to the
-    magnitude of the log-likelihood, not as an absolute difference. This
-    matters because the marginal log-likelihood is a sum over timesteps whose
-    magnitude scales with dataset size.
+    Monotonicity allows float rounding relative to the objective's magnitude.
+    Convergence is the objective's gain per time bin: it does not depend on
+    the magnitude, which the spike or mark likelihood sets (and a change of
+    mark or rate units shifts), nor on recording length.
     """
 
     def test_tiny_relative_decrease_on_large_ll_is_not_flagged(self):
@@ -487,9 +487,12 @@ class TestCheckConverged:
         to a large log-likelihood must NOT be flagged as a monotonicity
         violation."""
         # |LL| ~ 50000; an absolute drop of 0.01 is a ~2e-7 relative change,
-        # far inside the default 1e-4 tolerance.
+        # float noise, and 1e-6 nats per bin over 10000 bins.
         is_converged, is_increasing = check_converged(
-            jnp.asarray(-50000.01), jnp.asarray(-50000.0), tolerance=1e-4
+            jnp.asarray(-50000.01),
+            jnp.asarray(-50000.0),
+            tolerance=1e-4,
+            n_time_bins=10_000,
         )
         assert is_increasing, (
             "A negligible relative decrease on a large log-likelihood was "
@@ -498,46 +501,95 @@ class TestCheckConverged:
         assert is_converged
 
     def test_large_relative_decrease_is_flagged(self):
-        """A decrease that exceeds the tolerance fraction of the magnitude is
-        flagged as non-increasing."""
-        # avg magnitude ~50; a drop of 10 is a 0.2 relative change >> 1e-4.
+        """A decrease far beyond float rounding of the objective's magnitude
+        is flagged as non-increasing."""
+        # avg magnitude ~55; a drop of 10 is a 0.18 relative change, far
+        # beyond the ~1.2e-6 float-noise allowance.
         _, is_increasing = check_converged(
-            jnp.asarray(-60.0), jnp.asarray(-50.0), tolerance=1e-4
+            jnp.asarray(-60.0), jnp.asarray(-50.0), tolerance=1e-4, n_time_bins=100
         )
         assert not is_increasing
 
     def test_increase_is_never_a_violation(self):
         """An increasing log-likelihood is always monotonic."""
         _, is_increasing = check_converged(
-            jnp.asarray(-49000.0), jnp.asarray(-50000.0), tolerance=1e-4
+            jnp.asarray(-49000.0),
+            jnp.asarray(-50000.0),
+            tolerance=1e-4,
+            n_time_bins=1_000,
         )
         assert is_increasing
+
+    @pytest.mark.parametrize(
+        ("gain_per_bin", "expected"), [(0.9e-5, True), (1.1e-5, False)]
+    )
+    def test_converges_on_gain_per_time_bin(self, gain_per_bin, expected):
+        """EM has converged when the objective rose by less than
+        ``tolerance`` nats per time bin."""
+        n_time_bins = 300_000
+        previous = -1.5e6
+        is_converged, is_increasing = check_converged(
+            previous + gain_per_bin * n_time_bins,
+            previous,
+            tolerance=1e-5,
+            n_time_bins=n_time_bins,
+        )
+        assert is_increasing
+        assert is_converged is expected
+
+    @pytest.mark.parametrize("offset", [0.0, -5e7])
+    def test_convergence_ignores_the_objective_magnitude(self, offset):
+        """Shifting the objective by a constant (as mark or rate units do)
+        does not change whether the same gain counts as converged."""
+        # A 3-nat gain over 300000 bins is 1e-5 nats per bin; relative to
+        # |objective| it would be 2e-6 or 6e-8.
+        decisions = [
+            check_converged(
+                -1.5e6 + offset + 3.0,
+                -1.5e6 + offset,
+                tolerance=tolerance,
+                n_time_bins=300_000,
+            )[0]
+            for tolerance in (0.9e-5, 1.1e-5)
+        ]
+        assert decisions == [False, True]
+
+    def test_convergence_does_not_depend_on_recording_length(self):
+        """The same gain per bin on a recording twice as long gives the same
+        decision."""
+        short = check_converged(-1e6 + 2.0, -1e6, tolerance=1e-5, n_time_bins=250_000)
+        long = check_converged(-2e6 + 4.0, -2e6, tolerance=1e-5, n_time_bins=500_000)
+        assert short == long == (True, True)
 
     def test_slack_does_not_scale_with_tolerance(self):
         """The monotonicity slack is a fixed float-noise allowance, so a loose
         convergence tolerance does not hide a real decrease."""
-        # Relative change = -0.02 / ~100 = -2e-4.
+        # Relative change = -0.02 / ~100 = -2e-4; 2e-4 nats per bin over 100
+        # bins, inside the loose tolerance.
         curr, prev = jnp.asarray(-100.02), jnp.asarray(-100.0)
-        _, tight = check_converged(curr, prev, tolerance=1e-5)
-        _, loose = check_converged(curr, prev, tolerance=1e-3)
+        _, tight = check_converged(curr, prev, tolerance=1e-5, n_time_bins=100)
+        _, loose = check_converged(curr, prev, tolerance=1e-3, n_time_bins=100)
         assert not tight
         assert not loose
 
     def test_decrease_beyond_float_noise_is_not_convergence(self):
         """A decrease smaller than ``tolerance`` but larger than float noise is
         a monotonicity violation and must not end EM as converged."""
-        # Relative change -1e-5: inside tolerance=1e-4, far beyond float32 noise.
+        # A 10-nat drop over 1e6 bins is 1e-5 nats per bin, inside
+        # tolerance=1e-4; relative to the objective it is -1e-5, far beyond
+        # float32 noise.
         is_converged, is_increasing = check_converged(
-            -1_000_010.0, -1_000_000.0, tolerance=1e-4
+            -1_000_010.0, -1_000_000.0, tolerance=1e-4, n_time_bins=1_000_000
         )
         assert not is_increasing
         assert not is_converged
 
     def test_float_noise_decrease_counts_as_converged(self):
         """A decrease at float32 rounding level is noise, not a violation."""
-        # Relative change -5e-7, below the ~1.2e-6 float-noise allowance.
+        # Relative change -5e-7, below the ~1.2e-6 float-noise allowance;
+        # 2.5e-6 nats per bin over 200000 bins.
         is_converged, is_increasing = check_converged(
-            -1_000_000.5, -1_000_000.0, tolerance=1e-4
+            -1_000_000.5, -1_000_000.0, tolerance=1e-4, n_time_bins=200_000
         )
         assert is_increasing
         assert is_converged
@@ -546,7 +598,9 @@ class TestCheckConverged:
         """A finite objective after a ``-inf`` one (e.g. an initial transition
         matrix with a zero entry the prior penalizes) is an increase, not a
         NaN comparison."""
-        is_converged, is_increasing = check_converged(-50.0, -np.inf, tolerance=1e-4)
+        is_converged, is_increasing = check_converged(
+            -50.0, -np.inf, tolerance=1e-4, n_time_bins=100
+        )
         assert is_increasing
         assert not is_converged
 
@@ -556,7 +610,7 @@ class TestCheckConverged:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             is_converged, is_increasing = check_converged(
-                -np.inf, -50.0, tolerance=1e-4
+                -np.inf, -50.0, tolerance=1e-4, n_time_bins=100
             )
         assert not is_increasing
         assert not is_converged
@@ -565,6 +619,14 @@ class TestCheckConverged:
         """A degenerate timestep makes every E-step's marginal log-likelihood
         ``-inf``. That is no decrease, but there is no change to judge
         convergence by."""
-        is_converged, is_increasing = check_converged(-np.inf, -np.inf, tolerance=1e-4)
+        is_converged, is_increasing = check_converged(
+            -np.inf, -np.inf, tolerance=1e-4, n_time_bins=100
+        )
         assert is_increasing
         assert not is_converged
+
+    def test_n_time_bins_is_required(self):
+        """Without the bin count the gain has no unit: a silent default would
+        judge the whole-recording objective against a per-bin tolerance."""
+        with pytest.raises(TypeError, match="n_time_bins"):
+            check_converged(-1e6 + 1.0, -1e6, tolerance=1e-5)
