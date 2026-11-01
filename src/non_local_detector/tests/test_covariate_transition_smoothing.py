@@ -484,6 +484,49 @@ def _laml(design_matrix, response, coefficients, smoothness, penalty, l2_penalty
     return -loss + 0.5 * log_pdet - 0.5 * np.linalg.slogdet(hessian)[1]
 
 
+def _assert_reml_matches_the_grid_best(design, response, ridge: float) -> None:
+    """Each row's REML strength scores (nearly) as well as the best strength
+    on a dense grid of the Laplace approximate marginal likelihood, over
+    REML's search range (above it the LAML is numerical noise)."""
+    design_matrix = np.asarray(design, dtype=float)
+    penalty = _smoothness_matrix(design.design_info)
+    start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
+    common = {"transition_regularization": ridge, "smoothness_matrix": penalty}
+
+    fit = _fit_covariate_transition(
+        start, design_matrix, response, smoothness="reml", **common
+    )
+    grid = np.logspace(-12, 6, 37)
+    grid_fits = [
+        _fit_covariate_transition(
+            start, design_matrix, response, smoothness=value, **common
+        )
+        for value in grid
+    ]
+
+    def score(row, smoothness, coefficients):
+        return _laml(
+            design_matrix[:-1],
+            response[:, row],
+            coefficients[:, row],
+            smoothness,
+            penalty,
+            ridge,
+        )
+
+    for row in range(N_STATES):
+        grid_scores = [
+            score(row, value, grid_fit.coefficients)
+            for value, grid_fit in zip(grid, grid_fits, strict=True)
+        ]
+        reml_score = score(row, fit.smoothness[row], fit.coefficients)
+        assert reml_score >= max(grid_scores) - 0.05, (
+            f"row {row}: REML strength {fit.smoothness[row, 0]:.3g} scores "
+            f"{reml_score:.3f}, grid best {max(grid_scores):.3f} at "
+            f"{grid[int(np.argmax(grid_scores))]:.3g}"
+        )
+
+
 @pytest.mark.unit
 class TestRemlSmoothness:
     @pytest.mark.parametrize(
@@ -495,47 +538,7 @@ class TestRemlSmoothness:
         """The REML strength scores (nearly) as well as the best strength on
         a dense grid of the Laplace approximate marginal likelihood."""
         _, _, design, _, response = _row_problem(seed=8, n_time=n_time)
-        design_matrix = np.asarray(design, dtype=float)
-        penalty = _smoothness_matrix(design.design_info)
-        start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
-        common = {
-            "transition_regularization": ridge,
-            "smoothness_matrix": penalty,
-        }
-
-        fit = _fit_covariate_transition(
-            start, design_matrix, response, smoothness="reml", **common
-        )
-
-        def score(row, smoothness, coefficients):
-            return _laml(
-                design_matrix[:-1],
-                response[:, row],
-                coefficients[:, row],
-                smoothness,
-                penalty,
-                ridge,
-            )
-
-        # REML's search range; above it the LAML is numerical noise.
-        grid = np.logspace(-12, 6, 37)
-        grid_fits = [
-            _fit_covariate_transition(
-                start, design_matrix, response, smoothness=value, **common
-            )
-            for value in grid
-        ]
-        for row in range(N_STATES):
-            grid_scores = [
-                score(row, value, grid_fit.coefficients)
-                for value, grid_fit in zip(grid, grid_fits, strict=True)
-            ]
-            reml_score = score(row, fit.smoothness[row], fit.coefficients)
-            assert reml_score >= max(grid_scores) - 0.05, (
-                f"row {row}: REML strength {fit.smoothness[row, 0]:.3g} scores "
-                f"{reml_score:.3f}, grid best {max(grid_scores):.3f} at "
-                f"{grid[int(np.argmax(grid_scores))]:.3g}"
-            )
+        _assert_reml_matches_the_grid_best(design, response, ridge)
 
     @pytest.mark.parametrize(
         ("glitch", "ridge"),
@@ -555,56 +558,7 @@ class TestRemlSmoothness:
         speed[rng.choice(speed.size, 5, replace=False)] = glitch
         design = _design(speed)
         response = _sampled_responses(rng, _true_transition(np.minimum(speed, 200.0)))
-        design_matrix = np.asarray(design, dtype=float)
-        penalty = _smoothness_matrix(design.design_info)
-        start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
-
-        fit = _fit_covariate_transition(
-            start,
-            design_matrix,
-            response,
-            transition_regularization=ridge,
-            smoothness="reml",
-            smoothness_matrix=penalty,
-        )
-
-        grid = np.logspace(-12, 6, 37)
-        grid_fits = [
-            _fit_covariate_transition(
-                start,
-                design_matrix,
-                response,
-                transition_regularization=ridge,
-                smoothness=value,
-                smoothness_matrix=penalty,
-            )
-            for value in grid
-        ]
-        for row in range(N_STATES):
-            grid_scores = [
-                _laml(
-                    design_matrix[:-1],
-                    response[:, row],
-                    grid_fit.coefficients[:, row],
-                    value,
-                    penalty,
-                    ridge,
-                )
-                for value, grid_fit in zip(grid, grid_fits, strict=True)
-            ]
-            reml_score = _laml(
-                design_matrix[:-1],
-                response[:, row],
-                fit.coefficients[:, row],
-                fit.smoothness[row],
-                penalty,
-                ridge,
-            )
-            assert reml_score >= max(grid_scores) - 0.05, (
-                f"row {row}: REML strength {fit.smoothness[row, 0]:.3g} scores "
-                f"{reml_score:.3f}, grid best {max(grid_scores):.3f} at "
-                f"{grid[int(np.argmax(grid_scores))]:.3g}"
-            )
+        _assert_reml_matches_the_grid_best(design, response, ridge)
 
     def test_reml_smooths_a_linear_truth_more_than_a_wiggly_one(self):
         rng = np.random.default_rng(9)
