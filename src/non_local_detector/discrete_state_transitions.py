@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import NamedTuple
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from jax.nn import log_softmax
 from patsy import (  # type: ignore[import-untyped]
+    DesignInfo,
     DesignMatrix,
     build_design_matrices,
     dmatrix,
@@ -18,7 +20,7 @@ from patsy.splines import BS  # type: ignore[import-untyped]
 from scipy.interpolate import BSpline  # type: ignore[import-untyped]
 from scipy.linalg import cho_factor, cho_solve  # type: ignore[import-untyped]
 from scipy.optimize import minimize, minimize_scalar  # type: ignore[import-untyped]
-from scipy.special import expit, logit, softmax, xlogy  # type: ignore[import-untyped]  # type: ignore[import-untyped]
+from scipy.special import expit, logit, softmax, xlogy  # type: ignore[import-untyped]
 from scipy.stats import norm  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
@@ -1440,10 +1442,10 @@ def _precision_log_pdet(
 
 def _reml_row(
     coefficients: np.ndarray,
-    fit_row,
+    fit_row: Callable[..., np.ndarray],
     blocks: list,
     prior_per_bin: jnp.ndarray,
-    penalty,
+    penalty: Callable[[np.ndarray], np.ndarray],
     penalties: np.ndarray,
     l2_penalty: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1507,7 +1509,9 @@ def _reml_row(
         fits[key] = (beta, value)
         return value
 
-    def search(point, grid: np.ndarray, start: np.ndarray) -> float:
+    def search(
+        point: Callable[[float], np.ndarray], grid: np.ndarray, start: np.ndarray
+    ) -> float:
         """The log10 strength ``x`` maximizing ``laml(point(x))``: a grid,
         strongest first with each fit starting from the next-stronger one,
         then a bounded refinement within a decade of the best."""
@@ -1555,7 +1559,11 @@ def _reml_row(
             previous = log10_strengths.copy()
             for term in range(n_terms):
 
-                def point(x: float, term: int = term, base=log10_strengths.copy()):
+                def point(
+                    x: float,
+                    term: int = term,
+                    base: np.ndarray = log10_strengths.copy(),
+                ) -> np.ndarray:
                     moved = base.copy()
                     moved[term] = x
                     return moved
@@ -2555,7 +2563,9 @@ class _QuantileBSpline:
         return width**3 * penalty[1:, 1:]
 
 
-def _curvature_gram(second, breaks: np.ndarray, degree: int) -> np.ndarray:
+def _curvature_gram(
+    second: Callable[[np.ndarray], np.ndarray], breaks: np.ndarray, degree: int
+) -> np.ndarray:
     """``integral second(x).T @ second(x) dx`` between the first and last
     break, for basis second derivatives ``second(x)`` of shape
     (n_points, n_basis) that are polynomials between breaks.
@@ -2675,7 +2685,7 @@ class _CyclicBSpline:
         return period**3 * penalty[1:, 1:]
 
 
-def _smoothness_matrix(design_info) -> np.ndarray:
+def _smoothness_matrix(design_info: DesignInfo) -> np.ndarray:
     """Curvature penalty of each spline term of a design.
 
     Parameters
