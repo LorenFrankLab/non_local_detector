@@ -458,7 +458,7 @@ _MASKED_POSTERIOR_BLOCK_BYTES = 2**20
 # With a prior that changes each E-step (data-adaptive pseudo-counts), EM
 # also requires the last M-step to move every transition probability by
 # less than this. It is a probability, so it is separate from ``tolerance``
-# (nats per time bin); 1e-4 was its value when the two were one setting.
+# (nats per time bin).
 _TRANSITION_CHANGE_TOLERANCE = 1e-4
 
 
@@ -3699,16 +3699,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Subclasses have already combined ``is_missing`` with the bins
         # without tracked position via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
-        # Convergence is judged per observed bin: a missing bin's
-        # log-likelihood is zero, so it adds nothing to the objective's gain.
-        # With every bin missing there is no data term; count one bin so the
-        # (prior-only) change is still judged.
-        n_observed_bins = max(
-            len(time_edges)
-            - 1
-            - (0 if is_missing is None else int(np.count_nonzero(is_missing))),
-            1,
-        )
+        # Units of ``tolerance``; with every bin missing, count one so the
+        # prior-only change is still judged.
+        n_missing = 0 if is_missing is None else int(np.count_nonzero(is_missing))
+        n_observed_bins = max(len(time_centers) - n_missing, 1)
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
@@ -3999,9 +3993,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     n_time_bins=n_observed_bins,
                 )
                 # A data-adaptive prior changes with every E-step, so a flat
-                # objective alone does not mean the transitions have settled:
-                # the last M-step must also have moved them by
-                # < _TRANSITION_CHANGE_TOLERANCE.
+                # objective alone does not mean the transitions have settled.
                 converged = objective_converged and (
                     not prior_tracks_counts
                     or transition_change < _TRANSITION_CHANGE_TOLERANCE

@@ -157,17 +157,17 @@ class TestEMMonotonicity:
             results = detector.estimate_parameters(
                 **sorted_sim.fit_args,
                 is_missing=is_missing,
-                max_iter=3,
+                max_iter=2,
                 tolerance=0.0,
                 estimate_encoding_model=False,
                 transition_representation=representation,
             )
 
-        # Two in-loop checks and the final E-step's.
-        assert calls == [n_observed_bins] * 3
+        # One in-loop check and the final E-step's.
+        assert calls == [n_observed_bins] * 2
         objectives = np.asarray(results.attrs["em_objectives"])
         previous = np.asarray(results.attrs["em_previous_objectives"])
-        per_bin = (objectives[2] - previous[1]) / n_observed_bins
+        per_bin = (objectives[1] - previous[0]) / n_observed_bins
         (message,) = [
             str(w.message) for w in caught if "did not converge" in str(w.message)
         ]
