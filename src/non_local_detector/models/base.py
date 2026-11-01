@@ -45,9 +45,14 @@ from non_local_detector.core import (
     row_slice_aware,
 )
 from non_local_detector.discrete_state_transitions import (
+    _covariate_transition_covariance,
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
     _is_nonstationary,
+    _max_transition_change,
+    _row_smoothness,
+    _smoothness_matrix,
+    _transition_intervals,
     _transition_log_prior,
     centered_softmax_forward,
     predict_discrete_state_transitions,
@@ -455,10 +460,10 @@ _DENSE_EM_WORKING_ARRAYS = 8
 # 8.9 s; 1 MiB blocks took 3.8 s, 4-16 MiB 4.4 s and 64 MiB 5.7 s.
 _MASKED_POSTERIOR_BLOCK_BYTES = 2**20
 
-# With a prior that changes each E-step (data-adaptive pseudo-counts), EM
-# also requires the last M-step to move every transition probability by
-# less than this. It is a probability, so it is separate from ``tolerance``
-# (nats per time bin).
+# With a prior that changes each E-step (data-adaptive pseudo-counts, REML
+# smoothness), EM also requires the last M-step to move every transition
+# probability by less than this. It is a probability, so it is separate from
+# ``tolerance`` (nats per time bin).
 _TRANSITION_CHANGE_TOLERANCE = 1e-4
 
 
@@ -2408,6 +2413,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_transition_design_matrix_ = (
                 self.discrete_transition_type.make_state_transition(covariate_data)[2]
             )
+        # Detectors fitted before transition smoothing existed: no penalty
+        # strengths and no covariance, so EM and intervals see an unsmoothed
+        # fit that has not estimated its uncertainty.
+        if "discrete_transition_coefficient_covariance_" not in state:
+            self.discrete_transition_coefficient_covariance_ = None
+        if "discrete_transition_smoothness_matrix_" not in state:
+            design = getattr(self, "discrete_transition_design_matrix_", None)
+            if design is None:
+                self.discrete_transition_smoothness_matrix_ = None
+                self.discrete_transition_smoothness_ = None
+            else:
+                penalties = _smoothness_matrix(design.design_info)
+                self.discrete_transition_smoothness_matrix_ = penalties
+                self.discrete_transition_smoothness_ = _row_smoothness(
+                    0.0,
+                    None,
+                    penalties,
+                    self.discrete_transition_coefficients_.shape[1],
+                )[0]
 
     def initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict | None = None
@@ -2428,6 +2452,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Fitted coefficients for covariate-dependent transitions.
         discrete_transition_design_matrix_ : patsy.DesignMatrix or None
             Design matrix information for covariate-dependent transitions.
+        discrete_transition_smoothness_matrix_ : np.ndarray or None
+            Curvature penalty of each of the formula's ``quantile_bs`` and
+            ``cyclic_bs`` terms, shape (n_terms, n_coefficients,
+            n_coefficients), for covariate-dependent transitions.
+        discrete_transition_smoothness_ : np.ndarray or None
+            Curvature-penalty strength of each row for each spline term,
+            shape (n_states, n_terms), for covariate-dependent transitions.
+            With ``smoothness="reml"`` the strengths REML chose in the last
+            EM M-step.
+        discrete_transition_coefficient_covariance_ : np.ndarray or None
+            Laplace covariance of each row's flattened coefficients, shape
+            (n_states, n_parameters, n_parameters), from the last EM M-step
+            of a covariate-dependent transition; None before one.
         """
         logger.info("Fitting discrete state transition")
         (
@@ -2443,6 +2480,24 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             if self.discrete_transition_design_matrix_ is None
             else copy.deepcopy(covariate_data)
         )
+        # Curvature penalty of each of the formula's spline terms, the
+        # strengths of each row's penalties (fixed, or REML's starting value until an
+        # M-step chooses it) and, once an M-step has fit them, the Laplace
+        # covariance of each row's coefficients.
+        self.discrete_transition_coefficient_covariance_ = None
+        if self.discrete_transition_design_matrix_ is None:
+            self.discrete_transition_smoothness_matrix_ = None
+            self.discrete_transition_smoothness_ = None
+        else:
+            self.discrete_transition_smoothness_matrix_ = _smoothness_matrix(
+                self.discrete_transition_design_matrix_.design_info
+            )
+            self.discrete_transition_smoothness_ = _row_smoothness(
+                getattr(self.discrete_transition_type, "smoothness", 0.0),
+                None,
+                self.discrete_transition_smoothness_matrix_,
+                self.discrete_transition_coefficients_.shape[1],
+            )[0]
 
         # Snapshot frozen rows of a stationary matrix so the EM M-step can
         # restore them after every update. Covariate-dependent frozen rows
@@ -2458,6 +2513,59 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             )
         else:
             self._frozen_discrete_transition_rows_baseline_ = None
+
+    def discrete_transition_intervals(
+        self,
+        covariate_data: pd.DataFrame | dict,
+        coverage: float = 0.95,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Fitted covariate-dependent transitions with pointwise intervals.
+
+        Parameters
+        ----------
+        covariate_data : dict or pd.DataFrame
+            Covariates to evaluate the transitions at, e.g.
+            ``{"speed": np.linspace(0, 60, 100)}``.
+        coverage : float, optional
+            Pointwise coverage of the intervals, by default 0.95.
+
+        Returns
+        -------
+        transitions, lower, upper : np.ndarray, shape (n_new_time, n_states, n_states)
+            The fitted transition probabilities and their Laplace
+            (delta-method) intervals. The intervals treat the last M-step's
+            expected transitions and smoothness as known, so they leave out
+            the uncertainty in which state the animal was in. Frozen rows are
+            not estimated and have zero-width intervals; rows whose
+            coefficients are not identified (e.g. a state without expected
+            transitions) have NaN intervals. See
+            :func:`~non_local_detector.discrete_state_transitions.predict_discrete_state_transition_intervals`.
+
+        Raises
+        ------
+        ValueError
+            If the transitions do not depend on covariates, or were not
+            estimated by EM (no covariance yet).
+        """
+        if self.discrete_transition_design_matrix_ is None:
+            raise ValueError(
+                "The discrete transitions do not depend on covariates; use a "
+                "DiscreteNonStationaryCustom or DiscreteNonStationaryDiagonal "
+                "transition type."
+            )
+        if self.discrete_transition_coefficient_covariance_ is None:
+            raise ValueError(
+                "No transition covariance yet: it comes from an EM M-step, so "
+                "run estimate_parameters with estimate_discrete_transition=True "
+                "and max_iter >= 1."
+            )
+        return _transition_intervals(
+            self.discrete_transition_design_matrix_,
+            self.discrete_transition_coefficients_,
+            self.discrete_transition_coefficient_covariance_,
+            covariate_data,
+            coverage,
+        )
 
     def plot_discrete_state_transition(
         self,
@@ -3544,8 +3652,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             (marginal log-likelihood plus the discrete-transition log prior)
             rises by less than ``tolerance`` times the number of time bins in
             one iteration, without decreasing. With
-            ``discrete_transition_prior_weight > 0`` the last M-step must also
-            change every transition probability by less than 1e-4.
+            ``discrete_transition_prior_weight > 0`` or REML smoothness the
+            last M-step must also change every transition probability by less
+            than 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -3625,9 +3734,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             ``attrs["em_previous_objectives"]`` the earlier E-step's objective
             under that prior and ``n_time_bins`` the number of decode bins
             not marked missing. With
-            ``discrete_transition_prior_weight > 0`` the prior changes with
-            each E-step, so ``em_previous_objectives[k]`` can differ from
-            ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
+            ``discrete_transition_prior_weight > 0`` or REML smoothness the
+            prior changes with each E-step, so ``em_previous_objectives[k]``
+            can differ from ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
             prior; the sole objective is the final marginal log-likelihood
             and ``em_previous_objectives`` is empty. A ``result_path`` store
             keeps these attributes, so ``load_results`` returns them too.
@@ -3750,6 +3859,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             and not covariate_transitions
             and bool(np.any(np.asarray(self.discrete_transition_prior_weight) > 0))
         )
+        # REML chooses each covariate row's smoothness in its M-step, so that
+        # M-step's prior is known only after it, and EM checks the M-step's
+        # input against its output under it.
+        smoothness_setting = getattr(self.discrete_transition_type, "smoothness", 0.0)
+        prior_set_in_m_step = (
+            estimate_discrete_transition
+            and covariate_transitions
+            and isinstance(smoothness_setting, str)
+        )
+        prior_changes = prior_tracks_counts or prior_set_in_m_step
         if estimate_discrete_transition and not checkpointed:
             interior_state_bins = self.is_track_interior_state_bins_
             interior_state_ind = self.state_ind_[interior_state_bins]
@@ -3768,15 +3887,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         frozen_rows = self._frozen_discrete_transition_rows_mask_
         free_rows = None if frozen_rows is None else ~frozen_rows
 
-        def transition_log_prior(statistics: np.ndarray) -> float:
-            """Log prior of the current transitions under one M-step's prior."""
+        def transition_log_prior(
+            statistics: np.ndarray, coefficients: np.ndarray | None = None
+        ) -> float:
+            """Log prior of the current transitions (or covariate
+            ``coefficients``) under one M-step's prior."""
             return _transition_log_prior(
                 statistics,
                 self.discrete_state_transitions_,
-                self.discrete_transition_coefficients_,
+                (
+                    self.discrete_transition_coefficients_
+                    if coefficients is None
+                    else coefficients
+                ),
                 self.discrete_transition_design_matrix_,
                 *prior,
                 free_rows=free_rows,
+                smoothness=(
+                    0.0
+                    if self.discrete_transition_smoothness_ is None
+                    else self.discrete_transition_smoothness_
+                ),
+                smoothness_matrix=self.discrete_transition_smoothness_matrix_,
             )
 
         # Initialize the EM-result attributes together, after validation, so a
@@ -3923,18 +4055,30 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     if n_iter == 0 or prior_tracks_counts
                     else next_log_prior
                 )
-                if prior_tracks_counts:
-                    transitions_before = np.array(self.discrete_state_transitions_)
-                (
-                    self.discrete_state_transitions_,
-                    self.discrete_transition_coefficients_,
-                ) = _discrete_transition_from_statistics(
+                if prior_changes:
+                    coefficients_before = self.discrete_transition_coefficients_
+                    # Covariate transitions are compared from their
+                    # coefficients, without copying (n_time, n_states, n_states).
+                    if not covariate_transitions:
+                        transitions_before = np.array(self.discrete_state_transitions_)
+                m_step = _discrete_transition_from_statistics(
                     statistics,
                     self.discrete_transition_coefficients_,
                     self.discrete_transition_design_matrix_,
                     *prior,
                     frozen_rows=frozen_rows,
+                    smoothness=smoothness_setting,
+                    smoothness_matrix=self.discrete_transition_smoothness_matrix_,
+                    initial_smoothness=self.discrete_transition_smoothness_,
                 )
+                self.discrete_state_transitions_ = m_step.transition
+                self.discrete_transition_coefficients_ = m_step.coefficients
+                if covariate_transitions:
+                    self.discrete_transition_smoothness_ = m_step.smoothness
+                if prior_set_in_m_step:
+                    log_prior_before = transition_log_prior(
+                        statistics, coefficients_before
+                    )
                 # The learned transitions are per bin at this width.
                 self.transition_time_bin_width_ = time_bin_width
                 self._transition_time_bin_width_tolerance = _uniformity_tolerance(
@@ -3950,7 +4094,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         self._frozen_discrete_transition_rows_mask_
                     ] = self._frozen_discrete_transition_rows_baseline_
                 log_prior_after = transition_log_prior(statistics)
-                if prior_tracks_counts:
+                if prior_changes and covariate_transitions:
+                    transition_change = _max_transition_change(
+                        self.discrete_transition_design_matrix_,
+                        coefficients_before,
+                        self.discrete_transition_coefficients_,
+                    )
+                elif prior_changes:
                     moved = self.discrete_state_transitions_ - transitions_before
                     transition_change = float(np.max(np.abs(moved)))
             else:
@@ -3992,10 +4142,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     tolerance,
                     n_time_bins=n_observed_bins,
                 )
-                # A data-adaptive prior changes with every E-step, so a flat
-                # objective alone does not mean the transitions have settled.
+                # A data-adaptive prior (or REML smoothness) changes with
+                # every E-step, so a flat objective alone does not mean the
+                # transitions have settled.
                 converged = objective_converged and (
-                    not prior_tracks_counts
+                    not prior_changes
                     or transition_change < _TRANSITION_CHANGE_TOLERANCE
                 )
 
@@ -4024,7 +4175,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"change: {objective_change}"
                     + (
                         f", transition change: {transition_change}"
-                        if prior_tracks_counts
+                        if prior_changes
                         else ""
                     )
                 )
@@ -4036,6 +4187,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             # against this E-step, both under this M-step's prior.
             previous_objectives.append(marginal_log_likelihood + log_prior_before)
             next_log_prior = log_prior_after
+
+        if estimate_discrete_transition and covariate_transitions and n_iter > 0:
+            # The last M-step's statistics and output.
+            self.discrete_transition_coefficient_covariance_ = (
+                _covariate_transition_covariance(
+                    self.discrete_transition_coefficients_,
+                    self.discrete_transition_design_matrix_,
+                    np.asarray(statistics),
+                    self.discrete_transition_concentration,
+                    self.discrete_transition_stickiness,
+                    self.discrete_transition_regularization,
+                    self.discrete_transition_smoothness_,
+                    self.discrete_transition_smoothness_matrix_,
+                    frozen_rows,
+                )
+            )
 
         # converged_ is set after the final E-step, which evaluates the
         # returned parameters and can still find a decrease.
@@ -4060,10 +4227,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 advice = (
                     "The penalized log-likelihood changed by less than "
                     "tolerance, but with discrete_transition_prior_weight > 0 "
-                    "the last M-step must also move every transition "
-                    "probability by less than "
-                    f"{_TRANSITION_CHANGE_TOLERANCE:g}, and it moved one by "
-                    f"{transition_change:.3e}; consider increasing max_iter."
+                    "or REML smoothness the last M-step must also move every "
+                    "transition probability by less than "
+                    f"{_TRANSITION_CHANGE_TOLERANCE:g}, and it "
+                    f"moved one by {transition_change:.3e}; consider "
+                    "increasing max_iter."
                 )
             else:
                 advice = "Consider increasing max_iter or relaxing tolerance."
@@ -5967,8 +6135,9 @@ class ClusterlessDetector(_DetectorBase):
             (marginal log-likelihood plus the discrete-transition log prior)
             rises by less than ``tolerance`` times the number of time bins in
             one iteration, without decreasing. With
-            ``discrete_transition_prior_weight > 0`` the last M-step must also
-            change every transition probability by less than 1e-4.
+            ``discrete_transition_prior_weight > 0`` or REML smoothness the
+            last M-step must also change every transition probability by less
+            than 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -7176,8 +7345,9 @@ class SortedSpikesDetector(_DetectorBase):
             log-likelihood plus the discrete-transition log prior) rises by
             less than ``tolerance`` times the number of time bins in one
             iteration, without decreasing. With
-            ``discrete_transition_prior_weight > 0`` the last M-step must also
-            change every transition probability by less than 1e-4.
+            ``discrete_transition_prior_weight > 0`` or REML smoothness the
+            last M-step must also change every transition probability by less
+            than 1e-4.
         cache_likelihood : bool, optional
             Store the likelihood for faster iterations, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
