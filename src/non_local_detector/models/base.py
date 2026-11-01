@@ -3621,9 +3621,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             quantity EM's convergence and monotonicity checks use. Each check
             compares two E-steps under the prior of the M-step between them:
             ``check_converged(em_objectives[k + 1], em_previous_objectives[k],
-            tolerance, n_time_bins)`` reproduces it, with
+            tolerance, n_time_bins=n_time_bins)`` reproduces it, with
             ``attrs["em_previous_objectives"]`` the earlier E-step's objective
-            under that prior. With
+            under that prior and ``n_time_bins`` the number of decode bins
+            not marked missing. With
             ``discrete_transition_prior_weight > 0`` the prior changes with
             each E-step, so ``em_previous_objectives[k]`` can differ from
             ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
@@ -3698,6 +3699,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Subclasses have already combined ``is_missing`` with the bins
         # without tracked position via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
+        # Convergence is judged per observed bin: a missing bin's
+        # log-likelihood is zero, so it adds nothing to the objective's gain.
+        # With every bin missing there is no data term; count one bin so the
+        # (prior-only) change is still judged.
+        n_observed_bins = max(
+            len(time_edges)
+            - 1
+            - (0 if is_missing is None else int(np.count_nonzero(is_missing))),
+            1,
+        )
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
@@ -3985,7 +3996,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     objectives[-1],
                     previous_objectives[-1],
                     tolerance,
-                    n_time_bins=len(time_edges) - 1,
+                    n_time_bins=n_observed_bins,
                 )
                 # A data-adaptive prior changes with every E-step, so a flat
                 # objective alone does not mean the transitions have settled:
@@ -4067,7 +4078,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             warnings.warn(
                 f"EM did not converge after max_iter={max_iter} iterations "
                 f"(final penalized log-likelihood change per time bin="
-                f"{objective_change / (len(time_edges) - 1):.3e}, "
+                f"{objective_change / n_observed_bins:.3e}, "
                 f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
                 f"{advice}",
                 UserWarning,
@@ -4189,7 +4200,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 final_objective,
                 previous_objectives[-1],
                 tolerance,
-                n_time_bins=len(time_edges) - 1,
+                n_time_bins=n_observed_bins,
             )
             if not final_is_increasing:
                 self.em_monotonicity_violations_.append(n_iter + 1)

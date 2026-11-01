@@ -131,26 +131,32 @@ class TestEMMonotonicity:
     """EM marginal log-likelihood must be non-decreasing across iterations."""
 
     @pytest.mark.parametrize("representation", ["dense", "structured"])
-    def test_convergence_is_judged_per_decoded_time_bin(
+    def test_convergence_is_judged_per_observed_time_bin(
         self, monkeypatch, sorted_sim, representation
     ):
         """Both EM paths pass ``check_converged`` the number of decoded time
-        bins, and the max_iter warning reports the change per bin, the units
-        of ``tolerance``."""
+        bins not marked missing (a missing bin adds nothing to the objective),
+        and the max_iter warning reports the change per such bin, the units of
+        ``tolerance``."""
         from non_local_detector.models import base as base_module
 
-        n_time_bins = len(sorted_sim.fit_args["time_edges"]) - 1
+        is_missing = np.zeros(len(sorted_sim.fit_args["time_edges"]) - 1, dtype=bool)
+        is_missing[:1_000] = True
+        n_observed_bins = int(np.count_nonzero(~is_missing))
         calls = []
 
-        def spy(current, previous, tolerance, **kwargs):
-            calls.append(kwargs.get("n_time_bins"))
-            return check_converged(current, previous, tolerance, **kwargs)
+        def spy(current, previous, tolerance, *, n_time_bins):
+            calls.append(n_time_bins)
+            return check_converged(
+                current, previous, tolerance, n_time_bins=n_time_bins
+            )
 
         monkeypatch.setattr(base_module, "check_converged", spy)
         detector = NonLocalSortedSpikesDetector()
         with pytest.warns(UserWarning, match="did not converge") as caught:
             results = detector.estimate_parameters(
                 **sorted_sim.fit_args,
+                is_missing=is_missing,
                 max_iter=3,
                 tolerance=0.0,
                 estimate_encoding_model=False,
@@ -158,10 +164,10 @@ class TestEMMonotonicity:
             )
 
         # Two in-loop checks and the final E-step's.
-        assert calls == [n_time_bins] * 3
+        assert calls == [n_observed_bins] * 3
         objectives = np.asarray(results.attrs["em_objectives"])
         previous = np.asarray(results.attrs["em_previous_objectives"])
-        per_bin = (objectives[2] - previous[1]) / n_time_bins
+        per_bin = (objectives[2] - previous[1]) / n_observed_bins
         (message,) = [
             str(w.message) for w in caught if "did not converge" in str(w.message)
         ]
