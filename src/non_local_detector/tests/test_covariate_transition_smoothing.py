@@ -265,40 +265,69 @@ def _two_term_problem(seed: int, n_time: int = 8_000):
 
 @pytest.mark.unit
 class TestPerTermSmoothness:
+    @pytest.mark.parametrize("glitch", [None, 1e6, 1e9])
+    def test_precision_log_pdet_counts_every_penalized_direction(self, glitch):
+        """Without a ridge, log|Q|+ grows by the penalty's rank per unit of
+        log strength. A glitch that stretches the spline's range leaves
+        genuine eigenvalues below LAPACK's rank cutoff (1e-16 of the largest
+        at 1e6); they must still count. The curvature penalty of a
+        quantile_bs term leaves one direction free (the linear trend not
+        absorbed by the intercept)."""
+        rng = np.random.default_rng(0)
+        speed = _speeds(rng, 5_000)
+        if glitch is not None:
+            speed[0] = glitch
+        penalties = _smoothness_matrix(_design(speed).design_info)
+        n_columns = int(np.count_nonzero(np.any(penalties[0] != 0.0, axis=0)))
+
+        slope = (
+            _precision_log_pdet(penalties, np.array([10.0]), 0.0)
+            - _precision_log_pdet(penalties, np.array([1.0]), 0.0)
+        ) / np.log(10.0)
+
+        assert slope == pytest.approx(n_columns - 1)
+
     @pytest.mark.parametrize("ridge", [0.0, 1e-3])
-    @pytest.mark.parametrize("strengths", [(1.0, 1.0), (1e6, 1e-12), (1e-12, 1e6)])
+    @pytest.mark.parametrize("strengths", [(1e3, 1e-3), (1e6, 1e-12), (1e-12, 1e6)])
     def test_precision_log_pdet_factors_by_term(self, strengths, ridge):
         """The terms sit on disjoint columns, so the prior precision's log
-        pseudo-determinant is the sum of each block's, however far apart the
-        strengths: one term's round-off null directions must not stand in
-        for another's genuine ones."""
+        pseudo-determinant changes with the strengths as the sum of each
+        block's, however far apart they are: one term's round-off null
+        directions must not stand in for another's genuine ones. Compared
+        across strengths, as the LAML is: without a ridge it is known up to
+        a constant."""
         design, _ = _two_term_problem(seed=34, n_time=2_000)
         penalties = _smoothness_matrix(design.design_info)
         n_coefficients = design.shape[1]
 
-        if ridge == 0.0:
-            expected = 0.0
-            for strength, term in zip(strengths, penalties, strict=True):
-                rank = np.linalg.matrix_rank(term, hermitian=True)
-                expected += np.sum(
-                    np.log(np.linalg.eigvalsh(2.0 * strength * term)[-rank:])
-                )
-        else:
+        def reference(values):
+            if ridge == 0.0:
+                total = 0.0
+                for strength, term in zip(values, penalties, strict=True):
+                    rank = np.linalg.matrix_rank(term, hermitian=True)
+                    total += np.sum(
+                        np.log(np.linalg.eigvalsh(2.0 * strength * term)[-rank:])
+                    )
+                return total
             # Every coefficient but the intercept is penalized.
             precision = 2.0 * (
                 np.diag(np.r_[0.0, np.full(n_coefficients - 1, ridge)])
-                + np.tensordot(strengths, penalties, axes=1)
+                + np.tensordot(values, penalties, axes=1)
             )
-            sign, expected = np.linalg.slogdet(precision[1:, 1:])
+            sign, total = np.linalg.slogdet(precision[1:, 1:])
             assert sign == 1.0
+            return total
+
+        def ours(values):
+            return _precision_log_pdet(penalties, np.asarray(values), ridge)
 
         # With a ridge, a stiff term's null directions are known only to the
         # round-off of its strength times its largest eigenvalue (5e-5 nats
         # against a 60-digit determinant), far below the LAML differences
         # REML resolves; without one, the summed-eigenvalue error was 8 nats.
-        assert _precision_log_pdet(
-            penalties, np.asarray(strengths), ridge
-        ) == pytest.approx(expected, abs=1e-3)
+        assert ours(strengths) - ours((1.0, 1.0)) == pytest.approx(
+            reference(strengths) - reference((1.0, 1.0)), abs=1e-3
+        )
 
     def test_each_spline_term_gets_its_own_penalty(self):
         design, _ = _two_term_problem(seed=34, n_time=2_000)

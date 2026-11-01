@@ -1496,6 +1496,8 @@ def _precision_log_pdet(
     Returns
     -------
     log_pdet : float
+        Without an L2 penalty, up to a constant that does not depend on the
+        strengths.
     """
     n_coefficients = penalties.shape[-1]
     log_pdet = 0.0
@@ -1503,19 +1505,28 @@ def _precision_log_pdet(
     for strength, term in zip(strengths, penalties, strict=True):
         columns = np.flatnonzero(np.any(term != 0.0, axis=0))
         n_term_columns += columns.size
-        eigenvalues = np.linalg.eigvalsh(term[np.ix_(columns, columns)])
         if l2_penalty > 0.0:
+            eigenvalues = np.linalg.eigvalsh(term[np.ix_(columns, columns)])
             log_pdet += np.sum(
                 np.log(2.0 * (l2_penalty + strength * np.maximum(eigenvalues, 0.0)))
             )
         else:
-            # A term's null directions are round-off (about 1e-20 of its
-            # largest eigenvalue) while a range stretched by outliers leaves
-            # genuine ones below 1e-11, so the rank uses LAPACK's tolerance,
-            # not a fixed cutoff.
-            rank = np.linalg.matrix_rank(term, hermitian=True)
-            log_pdet += rank * np.log(2.0 * strength) + np.sum(
-                np.log(eigenvalues[eigenvalues.size - rank :])
+            # A range stretched by outliers puts genuine eigenvalues of the
+            # penalty at 1e-16 of its largest, among its null directions'
+            # round-off. Scaled by its diagonal (a congruence, which keeps the
+            # rank) they sit near 1e-2, far above round-off. The log
+            # pseudo-determinant of the scaled penalty plus that of the
+            # scaling is exact for a full-rank penalty and otherwise off by a
+            # constant in the strength, which the LAML's comparisons cancel.
+            block = term[np.ix_(columns, columns)]
+            diagonal = np.diag(block)
+            scaled = block / np.sqrt(np.outer(diagonal, diagonal))
+            rank = np.linalg.matrix_rank(scaled, hermitian=True)
+            scaled_eigenvalues = np.linalg.eigvalsh(scaled)
+            log_pdet += (
+                rank * np.log(2.0 * strength)
+                + np.sum(np.log(scaled_eigenvalues[scaled_eigenvalues.size - rank :]))
+                + np.sum(np.log(diagonal))
             )
     if l2_penalty > 0.0:
         # Penalized columns outside every spline term carry the L2 penalty.
