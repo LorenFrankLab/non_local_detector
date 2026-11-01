@@ -3018,16 +3018,30 @@ def predict_discrete_state_transitions(
         [discrete_transition_design_matrix.design_info],
         discrete_transition_covariate_data,
     )[0]
+    return _transitions_on_design(design_matrix, discrete_transition_coefficients)
 
-    n_states = discrete_transition_coefficients.shape[1]
+
+def _transitions_on_design(
+    design_matrix: np.ndarray, coefficients: np.ndarray
+) -> np.ndarray:
+    """Transition probabilities at the rows of a built design matrix.
+
+    Parameters
+    ----------
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+
+    Returns
+    -------
+    transitions : np.ndarray, shape (n_time, n_states, n_states)
+    """
+    n_states = coefficients.shape[1]
 
     # The float64 probabilities the covariate M-step fits; each row has shape
     # (n_time, n_states), stacked to (n_time, n_states, n_states).
     with _float64_jax():
         design_matrix = jnp.asarray(np.asarray(design_matrix, dtype=np.float64))
-        coefficients = jnp.asarray(
-            np.asarray(discrete_transition_coefficients, dtype=np.float64)
-        )
+        coefficients = jnp.asarray(np.asarray(coefficients, dtype=np.float64))
         rows = [
             jnp.exp(
                 jax_centered_log_softmax_forward(
@@ -3076,6 +3090,30 @@ def predict_discrete_state_transition_intervals(
         identified (e.g. a state without expected transitions and with a flat
         prior), so their uncertainty is unknown.
     """
+    _, lower, upper = _transition_intervals(
+        discrete_transition_design_matrix,
+        discrete_transition_coefficients,
+        discrete_transition_coefficient_covariance,
+        discrete_transition_covariate_data,
+        coverage,
+    )
+    return lower, upper
+
+
+def _transition_intervals(
+    discrete_transition_design_matrix: DesignMatrix,
+    discrete_transition_coefficients: np.ndarray,
+    discrete_transition_coefficient_covariance: np.ndarray,
+    discrete_transition_covariate_data: pd.DataFrame | dict,
+    coverage: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """:func:`predict_discrete_state_transition_intervals`, with the
+    transition probabilities it centres them on.
+
+    Returns
+    -------
+    transitions, lower, upper : np.ndarray, shape (n_new_time, n_states, n_states)
+    """
     if not 0.0 < coverage < 1.0:
         raise ValueError(f"coverage must be in (0, 1), got {coverage}.")
     design_matrix = np.asarray(
@@ -3087,13 +3125,9 @@ def predict_discrete_state_transition_intervals(
     )
     coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)
     n_coefficients, n_states, n_free = coefficients.shape
-    probabilities = predict_discrete_state_transitions(
-        discrete_transition_design_matrix,
-        coefficients,
-        discrete_transition_covariate_data,
-    )
+    transitions = _transitions_on_design(design_matrix, coefficients)
     tiny = np.finfo(np.float64).tiny
-    probabilities = np.clip(probabilities, tiny, 1.0 - np.finfo(np.float64).eps)
+    probabilities = np.clip(transitions, tiny, 1.0 - np.finfo(np.float64).eps)
     covariance = np.asarray(
         discrete_transition_coefficient_covariance, dtype=np.float64
     ).reshape(n_states, n_coefficients, n_free, n_coefficients, n_free)
@@ -3110,4 +3144,4 @@ def predict_discrete_state_transition_intervals(
     variance = np.einsum("tskj,tsjl,tskl->tsk", gradient, logit_covariance, gradient)
     half_width = norm.ppf(0.5 + coverage / 2.0) * np.sqrt(np.maximum(variance, 0.0))
     center = logit(probabilities)
-    return expit(center - half_width), expit(center + half_width)
+    return transitions, expit(center - half_width), expit(center + half_width)

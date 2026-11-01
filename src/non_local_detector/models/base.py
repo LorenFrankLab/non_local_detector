@@ -51,9 +51,9 @@ from non_local_detector.discrete_state_transitions import (
     _max_transition_change,
     _row_smoothness,
     _smoothness_matrix,
+    _transition_intervals,
     _transition_log_prior,
     centered_softmax_forward,
-    predict_discrete_state_transition_intervals,
     predict_discrete_state_transitions,
 )
 from non_local_detector.encoding_time import EncodingSupport
@@ -2558,19 +2558,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "run estimate_parameters with estimate_discrete_transition=True "
                 "and max_iter >= 1."
             )
-        transitions = predict_discrete_state_transitions(
-            self.discrete_transition_design_matrix_,
-            self.discrete_transition_coefficients_,
-            covariate_data,
-        )
-        lower, upper = predict_discrete_state_transition_intervals(
+        return _transition_intervals(
             self.discrete_transition_design_matrix_,
             self.discrete_transition_coefficients_,
             self.discrete_transition_coefficient_covariance_,
             covariate_data,
-            coverage=coverage,
+            coverage,
         )
-        return transitions, lower, upper
 
     def plot_discrete_state_transition(
         self,
