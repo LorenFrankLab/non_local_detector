@@ -932,7 +932,9 @@ class CovariateTransitionFit(NamedTuple):
     covariance : np.ndarray, shape (n_states, n_parameters, n_parameters)
         Laplace (posterior) covariance of each row's flattened coefficients,
         ``n_parameters = n_coefficients * (n_states - 1)``: the inverse
-        Hessian of the row's penalized loss at the fit. Zero for frozen rows.
+        Hessian of the row's penalized loss at the fit. Zero for frozen rows;
+        NaN for a row that is not identified (no transitions, or a singular
+        Hessian).
     """
 
     coefficients: np.ndarray
@@ -1289,12 +1291,17 @@ def _fit_covariate_transition(
                     fitted = fit_row(row_coefficients, strength)
                 row_coefficients = np.reshape(fitted, row_coefficients.shape)
                 row_smoothness[from_state] = strength
-                if blocks:
-                    covariance[from_state] = _inverse_symmetric(
+                # Without transitions (a single time bin) the row is not
+                # identified.
+                covariance[from_state] = (
+                    _inverse_symmetric(
                         _blocked_hessian(
                             row_coefficients, blocks, prior_per_bin, penalty(strength)
                         )
                     )
+                    if blocks
+                    else np.nan
+                )
             estimated_transition_coefficients[:, from_state, :] = row_coefficients
             device_coefficients = jnp.asarray(row_coefficients, dtype=jnp.float64)
             for start in range(0, n_time, _COVARIATE_BLOCK_ROWS):

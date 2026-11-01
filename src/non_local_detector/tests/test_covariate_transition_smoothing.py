@@ -981,6 +981,20 @@ def test_a_row_without_transitions_has_no_intervals():
 
 
 @pytest.mark.unit
+def test_a_single_bin_recording_has_no_intervals():
+    """With one time bin there are no transitions: no row is identified, so
+    every fitted row's covariance is NaN, not zero (false certainty)."""
+    _, _, design, _, response = _row_problem(n_time=1_500)
+    fit = _fit_covariate_transition(
+        np.zeros((design.shape[1], N_STATES, N_STATES - 1)),
+        np.asarray(design, dtype=float)[:1],
+        response[:0],
+    )
+
+    assert np.all(np.isnan(fit.covariance))
+
+
+@pytest.mark.unit
 def test_max_transition_change_matches_the_full_transitions():
     rng, _, design, _, _ = _row_problem(n_time=3_000)
     old = rng.normal(0.0, 0.5, (design.shape[1], N_STATES, N_STATES - 1))
