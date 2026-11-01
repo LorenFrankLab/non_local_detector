@@ -1919,7 +1919,8 @@ def check_converged(
     log_likelihood: float,
     previous_log_likelihood: float,
     tolerance: float = 1e-5,
-    n_time_bins: int = 1,
+    *,
+    n_time_bins: int,
 ) -> tuple[bool, bool]:
     """Check EM convergence and monotonicity from two objective values.
 
@@ -1940,8 +1941,10 @@ def check_converged(
     tolerance : float, optional
         Convergence threshold on the objective's gain, in nats per time bin,
         by default 1e-5.
-    n_time_bins : int, optional
-        Number of time bins the objective sums over, by default 1.
+    n_time_bins : int
+        Number of observed (non-missing) time bins the objective sums over.
+        Missing bins have a log-likelihood of zero and add nothing to the
+        objective, so they do not count.
 
     Returns
     -------

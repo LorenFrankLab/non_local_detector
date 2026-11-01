@@ -390,8 +390,8 @@ class TestEMConvergenceSurfacing:
         when the loop met its tolerance."""
 
         decoder = ClusterlessDecoder()
-        # A tolerance any increase meets ends the loop at iteration 2, so the
-        # final E-step is the third.
+        # An infinite tolerance (nats per time bin) is met by any increase, so
+        # the loop ends at iteration 2 and the final E-step is the third.
         _shift_marginal(monkeypatch, decoder, lambda n: -1000.0 if n == 3 else 0.0)
 
         with warnings.catch_warnings(record=True) as caught:
@@ -403,7 +403,7 @@ class TestEMConvergenceSurfacing:
                 spike_waveform_features=sim.spike_waveform_features,
                 time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=20,
-                tolerance=1.0,
+                tolerance=np.inf,
                 estimate_encoding_model=False,
             )
 
