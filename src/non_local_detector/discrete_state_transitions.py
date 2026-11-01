@@ -1264,7 +1264,7 @@ def _fit_covariate_transition(
                         prior_per_bin,
                         penalty,
                         penalties,
-                        transition_regularization > 0.0,
+                        transition_regularization,
                     )
                     # The search's fits each start from a neighbouring one,
                     # so check the result against the row's start too.
@@ -1372,6 +1372,59 @@ def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
     return cho_solve(factor, np.eye(matrix.shape[0]))
 
 
+def _precision_log_pdet(
+    penalties: np.ndarray, strengths: np.ndarray, l2_penalty: float
+) -> float:
+    """Log pseudo-determinant of one logit's prior precision.
+
+    The precision is twice :func:`_penalty_matrix`; the pseudo-determinant
+    is over its penalized directions, whose number the strengths do not
+    change: every coefficient but the intercept with an L2 penalty, else the
+    curvature penalties' ranges. The spline terms sit on disjoint columns, so
+    the precision is block diagonal and its determinant factors by term.
+    Taking the largest eigenvalues of the summed precision instead would let
+    one strongly penalized term's round-off null directions outrank a weakly
+    penalized term's genuine ones.
+
+    Parameters
+    ----------
+    penalties : np.ndarray, shape (n_terms, n_coefficients, n_coefficients)
+        Each spline term's curvature penalty.
+    strengths : np.ndarray, shape (n_terms,)
+        Positive strength of each term.
+    l2_penalty : float
+        The L2 penalty on every coefficient but the intercept.
+
+    Returns
+    -------
+    log_pdet : float
+    """
+    n_coefficients = penalties.shape[-1]
+    log_pdet = 0.0
+    n_term_columns = 0
+    for strength, term in zip(strengths, penalties, strict=True):
+        columns = np.flatnonzero(np.any(term != 0.0, axis=0))
+        n_term_columns += columns.size
+        eigenvalues = np.linalg.eigvalsh(term[np.ix_(columns, columns)])
+        if l2_penalty > 0.0:
+            log_pdet += np.sum(
+                np.log(2.0 * (l2_penalty + strength * np.maximum(eigenvalues, 0.0)))
+            )
+        else:
+            # A term's null directions are round-off (about 1e-20 of its
+            # largest eigenvalue) while a range stretched by outliers leaves
+            # genuine ones below 1e-11, so the rank uses LAPACK's tolerance,
+            # not a fixed cutoff.
+            rank = np.linalg.matrix_rank(term, hermitian=True)
+            log_pdet += rank * np.log(2.0 * strength) + np.sum(
+                np.log(eigenvalues[eigenvalues.size - rank :])
+            )
+    if l2_penalty > 0.0:
+        # Penalized columns outside every spline term carry the L2 penalty.
+        log_pdet += (n_coefficients - 1 - n_term_columns) * np.log(2.0 * l2_penalty)
+    return float(log_pdet)
+
+
 def _reml_row(
     coefficients: np.ndarray,
     fit_row,
@@ -1379,7 +1432,7 @@ def _reml_row(
     prior_per_bin: jnp.ndarray,
     penalty,
     penalties: np.ndarray,
-    has_ridge: bool,
+    l2_penalty: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """One row's curvature-penalty strengths maximizing its LAML.
 
@@ -1403,9 +1456,8 @@ def _reml_row(
         ``penalty(strengths)``, the row's :func:`_penalty_matrix`.
     penalties : np.ndarray, shape (n_terms, n_coefficients, n_coefficients)
         Each spline term's curvature penalty.
-    has_ridge : bool
-        Whether the L2 penalty is positive, which makes every coefficient but
-        the intercept penalized.
+    l2_penalty : float
+        The L2 penalty on every coefficient but the intercept.
 
     Returns
     -------
@@ -1415,17 +1467,6 @@ def _reml_row(
     """
     n_terms, n_coefficients = penalties.shape[:2]
     n_free = np.size(coefficients) // n_coefficients
-    # The number of penalized directions of one logit, which the strengths
-    # do not change: all but the intercept with an L2 penalty, else the sum
-    # of the terms' curvature-penalty ranks (they sit on disjoint columns).
-    # A term's null directions are round-off (about 1e-20 of its largest
-    # eigenvalue) while a range stretched by outliers leaves genuine ones
-    # below 1e-11, so each rank uses LAPACK's tolerance, not a fixed cutoff.
-    rank = (
-        n_coefficients - 1
-        if has_ridge
-        else int(sum(np.linalg.matrix_rank(term, hermitian=True) for term in penalties))
-    )
     fits: dict[tuple, tuple[np.ndarray, float]] = {}
 
     def laml(log10_strengths: np.ndarray, start: np.ndarray) -> float:
@@ -1437,9 +1478,7 @@ def _reml_row(
             fit_row(start, strengths, warn=False), (n_coefficients, n_free)
         )
         row_penalty = penalty(strengths)
-        log_pdet = n_free * np.sum(
-            np.log(np.linalg.eigvalsh(2.0 * row_penalty)[-rank:])
-        )
+        log_pdet = n_free * _precision_log_pdet(penalties, strengths, l2_penalty)
         sign, log_det = np.linalg.slogdet(
             _blocked_hessian(beta, blocks, prior_per_bin, row_penalty)
         )

@@ -17,6 +17,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     _fit_covariate_transition,
     _max_transition_change,
+    _precision_log_pdet,
     _smoothness_matrix,
     _transition_log_prior,
     cyclic_bs,  # noqa: F401  (used inside patsy formulas)
@@ -264,6 +265,41 @@ def _two_term_problem(seed: int, n_time: int = 8_000):
 
 @pytest.mark.unit
 class TestPerTermSmoothness:
+    @pytest.mark.parametrize("ridge", [0.0, 1e-3])
+    @pytest.mark.parametrize("strengths", [(1.0, 1.0), (1e6, 1e-12), (1e-12, 1e6)])
+    def test_precision_log_pdet_factors_by_term(self, strengths, ridge):
+        """The terms sit on disjoint columns, so the prior precision's log
+        pseudo-determinant is the sum of each block's, however far apart the
+        strengths: one term's round-off null directions must not stand in
+        for another's genuine ones."""
+        design, _ = _two_term_problem(seed=34, n_time=2_000)
+        penalties = _smoothness_matrix(design.design_info)
+        n_coefficients = design.shape[1]
+
+        if ridge == 0.0:
+            expected = 0.0
+            for strength, term in zip(strengths, penalties, strict=True):
+                rank = np.linalg.matrix_rank(term, hermitian=True)
+                expected += np.sum(
+                    np.log(np.linalg.eigvalsh(2.0 * strength * term)[-rank:])
+                )
+        else:
+            # Every coefficient but the intercept is penalized.
+            precision = 2.0 * (
+                np.diag(np.r_[0.0, np.full(n_coefficients - 1, ridge)])
+                + np.tensordot(strengths, penalties, axes=1)
+            )
+            sign, expected = np.linalg.slogdet(precision[1:, 1:])
+            assert sign == 1.0
+
+        # With a ridge, a stiff term's null directions are known only to the
+        # round-off of its strength times its largest eigenvalue (5e-5 nats
+        # against a 60-digit determinant), far below the LAML differences
+        # REML resolves; without one, the summed-eigenvalue error was 8 nats.
+        assert _precision_log_pdet(
+            penalties, np.asarray(strengths), ridge
+        ) == pytest.approx(expected, abs=1e-3)
+
     def test_each_spline_term_gets_its_own_penalty(self):
         design, _ = _two_term_problem(seed=34, n_time=2_000)
         penalties = _smoothness_matrix(design.design_info)
@@ -424,19 +460,27 @@ def _laml(design_matrix, response, coefficients, smoothness, penalty, l2_penalty
     n_coefficients = design_matrix.shape[1]
     penalties = np.reshape(penalty, (-1, n_coefficients, n_coefficients))
     strengths = np.broadcast_to(smoothness, (penalties.shape[0],))
-    curvature = np.tensordot(strengths, penalties, axes=1)
-    penalty = penalties.sum(axis=0)
-    ridge = np.diag(np.r_[0.0, np.full(n_coefficients - 1, l2_penalty)])
-    precision = 2.0 * np.kron(ridge + curvature, np.eye(N_STATES - 1))
     # The pseudo-determinant over the penalized directions, whose number the
-    # strength does not change: every coefficient but the intercepts with an
-    # L2 penalty, else the curvature penalty's null space is unpenalized too.
-    rank = (N_STATES - 1) * (
-        n_coefficients - 1
-        if l2_penalty > 0
-        else np.linalg.matrix_rank(penalty, hermitian=True)
-    )
-    log_pdet = np.sum(np.log(np.linalg.eigvalsh(precision)[-rank:]))
+    # strength does not change, for each of the N_STATES - 1 logits: every
+    # coefficient but the intercept with an L2 penalty, else each curvature
+    # penalty's range. The terms sit on disjoint columns, so without a ridge
+    # it is a sum over terms.
+    if l2_penalty > 0:
+        ridge = np.diag(np.r_[0.0, np.full(n_coefficients - 1, l2_penalty)])
+        precision = 2.0 * (ridge + np.tensordot(strengths, penalties, axes=1))
+        log_pdet = np.linalg.slogdet(precision[1:, 1:])[1]
+    else:
+        log_pdet = sum(
+            np.sum(
+                np.log(
+                    np.linalg.eigvalsh(2.0 * strength * term)[
+                        -np.linalg.matrix_rank(term, hermitian=True) :
+                    ]
+                )
+            )
+            for strength, term in zip(strengths, penalties, strict=True)
+        )
+    log_pdet *= N_STATES - 1
     return -loss + 0.5 * log_pdet - 0.5 * np.linalg.slogdet(hessian)[1]
 
 
