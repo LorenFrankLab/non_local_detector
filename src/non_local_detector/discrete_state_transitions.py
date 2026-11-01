@@ -1043,6 +1043,7 @@ def estimate_non_stationary_state_transition_from_responses(
         maxiter=maxiter,
         disp=disp,
         frozen_rows=frozen_rows,
+        compute_covariance=False,
     )
     return fit.coefficients, fit.transition
 
@@ -1440,18 +1441,12 @@ def _max_transition_change(
     """
     design_matrix = np.asarray(design_matrix, dtype=np.float64)
     change = 0.0
-    with _float64_jax():
-        old = jnp.asarray(old_coefficients, dtype=jnp.float64)
-        new = jnp.asarray(new_coefficients, dtype=jnp.float64)
-        for start in range(0, design_matrix.shape[0], _COVARIATE_BLOCK_ROWS):
-            design = jnp.asarray(
-                design_matrix[start : start + _COVARIATE_BLOCK_ROWS], dtype=jnp.float64
-            )
-            for row in range(old.shape[1]):
-                moved = jnp.exp(
-                    jax_centered_log_softmax_forward(design @ new[:, row])
-                ) - jnp.exp(jax_centered_log_softmax_forward(design @ old[:, row]))
-                change = max(change, float(jnp.max(jnp.abs(moved))))
+    for start in range(0, design_matrix.shape[0], _COVARIATE_BLOCK_ROWS):
+        design = design_matrix[start : start + _COVARIATE_BLOCK_ROWS]
+        moved = _transitions_on_design(design, new_coefficients) - (
+            _transitions_on_design(design, old_coefficients)
+        )
+        change = max(change, float(np.max(np.abs(moved))))
     return change
 
 
@@ -2458,7 +2453,6 @@ def _discrete_transition_from_statistics(
     smoothness: float | np.ndarray | str = 0.0,
     smoothness_matrix: np.ndarray | None = None,
     initial_smoothness: np.ndarray | None = None,
-    compute_covariance: bool = True,
 ) -> "_DiscreteTransitionMStep":
     """Discrete transition M-step from expected transition statistics.
 
@@ -2483,10 +2477,11 @@ def _discrete_transition_from_statistics(
     frozen_rows : np.ndarray of bool, shape (n_states,), optional
         Covariate-dependent rows that keep their coefficients. Stationary
         frozen rows are restored by the caller.
-    smoothness, smoothness_matrix, initial_smoothness, compute_covariance
-        Curvature penalty of a covariate transition and whether to compute
-        its covariance, as in :func:`_fit_covariate_transition`. Ignored for
-        a stationary one.
+    smoothness, smoothness_matrix, initial_smoothness
+        Curvature penalty of a covariate transition, as in
+        :func:`_fit_covariate_transition`. Ignored for a stationary one. The
+        covariance is not computed: EM computes it once, after its last
+        M-step, with :func:`_covariate_transition_covariance`.
 
     Returns
     -------
@@ -2523,10 +2518,10 @@ def _discrete_transition_from_statistics(
             smoothness_matrix=smoothness_matrix,
             initial_smoothness=initial_smoothness,
             frozen_rows=frozen_rows,
-            compute_covariance=compute_covariance,
+            compute_covariance=False,
         )
         return _DiscreteTransitionMStep(
-            fit.transition, fit.coefficients, fit.smoothness, fit.covariance
+            fit.transition, fit.coefficients, fit.smoothness
         )
     else:
         if (
@@ -2551,14 +2546,13 @@ def _discrete_transition_from_statistics(
 class _DiscreteTransitionMStep(NamedTuple):
     """Output of :func:`_discrete_transition_from_statistics`.
 
-    ``smoothness`` and ``covariance`` are those of
-    :class:`CovariateTransitionFit`, and None for a stationary transition.
+    ``smoothness`` is that of :class:`CovariateTransitionFit`, and None for
+    a stationary transition.
     """
 
     transition: np.ndarray
     coefficients: np.ndarray | None
     smoothness: np.ndarray | None = None
-    covariance: np.ndarray | None = None
 
 
 class _QuantileBSpline:

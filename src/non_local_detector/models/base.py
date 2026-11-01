@@ -2426,12 +2426,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else:
                 penalties = _smoothness_matrix(design.design_info)
                 self.discrete_transition_smoothness_matrix_ = penalties
-                self.discrete_transition_smoothness_ = np.zeros(
-                    (
-                        self.discrete_transition_coefficients_.shape[1],
-                        penalties.shape[0],
-                    )
-                )
+                self.discrete_transition_smoothness_ = _row_smoothness(
+                    0.0,
+                    None,
+                    penalties,
+                    self.discrete_transition_coefficients_.shape[1],
+                )[0]
 
     def initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict | None = None
@@ -4070,9 +4070,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     smoothness=smoothness_setting,
                     smoothness_matrix=self.discrete_transition_smoothness_matrix_,
                     initial_smoothness=self.discrete_transition_smoothness_,
-                    # Only the returned (last) M-step's covariance is kept:
-                    # it is computed once, after the loop.
-                    compute_covariance=False,
                 )
                 self.discrete_state_transitions_ = m_step.transition
                 self.discrete_transition_coefficients_ = m_step.coefficients
