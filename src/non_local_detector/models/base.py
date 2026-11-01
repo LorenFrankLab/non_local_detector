@@ -45,6 +45,7 @@ from non_local_detector.core import (
     row_slice_aware,
 )
 from non_local_detector.discrete_state_transitions import (
+    _covariate_transition_covariance,
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
     _is_nonstationary,
@@ -4069,12 +4070,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     smoothness=smoothness_setting,
                     smoothness_matrix=self.discrete_transition_smoothness_matrix_,
                     initial_smoothness=self.discrete_transition_smoothness_,
+                    # Only the returned (last) M-step's covariance is kept:
+                    # it is computed once, after the loop.
+                    compute_covariance=False,
                 )
                 self.discrete_state_transitions_ = m_step.transition
                 self.discrete_transition_coefficients_ = m_step.coefficients
                 if covariate_transitions:
                     self.discrete_transition_smoothness_ = m_step.smoothness
-                    self.discrete_transition_coefficient_covariance_ = m_step.covariance
                 if prior_set_in_m_step:
                     log_prior_before = transition_log_prior(
                         statistics, coefficients_before
@@ -4187,6 +4190,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             # against this E-step, both under this M-step's prior.
             previous_objectives.append(marginal_log_likelihood + log_prior_before)
             next_log_prior = log_prior_after
+
+        if estimate_discrete_transition and covariate_transitions and n_iter > 0:
+            # The last M-step's statistics and output.
+            self.discrete_transition_coefficient_covariance_ = (
+                _covariate_transition_covariance(
+                    self.discrete_transition_coefficients_,
+                    self.discrete_transition_design_matrix_,
+                    np.asarray(statistics),
+                    self.discrete_transition_concentration,
+                    self.discrete_transition_stickiness,
+                    self.discrete_transition_regularization,
+                    self.discrete_transition_smoothness_,
+                    self.discrete_transition_smoothness_matrix_,
+                    frozen_rows,
+                )
+            )
 
         # converged_ is set after the final E-step, which evaluates the
         # returned parameters and can still find a decrease.

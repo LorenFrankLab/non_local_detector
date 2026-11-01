@@ -1178,6 +1178,7 @@ def _fit_covariate_transition(
     maxiter: int | None = 100,
     disp: bool = False,
     frozen_rows: np.ndarray | None = None,
+    compute_covariance: bool = True,
 ) -> CovariateTransitionFit:
     """Fit a covariate-dependent transition, its smoothness and covariance.
 
@@ -1205,17 +1206,20 @@ def _fit_covariate_transition(
         Strengths kept by rows REML does not fit (frozen rows), e.g. the
         previous EM iteration's; by default 1. REML searches its full range
         for every fitted row. Ignored for fixed ``smoothness``.
+    compute_covariance : bool, optional
+        Whether to compute the fit's covariance, by default True. EM skips
+        it in every M-step and computes it once, after its last, with
+        :func:`_covariate_transition_covariance`.
 
     Returns
     -------
     fit : CovariateTransitionFit
+        ``covariance`` is None without ``compute_covariance``.
     """
     n_coefficients, n_states = transition_coefficients.shape[:2]
     estimated_transition_coefficients = np.zeros(
         (n_coefficients, n_states, (n_states - 1))
     )
-    n_parameters = n_coefficients * (n_states - 1)
-    covariance = np.zeros((n_states, n_parameters, n_parameters))
 
     design_matrix = np.asarray(design_matrix, dtype=np.float64)
     n_time = design_matrix.shape[0]
@@ -1316,17 +1320,6 @@ def _fit_covariate_transition(
                     fitted = fit_row(row_coefficients, strength)
                 row_coefficients = np.reshape(fitted, row_coefficients.shape)
                 row_smoothness[from_state] = strength
-                # Without transitions (a single time bin) the row is not
-                # identified.
-                covariance[from_state] = (
-                    _inverse_symmetric(
-                        _blocked_hessian(
-                            row_coefficients, blocks, prior_per_bin, penalty(strength)
-                        )
-                    )
-                    if blocks
-                    else np.nan
-                )
             estimated_transition_coefficients[:, from_state, :] = row_coefficients
             device_coefficients = jnp.asarray(row_coefficients, dtype=jnp.float64)
             for start in range(0, n_time, _COVARIATE_BLOCK_ROWS):
@@ -1342,8 +1335,86 @@ def _fit_covariate_transition(
         estimated_transition_coefficients,
         estimated_transition_matrix,
         row_smoothness,
-        covariance,
+        _covariate_transition_covariance(
+            estimated_transition_coefficients,
+            design_matrix,
+            response,
+            concentration,
+            stickiness,
+            transition_regularization,
+            row_smoothness,
+            smoothness_matrix,
+            frozen_rows,
+        )
+        if compute_covariance
+        else None,
     )
+
+
+def _covariate_transition_covariance(
+    transition_coefficients: np.ndarray,
+    design_matrix: np.ndarray,
+    response: np.ndarray,
+    concentration: float,
+    stickiness: float | np.ndarray,
+    transition_regularization: float,
+    smoothness: np.ndarray,
+    smoothness_matrix: np.ndarray | None,
+    frozen_rows: np.ndarray | None,
+) -> np.ndarray:
+    """Laplace covariance of each row's coefficients at a fit: the inverse
+    Hessian of the row's penalized loss.
+
+    Parameters
+    ----------
+    transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        The fitted coefficients.
+    design_matrix, response, concentration, stickiness,
+    transition_regularization, smoothness_matrix, frozen_rows
+        As given to :func:`_fit_covariate_transition`.
+    smoothness : np.ndarray, shape (n_states, n_terms)
+        The fit's strengths, :attr:`CovariateTransitionFit.smoothness`.
+
+    Returns
+    -------
+    covariance : np.ndarray, shape (n_states, n_parameters, n_parameters)
+        As :attr:`CovariateTransitionFit.covariance`.
+    """
+    n_coefficients, n_states, n_free = transition_coefficients.shape
+    n_parameters = n_coefficients * n_free
+    covariance = np.zeros((n_states, n_parameters, n_parameters))
+    alpha = get_transition_prior(concentration, stickiness, n_states)
+    penalties = _term_penalties(smoothness_matrix, n_coefficients)
+    with _float64_jax():
+        design_blocks = _transition_blocks(
+            np.asarray(design_matrix, dtype=np.float64)[:-1]
+        )
+        for from_state, row_alpha in enumerate(alpha):
+            if frozen_rows is not None and frozen_rows[from_state]:
+                continue
+            blocks, prior_per_bin = _row_problem(
+                design_blocks, response[:, from_state, :], row_alpha
+            )
+            # Without transitions (a single time bin) the row is not
+            # identified.
+            covariance[from_state] = (
+                _inverse_symmetric(
+                    _blocked_hessian(
+                        transition_coefficients[:, from_state, :],
+                        blocks,
+                        prior_per_bin,
+                        _penalty_matrix(
+                            n_coefficients,
+                            transition_regularization,
+                            smoothness[from_state],
+                            penalties,
+                        ),
+                    )
+                )
+                if blocks
+                else np.nan
+            )
+    return covariance
 
 
 def _max_transition_change(
@@ -2387,6 +2458,7 @@ def _discrete_transition_from_statistics(
     smoothness: float | np.ndarray | str = 0.0,
     smoothness_matrix: np.ndarray | None = None,
     initial_smoothness: np.ndarray | None = None,
+    compute_covariance: bool = True,
 ) -> "_DiscreteTransitionMStep":
     """Discrete transition M-step from expected transition statistics.
 
@@ -2411,9 +2483,10 @@ def _discrete_transition_from_statistics(
     frozen_rows : np.ndarray of bool, shape (n_states,), optional
         Covariate-dependent rows that keep their coefficients. Stationary
         frozen rows are restored by the caller.
-    smoothness, smoothness_matrix, initial_smoothness
-        Curvature penalty of a covariate transition, as in
-        :func:`_fit_covariate_transition`. Ignored for a stationary one.
+    smoothness, smoothness_matrix, initial_smoothness, compute_covariance
+        Curvature penalty of a covariate transition and whether to compute
+        its covariance, as in :func:`_fit_covariate_transition`. Ignored for
+        a stationary one.
 
     Returns
     -------
@@ -2450,6 +2523,7 @@ def _discrete_transition_from_statistics(
             smoothness_matrix=smoothness_matrix,
             initial_smoothness=initial_smoothness,
             frozen_rows=frozen_rows,
+            compute_covariance=compute_covariance,
         )
         return _DiscreteTransitionMStep(
             fit.transition, fit.coefficients, fit.smoothness, fit.covariance
