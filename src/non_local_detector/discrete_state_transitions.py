@@ -1083,6 +1083,33 @@ def _row_strengths(
     return np.broadcast_to(values, (n_states, n_terms)).astype(np.float64)
 
 
+def _validate_smoothness(smoothness: float | np.ndarray | str) -> bool:
+    """Check a smoothness value: strengths that are finite and >= 0, or
+    ``"reml"``. Returns whether REML estimates the strengths."""
+    if isinstance(smoothness, str):
+        if smoothness != "reml":
+            raise ValueError(
+                f'smoothness must be a float >= 0 or "reml", got {smoothness!r}.'
+            )
+        return True
+    if np.any(~np.isfinite(smoothness) | (np.asarray(smoothness) < 0.0)):
+        raise ValueError(f"smoothness must be finite and >= 0, got {smoothness}.")
+    return False
+
+
+def _require_spline_term(
+    smoothness: float | np.ndarray | str, smoothness_matrix: np.ndarray | None
+) -> None:
+    """Check that a smoothness penalty (REML, or a positive strength) has a
+    spline term to penalize."""
+    penalized = isinstance(smoothness, str) or np.any(np.asarray(smoothness) > 0.0)
+    if penalized and (smoothness_matrix is None or not np.any(smoothness_matrix)):
+        raise ValueError(
+            "A smoothness penalty needs a quantile_bs or cyclic_bs term in the "
+            "transition formula, e.g. '1 + quantile_bs(speed)'."
+        )
+
+
 def _row_smoothness(
     smoothness: float | np.ndarray | str,
     initial_smoothness: np.ndarray | None,
@@ -1099,11 +1126,13 @@ def _row_smoothness(
     estimate : bool
         Whether REML estimates the strengths.
     """
-    estimate = isinstance(smoothness, str)
-    if estimate and smoothness != "reml":
-        raise ValueError(
-            f'smoothness must be a float >= 0 or "reml", got {smoothness!r}.'
-        )
+    estimate = _validate_smoothness(smoothness)
+    _require_spline_term(smoothness, smoothness_matrix)
+    if estimate:
+        values = 1.0 if initial_smoothness is None else initial_smoothness
+        _validate_smoothness(values)
+    else:
+        values = smoothness
     n_terms = (
         0
         if smoothness_matrix is None
@@ -1111,19 +1140,6 @@ def _row_smoothness(
             0
         ]
     )
-    if estimate:
-        values = 1.0 if initial_smoothness is None else initial_smoothness
-    else:
-        values = smoothness
-    if np.any(~np.isfinite(values) | (np.asarray(values) < 0.0)):
-        raise ValueError(f"smoothness must be finite and >= 0, got {values}.")
-    if (estimate or np.any(np.asarray(values) > 0.0)) and (
-        n_terms == 0 or not np.any(smoothness_matrix)
-    ):
-        raise ValueError(
-            "A smoothness penalty needs a quantile_bs or cyclic_bs term in the "
-            "transition formula, e.g. '1 + quantile_bs(speed)'."
-        )
     return _row_strengths(values, n_states, n_terms), estimate
 
 
@@ -1136,7 +1152,8 @@ def _check_smoothness_design(
     L2 penalty leaves the first column unpenalized and REML counts the
     penalized directions assuming it is the intercept.
     """
-    _row_smoothness(smoothness, None, _smoothness_matrix(design_matrix.design_info), 1)
+    _validate_smoothness(smoothness)
+    _require_spline_term(smoothness, _smoothness_matrix(design_matrix.design_info))
     if (isinstance(smoothness, str) or smoothness != 0.0) and (
         design_matrix.design_info.column_names[0] != "Intercept"
     ):
@@ -2829,7 +2846,7 @@ class DiscreteNonStationaryDiagonal:
     smoothness: float | str = 0.0
 
     def __post_init__(self) -> None:
-        _row_smoothness(self.smoothness, None, np.ones((1, 1, 1)), 1)
+        _validate_smoothness(self.smoothness)
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict
@@ -2920,7 +2937,7 @@ class DiscreteNonStationaryCustom:
     smoothness: float | str = 0.0
 
     def __post_init__(self) -> None:
-        _row_smoothness(self.smoothness, None, np.ones((1, 1, 1)), 1)
+        _validate_smoothness(self.smoothness)
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict | None
