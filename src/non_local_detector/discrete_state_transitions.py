@@ -948,8 +948,10 @@ class CovariateTransitionFit(NamedTuple):
 # REML searches the curvature-penalty strength over this grid of log10
 # strengths, then refines the best grid point within one decade to this
 # log10 tolerance. Above 1e6 the fitted curve is already its linear limit
-# (transitions move by < 0.002) and the row's Hessian has condition numbers
-# above 1e13, so its log-determinant, and the LAML, are numerical noise.
+# (transitions move by < 0.002) and the LAML is flat (within 4e-4 nats to
+# 1e7 in one test). From about 3e7 the inner fit stops converging (its
+# Hessian's condition number passes 1e14), so the LAML it gives is wrong:
+# by 0.2 nats at 3e8 and 37 at 1e10 in that test.
 # The grid reaches 1e-12 because the penalty is on the covariate rescaled
 # between the spline's boundaries: a boundary far beyond the data (e.g. set
 # by tracking glitches) moves the useful strengths down by decades, and the
