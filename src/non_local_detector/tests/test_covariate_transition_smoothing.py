@@ -995,6 +995,34 @@ def test_a_single_bin_recording_has_no_intervals():
 
 
 @pytest.mark.unit
+def test_a_worse_reml_fit_keeps_the_previous_coefficients_and_warns(
+    monkeypatch, caplog
+):
+    """If the REML search's fit has a higher loss than the row's start, the
+    M-step keeps the start and says so, as the fixed-strength path does."""
+    from non_local_detector import discrete_state_transitions as module
+
+    def worse_reml_row(coefficients, *args):
+        return coefficients + 5.0, np.ones(1)
+
+    monkeypatch.setattr(module, "_reml_row", worse_reml_row)
+    _, _, design, _, response = _row_problem(n_time=1_500)
+    start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
+    with caplog.at_level("WARNING"):
+        fit = _fit_covariate_transition(
+            start,
+            np.asarray(design, dtype=float),
+            response,
+            smoothness="reml",
+            smoothness_matrix=_smoothness_matrix(design.design_info),
+        )
+
+    np.testing.assert_array_equal(fit.coefficients, start)
+    kept = [r for r in caplog.records if "Keeping previous coefficients" in r.message]
+    assert len(kept) == N_STATES
+
+
+@pytest.mark.unit
 def test_max_transition_change_matches_the_full_transitions():
     rng, _, design, _, _ = _row_problem(n_time=3_000)
     old = rng.normal(0.0, 0.5, (design.shape[1], N_STATES, N_STATES - 1))

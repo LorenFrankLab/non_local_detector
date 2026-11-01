@@ -1275,6 +1275,12 @@ def _fit_covariate_transition(
                     ) > _blocked_loss(
                         row_coefficients, blocks, prior_per_bin, penalty(strength)
                     ):
+                        logger.warning(
+                            "Transition optimization did not lower the loss for "
+                            "state %d at its REML smoothness. Keeping previous "
+                            "coefficients.",
+                            from_state,
+                        )
                         fitted = row_coefficients
                     elif (
                         _newton_decrement(
