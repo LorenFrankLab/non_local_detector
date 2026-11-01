@@ -1351,7 +1351,9 @@ class TestRemlInsideEM:
         detector, _, _ = _reml_detector()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _estimate_transitions(detector, max_iter=4, tolerance=1.0)
+            # An infinite tolerance (nats per time bin) is met by any increase,
+            # so only the transition change can keep EM running.
+            _estimate_transitions(detector, max_iter=4, tolerance=np.inf)
 
         assert detector.converged_ is converges
         assert detector.n_iter_ == (2 if converges else 4)
