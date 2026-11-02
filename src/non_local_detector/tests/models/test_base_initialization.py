@@ -203,15 +203,38 @@ class TestInitializeObservationModels:
         assert decoder.observation_models[1] is obs2
 
     @pytest.mark.parametrize("frozen_rows", ["no_spike", None])
-    @pytest.mark.parametrize("observation_models", [["a"] * 4, [None] * 4, "x", 5])
+    @pytest.mark.parametrize("observation_models", [["a"] * 4, [None] * 4])
     def test_non_observation_model_entries_raise(self, observation_models, frozen_rows):
-        """Anything but ObservationModel entries is rejected at construction,
-        whatever the frozen-row setting."""
-        with pytest.raises(ValidationError, match="ObservationModel"):
+        """Entries that are not ObservationModel instances are rejected at
+        construction, whatever the frozen-row setting."""
+        with pytest.raises(ValidationError, match="entries must be ObservationModel"):
             NonLocalClusterlessDetector(
                 observation_models=observation_models,
                 frozen_discrete_transition_rows=frozen_rows,
             )
+
+    @pytest.mark.parametrize("observation_models", ["xxxx", 5])
+    def test_non_sequence_observation_models_raise(self, observation_models):
+        """A string or a number is not a sequence of observation models."""
+        with pytest.raises(ValidationError, match="list, tuple or array"):
+            NonLocalClusterlessDetector(observation_models=observation_models)
+
+    def test_array_of_observation_models_accepted(self):
+        """An object array of ObservationModel instances is a sequence too."""
+        observation_models = np.array(
+            [
+                ObservationModel(is_local=True),
+                ObservationModel(is_no_spike=True),
+                ObservationModel(),
+                ObservationModel(),
+            ],
+            dtype=object,
+        )
+        detector = NonLocalClusterlessDetector(observation_models=observation_models)
+        np.testing.assert_array_equal(
+            detector._frozen_discrete_transition_rows_mask_,
+            [False, True, False, False],
+        )
 
     @pytest.mark.parametrize("n_models", [3, 5])
     def test_one_observation_model_per_state_required(self, n_models):
