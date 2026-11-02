@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Less memory and work in chunked decoding and covariate Viterbi
+
+- With `n_chunks > 1`, prediction no longer keeps the per-chunk causal, predictive and acausal posteriors on the device alongside their concatenations, which lowers the peak device memory of chunked decoding.
+- `most_likely_sequence` with covariate-dependent discrete transitions takes the log of the small per-state transition matrices instead of the expanded state-bin matrix at every time step; the decoded sequence is bit-identical.
+- The per-chunk checks for impossible (all `-inf`) and NaN likelihood rows run as one compiled pass with a single transfer to the host.
+
 ### State roles come from the observation models, not list position
 
 - **Changed:** `frozen_discrete_transition_rows` defaults to `"no_spike"` in every detector, freezing the rows of the states whose observation model has `is_no_spike=True`, wherever they are listed. The non-local detectors previously froze row 1, which is the No-Spike row only in the default state order; a reordered model froze another state's row. **`NoSpikeContFragSortedSpikesClassifier` and `NoSpikeContFragClusterlessClassifier` now freeze their No-Spike row during EM**, for the same reason the non-local detectors do: so its self-transition cannot collapse to fit stray gaps between spikes. Pass `frozen_discrete_transition_rows=None` for the previous behaviour. Models without a No-Spike state freeze nothing, as before. Explicit row indices and boolean masks still select rows by position.
