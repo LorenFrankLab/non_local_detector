@@ -30,8 +30,14 @@ from non_local_detector.likelihoods.mark_reference import fit_mark_references
 )
 def test_block_size_default_is_the_detectors(function):
     """Direct calls block spikes as a detector does: the old 100 was 3-4x slower."""
+    detector_default = _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"].get(
+        "block_size",
+        inspect.signature(clusterless_kde.fit_clusterless_kde_encoding_model)
+        .parameters["block_size"]
+        .default,
+    )
     default = inspect.signature(function).parameters["block_size"].default
-    assert default == _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"]["block_size"]
+    assert default == detector_default
 
 
 def test_select_spikes_in_rows_right_edge_last_bin():

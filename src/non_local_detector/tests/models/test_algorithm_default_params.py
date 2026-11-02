@@ -27,26 +27,16 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 
 pytestmark = pytest.mark.unit
 
-# What reached each fit when the user passed nothing, before defaults moved
-# per algorithm: the shared detector dict, minus the keys a fit dropped
-# (sorted signature filter) or ignored (GMM / mark-GLM dummy parameters),
-# minus ``block_size`` where the fit never used it (sorted diffusion, MRF).
+# What reaches each fit when the user passes nothing. Bandwidths are left to
+# the fits' own defaults; sorted KDE keeps the detector's larger block size.
 EXPECTED_DEFAULTS = {
     "sorted_spikes_glm": {},
-    "sorted_spikes_kde": {"position_std": 6.0, "block_size": 10_000},
-    "sorted_spikes_diffusion": {"position_std": 6.0},
+    "sorted_spikes_kde": {"block_size": 10_000},
+    "sorted_spikes_diffusion": {},
     "sorted_spikes_mrf": {},
-    "clusterless_kde": {
-        "waveform_std": 24.0,
-        "position_std": 6.0,
-        "block_size": 10_000,
-    },
+    "clusterless_kde": {},
     "clusterless_gmm": {},
-    "clusterless_diffusion": {
-        "waveform_std": 24.0,
-        "position_std": 6.0,
-        "block_size": 10_000,
-    },
+    "clusterless_diffusion": {},
     "clusterless_mark_glm": {},
 }
 
@@ -126,13 +116,40 @@ def _record_fit_params(monkeypatch, registry, algorithm, decoder, sim):
 
 
 def test_default_table_is_pinned():
-    """Every registered algorithm has defaults, equal to today's effective values."""
+    """Every registered algorithm has an entry, and the entries are pinned."""
     assert set(_SORTED_SPIKES_DEFAULT_PARAMS) == set(_SORTED_SPIKES_ALGORITHMS)
     assert set(_CLUSTERLESS_DEFAULT_PARAMS) == set(_CLUSTERLESS_ALGORITHMS)
     assert {
         **_SORTED_SPIKES_DEFAULT_PARAMS,
         **_CLUSTERLESS_DEFAULT_PARAMS,
     } == EXPECTED_DEFAULTS
+
+
+@pytest.mark.parametrize(
+    ("registry", "defaults", "algorithm"),
+    [
+        (_SORTED_SPIKES_ALGORITHMS, _SORTED_SPIKES_DEFAULT_PARAMS, "sorted_spikes_kde"),
+        (
+            _SORTED_SPIKES_ALGORITHMS,
+            _SORTED_SPIKES_DEFAULT_PARAMS,
+            "sorted_spikes_diffusion",
+        ),
+        (_CLUSTERLESS_ALGORITHMS, _CLUSTERLESS_DEFAULT_PARAMS, "clusterless_kde"),
+        (
+            _CLUSTERLESS_ALGORITHMS,
+            _CLUSTERLESS_DEFAULT_PARAMS,
+            "clusterless_diffusion",
+        ),
+    ],
+)
+def test_default_position_bandwidth(registry, defaults, algorithm):
+    """A detector's default position kernel is sqrt(12.5), the fits' default."""
+    parameters = inspect.signature(registry[algorithm][0]).parameters
+    effective = {
+        **{name: p.default for name, p in parameters.items()},
+        **defaults[algorithm],
+    }
+    assert effective["position_std"] == pytest.approx(np.sqrt(12.5))
 
 
 @pytest.mark.parametrize(
@@ -181,9 +198,9 @@ def test_user_params_replace_the_defaults(monkeypatch, sim):
 
 def test_resolved_params_are_a_fresh_copy():
     """Mutating a resolved dict leaks into neither the table nor the user's dict."""
-    decoder = _clusterless_decoder("clusterless_kde")
-    decoder._resolve_clusterless_algorithm_params()["block_size"] = 5
-    assert _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"]["block_size"] == 10_000
+    decoder = _sorted_decoder("sorted_spikes_kde")
+    decoder._resolve_sorted_spikes_algorithm_params()["block_size"] = 5
+    assert _SORTED_SPIKES_DEFAULT_PARAMS["sorted_spikes_kde"]["block_size"] == 10_000
 
     params = {"position_std": 5.0}
     decoder = _clusterless_decoder("clusterless_kde", params)

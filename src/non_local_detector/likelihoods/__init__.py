@@ -24,7 +24,6 @@ from non_local_detector.likelihoods.clusterless_mark_glm import (
     fit_clusterless_mark_glm_encoding_model,
     predict_clusterless_mark_glm_log_likelihood,
 )
-from non_local_detector.likelihoods.common import DEFAULT_WAVEFORM_STD
 from non_local_detector.likelihoods.mark_reference import (  # noqa
     fit_mark_references,
 )
@@ -85,26 +84,18 @@ _CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
     ),
 }
 # The parameters each algorithm's fit receives when a detector's
-# ``*_algorithm_params`` is None; a user dict replaces them. The detectors'
-# position bandwidth, 6.0, is wider than the fits' own sqrt(12.5) default.
+# ``*_algorithm_params`` is None, beyond the fit's own defaults; a user dict
+# replaces them. Bandwidths come from the fits (position_std sqrt(12.5)).
 _SORTED_SPIKES_DEFAULT_PARAMS: dict[str, dict] = {
     "sorted_spikes_glm": {},
-    "sorted_spikes_kde": {"position_std": 6.0, "block_size": 10_000},
-    "sorted_spikes_diffusion": {"position_std": 6.0},
+    "sorted_spikes_kde": {"block_size": 10_000},
+    "sorted_spikes_diffusion": {},
     "sorted_spikes_mrf": {},
 }
 _CLUSTERLESS_DEFAULT_PARAMS: dict[str, dict] = {
-    "clusterless_kde": {
-        "waveform_std": DEFAULT_WAVEFORM_STD,
-        "position_std": 6.0,
-        "block_size": 10_000,
-    },
+    "clusterless_kde": {},
     "clusterless_gmm": {},
-    "clusterless_diffusion": {
-        "waveform_std": DEFAULT_WAVEFORM_STD,
-        "position_std": 6.0,
-        "block_size": 10_000,
-    },
+    "clusterless_diffusion": {},
     "clusterless_mark_glm": {},
 }
 

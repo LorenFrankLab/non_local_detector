@@ -63,16 +63,13 @@ For longer training sets, `clusterless_kde` can also tile encoding samples and
 position queries during non-local prediction:
 
 `clusterless_algorithm_params` replaces the detector's default parameter
-dictionary. When adding tile limits, retain your existing bandwidths and block
-size. The example below explicitly preserves the detector defaults; supplying
-only tile limits would instead use the standalone backend's different defaults.
+dictionary. For `clusterless_kde` that dictionary is empty, so the fit's own
+defaults apply: supplying only tile limits keeps the default bandwidths and
+block size. If you had set bandwidths, keep them in the same dictionary.
 
 ```python
 detector = NonLocalClusterlessDetector(
     clusterless_algorithm_params={
-        "position_std": 6.0,
-        "waveform_std": 24.0,
-        "block_size": 10_000,
         "enc_tile_size": 1024,
         "pos_tile_size": 8192,
         "use_streaming": True,
