@@ -81,10 +81,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import matplotlib
+import matplotlib as mpl
 
 # Headless, deterministic rendering
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 
 # Constants
@@ -469,9 +469,9 @@ def _render_chunk(
     (frame_idx + 1) because ffmpeg's -i pattern expects consecutive files
     starting from 1.
     """
-    import matplotlib
+    import matplotlib as mpl
 
-    matplotlib.use("Agg")
+    mpl.use("Agg")
     import matplotlib.pyplot as plt
 
     try:

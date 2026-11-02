@@ -1,3 +1,4 @@
+import itertools
 from collections.abc import Hashable
 
 import networkx as nx  # type: ignore[import-untyped]
@@ -219,7 +220,7 @@ def _setup_track_graph(
         )
         track_graph.add_edge("mental_position", mental_edge[1], distance=distance)
 
-    for node1, node2 in zip(node_order[:-1], node_order[1:], strict=False):
+    for node1, node2 in itertools.pairwise(node_order):
         distance = _get_distance_between_nodes(track_graph, node1, node2)
         track_graph.add_edge(node1, node2, distance=distance)
 

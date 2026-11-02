@@ -234,8 +234,7 @@ def workload(args):
         "spike_times": decode_spikes,
         "position_time": decode_time,
         "position": decode_position,
-        "time_edges": np.arange(int(round(args.duration * SAMPLE_RATE)) + 1)
-        / SAMPLE_RATE,
+        "time_edges": np.arange(round(args.duration * SAMPLE_RATE) + 1) / SAMPLE_RATE,
     }
     if args.family == "clusterless":
         fit["spike_waveform_features"] = [

@@ -298,10 +298,7 @@ def profile_decoding(
     tuple
         (log_likelihood, timing_stats)
     """
-    if implementation == "reference":
-        predict_func = predict_reference
-    else:
-        predict_func = predict_log
+    predict_func = predict_reference if implementation == "reference" else predict_log
 
     mark_reference = fit_mark_references(
         data["encoding"]["spike_waveform_features"],

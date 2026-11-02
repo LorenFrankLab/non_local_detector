@@ -4,7 +4,7 @@ import inspect
 import pickle
 import warnings
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -1848,8 +1848,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
             )
             log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
-            log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
-            return log_kernel
+            return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
         # Gaussian kernel path (σ > 0). Uses topology-aware distance via
         # Environment.get_distances_to_interior_bins(). After the
@@ -1879,9 +1878,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         # NaN animal positions (tracking dropout) fall back to a uniform
         # kernel: each bin's exp value is 1, so log_kernel = 0 per bin.
-        log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
-
-        return log_kernel
+        return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
     def _validate_initial_conditions(
         self,
@@ -2740,7 +2737,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def plot_discrete_state_transition(
         self,
         cmap: str = "Oranges",
-        ax: matplotlib.axes.Axes | None = None,
+        ax: mpl.axes.Axes | None = None,
         convert_to_seconds: bool = False,
         sampling_frequency: int = 1,
         covariate_data: pd.DataFrame | dict | None = None,
@@ -4249,10 +4246,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         model or the data it describes can have changed -- at the start of every
         estimation run and on any refit.
         """
-        try:
+        with suppress(AttributeError):
             del self.log_likelihood_
-        except AttributeError:
-            pass
 
     def fit_predict(self) -> xr.Dataset:
         """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""

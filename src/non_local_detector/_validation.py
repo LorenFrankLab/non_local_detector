@@ -372,10 +372,7 @@ def ensure_monotonic_increasing(
 
     if not condition:
         # Find first violation
-        if strict:
-            bad_indices = np.where(diffs <= 0)[0]
-        else:
-            bad_indices = np.where(diffs < 0)[0]
+        bad_indices = np.where(diffs <= 0)[0] if strict else np.where(diffs < 0)[0]
 
         if len(bad_indices) > 0:
             idx = bad_indices[0]

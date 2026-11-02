@@ -532,9 +532,7 @@ def _compute_log_mark_kernel_gemm(
     ):
         half_difference = (encoding_dim[:, None] - decoding_dim[None, :]) / sigma
         half_sq_dist += half_difference**2
-    logK_mark = log_norm_const - 2.0 * half_sq_dist  # (n_enc, n_dec)
-
-    return logK_mark
+    return log_norm_const - 2.0 * half_sq_dist  # (n_enc, n_dec)
 
 
 def _encoding_log_weights(encoding_weights, n_encoding_spikes: int) -> jnp.ndarray:

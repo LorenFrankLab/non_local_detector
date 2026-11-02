@@ -122,6 +122,7 @@ ignore = [
     "E501",    # line too long, handled by ruff format
     "ISC001",  # conflicts with the formatter
     "B008",    # do not perform function calls in argument defaults
+    "PERF203", # try in a loop: zero-cost from Python 3.11; per-item handling needs it
 ]
 # Math notation in docstrings, comments and messages.
 allowed-confusables = ["×", "σ", "α", "γ", "∪"]
@@ -133,6 +134,10 @@ allowed-confusables = ["×", "σ", "α", "γ", "∪"]
     "B011",
 ]
 "{scripts,benchmarks}/**" = ["T201"]  # scripts report to stdout
+# Compares path strings as frames report them; Path.resolve would follow links.
+"src/non_local_detector/_warnings.py" = ["PTH"]
+# Progress of a long render, shown without logging configured.
+"src/non_local_detector/visualization/_parallel_video_writer.py" = ["T201"]
 
 # MyPy configuration
 [tool.mypy]

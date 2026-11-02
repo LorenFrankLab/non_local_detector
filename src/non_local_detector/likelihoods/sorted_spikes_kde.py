@@ -633,7 +633,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             "Local Likelihood",
             disable_progress_bar,
         )[:, None]
-    log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
+    return _blocked_nonlocal_poisson_log_likelihood(
         spike_times,
         time_edges,
         row_start,
@@ -644,5 +644,3 @@ def predict_sorted_spikes_kde_log_likelihood(
         disable_progress_bar=disable_progress_bar,
         _spike_time_order=_spike_time_order,
     )
-
-    return log_likelihood

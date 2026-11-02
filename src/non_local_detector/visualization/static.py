@@ -1,6 +1,6 @@
 import copy
 
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -165,7 +165,7 @@ def plot_non_local_model(
     axes[1].set_ylabel("Probability")
     axes[1].set_ylim((0.0, 1.05))
 
-    cmap = copy.copy(matplotlib.colormaps["bone_r"])
+    cmap = copy.copy(mpl.colormaps["bone_r"])
     cmap.set_bad(color="lightgrey")
 
     axes[2].pcolormesh(

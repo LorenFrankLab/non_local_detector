@@ -1,3 +1,5 @@
+import contextlib
+
 from non_local_detector.continuous_state_transitions import (
     Discrete,
     EmpiricalMovement,
@@ -40,7 +42,5 @@ from non_local_detector.time_edges import (
     time_edges_from_centers,
 )
 
-try:
+with contextlib.suppress(ImportError):
     from ._version import __version__
-except ImportError:
-    pass

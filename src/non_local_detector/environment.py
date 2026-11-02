@@ -49,6 +49,7 @@ and visualization (`plot_grid`). The class also supports saving and loading
 environment definitions using `pickle`.
 """
 
+import contextlib
 import hashlib
 import pickle
 import warnings
@@ -56,7 +57,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
@@ -776,7 +777,7 @@ class Environment:
         self._is_fitted = True
         return self
 
-    def plot_grid(self, ax: matplotlib.axes.Axes | None = None) -> matplotlib.axes.Axes:
+    def plot_grid(self, ax: mpl.axes.Axes | None = None) -> mpl.axes.Axes:
         """Plot the fitted spatial grid of the environment.
 
         Parameters
@@ -1515,7 +1516,7 @@ def _calculate_linear_position(
     ]
 
     n_edges = len(edge_order)
-    if isinstance(edge_spacing, int) or isinstance(edge_spacing, float):
+    if isinstance(edge_spacing, (int, float)):
         edge_spacing = [
             edge_spacing,
         ] * (n_edges - 1)
@@ -1526,10 +1527,8 @@ def _calculate_linear_position(
     for ind, edge in enumerate(edge_order):
         start_node_linear_position.append(counter)
 
-        try:
+        with contextlib.suppress(IndexError):
             counter += track_graph.edges[edge]["distance"] + edge_spacing[ind]
-        except IndexError:
-            pass
 
     start_node_linear_position = np.asarray(start_node_linear_position)
 
@@ -1680,14 +1679,12 @@ def extract_bin_info_from_track_graph(
         .rename("edge_avg_linear_position")
     )
 
-    nodes_df = (
+    return (
         pd.merge(nodes_df.reset_index(), edge_avg_linear_position, on="edge_id")
         .sort_values(by=["edge_avg_linear_position", "linear_position"], axis="rows")
         .set_index("node_id")
         .drop(columns="edge_avg_linear_position")
     )
-
-    return nodes_df
 
 
 def get_track_grid(
@@ -1780,7 +1777,7 @@ def get_track_grid(
         np.diff(no_duplicate_place_bin_edges_nodes_df.edge_id)
     )[0]
 
-    if isinstance(edge_spacing, int) or isinstance(edge_spacing, float):
+    if isinstance(edge_spacing, (int, float)):
         n_edges = len(edge_order)
         edge_spacing = [
             edge_spacing,

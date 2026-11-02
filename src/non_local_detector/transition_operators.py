@@ -6,6 +6,7 @@ Gaussian factors retain every grid-to-grid term, including tails and holes.
 The host builder is outside JAX tracing; runtime products are pure JAX.
 """
 
+import itertools
 from copy import copy
 from dataclasses import dataclass, field, fields, replace
 
@@ -351,7 +352,7 @@ class BlockTransitionOperator:
         boundaries = np.cumsum((0, *self.state_sizes))
         indices = tuple(
             np.flatnonzero(mask[start:stop])
-            for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True)
+            for start, stop in itertools.pairwise(boundaries)
         )
         blocks = tuple(
             tuple(

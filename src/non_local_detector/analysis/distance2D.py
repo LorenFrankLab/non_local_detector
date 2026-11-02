@@ -392,9 +392,7 @@ def get_ahead_behind_distance2D(
     # If there is no direction same point, arbitrarily set to positive
     ahead_behind[np.isclose(ahead_behind, 0.0)] = 1.0
 
-    ahead_behind_distance = ahead_behind * distance
-
-    return ahead_behind_distance
+    return ahead_behind * distance
 
 
 def get_velocity(

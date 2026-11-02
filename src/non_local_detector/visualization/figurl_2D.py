@@ -251,8 +251,7 @@ try:
         time_counts = xr.DataArray(time_counts_np, coords={"time": times})
         raw_times = base_slice.time
         (_, good_counts) = xr.align(raw_times, time_counts, join="left", fill_value=0)
-        observations_per_frame = good_counts.values.astype(np.uint8)
-        return observations_per_frame
+        return good_counts.values.astype(np.uint8)
 
     def extract_slice_data(
         base_slice: xr.DataArray, location_fn: Callable[[tuple[float, float]], int]
@@ -370,16 +369,8 @@ try:
         else:
             decoded_data_obj = None
 
-        timestamp_start = (
-            static_track_animation["timestampStart"]
-            if "timestampStart" in static_track_animation
-            else None
-        )
-        head_direction = (
-            static_track_animation["headDirection"]
-            if "headDirection" in static_track_animation
-            else None
-        )
+        timestamp_start = static_track_animation.get("timestampStart", None)
+        head_direction = static_track_animation.get("headDirection", None)
         return vvf.TrackPositionAnimationV1(
             track_bin_width=static_track_animation["trackBinWidth"],
             track_bin_height=static_track_animation["trackBinHeight"],

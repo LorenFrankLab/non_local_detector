@@ -75,6 +75,8 @@ import psutil
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import itertools
+
 from compare_prediction_modes import (
     provenance,
     set_population_defaults,
@@ -111,7 +113,7 @@ def load_recording(path, start, duration, sampling_frequency):
     offsets = data["spike_offsets"]
     flat_times = data["spike_times_flat"]
     spike_times, features = [], []
-    for begin, end in zip(offsets[:-1], offsets[1:], strict=True):
+    for begin, end in itertools.pairwise(offsets):
         times = flat_times[begin:end]
         in_window = (times >= t0) & (times < t1)
         spike_times.append(times[in_window])

@@ -1946,13 +1946,11 @@ def estimate_stationary_state_transition_from_counts(
     prior_fallback = alpha / alpha.sum(axis=-1, keepdims=True)
     row_totals = new_transition_matrix.sum(axis=-1, keepdims=True)
     safe_row_totals = np.where(row_totals == 0, 1.0, row_totals)
-    new_transition_matrix = np.where(
+    return np.where(
         row_totals == 0,
         prior_fallback,
         new_transition_matrix / safe_row_totals,
     )
-
-    return new_transition_matrix
 
 
 def _block_loss(
@@ -2836,7 +2834,7 @@ class _CyclicBSpline:
         shifted = start + np.mod(values[finite] - start, period)
         basis = BSpline.design_matrix(shifted, extended, self._degree)
         columns[finite] = self._fold(basis.toarray())[:, 1:]
-        return columns.reshape(np.shape(x) + (-1,))
+        return columns.reshape((*np.shape(x), -1))
 
     def curvature_penalty(self) -> np.ndarray:
         """Integrated squared second derivative of the basis over one period.

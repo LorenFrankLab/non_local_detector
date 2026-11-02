@@ -176,7 +176,7 @@ class EncodingSupport:
 
     def interpolate(self, values, times, *, fill_value=np.nan):
         values, times = np.asarray(values), np.asarray(times)
-        shape = (len(times),) + values.shape[1:]
+        shape = (len(times), *values.shape[1:])
         result = np.full(shape, fill_value, dtype=float)
         for start, stop, indices in self.segments:
             mask = (times >= start) & (times <= stop)

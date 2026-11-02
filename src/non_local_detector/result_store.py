@@ -217,7 +217,7 @@ class _ChunkedArray(BackendArray):
             )
             try:
                 if (
-                    array.shape != (chunk["stop"] - chunk["start"],) + self.shape[1:]
+                    array.shape != (chunk["stop"] - chunk["start"], *self.shape[1:])
                     or array.dtype != self.dtype
                 ):
                     msg = "Result chunk shape/dtype does not match its manifest"
@@ -281,7 +281,7 @@ def _validate_variable_chunks(path, spec):
             msg = "Result chunk file is missing or invalid"
             raise ValueError(msg) from exc
         try:
-            if array.shape != (stop - start,) + shape[1:] or array.dtype != dtype:
+            if array.shape != (stop - start, *shape[1:]) or array.dtype != dtype:
                 msg = "Result chunk shape/dtype does not match its manifest"
                 raise ValueError(msg)
         finally:
