@@ -11,10 +11,10 @@ import numpy as np
 import pytest
 
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.models.base import _validate_penalty_params
 from non_local_detector.models.non_local_model import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
-    _validate_penalty_params,
 )
 from non_local_detector.time_edges import time_edges_from_centers
 
@@ -42,8 +42,17 @@ class TestValidatePenaltyParams:
             # Zero sigma would divide by zero
             (1.0, 0.0, "non_local_penalty_std must be > 0"),
             (1.0, -1.0, "non_local_penalty_std must be > 0"),
+            # NaN compares False to everything, so it must not slip through.
+            (float("nan"), 1.0, "non_local_position_penalty must be >= 0"),
+            (1.0, float("nan"), "non_local_penalty_std must be > 0"),
         ],
-        ids=["negative-penalty", "zero-sigma", "negative-sigma"],
+        ids=[
+            "negative-penalty",
+            "zero-sigma",
+            "negative-sigma",
+            "nan-penalty",
+            "nan-sigma",
+        ],
     )
     def test_invalid_params_raise(self, penalty, sigma, match):
         """Negative penalty or non-positive sigma should raise ValidationError."""

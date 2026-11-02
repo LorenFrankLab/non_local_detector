@@ -1153,10 +1153,11 @@ def _validate_penalty_params(
     Raises
     ------
     ValidationError
-        If ``non_local_position_penalty < 0`` or
-        ``non_local_penalty_std <= 0``.
+        If ``non_local_position_penalty`` is negative or NaN, or
+        ``non_local_penalty_std`` is not positive (including NaN).
     """
-    if non_local_position_penalty < 0:
+    # Written as "not >=" / "not >" so NaN, which compares False, fails.
+    if not non_local_position_penalty >= 0:
         raise ValidationError(
             "non_local_position_penalty must be >= 0",
             expected="non_local_position_penalty >= 0",
@@ -1164,7 +1165,7 @@ def _validate_penalty_params(
             hint="A negative penalty would reward non-local states near the animal's "
             "position instead of suppressing them. Use 0.0 to disable the penalty.",
         )
-    if non_local_penalty_std <= 0:
+    if not non_local_penalty_std > 0:
         raise ValidationError(
             "non_local_penalty_std must be > 0",
             expected="non_local_penalty_std > 0",
@@ -1629,27 +1630,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             )
 
     def _non_local_position_penalty(self) -> float:
-        """The non-local position penalty, validated; 0.0 without one.
+        """Non-local position penalty, in nats; 0.0 for models without one.
 
-        Validated where it is used, so values set after construction with
-        ``set_params`` are checked too.
+        The non-local detectors override this to return their validated
+        ``non_local_position_penalty``.
 
         Returns
         -------
         penalty : float
-
-        Raises
-        ------
-        ValidationError
-            If ``non_local_position_penalty < 0`` or
-            ``non_local_penalty_std <= 0``.
         """
-        if not hasattr(self, "non_local_position_penalty"):
-            return 0.0
-        _validate_penalty_params(
-            self.non_local_position_penalty, self.non_local_penalty_std
-        )
-        return self.non_local_position_penalty
+        return 0.0
 
     def _decode_reads_position(self) -> bool:
         """Whether the decode likelihood reads the animal's position.
@@ -2143,7 +2133,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Parameters
         ----------
-        observation_models : sequence of ObservationModel
+        observation_models : list, tuple or np.ndarray of ObservationModel
             Output of ``_initialize_observation_models``.
         n_states : int
             Number of discrete states.
@@ -2151,16 +2141,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Raises
         ------
         ValidationError
-            If ``observation_models`` is not a sequence of ``ObservationModel``
-            instances of length ``n_states``.
+            If ``observation_models`` is not a list, tuple or array, holds
+            anything but ``ObservationModel`` instances, or does not have
+            ``n_states`` entries.
         """
-        if not isinstance(observation_models, (list, tuple)) or not all(
-            isinstance(obs, ObservationModel) for obs in observation_models
-        ):
+        if not isinstance(observation_models, (list, tuple, np.ndarray)):
             raise ValidationError(
-                "observation_models must be ObservationModel instances",
-                expected="an ObservationModel, a list or tuple of them, or None",
-                got=repr(observation_models),
+                "observation_models must be a list, tuple or array of "
+                "ObservationModel instances",
+                expected="an ObservationModel, a list, tuple or array of them, or None",
+                got=type(observation_models).__name__,
+            )
+        wrong_types = sorted(
+            {
+                type(obs).__name__
+                for obs in observation_models
+                if not isinstance(obs, ObservationModel)
+            }
+        )
+        if wrong_types:
+            raise ValidationError(
+                "observation_models entries must be ObservationModel instances",
+                expected="ObservationModel entries",
+                got=f"entries of type {', '.join(wrong_types)}",
             )
         if len(observation_models) != n_states:
             raise ValidationError(

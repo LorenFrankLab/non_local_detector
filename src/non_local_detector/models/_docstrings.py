@@ -18,6 +18,9 @@ Templates use :class:`string.Template` placeholders:
 import inspect
 from collections.abc import Callable
 from string import Template
+from typing import TypeVar
+
+_ModelClass = TypeVar("_ModelClass", bound=type)
 
 _SHARED_PARAMETERS = {
     "discrete_transition_concentration": """\
@@ -37,9 +40,10 @@ infer_track_interior : bool, optional
     fitting, by default True. Ignored for environments with a track graph.""",
     "sampling_frequency": """\
 sampling_frequency : float, optional
-    Rate in Hz of the decode bins built by ``calculate_time_edges``.
-    Transition probabilities are per decode bin. By default
-    $default_sampling_frequency.""",
+    Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
+    time range; ``predict`` and ``estimate_parameters`` use the
+    ``time_edges`` they are given. Transition probabilities are per decode
+    bin. By default $default_sampling_frequency.""",
     "discrete_transition_prior_weight": """\
 discrete_transition_prior_weight : float or np.ndarray, optional
     Dimensionless weight for data-adaptive Dirichlet prior scaling during
@@ -102,7 +106,9 @@ no_spike_rate : float, optional
 }
 
 
-def document_model(template: str, data_type: str) -> Callable[[type], type]:
+def document_model(
+    template: str, data_type: str
+) -> Callable[[_ModelClass], _ModelClass]:
     """Class decorator that fills a model-family docstring template.
 
     Parameters
@@ -115,10 +121,11 @@ def document_model(template: str, data_type: str) -> Callable[[type], type]:
     Returns
     -------
     decorate : callable
-        Sets the class's ``__doc__`` and returns the class.
+        Sets the class's ``__doc__`` and returns the class unchanged, with
+        its type preserved for type checkers.
     """
 
-    def decorate(cls: type) -> type:
+    def decorate(cls: _ModelClass) -> _ModelClass:
         defaults = {
             f"default_{name}": repr(parameter.default)
             for name, parameter in inspect.signature(cls.__init__).parameters.items()

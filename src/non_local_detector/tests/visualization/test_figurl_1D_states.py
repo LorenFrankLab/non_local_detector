@@ -92,3 +92,13 @@ def test_decode_panel_uses_non_local_states_whatever_their_names(monkeypatch):
         non_local / non_local.sum(axis=1, keepdims=True),
         rtol=1e-12,
     )
+
+
+def test_detector_and_view_height_are_keyword_only(monkeypatch):
+    """A call written before ``detector`` was added, with ``view_height``
+    passed by position, fails at the call instead of later inside it."""
+    figurl_1D = _load_figurl_1d_with_stub_sortingview(monkeypatch)
+    with pytest.raises(TypeError, match="positional"):
+        figurl_1D.create_interactive_1D_decoding_figurl(
+            np.zeros(3), np.zeros(3), [np.array([1.0])], None, 800
+        )

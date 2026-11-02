@@ -128,6 +128,7 @@ try:
         speed: np.ndarray,
         spike_times: list[np.ndarray],
         results: xr.Dataset,
+        *,
         detector: _DetectorBase,
         view_height: int = 800,
     ) -> str:
@@ -144,11 +145,11 @@ try:
         results : xr.Dataset
             Output of ``detector.predict``.
         detector : _DetectorBase
-            The fitted detector that produced ``results``. The decode panel
-            shows the posterior over position given the states whose
-            observation model is neither Local nor No-Spike.
+            Keyword-only. The fitted detector that produced ``results``. The
+            decode panel shows the posterior over position given the states
+            whose observation model is neither Local nor No-Spike.
         view_height : int, optional
-            Height of the view in pixels, by default 800.
+            Keyword-only. Height of the view in pixels, by default 800.
 
         Returns
         -------
