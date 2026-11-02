@@ -30,7 +30,7 @@ from non_local_detector.checkpointed_inference import checkpointed_forward_backw
 from non_local_detector.core import filter, smoother
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import provenance  # noqa: E402
+from compare_prediction_modes import provenance
 
 
 def parse():

@@ -16,9 +16,9 @@ import xarray as xr
 
 matplotlib.use("Agg", force=True)
 
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
-from non_local_detector.visualization.movie import (  # noqa: E402
+from non_local_detector.visualization.movie import (
     _render_single_env_frame,
     _setup_single_env_figure,
 )

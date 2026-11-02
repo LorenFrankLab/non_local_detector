@@ -12,7 +12,7 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
-from non_local_detector.likelihoods.clusterless_gmm import (  # noqa
+from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
@@ -24,10 +24,10 @@ from non_local_detector.likelihoods.clusterless_mark_glm import (
     fit_clusterless_mark_glm_encoding_model,
     predict_clusterless_mark_glm_log_likelihood,
 )
-from non_local_detector.likelihoods.mark_reference import (  # noqa
+from non_local_detector.likelihoods.mark_reference import (
     fit_mark_references,
 )
-from non_local_detector.likelihoods.no_spike import (  # noqa
+from non_local_detector.likelihoods.no_spike import (
     predict_no_spike_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (

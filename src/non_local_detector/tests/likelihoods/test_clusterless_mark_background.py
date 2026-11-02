@@ -445,7 +445,7 @@ def test_gmm_rate_below_the_background_still_sets_its_intensity(run_data, is_loc
         )
         return with_spikes - silent
 
-    assert 1e-13 < RATE_EPS_HZ
+    assert RATE_EPS_HZ > 1e-13
     higher, lower = spike_terms(1e-13), spike_terms(1e-14)
     assert np.all(higher >= lower - 1e-6)
     assert np.max(higher - lower) > 1e-2

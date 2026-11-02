@@ -25,7 +25,7 @@ def simple_fitted_detector(sorted_sim):
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
-            "block_size": int(2**12),
+            "block_size": (2**12),
         },
     ).fit(time, position, spike_times)
 

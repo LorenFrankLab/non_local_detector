@@ -24,11 +24,11 @@ from pathlib import Path
 
 os.environ.setdefault("TQDM_DISABLE", "1")  # quiet per-electrode progress bars
 
-import jax  # noqa: E402
-import numpy as np  # noqa: E402
+import jax
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import provenance  # noqa: E402
+from compare_prediction_modes import provenance
 
 ALGORITHMS = (
     "clusterless_kde",

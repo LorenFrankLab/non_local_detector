@@ -3390,7 +3390,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "Cannot specify both return_outputs and deprecated "
                     "save_*_to_results flags. Use return_outputs only."
                 )
-            return_outputs = outputs_from_flags if outputs_from_flags else None
+            return_outputs = outputs_from_flags or None
 
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)

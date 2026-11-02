@@ -2588,20 +2588,19 @@ def _discrete_transition_from_statistics(
         return _DiscreteTransitionMStep(
             fit.transition, fit.coefficients, fit.smoothness
         )
+    if (
+        isinstance(transition_stickiness, np.ndarray)
+        and transition_stickiness.size == 1
+    ):
+        stickiness_value = float(transition_stickiness.item())
     else:
-        if (
-            isinstance(transition_stickiness, np.ndarray)
-            and transition_stickiness.size == 1
-        ):
-            stickiness_value = float(transition_stickiness.item())
-        else:
-            stickiness_value = transition_stickiness
-        discrete_transition = estimate_stationary_state_transition_from_counts(
-            statistics,
-            concentration=transition_concentration,
-            stickiness=stickiness_value,
-            prior_weight=transition_prior_weight,
-        )
+        stickiness_value = transition_stickiness
+    discrete_transition = estimate_stationary_state_transition_from_counts(
+        statistics,
+        concentration=transition_concentration,
+        stickiness=stickiness_value,
+        prior_weight=transition_prior_weight,
+    )
 
     return _DiscreteTransitionMStep(
         discrete_transition, discrete_transition_coefficients

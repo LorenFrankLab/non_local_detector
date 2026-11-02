@@ -104,7 +104,7 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffus
     env = env_2d
     time, position, spike_times, encoding = three_neuron_diffusion
 
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
 
     n_total = env.place_bin_centers_.shape[0]
     is_interior = env.is_track_interior_.ravel()

@@ -218,7 +218,7 @@ def sorted_detector(**detector_kwargs) -> NonLocalSortedSpikesDetector:
     """An unfitted non-local sorted-spikes KDE detector."""
     return NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",
-        sorted_spikes_algorithm_params={"position_std": 6.0, "block_size": int(2**12)},
+        sorted_spikes_algorithm_params={"position_std": 6.0, "block_size": (2**12)},
         **detector_kwargs,
     )
 

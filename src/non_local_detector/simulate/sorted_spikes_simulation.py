@@ -240,8 +240,7 @@ def get_firing_rate(
                 0.0,
             )
         )
-    else:
-        return np.zeros_like(occupancy)
+    return np.zeros_like(occupancy)
 
 
 def simulate_two_state_inhomogenous_poisson(

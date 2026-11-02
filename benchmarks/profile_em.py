@@ -75,7 +75,7 @@ import psutil
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import (  # noqa: E402
+from compare_prediction_modes import (
     provenance,
     set_population_defaults,
     workload,

@@ -478,7 +478,7 @@ def get_map_speed(
 
     if n_time == 1:
         return np.asarray([np.nan])
-    elif n_time == 2:
+    if n_time == 2:
         speed = (
             np.asarray(
                 [

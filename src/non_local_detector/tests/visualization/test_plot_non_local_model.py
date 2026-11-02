@@ -9,7 +9,7 @@ from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_
 from non_local_detector.visualization.static import plot_non_local_model
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
 pytestmark = pytest.mark.integration
 

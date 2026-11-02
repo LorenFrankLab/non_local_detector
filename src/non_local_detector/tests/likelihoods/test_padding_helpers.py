@@ -17,8 +17,8 @@ pytestmark = pytest.mark.unit
 
 
 def test_padded_spike_counts_are_few_and_cover_each_count():
-    sizes = {_padded_spike_count(n, 100) for n in range(0, 5001)}
-    for n in range(0, 5001):
+    sizes = {_padded_spike_count(n, 100) for n in range(5001)}
+    for n in range(5001):
         size = _padded_spike_count(n, 100)
         assert size >= max(n, 16)
         assert size <= 100 or size % 100 == 0

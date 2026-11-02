@@ -9,13 +9,13 @@ ISIs with mean ~0.5 and a small Kolmogorov-Smirnov distance).
 
 import matplotlib
 
-matplotlib.use("Agg")  # noqa: E402  (must precede pyplot import)
+matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pytest  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
 
-from non_local_detector.model_checking.sorted_spikes import (  # noqa: E402
+from non_local_detector.model_checking.sorted_spikes import (
     TimeRescaling,
     ks_statistic,
     plot_ks,

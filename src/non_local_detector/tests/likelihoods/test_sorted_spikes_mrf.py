@@ -377,7 +377,7 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d):
         environment=env,
         rank=30,
     )
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
 
     is_interior = env.is_track_interior_.ravel()
     n_total = env.place_bin_centers_.shape[0]
@@ -639,7 +639,7 @@ def test_fit_empty_spike_times_returns_empty_place_fields(env_2d):
         rank=20,
     )
     n_total = env.place_bin_centers_.shape[0]
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
     assert np.asarray(encoding["place_fields"]).shape == (0, n_total)
     assert np.asarray(encoding["no_spike_part_log_likelihood"]).shape == (n_total,)
     assert np.asarray(encoding["mrf_coefficients"]).shape == (20, 0)
@@ -951,7 +951,7 @@ def test_fit_with_default_rank_is_valid(env_2d):
         spike_times=spike_times,
         environment=env,
     )
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
     is_interior = env.is_track_interior_.ravel()
     place_fields = np.asarray(encoding["place_fields"])
     assert np.all(np.isfinite(place_fields))

@@ -25,7 +25,7 @@ import numpy as np
 import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import workload  # noqa: E402
+from compare_prediction_modes import workload
 
 
 def main():

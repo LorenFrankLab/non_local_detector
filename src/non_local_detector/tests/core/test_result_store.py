@@ -53,20 +53,24 @@ def test_explicit_large_read_budget_and_small_slice(tmp_path):
 
 def test_partial_or_overlapping_writer_cannot_publish(tmp_path):
     path = tmp_path / "result"
-    with pytest.raises(ValueError, match="coverage"):
-        with IncrementalResultWriter(
+    with (
+        pytest.raises(ValueError, match="coverage"),
+        IncrementalResultWriter(
             path, {"posterior": (("time", "state_bins"), (10, 3), np.float32)}, {}
-        ) as writer:
-            writer.write("posterior", 0, np.ones((3, 3), np.float32))
-            writer.complete()
+        ) as writer,
+    ):
+        writer.write("posterior", 0, np.ones((3, 3), np.float32))
+        writer.complete()
     assert not path.exists()
     assert not list(tmp_path.glob(".result-*"))
-    with pytest.raises(ValueError, match="overlap"):
-        with IncrementalResultWriter(
+    with (
+        pytest.raises(ValueError, match="overlap"),
+        IncrementalResultWriter(
             path, {"posterior": (("time", "state_bins"), (10, 3), np.float32)}, {}
-        ) as writer:
-            writer.write("posterior", 0, np.ones((3, 3), np.float32))
-            writer.write("posterior", 2, np.ones((3, 3), np.float32))
+        ) as writer,
+    ):
+        writer.write("posterior", 0, np.ones((3, 3), np.float32))
+        writer.write("posterior", 2, np.ones((3, 3), np.float32))
 
 
 def test_writer_exception_cleans_staging_without_touching_existing(tmp_path):
@@ -77,12 +81,14 @@ def test_writer_exception_cleans_staging_without_touching_existing(tmp_path):
     with pytest.raises(FileExistsError):
         IncrementalResultWriter(existing, {}, {})
     assert marker.read_text() == "original"
-    with pytest.raises(RuntimeError):
-        with IncrementalResultWriter(
+    with (
+        pytest.raises(RuntimeError),
+        IncrementalResultWriter(
             tmp_path / "new", {"x": (("time",), (2,), np.float32)}, {}
-        ) as writer:
-            writer.write("x", 0, np.ones(2, np.float32))
-            raise RuntimeError("I/O failure")
+        ) as writer,
+    ):
+        writer.write("x", 0, np.ones(2, np.float32))
+        raise RuntimeError("I/O failure")
     assert not (tmp_path / "new").exists()
     assert not list(tmp_path.glob(".new-*"))
 

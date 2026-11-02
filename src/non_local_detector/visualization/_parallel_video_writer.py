@@ -188,7 +188,7 @@ def _validate_inputs(
 
     # Validate output directory exists
     output_dir = Path(output_path).parent
-    if output_dir != Path(".") and not output_dir.exists():
+    if output_dir != Path() and not output_dir.exists():
         raise FileNotFoundError(
             f"Output directory does not exist: {output_dir}\n"
             f"Please create it first: mkdir -p {output_dir}"
@@ -565,7 +565,7 @@ def _ffmpeg_stitch(
             f"ffmpeg encoding failed:\n"
             f"Command: {' '.join(cmd)}\n"
             f"Return code: {e.returncode}\n"
-            f"Stderr: {e.stderr if e.stderr else '(not captured)'}"
+            f"Stderr: {e.stderr or '(not captured)'}"
         )
         raise RuntimeError(error_msg) from e
 

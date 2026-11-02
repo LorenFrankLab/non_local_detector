@@ -598,8 +598,6 @@ class Discrete:
     is just an identity matrix.
     """
 
-    pass
-
     def make_state_transition(self, *args, **kwargs) -> np.ndarray:
         """Creates a continuous transition matrix for a discrete state space.
 

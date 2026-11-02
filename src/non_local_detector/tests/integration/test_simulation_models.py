@@ -53,7 +53,7 @@ def nonlocal_detector(simulated_data):
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
-            "block_size": int(2**12),
+            "block_size": (2**12),
         },
     ).fit(
         simulated_data["time"],
@@ -122,7 +122,7 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
-            "block_size": int(2**12),
+            "block_size": (2**12),
         },
     ).fit(
         position_time=time,
@@ -200,7 +200,7 @@ def test_sorted_spikes_decoder(simulated_data):
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
-            "block_size": int(2**12),
+            "block_size": (2**12),
         },
     ).fit(
         position_time=time,

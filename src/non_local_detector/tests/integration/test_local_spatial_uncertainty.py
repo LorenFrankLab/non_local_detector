@@ -63,7 +63,7 @@ def fit_predict(simulated_data):
                 sorted_spikes_algorithm="sorted_spikes_kde",
                 sorted_spikes_algorithm_params={
                     "position_std": 6.0,
-                    "block_size": int(2**12),
+                    "block_size": (2**12),
                 },
                 **detector_kwargs,
             ).fit(
@@ -172,7 +172,7 @@ def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
         clusterless_algorithm="clusterless_kde",
         clusterless_algorithm_params={
             "position_std": 6.0,
-            "block_size": int(2**12),
+            "block_size": (2**12),
         },
     ).fit(
         sim.position_time,
