@@ -80,6 +80,7 @@ class TestInitializeEnvironments:
             ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,
+            observation_models=ObservationModel(),
             environments=(env1, env2),
             state_names=["state 0", "state 1"],
         )
@@ -104,6 +105,7 @@ class TestInitializeEnvironments:
             ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,
+            observation_models=ObservationModel(),
             environments=[env1, env2],
             state_names=["state 0", "state 1"],
         )
@@ -200,6 +202,26 @@ class TestInitializeObservationModels:
         assert decoder.observation_models[0] is obs1
         assert decoder.observation_models[1] is obs2
 
+    @pytest.mark.parametrize("frozen_rows", ["no_spike", None])
+    @pytest.mark.parametrize("observation_models", [["a"] * 4, [None] * 4, "x", 5])
+    def test_non_observation_model_entries_raise(self, observation_models, frozen_rows):
+        """Anything but ObservationModel entries is rejected at construction,
+        whatever the frozen-row setting."""
+        with pytest.raises(ValidationError, match="ObservationModel"):
+            NonLocalClusterlessDetector(
+                observation_models=observation_models,
+                frozen_discrete_transition_rows=frozen_rows,
+            )
+
+    @pytest.mark.parametrize("n_models", [3, 5])
+    def test_one_observation_model_per_state_required(self, n_models):
+        """The non-local detector has four states, so three or five observation
+        models are rejected rather than misaligned with the states."""
+        with pytest.raises(ValidationError, match="one observation model per"):
+            NonLocalClusterlessDetector(
+                observation_models=[ObservationModel()] * n_models
+            )
+
 
 @pytest.mark.unit
 class TestInitializeStateNames:
@@ -220,6 +242,7 @@ class TestInitializeStateNames:
             ],
             continuous_transition_types=["random_walk", "random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,
+            observation_models=ObservationModel(),
             state_names=custom_names,
         )
 
@@ -247,6 +270,7 @@ class TestInitializeStateNames:
                     "random_walk",
                 ],
                 discrete_transition_stickiness=0.0,
+                observation_models=ObservationModel(),
                 state_names=["Local", "Non-Local"],  # Only 2 names - WRONG!
             )
 

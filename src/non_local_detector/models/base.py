@@ -1453,6 +1453,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.observation_models = self._initialize_observation_models(
             observation_models, continuous_transition_types, environments
         )
+        self._validate_observation_models(
+            self.observation_models, len(discrete_initial_conditions)
+        )
         # Validate the frozen-row spec against the states up front (raises on
         # bad input). The normalized boolean mask itself is derived lazily via
         # the ``_frozen_discrete_transition_rows_mask_`` property rather than
@@ -2068,6 +2071,42 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 continuous_transition_types
             )
         return observation_models
+
+    @staticmethod
+    def _validate_observation_models(observation_models, n_states: int) -> None:
+        """Require one ``ObservationModel`` per discrete state.
+
+        The state roles (Local, No-Spike) are read from these models, so a
+        non-model entry or a count that differs from the number of states
+        would misassign them.
+
+        Parameters
+        ----------
+        observation_models : sequence of ObservationModel
+            Output of ``_initialize_observation_models``.
+        n_states : int
+            Number of discrete states.
+
+        Raises
+        ------
+        ValidationError
+            If ``observation_models`` is not a sequence of ``ObservationModel``
+            instances of length ``n_states``.
+        """
+        if not isinstance(observation_models, (list, tuple)) or not all(
+            isinstance(obs, ObservationModel) for obs in observation_models
+        ):
+            raise ValidationError(
+                "observation_models must be ObservationModel instances",
+                expected="an ObservationModel, a list or tuple of them, or None",
+                got=repr(observation_models),
+            )
+        if len(observation_models) != n_states:
+            raise ValidationError(
+                "observation_models must have one observation model per discrete state",
+                expected=f"{n_states} observation models",
+                got=f"{len(observation_models)}",
+            )
 
     def _initialize_state_names(
         self, state_names: StateNames, discrete_initial_conditions: np.ndarray
