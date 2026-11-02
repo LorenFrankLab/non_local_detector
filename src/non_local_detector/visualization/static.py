@@ -5,44 +5,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import xarray as xr
-from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
+from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
-
-
-def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
-    """1D convolution of the data with a Gaussian.
-
-    The standard deviation of the gaussian is in the units of the sampling
-    frequency. The function is just a wrapper around scipy's
-    `gaussian_filter1d`, The support is truncated at 8 by default, instead
-    of 4 in `gaussian_filter1d`
-
-    Parameters
-    ----------
-    data : array_like
-    sigma : float
-    sampling_frequency : int
-    axis : int, optional
-    truncate : int, optional
-
-    Returns
-    -------
-    smoothed_data : array_like
-
-    """
-    return gaussian_filter1d(
-        data,
-        sigma * sampling_frequency,
-        truncate=truncate,
-        axis=axis,
-        mode="constant",
-    )
 
 
 def get_multiunit_firing_rate(
