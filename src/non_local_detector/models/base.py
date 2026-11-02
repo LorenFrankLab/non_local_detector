@@ -7352,7 +7352,7 @@ class SortedSpikesDetector(_DetectorBase):
             EM reports as a monotonicity violation and never counts as
             convergence. Off by default for that reason.
         max_iter : int, optional
-            Maximuim number of EM iterations, by default 20
+            Maximum number of EM iterations, by default 20
         tolerance : float, optional
             Convergence tolerance for EM, in nats per time bin, by default
             1e-5. EM stops when the penalized log-likelihood (marginal
