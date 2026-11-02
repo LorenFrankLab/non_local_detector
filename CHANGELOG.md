@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changed:** `create_interactive_1D_decoding_figurl` takes the fitted `detector` after `results` and decodes the states whose observation model is neither Local nor No-Spike. It previously dropped states named `"Local"` and `"No-Spike"`, so with renamed states it decoded every state.
 - Detectors raise `ValidationError` at construction when `observation_models` holds anything but `ObservationModel` instances, or when there is not one per discrete state (a single `ObservationModel` still applies to every state). The roles are read from these models. Before, a count mismatch was accepted and failed later inside `fit` with a shape error: a two-state `SortedSpikesDecoder` left with its single default observation model raised `ValueError: shape mismatch` from `fit`.
 
+### Default initial conditions without zero-probability states
+
+- **Changed:** `NonLocalSortedSpikesDetector` and `NonLocalClusterlessDetector` start one transition after Local: their default `discrete_initial_conditions` are the Local row of the default transition matrix, `[0.99, 0.005, 0.0025, 0.0025]`, instead of `[1, 0, 0, 0]`. `MultiEnvironment*Classifier` start one transition after env1, `[0.999, 0.001]` instead of `[1, 0]`. A state that starts at exactly zero stays there: EM sets the initial conditions to the posterior at the first bin, which is zero wherever the prior is. So on a simulated recording, EM returned exactly `[1, 0, 0, 0]` after 5 iterations, and `get_conditional_non_local_posterior` was NaN at the first bin.
+  - The non-local states now have positive probability from the first bin, and EM can move the starting probabilities.
+  - Only the first bins of each `predict` call change. On a simulated sorted recording that starts in Local, state probabilities moved by at most 0.008 and by less than 1e-6 after 195 bins. On the clusterless golden decode, which starts in a silent stretch, they moved by up to 0.135 at the first bin (toward No-Spike, which the data reach by bin 5) and were unchanged from bin 23 on. The most likely state changed in 1 of 50 bins, where Local and No-Spike were nearly tied.
+  - On the simulated recording, transitions learned by EM changed by at most 3e-7. The golden file for the non-local detector is regenerated.
+  - Pass `discrete_initial_conditions=np.array([1.0, 0.0, 0.0, 0.0])` for the previous behaviour.
+
 ### Model docstrings and penalty validation
 
 - The sorted-spikes and clusterless class of each model write their docstring once, and every model documents all of its constructor parameters. Four of the five model families did not document `discrete_transition_prior_weight` or `frozen_discrete_transition_rows`, `MultiEnvironmentClusterlessClassifier` described transitions it does not use, and the examples called `fit` and `predict` with arguments they do not take.

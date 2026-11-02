@@ -41,6 +41,31 @@ def _resolve_param(value: Any, default_factory: Callable[[], Any]) -> Any:
     return default_factory() if value is None else value
 
 
+def _one_transition_after(transition_type, start_state: int) -> np.ndarray:
+    """Discrete state distribution one transition after ``start_state``.
+
+    Used as the initial conditions of models that nominally start in one
+    state: most of the mass stays there, but every state the transitions
+    reach gets a positive probability. A state that starts at exactly zero
+    stays at zero through EM, which sets the initial conditions to the
+    posterior at the first time bin, and its conditional posterior is
+    undefined there.
+
+    Parameters
+    ----------
+    transition_type : DiscreteStationaryDiagonal or DiscreteStationaryCustom
+        The model's default (stationary) discrete transition model.
+    start_state : int
+        Index of the nominal start state.
+
+    Returns
+    -------
+    initial_conditions : np.ndarray, shape (n_states,)
+    """
+    transition_matrix, _, _ = transition_type.make_state_transition(None)
+    return np.array(transition_matrix[start_state], dtype=float)
+
+
 class _ModelDefaults:
     """Factory for model default parameters.
 
@@ -89,15 +114,20 @@ class _ModelDefaults:
     @staticmethod
     def multi_environment_defaults():
         """Defaults for multi-environment classifier (sorted and clusterless)."""
+
+        def transition_type():
+            return DiscreteStationaryDiagonal(diagonal_values=np.array([0.999, 0.98]))
+
         return {
-            "discrete_initial_conditions": lambda: np.array([1.0, 0.0]),
+            # One transition after env1.
+            "discrete_initial_conditions": lambda: _one_transition_after(
+                transition_type(), start_state=0
+            ),
             "continuous_initial_conditions_types": lambda: [
                 UniformInitialConditions(),
                 UniformInitialConditions(),
             ],
-            "discrete_transition_type": lambda: DiscreteStationaryDiagonal(
-                diagonal_values=np.array([0.999, 0.98])
-            ),
+            "discrete_transition_type": transition_type,
             "discrete_transition_stickiness": lambda: np.array([200.0, 30.0]),
             "observation_models": lambda: [
                 ObservationModel(environment_name="env1"),
@@ -139,12 +169,8 @@ class _ModelDefaults:
         non_local_frag_prob = 0.96
         no_spike_prob = 0.98
 
-        return {
-            "discrete_initial_conditions": lambda: np.array([1.0, 0.0, 0.0, 0.0]),
-            "continuous_initial_conditions_types": lambda: [
-                UniformInitialConditions() for _ in range(4)
-            ],
-            "discrete_transition_type": lambda: DiscreteStationaryCustom(
+        def transition_type():
+            return DiscreteStationaryCustom(
                 values=np.array(
                     [
                         [
@@ -173,7 +199,17 @@ class _ModelDefaults:
                         ],
                     ]
                 )
+            )
+
+        return {
+            # One transition after Local.
+            "discrete_initial_conditions": lambda: _one_transition_after(
+                transition_type(), start_state=0
             ),
+            "continuous_initial_conditions_types": lambda: [
+                UniformInitialConditions() for _ in range(4)
+            ],
+            "discrete_transition_type": transition_type,
             # Stickiness prior equivalent to ~3 minutes of data at 500 Hz
             # for Local/No-Spike; weak prior for Non-Local states.
             "discrete_transition_stickiness": lambda: np.array(

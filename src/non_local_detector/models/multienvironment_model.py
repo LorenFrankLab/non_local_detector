@@ -29,7 +29,10 @@ uniformly in the other one.
 Parameters
 ----------
 discrete_initial_conditions : np.ndarray, shape (2,), optional
-    Initial probabilities of [env1, env2], by default ``[1.0, 0.0]``.
+    Initial probabilities of [env1, env2], by default one transition after
+    env1, the env1 row of the default transition matrix
+    (``[0.999, 0.001]``). A state that starts at zero stays at zero through
+    EM.
 continuous_initial_conditions_types : ContinuousInitialConditions, optional
     Initial position distribution of each state, by default uniform for
     both.
