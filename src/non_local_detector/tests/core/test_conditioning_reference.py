@@ -765,8 +765,9 @@ class TestMultiStepEnumerationReference:
     def test_smoother_reusing_filter_predictions(self):
         """Smoothing from the filter's predicted rows matches enumeration.
 
-        The predictions are the filter's own rows plus its final carry, the
-        row after the last, so the terminal step uses the real prediction.
+        The predictions are the filter's own rows plus its final carry. The
+        carry only enters across a chunk boundary, which the chunked driver
+        tests cover; here the last row keeps its filtered value.
         """
         initial, transitions, ll = _tiny_model()
         ref = enumerate_reference(initial, transitions[0], ll)
@@ -785,6 +786,13 @@ class TestMultiStepEnumerationReference:
         np.testing.assert_allclose(np.asarray(smoothed), ref["smoothed"], atol=1e-5)
         with pytest.raises(ValueError, match="both predicted_probs"):
             smoother(transition, filtered, predicted_probs=predicted)
+        with pytest.raises(ValueError, match="shape of one row"):
+            smoother(
+                transition,
+                filtered,
+                predicted_probs=predicted,
+                predicted_probs_next=predicted_next[None],
+            )
 
     def test_constant_covariate_matches_stationary_expanded(self):
         initial, discrete, continuous, state_ind, ll, expanded = _covariate_model()

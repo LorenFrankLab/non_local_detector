@@ -632,7 +632,9 @@ def _smoother_scan(
     predicted_probs : jnp.ndarray, shape (n_time, n_states) or None
         The filter's predicted rows for the same rows as ``filtered_probs``.
     predicted_probs_next : jnp.ndarray, shape (n_states,) or None
-        The filter's prediction for the row after the last.
+        The filter's prediction for the row after the last. It only enters
+        when that row exists (a chunk before the end): at global row
+        ``n_time - 1`` the smoothed row is the filtered row.
 
     Returns
     -------
@@ -641,6 +643,16 @@ def _smoother_scan(
     if (predicted_probs is None) != (predicted_probs_next is None):
         raise ValueError(
             "Pass both predicted_probs and predicted_probs_next, or neither."
+        )
+    if predicted_probs is not None and (
+        jnp.shape(predicted_probs) != jnp.shape(filtered_probs)
+        or jnp.shape(predicted_probs_next) != jnp.shape(filtered_probs)[1:]
+    ):
+        raise ValueError(
+            "predicted_probs must have the shape of filtered_probs "
+            f"{jnp.shape(filtered_probs)}, and predicted_probs_next the shape "
+            f"of one row; got {jnp.shape(predicted_probs)} and "
+            f"{jnp.shape(predicted_probs_next)}."
         )
     if n_time is None:
         n_time = filtered_probs.shape[0]
@@ -740,7 +752,9 @@ def _smoother_impl(
         None (computed).
     predicted_probs_next : jnp.ndarray, shape (n_states,), optional
         The filter's prediction for the time point after the last one (its
-        final carry). Required with ``predicted_probs``. By default None.
+        final carry). Required with ``predicted_probs``; it only changes the
+        result when ``filtered_probs`` ends before global row ``n_time - 1``.
+        By default None.
 
     Returns
     -------
