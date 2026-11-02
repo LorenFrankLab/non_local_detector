@@ -1791,16 +1791,17 @@ def _viterbi_covariate_dependent_impl(
     # Handles zero probabilities correctly (returns -inf, not NaN)
     log_continuous_transition_matrix = _safe_log(continuous_transition_matrix)
     log_initial_distribution = _safe_log(initial_distribution)
+    # Log the (n_time, n_states, n_states) discrete matrices, not the expanded
+    # (n_state_bins, n_state_bins) ones: same values, n_states² logs per step
+    log_discrete_transition_matrix = _safe_log(discrete_transition_matrix)
 
     # Run the backward pass
     # Index discrete transitions per-step to avoid materializing T×N_bins×N_bins array
     def _backward_pass(best_next_score, args):
-        t, discrete_transition_matrix_t = args
-        # Index states and compute log per-step (avoids T×N×N materialization)
-        discrete_t_indexed = _index_discrete_transition(
-            discrete_transition_matrix_t, state_ind
+        t, log_discrete_transition_matrix_t = args
+        log_discrete_t = _index_discrete_transition(
+            log_discrete_transition_matrix_t, state_ind
         )
-        log_discrete_t = _safe_log(discrete_t_indexed)
 
         # Build log-space transition matrix: log(A * B) = log(A) + log(B)
         log_transition_matrix = log_continuous_transition_matrix + log_discrete_t
@@ -1813,7 +1814,7 @@ def _viterbi_covariate_dependent_impl(
     best_second_score, best_next_states = jax.lax.scan(
         _backward_pass,
         jnp.zeros(num_states),
-        (jnp.arange(num_timesteps - 1), discrete_transition_matrix[:-1]),
+        (jnp.arange(num_timesteps - 1), log_discrete_transition_matrix[:-1]),
         reverse=True,
     )
 
