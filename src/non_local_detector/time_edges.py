@@ -227,6 +227,19 @@ def _resolve_time_grid(
     return _DecodeTimeGrid(time_edges)
 
 
+def _uniform_time_grid(
+    time_edges, time_grid: _DecodeTimeGrid | None = None
+) -> _DecodeTimeGrid:
+    """Bind edges the detector already checked uniform; reuse a matching grid."""
+    if isinstance(time_grid, _DecodeTimeGrid) and time_grid.edges is time_edges:
+        return time_grid
+    return _DecodeTimeGrid.from_validated_edges(
+        time_edges,
+        uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
+        / (len(time_edges) - 1),
+    )
+
+
 def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
     """Validate that decode bins are uniform and return their width.
 

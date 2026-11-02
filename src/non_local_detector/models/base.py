@@ -90,6 +90,7 @@ from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 from non_local_detector.time_edges import (
     _MAX_RELATIVE_SPACING_TOLERANCE,
     _DecodeTimeGrid,
+    _uniform_time_grid,
     _uniformity_tolerance,
     calculate_time_edges,
     requires_time_edges,
@@ -3235,11 +3236,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         log_likelihood_func = self.compute_log_likelihood
         if log_likelihoods is None:
-            time_grid = _DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            )
+            time_grid = _uniform_time_grid(time_edges)
             log_likelihood_func = _prepare_likelihood_callback(
                 log_likelihood_func,
                 time_edges,
@@ -3296,9 +3293,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
     def _checkpointed_likelihood(self, edges, centers, log_likelihood_args):
         """Row-slice likelihood callback for the checkpointed driver."""
-        time_grid = _DecodeTimeGrid.from_validated_edges(
-            edges, uniform_width=(float(edges[-1]) - float(edges[0])) / (len(edges) - 1)
-        )
+        time_grid = _uniform_time_grid(edges)
         prepared = _prepare_likelihood_callback(
             self.compute_log_likelihood,
             edges,
@@ -4641,11 +4636,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
             log_likelihood_args=log_likelihood_args,
             reads_position=self._decode_reads_position(),
-            _time_grid=_DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            ),
+            _time_grid=_uniform_time_grid(time_edges),
         )
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
@@ -5674,15 +5665,7 @@ class ClusterlessDetector(_DetectorBase):
             _time_grid=_time_grid,
             row_slice=row_slice,
         )
-        if (
-            not isinstance(_time_grid, _DecodeTimeGrid)
-            or _time_grid.edges is not time_edges
-        ):
-            _time_grid = _DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            )
+        _time_grid = _uniform_time_grid(time_edges, _time_grid)
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
         needs_position = self._decode_reads_position()
@@ -6978,15 +6961,7 @@ class SortedSpikesDetector(_DetectorBase):
             _time_grid=_time_grid,
             row_slice=row_slice,
         )
-        if (
-            not isinstance(_time_grid, _DecodeTimeGrid)
-            or _time_grid.edges is not time_edges
-        ):
-            _time_grid = _DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            )
+        _time_grid = _uniform_time_grid(time_edges, _time_grid)
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
         needs_position = self._decode_reads_position()
