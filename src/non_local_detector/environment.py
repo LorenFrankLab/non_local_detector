@@ -68,6 +68,7 @@ from track_linearization import (  # type: ignore[import-untyped]
     plot_graph_as_1D,
 )
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import (
     DEFAULT_MAX_DENSE_DISTANCE_BYTES,
@@ -911,7 +912,7 @@ class Environment:
                             f"usually indicates a tracking glitch or an "
                             f"out-of-bounds position.",
                             UserWarning,
-                            stacklevel=2,
+                            stacklevel=user_stacklevel(),
                         )
 
         return bin_inds

@@ -70,6 +70,7 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
@@ -470,7 +471,7 @@ def fit_clusterless_diffusion_encoding_model(
                 "no effective encoding spikes. It contributes no ground-process "
                 "intensity and its decode spikes are explained by the background rate.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
             continue
 

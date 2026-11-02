@@ -49,6 +49,7 @@ from scipy.special import logsumexp  # type: ignore[import-untyped]
 from sklearn.mixture import BayesianGaussianMixture  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
@@ -560,7 +561,7 @@ def fit_clusterless_mark_glm_encoding_model(
                 "zero-rate -- its observed decode spikes are explained by the "
                 "background rate.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
             mark_mixtures.append(None)
             mean_rates.append(0.0)

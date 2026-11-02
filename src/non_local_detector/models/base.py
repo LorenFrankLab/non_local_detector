@@ -25,6 +25,7 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 
 from non_local_detector import _validation as val
 from non_local_detector._position_dims import get_position_dim_names
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.checkpointed_inference import (
     _available_host_bytes,
     default_chunk_size,
@@ -116,6 +117,8 @@ from non_local_detector.types import (
 )
 
 logger = getLogger(__name__)
+
+
 sklearn.set_config(print_changed_only=False)
 
 # Valid options for return_outputs parameter
@@ -158,7 +161,6 @@ class _LikelihoodPositionContext:
         *,
         reads_position: bool = True,
         warn_outside_tracking: bool = False,
-        stacklevel: int = 5,
     ) -> "_LikelihoodPositionContext":
         missing = _missing_bins(
             time_edges,
@@ -167,8 +169,6 @@ class _LikelihoodPositionContext:
             position,
             reads_position=reads_position,
             warn_outside_tracking=warn_outside_tracking,
-            # Through this method and compute_log_likelihood to its caller.
-            stacklevel=stacklevel,
         )
         prepared = position
         all_missing = False
@@ -618,7 +618,7 @@ def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
         'Pass transition_representation="auto" (or "structured") to '
         "estimate_parameters to bound EM's memory, or n_chunks > 1 for dense EM.",
         UserWarning,
-        stacklevel=3,
+        stacklevel=user_stacklevel(),
     )
 
 
@@ -858,7 +858,6 @@ def _missing_bins(
     *,
     reads_position: bool = True,
     warn_outside_tracking: bool = False,
-    stacklevel: int = 4,
 ) -> np.ndarray | None:
     """Combine the caller's missing mask with bins that lack tracked position.
 
@@ -894,9 +893,6 @@ def _missing_bins(
         Warn when bins are missing because they extend outside the tracked
         period, by default False. Public decode entry points set it, so one
         call warns once however many chunks or EM iterations it runs.
-    stacklevel : int, optional
-        Passed to ``warnings.warn``, by default 4 (the caller of a public
-        method decorated with ``requires_time_edges``).
 
     Returns
     -------
@@ -953,7 +949,7 @@ def _missing_bins(
             "alone. Pass position covering the decode time_edges, or restrict "
             "time_edges to the tracked period.",
             UserWarning,
-            stacklevel=stacklevel,
+            stacklevel=user_stacklevel(),
         )
     is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
     if np.any(is_nan):
@@ -1126,7 +1122,7 @@ def _group_weights(
             "encoding_group_labels, environment_labels, NaN positions, and "
             "encoding_time_range / valid_position_intervals.",
             UserWarning,
-            stacklevel=3,
+            stacklevel=user_stacklevel(),
         )
     return group_weights
 
@@ -2987,7 +2983,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "that the track topology is properly linearized. See the "
                     "Environment docstring for details.",
                     UserWarning,
-                    stacklevel=3,
+                    stacklevel=user_stacklevel(),
                 )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
@@ -3183,8 +3179,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 position,
                 reads_position=needs_position,
                 warn_outside_tracking=_position_context is None,
-                # One frame deeper than the public compute_log_likelihood.
-                stacklevel=6,
             )
         self._validate_decode_population(*spike_data)
         position_missing = _position_context.is_missing
@@ -3381,7 +3375,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             position,
             reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
-            stacklevel=5,
         )
 
         # Handle deprecated boolean flags
@@ -3393,7 +3386,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "save_log_likelihood_to_results and save_causal_posterior_to_results "
                 "are deprecated. Use return_outputs parameter instead.",
                 DeprecationWarning,
-                stacklevel=3,
+                stacklevel=user_stacklevel(),
             )
 
             # Convert old flags to new format
@@ -3586,7 +3579,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             position,
             reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
-            stacklevel=5,
         )
         # Before the internal fit, so a refused estimate leaves the model as is.
         _require_observed_bins(is_missing)
@@ -3671,7 +3663,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             position,
             reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
-            stacklevel=5,
         )
         return _DetectorBase.most_likely_sequence(
             self,
@@ -4294,10 +4285,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "approximate: if dense EM fits, pass "
                 'transition_representation="dense" to estimate_parameters.',
                 UserWarning,
-                # Through _fit_em_model, _estimate_spike_parameters,
-                # estimate_parameters and its requires_time_edges wrapper to
-                # the caller.
-                stacklevel=6,
+                stacklevel=user_stacklevel(),
             )
         logger.info(
             "EM with transition_representation='auto': %s (%d interior state "
@@ -4538,7 +4526,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "save_log_likelihood_to_results is deprecated. "
                 "Use return_outputs='log_likelihood' instead.",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
             if save_log_likelihood_to_results:
                 return_outputs = "log_likelihood"
@@ -4880,7 +4868,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         f"model inside EM, a covariate transition fit stopping "
                         f"early, or a numerical instability can.",
                         UserWarning,
-                        stacklevel=2,
+                        stacklevel=user_stacklevel(),
                     )
                     self.em_monotonicity_violations_.append(n_iter)
 
@@ -4958,7 +4946,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
                 f"{advice}",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
 
         def em_traces(final_log_likelihood: float) -> dict[str, list[float]]:
@@ -5089,7 +5077,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"the fitted parameters. converged_ is False and iteration "
                     f"{n_iter + 1} is recorded in em_monotonicity_violations_.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=user_stacklevel(),
                 )
         self.converged_ = bool(converged) and final_is_increasing
 

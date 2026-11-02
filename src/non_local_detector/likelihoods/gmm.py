@@ -23,6 +23,7 @@ import numpy as np
 from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 from threadpoolctl import threadpool_limits
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.likelihoods.common import _padded_sample_count
 
 # ---------------------------------------------------------------------
@@ -1314,7 +1315,7 @@ class GaussianMixtureModel:
                 f"n_components, or remove duplicate/degenerate samples so every "
                 f"restart is usable.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
 
         if not self.converged_:
@@ -1323,7 +1324,7 @@ class GaussianMixtureModel:
                 f"iterations (best restart ran {self.n_iter_}). Final lower-bound "
                 f"delta exceeded tol={self.tol:.3e}.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
 
         # diag/spherical variances are clamped up to a 1e-10 floor for a finite
@@ -1339,7 +1340,7 @@ class GaussianMixtureModel:
                 "was clamped rather than raised. Increase reg_covar or reduce "
                 "n_components.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
 
         return self
