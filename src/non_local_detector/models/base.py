@@ -4687,6 +4687,24 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     n_chunks=n_chunks,
                 )
                 first_smoothed = np.asarray(acausal_posterior[0])
+                # The transition statistics need only these posteriors, so
+                # take them now and release the device arrays before the
+                # M-step (an encoding refit allocates on the device too).
+                dense_transition_statistics = (
+                    _discrete_transition_statistics(
+                        causal_posterior,
+                        predictive_posterior,
+                        acausal_posterior,
+                        interior_continuous_transition,
+                        interior_state_ind,
+                        self.discrete_state_transitions_,
+                        self.discrete_transition_coefficients_,
+                        self.discrete_transition_design_matrix_,
+                    )
+                    if estimate_discrete_transition
+                    else None
+                )
+                acausal_posterior = causal_posterior = predictive_posterior = None
             # Reusable by the next iteration: the likelihood depends only on the
             # data and the encoding model, and the M-step below clears this when
             # it updates the encoding model. ``None`` when the likelihood was not
@@ -4760,16 +4778,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 statistics = (
                     e_step.transition_statistics
                     if checkpointed
-                    else _discrete_transition_statistics(
-                        causal_posterior,
-                        predictive_posterior,
-                        acausal_posterior,
-                        interior_continuous_transition,
-                        interior_state_ind,
-                        self.discrete_state_transitions_,
-                        self.discrete_transition_coefficients_,
-                        self.discrete_transition_design_matrix_,
-                    )
+                    else dense_transition_statistics
                 )
                 log_prior_before = (
                     transition_log_prior(statistics)
@@ -4826,9 +4835,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     transition_change = float(np.max(np.abs(moved)))
             else:
                 log_prior_before = log_prior_after = 0.0
-            # The dense E-step's posteriors are device arrays; release them
-            # before the next E-step allocates its own.
-            acausal_posterior = causal_posterior = predictive_posterior = None
 
             if estimate_initial_conditions:
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
