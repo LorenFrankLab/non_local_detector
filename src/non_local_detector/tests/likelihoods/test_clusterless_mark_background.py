@@ -87,6 +87,8 @@ def _params(algorithm, scale=1.0):
             "gmm_components_occupancy": 4,
             "disable_progress_bar": True,
         }
+    if algorithm == "clusterless_mark_glm":
+        return {"disable_progress_bar": True}
     return {
         "position_std": 6.0,
         "waveform_std": 24.0 * scale,

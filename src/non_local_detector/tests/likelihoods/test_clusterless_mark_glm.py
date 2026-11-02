@@ -14,7 +14,6 @@ from sklearn.mixture import BayesianGaussianMixture  # type: ignore[import-untyp
 
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
@@ -673,19 +672,6 @@ def test_electrode_without_encoding_spikes_is_background_only(track_1d, is_local
     )
     np.testing.assert_allclose(difference[2], expected, rtol=1e-6)
     assert np.all(difference[np.arange(10) != 2] == 0.0)
-
-
-@pytest.mark.unit
-def test_unknown_fit_parameter_raises(track_1d):
-    with pytest.raises(ValidationError, match="n_mark_component"):
-        fit_clusterless_mark_glm_encoding_model(
-            track_1d["time"][:100],
-            track_1d["position"][:100],
-            track_1d["spike_times"],
-            track_1d["features"],
-            track_1d["environment"],
-            n_mark_component=4,
-        )
 
 
 @pytest.mark.integration

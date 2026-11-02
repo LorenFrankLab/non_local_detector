@@ -203,9 +203,6 @@ def main():
     else:
         if args.enc_tile_size is not None:
             parameters["clusterless_algorithm_params"] = {
-                "position_std": 6.0,
-                "waveform_std": 24.0,
-                "block_size": 10_000,
                 "enc_tile_size": args.enc_tile_size,
                 "pos_tile_size": args.pos_tile_size,
                 "use_streaming": True,

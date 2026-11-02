@@ -182,8 +182,7 @@ def test_prediction_rebuilds_omitted_interior_log_fields(three_neuron_diffusion)
 
 
 def test_fit_accepts_shared_sorted_spikes_params():
-    """The fit signature accepts the shared sorted-spikes params so the base class's
-    signature filter does not silently drop user/default values (e.g. block_size)."""
+    """The fit signature takes the parameters a detector passes it."""
     params = set(
         inspect.signature(fit_sorted_spikes_diffusion_encoding_model).parameters
     )
@@ -191,7 +190,6 @@ def test_fit_accepts_shared_sorted_spikes_params():
         "weights",
         "position_std",
         "rank",
-        "block_size",
         "local_interpolation",
     } <= params
 
@@ -1132,10 +1130,9 @@ def test_detectors_reject_population_mismatch(env_2d, algorithm):
     env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     for detector_cls in (SortedSpikesDecoder, NonLocalSortedSpikesDetector):
-        detector = detector_cls(
-            sorted_spikes_algorithm=algorithm,
-            sorted_spikes_algorithm_params={"position_std": 6.0},
-        ).fit(position_time=time, position=position, spike_times=spike_times)
+        detector = detector_cls(sorted_spikes_algorithm=algorithm).fit(
+            position_time=time, position=position, spike_times=spike_times
+        )
         with pytest.raises(ValidationError, match="neuron population lengths"):
             detector.predict(
                 spike_times=spike_times[:1],

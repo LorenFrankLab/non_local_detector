@@ -159,7 +159,7 @@ def _simulate_2d(seed, seconds, phase):
 
 @pytest.fixture(scope="module")
 def recording():
-    train = _simulate(0, 8 * 2 * TRACK / SPEED)
+    train = _simulate(0, 32 * 2 * TRACK / SPEED)  # 32 laps, about 6.4 min
     test = _simulate(1, 2 * 2 * TRACK / SPEED)
     edges = np.arange(0.0, test["time"][-1], DECODE_BIN)
     return train, test, edges
@@ -345,8 +345,8 @@ def _score_nonlocal(model, algorithm, test, edges, centers, true_rates, radii):
 
 @pytest.mark.parametrize("algorithm", SORTED)
 def test_sorted_place_fields_recover_the_true_fields(algorithm, recording, fits):
-    """Measured: correlations 0.88-0.99, peaks within 3 cm, mean-rate ratios
-    0.91-1.17 (finite-data spike counts) for every sorted likelihood."""
+    """Measured: correlations 0.97-1.00, peaks within 2 cm, mean-rate ratios
+    0.96-1.06 (finite-data spike counts) for every sorted likelihood."""
     train, _, _ = recording
     _, encoding, interior, centers = _cached_fit(fits, algorithm, train, 2.0)
     x = centers[:, 0]
@@ -363,9 +363,9 @@ def test_sorted_place_fields_recover_the_true_fields(algorithm, recording, fits)
 def test_glm_place_field_peaks_match_the_truth(recording, fits):
     """The GLM's default log-rate prior does not flatten the fields.
 
-    Measured: peak ratios 0.80-1.29, median 1.05, as with a near-zero
+    Measured: peak ratios 0.93-1.08, median 1.00, as with a near-zero
     penalty (finite-data noise). The former per-second penalty, which grew
-    with the recording, gave 0.19-0.31.
+    with the recording, gave 0.19-0.31 with a quarter of this training set.
     """
     train, _, _ = recording
     _, encoding, interior, centers = _cached_fit(fits, "sorted_spikes_glm", train, 2.0)
@@ -379,7 +379,7 @@ def test_glm_place_field_peaks_match_the_truth(recording, fits):
 def test_clusterless_ground_process_recovers_the_true_intensity(
     algorithm, recording, fits
 ):
-    """Measured: correlations 0.98-0.99 and mean ratios 1.02-1.03."""
+    """Measured: correlations 0.996-0.999 and mean ratios 1.00."""
     train, _, _ = recording
     _, encoding, interior, centers = _cached_fit(fits, algorithm, train, 2.0)
     fitted = np.asarray(encoding["summed_ground_process_intensity"])
@@ -394,17 +394,19 @@ def test_clusterless_ground_process_recovers_the_true_intensity(
 def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording, fits):
     """Held-out non-local log likelihoods follow the exact one from the true rates.
 
-    Rows with at least two spikes. Measured median correlations: 0.95 for the
-    GLM, MRF and mark GLM, 0.78-0.79 for the KDE and diffusion variants (their
-    6 cm position bandwidth smooths the 4 cm fields), 0.69 for the GMM; the
-    most likely bins agree within 2 bins in 97.8-99.6% of rows (GMM: 89%
-    within 2, 96% within 3). Against reassigned cells the correlations are
-    below 0.15 and agreement within 3 bins below 0.15.
+    Rows with at least two spikes. Measured median correlations: 0.98 for the
+    GLM, MRF and mark GLM, 0.95 for the KDE and diffusion variants (their
+    sqrt(12.5) cm position bandwidth smooths the 4 cm fields; 6 cm gave 0.87),
+    0.74 for the GMM; the most likely bins agree within 2 bins in 98.7% of
+    rows (GMM: 97.3% within 2, 98.2% within 3). Against reassigned cells the
+    correlations are below -0.08 and agreement within 3 bins is 11%. The
+    training set is 32 laps: with 8, the sqrt(12.5) cm kernel is noisier than
+    a 6 cm one (KDE correlation 0.66 against 0.79).
 
     The correlation ignores a constant per row, so the absolute level is
     checked too: the median per-spike gap in log marginal likelihood. Measured
-    smoothing/fit bias: -0.81 (GMM), -0.49 (mark GLM), within 0.15 for the
-    rest (GLM 0.01; the KDE and diffusion clusterless backends against the
+    smoothing/fit bias: -0.19 (mark GLM), -0.13 (GMM), within 0.08 for the
+    rest (GLM 0.00; the KDE and diffusion clusterless backends against the
     kernel-smoothed mark density; against the true one their 24-unit mark
     kernel costs 2.9 nats per spike in 4-D). The tolerances, 1.5 (GMM), 0.75
     (mark GLM) and 0.5 nats, sit above those biases and below the constant
@@ -433,12 +435,12 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording, f
 def test_2d_sorted_place_fields_recover_the_true_fields(algorithm, recording_2d, fits):
     """Fitted 2-D fields have the true shape, location, amplitude and rate.
 
-    Measured: correlations 0.94-0.995; field centers of mass within 1.8 cm of
+    Measured: correlations 0.96-0.995; field centers of mass within 1.4 cm of
     the true ones in each axis (fields 20 cm apart in x, 12 in y);
     occupancy-weighted rate ratios (expected training spikes, fitted over
-    true) 0.87-1.11; peak ratios 0.48-0.61 for the KDE and diffusion
-    backends, as a 6 cm kernel on an (8, 6) cm field predicts (0.57),
-    0.88-1.19 for the GLM and 0.94-1.55 for the MRF.
+    true) 0.87-1.11; peak ratios 0.68-0.91 for the KDE and diffusion
+    backends, as a sqrt(12.5) cm kernel on an (8, 6) cm field predicts
+    (0.79), 0.88-1.19 for the GLM and 0.94-1.53 for the MRF.
     """
     train, _, _ = recording_2d
     _, encoding, interior, centers = _cached_fit(
@@ -461,7 +463,7 @@ def test_2d_sorted_place_fields_recover_the_true_fields(algorithm, recording_2d,
 def test_2d_clusterless_ground_process_recovers_the_true_intensity(
     algorithm, recording_2d, fits
 ):
-    """Measured: correlations 0.89-0.94, occupancy-weighted ratios 0.92-1.00."""
+    """Measured: correlations 0.89-0.97, occupancy-weighted ratios 0.94-1.00."""
     train, _, _ = recording_2d
     _, encoding, interior, centers = _cached_fit(
         fits, algorithm, train, PLACE_BIN_SIZE_2D
@@ -481,9 +483,10 @@ def test_2d_nonlocal_likelihood_tracks_the_exact_likelihood(
 ):
     """Held-out 2-D non-local log likelihoods follow the exact one.
 
-    Measured median correlations: 0.93 (KDE and diffusion), 0.97 (MRF),
-    0.92 (GLM, mark GLM), 0.69 (GMM); most likely bins within 6.5 cm (about
-    two 3 cm bins) in 95% (KDE, diffusion), 93% (GLM, mark GLM), 91% (MRF)
+    Measured median correlations: 0.86-0.87 (KDE and diffusion; 0.93 with a
+    6 cm kernel), 0.97 (MRF), 0.92 (GLM, mark GLM), 0.69 (GMM); most likely
+    bins within 6.5 cm (about two 3 cm bins) in 95-96% (KDE, diffusion), 93%
+    (GLM, mark GLM), 91% (MRF)
     and 65% (GMM) of rows. Against reassigned cells: correlations below -0.1
     and at most 1.2% of rows within 6.5 cm. Level offsets within 0.27 (GLM
     -0.01); tolerances as in 1-D.

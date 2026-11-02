@@ -1,9 +1,8 @@
-"""The clusterless GMM fit validates its parameters and carries predict's tiling.
+"""The clusterless GMM fit carries predict's tiling.
 
 A detector passes ``clusterless_algorithm_params`` only to the encoding fit and
 calls predict with the fitted encoding model, so predict's memory knobs reach it
-only through the model the fit returns. Unknown fit parameters used to be
-dropped silently, so a misspelled option fell back to its default.
+only through the model the fit returns.
 """
 
 import numpy as np
@@ -11,7 +10,6 @@ import pytest
 
 from non_local_detector import ClusterlessDecoder, time_edges_from_centers
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import clusterless_gmm
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
@@ -40,20 +38,6 @@ def _fit(sim, **params):
         disable_progress_bar=True,
         **params,
     )
-
-
-def test_unknown_fit_parameter_is_rejected(sim):
-    with pytest.raises(ValidationError, match="gmm_componets_joint") as error:
-        _fit(sim, gmm_componets_joint=99)
-    # The message lists the valid names so the typo is easy to fix.
-    assert "gmm_components_joint" in str(error.value)
-    assert "bin_tile_size" in str(error.value)
-
-
-def test_detector_default_parameters_are_accepted(sim):
-    """A detector passes its default clusterless parameters to every algorithm."""
-    model = _fit(sim, waveform_std=24.0, position_std=6.0, block_size=10_000)
-    assert len(model["joint_models"]) == len(sim.spike_times)
 
 
 def test_fit_stores_predict_tiling(sim):

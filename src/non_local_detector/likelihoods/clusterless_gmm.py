@@ -12,7 +12,6 @@ electrode's expected count gains ``RATE_EPS_HZ``.
 
 from __future__ import annotations
 
-import inspect
 import warnings
 from dataclasses import replace
 from functools import partial
@@ -541,11 +540,7 @@ def fit_clusterless_gmm_encoding_model(
     disable_progress_bar: bool = False,
     encoding_time_range=None,
     valid_position_intervals=None,
-    waveform_std: object = None,
-    position_std: object = None,
-    block_size: object = None,
     _encoding_support=None,
-    **kwargs,
 ) -> dict:
     """
     Fit the clusterless encoding model using GMMs.
@@ -604,14 +599,6 @@ def fit_clusterless_gmm_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
-    waveform_std, position_std, block_size : optional
-        Ignored. A detector's default ``clusterless_algorithm_params`` hold
-        these KDE and diffusion parameters and are passed to every clusterless
-        algorithm; the GMM has no kernel bandwidths, and its predict blocks
-        spikes by ``spike_block_size``.
-    **kwargs
-        Any other name raises a ``ValidationError`` that lists the valid
-        parameters.
 
     Returns
     -------
@@ -634,28 +621,6 @@ def fit_clusterless_gmm_encoding_model(
         - rate_units ("Hz")
         - encoding_exposure_seconds (weighted encoding occupancy time, seconds)
     """
-    for parameter in ("gmm_components_gpi", "gmm_covariance_type_gpi"):
-        if parameter in kwargs:
-            raise TypeError(
-                f"{parameter} has been removed; configure the joint GMM with "
-                "gmm_components_joint and gmm_covariance_type_joint instead."
-            )
-    if kwargs:
-        valid = [
-            name
-            for name, parameter in inspect.signature(
-                fit_clusterless_gmm_encoding_model
-            ).parameters.items()
-            if parameter.kind is inspect.Parameter.KEYWORD_ONLY
-            and not name.startswith("_")
-        ]
-        raise ValidationError(
-            f"unknown clusterless_gmm fit parameter(s): {', '.join(sorted(kwargs))}",
-            expected=f"parameters among: {', '.join(valid)}",
-            got=", ".join(f"{name}={value!r}" for name, value in kwargs.items()),
-            hint="Check the spelling. A detector passes its "
-            "clusterless_algorithm_params to this fit.",
-        )
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
