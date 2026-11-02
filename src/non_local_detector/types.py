@@ -8,6 +8,8 @@ used in Hidden Markov Model-based neural decoding.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 
 from non_local_detector.continuous_state_transitions import (
@@ -93,4 +95,14 @@ StateNames = list[str] | None
 
 List of human-readable names for each discrete state in the HMM,
 or None to use default state numbering.
+"""
+
+FrozenTransitionRows = (
+    Literal["no_spike"] | np.ndarray | list[int] | tuple[int, ...] | None
+)
+"""Type alias for the discrete transition rows held fixed during EM.
+
+``"no_spike"`` selects the rows of the states whose observation model has
+``is_no_spike=True``; integer indices or a boolean mask select rows by
+position; ``None`` or an empty sequence freezes nothing.
 """

@@ -15,6 +15,7 @@ from non_local_detector.types import (
     ContinuousTransitions,
     DiscreteTransitions,
     Environments,
+    FrozenTransitionRows,
     Observations,
     StateNames,
     Stickiness,
@@ -136,9 +137,7 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = None,
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
     ):
         params = _initialize_params(
             _ModelDefaults.cont_frag_defaults(),
@@ -298,9 +297,7 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = None,
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
     ):
         params = _initialize_params(
             _ModelDefaults.cont_frag_defaults(),

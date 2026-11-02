@@ -4,7 +4,8 @@ Covers:
 - ``_normalize_frozen_discrete_transition_rows`` helper (validation +
   normalization of input forms)
 - Constructor plumbing in ``_DetectorBase`` and model subclasses
-- NonLocal models default to freezing the No-Spike row (index 1)
+- Every model defaults to freezing its No-Spike rows, found from the
+  observation models rather than by position
 - End-to-end: running EM with a frozen row leaves that row byte-for-byte
   unchanged while other rows update
 """
@@ -15,19 +16,40 @@ import numpy as np
 import pytest
 
 from non_local_detector import (
+    ClusterlessDecoder,
+    ContFragClusterlessClassifier,
+    ContFragSortedSpikesClassifier,
     DiscreteNonStationaryDiagonal,
+    DiscreteStationaryCustom,
+    MultiEnvironmentClusterlessClassifier,
+    MultiEnvironmentSortedSpikesClassifier,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    NoSpikeContFragClusterlessClassifier,
+    NoSpikeContFragSortedSpikesClassifier,
+    SortedSpikesDecoder,
     time_edges_from_centers,
 )
 from non_local_detector.models.base import (
     _normalize_frozen_discrete_transition_rows,
 )
-from non_local_detector.models.cont_frag_model import (
-    ContFragClusterlessClassifier,
-    ContFragSortedSpikesClassifier,
-)
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+
+# Four states with the No-Spike state second, as in the non-local detector.
+NO_SPIKE_1 = np.array([False, True, False, False])
+
+ALL_MODEL_CLASSES = [
+    SortedSpikesDecoder,
+    ClusterlessDecoder,
+    ContFragSortedSpikesClassifier,
+    ContFragClusterlessClassifier,
+    MultiEnvironmentSortedSpikesClassifier,
+    MultiEnvironmentClusterlessClassifier,
+    NoSpikeContFragSortedSpikesClassifier,
+    NoSpikeContFragClusterlessClassifier,
+    NonLocalSortedSpikesDetector,
+    NonLocalClusterlessDetector,
+]
 
 
 @pytest.fixture(scope="module")
@@ -56,29 +78,29 @@ class TestNormalizeFrozenRowsHelper:
     """Unit tests for the ``_normalize_frozen_discrete_transition_rows`` helper."""
 
     def test_none_returns_none(self):
-        assert _normalize_frozen_discrete_transition_rows(None, 4) is None
+        assert _normalize_frozen_discrete_transition_rows(None, NO_SPIKE_1) is None
 
     def test_empty_list_returns_none(self):
-        assert _normalize_frozen_discrete_transition_rows([], 4) is None
+        assert _normalize_frozen_discrete_transition_rows([], NO_SPIKE_1) is None
 
     def test_empty_tuple_returns_none(self):
-        assert _normalize_frozen_discrete_transition_rows((), 4) is None
+        assert _normalize_frozen_discrete_transition_rows((), NO_SPIKE_1) is None
 
     def test_single_index(self):
-        mask = _normalize_frozen_discrete_transition_rows([1], 4)
+        mask = _normalize_frozen_discrete_transition_rows([1], NO_SPIKE_1)
         np.testing.assert_array_equal(mask, [False, True, False, False])
 
     def test_multiple_indices(self):
-        mask = _normalize_frozen_discrete_transition_rows([0, 2], 4)
+        mask = _normalize_frozen_discrete_transition_rows([0, 2], NO_SPIKE_1)
         np.testing.assert_array_equal(mask, [True, False, True, False])
 
     def test_tuple_indices(self):
-        mask = _normalize_frozen_discrete_transition_rows((1, 3), 4)
+        mask = _normalize_frozen_discrete_transition_rows((1, 3), NO_SPIKE_1)
         np.testing.assert_array_equal(mask, [False, True, False, True])
 
     def test_bool_mask_passthrough(self):
         input_mask = np.array([False, True, False, False])
-        mask = _normalize_frozen_discrete_transition_rows(input_mask, 4)
+        mask = _normalize_frozen_discrete_transition_rows(input_mask, NO_SPIKE_1)
         np.testing.assert_array_equal(mask, input_mask)
         # Must be a copy (mutating the input should not affect the returned mask)
         input_mask[0] = True
@@ -86,45 +108,78 @@ class TestNormalizeFrozenRowsHelper:
 
     def test_bool_mask_wrong_shape_raises(self):
         with pytest.raises(ValueError, match=r"boolean mask must have shape"):
-            _normalize_frozen_discrete_transition_rows(np.array([True, False]), 4)
+            _normalize_frozen_discrete_transition_rows(
+                np.array([True, False]), NO_SPIKE_1
+            )
 
     def test_index_out_of_range_raises(self):
         with pytest.raises(ValueError, match=r"indices must be in"):
-            _normalize_frozen_discrete_transition_rows([0, 5], 4)
+            _normalize_frozen_discrete_transition_rows([0, 5], NO_SPIKE_1)
 
     def test_negative_index_raises(self):
         with pytest.raises(ValueError, match=r"indices must be in"):
-            _normalize_frozen_discrete_transition_rows([-1], 4)
+            _normalize_frozen_discrete_transition_rows([-1], NO_SPIKE_1)
 
     def test_non_integer_dtype_raises(self):
         with pytest.raises(ValueError, match=r"integer indices or"):
-            _normalize_frozen_discrete_transition_rows(np.array([1.5]), 4)
+            _normalize_frozen_discrete_transition_rows(np.array([1.5]), NO_SPIKE_1)
+
+    def test_no_spike_role_selects_no_spike_rows(self):
+        mask = _normalize_frozen_discrete_transition_rows(
+            "no_spike", np.array([True, False, False, True])
+        )
+        np.testing.assert_array_equal(mask, [True, False, False, True])
+
+    def test_no_spike_role_without_no_spike_states_returns_none(self):
+        assert (
+            _normalize_frozen_discrete_transition_rows("no_spike", np.zeros(3, bool))
+            is None
+        )
+
+    def test_unknown_role_raises(self):
+        with pytest.raises(ValueError, match=r"'no_spike'"):
+            _normalize_frozen_discrete_transition_rows("local", NO_SPIKE_1)
 
     def test_2d_integer_raises(self):
         with pytest.raises(ValueError, match=r"index array must be 1D"):
-            _normalize_frozen_discrete_transition_rows(np.array([[0, 1]]), 4)
+            _normalize_frozen_discrete_transition_rows(np.array([[0, 1]]), NO_SPIKE_1)
 
 
 @pytest.mark.unit
 class TestDetectorConstructorPlumbing:
     """Constructor-level behavior: defaults, storage, validation."""
 
-    def test_non_local_sorted_spikes_default_freezes_no_spike(self):
-        """NonLocalSortedSpikesDetector freezes row 1 (No-Spike) by default."""
-        model = NonLocalSortedSpikesDetector()
-        assert model.frozen_discrete_transition_rows == (1,)
-        np.testing.assert_array_equal(
-            model._frozen_discrete_transition_rows_mask_,
-            [False, True, False, False],
-        )
+    @pytest.mark.parametrize("model_cls", ALL_MODEL_CLASSES)
+    def test_default_freezes_no_spike_states(self, model_cls):
+        """Every model freezes exactly its No-Spike rows by default."""
+        model = model_cls()
+        assert model.frozen_discrete_transition_rows == "no_spike"
+        is_no_spike = np.array([obs.is_no_spike for obs in model.observation_models])
+        mask = model._frozen_discrete_transition_rows_mask_
+        if is_no_spike.any():
+            np.testing.assert_array_equal(mask, is_no_spike)
+        else:
+            assert mask is None
 
-    def test_non_local_clusterless_default_freezes_no_spike(self):
-        """NonLocalClusterlessDetector freezes row 1 (No-Spike) by default."""
-        model = NonLocalClusterlessDetector()
-        assert model.frozen_discrete_transition_rows == (1,)
+    def test_default_follows_reordered_no_spike_state(self):
+        """The No-Spike row is frozen wherever it is listed, not at index 1."""
+        model = NoSpikeContFragSortedSpikesClassifier()
+        order = [1, 2, 0]
+        defaults = model.discrete_transition_type.values
+        reordered = NoSpikeContFragSortedSpikesClassifier(
+            discrete_initial_conditions=model.discrete_initial_conditions[order],
+            discrete_transition_type=DiscreteStationaryCustom(
+                values=defaults[np.ix_(order, order)]
+            ),
+            discrete_transition_stickiness=model.discrete_transition_stickiness[order],
+            continuous_transition_types=[
+                [model.continuous_transition_types[i][j] for j in order] for i in order
+            ],
+            observation_models=[model.observation_models[i] for i in order],
+            state_names=[model.state_names[i] for i in order],
+        )
         np.testing.assert_array_equal(
-            model._frozen_discrete_transition_rows_mask_,
-            [False, True, False, False],
+            reordered._frozen_discrete_transition_rows_mask_, [False, False, True]
         )
 
     def test_non_local_explicit_none_opts_out(self):
@@ -143,10 +198,11 @@ class TestDetectorConstructorPlumbing:
             [True, True, False, False],
         )
 
-    def test_non_nonlocal_model_no_default_freeze(self):
-        """Non-NonLocal models default to None (no frozen rows)."""
-        model = ContFragSortedSpikesClassifier()
-        assert model.frozen_discrete_transition_rows is None
+    def test_explicit_none_opts_out_without_no_spike_role(self):
+        """None disables freezing on a model with a No-Spike state."""
+        model = NoSpikeContFragSortedSpikesClassifier(
+            frozen_discrete_transition_rows=None
+        )
         assert model._frozen_discrete_transition_rows_mask_ is None
 
     def test_constructor_rejects_bad_input(self):
@@ -284,6 +340,31 @@ class TestFrozenRowEndToEnd:
         assert not np.allclose(
             detector.discrete_transition_coefficients_[:, 0],
             initial_coefficients[:, 0],
+        )
+
+    def test_no_spike_cont_frag_freezes_no_spike_row_by_default(self, em_recording):
+        """The no-spike/continuous/fragmented classifier keeps its No-Spike
+        row (index 0) fixed through EM by default, while other rows move."""
+        _, position, spike_times, time, is_event = em_recording
+        classifier = NoSpikeContFragSortedSpikesClassifier()
+        initial_no_spike_row = self._initial_transition_row(classifier, 0)
+        initial_other_row = self._initial_transition_row(classifier, 1)
+
+        classifier.estimate_parameters(
+            position_time=time,
+            position=position,
+            spike_times=spike_times,
+            time_edges=time_edges_from_centers(time),
+            is_training=~is_event,
+            max_iter=3,
+            estimate_encoding_model=False,
+        )
+
+        np.testing.assert_array_equal(
+            classifier.discrete_state_transitions_[0], initial_no_spike_row
+        )
+        assert not np.array_equal(
+            classifier.discrete_state_transitions_[1], initial_other_row
         )
 
     def test_opt_out_allows_no_spike_row_to_update(self, em_recording):

@@ -15,6 +15,7 @@ from non_local_detector.types import (
     ContinuousTransitions,
     DiscreteTransitions,
     Environments,
+    FrozenTransitionRows,
     Observations,
     StateNames,
     Stickiness,
@@ -181,11 +182,13 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         Dimensionless weight for data-adaptive Dirichlet prior scaling
         during EM re-estimation of discrete transitions. By default
         ``0.0`` (fixed-count prior).
-    frozen_discrete_transition_rows : array-like or None, optional
+    frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
-        default ``(1,)``, which freezes the No-Spike row so its
-        self-transition cannot collapse to fit stray spike gaps. Pass
-        ``None`` to disable row freezing.
+        default ``"no_spike"``, which freezes the No-Spike state's row
+        (found from ``observation_models``, wherever it is listed) so its
+        self-transition cannot collapse to fit stray spike gaps. Row
+        indices or a boolean mask select rows by position; ``None``
+        disables row freezing.
     local_position_std : float or None, optional
         Controls the Local state's spatial representation:
 
@@ -248,9 +251,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         non_local_position_penalty: float = 0.0,
         non_local_penalty_std: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = (1,),
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
         local_position_std: float | None = None,
     ):
         params = _initialize_params(
@@ -366,11 +367,13 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         Dimensionless weight for data-adaptive Dirichlet prior scaling
         during EM re-estimation of discrete transitions. By default
         ``0.0`` (fixed-count prior).
-    frozen_discrete_transition_rows : array-like or None, optional
+    frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
-        default ``(1,)``, which freezes the No-Spike row so its
-        self-transition cannot collapse to fit stray spike gaps. Pass
-        ``None`` to disable row freezing.
+        default ``"no_spike"``, which freezes the No-Spike state's row
+        (found from ``observation_models``, wherever it is listed) so its
+        self-transition cannot collapse to fit stray spike gaps. Row
+        indices or a boolean mask select rows by position; ``None``
+        disables row freezing.
     local_position_std : float or None, optional
         Controls the Local state's spatial representation:
 
@@ -434,9 +437,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         non_local_position_penalty: float = 0.0,
         non_local_penalty_std: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = (1,),
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
         local_position_std: float | None = None,
     ):
         params = _initialize_params(
