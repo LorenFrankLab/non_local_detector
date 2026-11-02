@@ -364,7 +364,7 @@ class Environment:
         return result.copy()
 
     def decoding_position(self, points: np.ndarray) -> np.ndarray:
-        """Points in the coordinates the place grid is binned in.
+        """Map points into the coordinates the place grid is binned in.
 
         On a track graph, multi-dimensional points (raw ``(x, y)`` tracking)
         are linearized onto the track; points with one column, or a 1-D array,
@@ -374,6 +374,7 @@ class Environment:
         Parameters
         ----------
         points : np.ndarray, shape (n_points, n_position_dims) or (n_points,)
+            Positions, such as the animal's tracked position.
 
         Returns
         -------
