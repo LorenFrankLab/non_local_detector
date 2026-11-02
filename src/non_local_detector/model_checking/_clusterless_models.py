@@ -50,9 +50,8 @@ def electrode_model(encoding_model: dict, algorithm: str, electrode: int) -> Any
         return _GMMElectrode(encoding_model, electrode)
     if algorithm == "clusterless_diffusion":
         return _DiffusionElectrode(encoding_model, electrode)
-    raise ValueError(
-        f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
-    )
+    msg = f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
+    raise ValueError(msg)
 
 
 def _gaussian_log_kernel(points, centers, std, block_elements=2**18):
@@ -98,7 +97,8 @@ def _require_interior_bins(environment, positions, full_to_local):
     """Interior-bin indices of ``positions``; raise if any is off the track."""
     bins = _interior_bin_indices(environment, positions, full_to_local)
     if np.any(bins < 0):
-        raise ValueError("positions must lie in interior bins of the environment")
+        msg = "positions must lie in interior bins of the environment"
+        raise ValueError(msg)
     return bins
 
 
@@ -164,7 +164,8 @@ class _KDEElectrode(_MarkKernelMixture):
             np.ones(len(self.marks)) if weights is None else np.asarray(weights, float)
         )
         if self.mean_rate <= 0 or not np.any(self.weights > 0):
-            raise ValueError(f"electrode {electrode} has no fitted encoding spikes")
+            msg = f"electrode {electrode} has no fitted encoding spikes"
+            raise ValueError(msg)
         n_position_dims = self.positions.shape[1]
         self.position_std = np.broadcast_to(
             np.asarray(model["position_std"], float), (n_position_dims,)
@@ -242,7 +243,8 @@ class _DiffusionElectrode(_MarkKernelMixture):
         self.mean_rate = float(model["mean_rates"][electrode])
         self.weight_total = float(model["weight_total"][electrode])
         if self.mean_rate <= 0 or self.weight_total <= 0:
-            raise ValueError(f"electrode {electrode} has no fitted encoding spikes")
+            msg = f"electrode {electrode} has no fitted encoding spikes"
+            raise ValueError(msg)
         node_order = np.asarray(model["node_order"])
         self.n_bins = node_order.size
         self.full_to_local = _full_to_local(
@@ -357,7 +359,8 @@ class _GMMElectrode:
     def __init__(self, model: dict, electrode: int) -> None:
         self.joint = model["joint_models"][electrode]
         if self.joint is None:
-            raise ValueError(f"electrode {electrode} has no fitted encoding spikes")
+            msg = f"electrode {electrode} has no fitted encoding spikes"
+            raise ValueError(msg)
         self.environment = model["environment"]
         self.mean_rate = float(model["mean_rates"][electrode])
         self.gpi = model["gpi_models"][electrode]

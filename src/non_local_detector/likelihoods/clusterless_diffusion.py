@@ -162,23 +162,28 @@ def _validate_diffusion_params(
     """
     position_std_arr = np.asarray(position_std, dtype=float)
     if position_std_arr.size != 1:
-        raise ValidationError(
+        msg = (
             "position_std must be a scalar; the graph heat kernel is isotropic in "
-            "graph distance, so per-dimension bandwidths are not supported.",
+            "graph distance, so per-dimension bandwidths are not supported."
+        )
+        raise ValidationError(
+            msg,
             expected="a scalar position_std",
             got=f"array of shape {position_std_arr.shape}",
         )
     position_std = float(position_std_arr.item())
     if not (position_std > 0.0 and np.isfinite(position_std)):
+        msg = "position_std must be a finite positive number"
         raise ValidationError(
-            "position_std must be a finite positive number",
+            msg,
             expected="0 < position_std < inf",
             got=f"position_std = {position_std}",
         )
     waveform_std_arr = np.asarray(waveform_std, dtype=float)
     if not (np.all(waveform_std_arr > 0.0) and np.all(np.isfinite(waveform_std_arr))):
+        msg = "waveform_std must be finite and positive"
         raise ValidationError(
-            "waveform_std must be finite and positive",
+            msg,
             expected="0 < waveform_std < inf",
             got=f"waveform_std = {waveform_std}",
         )
@@ -186,27 +191,31 @@ def _validate_diffusion_params(
     if heat_kernel_rank is not None:
         # Reject float/bool/zero/negative before it reaches SciPy / cache slicing.
         if isinstance(heat_kernel_rank, bool) or not isinstance(heat_kernel_rank, int):
+            msg = "heat_kernel_rank must be None or a positive integer"
             raise ValidationError(
-                "heat_kernel_rank must be None or a positive integer",
+                msg,
                 expected="None or a positive int",
                 got=f"{heat_kernel_rank!r} (type {type(heat_kernel_rank).__name__})",
             )
         if heat_kernel_rank < 1:
+            msg = "heat_kernel_rank must be a positive integer"
             raise ValidationError(
-                "heat_kernel_rank must be a positive integer",
+                msg,
                 expected="heat_kernel_rank >= 1",
                 got=f"heat_kernel_rank = {heat_kernel_rank}",
             )
 
     if isinstance(memory_budget, bool) or not isinstance(memory_budget, int):
+        msg = "memory_budget must be a positive integer number of bytes"
         raise ValidationError(
-            "memory_budget must be a positive integer number of bytes",
+            msg,
             expected="a positive int",
             got=f"{memory_budget!r} (type {type(memory_budget).__name__})",
         )
     if memory_budget < 1:
+        msg = "memory_budget must be a positive integer number of bytes"
         raise ValidationError(
-            "memory_budget must be a positive integer number of bytes",
+            msg,
             expected="memory_budget >= 1",
             got=f"memory_budget = {memory_budget}",
         )
@@ -216,8 +225,9 @@ def _validate_diffusion_params(
         or not isinstance(block_size, int)
         or block_size < 1
     ):
+        msg = "block_size must be a positive integer"
         raise ValidationError(
-            "block_size must be a positive integer",
+            msg,
             expected="a positive int >= 1",
             got=f"{block_size!r}",
         )
@@ -238,9 +248,12 @@ def _validate_waveform_std_shape(waveform_std, n_features: int, electrode: int) 
     if waveform_std_arr.ndim == 0:
         return  # a scalar bandwidth broadcasts to any feature dimension
     if waveform_std_arr.ndim != 1 or waveform_std_arr.shape[0] != n_features:
-        raise ValidationError(
+        msg = (
             "waveform_std must be a scalar or a 1-D array of length n_features "
-            "(matching each electrode's waveform-feature dimension)",
+            "(matching each electrode's waveform-feature dimension)"
+        )
+        raise ValidationError(
+            msg,
             expected=f"scalar or shape ({n_features},) for electrode {electrode}",
             got=f"waveform_std of shape {waveform_std_arr.shape}",
         )
@@ -357,10 +370,11 @@ def fit_clusterless_diffusion_encoding_model(
         _encoding_support=_encoding_support,
     )
     if environment.place_bin_centers_ is None:
-        raise ValueError(
+        msg = (
             "Environment must be fitted with place_bin_centers_. "
             "Call environment.fit_place_grid() first."
         )
+        raise ValueError(msg)
 
     n_time_position = position.shape[0]
     position_std = _validate_diffusion_params(

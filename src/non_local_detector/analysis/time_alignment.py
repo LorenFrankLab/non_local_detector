@@ -59,18 +59,17 @@ def align_tracking_to_results(
         For an analysis, also require finite values in the covariates it uses.
     """
     if not isinstance(position_info, pd.DataFrame) or position_info.empty:
-        raise ValidationError("position_info must be a non-empty DataFrame")
+        msg = "position_info must be a non-empty DataFrame"
+        raise ValidationError(msg)
     try:
         sample_time = np.asarray(position_info.index, dtype=float)
         intervals = np.asarray(valid_position_intervals, dtype=float)
     except (TypeError, ValueError) as error:
-        raise ValidationError(
-            "Tracking timestamps and intervals must be numeric seconds"
-        ) from error
+        msg = "Tracking timestamps and intervals must be numeric seconds"
+        raise ValidationError(msg) from error
     if not np.isfinite(sample_time).all() or np.any(np.diff(sample_time) <= 0):
-        raise ValidationError(
-            "Tracking timestamps must be finite and strictly increasing; resolve duplicate epochs upstream"
-        )
+        msg = "Tracking timestamps must be finite and strictly increasing; resolve duplicate epochs upstream"
+        raise ValidationError(msg)
     if (
         intervals.ndim != 2
         or intervals.shape[1] != 2
@@ -79,23 +78,19 @@ def align_tracking_to_results(
         or np.any(intervals[:, 1] <= intervals[:, 0])
         or np.any(intervals[1:, 0] < intervals[:-1, 1])
     ):
-        raise ValidationError(
-            "valid_position_intervals must be ordered, non-overlapping [start, stop] intervals"
-        )
+        msg = "valid_position_intervals must be ordered, non-overlapping [start, stop] intervals"
+        raise ValidationError(msg)
     required = set(position_columns) | set(categorical_columns) | set(circular_columns)
     if not position_columns or not required.issubset(position_info.columns):
-        raise ValidationError(
-            "Declare existing position, categorical, and circular columns"
-        )
+        msg = "Declare existing position, categorical, and circular columns"
+        raise ValidationError(msg)
     if set(categorical_columns) & (set(position_columns) | set(circular_columns)):
-        raise ValidationError(
-            "Position and circular columns must be numeric, not categorical"
-        )
+        msg = "Position and circular columns must be numeric, not categorical"
+        raise ValidationError(msg)
     for name in ("time", "time_bin_start", "time_bin_end"):
         if name not in results.coords:
-            raise ValidationError(
-                f"Result coordinates must include {name}; retain the saved bin bounds"
-            )
+            msg = f"Result coordinates must include {name}; retain the saved bin bounds"
+            raise ValidationError(msg)
     center = np.asarray(results.time, dtype=float)
     start = np.asarray(results.time_bin_start, dtype=float)
     stop = np.asarray(results.time_bin_end, dtype=float)
@@ -108,16 +103,18 @@ def align_tracking_to_results(
         or np.any(center < start)
         or np.any(center > stop)
     ):
-        raise ValidationError(
+        msg = (
             "Result times and bin bounds must be finite, aligned one-dimensional arrays"
         )
+        raise ValidationError(msg)
     missing = (
         np.asarray(results.is_missing, dtype=bool)
         if "is_missing" in results
         else np.zeros(len(center), bool)
     )
     if missing.shape != center.shape:
-        raise ValidationError("Result is_missing must have one entry per bin")
+        msg = "Result is_missing must have one entry per bin"
+        raise ValidationError(msg)
 
     numeric = {}
     categorical = set(categorical_columns)
@@ -126,9 +123,8 @@ def align_tracking_to_results(
             try:
                 numeric[column] = position_info[column].to_numpy(dtype=float)
             except (TypeError, ValueError) as error:
-                raise ValidationError(
-                    f"Non-numeric column {column!r} must be declared categorical"
-                ) from error
+                msg = f"Non-numeric column {column!r} must be declared categorical"
+                raise ValidationError(msg) from error
     finite_position = np.all(
         np.isfinite(np.column_stack([numeric[c] for c in position_columns])), axis=1
     )

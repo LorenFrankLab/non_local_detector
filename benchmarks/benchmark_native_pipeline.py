@@ -425,11 +425,11 @@ def main():
         )
     )
     if peak[0] > budget:
-        raise RuntimeError(f"measured peak {peak[0]} exceeds declared budget {budget}")
+        msg = f"measured peak {peak[0]} exceeds declared budget {budget}"
+        raise RuntimeError(msg)
     if hashes_before != hashes_after or not report["benchmark_stable_during_run"]:
-        raise RuntimeError(
-            "imported implementation changed during the benchmark; rerun with frozen sources"
-        )
+        msg = "imported implementation changed during the benchmark; rerun with frozen sources"
+        raise RuntimeError(msg)
     stats = devices[0].memory_stats() or {}
     if (
         args.device_budget_gib is not None
@@ -439,9 +439,8 @@ def main():
         )
         > args.device_budget_gib * 1024**3
     ):
-        raise RuntimeError(
-            "measured device allocation/reservation exceeds declared budget"
-        )
+        msg = "measured device allocation/reservation exceeds declared budget"
+        raise RuntimeError(msg)
 
 
 if __name__ == "__main__":

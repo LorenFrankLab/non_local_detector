@@ -1071,7 +1071,8 @@ def test_a_failing_newton_optimizer_falls_back_to_gradient_steps(monkeypatch):
     def flaky_minimize(*args, **kwargs):
         methods.append(kwargs["method"])
         if kwargs["method"] == "trust-exact":
-            raise ValueError("array must not contain infs or NaNs")
+            msg = "array must not contain infs or NaNs"
+            raise ValueError(msg)
         return real_minimize(*args, **kwargs)
 
     monkeypatch.setattr(module, "minimize", flaky_minimize)

@@ -68,14 +68,16 @@ def _budget(nbytes, maximum, description):
         or isinstance(maximum, bool)
         or maximum < 0
     ):
-        raise ValueError("Dense transition byte budget must be a nonnegative integer")
+        msg = "Dense transition byte budget must be a nonnegative integer"
+        raise ValueError(msg)
     if nbytes > maximum:
-        raise DenseTransitionBudgetError(
+        msg = (
             f"{description} requires {nbytes:,} bytes, exceeding the "
             f"{maximum:,}-byte dense transition budget. Use supported structured "
             "products, request a smaller dense selection, or explicitly choose "
             "a feasible dense budget. EM/Viterbi/plotting may require dense data."
         )
+        raise DenseTransitionBudgetError(msg)
 
 
 def _nan_result(result, source):
@@ -337,15 +339,15 @@ class BlockTransitionOperator:
 
     def bind_discrete(self, weights):
         if np.shape(weights) != (len(self.state_sizes),) * 2:
-            raise ValueError("discrete_weights must have shape (n_states, n_states)")
+            msg = "discrete_weights must have shape (n_states, n_states)"
+            raise ValueError(msg)
         return replace(self, discrete_weights=weights)
 
     def restricted(self, mask):
         mask = np.asarray(mask, dtype=bool)
         if mask.shape != (self.n_bins,):
-            raise ValueError(
-                "Restriction mask must have one entry per combined state bin"
-            )
+            msg = "Restriction mask must have one entry per combined state bin"
+            raise ValueError(msg)
         boundaries = np.cumsum((0, *self.state_sizes))
         indices = tuple(
             np.flatnonzero(mask[start:stop])
@@ -367,7 +369,8 @@ class BlockTransitionOperator:
         if weights is None:
             return jnp.ones((len(self.state_sizes),) * 2, dtype=values.dtype)
         if weights.shape != (len(self.state_sizes),) * 2:
-            raise ValueError("Pass one S-by-S discrete transition matrix per step")
+            msg = "Pass one S-by-S discrete transition matrix per step"
+            raise ValueError(msg)
         return jnp.asarray(weights, dtype=values.dtype)
 
     def forward(self, probabilities, discrete_weights=None):
@@ -621,7 +624,8 @@ class FusedBlockTransition:
         if weights is None:
             return jnp.ones(len(self.state_sizes) ** 2, dtype=values.dtype)
         if weights.shape != (len(self.state_sizes),) * 2:
-            raise ValueError("Pass one S-by-S discrete transition matrix per step")
+            msg = "Pass one S-by-S discrete transition matrix per step"
+            raise ValueError(msg)
         return jnp.asarray(weights, dtype=values.dtype).ravel()
 
     def forward(self, probabilities, discrete_weights=None):
@@ -818,7 +822,8 @@ class LazyDenseTransition:
                 basic.append(True)
             elif isinstance(item, (int, np.integer)):
                 if not -size <= item < size:
-                    raise IndexError("Transition index out of range")
+                    msg = "Transition index out of range"
+                    raise IndexError(msg)
                 indices.append(np.asarray(item % size))
                 basic.append(True)
             else:
@@ -828,7 +833,8 @@ class LazyDenseTransition:
                 elif not np.issubdtype(index.dtype, np.integer):
                     return np.asarray(self)[key]
                 if np.any((index < -size) | (index >= size)):
-                    raise IndexError("Transition index out of range")
+                    msg = "Transition index out of range"
+                    raise IndexError(msg)
                 indices.append(np.where(index < 0, index + size, index))
                 basic.append(False)
         rows, columns = indices
@@ -858,9 +864,8 @@ class LazyDenseTransition:
         return result
 
     def __setitem__(self, key, value):
-        raise TypeError(
-            "Structured transitions are read-only; choose the dense representation to edit a matrix"
-        )
+        msg = "Structured transitions are read-only; choose the dense representation to edit a matrix"
+        raise TypeError(msg)
 
     def astype(self, dtype, **kwargs):
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
@@ -870,7 +875,8 @@ def _find_environment(environments, name):
     for environment in environments:
         if environment.environment_name == name:
             return environment
-    raise ValueError(f"Environment {name!r} not found")
+    msg = f"Environment {name!r} not found"
+    raise ValueError(msg)
 
 
 def _mask(environment):
@@ -883,28 +889,26 @@ def _gaussian_block(transition, environment):
         or transition.use_manifold_distance
         or transition.direction is not None
     ):
-        raise UnsupportedTransitionError(
+        msg = (
             "Graph, manifold-distance and directional RandomWalk require dense fallback"
         )
+        raise UnsupportedTransitionError(msg)
     centers = np.asarray(environment.place_bin_centers_, dtype=float)
     axes = tuple(np.unique(centers[:, axis]) for axis in range(centers.shape[1]))
     shape = tuple(len(axis) for axis in axes)
     if int(np.prod(shape)) != len(centers):
-        raise UnsupportedTransitionError(
-            "RandomWalk needs a complete Cartesian grid before interior masking"
-        )
+        msg = "RandomWalk needs a complete Cartesian grid before interior masking"
+        raise UnsupportedTransitionError(msg)
     expected = np.stack(
         [grid.ravel() for grid in np.meshgrid(*axes, indexing="ij")], axis=1
     )
     if not np.array_equal(centers, expected):
-        raise UnsupportedTransitionError(
-            "RandomWalk grid must retain canonical Cartesian ordering"
-        )
+        msg = "RandomWalk grid must retain canonical Cartesian ordering"
+        raise UnsupportedTransitionError(msg)
     mean = np.asarray(transition.movement_mean)
     if mean.ndim != 0 or not np.isfinite(mean):
-        raise UnsupportedTransitionError(
-            "Structured RandomWalk supports only a finite scalar mean shift"
-        )
+        msg = "Structured RandomWalk supports only a finite scalar mean shift"
+        raise UnsupportedTransitionError(msg)
     covariance = np.asarray(transition.movement_var, dtype=float)
     dimensions = centers.shape[1]
     if covariance.ndim == 0:
@@ -916,13 +920,11 @@ def _gaussian_block(transition, environment):
     ):
         variance = np.diag(covariance)
     else:
-        raise UnsupportedTransitionError(
-            "Nonseparable covariance requires dense RandomWalk fallback"
-        )
+        msg = "Nonseparable covariance requires dense RandomWalk fallback"
+        raise UnsupportedTransitionError(msg)
     if not np.all(np.isfinite(variance)) or np.any(variance <= 0):
-        raise UnsupportedTransitionError(
-            "Structured Gaussian variance must be finite and positive"
-        )
+        msg = "Structured Gaussian variance must be finite and positive"
+        raise UnsupportedTransitionError(msg)
     mask = _mask(environment)
     raw_factors = tuple(
         norm.pdf(axis[None, :], loc=axis[:, None] + float(mean), scale=np.sqrt(var))
@@ -940,9 +942,8 @@ def _gaussian_block(transition, environment):
     if not np.all(np.isfinite(scaled_destinations)) or not np.all(
         np.isfinite(scaled_sources)
     ):
-        raise UnsupportedTransitionError(
-            "Gaussian coordinate scaling needs dense fallback"
-        )
+        msg = "Gaussian coordinate scaling needs dense fallback"
+        raise UnsupportedTransitionError(msg)
     _, closest = cKDTree(scaled_destinations).query(scaled_sources)
     distribution = multivariate_normal(mean=np.zeros(dimensions), cov=variance)
     deviations = valid[closest] - (valid + float(mean))
@@ -953,9 +954,8 @@ def _gaussian_block(transition, environment):
     ambiguous_zero = (largest_pdf == 0) & (largest_log_pdf + uncertainty >= zero_cutoff)
     subnormal = (largest_pdf > 0) & (largest_pdf < np.finfo(float).tiny)
     if not np.all(np.isfinite(largest_pdf)) or np.any(ambiguous_zero | subnormal):
-        raise UnsupportedTransitionError(
-            "Subnormal/overflowed original Gaussian PDF normalization requires dense fallback"
-        )
+        msg = "Subnormal/overflowed original Gaussian PDF normalization requires dense fallback"
+        raise UnsupportedTransitionError(msg)
 
     # Multiplying each axis row by a positive constant cancels EXACTLY in the
     # final row normalization. Scale before casting to float32 so a normal
@@ -982,9 +982,8 @@ def _gaussian_block(transition, environment):
         (largest_pdf > 0)
         & (largest_scaled_log_pdf <= np.log(np.finfo(np.float32).tiny))
     ):
-        raise UnsupportedTransitionError(
-            "Largest valid scaled Gaussian term is not safely normal in float32; use dense fallback"
-        )
+        msg = "Largest valid scaled Gaussian term is not safely normal in float32; use dense fallback"
+        raise UnsupportedTransitionError(msg)
     factors = tuple(factors)
     normalizer = _axes_product(
         mask.astype(float).reshape(shape), factors, backward=True, numpy=True
@@ -993,25 +992,24 @@ def _gaussian_block(transition, environment):
     original_positive[mask] = largest_pdf > 0
     normalizer = np.where(original_positive, normalizer, 0)
     if np.any(original_positive & (normalizer < np.finfo(np.float32).tiny)):
-        raise UnsupportedTransitionError(
-            "Masked Gaussian normalization cannot be represented safely in float32; use dense fallback"
-        )
+        msg = "Masked Gaussian normalization cannot be represented safely in float32; use dense fallback"
+        raise UnsupportedTransitionError(msg)
     return GaussianGridBlock(factors, mask, normalizer)
 
 
 def _structured_block(transition, environments, source_size, target_size):
     if isinstance(transition, EmpiricalMovement):
-        raise UnsupportedTransitionError(
-            "EmpiricalMovement requires its original fit-context dense fallback"
-        )
+        msg = "EmpiricalMovement requires its original fit-context dense fallback"
+        raise UnsupportedTransitionError(msg)
     if source_size == 1 and target_size > 1:
         if not hasattr(transition, "environment_name"):
             # A configuration error, as in the dense constructor: no fallback
             # may broadcast a scalar block across the destination bins.
-            raise ValueError(
+            msg = (
                 "Transition must have an environment_name attribute for discrete "
                 "to continuous transitions"
             )
+            raise ValueError(msg)
         destination = _mask(
             _find_environment(environments, transition.environment_name)
         )
@@ -1045,9 +1043,8 @@ def _structured_block(transition, environments, source_size, target_size):
         return _gaussian_block(
             transition, _find_environment(environments, transition.environment_name)
         )
-    raise UnsupportedTransitionError(
-        f"No proven exact structured operator for {type(transition).__name__}"
-    )
+    msg = f"No proven exact structured operator for {type(transition).__name__}"
+    raise UnsupportedTransitionError(msg)
 
 
 # Package transitions whose dense constructors the fallback planner understands.
@@ -1082,9 +1079,10 @@ def _check_known_fallback_shape(transition, environments, expected):
     else:
         return
     if np.broadcast_shapes(shape, expected) != expected:
-        raise ValueError(
+        msg = (
             f"Dense transition block shape {shape} does not match state bins {expected}"
         )
+        raise ValueError(msg)
 
 
 def build_transition_operator(
@@ -1140,12 +1138,14 @@ def build_transition_operator(
     """
     sizes = tuple(int(size) for size in state_sizes)
     if not sizes or any(size <= 0 for size in sizes):
-        raise ValueError("state_sizes must contain positive padded bin counts")
+        msg = "state_sizes must contain positive padded bin counts"
+        raise ValueError(msg)
     count = len(sizes)
     if len(transition_types) != count or any(
         len(row) != count for row in transition_types
     ):
-        raise ValueError("transition_types must be an n_states by n_states grid")
+        msg = "transition_types must be an n_states by n_states grid"
+        raise ValueError(msg)
     _budget(0, max_dense_bytes, "Dense fallback budget")
     plan = []
     fallback_bytes = 0
@@ -1163,9 +1163,8 @@ def build_transition_operator(
                 )
                 if from_obs.is_local or to_obs.is_local:
                     if from_obs.environment_name != to_obs.environment_name:
-                        raise ValueError(
-                            "Cross-environment Discrete with multi-bin Local is unsupported; use explicit Uniform"
-                        )
+                        msg = "Cross-environment Discrete with multi-bin Local is unsupported; use explicit Uniform"
+                        raise ValueError(msg)
                     transition = Uniform(
                         environment_name=(
                             from_obs if from_obs.is_local else to_obs
@@ -1176,9 +1175,8 @@ def build_transition_operator(
                     transition, environments, sizes[source], sizes[target]
                 )
                 if block.shape != (sizes[source], sizes[target]):
-                    raise ValueError(
-                        f"Transition block shape {block.shape} does not match state bins {(sizes[source], sizes[target])}"
-                    )
+                    msg = f"Transition block shape {block.shape} does not match state bins {(sizes[source], sizes[target])}"
+                    raise ValueError(msg)
                 planned_row.append(block)
             except UnsupportedTransitionError:
                 if not allow_dense_fallback:
@@ -1205,9 +1203,8 @@ def build_transition_operator(
                 isinstance(env.distance_between_nodes_, LazyGraphDistances)
                 for env in environments
             ):
-                raise UnsupportedTransitionError(
-                    "Opaque custom dense fallback with deferred graph distances has no verified exact distance contract; use the legacy dense representation"
-                )
+                msg = "Opaque custom dense fallback with deferred graph distances has no verified exact distance contract; use the legacy dense representation"
+                raise UnsupportedTransitionError(msg)
             if type(block) is RandomWalk and block.use_manifold_distance:
                 env = _find_environment(environments, block.environment_name)
                 if isinstance(env.distance_between_nodes_, LazyGraphDistances):
@@ -1242,9 +1239,10 @@ def build_transition_operator(
                 continue
             if isinstance(block, EmpiricalMovement):
                 if position is None:
-                    raise UnsupportedTransitionError(
+                    msg = (
                         "EmpiricalMovement dense fallback requires position fit context"
                     )
+                    raise UnsupportedTransitionError(msg)
                 training = (
                     np.ones(len(position), dtype=bool)
                     if is_training is None

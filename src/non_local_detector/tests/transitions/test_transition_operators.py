@@ -136,7 +136,8 @@ def test_invalid_scalar_gaussian_shape_is_rejected_before_dense_allocation(monke
     env = environment((3, 4))
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("allocated an invalid spatial dense block")
+        msg = "allocated an invalid spatial dense block"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(RandomWalk, "make_state_transition", forbidden)
     with pytest.raises(ValueError, match="shape"):
@@ -152,9 +153,8 @@ def test_invalid_scalar_gaussian_shape_is_rejected_before_dense_allocation(monke
 def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
     class Custom:
         def make_state_transition(self, environments):
-            raise AssertionError(
-                "opaque constructor cannot reinterpret sparse distances"
-            )
+            msg = "opaque constructor cannot reinterpret sparse distances"
+            raise AssertionError(msg)
 
     position = np.array([[0.0, 0.0], [3.0, 4.0]])
     env = Environment(place_bin_size=1.0).fit_place_grid(
@@ -189,7 +189,8 @@ def test_slotted_custom_never_receives_a_temporary_dense_environment():
 
         def make_state_transition(self, environments):
             self.environment = environments[0]
-            raise AssertionError("opaque lazy fallback must reject before construction")
+            msg = "opaque lazy fallback must reject before construction"
+            raise AssertionError(msg)
 
     position = np.array([[0.0, 0.0], [3.0, 4.0]])
     env = Environment(place_bin_size=1.0).fit_place_grid(

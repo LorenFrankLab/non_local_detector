@@ -119,7 +119,8 @@ def _euclidean_random_walk(
     if environment.place_bin_centers_ is not None:
         place_bin_centers = environment.place_bin_centers_
     else:
-        raise ValueError("Environment must have defined place bin centers")
+        msg = "Environment must have defined place bin centers"
+        raise ValueError(msg)
 
     return np.stack(
         [
@@ -178,9 +179,8 @@ class RandomWalk:
             "inward",
             "outward",
         ):
-            raise ValueError(
-                f"direction must be 'inward' or 'outward', got '{self.direction}'"
-            )
+            msg = f"direction must be 'inward' or 'outward', got '{self.direction}'"
+            raise ValueError(msg)
         self.environment = find_environment_by_name(environments, self.environment_name)
         # ``direction`` is only consulted on the N-D-grid manifold-distance path
         # (no track_graph + use_manifold_distance=True). On every other path it
@@ -188,14 +188,15 @@ class RandomWalk:
         if self.direction is not None and not (
             self.environment.track_graph is None and self.use_manifold_distance
         ):
+            msg = (
+                "direction-aware RandomWalk is only applied on an N-D grid "
+                "environment with use_manifold_distance=True; got "
+                f"track_graph={'set' if self.environment.track_graph is not None else 'None'}"
+                f", use_manifold_distance={self.use_manifold_distance}. The "
+                "direction= argument would otherwise be silently ignored."
+            )
             raise ConfigurationError(
-                (
-                    "direction-aware RandomWalk is only applied on an N-D grid "
-                    "environment with use_manifold_distance=True; got "
-                    f"track_graph={'set' if self.environment.track_graph is not None else 'None'}"
-                    f", use_manifold_distance={self.use_manifold_distance}. The "
-                    "direction= argument would otherwise be silently ignored."
-                ),
+                (msg),
                 hint=(
                     "Set use_manifold_distance=True on an environment without a "
                     "track_graph (a fitted N-D grid), or remove the direction= "
@@ -240,14 +241,15 @@ class RandomWalk:
                 if self.environment.track_graphDD is None or not isinstance(
                     distance_data, np.ndarray
                 ):
+                    msg = (
+                        "direction-aware RandomWalk requires an N-D track graph "
+                        "and an array-valued distance_between_nodes_; got "
+                        f"track_graphDD={self.environment.track_graphDD!r}, "
+                        "distance_between_nodes_="
+                        f"{type(self.environment.distance_between_nodes_).__name__}."
+                    )
                     raise ConfigurationError(
-                        (
-                            "direction-aware RandomWalk requires an N-D track graph "
-                            "and an array-valued distance_between_nodes_; got "
-                            f"track_graphDD={self.environment.track_graphDD!r}, "
-                            "distance_between_nodes_="
-                            f"{type(self.environment.distance_between_nodes_).__name__}."
-                        ),
+                        (msg),
                         hint=(
                             "Either remove the direction= argument, or fit the "
                             "environment as an N-D grid (do not pass a track_graph) "
@@ -261,9 +263,8 @@ class RandomWalk:
                 }
                 direction_func = direction_funcs.get(self.direction.lower())
                 if direction_func is None:
-                    raise ValueError(
-                        f"direction must be 'inward' or 'outward', got '{self.direction}'"
-                    )
+                    msg = f"direction must be 'inward' or 'outward', got '{self.direction}'"
+                    raise ValueError(msg)
 
                 centrality = nx.closeness_centrality(
                     self.environment.track_graphDD, distance="distance"
@@ -283,25 +284,25 @@ class RandomWalk:
         if self.environment.place_bin_centers_ is not None:
             n_position_dims = self.environment.place_bin_centers_.shape[1]
         else:
-            raise ValueError("Environment must have defined place bin centers")
+            msg = "Environment must have defined place bin centers"
+            raise ValueError(msg)
         if n_position_dims != 1:
-            raise NotImplementedError(
-                "Random walk with track graph is only implemented for 1D environments"
-            )
+            msg = "Random walk with track graph is only implemented for 1D environments"
+            raise NotImplementedError(msg)
 
         if self.environment.place_bin_centers_nodes_df_ is not None:
             place_bin_center_ind_to_node = np.asarray(
                 self.environment.place_bin_centers_nodes_df_.node_id
             )
         else:
-            raise ValueError(
-                "Environment must have defined place_bin_centers_nodes_df_ for track graph"
-            )
+            msg = "Environment must have defined place_bin_centers_nodes_df_ for track graph"
+            raise ValueError(msg)
 
         if self.environment.distance_between_nodes_ is None:
-            raise ValueError(
+            msg = (
                 "Environment must have defined distance_between_nodes_ for track graph"
             )
+            raise ValueError(msg)
 
         return _random_walk_on_track_graph(
             self.environment.place_bin_centers_,
@@ -349,7 +350,8 @@ class Uniform:
         if self.environment1.place_bin_centers_ is not None:
             n_bins1 = self.environment1.place_bin_centers_.shape[0]
         else:
-            raise ValueError("Environment must have defined place bin centers")
+            msg = "Environment must have defined place bin centers"
+            raise ValueError(msg)
 
         is_track_interior1 = self.environment1.is_track_interior_flat_
 
@@ -363,7 +365,8 @@ class Uniform:
             if self.environment2.place_bin_centers_ is not None:
                 n_bins2 = self.environment2.place_bin_centers_.shape[0]
             else:
-                raise ValueError("Environment must have defined place bin centers")
+                msg = "Environment must have defined place bin centers"
+                raise ValueError(msg)
 
             is_track_interior2 = self.environment2.is_track_interior_flat_
 
@@ -406,7 +409,8 @@ class Identity:
         if self.environment.place_bin_centers_ is not None:
             n_bins = self.environment.place_bin_centers_.shape[0]
         else:
-            raise ValueError("Environment must have defined place bin centers")
+            msg = "Environment must have defined place bin centers"
+            raise ValueError(msg)
 
         transition_matrix = np.identity(n_bins)
 

@@ -277,7 +277,8 @@ def test_structured_fit_avoids_all_pairs_graph_and_dense_gaussian(
     model, fit, _ = checkpoint_recording("sorted")
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("quadratic setup used")
+        msg = "quadratic setup used"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(nx, "shortest_path_length", forbidden)
     monkeypatch.setattr(transitions, "_euclidean_random_walk", forbidden)
@@ -361,7 +362,8 @@ def test_fit_rejects_invalid_transition_arguments_before_refit(
     model, fit, _ = checkpoint_recording(family)
 
     def refit(*args, **kwargs):
-        raise AssertionError("environments were refit before validation")
+        msg = "environments were refit before validation"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(model, "initialize_environments", refit)
     with pytest.raises(ValidationError):

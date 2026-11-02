@@ -580,12 +580,14 @@ def predict_sorted_spikes_kde_log_likelihood(
         # host count matrix and compiled graph stay bounded for any request.
         for model in marginal_models:
             if not isinstance(model, KDEModel):
-                raise TypeError(
+                msg = (
                     "Local sorted-spikes KDE likelihood needs KDEModel marginal "
                     f"models from the fitted encoding model, got {type(model).__name__}."
                 )
+                raise TypeError(msg)
             if model.samples_ is None:
-                raise RuntimeError("This KDE instance is not fitted yet.")
+                msg = "This KDE instance is not fitted yet."
+                raise RuntimeError(msg)
         points = jnp.asarray(interpolated_position)
         if points.ndim == 1:
             points = points[:, None]

@@ -45,7 +45,8 @@ class DeviceMemory:
             return
         uuid = os.environ.get("CUDA_VISIBLE_DEVICES", "")
         if not uuid.startswith("GPU-") or "," in uuid:
-            raise ValueError("GPU measurement requires one CUDA_VISIBLE_DEVICES UUID")
+            msg = "GPU measurement requires one CUDA_VISIBLE_DEVICES UUID"
+            raise ValueError(msg)
         library = ctypes.CDLL("libnvidia-ml.so.1")
         self.check(library.nvmlInit_v2())
         library.nvmlDeviceGetHandleByUUID.argtypes = [
@@ -65,7 +66,8 @@ class DeviceMemory:
     @staticmethod
     def check(code):
         if code:
-            raise RuntimeError(f"NVML failed with status {code}")
+            msg = f"NVML failed with status {code}"
+            raise RuntimeError(msg)
 
     def used(self):
         if self.library is None:
@@ -109,7 +111,8 @@ class MemorySampler:
         self.stopped.set()
         self.thread.join()
         if self.error is not None:
-            raise RuntimeError("Memory sampler failed") from self.error
+            msg = "Memory sampler failed"
+            raise RuntimeError(msg) from self.error
 
 
 def file_hash(path):
@@ -149,13 +152,15 @@ def main():
     chunk_bytes = max(args.checkpoint_sizes) * args.hidden * 4
     preflight = 1536 * 1024**2 + 12 * chunk_bytes + args.hidden**2 * 8
     if preflight >= 2 * 1024**3:
-        raise MemoryError("Prototype preflight exceeds 2 GiB")
+        msg = "Prototype preflight exceeds 2 GiB"
+        raise MemoryError(msg)
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     devices = jax.devices(args.platform)
     if args.platform == "gpu" and not all(
         "NVIDIA" in device.device_kind for device in devices
     ):
-        raise RuntimeError("GPU memory qualification requires NVIDIA/NVML")
+        msg = "GPU memory qualification requires NVIDIA/NVML"
+        raise RuntimeError(msg)
     with jax.default_device(devices[0]):
         run(args, devices, preflight)
 
@@ -290,7 +295,8 @@ def run(args, devices, preflight):
             time.perf_counter() - started
         )
         if memory.host >= 2 * 1024**3 or (memory.gpu or 0) >= 2 * 1024**3:
-            raise MemoryError("Measured prototype memory exceeds 2 GiB")
+            msg = "Measured prototype memory exceeds 2 GiB"
+            raise MemoryError(msg)
         records.append(record)
         return values, evidence
 

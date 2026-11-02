@@ -88,7 +88,8 @@ def test_writer_exception_cleans_staging_without_touching_existing(tmp_path):
         ) as writer,
     ):
         writer.write("x", 0, np.ones(2, np.float32))
-        raise RuntimeError("I/O failure")
+        msg = "I/O failure"
+        raise RuntimeError(msg)
     assert not (tmp_path / "new").exists()
     assert not list(tmp_path.glob(".new-*"))
 

@@ -113,7 +113,7 @@ def check_em_iterations(
     iterations = int(final_i)
     lower_bound = float(final_lb)
     if iterations != expected_iterations or not np.isfinite(lower_bound):
-        raise RuntimeError(
+        msg = (
             f"EM ({covariance_type}) ran {iterations} of the requested "
             f"{expected_iterations} iterations with a final lower bound of "
             f"{lower_bound!r}. With tol=0.0 the loop stops as soon as the "
@@ -121,6 +121,7 @@ def check_em_iterations(
             "degenerate (identical or collinear samples) or produced a "
             "non-finite lower bound; the timings would compare unequal work."
         )
+        raise RuntimeError(msg)
 
 
 def main() -> None:

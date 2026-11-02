@@ -216,10 +216,11 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
             self._n_m_step,
             self._n_lower_bound,
         ):
-            raise RuntimeError(
+            msg = (
                 "scikit-learn's BayesianGaussianMixture internals changed: the "
                 "sample weights were not applied. Please report this issue."
             )
+            raise RuntimeError(msg)
         return self
 
     def _check_parameters(self, X, *args, **kwargs):
@@ -976,8 +977,9 @@ def predict_clusterless_mark_glm_log_likelihood(
     ):
         validate_spike_feature_pair(electrode_times, electrode_marks, electrode)
         if np.shape(electrode_marks)[1] != expected:
+            msg = f"waveform feature dimension changed for electrode {electrode}"
             raise ValidationError(
-                f"waveform feature dimension changed for electrode {electrode}",
+                msg,
                 expected=f"{expected} features per spike",
                 got=f"{np.shape(electrode_marks)[1]} features",
                 hint="Use the same waveform feature representation at fit and predict.",

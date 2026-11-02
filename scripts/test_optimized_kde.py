@@ -143,9 +143,8 @@ def test_estimate_functions_equivalence():
                     "    Differences are within acceptable float32 precision, continuing..."
                 )
             else:
-                raise AssertionError(
-                    f"Vectorized version not equivalent for {n_features}D"
-                )
+                msg = f"Vectorized version not equivalent for {n_features}D"
+                raise AssertionError(msg)
 
         # Compare logspace vs original
         diff_log = jnp.abs(result_original - result_logspace)
@@ -169,9 +168,8 @@ def test_estimate_functions_equivalence():
                     "    Differences are within acceptable float32 precision, continuing..."
                 )
             else:
-                raise AssertionError(
-                    f"Log-space version not equivalent for {n_features}D"
-                )
+                msg = f"Log-space version not equivalent for {n_features}D"
+                raise AssertionError(msg)
 
     print("  ✓ All tests passed\n")
 

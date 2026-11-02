@@ -241,7 +241,8 @@ def get_2D_distance(
         distance = np.linalg.norm(position1 - position2, axis=1)
     else:
         if edges is None:
-            raise ValueError("edges parameter is required when track_graph is provided")
+            msg = "edges parameter is required when track_graph is provided"
+            raise ValueError(msg)
         node_positions = nx.get_node_attributes(track_graph, "pos")
         node_ids = np.asarray(list(node_positions.keys()))
         node_positions = np.asarray(list(node_positions.values()))
@@ -331,7 +332,8 @@ def head_direction_simliarity(
         )
     else:
         if edges is None:
-            raise ValueError("edges parameter is required when track_graph is provided")
+            msg = "edges parameter is required when track_graph is provided"
+            raise ValueError(msg)
         map_estimate_direction = get_map_estimate_direction_from_track_graph(
             head_position, map_estimate, track_graph, edges, precomputed_distance
         )

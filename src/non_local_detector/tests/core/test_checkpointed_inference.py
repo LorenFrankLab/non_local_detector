@@ -337,7 +337,8 @@ def test_failure_leaves_no_completed_output_or_checkpoints(tmp_path):
         nonlocal calls
         calls += 1
         if calls == 6:
-            raise RuntimeError("writer upstream failure")
+            msg = "writer upstream failure"
+            raise RuntimeError(msg)
         return ll[kwargs["row_slice"]]
 
     with pytest.raises(RuntimeError, match="upstream failure"):
@@ -1048,7 +1049,8 @@ def test_sum_evidence_propagates_chunk_source_errors():
 
     def chunks():
         yield 1.0
-        raise OverflowError("raised by the likelihood callback")
+        msg = "raised by the likelihood callback"
+        raise OverflowError(msg)
 
     with pytest.raises(OverflowError, match="likelihood callback"):
         _sum_evidence(chunks())
@@ -1064,7 +1066,8 @@ def test_likelihood_overflow_error_aborts_stable_checkpointed_pass(tmp_path):
         # as an unrelated missing-checkpoint failure during replay.
         calls.append(kw["row_slice"].start)
         if calls.count(4) == 1 and kw["row_slice"].start == 4:
-            raise OverflowError("raised by the likelihood callback")
+            msg = "raised by the likelihood callback"
+            raise OverflowError(msg)
         return ll[kw["row_slice"]]
 
     with pytest.raises(OverflowError, match="likelihood callback"):

@@ -89,10 +89,11 @@ def _interior_bin_indices(
 def _validate_local_interpolation(local_interpolation: str) -> str:
     """Validate the local place-field lookup mode."""
     if local_interpolation not in _LOCAL_INTERPOLATION_MODES:
-        raise ValidationError(
+        msg = (
             "local_interpolation must be one of "
             f"{sorted(_LOCAL_INTERPOLATION_MODES)}, got {local_interpolation!r}"
         )
+        raise ValidationError(msg)
     return local_interpolation
 
 
@@ -103,7 +104,8 @@ def _grid_axes(environment: Environment) -> tuple[np.ndarray, ...]:
     is their tensor product, so these equal ``np.unique(place_bin_centers_[:, d])``.
     """
     if environment.edges_ is None:
-        raise ValueError("environment must be fitted (edges_ is None)")
+        msg = "environment must be fitted (edges_ is None)"
+        raise ValueError(msg)
     return tuple(get_centers(edge) for edge in environment.edges_)
 
 
@@ -503,9 +505,12 @@ def fit_sorted_spikes_diffusion_encoding_model(
     # isotropic in graph distance, so per-dimension bandwidths are not supported.
     position_std_arr = np.asarray(position_std, dtype=float)
     if position_std_arr.size != 1:
-        raise ValidationError(
+        msg = (
             "position_std must be a scalar; the graph heat kernel is isotropic in graph "
-            "distance, so per-dimension bandwidths are not supported.",
+            "distance, so per-dimension bandwidths are not supported."
+        )
+        raise ValidationError(
+            msg,
             expected="a scalar position_std",
             got=f"array of shape {position_std_arr.shape}",
         )

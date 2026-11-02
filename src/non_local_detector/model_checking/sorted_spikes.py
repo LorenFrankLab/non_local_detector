@@ -110,9 +110,11 @@ class TimeRescaling:
                 time_edges=self.time_edges,
             )
         if self.trial_id.shape != self.conditional_intensity.shape:
-            raise ValueError("trial_id must match conditional_intensity rows")
+            msg = "trial_id must match conditional_intensity rows"
+            raise ValueError(msg)
         if self.is_spike.shape != self.conditional_intensity.shape:
-            raise ValueError("is_spike must match conditional_intensity rows")
+            msg = "is_spike must match conditional_intensity rows"
+            raise ValueError(msg)
 
     @property
     def n_spikes(self) -> int:
@@ -387,7 +389,8 @@ def _integrated_conditional_intensity(
 ) -> np.ndarray:
     """Integrate explicitly selected rate units without guessing a clock."""
     if not isinstance(rate_units, str) or rate_units not in ("expected_counts", "Hz"):
-        raise ValueError("rate_units must be 'expected_counts' or 'Hz'")
+        msg = "rate_units must be 'expected_counts' or 'Hz'"
+        raise ValueError(msg)
     # Integrate Hz rates in float64 before any addition or multiplication.
     # Preserve the original arithmetic for explicit legacy expected counts.
     intensity = np.asarray(
@@ -395,30 +398,31 @@ def _integrated_conditional_intensity(
     )
     if rate_units == "expected_counts":
         if time is not None or time_edges is not None:
-            raise ValueError(
+            msg = (
                 "expected_counts uses the existing bin-index convention; "
                 "physical time or time_edges requires rate_units='Hz'"
             )
+            raise ValueError(msg)
         return (
             np.cumsum(intensity)
             if legacy_residuals
             else integrate.cumulative_trapezoid(intensity, initial=0.0)
         )
     if (time is None) == (time_edges is None):
-        raise ValueError(
-            "Hz inputs require exactly one of time or time_edges in seconds"
-        )
+        msg = "Hz inputs require exactly one of time or time_edges in seconds"
+        raise ValueError(msg)
     if intensity.ndim != 1 or not intensity.size:
-        raise ValueError(
-            "conditional_intensity must have nonempty one-dimensional rows"
-        )
+        msg = "conditional_intensity must have nonempty one-dimensional rows"
+        raise ValueError(msg)
     if not np.all(np.isfinite(intensity)) or np.any(intensity < 0):
-        raise ValueError("conditional_intensity must be finite and nonnegative")
+        msg = "conditional_intensity must be finite and nonnegative"
+        raise ValueError(msg)
     grid = np.asarray(time if time is not None else time_edges, dtype=float)
     expected_size = len(intensity) + (time_edges is not None)
     if grid.ndim != 1 or grid.size != expected_size:
         shape = "n_time" if time is not None else "n_time + 1"
-        raise ValueError(f"physical grid must have shape ({shape},)")
+        msg = f"physical grid must have shape ({shape},)"
+        raise ValueError(msg)
     with np.errstate(over="ignore", invalid="ignore"):
         durations = np.diff(grid)
     if (
@@ -426,7 +430,8 @@ def _integrated_conditional_intensity(
         or not np.all(np.isfinite(durations))
         or np.any(durations <= 0)
     ):
-        raise ValueError("physical time must be finite and strictly increasing")
+        msg = "physical time must be finite and strictly increasing"
+        raise ValueError(msg)
     if time_edges is not None:
         return np.cumsum(intensity * durations)
     return integrate.cumulative_trapezoid(intensity, x=grid, initial=0.0)
@@ -485,7 +490,8 @@ def uniform_rescaled_ISIs(
     )
     is_spike = np.asarray(is_spike)
     if is_spike.shape != integrated_conditional_intensity.shape:
-        raise ValueError("is_spike must match conditional_intensity rows")
+        msg = "is_spike must match conditional_intensity rows"
+        raise ValueError(msg)
     # Rescale the ISIs to unit rate Poisson: \Lambda(spike_k) - \Lambda(spike_{k-1})
     # These should be exponentially distributed with mean 1
     rescaled_ISIs = _rescaled_ISIs(integrated_conditional_intensity, is_spike)
@@ -544,7 +550,8 @@ def point_process_residuals(
     )
     is_spike = np.asarray(is_spike)
     if is_spike.shape != integrated.shape:
-        raise ValueError("is_spike must match conditional_intensity rows")
+        msg = "is_spike must match conditional_intensity rows"
+        raise ValueError(msg)
     if rate_units == "expected_counts":
         # Retain the original accumulation order for existing callers.
         return np.cumsum(is_spike - conditional_intensity)

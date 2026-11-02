@@ -277,7 +277,8 @@ def test_truncated_eigsh_falls_back_when_shift_invert_fails(monkeypatch):
 
     def flaky_eigsh(*args, **kwargs):
         if kwargs.get("sigma") is not None:  # the shift-invert attempt
-            raise RuntimeError("Factor is exactly singular")
+            msg = "Factor is exactly singular"
+            raise RuntimeError(msg)
         return real_eigsh(*args, **kwargs)
 
     monkeypatch.setattr(sparse_linalg, "eigsh", flaky_eigsh)
@@ -306,7 +307,8 @@ def test_fallback_eigsh_is_reproducible(monkeypatch):
 
     def flaky_eigsh(*args, **kwargs):
         if kwargs.get("sigma") is not None:  # force the shift-invert attempt to fail
-            raise RuntimeError("Factor is exactly singular")
+            msg = "Factor is exactly singular"
+            raise RuntimeError(msg)
         return real_eigsh(*args, **kwargs)
 
     monkeypatch.setattr(sparse_linalg, "eigsh", flaky_eigsh)

@@ -139,8 +139,9 @@ def _resolve_fit_params(
     """
     if algorithm not in algorithms:
         algorithm_name = params_name.removesuffix("_params")
+        msg = f"Unknown {algorithm_name} {algorithm!r}"
         raise ValidationError(
-            f"Unknown {algorithm_name} {algorithm!r}",
+            msg,
             expected=f"one of {sorted(algorithms)}",
             got=repr(algorithm),
         )
@@ -157,8 +158,9 @@ def _resolve_fit_params(
     ]
     unknown = sorted(set(resolved) - set(accepted))
     if unknown:
+        msg = f"unknown {algorithm} parameter(s) in {params_name}: {', '.join(unknown)}"
         raise ValidationError(
-            f"unknown {algorithm} parameter(s) in {params_name}: {', '.join(unknown)}",
+            msg,
             expected=f"parameters among: {', '.join(accepted)}",
             got=", ".join(f"{name}={resolved[name]!r}" for name in unknown),
             hint="Check the spelling, and that the parameter belongs to "

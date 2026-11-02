@@ -658,8 +658,9 @@ def fit_clusterless_gmm_encoding_model(
     # positive weight here could reserve more components than there are rows.
     occupancy_n_samples = _effective_sample_count(pos_for_occ, occupancy_sample_weight)
     if occupancy_n_samples < 1:
+        msg = "clusterless GMM has no position samples to fit the occupancy density"
         raise ValidationError(
-            "clusterless GMM has no position samples to fit the occupancy density",
+            msg,
             expected="at least one position sample in the encoding period",
             got=f"{occupancy_n_samples} effective position samples",
             hint="Provide position data covering the encoding period.",
@@ -971,8 +972,9 @@ def predict_clusterless_gmm_log_likelihood(
     ):
         validate_spike_feature_pair(elect_times, elect_feats, electrode)
         if np.shape(elect_feats)[1] != expected_mark_dims:
+            msg = f"waveform feature dimension changed for electrode {electrode}"
             raise ValidationError(
-                f"waveform feature dimension changed for electrode {electrode}",
+                msg,
                 expected=f"{expected_mark_dims} features per spike",
                 got=f"{np.shape(elect_feats)[1]} features",
                 hint="Use the same waveform feature representation at fit and predict.",

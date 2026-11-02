@@ -557,7 +557,8 @@ def fit_backend(name: str, encoding) -> FittedBackend:
         )
         is_clusterless = True
     else:
-        raise SystemExit(f"unknown backend {name!r}")
+        msg = f"unknown backend {name!r}"
+        raise SystemExit(msg)
 
     return FittedBackend(
         name=name,

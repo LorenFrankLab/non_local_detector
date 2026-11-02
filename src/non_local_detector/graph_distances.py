@@ -30,13 +30,15 @@ def _budget(nbytes, maximum, description):
         or isinstance(maximum, bool)
         or maximum < 0
     ):
-        raise ValueError("Graph distance byte budgets must be nonnegative integers")
+        msg = "Graph distance byte budgets must be nonnegative integers"
+        raise ValueError(msg)
     if nbytes > maximum:
-        raise GraphDistanceBudgetError(
+        msg = (
             f"{description} requires {nbytes:,} bytes, exceeding the {maximum:,}-byte "
             "graph distance budget. Request fewer source/destination rows or explicitly "
             "choose a feasible budget."
         )
+        raise GraphDistanceBudgetError(msg)
 
 
 class LazyGraphDistances:
@@ -69,9 +71,11 @@ class LazyGraphDistances:
         _budget(0, max_cache_bytes, "Graph distance row cache")
         graph = csr_matrix(graph, dtype=np.float64, copy=True)
         if graph.shape[0] != graph.shape[1]:
-            raise ValueError("Graph adjacency must be square")
+            msg = "Graph adjacency must be square"
+            raise ValueError(msg)
         if not np.all(np.isfinite(graph.data)) or np.any(graph.data < 0):
-            raise ValueError("Graph edge distances must be finite and nonnegative")
+            msg = "Graph edge distances must be finite and nonnegative"
+            raise ValueError(msg)
         self.graph = graph
         self.directed = bool(directed)
         self.max_dense_bytes = int(max_dense_bytes)
@@ -92,9 +96,8 @@ class LazyGraphDistances:
     @classmethod
     def from_graph(cls, graph, **kwargs):
         if set(graph.nodes) != set(range(len(graph))):
-            raise ValueError(
-                "Graph distance nodes must be indexed from zero through N-1"
-            )
+            msg = "Graph distance nodes must be indexed from zero through N-1"
+            raise ValueError(msg)
         sparse = nx.to_scipy_sparse_array(
             graph,
             nodelist=range(len(graph)),
@@ -204,7 +207,8 @@ class LazyGraphDistances:
         rows, columns = np.asarray(rows), np.asarray(columns)
         for name, index in (("rows", rows), ("columns", columns)):
             if index.ndim != 1 or (index.size and index.dtype.kind not in "iu"):
-                raise IndexError(f"{name} must be a one-dimensional integer array")
+                msg = f"{name} must be a one-dimensional integer array"
+                raise IndexError(msg)
         # Same normalization as ``__getitem__``: negative indices wrap and
         # out-of-range indices raise.
         rows = np.arange(self.shape[0])[rows.astype(np.intp)]
@@ -283,7 +287,8 @@ class LazyGraphDistances:
         return result
 
     def __setitem__(self, key, value):
-        raise TypeError("Lazy graph distances are read-only")
+        msg = "Lazy graph distances are read-only"
+        raise TypeError(msg)
 
     def __len__(self):
         return self.shape[0]

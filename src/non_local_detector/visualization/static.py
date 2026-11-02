@@ -45,8 +45,9 @@ def get_multiunit_firing_rate(
     """
     time = np.asarray(time)
     if time.ndim != 1 or time.shape[0] < 2:
+        msg = "get_multiunit_firing_rate needs at least two timestamps"
         raise ValidationError(
-            "get_multiunit_firing_rate needs at least two timestamps",
+            msg,
             expected="array with shape (n_time,), n_time >= 2",
             got=f"array with shape {time.shape}",
             hint="A single timestamp does not determine a row duration. Pass "

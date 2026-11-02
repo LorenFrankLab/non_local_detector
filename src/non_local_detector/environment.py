@@ -115,11 +115,12 @@ def find_environment_by_name(
     for env in environments:
         if env.environment_name == name:
             return env
-    raise KeyError(
+    msg = (
         f"No environment with name {name!r} in environments list of "
         f"length {len(environments)}; available names: "
         f"{[e.environment_name for e in environments]}"
     )
+    raise KeyError(msg)
 
 
 # Bytes of cached track linearizations kept per environment. EM linearizes the
@@ -409,9 +410,8 @@ class Environment:
         if self.is_track_interior_ is not None:
             return np.asarray(self.is_track_interior_, dtype=bool).ravel()
         if self.place_bin_centers_ is None:
-            raise ValueError(
-                "place_bin_centers_ is required when is_track_interior_ is None"
-            )
+            msg = "place_bin_centers_ is required when is_track_interior_ is None"
+            raise ValueError(msg)
         return np.ones(len(self.place_bin_centers_), dtype=bool)
 
     def _validate_track_graph(self) -> None:
@@ -447,22 +447,25 @@ class Environment:
 
         # Validate that edge_order is provided
         if self.edge_order is None:
+            msg = "Missing edge_order for track_graph environment"
             raise ConfigurationError(
-                "Missing edge_order for track_graph environment",
+                msg,
                 hint="When using track_graph, you must provide edge_order to specify how edges connect. Example: env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
             )
 
         # Validate that edge_spacing is provided
         if self.edge_spacing is None:
+            msg = "Missing edge_spacing for track_graph environment"
             raise ConfigurationError(
-                "Missing edge_spacing for track_graph environment",
+                msg,
                 hint="When using track_graph, you must provide edge_spacing to define bin size along edges. Example: env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
             )
 
         # Validate edge_order structure
         if not isinstance(self.edge_order, list):
+            msg = "edge_order must be a list of tuples"
             raise ValidationError(
-                "edge_order must be a list of tuples",
+                msg,
                 expected="list of 2-tuples",
                 got=f"{type(self.edge_order).__name__}",
                 hint="edge_order should be a list like [(0, 1), (1, 2), ...]",
@@ -472,8 +475,9 @@ class Environment:
         # Validate each edge in edge_order
         for i, edge in enumerate(self.edge_order):
             if not isinstance(edge, tuple) or len(edge) != 2:
+                msg = f"edge_order[{i}] must be a 2-tuple"
                 raise ValidationError(
-                    f"edge_order[{i}] must be a 2-tuple",
+                    msg,
                     expected="tuple of length 2",
                     got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, tuple | list) else 'N/A'}",
                     hint="Each edge should be a 2-tuple like (node1, node2)",
@@ -486,8 +490,9 @@ class Environment:
                 reversed_edge = (edge[1], edge[0])
                 if reversed_edge not in self.track_graph.edges():
                     available_edges = list(self.track_graph.edges())[:5]
+                    msg = f"edge_order[{i}] references non-existent edge {edge}"
                     raise ValidationError(
-                        f"edge_order[{i}] references non-existent edge {edge}",
+                        msg,
                         expected="edge that exists in track_graph",
                         got=f"edge {edge} not found",
                         hint=f"Available edges: {available_edges}...",
@@ -505,8 +510,9 @@ class Environment:
         elif isinstance(self.edge_spacing, list):
             expected_len = len(self.edge_order) - 1
             if len(self.edge_spacing) != expected_len:
+                msg = "edge_spacing list has wrong length"
                 raise ValidationError(
-                    "edge_spacing list has wrong length",
+                    msg,
                     expected=f"length {expected_len} (one less than edge_order)",
                     got=f"length {len(self.edge_spacing)}",
                     hint="edge_spacing should have one entry for each gap between consecutive edges",
@@ -530,8 +536,9 @@ class Environment:
             If position_range is invalid
         """
         if not isinstance(self.position_range, Sequence):
+            msg = "position_range must be a sequence"
             raise ValidationError(
-                "position_range must be a sequence",
+                msg,
                 expected="list or tuple of (min, max) tuples",
                 got=f"{type(self.position_range).__name__}",
                 hint="position_range should be like [(xmin, xmax), (ymin, ymax)]",
@@ -540,8 +547,9 @@ class Environment:
 
         for i, dim_range in enumerate(self.position_range):
             if not isinstance(dim_range, tuple) or len(dim_range) != 2:
+                msg = f"position_range[{i}] must be a 2-tuple"
                 raise ValidationError(
-                    f"position_range[{i}] must be a 2-tuple",
+                    msg,
                     expected="(min, max) tuple",
                     got=f"{type(dim_range).__name__}",
                     hint="Each dimension range should be (min_value, max_value)",
@@ -552,8 +560,9 @@ class Environment:
             if not isinstance(min_val, int | float) or not isinstance(
                 max_val, int | float
             ):
+                msg = f"position_range[{i}] must contain numeric values"
                 raise ValidationError(
-                    f"position_range[{i}] must contain numeric values",
+                    msg,
                     expected="(float, float)",
                     got=f"({type(min_val).__name__}, {type(max_val).__name__})",
                     hint="Range values must be numbers",
@@ -561,8 +570,9 @@ class Environment:
                 )
 
             if min_val >= max_val:
+                msg = f"position_range[{i}] has min >= max"
                 raise ValidationError(
-                    f"position_range[{i}] has min >= max",
+                    msg,
                     expected="min < max",
                     got=f"min={min_val}, max={max_val}",
                     hint="The minimum value must be less than the maximum value",
@@ -609,16 +619,18 @@ class Environment:
             # both drop NaN rows internally; callers routinely pass position
             # arrays with missing samples. Infs are still rejected.
             if np.any(np.isinf(position)):
+                msg = "position contains Inf values"
                 raise ValidationError(
-                    "position contains Inf values",
+                    msg,
                     expected="finite or NaN values only",
                     got=f"{int(np.sum(np.isinf(position)))} Inf entries",
                     hint="Clean or drop Inf entries before calling fit_place_grid",
                 )
 
             if position.ndim not in [1, 2]:
+                msg = "position must be 1D or 2D"
                 raise ValidationError(
-                    "position must be 1D or 2D",
+                    msg,
                     expected="shape (n_time,) or (n_time, n_dims)",
                     got=f"shape {position.shape} (ndim={position.ndim})",
                     hint="Ensure position is a 1D or 2D array with time as first dimension",
@@ -626,8 +638,9 @@ class Environment:
                 )
 
             if position.shape[0] == 0:
+                msg = "position has no time points"
                 raise ValidationError(
-                    "position has no time points",
+                    msg,
                     expected="at least 1 time point",
                     got="0 time points (empty array)",
                     hint="Provide position data with at least one time point",
@@ -672,15 +685,17 @@ class Environment:
             if self.is_track_interior is not None:
                 val.ensure_ndarray(self.is_track_interior, "is_track_interior")
                 if self.is_track_interior.dtype != np.bool_:
+                    msg = "is_track_interior must have boolean dtype"
                     raise ValidationError(
-                        "is_track_interior must have boolean dtype",
+                        msg,
                         expected="boolean array",
                         got=f"dtype {self.is_track_interior.dtype}",
                         hint="Provide a boolean mask of the Cartesian grid bins",
                     )
                 if self.is_track_interior.shape != self.centers_shape_:
+                    msg = "is_track_interior shape must match the fitted grid"
                     raise ValidationError(
-                        "is_track_interior shape must match the fitted grid",
+                        msg,
                         expected=f"shape {self.centers_shape_}",
                         got=f"shape {self.is_track_interior.shape}",
                         hint="Include the grid's boundary bins in the mask",
@@ -727,8 +742,9 @@ class Environment:
             # Note: track_graph validation is done in __post_init__
             # Track-graph path requires scalar place_bin_size.
             if isinstance(self.place_bin_size, tuple):
+                msg = "place_bin_size must be a scalar when track_graph is provided"
                 raise ValidationError(
-                    "place_bin_size must be a scalar when track_graph is provided",
+                    msg,
                     expected="float",
                     got=f"tuple {self.place_bin_size}",
                     hint=(
@@ -865,14 +881,16 @@ class Environment:
         distance check on every call and is left as a follow-up.
         """
         if not self._is_fitted:
+            msg = "Environment has not been fitted yet"
             raise ConfigurationError(
-                "Environment has not been fitted yet",
+                msg,
                 hint="Call fit_place_grid() before using this method",
                 example="    env = Environment(place_bin_size=5.0)\n    env.fit_place_grid(position=position_data)",
             )
         if self.edges_ is None:
+            msg = "Environment edges not defined"
             raise ConfigurationError(
-                "Environment edges not defined",
+                msg,
                 hint="Edges are created during fit_place_grid(). Ensure the environment was fitted properly",
             )
 
@@ -1025,19 +1043,20 @@ class Environment:
             If input shapes mismatch or required attributes are missing.
         """
         if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
-            )
+            msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
+            raise RuntimeError(msg)
         if self.distance_between_nodes_ is None:
-            raise ValueError("Distance between nodes has not been computed or stored.")
+            msg = "Distance between nodes has not been computed or stored."
+            raise ValueError(msg)
 
         position1 = np.atleast_2d(position1)
         position2 = np.atleast_2d(position2)
 
         # Validate input shapes
         if position1.shape != position2.shape:
+            msg = "Position array shapes must match"
             raise ValidationError(
-                "Position array shapes must match",
+                msg,
                 expected=f"position2 with shape {position1.shape}",
                 got=f"position2 with shape {position2.shape}",
                 hint="Both position arrays must have the same shape (n_points, n_dims)",
@@ -1048,10 +1067,11 @@ class Environment:
 
         if self.track_graph is not None:  # 1D case uses dict-of-dicts
             if self.place_bin_centers_nodes_df_ is None:
-                raise ValueError(
+                msg = (
                     "place_bin_centers_nodes_df_ is required for 1D manifold "
                     "distance lookup."
                 )
+                raise ValueError(msg)
             bin_to_node = np.asarray(self.place_bin_centers_nodes_df_.node_id)
             node_ids1 = bin_to_node[bin_ind1]
             node_ids2 = bin_to_node[bin_ind2]
@@ -1113,13 +1133,11 @@ class Environment:
             If the environment has not been fitted.
         """
         if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
-            )
+            msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
+            raise RuntimeError(msg)
         if self.is_track_interior_ is None or self.place_bin_centers_ is None:
-            raise ValueError(
-                "Environment must have is_track_interior_ and place_bin_centers_."
-            )
+            msg = "Environment must have is_track_interior_ and place_bin_centers_."
+            raise ValueError(msg)
 
         is_interior = self.is_track_interior_.ravel()
         interior_bin_indices = np.where(is_interior)[0]
@@ -1127,10 +1145,11 @@ class Environment:
         if self.track_graph is not None:
             # 1D track graph: use dense bin-indexed distance matrix.
             if self.place_bin_centers_nodes_df_ is None:
-                raise ValueError(
+                msg = (
                     "place_bin_centers_nodes_df_ is required for 1D track "
                     "graph distance lookup."
                 )
+                raise ValueError(msg)
 
             # Lazily build and cache dense (n_bins, n_bins) distance matrix
             # indexed by bin. Off-track bins (node_id == -1) get NaN.
@@ -1224,13 +1243,11 @@ class Environment:
         """
 
         if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
-            )
+            msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
+            raise RuntimeError(msg)
         if self.track_graphDD is None or self.distance_between_nodes_ is None:
-            raise RuntimeError(
-                "Direction finding requires a fitted N-D environment with a track graph ('track_graphDD') and precomputed distances."
-            )
+            msg = "Direction finding requires a fitted N-D environment with a track graph ('track_graphDD') and precomputed distances."
+            raise RuntimeError(msg)
 
         if position_time is None:
             position_time = np.arange(position.shape[0])
@@ -1859,7 +1876,8 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
 
     # Enumerate over nodes
     if environment.place_bin_centers_ is None:
-        raise ValueError("place_bin_centers_ is required for track graph construction")
+        msg = "place_bin_centers_ is required for track graph construction"
+        raise ValueError(msg)
 
     interior_data = environment.is_track_interior_flat_
 
@@ -1875,9 +1893,11 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         )
 
     if environment.is_track_interior_ is None:
-        raise ValueError("is_track_interior_ is required for edge construction")
+        msg = "is_track_interior_ is required for edge construction"
+        raise ValueError(msg)
     if environment.centers_shape_ is None:
-        raise ValueError("centers_shape_ is required for edge construction")
+        msg = "centers_shape_ is required for edge construction"
+        raise ValueError(msg)
 
     edges = []
     # Enumerate over nodes in the track interior

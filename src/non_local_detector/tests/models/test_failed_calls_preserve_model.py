@@ -190,7 +190,8 @@ def test_fit_failing_after_rebuilding_state_restores_detector(
     )
 
     def failing_fit(**kwargs):
-        raise RuntimeError("encoding backend failed")
+        msg = "encoding backend failed"
+        raise RuntimeError(msg)
 
     monkeypatch.setitem(registry, name, (failing_fit, registry[name][1]))
     refit_args, is_training = _refit_changes_state(fit_args)

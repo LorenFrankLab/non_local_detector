@@ -134,7 +134,8 @@ def test_deferred_environment_matches_topology_and_queries(monkeypatch):
     )
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("eager all-pairs construction was called")
+        msg = "eager all-pairs construction was called"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(nx, "shortest_path_length", forbidden)
     lazy_env = Environment(**kwargs, is_track_interior=mask).fit_place_grid(

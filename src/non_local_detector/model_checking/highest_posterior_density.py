@@ -128,29 +128,32 @@ def get_HPD_spatial_coverage(
     """
     position_dims = get_position_dims(posterior)
     if not position_dims:
-        raise ValueError(
+        msg = (
             "posterior must have a 'position' dim or dims ending in "
             f"'_position'; got {tuple(posterior.dims)}"
         )
+        raise ValueError(msg)
     # Broadcast the per-time threshold over the trailing position axes.
     threshold = hpd_threshold[(slice(None), *([np.newaxis] * len(position_dims)))]
     isin_hpd = posterior >= threshold
 
     if bin_width is not None:
         if len(position_dims) != 1:
-            raise ValueError(
+            msg = (
                 "bin_width is only supported for a single (linearized) position "
                 f"dimension; the posterior has {len(position_dims)} position "
                 f"dims {tuple(position_dims)}. Multidimensional grids are "
                 "uniformly spaced, so omit bin_width."
             )
+            raise ValueError(msg)
         (dim,) = position_dims
         bin_width = np.asarray(bin_width, dtype=float)
         if bin_width.shape != (posterior.sizes[dim],):
-            raise ValueError(
+            msg = (
                 f"bin_width must have shape ({posterior.sizes[dim]},) to match "
                 f"the posterior's '{dim}' dimension; got {bin_width.shape}."
             )
+            raise ValueError(msg)
         # Weight each in-HPD bin by its exact width and reduce over the position
         # axis identified by name, so the result does not depend on whether the
         # position axis is trailing.
@@ -166,19 +169,21 @@ def get_HPD_spatial_coverage(
     for dim in position_dims:
         coord = np.asarray(posterior[dim].values)
         if coord.size < 2:
-            raise ValueError(
+            msg = (
                 f"position dimension '{dim}' has size {coord.size}; at least 2 "
                 "bins are required to infer the bin width from coordinates. Pass "
                 "an explicit bin_width for a single-bin 1D grid."
             )
+            raise ValueError(msg)
         diffs = np.diff(coord)
         if np.any(diffs <= 0):
-            raise ValueError(
+            msg = (
                 f"position coordinate '{dim}' must be strictly increasing to "
                 "infer a uniform bin width; got non-monotonic or descending "
                 "coordinates. Sort the posterior along this dimension, or pass an "
                 "explicit bin_width for a 1D non-uniform grid."
             )
+            raise ValueError(msg)
         bin_measure *= float(diffs[0])
     coverage = (isin_hpd * bin_measure).sum(position_dims).values
     return np.where(np.isnan(hpd_threshold), np.nan, coverage)

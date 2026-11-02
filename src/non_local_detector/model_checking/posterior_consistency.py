@@ -24,17 +24,19 @@ def _validate_consistency_inputs(posterior: np.ndarray, likelihood: np.ndarray) 
     2-D array of matching shape up front.
     """
     if posterior.ndim != 2 or likelihood.ndim != 2:
-        raise ValueError(
+        msg = (
             "posterior and likelihood must be 2-D arrays of shape "
             "(n_time, n_position_bins); flatten multidimensional environments to "
             f"a single position axis first. Got posterior.ndim={posterior.ndim}, "
             f"likelihood.ndim={likelihood.ndim}."
         )
+        raise ValueError(msg)
     if posterior.shape != likelihood.shape:
-        raise ValueError(
+        msg = (
             "posterior and likelihood must have the same shape; got "
             f"{posterior.shape} and {likelihood.shape}."
         )
+        raise ValueError(msg)
 
 
 def posterior_consistency_kl_divergence(

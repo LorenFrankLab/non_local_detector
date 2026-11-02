@@ -319,8 +319,9 @@ def _prepare_likelihood_callback(
 
     def checked(result, n_rows: int):
         if np.shape(result)[0] != n_rows:
+            msg = "log likelihood callback returned the wrong number of rows"
             raise ValidationError(
-                "log likelihood callback returned the wrong number of rows",
+                msg,
                 expected=f"{n_rows} rows, one per requested decode bin",
                 got=f"{np.shape(result)[0]} rows",
                 hint="Likelihoods receive time_edges (n_bins + 1 edges) and "
@@ -343,8 +344,9 @@ def _prepare_likelihood_callback(
     def chunk_callback(row_time, *args, row_slice=None, **kwargs):
         row_start, row_stop = resolve_row_slice(row_slice, n_bins)
         if (row_start, row_stop) != (0, n_bins):
+            msg = "Chunked custom likelihoods must be row_slice_aware"
             raise ValidationError(
-                "Chunked custom likelihoods must be row_slice_aware",
+                msg,
                 hint="Decorate the callback with @row_slice_aware from "
                 "non_local_detector.core and forward row_slice with the full "
                 "time_edges. This preserves durations and counts boundary spikes once.",
@@ -362,15 +364,15 @@ def _validate_transition_arguments(
     if not isinstance(transition_representation, str) or (
         transition_representation not in {"dense", "structured", "auto"}
     ):
-        raise ValidationError(
-            "transition_representation must be dense, structured, or auto"
-        )
+        msg = "transition_representation must be dense, structured, or auto"
+        raise ValidationError(msg)
     if (
         isinstance(max_dense_transition_bytes, (bool, np.bool_))
         or not isinstance(max_dense_transition_bytes, (int, np.integer))
         or max_dense_transition_bytes <= 0
     ):
-        raise ValidationError("max_dense_transition_bytes must be a positive integer")
+        msg = "max_dense_transition_bytes must be a positive integer"
+        raise ValidationError(msg)
 
 
 def _validate_inference_arguments(
@@ -386,13 +388,14 @@ def _validate_inference_arguments(
 ) -> None:
     """Reject prediction-mode settings that the chosen inference mode ignores."""
     if inference_mode not in {"dense", "checkpointed"}:
-        raise ValidationError("inference_mode must be dense or checkpointed")
+        msg = "inference_mode must be dense or checkpointed"
+        raise ValidationError(msg)
     if inference_mode == "checkpointed" and (cache_likelihood or n_chunks != 1):
-        raise ValueError(
-            "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
-        )
+        msg = "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
+        raise ValueError(msg)
     if output_mode not in {"compact", "spatial"}:
-        raise ValidationError("output_mode must be compact or spatial")
+        msg = "output_mode must be compact or spatial"
+        raise ValidationError(msg)
     if inference_mode == "dense" and (
         output_mode != "spatial"
         or chunk_size is not None
@@ -401,9 +404,8 @@ def _validate_inference_arguments(
         or selected_intervals is not None
         or replay_cache_bytes is not None
     ):
-        raise ValueError(
-            "output selection/storage options require inference_mode='checkpointed'"
-        )
+        msg = "output selection/storage options require inference_mode='checkpointed'"
+        raise ValueError(msg)
 
 
 def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
@@ -425,8 +427,9 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
         If the value is not zero (including NaN).
     """
     if encoding_update_damping != 0.0:
+        msg = "encoding_update_damping is not supported"
         raise ValidationError(
-            "encoding_update_damping is not supported",
+            msg,
             expected="encoding_update_damping=0.0",
             got=str(encoding_update_damping),
             hint=(
@@ -518,8 +521,9 @@ def _validate_em_options(
             or not isinstance(value, (int, np.integer))
             or value < minimum
         ):
+            msg = f"Invalid {name} for estimate_parameters"
             raise ValidationError(
-                f"Invalid {name} for estimate_parameters",
+                msg,
                 expected=f"an integer >= {minimum}, or None for the default",
                 got=f"{value!r} ({type(value).__name__})",
                 hint=(
@@ -529,8 +533,9 @@ def _validate_em_options(
                 ),
             )
     if structured and n_chunks != 1:
+        msg = "n_chunks applies only to dense EM"
         raise ValidationError(
-            "n_chunks applies only to dense EM",
+            msg,
             got=f"n_chunks={n_chunks} with structured EM",
             hint=(
                 "Structured EM already bounds memory with checkpoint chunks: set "
@@ -544,8 +549,9 @@ def _validate_em_options(
             chunk_size, result_path, replay_cache_bytes
         )
         if checkpoint_options:
+            msg = f"{', '.join(checkpoint_options)} applies only to structured EM"
             raise ValidationError(
-                f"{', '.join(checkpoint_options)} applies only to structured EM",
+                msg,
                 got=f"{', '.join(checkpoint_options)} with dense EM",
                 hint=(
                     'Pass transition_representation="structured" or "auto" to '
@@ -554,8 +560,9 @@ def _validate_em_options(
                 ),
             )
     if result_path is not None and store_log_likelihood:
+        msg = "store_log_likelihood cannot be combined with result_path"
         raise ValidationError(
-            "store_log_likelihood cannot be combined with result_path",
+            msg,
             got="store_log_likelihood=True and a result_path",
             hint=(
                 "store_log_likelihood keeps the full likelihood in memory; with "
@@ -644,9 +651,12 @@ def _resolve_em_options(
     )
     if transition_representation == "auto" and n_chunks != 1:
         if checkpoint_options:
-            raise ValidationError(
+            msg = (
                 "n_chunks (dense EM) cannot be combined with "
-                f"{', '.join(checkpoint_options)} (structured EM)",
+                f"{', '.join(checkpoint_options)} (structured EM)"
+            )
+            raise ValidationError(
+                msg,
                 got=f"n_chunks={n_chunks} and {', '.join(checkpoint_options)}",
                 hint=(
                     "Drop n_chunks to run structured EM, or drop "
@@ -706,25 +716,25 @@ def _validate_estimation_arguments(
     time_edges, time_bin_width = uniform_time_edges(time_edges)
     n_bins = len(time_edges) - 1
     if n_chunks > n_bins:
-        raise ValueError(
+        msg = (
             f"n_chunks ({n_chunks}) cannot exceed n_bins ({n_bins}). "
             f"Each chunk must contain at least one time bin."
         )
+        raise ValueError(msg)
     if save_log_likelihood_to_results and return_outputs is not None:
-        raise ValueError(
+        msg = (
             "Cannot specify both return_outputs and deprecated "
             "save_log_likelihood_to_results flag. "
             "Use return_outputs only."
         )
+        raise ValueError(msg)
     _normalize_return_outputs(return_outputs)
     if min_encoding_local_mass < 0:
-        raise ValueError(
-            f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
-        )
+        msg = f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
+        raise ValueError(msg)
     if min_encoding_local_ess < 0:
-        raise ValueError(
-            f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
-        )
+        msg = f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
+        raise ValueError(msg)
     return time_edges, time_bin_width
 
 
@@ -790,8 +800,9 @@ def _decode_time_edges(
             > _MAX_RELATIVE_SPACING_TOLERANCE * transition_time_bin_width
         )
     ):
+        msg = "Saved model has invalid transition clock provenance; refit before decoding."
         raise ValidationError(
-            "Saved model has invalid transition clock provenance; refit before decoding.",
+            msg,
             hint="The learned bin width must be finite and positive, with a "
             "finite nonnegative timestamp tolerance within the existing "
             "precision bound. Call fit(...) or "
@@ -807,8 +818,9 @@ def _decode_time_edges(
         ),
         transition_time_bin_width_tolerance,
     ):
+        msg = "time_edges bin width differs from the learned transitions"
         raise ValidationError(
-            "time_edges bin width differs from the learned transitions",
+            msg,
             expected=f"bin width {transition_time_bin_width!r} s",
             got=f"bin width {width!r} s",
             hint="The discrete transitions were estimated per bin at that width "
@@ -837,9 +849,12 @@ def _require_observed_bins(is_missing: np.ndarray | None) -> None:
         If every bin is missing.
     """
     if is_missing is not None and is_missing.size and bool(np.all(is_missing)):
-        raise DataError(
+        msg = (
             "Cannot estimate parameters: every decode time bin is missing, so "
-            "EM has no observations to fit",
+            "EM has no observations to fit"
+        )
+        raise DataError(
+            msg,
             data_name="is_missing",
             hint=(
                 "Check that is_missing is True only for missing bins, and that "
@@ -916,8 +931,9 @@ def _missing_bins(
     if is_missing is not None:
         is_missing = np.asarray(is_missing, dtype=bool)
         if is_missing.shape != (n_bins,):
+            msg = "is_missing must have one entry per decode bin"
             raise ValidationError(
-                "is_missing must have one entry per decode bin",
+                msg,
                 expected=f"shape ({n_bins},)",
                 got=f"shape {is_missing.shape}",
                 hint="time_edges has n_bins + 1 entries; is_missing has n_bins.",
@@ -927,8 +943,9 @@ def _missing_bins(
     position = np.asarray(position)
     position_time = np.asarray(position_time)
     if position.shape[0] != position_time.shape[0]:
+        msg = "position must have one row per position_time sample"
         raise ValidationError(
-            "position must have one row per position_time sample",
+            msg,
             expected=f"{position_time.shape[0]} rows",
             got=f"{position.shape[0]} rows",
         )
@@ -1147,16 +1164,18 @@ def _validate_penalty_params(
     """
     # Written as "not >=" / "not >" so NaN, which compares False, fails.
     if not non_local_position_penalty >= 0:
+        msg = "non_local_position_penalty must be >= 0"
         raise ValidationError(
-            "non_local_position_penalty must be >= 0",
+            msg,
             expected="non_local_position_penalty >= 0",
             got=f"{non_local_position_penalty}",
             hint="A negative penalty would reward non-local states near the animal's "
             "position instead of suppressing them. Use 0.0 to disable the penalty.",
         )
     if not non_local_penalty_std > 0:
+        msg = "non_local_penalty_std must be > 0"
         raise ValidationError(
-            "non_local_penalty_std must be > 0",
+            msg,
             expected="non_local_penalty_std > 0",
             got=f"{non_local_penalty_std}",
             hint="Standard deviation controls the width of the Gaussian penalty "
@@ -1197,10 +1216,11 @@ def _normalize_frozen_discrete_transition_rows(
     n_states = len(is_no_spike_state)
     if isinstance(frozen_rows, str):
         if frozen_rows != "no_spike":
-            raise ValueError(
+            msg = (
                 "frozen_discrete_transition_rows must be 'no_spike', row "
                 f"indices, a boolean mask or None, got {frozen_rows!r}"
             )
+            raise ValueError(msg)
         frozen_rows = np.asarray(is_no_spike_state, dtype=bool)
         return frozen_rows.copy() if frozen_rows.any() else None
     if frozen_rows is None:
@@ -1210,26 +1230,30 @@ def _normalize_frozen_discrete_transition_rows(
         return None
     if arr.dtype == bool:
         if arr.shape != (n_states,):
-            raise ValueError(
+            msg = (
                 f"frozen_discrete_transition_rows boolean mask must have "
                 f"shape ({n_states},), got {arr.shape}"
             )
+            raise ValueError(msg)
         return arr.copy()
     if not np.issubdtype(arr.dtype, np.integer):
-        raise ValueError(
+        msg = (
             f"frozen_discrete_transition_rows must be integer indices or "
             f"a boolean mask, got dtype {arr.dtype}"
         )
+        raise ValueError(msg)
     if arr.ndim != 1:
-        raise ValueError(
+        msg = (
             f"frozen_discrete_transition_rows index array must be 1D, "
             f"got shape {arr.shape}"
         )
+        raise ValueError(msg)
     if np.any(arr < 0) or np.any(arr >= n_states):
-        raise ValueError(
+        msg = (
             f"frozen_discrete_transition_rows indices must be in "
             f"[0, {n_states}), got {arr.tolist()}"
         )
+        raise ValueError(msg)
     mask = np.zeros(n_states, dtype=bool)
     mask[arr] = True
     return mask
@@ -1254,11 +1278,12 @@ def _validate_covariate_time_length(
     n_covariate_time = predicted_transitions.shape[0]
     n_decode_time = len(time)
     if n_covariate_time != n_decode_time:
-        raise ValueError(
+        msg = (
             f"Covariate data has {n_covariate_time} time steps but "
             f"decode time has {n_decode_time} time steps. "
             f"These must match."
         )
+        raise ValueError(msg)
 
 
 def _normalize_return_outputs(
@@ -1289,29 +1314,32 @@ def _normalize_return_outputs(
 
     if isinstance(return_outputs, str):
         if return_outputs not in VALID_OUTPUTS:
-            raise ValueError(
+            msg = (
                 f"Invalid return_outputs='{return_outputs}'. "
                 f"Must be one of: {sorted(VALID_OUTPUTS)}"
             )
+            raise ValueError(msg)
         return OUTPUT_INCLUDES.get(return_outputs, {return_outputs})
 
     if isinstance(return_outputs, list | set):
         outputs_set = set(return_outputs)
         invalid = outputs_set - VALID_OUTPUTS
         if invalid:
-            raise ValueError(
+            msg = (
                 f"Invalid outputs: {sorted(invalid)}. "
                 f"Valid options are: {sorted(VALID_OUTPUTS)}"
             )
+            raise ValueError(msg)
         # Expand 'all' if present
         if "all" in outputs_set:
             return OUTPUT_INCLUDES["all"]
         return outputs_set
 
-    raise TypeError(
+    msg = (
         f"return_outputs must be str, list of str, set of str, or None. "
         f"Got {type(return_outputs).__name__}"
     )
+    raise TypeError(msg)
 
 
 class _DetectorBase(BaseEstimator, abc.ABC):
@@ -1508,8 +1536,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # subnormals to 0, a silent divide-by-zero.
         if local_position_std is not None:
             if not np.isfinite(local_position_std):
+                msg = "local_position_std must be finite"
                 raise ValidationError(
-                    "local_position_std must be finite",
+                    msg,
                     expected="finite float >= 0 or None",
                     got=str(local_position_std),
                     hint=(
@@ -1519,8 +1548,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     ),
                 )
             if local_position_std < 0:
+                msg = "local_position_std must be non-negative"
                 raise ValidationError(
-                    "local_position_std must be non-negative",
+                    msg,
                     expected="float >= 0 or None",
                     got=str(local_position_std),
                     hint=(
@@ -1532,8 +1562,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
             f32_min_sigma = float(np.sqrt(np.finfo(np.float32).tiny))
             if 0 < float(local_position_std) < f32_min_sigma:
+                msg = "local_position_std**2 underflows to 0 in float32"
                 raise ValidationError(
-                    "local_position_std**2 underflows to 0 in float32",
+                    msg,
                     expected=(
                         "0.0, or a positive value with a representable float32 "
                         f"square (>= sqrt(float32 tiny) ~{f32_min_sigma:.3e})"
@@ -1598,12 +1629,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         has_track_graph = any(env.track_graph is not None for env in self.environments)
         if has_track_graph:
-            raise ValidationError(
+            msg = (
                 "Environment has a track_graph but position is 1D "
                 f"(shape {position.shape}). Track-graph environments "
                 "require raw 2D (x, y) position — the detector "
                 "linearizes internally. Passing pre-linearized 1D "
-                "position silently corrupts internal coordinates.",
+                "position silently corrupts internal coordinates."
+            )
+            raise ValidationError(
+                msg,
                 expected="shape (n_time, 2) or (n_time, n_dims) with n_dims >= 2",
                 got=f"shape {position.shape}",
                 hint=(
@@ -1879,8 +1913,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         n_continuous_trans = len(continuous_transition_types)
 
         if n_discrete != n_continuous_init:
+            msg = "Mismatch between discrete initial conditions and continuous initial conditions"
             raise ValidationError(
-                "Mismatch between discrete initial conditions and continuous initial conditions",
+                msg,
                 expected=f"{n_continuous_init} discrete initial condition(s) (one per continuous initial condition type)",
                 got=f"{n_discrete} discrete initial condition(s)",
                 hint="Each continuous initial condition type needs a corresponding discrete initial probability",
@@ -1893,8 +1928,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 if hasattr(self, "state_names") and self.state_names
                 else ""
             )
+            msg = "Mismatch between discrete initial conditions and continuous transition types"
             raise ValidationError(
-                "Mismatch between discrete initial conditions and continuous transition types",
+                msg,
                 expected=f"{n_continuous_trans} discrete initial condition(s) (one per state{state_names_str})",
                 got=f"{n_discrete} discrete initial condition(s)",
                 hint="Each state needs an initial probability. Check that your discrete_initial_conditions array has the same length as continuous_transition_types list.",
@@ -1904,8 +1940,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if not isinstance(discrete_transition_stickiness, float) and len(
             discrete_initial_conditions
         ) != len(discrete_transition_stickiness):
+            msg = f"Discrete transition stickiness must be set for all {n_discrete} states or be a single float"
             raise ValidationError(
-                f"Discrete transition stickiness must be set for all {n_discrete} states or be a single float",
+                msg,
                 expected=f"Either a float or array of length {n_discrete}",
                 got=f"Array of length {len(discrete_transition_stickiness)}",
                 hint="Use a float for uniform stickiness across all states, or an array with one value per state",
@@ -2041,8 +2078,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
             # Check correct size
             if matrix.shape[0] != n_states:
+                msg = "Discrete transition matrix size must match number of states"
                 raise ValidationError(
-                    "Discrete transition matrix size must match number of states",
+                    msg,
                     expected=f"matrix with shape ({n_states}, {n_states})",
                     got=f"matrix with shape {matrix.shape}",
                     hint=f"Your model has {n_states} states, so transition matrix needs {n_states}x{n_states} shape",
@@ -2135,9 +2173,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             ``n_states`` entries.
         """
         if not isinstance(observation_models, (list, tuple, np.ndarray)):
-            raise ValidationError(
+            msg = (
                 "observation_models must be a list, tuple or array of "
-                "ObservationModel instances",
+                "ObservationModel instances"
+            )
+            raise ValidationError(
+                msg,
                 expected="an ObservationModel, a list, tuple or array of them, or None",
                 got=type(observation_models).__name__,
             )
@@ -2149,14 +2190,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             }
         )
         if wrong_types:
+            msg = "observation_models entries must be ObservationModel instances"
             raise ValidationError(
-                "observation_models entries must be ObservationModel instances",
+                msg,
                 expected="ObservationModel entries",
                 got=f"entries of type {', '.join(wrong_types)}",
             )
         if len(observation_models) != n_states:
+            msg = (
+                "observation_models must have one observation model per discrete state"
+            )
             raise ValidationError(
-                "observation_models must have one observation model per discrete state",
+                msg,
                 expected=f"{n_states} observation models",
                 got=f"{len(observation_models)}",
             )
@@ -2189,8 +2234,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 for state_ind in range(len(discrete_initial_conditions))
             ]
         if len(state_names) != len(discrete_initial_conditions):
+            msg = "Number of state names must match number of states"
             raise ValidationError(
-                "Number of state names must match number of states",
+                msg,
                 expected=f"{len(discrete_initial_conditions)} state name(s)",
                 got=f"{len(state_names)} state name(s)",
                 hint="Provide one name per state in your model",
@@ -2290,7 +2336,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     bin_sizes.append(environment.place_bin_centers_.shape[0])
                     state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
                 else:
-                    raise ValueError("Environment place_bin_centers_ cannot be None")
+                    msg = "Environment place_bin_centers_ cannot be None"
+                    raise ValueError(msg)
                 is_track_interior.append(environment.is_track_interior_flat_)
 
         self.state_ind_ = np.concatenate(state_ind)
@@ -2423,24 +2470,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             n_time = position.shape[0]
                             is_training = np.ones((n_time,), dtype=bool)
                         else:
-                            raise ValueError(
-                                "Position cannot be None when is_training is None"
-                            )
+                            msg = "Position cannot be None when is_training is None"
+                            raise ValueError(msg)
 
                     if encoding_group_labels is None:
                         if position is not None:
                             n_time = position.shape[0]
                             encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
                         else:
-                            raise ValueError(
-                                "Position cannot be None when encoding_group_labels is None"
-                            )
+                            msg = "Position cannot be None when encoding_group_labels is None"
+                            raise ValueError(msg)
 
                     is_training = np.asarray(is_training).squeeze()
                     if position is None:
-                        raise ValueError(
-                            "position must not be None for EmpiricalMovement transitions"
-                        )
+                        msg = "position must not be None for EmpiricalMovement transitions"
+                        raise ValueError(msg)
                     self.continuous_state_transitions_[inds] = (
                         transition.make_state_transition(
                             self.environments,
@@ -2464,7 +2508,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             # Cross-environment transitions with multi-bin
                             # local are not supported in v1.
                             if from_obs.environment_name != to_obs.environment_name:
-                                raise ValueError(
+                                msg = (
                                     f"Cross-environment Discrete() transition "
                                     f"between '{from_obs.environment_name}' and "
                                     f"'{to_obs.environment_name}' is not "
@@ -2473,6 +2517,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                     f"Uniform(environment_name=..., "
                                     f"environment2_name=...) instead."
                                 )
+                                raise ValueError(msg)
                             local_obs = from_obs if from_obs.is_local else to_obs
                             transition = Uniform(
                                 environment_name=local_obs.environment_name
@@ -2489,9 +2534,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                 transition.environment_name
                             )
                         else:
-                            raise ValueError(
-                                "Transition must have an environment_name attribute for discrete to continuous transitions"
-                            )
+                            msg = "Transition must have an environment_name attribute for discrete to continuous transitions"
+                            raise ValueError(msg)
                         if environment.is_track_interior_ is not None:
                             self.continuous_state_transitions_[inds] = (
                                 environment.is_track_interior_.ravel()
@@ -2503,9 +2547,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                 n_bins = environment.place_bin_centers_.shape[0]
                                 self.continuous_state_transitions_[inds] = 1.0 / n_bins
                             else:
-                                raise ValueError(
-                                    "Environment must have place_bin_centers_ for discrete to continuous transitions"
-                                )
+                                msg = "Environment must have place_bin_centers_ for discrete to continuous transitions"
+                                raise ValueError(msg)
                     elif n_row_bins > 1 and n_col_bins == 1:
                         # Spatial to non-spatial: each source bin transitions
                         # to the single target bin with probability 1.
@@ -2672,17 +2715,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             estimated by EM (no covariance yet).
         """
         if self.discrete_transition_design_matrix_ is None:
-            raise ValueError(
+            msg = (
                 "The discrete transitions do not depend on covariates; use a "
                 "DiscreteNonStationaryCustom or DiscreteNonStationaryDiagonal "
                 "transition type."
             )
+            raise ValueError(msg)
         if self.discrete_transition_coefficient_covariance_ is None:
-            raise ValueError(
+            msg = (
                 "No transition covariance yet: it comes from an EM M-step, so "
                 "run estimate_parameters with estimate_discrete_transition=True "
                 "and max_iter >= 1."
             )
+            raise ValueError(msg)
         return _transition_intervals(
             self.discrete_transition_design_matrix_,
             self.discrete_transition_coefficients_,
@@ -2753,9 +2798,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             state_names = self.state_names
 
             if discrete_transition_design_matrix is None:
-                raise ValueError(
-                    "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
-                )
+                msg = "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
+                raise ValueError(msg)
 
             predict_matrix = build_design_matrices(
                 [discrete_transition_design_matrix.design_info],
@@ -2939,8 +2983,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         # Validate required parameters
         if position is None:
+            msg = "Missing required parameter: position"
             raise ValidationError(
-                "Missing required parameter: position",
+                msg,
                 expected="position array with shape (n_time, n_dims)",
                 got="None",
                 hint="Provide the animal's position data during training",
@@ -2951,9 +2996,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         val.ensure_ndarray(position, "position")
         val.ensure_all_finite(position[~np.isnan(position)], "position")
         if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
-            raise ValidationError(
-                "At least one finite position sample is required for fitting"
-            )
+            msg = "At least one finite position sample is required for fitting"
+            raise ValidationError(msg)
 
         # Raises ValidationError if position is 1D but env has track_graph.
         self._validate_position_dimensionality(position, context="fit")
@@ -3011,9 +3055,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def _validate_time_contract(self) -> None:
         """Reject unknown encoding units and unknown learned transition clocks."""
         if not hasattr(self, "encoding_model_"):
-            raise ValidationError(
-                "Detector is not fitted; call fit(...) before decoding."
-            )
+            msg = "Detector is not fitted; call fit(...) before decoding."
+            raise ValidationError(msg)
         if (
             getattr(self, "time_contract_", None)
             != {
@@ -3024,8 +3067,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             or not hasattr(self, "transition_time_bin_width_")
             or not isinstance(self.encoding_model_, Mapping)
         ):
+            msg = "Saved model has a legacy or unknown time contract; refit before decoding."
             raise ValidationError(
-                "Saved model has a legacy or unknown time contract; refit before decoding.",
+                msg,
                 hint="Load for inspection, then call fit(...) or estimate_parameters(..., time_edges=...) with the original recording. Old rates and learned transition clocks cannot be inferred safely.",
             )
         # Validate the complete dispatch set before any state is evaluated.
@@ -3040,8 +3084,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             model = self.encoding_model_.get(key)
             units = model.get("rate_units") if isinstance(model, Mapping) else None
             if not isinstance(units, str) or units != "Hz":
+                msg = f"Encoding entry {key!r} is missing or has unknown rate units; refit before decoding."
                 raise ValidationError(
-                    f"Encoding entry {key!r} is missing or has unknown rate units; refit before decoding.",
+                    msg,
                     hint="Each environment/encoding-group used by a spike state "
                     "needs a fitted encoding dictionary with rate_units='Hz'. "
                     "Call fit(...) or estimate_parameters(..., time_edges=...) "
@@ -3050,8 +3095,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if isinstance(self, ClusterlessDetector) and not hasattr(
             self, "mark_reference_"
         ):
+            msg = (
+                "Saved clusterless model has no mark reference; refit before decoding."
+            )
             raise ValidationError(
-                "Saved clusterless model has no mark reference; refit before decoding.",
+                msg,
                 hint="Clusterless states score waveform marks against a reference "
                 "density fitted from training spikes. Call fit(...) with the "
                 "original recording.",
@@ -3065,8 +3113,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         else:
             for neuron, times in enumerate(spike_times):
                 if len(np.shape(times)) != 1:
+                    msg = f"spike_times for neuron {neuron} must be 1-D"
                     raise ValidationError(
-                        f"spike_times for neuron {neuron} must be 1-D",
+                        msg,
                         expected="one array with shape (n_spikes,) per neuron",
                         got=f"shape {np.shape(times)}",
                     )
@@ -3097,9 +3146,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     zip(spike_waveform_features, dimensions, strict=True)
                 ):
                     if np.shape(features)[1] != expected:
-                        raise ValidationError(
+                        msg = (
                             f"Waveform-feature dimensionality for electrode {electrode} "
-                            "does not match the fitted encoding model",
+                            "does not match the fitted encoding model"
+                        )
+                        raise ValidationError(
+                            msg,
                             expected=f"{expected} waveform features",
                             got=f"{np.shape(features)[1]} waveform features",
                             hint="Use the same waveform-feature selection for encoding "
@@ -3153,7 +3205,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         _time_grid = _uniform_time_grid(time_edges, _time_grid)
         if position is not None and position_time is None:
-            raise ValidationError("position_time is required when position is provided")
+            msg = "position_time is required when position is provided"
+            raise ValidationError(msg)
         needs_position = self._decode_reads_position()
         if not isinstance(
             _position_context, _LikelihoodPositionContext
@@ -3181,8 +3234,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 reason.append("local observation models")
             if non_local_penalty > 0:
                 reason.append("non_local_position_penalty > 0")
+            msg = (
+                f"Missing required parameter: position (needed for {', '.join(reason)})"
+            )
             raise ValidationError(
-                f"Missing required parameter: position (needed for {', '.join(reason)})",
+                msg,
                 expected="position array with shape (n_time, n_dims)",
                 got="None",
                 hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
@@ -3201,9 +3257,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         else:
             is_missing = np.asarray(is_missing, dtype=bool)
             if is_missing.shape != (n_rows,):
-                raise ValidationError(
-                    "is_missing must have one entry per requested decode bin"
-                )
+                msg = "is_missing must have one entry per requested decode bin"
+                raise ValidationError(msg)
         if position_missing is not None:
             is_missing = is_missing | position_missing[row_start:row_stop]
         if _position_context.all_missing:
@@ -3343,8 +3398,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> xr.Dataset:
         """Body of the detectors' ``predict``; see ``_compute_spike_log_likelihood``."""
         if position is not None and position_time is None:
+            msg = "position_time is required when position is provided"
             raise ValidationError(
-                "position_time is required when position is provided",
+                msg,
                 expected="position_time array with shape (n_time_position,)",
                 got="None",
                 hint="Provide position_time corresponding to the position samples",
@@ -3386,10 +3442,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 outputs_from_flags.add("filter")
 
             if return_outputs is not None:
-                raise ValueError(
+                msg = (
                     "Cannot specify both return_outputs and deprecated "
                     "save_*_to_results flags. Use return_outputs only."
                 )
+                raise ValueError(msg)
             return_outputs = outputs_from_flags or None
 
         # Normalize return_outputs to canonical set
@@ -3424,9 +3481,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         predicted_transitions = None
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
-                raise ValueError(
-                    "discrete_transition_coefficients_ is None but covariate data provided"
-                )
+                msg = "discrete_transition_coefficients_ is None but covariate data provided"
+                raise ValueError(msg)
             predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
@@ -3766,8 +3822,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if discrete_transitions.ndim == 3 and discrete_transitions.shape[0] != len(
             time_centers
         ):
+            msg = "Predict covariate transitions must have one row per decode bin"
             raise ValidationError(
-                "Predict covariate transitions must have one row per decode bin",
+                msg,
                 expected=f"{len(time_centers)} transition rows",
                 got=f"{discrete_transitions.shape[0]} rows",
                 hint="Pass discrete_transition_covariate_data aligned to the "
@@ -3863,9 +3920,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         matrices separately and must have one row per decode bin.
         """
         if discrete.ndim == 3 and discrete.shape[0] != n_rows:
-            raise ValidationError(
-                "Predict covariate transitions must have one row per decode bin"
-            )
+            msg = "Predict covariate transitions must have one row per decode bin"
+            raise ValidationError(msg)
         interior = self.is_track_interior_state_bins_
         states = self.state_ind_[interior]
         transition_args = {}
@@ -3992,14 +4048,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             # posterior, which compact output cannot hold.
             requested_outputs = requested_outputs - {"predictive_posterior"}
         if output_mode == "spatial" and result_path is None:
-            raise ValueError("Checkpointed spatial prediction requires result_path")
+            msg = "Checkpointed spatial prediction requires result_path"
+            raise ValueError(msg)
         if output_mode == "compact" and requested_outputs & {
             "log_likelihood",
             "predictive_posterior",
         }:
-            raise ValueError(
-                "Spatial outputs (including return_outputs='all') require output_mode='spatial'"
-            )
+            msg = "Spatial outputs (including return_outputs='all') require output_mode='spatial'"
+            raise ValueError(msg)
         self._validate_time_contract()
         edges, centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
@@ -4025,9 +4081,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 or np.any(intervals[:, 0] >= intervals[:, 1])
                 or np.any(intervals[1:, 0] < intervals[:-1, 1])
             ):
-                raise ValidationError(
-                    "selected_intervals must be ordered non-overlapping start/stop pairs"
-                )
+                msg = "selected_intervals must be ordered non-overlapping start/stop pairs"
+                raise ValidationError(msg)
             mask = np.zeros(len(centers), dtype=bool)
             # The tolerances are under 1% of a bin width, so bins more than one
             # bin outside an interval can never be selected; apply the rule only
@@ -4055,8 +4110,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
             selected = np.flatnonzero(mask)
             if selected.size == 0:
+                msg = "selected_intervals select no complete decode bins"
                 raise ValidationError(
-                    "selected_intervals select no complete decode bins",
+                    msg,
                     got=f"{len(intervals)} interval(s)",
                     hint=(
                         "Intervals are in seconds and select bins whose start and "
@@ -5172,8 +5228,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_state_transitions_.ndim == 3
             and self.discrete_state_transitions_.shape[0] != len(time_edges) - 1
         ):
+            msg = "Viterbi covariate transitions must have one row per decode bin"
             raise ValidationError(
-                "Viterbi covariate transitions must have one row per decode bin",
+                msg,
                 expected=f"{len(time_edges) - 1} transition rows",
                 got=f"{self.discrete_state_transitions_.shape[0]} rows",
                 hint="Viterbi uses the fitted covariate transitions. Fit or estimate with covariates aligned to this grid; predict(..., discrete_transition_covariate_data=...) accepts new aligned prediction covariates.",
@@ -5396,9 +5453,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         environment = self._env_lookup_cache_.get(environment_name)
         if environment is None:
-            raise ValueError(
-                f"Environment '{environment_name}' not found in environments list"
-            )
+            msg = f"Environment '{environment_name}' not found in environments list"
+            raise ValueError(msg)
         return environment
 
     @staticmethod
@@ -5489,8 +5545,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         # Get position dimensionality
         if not self.environments:
+            msg = "No environments found in model"
             raise ConfigurationError(
-                "No environments found in model",
+                msg,
                 hint="Environments are set up during fit(). Either fit the model first, or check that position data was provided",
             )
         n_position_dims = self.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
@@ -5503,13 +5560,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else:
                 environment = env_dict.get(obs.environment_name)
                 if environment is None:
-                    raise ValueError(
-                        f"Environment '{obs.environment_name}' not found in environments list"
-                    )
+                    msg = f"Environment '{obs.environment_name}' not found in environments list"
+                    raise ValueError(msg)
                 if environment.place_bin_centers_ is None:
-                    raise ValueError(
-                        f"place_bin_centers_ is None for environment {obs.environment_name}"
-                    )
+                    msg = f"place_bin_centers_ is None for environment {obs.environment_name}"
+                    raise ValueError(msg)
                 position.append(environment.place_bin_centers_)
         position = np.concatenate(position, axis=0)
 
@@ -5647,9 +5702,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else:
                 environment = self._get_environment_by_name(obs.environment_name)
                 if environment.place_bin_centers_ is None:
-                    raise ValueError(
-                        f"place_bin_centers_ is None for environment {obs.environment_name}"
-                    )
+                    msg = f"place_bin_centers_ is None for environment {obs.environment_name}"
+                    raise ValueError(msg)
                 position.append(environment.place_bin_centers_)
                 environment_names.append(
                     [obs.environment_name] * environment.place_bin_centers_.shape[0]
@@ -5824,8 +5878,9 @@ class ClusterlessDetector(_DetectorBase):
                 if self.clusterless_algorithm == "clusterless_kde_log"
                 else None
             )
+            msg = f"Unknown clusterless_algorithm {self.clusterless_algorithm!r}"
             raise ValidationError(
-                f"Unknown clusterless_algorithm {self.clusterless_algorithm!r}",
+                msg,
                 expected=f"one of {sorted(_CLUSTERLESS_ALGORITHMS)}",
                 got=repr(self.clusterless_algorithm),
                 hint=hint,

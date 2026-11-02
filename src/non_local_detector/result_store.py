@@ -60,9 +60,8 @@ class IncrementalResultWriter:
                     or len(dims) != len(shape)
                     or any(s < 0 for s in shape)
                 ):
-                    raise ValueError(
-                        "Variables require time-leading dimensions and nonnegative shapes"
-                    )
+                    msg = "Variables require time-leading dimensions and nonnegative shapes"
+                    raise ValueError(msg)
                 self._variables[name] = {
                     "dims": dims,
                     "shape": shape,
@@ -75,9 +74,8 @@ class IncrementalResultWriter:
                 values = np.asarray(values)
                 if values.dtype.kind == "O":
                     if not all(isinstance(x, str) for x in values.flat):
-                        raise ValueError(
-                            "Object coordinates must contain strings; encode MultiIndex levels separately"
-                        )
+                        msg = "Object coordinates must contain strings; encode MultiIndex levels separately"
+                        raise ValueError(msg)
                     values = values.astype(str)
                 filename = f"coordinate-{name}.npy"
                 np.save(self._temporary / filename, values, allow_pickle=False)
@@ -89,12 +87,14 @@ class IncrementalResultWriter:
     @staticmethod
     def _check_name(name):
         if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_]+", name) is None:
-            raise ValueError("Store names must use letters, numbers, and underscores")
+            msg = "Store names must use letters, numbers, and underscores"
+            raise ValueError(msg)
 
     def write(self, name, start, values):
         """Write one bounded chunk at its result-row offset, in any chunk order."""
         if self._published:
-            raise RuntimeError("Result already completed")
+            msg = "Result already completed"
+            raise RuntimeError(msg)
         spec = self._variables[name]
         values = np.asarray(values, dtype=np.dtype(spec["dtype"]))
         stop = start + len(values)
@@ -102,9 +102,8 @@ class IncrementalResultWriter:
             values.shape[1:] != tuple(spec["shape"][1:])
             or not 0 <= start <= stop <= spec["shape"][0]
         ):
-            raise ValueError(
-                "Output chunk shape or row range does not match the variable"
-            )
+            msg = "Output chunk shape or row range does not match the variable"
+            raise ValueError(msg)
         if start == stop:
             return
         # Sorted written (start, stop) intervals: only neighbours can overlap.
@@ -115,7 +114,8 @@ class IncrementalResultWriter:
         if (before is not None and before[1] > start) or (
             after is not None and after[0] < stop
         ):
-            raise ValueError("Output chunks overlap")
+            msg = "Output chunks overlap"
+            raise ValueError(msg)
         filename = f"{name}-{start}-{stop}.npy"
         np.save(self._temporary / filename, values, allow_pickle=False)
         spec["chunks"].append(
@@ -126,16 +126,19 @@ class IncrementalResultWriter:
     def complete(self, attrs=None):
         """Validate coverage and atomically expose a completed immutable result."""
         if self._published:
-            raise RuntimeError("Result already completed")
+            msg = "Result already completed"
+            raise RuntimeError(msg)
         for spec in self._variables.values():
             spec["chunks"].sort(key=lambda chunk: chunk["start"])
             previous = 0
             for chunk in spec["chunks"]:
                 if chunk["start"] != previous:
-                    raise ValueError("Incomplete output row coverage")
+                    msg = "Incomplete output row coverage"
+                    raise ValueError(msg)
                 previous = chunk["stop"]
             if previous != spec["shape"][0]:
-                raise ValueError("Incomplete output row coverage")
+                msg = "Incomplete output row coverage"
+                raise ValueError(msg)
         manifest = {
             "format_version": 1,
             "complete": True,
@@ -171,7 +174,8 @@ def _json_value(value):
         return value.item()
     if isinstance(value, np.ndarray):
         return value.tolist()
-    raise TypeError(f"Unsupported result attribute: {type(value).__name__}")
+    msg = f"Unsupported result attribute: {type(value).__name__}"
+    raise TypeError(msg)
 
 
 class _ChunkedArray(BackendArray):
@@ -197,9 +201,8 @@ class _ChunkedArray(BackendArray):
         read_shape = tuple(len(index) for index in indices)
         size = int(np.prod(read_shape, dtype=np.int64)) * self.dtype.itemsize
         if size > self.max_read_bytes:
-            raise MemoryError(
-                f"Explicit read needs {size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
-            )
+            msg = f"Explicit read needs {size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
+            raise MemoryError(msg)
         out = np.empty(read_shape, dtype=self.dtype)
         # Group requested rows by owning chunk without scanning every chunk.
         owner = np.searchsorted(self._starts, indices[0], side="right") - 1
@@ -217,9 +220,8 @@ class _ChunkedArray(BackendArray):
                     array.shape != (chunk["stop"] - chunk["start"],) + self.shape[1:]
                     or array.dtype != self.dtype
                 ):
-                    raise ValueError(
-                        "Result chunk shape/dtype does not match its manifest"
-                    )
+                    msg = "Result chunk shape/dtype does not match its manifest"
+                    raise ValueError(msg)
                 source = [indices[0][selected] - chunk["start"], *indices[1:]]
                 destination = [
                     selected,
@@ -245,7 +247,8 @@ def _validate_read_budget(max_read_bytes):
         or not isinstance(max_read_bytes, (int, np.integer))
         or max_read_bytes <= 0
     ):
-        raise ValueError("max_read_bytes must be a positive integer byte limit")
+        msg = "max_read_bytes must be a positive integer byte limit"
+        raise ValueError(msg)
     return int(max_read_bytes)
 
 
@@ -258,7 +261,8 @@ def _validate_variable_chunks(path, spec):
         or dims[0] != "time"
         or any(type(size) is not int or size < 0 for size in shape)
     ):
-        raise ValueError("Invalid variable shape/dimensions in result manifest")
+        msg = "Invalid variable shape/dimensions in result manifest"
+        raise ValueError(msg)
     dtype = np.dtype(spec["dtype"])
     previous = 0
     for chunk in spec["chunks"]:
@@ -269,19 +273,23 @@ def _validate_variable_chunks(path, spec):
             or start != previous
             or not start < stop <= shape[0]
         ):
-            raise ValueError("Incomplete or overlapping result chunk row coverage")
+            msg = "Incomplete or overlapping result chunk row coverage"
+            raise ValueError(msg)
         try:
             array = np.load(path / chunk["file"], mmap_mode="r", allow_pickle=False)
         except (OSError, ValueError) as exc:
-            raise ValueError("Result chunk file is missing or invalid") from exc
+            msg = "Result chunk file is missing or invalid"
+            raise ValueError(msg) from exc
         try:
             if array.shape != (stop - start,) + shape[1:] or array.dtype != dtype:
-                raise ValueError("Result chunk shape/dtype does not match its manifest")
+                msg = "Result chunk shape/dtype does not match its manifest"
+                raise ValueError(msg)
         finally:
             array._mmap.close()
         previous = stop
     if previous != shape[0]:
-        raise ValueError("Incomplete result chunk row coverage")
+        msg = "Incomplete result chunk row coverage"
+        raise ValueError(msg)
 
 
 def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
@@ -298,7 +306,8 @@ def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
     path = Path(path)
     manifest = json.loads((path / "manifest.json").read_text())
     if manifest.get("format_version") != 1 or manifest.get("complete") is not True:
-        raise ValueError("Result is incomplete or uses an unsupported store version")
+        msg = "Result is incomplete or uses an unsupported store version"
+        raise ValueError(msg)
     for spec in manifest["variables"].values():
         _validate_variable_chunks(path, spec)
     variables = {
@@ -348,9 +357,11 @@ class PaddedBackendArray(BackendArray):
             or self.mask.ndim != 1
             or self.mask.sum() != self.source.shape[1]
         ):
-            raise ValueError("Interior mask must match the source spatial columns")
+            msg = "Interior mask must match the source spatial columns"
+            raise ValueError(msg)
         if np.dtype(self.source.dtype).kind != "f":
-            raise ValueError("NaN-padded spatial variables require floating-point data")
+            msg = "NaN-padded spatial variables require floating-point data"
+            raise ValueError(msg)
         max_read_bytes = _validate_read_budget(max_read_bytes)
         self.shape = (self.source.shape[0], len(self.mask))
         self.dtype = np.dtype(self.source.dtype)
@@ -369,9 +380,8 @@ class PaddedBackendArray(BackendArray):
         ]
         read_size = len(rows) * len(columns) * self.dtype.itemsize
         if read_size > self.max_read_bytes:
-            raise MemoryError(
-                f"Explicit padded read needs {read_size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
-            )
+            msg = f"Explicit padded read needs {read_size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
+            raise MemoryError(msg)
         output = np.full((len(rows), len(columns)), np.nan, dtype=self.dtype)
         inside = self.mask[columns]
         if inside.any() and len(rows):

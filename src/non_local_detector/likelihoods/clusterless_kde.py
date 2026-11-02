@@ -700,13 +700,13 @@ def _estimate_with_enc_chunking(
             or encoding_positions is None
             or position_std is None
         ):
-            raise ValueError(
-                "use_streaming=True requires encoding_positions, position_eval_points, and position_std"
-            )
+            msg = "use_streaming=True requires encoding_positions, position_eval_points, and position_std"
+            raise ValueError(msg)
         n_pos = position_eval_points.shape[0]
     else:
         if log_position_distance is None:
-            raise ValueError("use_streaming=False requires log_position_distance")
+            msg = "use_streaming=False requires log_position_distance"
+            raise ValueError(msg)
         n_pos = log_position_distance.shape[1]
     enc_tile_size = min(n_enc, enc_tile_size, _LOG_REDUCTION_ENCODING_ROWS)
     pos_tile_size = min(n_pos, pos_tile_size or n_pos)
@@ -1102,10 +1102,11 @@ def estimate_log_joint_mark_intensity(
     # Reject unsupported combinations before any array work so the failure is a
     # clear message rather than a downstream exp(None) TypeError.
     if use_streaming and not use_gemm:
-        raise ValueError(
+        msg = (
             "use_streaming=True is not supported with use_gemm=False "
             "(the linear-space reference path). Use use_gemm=True for streaming."
         )
+        raise ValueError(msg)
 
     if not use_gemm:
         # Linear-space reference: convert log position back to linear for the
@@ -1164,18 +1165,18 @@ def estimate_log_joint_mark_intensity(
     # Validation: streaming requires chunking configuration and inputs.
     if use_streaming:
         if enc_tile_size is None:
-            raise ValueError(
-                "use_streaming=True requires enc_tile_size to be specified"
-            )
+            msg = "use_streaming=True requires enc_tile_size to be specified"
+            raise ValueError(msg)
         if (
             encoding_positions is None
             or position_eval_points is None
             or position_std is None
         ):
-            raise ValueError(
+            msg = (
                 "use_streaming=True requires encoding_positions, position_eval_points, "
                 "and position_std to be specified"
             )
+            raise ValueError(msg)
         if enc_tile_size >= n_encoding_spikes:
             # This group has fewer encoding spikes than the tile, so there is
             # nothing to chunk and streaming's memory savings are moot at this
@@ -1267,9 +1268,8 @@ def _validate_tile_sizes(enc_tile_size, pos_tile_size) -> None:
             or not isinstance(value, (int, np.integer))
             or value < 1
         ):
-            raise ValidationError(
-                f"{name} must be None or a positive integer", got=repr(value)
-            )
+            msg = f"{name} must be None or a positive integer"
+            raise ValidationError(msg, got=repr(value))
 
 
 def _pad_with_last_row(array, n_rows: int) -> np.ndarray:
@@ -1699,10 +1699,11 @@ def fit_clusterless_kde_encoding_model(
         _encoding_support=_encoding_support,
     )
     if environment.place_bin_centers_ is None:
-        raise ValueError(
+        msg = (
             "Environment must be fitted with place_bin_centers_. "
             "Call environment.fit_place_grid() first."
         )
+        raise ValueError(msg)
 
     # Weighted occupancy time in seconds: each sample's weight times the
     # tracking time it covers (its integrated interpolation exposure). Gaps from

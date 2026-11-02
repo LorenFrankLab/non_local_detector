@@ -39,8 +39,9 @@ def ensure_probability_distribution(
     """
     arr_sum = np.sum(arr)
     if not np.isclose(arr_sum, 1.0, atol=tolerance):
+        msg = f"{name} must be a valid probability distribution"
         raise ValidationError(
-            f"{name} must be a valid probability distribution",
+            msg,
             expected="sum = 1.0",
             got=f"sum = {arr_sum:.6f}",
             hint=f"Normalize the array: {name} = {name} / {name}.sum()",
@@ -84,8 +85,9 @@ def ensure_positive_scalar(
         expected_str = f"{name} >= {minimum}"
 
     if not condition:
+        msg = f"Invalid value for {name}"
         raise ValidationError(
-            f"Invalid value for {name}",
+            msg,
             expected=expected_str,
             got=f"{name} = {value}",
             hint=f"Use a {'positive' if strict else 'non-negative'} value",
@@ -114,8 +116,9 @@ def ensure_array_1d(arr: np.ndarray, name: str) -> None:
     >>> ensure_array_1d(np.array([[1, 2]]), "probs")  # Raises
     """
     if arr.ndim != 1:
+        msg = f"{name} must be a 1-dimensional array"
         raise ValidationError(
-            f"{name} must be a 1-dimensional array",
+            msg,
             expected="array with shape (n,)",
             got=f"array with shape {arr.shape}",
             hint="Use array.flatten() or array.ravel() to convert to 1D",
@@ -146,8 +149,9 @@ def ensure_all_finite(arr: np.ndarray, name: str) -> None:
     if not np.all(np.isfinite(arr)):
         n_nan = np.sum(np.isnan(arr))
         n_inf = np.sum(np.isinf(arr))
+        msg = f"Found non-finite values in {name}"
         raise DataError(
-            f"Found non-finite values in {name}",
+            msg,
             data_name=name,
             hint=f"Array contains {n_nan} NaN value(s) and {n_inf} Inf value(s). Check your data for missing or invalid values.",
         )
@@ -176,8 +180,9 @@ def ensure_all_non_negative(arr: np.ndarray, name: str) -> None:
     if np.any(arr < 0):
         n_negative = np.sum(arr < 0)
         min_val = np.min(arr)
+        msg = f"{name} must contain only non-negative values"
         raise ValidationError(
-            f"{name} must contain only non-negative values",
+            msg,
             expected="all values >= 0",
             got=f"{n_negative} negative value(s), minimum = {min_val:.6f}",
             hint="Check your data for errors or use np.abs() if negative values should be positive",
@@ -211,8 +216,9 @@ def ensure_in_range(arr: np.ndarray, name: str, low: float, high: float) -> None
     if np.any(arr < low) or np.any(arr > high):
         min_val = np.min(arr)
         max_val = np.max(arr)
+        msg = f"{name} values must be in range [{low}, {high}]"
         raise ValidationError(
-            f"{name} values must be in range [{low}, {high}]",
+            msg,
             expected=f"all values in [{low}, {high}]",
             got=f"values in [{min_val:.6f}, {max_val:.6f}]",
             hint=f"Use np.clip({name}, {low}, {high}) to clamp values to valid range",
@@ -240,16 +246,18 @@ def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
     >>> ensure_square_matrix(np.zeros((3, 4)), "transition_matrix")  # Raises
     """
     if matrix.ndim != 2:
+        msg = f"{name} must be a 2-dimensional matrix"
         raise ValidationError(
-            f"{name} must be a 2-dimensional matrix",
+            msg,
             expected="matrix with shape (n, n)",
             got=f"array with shape {matrix.shape}",
             hint="Transition matrices must be 2D and square",
         )
 
     if matrix.shape[0] != matrix.shape[1]:
+        msg = f"{name} must be square"
         raise ValidationError(
-            f"{name} must be square",
+            msg,
             expected=f"matrix with shape ({matrix.shape[0]}, {matrix.shape[0]})",
             got=f"matrix with shape {matrix.shape}",
             hint="Transition matrix needs one row and one column per state",
@@ -287,8 +295,9 @@ def ensure_stochastic_matrix(
     if np.any(bad_rows):
         bad_indices = np.where(bad_rows)[0]
         bad_sums = row_sums[bad_rows]
+        msg = f"{name} must be row-stochastic (each row sums to 1)"
         raise ValidationError(
-            f"{name} must be row-stochastic (each row sums to 1)",
+            msg,
             expected="all row sums = 1.0",
             got=f"{len(bad_indices)} row(s) with invalid sums: rows {bad_indices.tolist()}, sums {bad_sums.tolist()}",
             hint=f"Normalize each row: {name} = {name} / {name}.sum(axis=1, keepdims=True)",
@@ -317,8 +326,9 @@ def ensure_ndarray(value: Any, name: str) -> None:
     >>> ensure_ndarray([1, 2], "position")  # Raises
     """
     if not isinstance(value, np.ndarray):
+        msg = f"{name} must be a numpy array"
         raise ValidationError(
-            f"{name} must be a numpy array",
+            msg,
             expected="np.ndarray",
             got=f"{type(value).__name__}",
             hint=f"Convert to numpy array: {name} = np.array({name})",
@@ -369,8 +379,9 @@ def ensure_monotonic_increasing(
 
         if len(bad_indices) > 0:
             idx = bad_indices[0]
+            msg = f"{name} must be {expected_str}"
             raise DataError(
-                f"{name} must be {expected_str}",
+                msg,
                 data_name=name,
                 hint=f"Found violation at index {idx}: {name}[{idx}] = {arr[idx]:.6f}, {name}[{idx + 1}] = {arr[idx + 1]:.6f}. Check for duplicate or out-of-order timestamps.",
             )
@@ -404,8 +415,9 @@ def ensure_matching_lengths(arr1, arr2, name1: str, name2: str) -> None:
     len2 = len(arr2)
 
     if len1 != len2:
+        msg = f"Length mismatch between {name1} and {name2}"
         raise ValidationError(
-            f"Length mismatch between {name1} and {name2}",
+            msg,
             expected=f"{name2} with length {len1}",
             got=f"{name2} with length {len2}",
             hint=f"Ensure {name1} and {name2} have the same number of time points",
@@ -437,14 +449,16 @@ def ensure_networkx_graph(value: Any, name: str) -> None:
     try:
         import networkx as nx
     except ImportError as err:
+        msg = "NetworkX is required but not installed"
         raise ValidationError(
-            "NetworkX is required but not installed",
+            msg,
             hint="Install NetworkX: pip install networkx",
         ) from err
 
     if not isinstance(value, nx.Graph):
+        msg = f"{name} must be a NetworkX Graph"
         raise ValidationError(
-            f"{name} must be a NetworkX Graph",
+            msg,
             expected="networkx.Graph",
             got=f"{type(value).__name__}",
             hint=f"Create a NetworkX graph: {name} = nx.Graph()",
@@ -480,8 +494,9 @@ def ensure_graph_has_nodes(graph: Any, name: str, min_nodes: int = 2) -> None:
     n_nodes = graph.number_of_nodes()
 
     if n_nodes < min_nodes:
+        msg = f"{name} has too few nodes"
         raise ValidationError(
-            f"{name} has too few nodes",
+            msg,
             expected=f"at least {min_nodes} node(s)",
             got=f"{n_nodes} node(s)",
             hint=f"Add more nodes to {name} using .add_node() or .add_edge()",
@@ -517,8 +532,9 @@ def ensure_graph_has_edges(graph: Any, name: str, min_edges: int = 1) -> None:
     n_edges = graph.number_of_edges()
 
     if n_edges < min_edges:
+        msg = f"{name} has too few edges"
         raise ValidationError(
-            f"{name} has too few edges",
+            msg,
             expected=f"at least {min_edges} edge(s)",
             got=f"{n_edges} edge(s)",
             hint=f"Add edges to {name} using .add_edge(node1, node2)",
@@ -575,8 +591,9 @@ def ensure_graph_nodes_have_attribute(
         if n_missing > 3:
             sample_str += f", ... ({n_missing - 3} more)"
 
+        msg = f"{name} nodes missing required attribute '{attribute}'"
         raise ValidationError(
-            f"{name} nodes missing required attribute '{attribute}'",
+            msg,
             expected=f"all {graph.number_of_nodes()} node(s) to have '{attribute}' attribute",
             got=f"{n_missing} node(s) missing '{attribute}': {sample_str}",
             hint=f"Add '{attribute}' to all nodes: {name}.nodes[node]['{attribute}'] = value",
@@ -586,8 +603,9 @@ def ensure_graph_nodes_have_attribute(
     if nodes_with_wrong_type:
         sample_node, sample_type = nodes_with_wrong_type[0]
 
+        msg = f"{name} node attribute '{attribute}' has wrong type"
         raise ValidationError(
-            f"{name} node attribute '{attribute}' has wrong type",
+            msg,
             expected=f"attribute type: {sample_value_type.__name__}",
             got=f"node {sample_node} has type {sample_type}",
             hint=f"Ensure all '{attribute}' values are {sample_value_type.__name__}",
@@ -643,8 +661,9 @@ def ensure_graph_edges_have_attribute(
         if n_missing > 3:
             sample_str += f", ... ({n_missing - 3} more)"
 
+        msg = f"{name} edges missing required attribute '{attribute}'"
         raise ValidationError(
-            f"{name} edges missing required attribute '{attribute}'",
+            msg,
             expected=f"all {graph.number_of_edges()} edge(s) to have '{attribute}' attribute",
             got=f"{n_missing} edge(s) missing '{attribute}': {sample_str}",
             hint=f"Add '{attribute}' to all edges: {name}.edges[edge]['{attribute}'] = value",
@@ -654,8 +673,9 @@ def ensure_graph_edges_have_attribute(
     if edges_with_wrong_type:
         sample_edge, sample_type = edges_with_wrong_type[0]
 
+        msg = f"{name} edge attribute '{attribute}' has wrong type"
         raise ValidationError(
-            f"{name} edge attribute '{attribute}' has wrong type",
+            msg,
             expected=f"attribute type: {sample_value_type.__name__}",
             got=f"edge {sample_edge} has type {sample_type}",
             hint=f"Ensure all '{attribute}' values are {sample_value_type.__name__}",

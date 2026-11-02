@@ -778,8 +778,9 @@ def log_rate_prior_l2_penalty(
         for an intercept-only basis.
     """
     if not (np.isfinite(log_rate_prior_std) and log_rate_prior_std > 0):
+        msg = "log_rate_prior_std must be a positive, finite standard deviation"
         raise ValidationError(
-            "log_rate_prior_std must be a positive, finite standard deviation",
+            msg,
             expected="a float > 0 (nats of log-rate)",
             got=repr(log_rate_prior_std),
             hint=f"The default is {GLM_LOG_RATE_PRIOR_STD}.",

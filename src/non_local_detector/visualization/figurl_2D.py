@@ -32,7 +32,7 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
     n_position_bins = x_count * y_count
     max_linear_index = n_position_bins - 1
     if max_linear_index > _UINT16_MAX:
-        raise ValueError(
+        msg = (
             f"figurl_2D decoded-position rendering currently supports grids whose "
             f"largest linear bin index fits in uint16 (up to {_UINT16_MAX + 1} "
             f"bins); got {n_position_bins} bins "
@@ -41,6 +41,7 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
             f"DecodedPositionData schema receives 'locations' as uint16; verify "
             f"the schema before widening the dtype here."
         )
+        raise ValueError(msg)
     return n_position_bins
 
 
@@ -590,9 +591,8 @@ try:
         )
 
         if spike_times is None:
-            raise ValueError(
-                "spike_times is required for multiunit firing rate visualization"
-            )
+            msg = "spike_times is required for multiunit firing rate visualization"
+            raise ValueError(msg)
         multiunit_firing_rate = get_multiunit_firing_rate(
             spike_times, results.time.values
         )

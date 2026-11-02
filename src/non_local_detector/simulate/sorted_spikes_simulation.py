@@ -511,11 +511,12 @@ def make_simulated_data(
         start_idx = int(np.searchsorted(time, event_starts[event_idx], side="left"))
         end_idx = start_idx + n_event_samples
         if end_idx > len(time):
-            raise ValueError(
+            msg = (
                 f"Event {event_idx} would run past the end of the simulated "
                 f"time axis (start_idx={start_idx}, end_idx={end_idx}, "
                 f"n_time={len(time)})"
             )
+            raise ValueError(msg)
         spikes[start_idx:end_idx] = 0
         spikes[start_idx:end_idx] = event_spikes
         event_ends[event_idx] = (
