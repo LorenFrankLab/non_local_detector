@@ -822,6 +822,236 @@ def _state_marginals(posterior: jnp.ndarray, aggregation: jnp.ndarray) -> jnp.nd
     return jnp.matmul(posterior, aggregation, precision=jax.lax.Precision.HIGHEST)
 
 
+def _chunked_filter_smoother(
+    filter_chunk: Callable[..., tuple],
+    smoother_chunk: Callable[..., jnp.ndarray],
+    *,
+    time: np.ndarray,
+    state_ind: np.ndarray,
+    initial_distribution: np.ndarray,
+    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_args: tuple,
+    is_missing: np.ndarray | None,
+    n_chunks: int,
+    log_likelihoods: np.ndarray | None,
+    cache_log_likelihoods: bool,
+    dtype: jnp.dtype,
+    degenerate_indices_out: list | None,
+    accumulate_log_likelihoods: bool,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    float,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """Chunked forward-backward shared by the stationary and covariate drivers.
+
+    The transition model enters only through the two per-chunk steps, which
+    close over the device transition arrays. Both run donating JIT functions:
+    they must not be handed an array the driver reads again.
+
+    Parameters
+    ----------
+    filter_chunk : callable
+        ``filter_chunk(initial_distribution, log_likelihoods, time_inds)``
+        filters one chunk from the predicted distribution of its first row,
+        returning ``((_, predicted_probs_next), (causal_posterior,
+        predicted_probs, increments))`` as :func:`_filter_impl` does.
+        ``time_inds`` is the chunk's global row indices (device array).
+    smoother_chunk : callable
+        ``smoother_chunk(filtered_probs, initial, time_inds, n_time)`` smooths
+        one chunk backward from ``initial``, the smoothed row after the chunk
+        (the last filtered row for the final chunk), as :func:`_smoother_impl`
+        does.
+
+    The remaining parameters and the returns are those of
+    :func:`chunked_filter_smoother`.
+    """
+    causal_posterior = []
+    predictive_posterior = []
+    predictive_state_probabilities = []
+    causal_state_probabilities = []
+    acausal_posterior = []
+    acausal_state_probabilities = []
+    # Device increments, summed in float64 after the loop so the host does not
+    # wait for each chunk's filter.
+    chunk_increments = []
+    n_degenerate_total = 0
+    n_nan_total = 0
+
+    n_time = len(time)
+    # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
+    if n_chunks > n_time:
+        raise ValueError(
+            f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time}). "
+            f"Each chunk must contain at least one time point."
+        )
+    time_chunks = np.array_split(np.arange(n_time), n_chunks)
+
+    # Convert inputs to JAX arrays once at the top - keep data on device
+    # Cast to desired dtype for precision control
+    state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
+    initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
+
+    # Create aggregation matrix for marginalizing state bins -> discrete states
+    # This is reused across all chunks
+    n_discrete_states = int(jnp.max(state_ind_jax)) + 1
+    state_aggregation_matrix = jax.nn.one_hot(
+        state_ind_jax, n_discrete_states
+    )  # (n_state_bins, n_states)
+
+    # Initialize variables that may be referenced in loop conditionals
+    predicted_probs_next = None
+    acausal_posterior_chunk = None
+
+    # Precompute or convert log_likelihoods to JAX once
+    if cache_log_likelihoods and log_likelihoods is None:
+        log_likelihoods = log_likelihood_func(
+            time,
+            *log_likelihood_args,
+            is_missing=is_missing,
+        )
+    log_likelihoods_jax = (
+        jnp.asarray(log_likelihoods, dtype=dtype)
+        if log_likelihoods is not None
+        else None
+    )
+    accumulated_log_likelihoods: np.ndarray | None = None
+    if log_likelihoods_jax is None:
+        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
+
+    # Forward pass: accumulate JAX arrays
+    for chunk_id, time_inds_np in enumerate(time_chunks):
+        # Convert time_inds to JAX once to avoid repeated host↔device syncs
+        time_inds = jnp.asarray(time_inds_np)
+
+        if log_likelihoods_jax is not None:
+            log_likelihood_chunk = log_likelihoods_jax[time_inds]
+        else:
+            is_missing_chunk = (
+                is_missing[time_inds_np] if is_missing is not None else None
+            )
+            log_likelihood_chunk = _call_log_likelihood_chunk(
+                log_likelihood_func,
+                time,
+                log_likelihood_args,
+                time_inds_np,
+                is_missing_chunk,
+            )
+            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
+            if accumulate_log_likelihoods:
+                accumulated_log_likelihoods = _store_chunk_rows(
+                    accumulated_log_likelihoods,
+                    log_likelihood_chunk,
+                    time_inds_np,
+                    n_time,
+                )
+
+        # Tally degenerate (all -inf) and NaN timesteps at one host sync point
+        # before the array is donated to the JIT call. Accumulated across chunks
+        # and reported once after the forward pass.
+        n_degen, n_nan = _accumulate_chunk_degeneracy(
+            log_likelihood_chunk, time_inds_np, degenerate_indices_out
+        )
+        n_degenerate_total += n_degen
+        n_nan_total += n_nan
+
+        # Donated: log_likelihood_chunk (created fresh), initial_distribution
+        # Do not read these after the call - they are consumed by the JIT function
+        # Note: On first iteration, initial_distribution_jax may trigger a donation warning
+        # if the array is small (< ~1 KB). This is benign - JAX skips donation for small
+        # arrays where the overhead exceeds the benefit. The optimization works correctly
+        # for large production workloads.
+        (
+            (_, predicted_probs_next),
+            (causal_posterior_chunk, predicted_probs_chunk, increments),
+        ) = filter_chunk(
+            initial_distribution=(
+                initial_distribution_jax if chunk_id == 0 else predicted_probs_next
+            ),
+            log_likelihoods=log_likelihood_chunk,
+            time_inds=time_inds,
+        )
+
+        # Keep as JAX arrays - no conversion to NumPy yet
+        # Marginalize state bins -> discrete states by summing probabilities
+        causal_posterior.append(causal_posterior_chunk)
+        causal_state_probabilities.append(
+            _state_marginals(causal_posterior_chunk, state_aggregation_matrix)
+        )
+        predictive_posterior.append(predicted_probs_chunk)
+        predictive_state_probabilities.append(
+            _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
+        )
+
+        chunk_increments.append(increments)
+
+    marginal_likelihood = 0.0
+    for increments in chunk_increments:
+        marginal_likelihood += _float64_evidence(increments)
+    del chunk_increments
+    _warn_degenerate_and_nan_timesteps(
+        n_degenerate_total,
+        n_nan_total,
+        n_time,
+        marginal_log_likelihood=float(marginal_likelihood),
+    )
+
+    if accumulated_log_likelihoods is not None:
+        log_likelihoods = accumulated_log_likelihoods
+
+    # Concatenate JAX arrays on device
+    causal_posterior_jax = jnp.concatenate(causal_posterior)
+    causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
+    predictive_posterior_jax = jnp.concatenate(predictive_posterior)
+    predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
+    # Release the per-chunk copies so they don't coexist with the concatenations
+    del causal_posterior, predictive_posterior
+
+    # Backward pass: accumulate JAX arrays
+    for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
+        time_inds = jnp.asarray(time_inds_np)
+
+        # Donated: the filtered_probs slice (a copy) and the initial boundary
+        # row are single-use per iteration.
+        # Note: Small arrays may trigger benign donation warnings in tests
+        acausal_posterior_chunk = smoother_chunk(
+            filtered_probs=causal_posterior_jax[time_inds],
+            initial=(
+                causal_posterior_jax[-1]
+                if chunk_id == 0
+                else acausal_posterior_chunk[0]
+            ),
+            time_inds=time_inds,
+            n_time=n_time,
+        )
+        acausal_posterior.append(acausal_posterior_chunk)
+        acausal_state_probabilities.append(
+            _state_marginals(acausal_posterior_chunk, state_aggregation_matrix)
+        )
+
+    # Concatenate JAX arrays on device
+    acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
+    acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
+    del acausal_posterior
+
+    # Convert to NumPy only at the very end for API compatibility
+    return (
+        np.asarray(acausal_posterior_jax),
+        np.asarray(acausal_state_probabilities_jax),
+        float(marginal_likelihood),
+        np.asarray(causal_state_probabilities_jax),
+        np.asarray(predictive_state_probabilities_jax),
+        log_likelihoods,  # Keep as original (may be None or NumPy)
+        np.asarray(causal_posterior_jax),
+        np.asarray(predictive_posterior_jax),
+    )
+
+
 def chunked_filter_smoother(
     time: np.ndarray,
     state_ind: np.ndarray,
@@ -909,186 +1139,48 @@ def chunked_filter_smoother(
     predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
         One-step-ahead predicted state probabilities over state bins
     """
-    causal_posterior = []
-    predictive_posterior = []
-    predictive_state_probabilities = []
-    causal_state_probabilities = []
-    acausal_posterior = []
-    acausal_state_probabilities = []
-    # Device increments, summed in float64 after the loop so the host does not
-    # wait for each chunk's filter.
-    chunk_increments = []
-    n_degenerate_total = 0
-    n_nan_total = 0
-
-    n_time = len(time)
-    # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
-    if n_chunks > n_time:
-        raise ValueError(
-            f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time}). "
-            f"Each chunk must contain at least one time point."
-        )
-    time_chunks = np.array_split(np.arange(n_time), n_chunks)
-
-    # Convert inputs to JAX arrays once at the top - keep data on device
-    # Cast to desired dtype for precision control
-    state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
-    initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
 
-    # Create aggregation matrix for marginalizing state bins -> discrete states
-    # This is reused across all chunks
-    n_discrete_states = int(jnp.max(state_ind_jax)) + 1
-    state_aggregation_matrix = jax.nn.one_hot(
-        state_ind_jax, n_discrete_states
-    )  # (n_state_bins, n_states)
-
-    # Initialize variables that may be referenced in loop conditionals
-    predicted_probs_next = None
-    acausal_posterior_chunk = None
-
-    # Precompute or convert log_likelihoods to JAX once
-    if cache_log_likelihoods and log_likelihoods is None:
-        log_likelihoods = log_likelihood_func(
-            time,
-            *log_likelihood_args,
-            is_missing=is_missing,
-        )
-    log_likelihoods_jax = (
-        jnp.asarray(log_likelihoods, dtype=dtype)
-        if log_likelihoods is not None
-        else None
-    )
-    accumulated_log_likelihoods: np.ndarray | None = None
-    if log_likelihoods_jax is None:
-        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
-
-    # Forward pass: accumulate JAX arrays
-    for chunk_id, time_inds_np in enumerate(time_chunks):
-        # Convert time_inds to JAX once to avoid repeated host↔device syncs
-        time_inds = jnp.asarray(time_inds_np)
-
-        if log_likelihoods_jax is not None:
-            log_likelihood_chunk = log_likelihoods_jax[time_inds]
-        else:
-            is_missing_chunk = (
-                is_missing[time_inds_np] if is_missing is not None else None
-            )
-            log_likelihood_chunk = _call_log_likelihood_chunk(
-                log_likelihood_func,
-                time,
-                log_likelihood_args,
-                time_inds_np,
-                is_missing_chunk,
-            )
-            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
-            if accumulate_log_likelihoods:
-                accumulated_log_likelihoods = _store_chunk_rows(
-                    accumulated_log_likelihoods,
-                    log_likelihood_chunk,
-                    time_inds_np,
-                    n_time,
-                )
-
-        # Tally degenerate (all -inf) and NaN timesteps at one host sync point
-        # before the array is donated to the JIT call. Accumulated across chunks
-        # and reported once after the forward pass.
-        n_degen, n_nan = _accumulate_chunk_degeneracy(
-            log_likelihood_chunk, time_inds_np, degenerate_indices_out
-        )
-        n_degenerate_total += n_degen
-        n_nan_total += n_nan
-
-        # Donated: log_likelihood_chunk (created fresh), initial_distribution
-        # Do not read these after the call - they are consumed by the JIT function
-        # Note: On first iteration, initial_distribution_jax may trigger a donation warning
-        # if the array is small (< ~1 KB). This is benign - JAX skips donation for small
-        # arrays where the overhead exceeds the benefit. The optimization works correctly
-        # for large production workloads.
-        (
-            (_, predicted_probs_next),
-            (causal_posterior_chunk, predicted_probs_chunk, increments),
-        ) = _filter_internal(
-            initial_distribution=(
-                initial_distribution_jax if chunk_id == 0 else predicted_probs_next
-            ),
+    def filter_chunk(
+        initial_distribution: jnp.ndarray,
+        log_likelihoods: jnp.ndarray,
+        time_inds: jnp.ndarray,
+    ) -> tuple:
+        return _filter_internal(
+            initial_distribution=initial_distribution,
             transition_matrix=transition_matrix_jax,
-            log_likelihoods=log_likelihood_chunk,
+            log_likelihoods=log_likelihoods,
         )
 
-        # Keep as JAX arrays - no conversion to NumPy yet
-        # Marginalize state bins -> discrete states by summing probabilities
-        causal_posterior.append(causal_posterior_chunk)
-        causal_state_probabilities.append(
-            _state_marginals(causal_posterior_chunk, state_aggregation_matrix)
-        )
-        predictive_posterior.append(predicted_probs_chunk)
-        predictive_state_probabilities.append(
-            _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
-        )
-
-        chunk_increments.append(increments)
-
-    marginal_likelihood = 0.0
-    for increments in chunk_increments:
-        marginal_likelihood += _float64_evidence(increments)
-    del chunk_increments
-    _warn_degenerate_and_nan_timesteps(
-        n_degenerate_total,
-        n_nan_total,
-        n_time,
-        marginal_log_likelihood=float(marginal_likelihood),
-    )
-
-    if accumulated_log_likelihoods is not None:
-        log_likelihoods = accumulated_log_likelihoods
-
-    # Concatenate JAX arrays on device
-    causal_posterior_jax = jnp.concatenate(causal_posterior)
-    causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
-    predictive_posterior_jax = jnp.concatenate(predictive_posterior)
-    predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
-    # Release the per-chunk copies so they don't coexist with the concatenations
-    del causal_posterior, predictive_posterior
-
-    # Backward pass: accumulate JAX arrays
-    for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
-        time_inds = jnp.asarray(time_inds_np)
-
-        # Use internal version with buffer donation
-        # Safe because causal_posterior_jax[time_inds] creates a slice (copy)
-        # Note: Small arrays may trigger benign donation warnings in tests
-        acausal_posterior_chunk = _smoother_internal(
+    def smoother_chunk(
+        filtered_probs: jnp.ndarray,
+        initial: jnp.ndarray,
+        time_inds: jnp.ndarray,
+        n_time: int,
+    ) -> jnp.ndarray:
+        return _smoother_internal(
             transition_matrix=transition_matrix_jax,
-            filtered_probs=causal_posterior_jax[time_inds],
-            initial=(
-                causal_posterior_jax[-1]
-                if chunk_id == 0
-                else acausal_posterior_chunk[0]
-            ),
+            filtered_probs=filtered_probs,
+            initial=initial,
             ind=time_inds,
             n_time=n_time,
         )
-        acausal_posterior.append(acausal_posterior_chunk)
-        acausal_state_probabilities.append(
-            _state_marginals(acausal_posterior_chunk, state_aggregation_matrix)
-        )
 
-    # Concatenate JAX arrays on device
-    acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
-    acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
-    del acausal_posterior
-
-    # Convert to NumPy only at the very end for API compatibility
-    return (
-        np.asarray(acausal_posterior_jax),
-        np.asarray(acausal_state_probabilities_jax),
-        float(marginal_likelihood),
-        np.asarray(causal_state_probabilities_jax),
-        np.asarray(predictive_state_probabilities_jax),
-        log_likelihoods,  # Keep as original (may be None or NumPy)
-        np.asarray(causal_posterior_jax),
-        np.asarray(predictive_posterior_jax),
+    return _chunked_filter_smoother(
+        filter_chunk,
+        smoother_chunk,
+        time=time,
+        state_ind=state_ind,
+        initial_distribution=initial_distribution,
+        log_likelihood_func=log_likelihood_func,
+        log_likelihood_args=log_likelihood_args,
+        is_missing=is_missing,
+        n_chunks=n_chunks,
+        log_likelihoods=log_likelihoods,
+        cache_log_likelihoods=cache_log_likelihoods,
+        dtype=dtype,
+        degenerate_indices_out=degenerate_indices_out,
+        accumulate_log_likelihoods=accumulate_log_likelihoods,
     )
 
 
@@ -1556,201 +1648,64 @@ def chunked_filter_smoother_covariate_dependent(
     predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
         One-step-ahead predicted state probabilities over state bins
     """
-    causal_posterior = []
-    predictive_posterior = []
-    predictive_state_probabilities = []
-    causal_state_probabilities = []
-    acausal_posterior = []
-    acausal_state_probabilities = []
-    # Device increments, summed in float64 after the loop so the host does not
-    # wait for each chunk's filter.
-    chunk_increments = []
-    n_degenerate_total = 0
-    n_nan_total = 0
-
-    n_time = len(time)
-    # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
-    if n_chunks > n_time:
-        raise ValueError(
-            f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time}). "
-            f"Each chunk must contain at least one time point."
-        )
-    time_chunks = np.array_split(np.arange(n_time), n_chunks)
-
-    # Convert inputs to JAX arrays once at the top - keep data on device
-    # Cast to desired dtype for precision control
     state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
-    initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     continuous_transition_matrix_jax = jnp.asarray(
         continuous_transition_matrix, dtype=dtype
     )
-    # Convert discrete transition matrix but don't pre-index to avoid T×N×N materialization
-    # Index per-chunk instead (see forward/backward loops)
+    # Convert the discrete transitions but do not expand them to state bins:
+    # each chunk takes its time slice, and the scan body indexes the states
+    # per step, so the joint (n_time, n_state_bins, n_state_bins) transition
+    # is never materialized.
     discrete_transition_matrix_jax = jnp.asarray(
         discrete_transition_matrix, dtype=dtype
     )
 
-    # Create aggregation matrix for marginalizing state bins -> discrete states
-    # This is reused across all chunks
-    n_discrete_states = int(jnp.max(state_ind_jax)) + 1
-    state_aggregation_matrix = jax.nn.one_hot(
-        state_ind_jax, n_discrete_states
-    )  # (n_state_bins, n_states)
-
-    # Initialize variables that may be referenced in loop conditionals
-    predicted_probs_next = None
-    acausal_posterior_chunk = None
-
-    # Precompute or convert log_likelihoods to JAX once
-    if cache_log_likelihoods and log_likelihoods is None:
-        log_likelihoods = log_likelihood_func(
-            time,
-            *log_likelihood_args,
-            is_missing=is_missing,
-        )
-    log_likelihoods_jax = (
-        jnp.asarray(log_likelihoods, dtype=dtype)
-        if log_likelihoods is not None
-        else None
-    )
-    accumulated_log_likelihoods: np.ndarray | None = None
-    if log_likelihoods_jax is None:
-        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
-
-    # Forward pass: accumulate JAX arrays
-    for chunk_id, time_inds_np in enumerate(time_chunks):
-        # Convert time_inds to JAX once to avoid repeated host↔device syncs
-        time_inds = jnp.asarray(time_inds_np)
-
-        if log_likelihoods_jax is not None:
-            log_likelihood_chunk = log_likelihoods_jax[time_inds]
-        else:
-            is_missing_chunk = (
-                is_missing[time_inds_np] if is_missing is not None else None
-            )
-            log_likelihood_chunk = _call_log_likelihood_chunk(
-                log_likelihood_func,
-                time,
-                log_likelihood_args,
-                time_inds_np,
-                is_missing_chunk,
-            )
-            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
-            if accumulate_log_likelihoods:
-                accumulated_log_likelihoods = _store_chunk_rows(
-                    accumulated_log_likelihoods,
-                    log_likelihood_chunk,
-                    time_inds_np,
-                    n_time,
-                )
-
-        # Tally degenerate (all -inf) and NaN timesteps at one host sync point
-        # before the array is donated to the JIT call. Accumulated across chunks
-        # and reported once after the forward pass.
-        n_degen, n_nan = _accumulate_chunk_degeneracy(
-            log_likelihood_chunk, time_inds_np, degenerate_indices_out
-        )
-        n_degenerate_total += n_degen
-        n_nan_total += n_nan
-
-        # Time-slice only: the scan body indexes states per step, so the joint
-        # (chunk, n_state_bins, n_state_bins) transition is never materialized.
-        dtm_chunk = discrete_transition_matrix_jax[time_inds]
-
-        # Donated: log_likelihood_chunk, dtm_chunk, initial_distribution
-        # All are single-use per iteration - safe to donate
-        # Note: Small arrays may trigger benign donation warnings in tests
-        (
-            (_, predicted_probs_next),
-            (causal_posterior_chunk, predicted_probs_chunk, increments),
-        ) = _filter_covariate_dependent_internal(
-            initial_distribution=(
-                initial_distribution_jax if chunk_id == 0 else predicted_probs_next
-            ),
-            discrete_transition_matrix=dtm_chunk,
+    def filter_chunk(
+        initial_distribution: jnp.ndarray,
+        log_likelihoods: jnp.ndarray,
+        time_inds: jnp.ndarray,
+    ) -> tuple:
+        # Donated: the time slice is fresh and single-use.
+        return _filter_covariate_dependent_internal(
+            initial_distribution=initial_distribution,
+            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
             continuous_transition_matrix=continuous_transition_matrix_jax,
             state_ind=state_ind_jax,
-            log_likelihoods=log_likelihood_chunk,
+            log_likelihoods=log_likelihoods,
         )
 
-        # Keep as JAX arrays - no conversion to NumPy yet
-        # Marginalize state bins -> discrete states by summing probabilities
-        causal_posterior.append(causal_posterior_chunk)
-        causal_state_probabilities.append(
-            _state_marginals(causal_posterior_chunk, state_aggregation_matrix)
-        )
-        predictive_posterior.append(predicted_probs_chunk)
-        predictive_state_probabilities.append(
-            _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
-        )
-
-        chunk_increments.append(increments)
-
-    marginal_likelihood = 0.0
-    for increments in chunk_increments:
-        marginal_likelihood += _float64_evidence(increments)
-    del chunk_increments
-    _warn_degenerate_and_nan_timesteps(
-        n_degenerate_total,
-        n_nan_total,
-        n_time,
-        marginal_log_likelihood=float(marginal_likelihood),
-    )
-
-    if accumulated_log_likelihoods is not None:
-        log_likelihoods = accumulated_log_likelihoods
-
-    # Concatenate JAX arrays on device
-    causal_posterior_jax = jnp.concatenate(causal_posterior)
-    causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
-    predictive_posterior_jax = jnp.concatenate(predictive_posterior)
-    predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
-    # Release the per-chunk copies so they don't coexist with the concatenations
-    del causal_posterior, predictive_posterior
-
-    # Backward pass: accumulate JAX arrays
-    for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
-        time_inds = jnp.asarray(time_inds_np)
-
-        # Time-slice only; states indexed per step in the scan (see forward).
-        dtm_chunk = discrete_transition_matrix_jax[time_inds]
-
-        # Donated: dtm_chunk, filtered_probs slice, initial boundary
-        # All are single-use per iteration
-        # Note: Small arrays may trigger benign donation warnings in tests
-        acausal_posterior_chunk = _smoother_covariate_dependent_internal(
-            discrete_transition_matrix=dtm_chunk,
+    def smoother_chunk(
+        filtered_probs: jnp.ndarray,
+        initial: jnp.ndarray,
+        time_inds: jnp.ndarray,
+        n_time: int,
+    ) -> jnp.ndarray:
+        # Donated: the time slice is fresh and single-use.
+        return _smoother_covariate_dependent_internal(
+            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
             continuous_transition_matrix=continuous_transition_matrix_jax,
             state_ind=state_ind_jax,
-            filtered_probs=causal_posterior_jax[time_inds],
-            initial=(
-                causal_posterior_jax[-1]
-                if chunk_id == 0
-                else acausal_posterior_chunk[0]
-            ),
+            filtered_probs=filtered_probs,
+            initial=initial,
             ind=time_inds,
             n_time=n_time,
         )
-        acausal_posterior.append(acausal_posterior_chunk)
-        acausal_state_probabilities.append(
-            _state_marginals(acausal_posterior_chunk, state_aggregation_matrix)
-        )
 
-    # Concatenate JAX arrays on device
-    acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
-    acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
-    del acausal_posterior
-
-    # Convert to NumPy only at the very end for API compatibility
-    return (
-        np.asarray(acausal_posterior_jax),
-        np.asarray(acausal_state_probabilities_jax),
-        float(marginal_likelihood),
-        np.asarray(causal_state_probabilities_jax),
-        np.asarray(predictive_state_probabilities_jax),
-        log_likelihoods,  # Keep as original (may be None or NumPy)
-        np.asarray(causal_posterior_jax),
-        np.asarray(predictive_posterior_jax),
+    return _chunked_filter_smoother(
+        filter_chunk,
+        smoother_chunk,
+        time=time,
+        state_ind=state_ind,
+        initial_distribution=initial_distribution,
+        log_likelihood_func=log_likelihood_func,
+        log_likelihood_args=log_likelihood_args,
+        is_missing=is_missing,
+        n_chunks=n_chunks,
+        log_likelihoods=log_likelihoods,
+        cache_log_likelihoods=cache_log_likelihoods,
+        dtype=dtype,
+        degenerate_indices_out=degenerate_indices_out,
+        accumulate_log_likelihoods=accumulate_log_likelihoods,
     )
 
 
