@@ -573,6 +573,8 @@ def test_auto_em_uses_dense_em_for_a_small_state_space(dense_fit):
     "reason", ["large_transition", "dense_does_not_fit", "checkpoint_option"]
 )
 def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path, dense_fit):
+    import warnings
+
     from non_local_detector.models import base
 
     kwargs = {}
@@ -584,7 +586,14 @@ def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path, den
         kwargs["result_path"] = tmp_path / "store"
     dense = dense_fit("sorted")
     model, data = _recording("sorted")
-    auto = _fit(model, data, transition_representation="auto", **kwargs)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        auto = _fit(model, data, transition_representation="auto", **kwargs)
+    fallback = [w for w in caught if "runs structured EM" in str(w.message)]
+    # Only a memory fallback warns, and it points at the estimate_parameters call.
+    assert [w.filename for w in fallback] == (
+        [__file__] if reason == "dense_does_not_fit" else []
+    )
     assert _uses_operator(model)
     _assert_same_fit(auto, dense)
 
@@ -670,6 +679,47 @@ def test_auto_em_device_memory_boundary(monkeypatch):
         monkeypatch.setattr(base, "_device_memory_limit", lambda limit=limit: limit)
         model._choose_em_representation(n_time)
         assert _uses_operator(model) is not dense
+
+
+@pytest.mark.parametrize("reason", ["memory", "fits", "large_transition"])
+def test_auto_em_warns_when_memory_alone_rules_out_dense_em(reason, monkeypatch):
+    """Falling back to structured EM for memory is slow, so auto says so.
+
+    Structured EM recomputes the likelihood every E-step, so a memory-driven
+    fallback can cost several times the run time. It warns, naming the
+    estimate, the limit and how to choose dense EM; a large transition (the
+    intended speed choice) and a dense EM that fits stay silent.
+    """
+    import warnings
+
+    from non_local_detector.models import base
+
+    model, data = _recording("sorted")
+    n_time = N_BINS
+    model.fit(
+        data["position_time"],
+        data["position"],
+        data["spike_times"],
+        transition_representation="auto",
+    )
+    n_bins = int(model.is_track_interior_state_bins_.sum())
+    working = base._DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+    limit = 2 * working if reason == "fits" else 2 * working - 2
+    monkeypatch.setattr(base, "_device_memory_limit", lambda: limit)
+    if reason == "large_transition":
+        monkeypatch.setattr(base, "_AUTO_DENSE_TRANSITION_BYTES", 1)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model._choose_em_representation(n_time)
+    messages = [str(w.message) for w in caught if "structured EM" in str(w.message)]
+    if reason == "memory":
+        assert _uses_operator(model)
+        assert len(messages) == 1
+        assert f"{n_time} time bins x {n_bins} state bins" in messages[0]
+        assert 'transition_representation="dense"' in messages[0]
+    else:
+        assert _uses_operator(model) is (reason == "large_transition")
+        assert not messages
 
 
 @pytest.mark.parametrize(
@@ -767,6 +817,38 @@ def test_dense_em_within_memory_does_not_warn(monkeypatch):
         warnings.simplefilter("always")
         model.estimate_parameters(**data, max_iter=1, transition_representation="dense")
     assert not [w for w in caught if "Dense EM needs" in str(w.message)]
+
+
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+@pytest.mark.parametrize("representation", ["dense", "structured"])
+def test_estimate_parameters_rejects_every_bin_missing(family, representation):
+    """With no observed bin there is nothing to fit, so EM refuses to start.
+
+    Run anyway, EM drove every stay probability to 1 and then reported that
+    it had not converged, which points at max_iter instead of the mask.
+    The detector must be left unfitted.
+    """
+    from non_local_detector.exceptions import DataError
+
+    model, data = _recording(family)
+    n_time = len(data["time_edges"]) - 1
+    with pytest.raises(DataError, match="every decode time bin is missing"):
+        model.estimate_parameters(
+            **data,
+            is_missing=np.ones(n_time, dtype=bool),
+            max_iter=2,
+            transition_representation=representation,
+        )
+    assert not hasattr(model, "discrete_state_transitions_")
+    # One observed bin is enough to run.
+    is_missing = np.ones(n_time, dtype=bool)
+    is_missing[0] = False
+    model.estimate_parameters(
+        **data,
+        is_missing=is_missing,
+        max_iter=1,
+        transition_representation=representation,
+    )
 
 
 def _with_opaque_random_walks(model):
