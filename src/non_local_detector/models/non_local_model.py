@@ -182,11 +182,34 @@ Examples
 """
 
 
-class _NonLocalResultsMixin:
-    """Results helpers shared by the non-local detectors."""
+class _NonLocalMixin:
+    """Behaviour shared by the sorted-spikes and clusterless non-local detectors."""
 
     state_names: list[str]
     observation_models: list[ObservationModel]
+    non_local_position_penalty: float
+    non_local_penalty_std: float
+
+    def _non_local_position_penalty(self) -> float:
+        """The non-local position penalty, validated where it is used.
+
+        Validating at use, not only at construction, also checks values set
+        later with ``set_params``.
+
+        Returns
+        -------
+        penalty : float
+
+        Raises
+        ------
+        ValidationError
+            If the penalty is negative or NaN, or its standard deviation is
+            not positive.
+        """
+        _validate_penalty_params(
+            self.non_local_position_penalty, self.non_local_penalty_std
+        )
+        return self.non_local_position_penalty
 
     def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
         """Posterior over position given that activity is non-local.
@@ -201,7 +224,7 @@ class _NonLocalResultsMixin:
 
 
 @document_model(_NON_LOCAL_DOC, "sorted_spikes")
-class NonLocalSortedSpikesDetector(_NonLocalResultsMixin, SortedSpikesDetector):
+class NonLocalSortedSpikesDetector(_NonLocalMixin, SortedSpikesDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -263,7 +286,7 @@ class NonLocalSortedSpikesDetector(_NonLocalResultsMixin, SortedSpikesDetector):
 
 
 @document_model(_NON_LOCAL_DOC, "clusterless")
-class NonLocalClusterlessDetector(_NonLocalResultsMixin, ClusterlessDetector):
+class NonLocalClusterlessDetector(_NonLocalMixin, ClusterlessDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
