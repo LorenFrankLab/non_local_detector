@@ -3237,12 +3237,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         likelihood_func = self._likelihood_predict_function()
 
-        # Pre-compute state bins mask for all states (avoid recomputation in loop)
-        interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]
-        state_bin_masks = {
-            state_id: interior_state_ind == state_id
-            for state_id in range(len(self.observation_models))
-        }
+        # Interior state bins per state. state_ind_ is built state by state, so
+        # each state's bins are one contiguous block of columns.
+        n_state_columns = np.bincount(
+            self.state_ind_[self.is_track_interior_state_bins_],
+            minlength=len(self.observation_models),
+        )
 
         # Use dict for O(1) lookup instead of list
         computed_likelihoods = {}
@@ -3302,59 +3302,39 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 # Will reuse previously computed likelihood
                 likelihood_results[state_id] = computed_likelihoods[likelihood_name]
 
-        # Assemble final array (single pass, stays in JAX)
-        log_likelihood = jnp.zeros(
-            (n_rows, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
-        )
-
-        for state_id in range(len(self.observation_models)):
-            is_state_bin = state_bin_masks[state_id]
+        # Assemble the per-state column blocks in one concatenation. Each block
+        # is cast to float32 and its penalty or local kernel added in float32,
+        # as a scatter into a float32 array would.
+        env_penalties = {}
+        env_kernels = {}
+        blocks = []
+        for state_id, obs in enumerate(self.observation_models):
             result = likelihood_results[state_id]
-
             if isinstance(result, int):
-                # Reuse from previously computed state
-                source_mask = state_bin_masks[result]
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    log_likelihood[:, source_mask]
-                )
-            else:
-                # Set new likelihood values
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
-
-        # Apply non-local position penalty if configured
-        if non_local_penalty > 0:
-            # Cache penalties per environment to avoid recomputation
-            env_penalties = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if not obs.is_local and not obs.is_no_spike:
-                    env_name = obs.environment_name
-                    if env_name not in env_penalties:
-                        env = self._get_environment_by_name(env_name)
-                        env_penalties[env_name] = (
-                            self._compute_non_local_position_penalty(
-                                row_time, position_time, position, env
-                            )
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_penalties[env_name]
+                # Reuse the likelihood computed for an earlier state
+                result = likelihood_results[result]
+            block = jnp.broadcast_to(
+                jnp.asarray(result, dtype=jnp.float32),
+                (n_rows, int(n_state_columns[state_id])),
+            )
+            if non_local_penalty > 0 and not obs.is_local and not obs.is_no_spike:
+                env_name = obs.environment_name
+                if env_name not in env_penalties:
+                    env = self._get_environment_by_name(env_name)
+                    env_penalties[env_name] = self._compute_non_local_position_penalty(
+                        row_time, position_time, position, env
                     )
-
-        # Apply local position kernel if configured
-        if self.local_position_std is not None:
-            env_kernels = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if obs.is_local:
-                    env_name = obs.environment_name
-                    if env_name not in env_kernels:
-                        env = self._get_environment_by_name(env_name)
-                        env_kernels[env_name] = self._compute_local_position_kernel(
-                            row_time, position_time, position, env
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_kernels[env_name]
+                block = block + jnp.asarray(env_penalties[env_name], dtype=jnp.float32)
+            if self.local_position_std is not None and obs.is_local:
+                env_name = obs.environment_name
+                if env_name not in env_kernels:
+                    env = self._get_environment_by_name(env_name)
+                    env_kernels[env_name] = self._compute_local_position_kernel(
+                        row_time, position_time, position, env
                     )
+                block = block + jnp.asarray(env_kernels[env_name], dtype=jnp.float32)
+            blocks.append(block)
+        log_likelihood = jnp.concatenate(blocks, axis=1)
 
         # Apply missing data mask
         is_missing = jnp.asarray(is_missing)
