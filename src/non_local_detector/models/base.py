@@ -2143,7 +2143,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Parameters
         ----------
-        observation_models : sequence of ObservationModel
+        observation_models : list, tuple or np.ndarray of ObservationModel
             Output of ``_initialize_observation_models``.
         n_states : int
             Number of discrete states.
@@ -2151,16 +2151,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Raises
         ------
         ValidationError
-            If ``observation_models`` is not a sequence of ``ObservationModel``
-            instances of length ``n_states``.
+            If ``observation_models`` is not a list, tuple or array, holds
+            anything but ``ObservationModel`` instances, or does not have
+            ``n_states`` entries.
         """
-        if not isinstance(observation_models, (list, tuple)) or not all(
-            isinstance(obs, ObservationModel) for obs in observation_models
-        ):
+        if not isinstance(observation_models, (list, tuple, np.ndarray)):
             raise ValidationError(
-                "observation_models must be ObservationModel instances",
-                expected="an ObservationModel, a list or tuple of them, or None",
-                got=repr(observation_models),
+                "observation_models must be a list, tuple or array of "
+                "ObservationModel instances",
+                expected="an ObservationModel, a list, tuple or array of them, or None",
+                got=type(observation_models).__name__,
+            )
+        wrong_types = sorted(
+            {
+                type(obs).__name__
+                for obs in observation_models
+                if not isinstance(obs, ObservationModel)
+            }
+        )
+        if wrong_types:
+            raise ValidationError(
+                "observation_models entries must be ObservationModel instances",
+                expected="ObservationModel entries",
+                got=f"entries of type {', '.join(wrong_types)}",
             )
         if len(observation_models) != n_states:
             raise ValidationError(
