@@ -153,12 +153,10 @@ def plot_non_local_model(
         neuron_sort_ind = np.arange(len(spike_times))
         cell_label = "Electrode\nGroup"
 
-    state_ind = detector.state_ind_
     state_names = detector.state_names
     acausal_state_probabilities = results.sel(
         time=time_slice
     ).acausal_state_probabilities.values
-    acausal_posterior = results.sel(time=time_slice).acausal_posterior.values
     results_time = results.sel(time=time_slice).time.values
 
     _, axes = plt.subplots(
@@ -172,19 +170,11 @@ def plot_non_local_model(
 
     t, x = np.meshgrid(results_time, env.place_bin_centers_)
 
-    non_local_inds = np.nonzero(
-        ["Non-Local" in state for state in detector.state_names]
-    )[0]
-    conditional_non_local_acausal_posterior = np.zeros(
-        (len(results_time), len(env.place_bin_centers_))
+    conditional_non_local_acausal_posterior = (
+        detector.get_conditional_non_local_posterior(results.sel(time=time_slice))
+        .values.reshape(len(results_time), -1)
+        .copy()
     )
-    for non_local_ind in non_local_inds:
-        conditional_non_local_acausal_posterior += acausal_posterior[
-            :, state_ind == non_local_ind
-        ]
-    conditional_non_local_acausal_posterior /= np.nansum(
-        conditional_non_local_acausal_posterior, axis=1
-    )[:, np.newaxis]
     conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
 
     new_spike_times = [

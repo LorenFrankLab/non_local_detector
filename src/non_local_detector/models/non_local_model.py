@@ -10,61 +10,81 @@ from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
 )
+from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
     DiscreteTransitions,
     Environments,
+    FrozenTransitionRows,
     Observations,
     StateNames,
     Stickiness,
 )
 
 
-def _get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
-    """Extract the conditional posterior probability for non-local states.
+def _get_conditional_non_local_posterior(
+    results: xr.Dataset,
+    state_names: list[str],
+    observation_models: list[ObservationModel],
+) -> xr.DataArray:
+    """Posterior over position given that activity is non-local.
 
-    Combines the posterior probabilities from both non-local continuous and
-    non-local fragmented states (indices 2 and 3 in the model's state list),
-    then normalizes across position.
+    Sums the posterior of every non-local state -- each state whose
+    observation model is neither Local (``is_local``) nor No-Spike
+    (``is_no_spike``) -- and normalizes across position.
 
     Parameters
     ----------
     results : xr.Dataset
-        Results from a non-local detector's predict method containing
-        acausal_posterior with a ``state`` coordinate.
+        Results from the detector's ``predict`` method, containing
+        ``acausal_posterior`` with a ``state`` coordinate.
+    state_names : list of str, length n_states
+        The detector's state names, as labelled in ``results``.
+    observation_models : list of ObservationModel, length n_states
+        The detector's observation models, in the same order.
 
     Returns
     -------
     conditional_posterior : xr.DataArray
-        Normalized posterior probability for non-local activity across
-        positions.  Shape is ``(n_time, n_position_bins)`` for 1-D
-        environments and ``(n_time, n_x_bins, n_y_bins)`` for 2-D.
+        Posterior over position given a non-local state. Shape is
+        ``(n_time, n_position_bins)`` for 1-D environments and
+        ``(n_time, n_x_bins, n_y_bins)`` for 2-D. Rows where the non-local
+        states have no posterior mass are NaN.
 
     Raises
     ------
     ValidationError
-        If the results dataset contains fewer than 4 unique states, which
-        indicates it did not come from a non-local detector.
+        If the detector has no non-local states, or ``results`` lacks them
+        (it came from a different detector).
     """
-    state_names = results.acausal_posterior.coords["state"].values
-    unique_states = list(dict.fromkeys(state_names))
-    if len(unique_states) < 4:
-        raise ValidationError(
-            f"Expected at least 4 unique states in results, got {len(unique_states)}: "
-            f"{unique_states}",
-            expected="Results from a NonLocal detector with 4 states "
-            "(e.g. Local, No-Spike, Non-Local Continuous, Non-Local Fragmented)",
-            got=f"{len(unique_states)} states: {unique_states}",
-            hint="This method should only be called on results from "
-            "NonLocalSortedSpikesDetector or NonLocalClusterlessDetector",
+    non_local_states = list(
+        dict.fromkeys(
+            name
+            for name, obs in zip(state_names, observation_models, strict=True)
+            if not obs.is_local and not obs.is_no_spike
         )
-    non_local_continuous = unique_states[2]
-    non_local_fragmented = unique_states[3]
+    )
+    if not non_local_states:
+        raise ValidationError(
+            "The detector has no non-local states",
+            expected="at least one observation model with is_local=False "
+            "and is_no_spike=False",
+            got=f"states {list(state_names)}",
+        )
+    result_states = set(results.acausal_posterior.coords["state"].values)
+    missing = [name for name in non_local_states if name not in result_states]
+    if missing:
+        raise ValidationError(
+            f"results lack the detector's non-local states {missing}",
+            expected=f"results with states {list(state_names)}",
+            got=f"states {sorted(result_states)}",
+            hint="Pass results from this detector's predict method.",
+        )
 
-    acausal_posterior = results.acausal_posterior.sel(
-        state=non_local_continuous
-    ) + results.acausal_posterior.sel(state=non_local_fragmented)
+    acausal_posterior = sum(
+        results.acausal_posterior.sel(state=name) for name in non_local_states
+    )
 
     # Marginalize over position. After .sel(state=...), the position bins stay
     # stacked under the single "state_bins" dim (2D+) or appear as the unstacked
@@ -181,11 +201,13 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         Dimensionless weight for data-adaptive Dirichlet prior scaling
         during EM re-estimation of discrete transitions. By default
         ``0.0`` (fixed-count prior).
-    frozen_discrete_transition_rows : array-like or None, optional
+    frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
-        default ``(1,)``, which freezes the No-Spike row so its
-        self-transition cannot collapse to fit stray spike gaps. Pass
-        ``None`` to disable row freezing.
+        default ``"no_spike"``, which freezes the No-Spike state's row
+        (found from ``observation_models``, wherever it is listed) so its
+        self-transition cannot collapse to fit stray spike gaps. Row
+        indices or a boolean mask select rows by position; ``None``
+        disables row freezing.
     local_position_std : float or None, optional
         Controls the Local state's spatial representation:
 
@@ -248,9 +270,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         non_local_position_penalty: float = 0.0,
         non_local_penalty_std: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = (1,),
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
         local_position_std: float | None = None,
     ):
         params = _initialize_params(
@@ -289,13 +309,16 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_std = non_local_penalty_std
 
-    @staticmethod
-    def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
-        """Extract the conditional posterior probability for non-local states.
+    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
+        """Posterior over position given that activity is non-local.
 
-        See :func:`_get_conditional_non_local_posterior` for full documentation.
+        The non-local states are those whose observation model is neither
+        Local nor No-Spike, wherever they are listed. See
+        :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        return _get_conditional_non_local_posterior(results)
+        return _get_conditional_non_local_posterior(
+            results, self.state_names, self.observation_models
+        )
 
 
 class NonLocalClusterlessDetector(ClusterlessDetector):
@@ -366,11 +389,13 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         Dimensionless weight for data-adaptive Dirichlet prior scaling
         during EM re-estimation of discrete transitions. By default
         ``0.0`` (fixed-count prior).
-    frozen_discrete_transition_rows : array-like or None, optional
+    frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
-        default ``(1,)``, which freezes the No-Spike row so its
-        self-transition cannot collapse to fit stray spike gaps. Pass
-        ``None`` to disable row freezing.
+        default ``"no_spike"``, which freezes the No-Spike state's row
+        (found from ``observation_models``, wherever it is listed) so its
+        self-transition cannot collapse to fit stray spike gaps. Row
+        indices or a boolean mask select rows by position; ``None``
+        disables row freezing.
     local_position_std : float or None, optional
         Controls the Local state's spatial representation:
 
@@ -434,9 +459,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         non_local_position_penalty: float = 0.0,
         non_local_penalty_std: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = (1,),
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
         local_position_std: float | None = None,
     ):
         params = _initialize_params(
@@ -475,10 +498,13 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_std = non_local_penalty_std
 
-    @staticmethod
-    def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
-        """Extract the conditional posterior probability for non-local states.
+    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
+        """Posterior over position given that activity is non-local.
 
-        See :func:`_get_conditional_non_local_posterior` for full documentation.
+        The non-local states are those whose observation model is neither
+        Local nor No-Spike, wherever they are listed. See
+        :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        return _get_conditional_non_local_posterior(results)
+        return _get_conditional_non_local_posterior(
+            results, self.state_names, self.observation_models
+        )

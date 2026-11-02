@@ -80,6 +80,7 @@ class TestInitializeEnvironments:
             ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,
+            observation_models=ObservationModel(),
             environments=(env1, env2),
             state_names=["state 0", "state 1"],
         )
@@ -104,6 +105,7 @@ class TestInitializeEnvironments:
             ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,
+            observation_models=ObservationModel(),
             environments=[env1, env2],
             state_names=["state 0", "state 1"],
         )
@@ -200,6 +202,49 @@ class TestInitializeObservationModels:
         assert decoder.observation_models[0] is obs1
         assert decoder.observation_models[1] is obs2
 
+    @pytest.mark.parametrize("frozen_rows", ["no_spike", None])
+    @pytest.mark.parametrize("observation_models", [["a"] * 4, [None] * 4])
+    def test_non_observation_model_entries_raise(self, observation_models, frozen_rows):
+        """Entries that are not ObservationModel instances are rejected at
+        construction, whatever the frozen-row setting."""
+        with pytest.raises(ValidationError, match="entries must be ObservationModel"):
+            NonLocalClusterlessDetector(
+                observation_models=observation_models,
+                frozen_discrete_transition_rows=frozen_rows,
+            )
+
+    @pytest.mark.parametrize("observation_models", ["xxxx", 5])
+    def test_non_sequence_observation_models_raise(self, observation_models):
+        """A string or a number is not a sequence of observation models."""
+        with pytest.raises(ValidationError, match="list, tuple or array"):
+            NonLocalClusterlessDetector(observation_models=observation_models)
+
+    def test_array_of_observation_models_accepted(self):
+        """An object array of ObservationModel instances is a sequence too."""
+        observation_models = np.array(
+            [
+                ObservationModel(is_local=True),
+                ObservationModel(is_no_spike=True),
+                ObservationModel(),
+                ObservationModel(),
+            ],
+            dtype=object,
+        )
+        detector = NonLocalClusterlessDetector(observation_models=observation_models)
+        np.testing.assert_array_equal(
+            detector._frozen_discrete_transition_rows_mask_,
+            [False, True, False, False],
+        )
+
+    @pytest.mark.parametrize("n_models", [3, 5])
+    def test_one_observation_model_per_state_required(self, n_models):
+        """The non-local detector has four states, so three or five observation
+        models are rejected rather than misaligned with the states."""
+        with pytest.raises(ValidationError, match="one observation model per"):
+            NonLocalClusterlessDetector(
+                observation_models=[ObservationModel()] * n_models
+            )
+
 
 @pytest.mark.unit
 class TestInitializeStateNames:
@@ -220,6 +265,7 @@ class TestInitializeStateNames:
             ],
             continuous_transition_types=["random_walk", "random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,
+            observation_models=ObservationModel(),
             state_names=custom_names,
         )
 
@@ -247,6 +293,7 @@ class TestInitializeStateNames:
                     "random_walk",
                 ],
                 discrete_transition_stickiness=0.0,
+                observation_models=ObservationModel(),
                 state_names=["Local", "Non-Local"],  # Only 2 names - WRONG!
             )
 

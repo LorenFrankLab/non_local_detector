@@ -106,6 +106,7 @@ from non_local_detector.types import (
     ContinuousTransitions,
     DiscreteTransitions,
     Environments,
+    FrozenTransitionRows,
     Observations,
     StateNames,
     Stickiness,
@@ -1137,22 +1138,23 @@ def _group_weights(
 
 
 def _normalize_frozen_discrete_transition_rows(
-    frozen_rows: np.ndarray | list[int] | tuple[int, ...] | None,
-    n_states: int,
+    frozen_rows: FrozenTransitionRows,
+    is_no_spike_state: np.ndarray,
 ) -> np.ndarray | None:
     """Normalize ``frozen_discrete_transition_rows`` to a boolean row mask.
 
-    Accepts a sequence of integer row indices, a boolean mask of shape
-    ``(n_states,)``, or ``None``/empty (no frozen rows). Returns a
-    boolean mask of shape ``(n_states,)`` where ``True`` marks rows to
-    freeze, or ``None`` if no rows are frozen.
+    Accepts ``"no_spike"`` (the rows of the No-Spike states), a sequence of
+    integer row indices, a boolean mask of shape ``(n_states,)``, or
+    ``None``/empty (no frozen rows). Returns a boolean mask of shape
+    ``(n_states,)`` where ``True`` marks rows to freeze, or ``None`` if no
+    rows are frozen.
 
     Parameters
     ----------
-    frozen_rows : np.ndarray, list of int, tuple of int, or None
-        Row indices to freeze, a boolean mask, or None/empty.
-    n_states : int
-        Total number of discrete states.
+    frozen_rows : {"no_spike"}, np.ndarray, list of int, tuple of int, or None
+        Rows to freeze.
+    is_no_spike_state : np.ndarray of bool, shape (n_states,)
+        Which discrete states have a No-Spike observation model.
 
     Returns
     -------
@@ -1161,9 +1163,18 @@ def _normalize_frozen_discrete_transition_rows(
     Raises
     ------
     ValueError
-        If the input has the wrong shape, wrong dtype, or out-of-range
-        indices.
+        If the input is an unknown string, has the wrong shape or dtype, or
+        has out-of-range indices.
     """
+    n_states = len(is_no_spike_state)
+    if isinstance(frozen_rows, str):
+        if frozen_rows != "no_spike":
+            raise ValueError(
+                "frozen_discrete_transition_rows must be 'no_spike', row "
+                f"indices, a boolean mask or None, got {frozen_rows!r}"
+            )
+        frozen_rows = np.asarray(is_no_spike_state, dtype=bool)
+        return frozen_rows.copy() if frozen_rows.any() else None
     if frozen_rows is None:
         return None
     arr = np.asarray(frozen_rows)
@@ -1330,9 +1341,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = None,
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
         local_position_std: float | None = None,
     ) -> None:
         """
@@ -1374,18 +1383,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             an array of shape ``(n_states,)`` for per-row control. When 0.0
             (default), the fixed-count prior from concentration and stickiness
             is used directly.
-        frozen_discrete_transition_rows : np.ndarray, list, tuple, or None, optional
+        frozen_discrete_transition_rows : {"no_spike"}, np.ndarray, list, tuple, or None, optional
             Rows of the discrete transition matrix to freeze during EM
-            re-estimation. Accepts integer row indices, a boolean mask of
-            shape ``(n_states,)``, or ``None``/empty (no frozen rows,
-            default). Frozen rows are snapshotted from the initial
-            transition matrix and restored after every M-step, so they
-            retain the values specified by ``discrete_transition_type``
-            regardless of what the data suggests. Use this to pin
-            structural states (e.g., a No-Spike self-transition) that
-            should not be learned from data. For covariate-dependent
-            transitions, frozen rows keep their initial coefficients, so they
-            stay at their initial (time-constant) values.
+            re-estimation. ``"no_spike"`` (default) freezes the rows of the
+            states whose observation model has ``is_no_spike=True``, wherever
+            they are listed, so a No-Spike self-transition cannot collapse to
+            fit stray gaps between spikes; models without a No-Spike state
+            freeze nothing. Also accepts integer row indices, a boolean mask
+            of shape ``(n_states,)``, or ``None``/empty (no frozen rows).
+            Frozen rows are snapshotted from the initial transition matrix
+            and restored after every M-step, so they retain the values
+            specified by ``discrete_transition_type`` regardless of what the
+            data suggests. For covariate-dependent transitions, frozen rows
+            keep their initial coefficients, so they stay at their initial
+            (time-constant) values.
         local_position_std : float or None, optional
             Controls the Local state's spatial representation:
 
@@ -1430,17 +1441,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.discrete_transition_type = discrete_transition_type
         self.discrete_transition_prior_weight = discrete_transition_prior_weight
         self.frozen_discrete_transition_rows = frozen_discrete_transition_rows
-        # Validate the frozen-row spec against n_states up front (raises on bad
-        # input). The normalized boolean mask itself is derived lazily via the
-        # ``_frozen_discrete_transition_rows_mask_`` property rather than stored
-        # as an instance attribute, so it stays out of ``vars()`` /
-        # ``get_params()`` and does not break serialization round-trips that
-        # reconstruct the model from its public parameters (e.g. Spyglass's
-        # DecodingParameters).
-        _normalize_frozen_discrete_transition_rows(
-            frozen_discrete_transition_rows,
-            n_states=len(discrete_initial_conditions),
-        )
 
         # Continuous state transition parameters
         self.continuous_transition_types = continuous_transition_types
@@ -1453,6 +1453,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.observation_models = self._initialize_observation_models(
             observation_models, continuous_transition_types, environments
         )
+        self._validate_observation_models(
+            self.observation_models, len(discrete_initial_conditions)
+        )
+        # Validate the frozen-row spec against the states up front (raises on
+        # bad input). The normalized boolean mask itself is derived lazily via
+        # the ``_frozen_discrete_transition_rows_mask_`` property rather than
+        # stored as an instance attribute, so it stays out of ``vars()`` /
+        # ``get_params()`` and does not break serialization round-trips that
+        # reconstruct the model from its public parameters (e.g. Spyglass's
+        # DecodingParameters).
+        _ = self._frozen_discrete_transition_rows_mask_
 
         # State names
         self.state_names = self._initialize_state_names(
@@ -1526,7 +1537,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """
         return _normalize_frozen_discrete_transition_rows(
             self.frozen_discrete_transition_rows,
-            n_states=len(self.discrete_initial_conditions),
+            np.array([obs.is_no_spike for obs in self.observation_models]),
         )
 
     def _validate_position_dimensionality(
@@ -2060,6 +2071,55 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 continuous_transition_types
             )
         return observation_models
+
+    @staticmethod
+    def _validate_observation_models(observation_models, n_states: int) -> None:
+        """Require one ``ObservationModel`` per discrete state.
+
+        The state roles (Local, No-Spike) are read from these models, so a
+        non-model entry or a count that differs from the number of states
+        would misassign them.
+
+        Parameters
+        ----------
+        observation_models : list, tuple or np.ndarray of ObservationModel
+            Output of ``_initialize_observation_models``.
+        n_states : int
+            Number of discrete states.
+
+        Raises
+        ------
+        ValidationError
+            If ``observation_models`` is not a list, tuple or array, holds
+            anything but ``ObservationModel`` instances, or does not have
+            ``n_states`` entries.
+        """
+        if not isinstance(observation_models, (list, tuple, np.ndarray)):
+            raise ValidationError(
+                "observation_models must be a list, tuple or array of "
+                "ObservationModel instances",
+                expected="an ObservationModel, a list, tuple or array of them, or None",
+                got=type(observation_models).__name__,
+            )
+        wrong_types = sorted(
+            {
+                type(obs).__name__
+                for obs in observation_models
+                if not isinstance(obs, ObservationModel)
+            }
+        )
+        if wrong_types:
+            raise ValidationError(
+                "observation_models entries must be ObservationModel instances",
+                expected="ObservationModel entries",
+                got=f"entries of type {', '.join(wrong_types)}",
+            )
+        if len(observation_models) != n_states:
+            raise ValidationError(
+                "observation_models must have one observation model per discrete state",
+                expected=f"{n_states} observation models",
+                got=f"{len(observation_models)}",
+            )
 
     def _initialize_state_names(
         self, state_names: StateNames, discrete_initial_conditions: np.ndarray
@@ -5048,9 +5108,7 @@ class ClusterlessDetector(_DetectorBase):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = None,
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
         local_position_std: float | None = None,
     ) -> None:
         """
@@ -5100,10 +5158,10 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_prior_weight : float or np.ndarray, optional
             Data-adaptive prior weight, by default 0.0. See
             ``_DetectorBase`` for details.
-        frozen_discrete_transition_rows : array-like or None, optional
+        frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
             Rows of the discrete transition matrix to freeze during EM
-            re-estimation, by default None. See ``_DetectorBase`` for
-            details.
+            re-estimation, by default ``"no_spike"`` (the No-Spike states'
+            rows). See ``_DetectorBase`` for details.
         local_position_std : float or None, optional
             Standard deviation of the position uncertainty kernel for the
             local state. See ``_DetectorBase`` for details.
@@ -6452,9 +6510,7 @@ class SortedSpikesDetector(_DetectorBase):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
-        frozen_discrete_transition_rows: (
-            np.ndarray | list[int] | tuple[int, ...] | None
-        ) = None,
+        frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
         local_position_std: float | None = None,
     ) -> None:
         """
@@ -6502,10 +6558,10 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_prior_weight : float or np.ndarray, optional
             Data-adaptive prior weight, by default 0.0. See
             ``_DetectorBase`` for details.
-        frozen_discrete_transition_rows : array-like or None, optional
+        frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
             Rows of the discrete transition matrix to freeze during EM
-            re-estimation, by default None. See ``_DetectorBase`` for
-            details.
+            re-estimation, by default ``"no_spike"`` (the No-Spike states'
+            rows). See ``_DetectorBase`` for details.
         local_position_std : float or None, optional
             Standard deviation of the position uncertainty kernel for the
             local state. See ``_DetectorBase`` for details.

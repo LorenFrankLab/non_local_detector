@@ -4,6 +4,10 @@ try:
     import sortingview.views.franklab as vvf
     import xarray as xr
 
+    from non_local_detector.models.base import _DetectorBase
+    from non_local_detector.models.non_local_model import (
+        _get_conditional_non_local_posterior,
+    )
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def discretize_and_trim(series: xr.DataArray) -> xr.DataArray:
@@ -124,14 +128,39 @@ try:
         speed: np.ndarray,
         spike_times: list[np.ndarray],
         results: xr.Dataset,
+        *,
+        detector: _DetectorBase,
         view_height: int = 800,
     ) -> str:
-        posterior = (
-            results.acausal_posterior.unstack("state_bins")
-            .drop_sel(state=["Local", "No-Spike"], errors="ignore")
-            .sum("state")
+        """Interactive figurl of a 1-D decode with state probabilities.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time,)
+            Linearized position of the animal at ``results.time``.
+        speed : np.ndarray, shape (n_time,)
+            Speed of the animal at ``results.time``, in cm/s.
+        spike_times : list of np.ndarray
+            Spike times of each neuron or electrode, in seconds.
+        results : xr.Dataset
+            Output of ``detector.predict``.
+        detector : _DetectorBase
+            Keyword-only. The fitted detector that produced ``results``. The
+            decode panel shows the posterior over position given the states
+            whose observation model is neither Local nor No-Spike.
+        view_height : int, optional
+            Keyword-only. Height of the view in pixels, by default 800.
+
+        Returns
+        -------
+        url : str
+            The figurl URL.
+        """
+        # Decode the states that are neither Local nor No-Spike, found from
+        # the detector's observation models rather than the state names.
+        posterior = _get_conditional_non_local_posterior(
+            results, detector.state_names, detector.observation_models
         )
-        posterior = posterior / posterior.sum("position")
         decode_view = create_1D_decode_view(
             posterior=posterior,
             linear_position=position,

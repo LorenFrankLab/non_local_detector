@@ -18,6 +18,7 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.models import SortedSpikesDecoder
+from non_local_detector.observation_models import ObservationModel
 
 
 @pytest.fixture
@@ -39,6 +40,8 @@ def _two_state_decoder(environments, **overrides):
         "discrete_transition_stickiness": 0.0,
         "state_names": ["state1", "state2"],
         "environments": environments,
+        # One observation model shared by both states.
+        "observation_models": ObservationModel(),
     }
     kwargs.update(overrides)
     return SortedSpikesDecoder(**kwargs)
