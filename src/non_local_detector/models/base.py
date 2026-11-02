@@ -5897,7 +5897,7 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
-            If True, log likelihoods are cached instead of recomputed for each chunk, by default True
+            Whether to cache the log likelihoods, by default False.
             Caching is disabled automatically when ``n_chunks > 1``. Requesting
             ``return_outputs='log_likelihood'`` with ``n_chunks > 1`` instead
             accumulates the per-chunk rows into the full
