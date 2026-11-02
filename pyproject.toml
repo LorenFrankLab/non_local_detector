@@ -123,6 +123,8 @@ ignore = [
     "ISC001",  # conflicts with the formatter
     "B008",    # do not perform function calls in argument defaults
 ]
+# Math notation in docstrings, comments and messages.
+allowed-confusables = ["×", "σ", "α", "γ", "∪"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
