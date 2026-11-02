@@ -41,7 +41,10 @@ def _resolve_param(value: Any, default_factory: Callable[[], Any]) -> Any:
     return default_factory() if value is None else value
 
 
-def _one_transition_after(transition_type, start_state: int) -> np.ndarray:
+def _one_transition_after(
+    transition_type: DiscreteStationaryDiagonal | DiscreteStationaryCustom,
+    start_state: int,
+) -> np.ndarray:
     """Discrete state distribution one transition after ``start_state``.
 
     Used as the initial conditions of models that nominally start in one

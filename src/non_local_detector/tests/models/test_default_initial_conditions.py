@@ -73,6 +73,25 @@ def test_default_starts_one_transition_after_nominal_start(model_cls, start_stat
     )
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model_cls, expected",
+    [
+        (NonLocalSortedSpikesDetector, [0.99, 0.005, 0.0025, 0.0025]),
+        (NonLocalClusterlessDetector, [0.99, 0.005, 0.0025, 0.0025]),
+        (MultiEnvironmentSortedSpikesClassifier, [0.999, 0.001]),
+        (MultiEnvironmentClusterlessClassifier, [0.999, 0.001]),
+    ],
+    ids=lambda value: getattr(value, "__name__", ""),
+)
+def test_default_initial_condition_values(model_cls, expected):
+    """The values quoted in the docstrings and CHANGELOG; a change to the
+    default transition matrix that moves them fails here."""
+    np.testing.assert_allclose(
+        model_cls().discrete_initial_conditions, expected, rtol=1e-12
+    )
+
+
 @pytest.fixture(scope="module")
 def sorted_recording():
     """Two seconds of 25 simulated place cells at 1500 Hz."""
