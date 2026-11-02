@@ -15,7 +15,7 @@ import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Literal
+from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -44,12 +44,12 @@ def _fitted_parameters_finite(parameters: tuple[Array, ...]) -> Array:
     return jnp.all(jnp.stack([jnp.all(jnp.isfinite(value)) for value in parameters]))
 
 
-def _as_floating(x) -> Array:
+def _as_floating(x: Any) -> Array:
     """``x`` as a JAX array, with integer or boolean measurements as floats."""
     x = jnp.asarray(x)
     if jnp.issubdtype(x.dtype, jnp.integer) or x.dtype == jnp.bool_:
         x = x.astype(jnp.result_type(x.dtype, jnp.zeros(())))
-    return x
+    return cast(Array, x)
 
 
 def _has_negative_or_nonfinite(arr: Array) -> bool:
@@ -104,7 +104,7 @@ def _estimate_gaussian_covariances_full(
         d = X - mu  # (N, D)
         return jnp.matmul(d.T * r, d, precision=jax.lax.Precision.HIGHEST) / n
 
-    covariances = jax.lax.map(per_component, (means, resp.T, nk))
+    covariances: Array = jax.lax.map(per_component, (means, resp.T, nk))
     # Symmetrize covariances for numerical stability (ensure exact symmetry)
     covariances = (covariances + jnp.swapaxes(covariances, -2, -1)) * 0.5
     covariances += jnp.eye(n_features, dtype=X.dtype) * reg_covar
@@ -173,7 +173,7 @@ def _estimate_gaussian_covariances_tied(
     # the covariance downward; eps only intervenes when there is effectively no
     # weight at all. Cast: under NumPy 1.x, 10 * a float32 eps is a float64
     # scalar, which would promote the covariance to float64 under x64.
-    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)
+    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)  # type: ignore[no-untyped-call]  # jnp.finfo is untyped
     covariance = covariance_sum / jnp.maximum(sum_w, eps)
     # Symmetrize covariance for numerical stability (ensure exact symmetry)
     covariance = (covariance + covariance.T) * 0.5
@@ -406,7 +406,7 @@ def _estimate_gaussian_parameters(
         resp = resp_unweighted * sample_weight[:, None]
 
     # Cast: under NumPy 1.x, 10 * a float32 eps is a float64 scalar.
-    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)
+    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)  # type: ignore[no-untyped-call]  # jnp.finfo is untyped
     nk = resp.sum(axis=0) + eps  # (K,)
     means = (
         jnp.matmul(resp.T, X, precision=jax.lax.Precision.HIGHEST) / nk[:, jnp.newaxis]
@@ -511,7 +511,7 @@ def _estimate_log_gaussian_prob(
             maha = jnp.sum(centered * centered, axis=-1) * precisions_chol**2
 
     log_det = _compute_log_det_cholesky(precisions_chol, covariance_type, n_features)
-    return -0.5 * (n_features * jnp.log(2.0 * jnp.pi) + maha) + log_det
+    return cast(Array, -0.5 * (n_features * jnp.log(2.0 * jnp.pi) + maha) + log_det)
 
 
 def _estimate_weighted_log_prob(
@@ -538,9 +538,11 @@ def _estimate_weighted_log_prob(
     -------
     weighted_log_prob : Array, shape (n_samples, n_components)
     """
-    return _estimate_log_gaussian_prob(
-        X, means, precisions_chol, covariance_type
-    ) + jnp.log(weights)
+    return cast(
+        Array,
+        _estimate_log_gaussian_prob(X, means, precisions_chol, covariance_type)
+        + jnp.log(weights),
+    )
 
 
 @partial(jax.jit, static_argnames=("covariance_type",))
@@ -603,7 +605,10 @@ def _e_step_func(
     """
     weights, means, covariances = params
     precisions_chol = _compute_precision_cholesky(covariances, covariance_type)
-    return _estimate_log_prob_resp(X, means, precisions_chol, covariance_type, weights)
+    return cast(
+        tuple[Array, Array],
+        _estimate_log_prob_resp(X, means, precisions_chol, covariance_type, weights),
+    )
 
 
 def _m_step_func(
@@ -646,7 +651,7 @@ def _m_step_func(
 def _em_fit_while_loop(
     X: Array,
     init_params: Params,
-    tol: float,
+    tol: float | Array,
     max_iter: int,
     reg_covar: float,
     covariance_type: CovType,
@@ -693,11 +698,13 @@ def _em_fit_while_loop(
         jnp.array(0, dtype=jnp.int32),  # iter
     )
 
-    def cond_fun(state):
+    def cond_fun(state: tuple[Params, Array, Array, Array]) -> Array:
         _, _, delta, i = state
         return jnp.logical_and(i < max_iter, delta > tol)
 
-    def body_fun(state):
+    def body_fun(
+        state: tuple[Params, Array, Array, Array],
+    ) -> tuple[Params, Array, Array, Array]:
         params, prev_lb, _, i = state
         log_prob_norm, log_resp = _e_step_func(X, params, covariance_type)
         new_params = _m_step_func(
@@ -1427,7 +1434,7 @@ class GaussianMixtureModel:
         log_likelihoods, _ = _estimate_log_prob_resp(
             X, self.means_, self.precisions_chol_, self.covariance_type, self.weights_
         )
-        return log_likelihoods
+        return cast(Array, log_likelihoods)
 
     # ----------------- Initialization helpers -----------------
     def _initialize_random(self, X: Array, key: jax.Array) -> Array:
@@ -1507,7 +1514,7 @@ class GaussianMixtureModel:
                     jax.random.fold_in(key, self.random_state),
                     (),
                     0,
-                    jnp.iinfo(jnp.int32).max,
+                    jnp.iinfo(jnp.int32).max,  # type: ignore[no-untyped-call]  # jnp.iinfo is untyped
                 )
             )
         single_thread = (
@@ -1581,7 +1588,7 @@ class GaussianMixtureModel:
         elif self.init_params == "random":
             resp = self._initialize_random(X, key)
         else:
-            msg = f"Unknown init_params: {self.init_params}"
+            msg = f"Unknown init_params: {self.init_params}"  # type: ignore[unreachable]  # runtime guard for a Literal-typed field
             raise ValueError(msg)
 
         if sample_weight is not None:

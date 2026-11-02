@@ -64,16 +64,19 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
+from numpy.typing import ArrayLike
 from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
 from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
@@ -103,7 +106,7 @@ from non_local_detector.time_edges import (
 
 
 @jax.jit
-def _glm_rates(design, coefficients):
+def _glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
     """Floored rates at each design row, as the local likelihood computes them.
 
     Parameters
@@ -124,15 +127,19 @@ def _glm_rates(design, coefficients):
 
 
 @jax.jit
-def _local_glm_log_likelihood(design, coefficients, counts, durations):
+def _local_glm_log_likelihood(
+    design: jax.Array, coefficients: jax.Array, counts: jax.Array, durations: jax.Array
+) -> jax.Array:
     if counts.shape[1] == 0:
         return jnp.zeros((counts.shape[0],))
-    rate = jax.lax.optimization_barrier(
+    rate = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
         jnp.exp(jnp.matmul(design, coefficients.T, precision=jax.lax.Precision.HIGHEST))
     )
-    rate = jax.lax.optimization_barrier(jnp.clip(rate, min=RATE_EPS_HZ, max=None))
-    expected = jax.lax.optimization_barrier(rate * durations[:, None])
-    return _poisson_row_log_likelihood(counts, expected)
+    rate = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+        jnp.clip(rate, min=RATE_EPS_HZ, max=None)
+    )
+    expected = jax.lax.optimization_barrier(rate * durations[:, None])  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+    return cast(jax.Array, _poisson_row_log_likelihood(counts, expected))
 
 
 def _spline_inner_knots(
@@ -180,6 +187,7 @@ def _narrowest_knot_interval(
     """
     if isinstance(design_info, TrackGraphBasis):
         return float(min(np.diff(knots).min() for knots in design_info.branch_knots))
+    assert basis_positions is not None  # only the track-graph basis has none
     varying_dimensions, inner_knots = _spline_inner_knots(
         basis_positions, place_bin_edges, knot_spacing
     )
@@ -230,9 +238,11 @@ def make_spline_design_matrix(
         position, place_bin_edges, knot_spacing
     )
     if not len(varying_dimensions):
-        return dmatrix("1", pd.DataFrame(index=np.arange(len(position))))
+        return cast(
+            np.ndarray, dmatrix("1", pd.DataFrame(index=np.arange(len(position))))
+        )
 
-    data = {}
+    data: dict[str, np.ndarray] = {}
     formula = "1 + te("
     for knot_ind, ind in enumerate(varying_dimensions):
         formula += f"cr(x{ind}, knots=inner_knots[{knot_ind}])"
@@ -240,20 +250,20 @@ def make_spline_design_matrix(
         data[f"x{ind}"] = position[:, ind]
 
     formula += 'constraints="center")'
-    return dmatrix(formula, data)
+    return cast(np.ndarray, dmatrix(formula, data))
 
 
-def _track_branches(graph) -> list[list[tuple]]:
+def _track_branches(graph: Any) -> list[list[tuple[Any, Any]]]:
     """Maximal paths of the track graph between nodes whose degree is not 2.
 
     Each branch is a list of directed edges ``(a, b)``; a cycle of degree-2 nodes
     is one branch that starts and ends at the same node.
     """
     anchors = {node for node, degree in graph.degree() if degree != 2}
-    seen: set[frozenset] = set()
-    branches = []
+    seen: set[frozenset[Any]] = set()
+    branches: list[list[tuple[Any, Any]]] = []
 
-    def walk(start, first):
+    def walk(start: Any, first: Any) -> list[tuple[Any, Any]]:
         path, previous, current = [(start, first)], start, first
         seen.add(frozenset((start, first)))
         while current not in anchors and current != start:
@@ -346,14 +356,15 @@ def _cubic_cardinal_basis(
     width = widths[interval]
     a = (knots[interval + 1] - x) / width
     b = 1.0 - a
-    return (
+    return cast(
+        np.ndarray,
         a[:, None] * values[interval]
         + b[:, None] * values[interval + 1]
         + (
             (a**3 - a)[:, None] * second_derivative[interval]
             + (b**3 - b)[:, None] * second_derivative[interval + 1]
         )
-        * (width**2 / 6.0)[:, None]
+        * (width**2 / 6.0)[:, None],
     )
 
 
@@ -400,9 +411,9 @@ class TrackGraphBasis:
     edge_branches: np.ndarray
     edge_branch_starts: np.ndarray
     edge_forward: np.ndarray
-    branch_knots: tuple
-    branch_columns: tuple
-    branch_periodic: tuple
+    branch_knots: tuple[np.ndarray, ...]
+    branch_columns: tuple[np.ndarray, ...]
+    branch_periodic: tuple[bool, ...]
     n_columns: int
 
     def edge_index(self, linear_position: np.ndarray) -> np.ndarray:
@@ -504,12 +515,14 @@ def make_track_graph_basis(
     -------
     basis : TrackGraphBasis
     """
-    graph = environment.track_graph
-    edge_order = [tuple(edge) for edge in environment.edge_order]
+    graph = cast(Any, environment.track_graph)
+    edge_order = [
+        tuple(edge) for edge in cast(list[tuple[Any, ...]], environment.edge_order)
+    ]
     lengths = np.asarray([float(graph.edges[edge]["distance"]) for edge in edge_order])
-    spacing = environment.edge_spacing
+    spacing = cast("float | list[float]", environment.edge_spacing)
     gaps = (
-        np.full(len(edge_order) - 1, float(spacing))
+        np.full(len(edge_order) - 1, float(cast(float, spacing)))
         if np.ndim(spacing) == 0
         else np.asarray(spacing, dtype=float)
     )
@@ -524,13 +537,14 @@ def make_track_graph_basis(
         branch[0][0] == branch[-1][1] and graph.degree(branch[0][0]) == 2
         for branch in branches
     ]
-    node_column: dict = {}
+    node_column: dict[Any, int] = {}
     for branch, is_loop in zip(branches, periodic, strict=True):
         if not is_loop:
             for node in (branch[0][0], branch[-1][1]):
                 node_column.setdefault(node, 1 + len(node_column))
     next_column = 1 + len(node_column)
-    branch_knots, branch_columns = [], []
+    branch_knots: list[np.ndarray] = []
+    branch_columns: list[np.ndarray] = []
     for index, (branch, is_loop) in enumerate(zip(branches, periodic, strict=True)):
         along = 0.0
         for a, b in branch:
@@ -696,7 +710,7 @@ def _aggregate_by_position_cell(
 
 def make_spline_predict_matrix(
     design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
-    position: jnp.ndarray,
+    position: jnp.ndarray | np.ndarray,
 ) -> jnp.ndarray:
     """Create a prediction matrix for a spline basis.
 
@@ -809,15 +823,15 @@ _GLM_BLOCK_BYTES = 256 * 2**20
 
 @partial(jax.jit, static_argnames=("block_rows", "derivatives"))
 def _poisson_regression_sums(
-    design_matrix,
-    spikes,
-    weights,
-    coefficients,
-    rate_floor,
+    design_matrix: jax.Array,
+    spikes: jax.Array,
+    weights: jax.Array,
+    coefficients: jax.Array,
+    rate_floor: float | jax.Array,
     *,
-    block_rows,
-    derivatives,
-):
+    block_rows: int,
+    derivatives: bool,
+) -> tuple[jax.Array, ...]:
     """Per-cell sums over rows of the Poisson data term and its derivatives.
 
     Parameters
@@ -847,7 +861,9 @@ def _poisson_regression_sums(
     highest = jax.lax.Precision.HIGHEST
     n_cells, n_coefficients = coefficients.shape
 
-    def add_block(block, sums):
+    def add_block(
+        block: jax.Array, sums: tuple[jax.Array, ...]
+    ) -> tuple[jax.Array, ...]:
         start = block * block_rows
         X = jax.lax.dynamic_slice_in_dim(design_matrix, start, block_rows)
         y = jax.lax.dynamic_slice_in_dim(spikes, start, block_rows, axis=1)
@@ -867,17 +883,20 @@ def _poisson_regression_sums(
         )
 
     dtype = design_matrix.dtype
-    sums = (jnp.zeros(n_cells, dtype),)
+    sums: tuple[jax.Array, ...] = (jnp.zeros(n_cells, dtype),)
     if derivatives:
         sums += (
             jnp.zeros((n_cells, n_coefficients), dtype),
             jnp.zeros((n_cells, n_coefficients, n_coefficients), dtype),
         )
-    return jax.lax.fori_loop(0, design_matrix.shape[0] // block_rows, add_block, sums)
+    return cast(
+        tuple[jax.Array, ...],
+        jax.lax.fori_loop(0, design_matrix.shape[0] // block_rows, add_block, sums),
+    )
 
 
 def fit_poisson_regressions(
-    design_matrix: np.ndarray,
+    design_matrix: np.ndarray | jnp.ndarray,
     spikes: np.ndarray,
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
@@ -955,8 +974,8 @@ def fit_poisson_regressions(
     penalized = np.ones(n_coefficients)
     penalized[0] = 0.0
 
-    def evaluate(coefficients, derivatives):
-        sums = _poisson_regression_sums(
+    def evaluate(coefficients: np.ndarray, derivatives: bool) -> list[np.ndarray]:
+        sums: Any = _poisson_regression_sums(
             design,
             counts,
             exposure,
@@ -977,7 +996,7 @@ def fit_poisson_regressions(
                 -sums[1] + 2 * l2_penalty * penalized * coefficients
             ) / weight_sum
             sums[2] = (sums[2] + 2 * l2_penalty * np.diag(penalized)) / weight_sum
-        return sums
+        return cast(list[np.ndarray], sums)
 
     loss, gradient, hessian = evaluate(coefficients, derivatives=True)
     active = np.ones(n_cells, dtype=bool)
@@ -1175,8 +1194,8 @@ def _fit_rate_maps(
     if environment.track_graph is not None:
         # Splines along the track's branches: one spline over linear position
         # would join segments that are only neighbors in edge_order.
-        emission_design_info = make_track_graph_basis(
-            environment, knot_spacing=emission_knot_spacing
+        emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign = (
+            make_track_graph_basis(environment, knot_spacing=emission_knot_spacing)
         )
         basis_positions = None
     else:
@@ -1188,12 +1207,15 @@ def _fit_rate_maps(
                 (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
             )[:, varying_dimensions]
             basis_positions = np.vstack((basis_positions, boundary_positions))
-        emission_design_info = make_spline_design_matrix(
-            basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
+        emission_design_info = cast(
+            Any,
+            make_spline_design_matrix(
+                basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
+            ),
         ).design_info
 
     if n_maps is None:
-        n_maps = event_counts.shape[0]
+        n_maps = cast(np.ndarray, event_counts).shape[0]
     fit_edges = None
     if exposure.size and n_maps:
         # Fit on sums over small position cells. On a track graph the cells are
@@ -1258,7 +1280,9 @@ def _fit_rate_maps(
         # A cell's mean position can round past its edge's end; with no gap
         # that is the next edge, so each cell keeps the edge it was built on.
         emission_design_matrix = jnp.asarray(
-            emission_design_info.design_matrix(fit_positions, edge=fit_edges)
+            cast(TrackGraphBasis, emission_design_info).design_matrix(
+                fit_positions, edge=fit_edges
+            )
         )
     coefficients = fit_poisson_regressions(
         emission_design_matrix,
@@ -1274,8 +1298,8 @@ def _fit_rate_maps(
 
 
 def fit_sorted_spikes_glm_encoding_model(
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
+    position_time: jnp.ndarray | np.ndarray,
+    position: jnp.ndarray | np.ndarray,
     spike_times: list[jnp.ndarray],
     environment: Environment,
     place_bin_edges: np.ndarray,
@@ -1288,10 +1312,10 @@ def fit_sorted_spikes_glm_encoding_model(
     disable_progress_bar: bool = False,
     *,
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> dict[str, Any]:
     """Fit a GLM encoding model
 
     The Poisson likelihood depends on position only through the basis, so the
@@ -1393,7 +1417,7 @@ def fit_sorted_spikes_glm_encoding_model(
 
     is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
-        environment.place_bin_centers_[is_track_interior]
+        cast(np.ndarray, environment.place_bin_centers_)[is_track_interior]
     )
 
     # The spline is defined on the track's 1-D bin edges, as the KDE fits and
@@ -1462,7 +1486,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
-    environment_grid: dict | None = None,
+    environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
@@ -1566,7 +1590,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         design = jnp.asarray(emission_predict_matrix)
         coefficients = jnp.asarray(coefficients)
 
-        def evaluate(start, stop):
+        def evaluate(start: int, stop: int) -> jax.Array:
             rows = slice(start - row_start, stop - row_start)
             counts = _spike_counts_matrix(
                 spike_times,
@@ -1576,8 +1600,11 @@ def predict_sorted_spikes_glm_log_likelihood(
                 slice(start, stop),
                 _spike_time_order=_spike_time_order,
             )
-            return _local_glm_log_likelihood(
-                design[rows], coefficients, jnp.asarray(counts), durations[rows]
+            return cast(
+                jax.Array,
+                _local_glm_log_likelihood(
+                    design[rows], coefficients, jnp.asarray(counts), durations[rows]
+                ),
             )
 
         log_likelihood = _concatenate_row_blocks(

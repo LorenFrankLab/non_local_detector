@@ -22,14 +22,18 @@ and cached on the ``Environment``, so it is built once and reused across neurons
 EM refits.
 """
 
+from typing import Any, cast
+
 import jax
 import jax.numpy as jnp
 import networkx as nx
 import numpy as np
-import scipy.interpolate  # type: ignore[import-untyped]
+import scipy.interpolate
+from numpy.typing import ArrayLike
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
@@ -83,7 +87,7 @@ def _interior_bin_indices(
     environment: Environment, positions: np.ndarray, full_to_local: np.ndarray
 ) -> np.ndarray:
     """Map sample positions to local interior-bin indices (``node_order`` order)."""
-    return full_to_local[environment.get_bin_ind(positions)]
+    return cast(np.ndarray, full_to_local[environment.get_bin_ind(positions)])
 
 
 def _validate_local_interpolation(local_interpolation: str) -> str:
@@ -134,7 +138,7 @@ def _interpolation_corner_indices(
             candidates.append([upper - 1, upper])
 
     corners = np.array(np.meshgrid(*candidates, indexing="ij")).reshape(len(axes), -1)
-    return np.ravel_multi_index(corners, centers_shape)
+    return cast(np.ndarray | None, np.ravel_multi_index(corners, centers_shape))
 
 
 def _linear_interpolation_safe_mask(
@@ -272,7 +276,7 @@ def pixellate_interior_fields(
     weights: np.ndarray,
     disable_progress_bar: bool = False,
     *,
-    encoding_support=None,
+    encoding_support: EncodingSupport | None = None,
 ) -> tuple[np.ndarray, list[np.ndarray], list[float]]:
     """Histogram weighted occupancy and per-neuron spike counts onto interior bins.
 
@@ -394,7 +398,9 @@ def _assemble_place_fields(
     clipped_interior = np.clip(
         rate_interior.T, RATE_EPS_HZ, None
     )  # (n_neurons, n_interior)
-    place_fields = np.zeros((rate_interior.shape[1], n_total_bins))
+    place_fields: np.ndarray | jax.Array = np.zeros(
+        (rate_interior.shape[1], n_total_bins)
+    )
     place_fields[:, node_order] = clipped_interior
     place_fields = jnp.asarray(place_fields)
     # clipped_interior IS place_fields[:, node_order] (node_order == np.where(interior)[0],
@@ -415,10 +421,10 @@ def fit_sorted_spikes_diffusion_encoding_model(
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
     *,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> dict[str, Any]:
     """Fit a graph-diffusion encoding model for sorted spikes.
 
     Parameters
@@ -615,7 +621,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
-    environment_grid: dict | None = None,
+    environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **_encoding_extras: object,
@@ -770,7 +776,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     )
     interior_summed_rates = no_spike_part_log_likelihood[is_track_interior]
 
-    def evaluate(start, stop):
+    def evaluate(start: int, stop: int) -> jax.Array:
         spike_counts = jnp.asarray(
             _spike_counts_matrix(
                 spike_times,

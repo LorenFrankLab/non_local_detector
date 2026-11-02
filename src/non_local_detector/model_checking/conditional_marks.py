@@ -7,7 +7,7 @@ distribution or empirical CDF. Temporary query arrays scale with batch size.
 
 from collections.abc import Callable, Sequence
 from numbers import Integral
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -75,12 +75,12 @@ class GaussianMixtureConditionalCDF:
             raise ValueError(msg)
         if (
             isinstance(batch_size, bool)
-            or not isinstance(batch_size, Integral)
-            or batch_size < 1
+            or not isinstance(batch_size, Integral)  # type: ignore[unreachable]  # runtime validation of a typed argument
+            or batch_size < 1  # type: ignore[unreachable]  # runtime validation of a typed argument
         ):
             msg = "batch_size must be a positive integer"
             raise ValueError(msg)
-        if (
+        if (  # type: ignore[unreachable]  # mypy treats the batch_size check above as always true
             isinstance(n_position_dims, bool)
             or not isinstance(n_position_dims, Integral)
             or not 0 <= n_position_dims < means.shape[1]
@@ -103,7 +103,7 @@ class GaussianMixtureConditionalCDF:
             msg = f"covariances must be finite with shape {expected}"
             raise ValueError(msg)
         keep = weights > 0
-        self._kept_components = np.flatnonzero(keep)
+        self._kept_components: np.ndarray = np.flatnonzero(keep)
         means, weights = means[keep], weights[keep]
         weights = weights / weights.max()
         weights = weights / weights.sum()
@@ -142,12 +142,14 @@ class GaussianMixtureConditionalCDF:
                 msg = "Gaussian component covariances must be positive definite"
                 raise ValueError(msg) from exc
             self.covariances = covariance
-        self.weights = weights
-        self.means = means
-        self.n_position_dims = int(n_position_dims)
-        self.n_features = n_dims - self.n_position_dims
-        self.position_at_time = position_at_time
-        self.batch_size = int(batch_size)
+        self.weights: np.ndarray = weights
+        self.means: np.ndarray = means
+        self.n_position_dims: int = int(n_position_dims)
+        self.n_features: int = n_dims - self.n_position_dims
+        self.position_at_time: Callable[[np.ndarray], ArrayLike] | None = (
+            position_at_time
+        )
+        self.batch_size: int = int(batch_size)
         self._recipes: dict[
             tuple[int, ...], list[tuple[np.ndarray, np.ndarray, np.ndarray]]
         ] = {}
@@ -245,7 +247,9 @@ class GaussianMixtureConditionalCDF:
             batch_size=batch_size,
         )
 
-    def _feature_order(self, feature_order: Sequence[int] | None) -> np.ndarray:
+    def _feature_order(
+        self, feature_order: Sequence[int] | np.ndarray | None
+    ) -> np.ndarray:
         order = (
             np.arange(self.n_features)
             if feature_order is None
@@ -275,9 +279,15 @@ class GaussianMixtureConditionalCDF:
                     gain = np.empty((len(self.weights), 0))
                     variance = self.variances[:, coordinate]
                 elif not prefix:
+                    assert (
+                        self.covariances is not None
+                    )  # set whenever variances is None
                     gain = np.zeros((len(self.weights), 0))
                     variance = self.covariances[:, coordinate, coordinate]
                 else:
+                    assert (
+                        self.covariances is not None
+                    )  # set whenever variances is None
                     covariance_prefix = self.covariances[:, prefix][:, :, prefix]
                     cross_covariance = self.covariances[:, prefix, coordinate]
                     gain = np.linalg.solve(
@@ -301,18 +311,29 @@ class GaussianMixtureConditionalCDF:
         residual = positions[:, None, :] - self.means[None, :, : self.n_position_dims]
         if self.variances is not None:
             variance = self.variances[:, : self.n_position_dims]
-            return -0.5 * np.sum(
-                residual**2 / variance[None] + np.log(2 * np.pi * variance)[None],
-                axis=2,
+            return cast(
+                np.ndarray,
+                -0.5
+                * np.sum(
+                    residual**2 / variance[None] + np.log(2 * np.pi * variance)[None],
+                    axis=2,
+                ),
             )
+        # Both are set in the constructor whenever it models position with full
+        # covariances, the only case that reaches here.
+        assert self._position_precision is not None
+        assert self._position_log_normalizer is not None
         whitened = np.einsum("bkp,kpq->bkq", residual, self._position_precision)
-        return -0.5 * np.sum(whitened**2, axis=2) - self._position_log_normalizer[None]
+        return cast(
+            np.ndarray,
+            -0.5 * np.sum(whitened**2, axis=2) - self._position_log_normalizer[None],
+        )
 
     def transform(
         self,
         observed_marks: ArrayLike,
         *,
-        feature_order: Sequence[int] | None = None,
+        feature_order: Sequence[int] | np.ndarray | None = None,
         given_positions: ArrayLike | None = None,
         component_log_weights: Callable[[int, int], np.ndarray] | None = None,
     ) -> np.ndarray:
