@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Warnings point at the caller's code
 
-- Warnings raised inside the detectors are attributed to the first caller outside the library, whichever public method led there. Before, a fixed stack depth sent some of them to library files: the deprecated `save_*_to_results` warning to `time_edges.py`, and "EM did not converge" and the 1-D position warning under `estimate_parameters` to `models/base.py`. `warnings.filterwarnings(module=...)` and the reported location now name your script.
+- Warnings raised anywhere in the library are attributed to the first caller outside it, whichever public method led there, including when the package is imported through a symlinked path. Before, fixed stack depths sent many of them to library files: the deprecated `save_*_to_results` warning to `time_edges.py`; "EM did not converge" and the 1-D position warning under `estimate_parameters`, and the encoding fits' warnings (zero training exposure, sparse tracking, fit diagnostics) to `models/base.py`. `warnings.filterwarnings(module=...)` and the reported location now name your script.
 
 ### Less memory and work in chunked decoding and covariate Viterbi
 

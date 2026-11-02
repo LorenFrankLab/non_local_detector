@@ -72,6 +72,7 @@ import pandas as pd  # type: ignore[import-untyped]
 from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
 from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
@@ -1037,7 +1038,7 @@ def fit_poisson_regressions(
             f"combinations at their starting values. Use a positive l2_penalty "
             f"to identify them.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=user_stacklevel(),
         )
 
     # Judge convergence by the gradient inf-norm, and also warn when a fit
@@ -1063,7 +1064,7 @@ def fit_poisson_regressions(
             f"{GLM_CONVERGENCE_GRAD_TOL:.1e} (a non-finite gradient or loss means "
             f"the fit diverged). Place-field coefficients may be unreliable.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=user_stacklevel(),
         )
 
     return jnp.asarray(coefficients)

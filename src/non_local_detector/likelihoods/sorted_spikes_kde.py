@@ -54,6 +54,7 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
@@ -442,7 +443,7 @@ def fit_sorted_spikes_kde_encoding_model(
             f"spike features, or position_std=0). Inspect the encoding-spike "
             f"feature distribution.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=user_stacklevel(),
         )
 
     return {

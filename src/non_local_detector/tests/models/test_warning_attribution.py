@@ -95,3 +95,66 @@ def test_outside_tracking_warning(recording, entry):
             position_time=recording["position_time"],
         )
     assert _sources("outside the tracked period", call) == {__file__}
+
+
+def test_encoding_fit_warning(recording):
+    """Warnings from the likelihood fits point at the caller too."""
+    detector = NonLocalSortedSpikesDetector()
+    n = len(recording["position_time"])
+    call = lambda: detector.fit(  # noqa: E731
+        **recording, is_training=np.zeros(n, dtype=bool)
+    )
+    assert _sources("zero training exposure", call) == {__file__}
+
+
+def test_attribution_through_a_symlinked_package(tmp_path):
+    """Importing the package through a symlink still attributes to the caller."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import non_local_detector
+
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "non_local_detector").symlink_to(Path(non_local_detector.__file__).parent)
+    script = tmp_path / "caller.py"
+    script.write_text(
+        "import warnings\n"
+        "import numpy as np\n"
+        "import non_local_detector\n"
+        "from non_local_detector.models.base import _missing_bins\n"
+        f"assert non_local_detector.__file__.startswith({str(linked)!r})\n"
+        "edges = np.linspace(0.0, 1.2, 13)\n"
+        "time = np.linspace(0.0, 1.0, 11)\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always')\n"
+        "    _missing_bins(edges, None, time, time[:, None], warn_outside_tracking=True)\n"
+        "print(caught[0].filename)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(linked), "PATH": ""},
+        check=True,
+    )
+    assert result.stdout.strip() == str(script)
+
+
+def test_no_fixed_stacklevels_in_library_code():
+    """Library warnings use user_stacklevel(), not a depth tuned to one path."""
+    import re
+    from pathlib import Path
+
+    import non_local_detector
+
+    root = Path(non_local_detector.__file__).parent
+    fixed = [
+        f"{path.relative_to(root)}:{number}"
+        for path in root.rglob("*.py")
+        if "tests" not in path.relative_to(root).parts
+        for number, line in enumerate(path.read_text().splitlines(), 1)
+        if re.search(r"stacklevel\s*=\s*\d", line)
+    ]
+    assert not fixed, fixed

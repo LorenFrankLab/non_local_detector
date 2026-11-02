@@ -2,7 +2,6 @@ import abc
 import copy
 import inspect
 import pickle
-import sys
 import warnings
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -26,6 +25,7 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 
 from non_local_detector import _validation as val
 from non_local_detector._position_dims import get_position_dim_names
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.checkpointed_inference import (
     _available_host_bytes,
     default_chunk_size,
@@ -117,34 +117,6 @@ from non_local_detector.types import (
 )
 
 logger = getLogger(__name__)
-
-_LIBRARY_DIR = Path(__file__).resolve().parents[1]
-_LIBRARY_TESTS_DIR = _LIBRARY_DIR / "tests"
-
-
-def _user_stacklevel() -> int:
-    """``warnings.warn`` stacklevel of the first caller outside the library.
-
-    Call it in the function that calls ``warnings.warn``. Frames in this
-    package, apart from its tests, are skipped, so the warning points at the
-    user's code however deep inside the library it was raised and whichever
-    public method led there.
-
-    Returns
-    -------
-    stacklevel : int
-    """
-    frame = sys._getframe(1)
-    level = 1
-    while frame is not None:
-        path = Path(frame.f_code.co_filename)
-        if not path.is_relative_to(_LIBRARY_DIR) or path.is_relative_to(
-            _LIBRARY_TESTS_DIR
-        ):
-            break
-        frame = frame.f_back
-        level += 1
-    return level
 
 
 sklearn.set_config(print_changed_only=False)
@@ -646,7 +618,7 @@ def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
         'Pass transition_representation="auto" (or "structured") to '
         "estimate_parameters to bound EM's memory, or n_chunks > 1 for dense EM.",
         UserWarning,
-        stacklevel=_user_stacklevel(),
+        stacklevel=user_stacklevel(),
     )
 
 
@@ -977,7 +949,7 @@ def _missing_bins(
             "alone. Pass position covering the decode time_edges, or restrict "
             "time_edges to the tracked period.",
             UserWarning,
-            stacklevel=_user_stacklevel(),
+            stacklevel=user_stacklevel(),
         )
     is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
     if np.any(is_nan):
@@ -1150,7 +1122,7 @@ def _group_weights(
             "encoding_group_labels, environment_labels, NaN positions, and "
             "encoding_time_range / valid_position_intervals.",
             UserWarning,
-            stacklevel=_user_stacklevel(),
+            stacklevel=user_stacklevel(),
         )
     return group_weights
 
@@ -3011,7 +2983,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "that the track topology is properly linearized. See the "
                     "Environment docstring for details.",
                     UserWarning,
-                    stacklevel=_user_stacklevel(),
+                    stacklevel=user_stacklevel(),
                 )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
@@ -3414,7 +3386,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "save_log_likelihood_to_results and save_causal_posterior_to_results "
                 "are deprecated. Use return_outputs parameter instead.",
                 DeprecationWarning,
-                stacklevel=_user_stacklevel(),
+                stacklevel=user_stacklevel(),
             )
 
             # Convert old flags to new format
@@ -4313,7 +4285,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "approximate: if dense EM fits, pass "
                 'transition_representation="dense" to estimate_parameters.',
                 UserWarning,
-                stacklevel=_user_stacklevel(),
+                stacklevel=user_stacklevel(),
             )
         logger.info(
             "EM with transition_representation='auto': %s (%d interior state "
@@ -4554,7 +4526,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "save_log_likelihood_to_results is deprecated. "
                 "Use return_outputs='log_likelihood' instead.",
                 DeprecationWarning,
-                stacklevel=_user_stacklevel(),
+                stacklevel=user_stacklevel(),
             )
             if save_log_likelihood_to_results:
                 return_outputs = "log_likelihood"
@@ -4896,7 +4868,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         f"model inside EM, a covariate transition fit stopping "
                         f"early, or a numerical instability can.",
                         UserWarning,
-                        stacklevel=_user_stacklevel(),
+                        stacklevel=user_stacklevel(),
                     )
                     self.em_monotonicity_violations_.append(n_iter)
 
@@ -4974,7 +4946,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
                 f"{advice}",
                 UserWarning,
-                stacklevel=_user_stacklevel(),
+                stacklevel=user_stacklevel(),
             )
 
         def em_traces(final_log_likelihood: float) -> dict[str, list[float]]:
@@ -5105,7 +5077,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"the fitted parameters. converged_ is False and iteration "
                     f"{n_iter + 1} is recorded in em_monotonicity_violations_.",
                     UserWarning,
-                    stacklevel=_user_stacklevel(),
+                    stacklevel=user_stacklevel(),
                 )
         self.converged_ = bool(converged) and final_is_increasing
 

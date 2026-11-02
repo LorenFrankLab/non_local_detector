@@ -51,6 +51,7 @@ import numpy as np
 import scipy.optimize
 from jax import lax
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
@@ -930,7 +931,7 @@ def fit_sorted_spikes_mrf_encoding_model(
             f"{node_order.shape[0]} interior bins; the highest-frequency "
             f"eigenmodes are dropped. Pass an explicit `rank` to override.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=user_stacklevel(),
         )
 
     assert environment.is_track_interior_ is not None
@@ -977,7 +978,7 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"exposure; their rates are unidentified and set to the zero-exposure "
                 f"floor ({RATE_EPS_HZ:.1e} Hz).",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
             # Spikes binned where there is no exposure carry no rate information and
             # would push that component's unpenalized null mode without bound.
@@ -1021,7 +1022,7 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"{diagnostics['max_step']:.2e}); place fields may be unreliable. "
                 f"Increase max_iter or the penalty.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
         rate_interior = np.exp(
             eta

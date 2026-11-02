@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
@@ -683,7 +684,7 @@ def fit_clusterless_gmm_encoding_model(
             f"because only {occupancy_n_samples} effective position samples are "
             "available.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=user_stacklevel(),
         )
 
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
@@ -750,7 +751,7 @@ def fit_clusterless_gmm_encoding_model(
                 "zero-rate -- its observed decode spikes are explained by the background rate "
                 "rather than fit on the de-weighted spikes.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
             mean_rates.append(0.0)
             gpi_models.append(None)
@@ -780,7 +781,7 @@ def fit_clusterless_gmm_encoding_model(
                 "effective encoding spikes; reduced "
                 f"joint components {gmm_components_joint}->{n_joint_components}.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
 
         # Joint GMM over [position, waveform]

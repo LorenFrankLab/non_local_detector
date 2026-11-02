@@ -9,6 +9,7 @@ import warnings
 
 import numpy as np
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.time_edges import uniform_time_bin_width, validate_time_edges
 
@@ -317,7 +318,7 @@ def prepare_encoding_support(
 
 
 def warn_if_no_encoding_exposure(
-    exposure_weights, model: str, *, clusterless: bool, stacklevel: int = 3
+    exposure_weights, model: str, *, clusterless: bool
 ) -> None:
     """Warn when an encoding fit has zero training exposure.
 
@@ -336,8 +337,6 @@ def warn_if_no_encoding_exposure(
         Name of the encoding model, for the message.
     clusterless : bool
         Whether the model is clusterless, which selects the stated consequence.
-    stacklevel : int, optional
-        Passed to ``warnings.warn``, by default 3 (the encoding fit's caller).
     """
     if not np.sum(exposure_weights) > 0.0:
         consequence = (
@@ -355,7 +354,7 @@ def warn_if_no_encoding_exposure(
             "encoding_group_labels and environment_labels), NaN positions, and "
             "encoding_time_range / valid_position_intervals.",
             UserWarning,
-            stacklevel=stacklevel,
+            stacklevel=user_stacklevel(),
         )
 
 
@@ -386,7 +385,7 @@ def largest_tracking_step(support: EncodingSupport, position) -> float:
 
 
 def warn_if_tracking_is_sparse(
-    support: EncodingSupport, position, position_std, *, stacklevel: int = 3
+    support: EncodingSupport, position, position_std
 ) -> None:
     """Warn when tracking moves farther per sample than ``position_std``.
 
@@ -403,8 +402,6 @@ def warn_if_tracking_is_sparse(
     position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
     position_std : float or array_like
         Position bandwidth; its smallest entry is used.
-    stacklevel : int, optional
-        Passed to ``warnings.warn``, by default 3 (the encoding fit's caller).
     """
     scale = float(np.min(position_std))
     step = largest_tracking_step(support, position)
@@ -417,5 +414,5 @@ def warn_if_tracking_is_sparse(
             "samples. Use position sampled more often (or upsampled along the "
             "path), or a position_std at least as large as the largest step.",
             UserWarning,
-            stacklevel=stacklevel,
+            stacklevel=user_stacklevel(),
         )

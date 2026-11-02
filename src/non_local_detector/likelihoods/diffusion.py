@@ -37,6 +37,7 @@ import scipy.sparse
 import scipy.sparse.csgraph
 import scipy.sparse.linalg
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import ValidationError
 
 if TYPE_CHECKING:
@@ -161,7 +162,7 @@ def _block_eigenbasis(
             "which='SM' solver, which may return a lower-quality eigenbasis. "
             "Consider a smaller rank or the full (rank=None) decomposition.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=user_stacklevel(),
         )
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM", v0=v0)
 
@@ -790,7 +791,7 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
                 "one bin, so place fields will stay close to the raw spike counts. "
                 "Increase position_std or use a coarser grid.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
 
 
