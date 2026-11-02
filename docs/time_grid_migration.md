@@ -27,8 +27,9 @@ results = detector.predict(spike_times, time_edges=edges)
 
 # Uniform existing sample timestamps, retaining their nominal row coordinates.
 edges = time_edges_from_centers(position_time)
-results = detector.predict(spike_times, time_edges=edges,
-                           position_time=position_time, position=position)
+results = detector.predict(
+    spike_times, time_edges=edges, position_time=position_time, position=position
+)
 sequence = detector.most_likely_sequence(spike_times, time_edges=edges)
 ```
 
@@ -46,7 +47,9 @@ and counting. Keep spike times and marks from the same unit aligned:
 
 ```python
 from non_local_detector.likelihoods.common import (
-    get_spikecount_per_time_bin, select_spikes_in_rows, select_spike_rows,
+    get_spikecount_per_time_bin,
+    select_spikes_in_rows,
+    select_spike_rows,
 )
 
 n_bins = len(edges) - 1
@@ -74,10 +77,11 @@ identify continuous tracking intervals:
 
 ```python
 detector.fit(
-    position_time, position, spike_times,
+    position_time,
+    position,
+    spike_times,
     encoding_time_range=[acquisition_start, acquisition_stop],
-    valid_position_intervals=[[epoch1_start, epoch1_stop],
-                              [epoch2_start, epoch2_stop]],
+    valid_position_intervals=[[epoch1_start, epoch1_stop], [epoch2_start, epoch2_stop]],
 )
 ```
 
@@ -149,18 +153,21 @@ import numpy as np
 
 # Two finite tracking spans. Encoding could additionally hold endpoints over
 # [-0.5, 1.5] and [9.5, 11.5]; this decode policy uses only measured spans.
-position_time = np.array([0., 1., 10., 11.])
-position = np.array([[0.], [0.], [100.], [100.]])
-observation_intervals = np.array([[0., 1.], [10., 11.]])
-edges = calculate_time_edges([0., 11.], sampling_frequency=500)
+position_time = np.array([0.0, 1.0, 10.0, 11.0])
+position = np.array([[0.0], [0.0], [100.0], [100.0]])
+observation_intervals = np.array([[0.0, 1.0], [10.0, 11.0]])
+edges = calculate_time_edges([0.0, 11.0], sampling_frequency=500)
 supported = np.any(
     (edges[:-1, None] >= observation_intervals[:, 0])
     & (edges[1:, None] <= observation_intervals[:, 1]),
     axis=1,
 )
 results = detector.predict(
-    spike_times, time_edges=edges, position_time=position_time,
-    position=position, is_missing=~supported,
+    spike_times,
+    time_edges=edges,
+    position_time=position_time,
+    position=position,
+    is_missing=~supported,
 )
 ```
 
@@ -192,7 +199,8 @@ per actual result time and a whole-bin measured-support mask:
 from non_local_detector.analysis import align_tracking_to_results
 
 tracking, is_valid = align_tracking_to_results(
-    position_info, results,
+    position_info,
+    results,
     position_columns=["position_x", "position_y"],
     valid_position_intervals=observation_intervals,
     categorical_columns=["track_segment_id"],
@@ -220,10 +228,14 @@ from non_local_detector.core import row_slice_aware
 
 original_likelihood = detector.compute_log_likelihood
 
+
 @row_slice_aware
 def custom_likelihood(*args, time_edges, row_slice=None, is_missing=None):
     return original_likelihood(
-        *args, time_edges=time_edges, row_slice=row_slice, is_missing=is_missing,
+        *args,
+        time_edges=time_edges,
+        row_slice=row_slice,
+        is_missing=is_missing,
     )
 ```
 
@@ -269,12 +281,16 @@ For fitted Hz rates, select the units and provide the physical grid explicitly:
 
 ```python
 from non_local_detector.model_checking.sorted_spikes import (
-    TimeRescaling, point_process_residuals,
+    TimeRescaling,
+    point_process_residuals,
 )
 
 check = TimeRescaling(rate_Hz, is_spike, rate_units="Hz", time_edges=edges)
 residuals = point_process_residuals(
-    rate_Hz, is_spike, rate_units="Hz", time_edges=edges,
+    rate_Hz,
+    is_spike,
+    rate_units="Hz",
+    time_edges=edges,
 )
 ```
 

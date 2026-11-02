@@ -129,9 +129,15 @@ def main():
         )
 
         print(f"{n_dims}D features:")
-        print(f"  Original (loop):     {time_orig*1000:.2f}ms ± {std_orig*1000:.2f}ms")
-        print(f"  Vectorized:          {time_vec*1000:.2f}ms ± {std_vec*1000:.2f}ms  ({speedup_vec:.2f}x)")
-        print(f"  JIT-compiled:        {time_jit*1000:.2f}ms ± {std_jit*1000:.2f}ms  ({speedup_jit:.2f}x)")
+        print(
+            f"  Original (loop):     {time_orig * 1000:.2f}ms ± {std_orig * 1000:.2f}ms"
+        )
+        print(
+            f"  Vectorized:          {time_vec * 1000:.2f}ms ± {std_vec * 1000:.2f}ms  ({speedup_vec:.2f}x)"
+        )
+        print(
+            f"  JIT-compiled:        {time_jit * 1000:.2f}ms ± {std_jit * 1000:.2f}ms  ({speedup_jit:.2f}x)"
+        )
         print()
 
     # Log-space KDE profiling
@@ -178,9 +184,15 @@ def main():
         )
 
         print(f"{n_dims}D features:")
-        print(f"  Original (loop):     {time_orig*1000:.2f}ms ± {std_orig*1000:.2f}ms")
-        print(f"  Vectorized:          {time_vec*1000:.2f}ms ± {std_vec*1000:.2f}ms  ({speedup_vec:.2f}x)")
-        print(f"  JIT-compiled:        {time_jit*1000:.2f}ms ± {std_jit*1000:.2f}ms  ({speedup_jit:.2f}x)")
+        print(
+            f"  Original (loop):     {time_orig * 1000:.2f}ms ± {std_orig * 1000:.2f}ms"
+        )
+        print(
+            f"  Vectorized:          {time_vec * 1000:.2f}ms ± {std_vec * 1000:.2f}ms  ({speedup_vec:.2f}x)"
+        )
+        print(
+            f"  JIT-compiled:        {time_jit * 1000:.2f}ms ± {std_jit * 1000:.2f}ms  ({speedup_jit:.2f}x)"
+        )
         print()
 
     # Summary table

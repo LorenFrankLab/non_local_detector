@@ -13,10 +13,10 @@ import numpy as np
 sys.path.insert(0, "src")
 
 from non_local_detector.likelihoods.clusterless_kde import (
-    estimate_log_joint_mark_intensity as estimate_ref,
+    estimate_log_joint_mark_intensity as estimate_log,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
-    estimate_log_joint_mark_intensity as estimate_log,
+    estimate_log_joint_mark_intensity as estimate_ref,
 )
 
 
@@ -43,10 +43,10 @@ def time_function(func, *args, n_warmup=2, n_runs=5, **kwargs):
 
 def profile_dimension(n_features, n_enc=200, n_dec=100, n_pos=500):
     """Profile performance for a specific feature dimension."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"Testing {n_features}D waveform features")
     print(f"  n_encoding={n_enc}, n_decoding={n_dec}, n_positions={n_pos}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     rng = np.random.default_rng(0)
 
@@ -69,7 +69,7 @@ def profile_dimension(n_features, n_enc=200, n_dec=100, n_pos=500):
         mean_rate=mean_rate,
         position_distance=position_distance,
     )
-    print(f"  Time: {mean_ref*1000:.2f} ± {std_ref*1000:.2f} ms")
+    print(f"  Time: {mean_ref * 1000:.2f} ± {std_ref * 1000:.2f} ms")
 
     # Log-space with GEMM (vmap)
     print("\nOptimized with GEMM + vmap (use_gemm=True):")
@@ -83,7 +83,7 @@ def profile_dimension(n_features, n_enc=200, n_dec=100, n_pos=500):
         position_distance=position_distance,
         use_gemm=True,
     )
-    print(f"  Time: {mean_gemm*1000:.2f} ± {std_gemm*1000:.2f} ms")
+    print(f"  Time: {mean_gemm * 1000:.2f} ± {std_gemm * 1000:.2f} ms")
 
     # Log-space without GEMM (fallback to reference algorithm in log file)
     print("\nOptimized without GEMM (use_gemm=False):")
@@ -97,7 +97,7 @@ def profile_dimension(n_features, n_enc=200, n_dec=100, n_pos=500):
         position_distance=position_distance,
         use_gemm=False,
     )
-    print(f"  Time: {mean_no_gemm*1000:.2f} ± {std_no_gemm*1000:.2f} ms")
+    print(f"  Time: {mean_no_gemm * 1000:.2f} ± {std_no_gemm * 1000:.2f} ms")
 
     # Speedup analysis
     speedup_gemm = mean_ref / mean_gemm
@@ -125,9 +125,9 @@ def profile_dimension(n_features, n_enc=200, n_dec=100, n_pos=500):
 
 def main():
     """Run profiling across multiple feature dimensions."""
-    print("="*70)
+    print("=" * 70)
     print("FEATURE DIMENSION PROFILING (Core Functions Only)")
-    print("="*70)
+    print("=" * 70)
     print("\nTesting hypothesis: GEMM optimization performs better")
     print("with higher-dimensional waveform features.")
     print("\nTest configuration:")
@@ -144,27 +144,27 @@ def main():
         results.append(result)
 
     # Summary table
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("SUMMARY: Performance vs Feature Dimension")
-    print("="*70)
+    print("=" * 70)
     print("\nExecution time (ms):")
     print(f"{'Dim':<6} {'Reference':<15} {'GEMM':<15} {'No-GEMM':<15}")
     print("-" * 70)
     for r in results:
         print(
             f"{r['n_features']:<6} "
-            f"{r['ref_time']*1000:>6.2f} ± {r['ref_std']*1000:>4.2f}   "
-            f"{r['gemm_time']*1000:>6.2f} ± {r['gemm_std']*1000:>4.2f}   "
-            f"{r['no_gemm_time']*1000:>6.2f} ± {r['no_gemm_std']*1000:>4.2f}"
+            f"{r['ref_time'] * 1000:>6.2f} ± {r['ref_std'] * 1000:>4.2f}   "
+            f"{r['gemm_time'] * 1000:>6.2f} ± {r['gemm_std'] * 1000:>4.2f}   "
+            f"{r['no_gemm_time'] * 1000:>6.2f} ± {r['no_gemm_std'] * 1000:>4.2f}"
         )
 
     print("\nSpeedup vs Reference:")
     print(f"{'Dim':<6} {'GEMM (vmap)':<15} {'No-GEMM':<15} {'GEMM vs No-GEMM':<15}")
     print("-" * 70)
     for r in results:
-        gemm_marker = "✓" if r['speedup_gemm'] > 1.0 else "✗"
-        no_gemm_marker = "✓" if r['speedup_no_gemm'] > 1.0 else "✗"
-        gemm_win = "✓" if r['gemm_vs_no_gemm'] > 1.0 else "✗"
+        gemm_marker = "✓" if r["speedup_gemm"] > 1.0 else "✗"
+        no_gemm_marker = "✓" if r["speedup_no_gemm"] > 1.0 else "✗"
+        gemm_win = "✓" if r["gemm_vs_no_gemm"] > 1.0 else "✗"
         print(
             f"{r['n_features']:<6} "
             f"{r['speedup_gemm']:>6.2f}x {gemm_marker:<8} "
@@ -172,47 +172,51 @@ def main():
             f"{r['gemm_vs_no_gemm']:>6.2f}x {gemm_win:<8}"
         )
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("ANALYSIS")
-    print("="*70)
+    print("=" * 70)
 
     # Find when GEMM wins vs linear
-    gemm_wins_linear = [r for r in results if r['speedup_gemm'] > 1.0]
+    gemm_wins_linear = [r for r in results if r["speedup_gemm"] > 1.0]
     if gemm_wins_linear:
-        min_dim = min(r['n_features'] for r in gemm_wins_linear)
+        min_dim = min(r["n_features"] for r in gemm_wins_linear)
         print(f"\n✓ GEMM (vmap) beats linear reference at {min_dim}D+ features")
     else:
         print("\n✗ GEMM (vmap) never beats linear reference")
 
     # Find when GEMM wins vs no-GEMM
-    gemm_wins_no_gemm = [r for r in results if r['gemm_vs_no_gemm'] > 1.0]
+    gemm_wins_no_gemm = [r for r in results if r["gemm_vs_no_gemm"] > 1.0]
     if gemm_wins_no_gemm:
-        min_dim = min(r['n_features'] for r in gemm_wins_no_gemm)
+        min_dim = min(r["n_features"] for r in gemm_wins_no_gemm)
         print(f"✓ GEMM optimization is worthwhile at {min_dim}D+ features")
     else:
         print("✗ GEMM optimization overhead not justified at any dimension")
 
     # Trend analysis
     print("\nTrends:")
-    gemm_speedups = [r['speedup_gemm'] for r in results]
+    gemm_speedups = [r["speedup_gemm"] for r in results]
     if gemm_speedups[-1] > gemm_speedups[0]:
-        print(f"  GEMM speedup improves with dimension: {gemm_speedups[0]:.2f}x → {gemm_speedups[-1]:.2f}x")
+        print(
+            f"  GEMM speedup improves with dimension: {gemm_speedups[0]:.2f}x → {gemm_speedups[-1]:.2f}x"
+        )
     else:
-        print(f"  GEMM speedup decreases with dimension: {gemm_speedups[0]:.2f}x → {gemm_speedups[-1]:.2f}x")
+        print(
+            f"  GEMM speedup decreases with dimension: {gemm_speedups[0]:.2f}x → {gemm_speedups[-1]:.2f}x"
+        )
 
     # Best configuration per dimension
     print("\nRecommended configuration per dimension:")
     for r in results:
         times = {
-            "GEMM (vmap)": r['gemm_time'],
-            "No-GEMM": r['no_gemm_time'],
-            "Reference": r['ref_time'],
+            "GEMM (vmap)": r["gemm_time"],
+            "No-GEMM": r["no_gemm_time"],
+            "Reference": r["ref_time"],
         }
         best = min(times, key=times.get)
-        speedup = r['ref_time'] / min(times.values())
+        speedup = r["ref_time"] / min(times.values())
         print(f"  {r['n_features']}D: {best} ({speedup:.2f}x faster)")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":

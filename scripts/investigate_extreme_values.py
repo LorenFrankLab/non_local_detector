@@ -12,13 +12,15 @@ import numpy as np
 sys.path.insert(0, "src")
 
 from non_local_detector.likelihoods.clusterless_kde import (
-    estimate_log_joint_mark_intensity as estimate_original,
-)
-from non_local_detector.likelihoods.clusterless_kde import kde_distance
-from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity as estimate_log,
 )
-from non_local_detector.likelihoods.clusterless_kde import log_kde_distance
+from non_local_detector.likelihoods.clusterless_kde import (
+    estimate_log_joint_mark_intensity as estimate_original,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
+    kde_distance,
+    log_kde_distance,
+)
 
 
 def analyze_extreme_features():
@@ -64,7 +66,9 @@ def analyze_extreme_features():
     feature_distances = []
     for i in range(n_dec_spikes):
         for j in range(n_enc_spikes):
-            dist = np.sqrt(np.sum(((dec_features[i] - enc_features[j]) / waveform_stds) ** 2))
+            dist = np.sqrt(
+                np.sum(((dec_features[i] - enc_features[j]) / waveform_stds) ** 2)
+            )
             feature_distances.append(dist)
 
     feature_distances = np.array(feature_distances)
@@ -78,15 +82,23 @@ def analyze_extreme_features():
 
     # What does this mean for Gaussian PDF values?
     print("Expected Gaussian PDF values:")
-    print(f"  At min distance ({feature_distances.min():.2f} std): {np.exp(-0.5 * feature_distances.min()**2):.2e}")
-    print(f"  At mean distance ({feature_distances.mean():.2f} std): {np.exp(-0.5 * feature_distances.mean()**2):.2e}")
-    print(f"  At max distance ({feature_distances.max():.2f} std): {np.exp(-0.5 * feature_distances.max()**2):.2e}")
+    print(
+        f"  At min distance ({feature_distances.min():.2f} std): {np.exp(-0.5 * feature_distances.min() ** 2):.2e}"
+    )
+    print(
+        f"  At mean distance ({feature_distances.mean():.2f} std): {np.exp(-0.5 * feature_distances.mean() ** 2):.2e}"
+    )
+    print(
+        f"  At max distance ({feature_distances.max():.2f} std): {np.exp(-0.5 * feature_distances.max() ** 2):.2e}"
+    )
     print()
 
     # Check for underflow
     underflow_threshold = 1e-300  # Approximate float64 underflow
     n_underflow = np.sum(np.exp(-0.5 * feature_distances**2) < underflow_threshold)
-    print(f"Pairs expected to underflow: {n_underflow}/{len(feature_distances)} ({100*n_underflow/len(feature_distances):.1f}%)")
+    print(
+        f"Pairs expected to underflow: {n_underflow}/{len(feature_distances)} ({100 * n_underflow / len(feature_distances):.1f}%)"
+    )
     print()
 
     # Compute position distances
@@ -119,9 +131,15 @@ def analyze_extreme_features():
     n_nan = np.sum(np.isnan(ll_original))
 
     print("Value distribution:")
-    print(f"  Finite values: {n_finite}/{ll_original.size} ({100*n_finite/ll_original.size:.1f}%)")
-    print(f"  -Inf values: {n_inf}/{ll_original.size} ({100*n_inf/ll_original.size:.1f}%)")
-    print(f"  NaN values: {n_nan}/{ll_original.size} ({100*n_nan/ll_original.size:.1f}%)")
+    print(
+        f"  Finite values: {n_finite}/{ll_original.size} ({100 * n_finite / ll_original.size:.1f}%)"
+    )
+    print(
+        f"  -Inf values: {n_inf}/{ll_original.size} ({100 * n_inf / ll_original.size:.1f}%)"
+    )
+    print(
+        f"  NaN values: {n_nan}/{ll_original.size} ({100 * n_nan / ll_original.size:.1f}%)"
+    )
     print()
 
     if n_finite > 0:
@@ -168,20 +186,30 @@ def analyze_extreme_features():
     n_nan_log = np.sum(np.isnan(ll_log_no_gemm))
 
     print("Value distribution:")
-    print(f"  Finite values: {n_finite_log}/{ll_log_no_gemm.size} ({100*n_finite_log/ll_log_no_gemm.size:.1f}%)")
-    print(f"  -Inf values: {n_inf_log}/{ll_log_no_gemm.size} ({100*n_inf_log/ll_log_no_gemm.size:.1f}%)")
-    print(f"  NaN values: {n_nan_log}/{ll_log_no_gemm.size} ({100*n_nan_log/ll_log_no_gemm.size:.1f}%)")
+    print(
+        f"  Finite values: {n_finite_log}/{ll_log_no_gemm.size} ({100 * n_finite_log / ll_log_no_gemm.size:.1f}%)"
+    )
+    print(
+        f"  -Inf values: {n_inf_log}/{ll_log_no_gemm.size} ({100 * n_inf_log / ll_log_no_gemm.size:.1f}%)"
+    )
+    print(
+        f"  NaN values: {n_nan_log}/{ll_log_no_gemm.size} ({100 * n_nan_log / ll_log_no_gemm.size:.1f}%)"
+    )
     print()
 
     # Compare with original
     print("Comparison with original:")
     both_finite = finite_mask & finite_mask_log
     if np.any(both_finite):
-        max_diff = np.max(np.abs(ll_original[both_finite] - ll_log_no_gemm[both_finite]))
+        max_diff = np.max(
+            np.abs(ll_original[both_finite] - ll_log_no_gemm[both_finite])
+        )
         print(f"  Max difference (finite values): {max_diff:.2e}")
 
     agreement = np.sum(finite_mask == finite_mask_log)
-    print(f"  Finite/Inf pattern agreement: {agreement}/{ll_original.size} ({100*agreement/ll_original.size:.1f}%)")
+    print(
+        f"  Finite/Inf pattern agreement: {agreement}/{ll_original.size} ({100 * agreement / ll_original.size:.1f}%)"
+    )
     print()
 
     # Log-space with use_gemm=True (GEMM optimization)
@@ -212,9 +240,15 @@ def analyze_extreme_features():
     n_nan_gemm = np.sum(np.isnan(ll_log_gemm))
 
     print("Value distribution:")
-    print(f"  Finite values: {n_finite_gemm}/{ll_log_gemm.size} ({100*n_finite_gemm/ll_log_gemm.size:.1f}%)")
-    print(f"  -Inf values: {n_inf_gemm}/{ll_log_gemm.size} ({100*n_inf_gemm/ll_log_gemm.size:.1f}%)")
-    print(f"  NaN values: {n_nan_gemm}/{ll_log_gemm.size} ({100*n_nan_gemm/ll_log_gemm.size:.1f}%)")
+    print(
+        f"  Finite values: {n_finite_gemm}/{ll_log_gemm.size} ({100 * n_finite_gemm / ll_log_gemm.size:.1f}%)"
+    )
+    print(
+        f"  -Inf values: {n_inf_gemm}/{ll_log_gemm.size} ({100 * n_inf_gemm / ll_log_gemm.size:.1f}%)"
+    )
+    print(
+        f"  NaN values: {n_nan_gemm}/{ll_log_gemm.size} ({100 * n_nan_gemm / ll_log_gemm.size:.1f}%)"
+    )
     print()
 
     if n_finite_gemm > 0:
@@ -241,9 +275,15 @@ def analyze_extreme_features():
 
     print("| Implementation | Finite Values | -Inf Values | NaN Values |")
     print("|----------------|---------------|-------------|------------|")
-    print(f"| Original       | {n_finite:3d}/{ll_original.size} ({100*n_finite/ll_original.size:5.1f}%) | {n_inf:3d}/{ll_original.size} ({100*n_inf/ll_original.size:5.1f}%) | {n_nan:3d}/{ll_original.size} ({100*n_nan/ll_original.size:4.1f}%) |")
-    print(f"| Log (no GEMM)  | {n_finite_log:3d}/{ll_log_no_gemm.size} ({100*n_finite_log/ll_log_no_gemm.size:5.1f}%) | {n_inf_log:3d}/{ll_log_no_gemm.size} ({100*n_inf_log/ll_log_no_gemm.size:5.1f}%) | {n_nan_log:3d}/{ll_log_no_gemm.size} ({100*n_nan_log/ll_log_no_gemm.size:4.1f}%) |")
-    print(f"| Log (GEMM)     | {n_finite_gemm:3d}/{ll_log_gemm.size} ({100*n_finite_gemm/ll_log_gemm.size:5.1f}%) | {n_inf_gemm:3d}/{ll_log_gemm.size} ({100*n_inf_gemm/ll_log_gemm.size:5.1f}%) | {n_nan_gemm:3d}/{ll_log_gemm.size} ({100*n_nan_gemm/ll_log_gemm.size:4.1f}%) |")
+    print(
+        f"| Original       | {n_finite:3d}/{ll_original.size} ({100 * n_finite / ll_original.size:5.1f}%) | {n_inf:3d}/{ll_original.size} ({100 * n_inf / ll_original.size:5.1f}%) | {n_nan:3d}/{ll_original.size} ({100 * n_nan / ll_original.size:4.1f}%) |"
+    )
+    print(
+        f"| Log (no GEMM)  | {n_finite_log:3d}/{ll_log_no_gemm.size} ({100 * n_finite_log / ll_log_no_gemm.size:5.1f}%) | {n_inf_log:3d}/{ll_log_no_gemm.size} ({100 * n_inf_log / ll_log_no_gemm.size:5.1f}%) | {n_nan_log:3d}/{ll_log_no_gemm.size} ({100 * n_nan_log / ll_log_no_gemm.size:4.1f}%) |"
+    )
+    print(
+        f"| Log (GEMM)     | {n_finite_gemm:3d}/{ll_log_gemm.size} ({100 * n_finite_gemm / ll_log_gemm.size:5.1f}%) | {n_inf_gemm:3d}/{ll_log_gemm.size} ({100 * n_inf_gemm / ll_log_gemm.size:5.1f}%) | {n_nan_gemm:3d}/{ll_log_gemm.size} ({100 * n_nan_gemm / ll_log_gemm.size:4.1f}%) |"
+    )
     print()
 
     # Conclusions
@@ -255,7 +295,9 @@ def analyze_extreme_features():
     if n_finite_gemm > n_finite:
         improvement = n_finite_gemm - n_finite
         print("✅ GEMM optimization improves numerical stability:")
-        print(f"   {improvement} more finite values ({100*improvement/ll_original.size:.1f}% of total)")
+        print(
+            f"   {improvement} more finite values ({100 * improvement / ll_original.size:.1f}% of total)"
+        )
         print()
         print("   The GEMM approach computes in log-space throughout,")
         print("   avoiding the exp(log(...)) round-trip that can cause underflow.")
@@ -290,8 +332,10 @@ def analyze_extreme_features():
         print("**Use GEMM optimization for extreme features**")
         print()
         print("The GEMM approach (use_gemm=True) significantly improves")
-        print(f"numerical stability, preserving {100*n_finite_gemm/ll_log_gemm.size:.1f}% finite values")
-        print(f"vs {100*n_finite/ll_original.size:.1f}% for the original.")
+        print(
+            f"numerical stability, preserving {100 * n_finite_gemm / ll_log_gemm.size:.1f}% finite values"
+        )
+        print(f"vs {100 * n_finite / ll_original.size:.1f}% for the original.")
         print()
         print("This is especially important for:")
         print("- High-dimensional waveform features")
@@ -301,7 +345,9 @@ def analyze_extreme_features():
         print("**GEMM optimization does not significantly help with extreme features**")
         print()
         print("Both approaches produce similar amounts of underflow")
-        print(f"({100*n_finite/ll_original.size:.1f}% vs {100*n_finite_gemm/ll_log_gemm.size:.1f}% finite).")
+        print(
+            f"({100 * n_finite / ll_original.size:.1f}% vs {100 * n_finite_gemm / ll_log_gemm.size:.1f}% finite)."
+        )
         print()
         print("With such extreme feature distances, underflow is unavoidable.")
         print("Consider:")
