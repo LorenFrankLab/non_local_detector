@@ -1320,25 +1320,6 @@ def most_likely_sequence(
 
 
 ## Covariate dependent filtering and smoothing ##
-def _index_discrete_transition(
-    discrete_transition_matrix_t: ArrayLike,
-    state_ind: ArrayLike,
-) -> jnp.ndarray:
-    """Expand a discrete transition to the joint state-bin space.
-
-    Parameters
-    ----------
-    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
-    state_ind : jnp.ndarray, shape (n_state_bins,)
-        Maps each state bin to its discrete state.
-
-    Returns
-    -------
-    discrete_indexed : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    """
-    return discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
-
-
 def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype) -> jnp.ndarray:
     """One-hot discrete-state membership of each state bin.
 
@@ -1834,13 +1815,18 @@ def _viterbi_covariate_dependent_impl(
     # Index discrete transitions per-step to avoid materializing T×N_bins×N_bins array
     def _backward_pass(best_next_score, args):
         t, log_discrete_transition_matrix_t = args
-        log_discrete_t = _index_discrete_transition(
-            log_discrete_transition_matrix_t, state_ind
+        # log T[i, j] + next[j] = log C[i, j] + (log D[s_i, s_j] + next[j]).
+        # The bracket depends on i only through s_i, so build it per source
+        # state (n_states, n_state_bins) and gather whole rows: a row gather
+        # is ~2x faster on CPU than the elementwise D[s_i, s_j] gather.
+        next_score_by_source_state = (
+            log_discrete_transition_matrix_t[:, state_ind]
+            + best_next_score
+            + log_likelihoods[t + 1]
         )
-
-        # Build log-space transition matrix: log(A * B) = log(A) + log(B)
-        log_transition_matrix = log_continuous_transition_matrix + log_discrete_t
-        scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
+        scores = (
+            log_continuous_transition_matrix + next_score_by_source_state[state_ind]
+        )
         best_next_state = jnp.argmax(scores, axis=1)
         best_next_score = jnp.max(scores, axis=1)
         return best_next_score, best_next_state
