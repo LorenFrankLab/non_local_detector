@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Model docstrings and penalty validation
 
 - The sorted-spikes and clusterless class of each model write their docstring once, and every model documents all of its constructor parameters. Four of the five model families did not document `discrete_transition_prior_weight` or `frozen_discrete_transition_rows`, `MultiEnvironmentClusterlessClassifier` described transitions it does not use, and the examples called `fit` and `predict` with arguments they do not take.
+- **Changed:** `SortedSpikesDecoder` defaults `discrete_transition_concentration` to 1.1, as `ClusterlessDecoder` does (it was 1.0). The default one-state decoder is unaffected: its single transition row is always `[1.0]`, so the prior has no effect. A decoder configured with several states gets the same Dirichlet prior for either data type. `sampling_frequency` defaults to `500.0` rather than the integer `500` in `SortedSpikesDecoder`, `ContFragSortedSpikesClassifier` and `MultiEnvironmentSortedSpikesClassifier`. A test now checks that the sorted-spikes and clusterless class of every model share their defaults.
 - `non_local_position_penalty` and `non_local_penalty_std` are validated when decoding as well as at construction, so values set with `set_params` are checked too. A negative penalty set that way was previously ignored without an error.
 
 ### EM convergence judged by gain per time bin

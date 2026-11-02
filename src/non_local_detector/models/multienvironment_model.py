@@ -94,7 +94,7 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         sorted_spikes_algorithm_params: dict | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
-        sampling_frequency: float = 500,
+        sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
         frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
