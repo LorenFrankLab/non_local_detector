@@ -67,12 +67,14 @@ from non_local_detector.exceptions import (
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
+    _CLUSTERLESS_DEFAULT_PARAMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
+    _SORTED_SPIKES_DEFAULT_PARAMS,
+    _resolve_fit_params,
     predict_no_spike_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
-    DEFAULT_WAVEFORM_STD,
     _SpikeTimeOrder,
     decode_bin_centers,
     interpolate_weights_at_spike_times,
@@ -115,16 +117,6 @@ from non_local_detector.types import (
 
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
-
-_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
-    "waveform_std": DEFAULT_WAVEFORM_STD,
-    "position_std": 6.0,
-    "block_size": 10_000,
-}
-_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
-    "position_std": 6.0,
-    "block_size": 10_000,
-}
 
 # Valid options for return_outputs parameter
 VALID_OUTPUTS: set[str] = {
@@ -5181,12 +5173,14 @@ class ClusterlessDetector(_DetectorBase):
         clusterless_algorithm_params : dict or None, optional
             Parameters for the clusterless algorithm. Stored as-is (``None``
             stays ``None``) to keep sklearn's ``clone()`` contract intact. If
-            ``None`` (the default), the module-level
-            ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied into a
-            fresh dict **at fit time**; a user-supplied dict is **stored by
-            reference** and copied on use. Mutations the caller makes to their
-            own dict between construction and fit are therefore observed by the
-            fit — pass ``dict(my_params)`` for an isolated copy.
+            ``None`` (the default), the algorithm's entry of
+            ``_CLUSTERLESS_DEFAULT_PARAMS`` is copied into a fresh dict **at
+            fit time**; a user-supplied dict replaces those defaults, is
+            **stored by reference** and copied on use. At fit time a key the
+            algorithm's fit does not accept raises ``ValidationError``.
+            Mutations the caller makes to their own dict between construction
+            and fit are therefore observed by the fit — pass
+            ``dict(my_params)`` for an isolated copy.
         infer_track_interior : bool, optional
             Whether to infer track interior, by default True.
         state_names : StateNames, optional
@@ -5247,17 +5241,21 @@ class ClusterlessDetector(_DetectorBase):
         )
 
     def _resolve_clusterless_algorithm_params(self) -> dict:
-        """Return a fresh copy of the clusterless algorithm params.
+        """Return a fresh, validated copy of the clusterless algorithm params.
 
-        Resolves a ``None`` user spec to a copy of
-        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS``; otherwise returns a copy
-        of the user's dict. Always returns a fresh dict, so mutating the
-        returned value does not leak into the default or into the user's
-        original dict.
+        Resolves a ``None`` user spec to the algorithm's entry of
+        ``_CLUSTERLESS_DEFAULT_PARAMS``; otherwise copies the user's dict.
+        Raises ``ValidationError`` for a key the registered fit does not
+        accept.
         """
-        if self.clusterless_algorithm_params is None:
-            return dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
-        return dict(self.clusterless_algorithm_params)
+        self._clusterless_algorithm_functions()  # validates the algorithm name
+        return _resolve_fit_params(
+            _CLUSTERLESS_ALGORITHMS,
+            _CLUSTERLESS_DEFAULT_PARAMS,
+            self.clusterless_algorithm,
+            self.clusterless_algorithm_params,
+            "clusterless_algorithm_params",
+        )
 
     def _clusterless_algorithm_functions(self) -> tuple:
         """The registered (fit, predict) pair of ``clusterless_algorithm``."""
@@ -6575,12 +6573,14 @@ class SortedSpikesDetector(_DetectorBase):
         sorted_spikes_algorithm_params : dict or None, optional
             Parameters for the sorted spikes algorithm. Stored as-is (``None``
             stays ``None``) to keep sklearn's ``clone()`` contract intact. If
-            ``None`` (the default), the module-level
-            ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied into
-            a fresh dict **at fit time**; a user-supplied dict is **stored by
-            reference** and copied on use. Mutations the caller makes to their
-            own dict between construction and fit are therefore observed by the
-            fit — pass ``dict(my_params)`` for an isolated copy.
+            ``None`` (the default), the algorithm's entry of
+            ``_SORTED_SPIKES_DEFAULT_PARAMS`` is copied into a fresh dict **at
+            fit time**; a user-supplied dict replaces those defaults, is
+            **stored by reference** and copied on use. At fit time a key the
+            algorithm's fit does not accept raises ``ValidationError``.
+            Mutations the caller makes to their own dict between construction
+            and fit are therefore observed by the fit — pass
+            ``dict(my_params)`` for an isolated copy.
         infer_track_interior : bool, optional
             Whether to infer track interior, by default True.
         state_names : StateNames, optional
@@ -6625,17 +6625,20 @@ class SortedSpikesDetector(_DetectorBase):
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
 
     def _resolve_sorted_spikes_algorithm_params(self) -> dict:
-        """Return a fresh copy of the sorted-spikes algorithm params.
+        """Return a fresh, validated copy of the sorted-spikes algorithm params.
 
-        Resolves a ``None`` user spec to a copy of
-        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS``; otherwise returns a
-        copy of the user's dict. Always returns a fresh dict, so mutating
-        the returned value does not leak into the default or into the
-        user's original dict.
+        Resolves a ``None`` user spec to the algorithm's entry of
+        ``_SORTED_SPIKES_DEFAULT_PARAMS``; otherwise copies the user's dict.
+        Raises ``ValidationError`` for a key the registered fit does not
+        accept.
         """
-        if self.sorted_spikes_algorithm_params is None:
-            return dict(_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS)
-        return dict(self.sorted_spikes_algorithm_params)
+        return _resolve_fit_params(
+            _SORTED_SPIKES_ALGORITHMS,
+            _SORTED_SPIKES_DEFAULT_PARAMS,
+            self.sorted_spikes_algorithm,
+            self.sorted_spikes_algorithm_params,
+            "sorted_spikes_algorithm_params",
+        )
 
     def fit_encoding_model(
         self,
@@ -6756,14 +6759,6 @@ class SortedSpikesDetector(_DetectorBase):
                     "is_track_boundary": environment.is_track_boundary_,
                 }
 
-            # Filter algorithm_params to only those accepted by the
-            # encoding function (KDE and GLM have different signatures).
-            # Exclude glm_kwargs keys so user params can't override
-            # environment geometry.
-            sig = inspect.signature(encoding_algorithm)
-            valid_params = set(sig.parameters.keys()) - set(glm_kwargs.keys())
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
-
             encoding_model[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
@@ -6779,7 +6774,7 @@ class SortedSpikesDetector(_DetectorBase):
                 _encoding_support=support,
                 weights=group_weights,
                 **glm_kwargs,
-                **filtered_kwargs,
+                **kwargs,
             )
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced

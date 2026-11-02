@@ -102,18 +102,22 @@ _CLUSTERLESS_TO_SORTED = [
     Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
     by default "clusterless_kde".
 clusterless_algorithm_params : dict or None, optional
-    Parameters for the clusterless algorithm. If ``None`` (the default),
-    the module-level ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are
-    copied into a fresh dict at fit time. User-supplied dicts are stored
-    as-is for sklearn ``clone()`` compatibility and copied on use.""",
+    Parameters for the clusterless algorithm's fit. If ``None`` (the
+    default), the algorithm's entry of ``_CLUSTERLESS_DEFAULT_PARAMS`` is
+    copied into a fresh dict at fit time; a user dict replaces those
+    defaults. A key the fit does not accept raises ``ValidationError``.
+    User-supplied dicts are stored as-is for sklearn ``clone()``
+    compatibility and copied on use.""",
         """sorted_spikes_algorithm : str, optional
     Sorted-spikes likelihood algorithm, a key of
     ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
 sorted_spikes_algorithm_params : dict or None, optional
-    Parameters for the sorted-spikes algorithm. If ``None`` (the default),
-    the module-level ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are
-    copied into a fresh dict at fit time. User-supplied dicts are stored
-    as-is for sklearn ``clone()`` compatibility and copied on use.""",
+    Parameters for the sorted-spikes algorithm's fit. If ``None`` (the
+    default), the algorithm's entry of ``_SORTED_SPIKES_DEFAULT_PARAMS`` is
+    copied into a fresh dict at fit time; a user dict replaces those
+    defaults. A key the fit does not accept raises ``ValidationError``.
+    User-supplied dicts are stored as-is for sklearn ``clone()``
+    compatibility and copied on use.""",
     ),
     (
         """no_spike_rate : float, optional

@@ -419,7 +419,6 @@ def test_fixed_penalty_solver_controls_are_reported(env_2d):
         tol=1e-12,
         log_penalty_bounds=(-4.0, 2.0),
         reml_xatol=1e-2,
-        block_size=7,
     )
 
     assert encoding["mrf_penalty"] == 0.5
@@ -451,7 +450,6 @@ def test_mrf_nonconvergence_warns(env_2d):
             penalty=0.5,
             max_iter=1,
             tol=1e-12,
-            block_size=7,
         )
 
 
@@ -474,7 +472,6 @@ def test_mrf_auto_rank_cap_warns(env_2d, monkeypatch):
             spike_times=spike_times,
             environment=env,
             penalty=0.5,
-            block_size=7,
         )
 
 

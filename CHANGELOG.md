@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Each likelihood algorithm has its own default parameters
+
+- When `sorted_spikes_algorithm_params` or `clusterless_algorithm_params` is `None`, the fit receives its algorithm's defaults (`_SORTED_SPIKES_DEFAULT_PARAMS` and `_CLUSTERLESS_DEFAULT_PARAMS` in `non_local_detector.likelihoods`) instead of one dictionary per data type (the private `_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS` and `_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS` of `non_local_detector.models.base`, now removed). The values that reach every fit are unchanged, so default results are identical. A user dictionary still replaces the defaults rather than merging with them.
+- **Changed:** an unknown key in `sorted_spikes_algorithm_params` raises `ValidationError` at fit, naming the key and listing the algorithm's parameters. It was dropped silently, so a misspelled option fell back to its default. This includes keys of another algorithm (`position_std` or `block_size` for `sorted_spikes_glm` or `sorted_spikes_mrf`) and the GLM's environment geometry, which the detector supplies.
+- **Changed:** `clusterless_gmm` and `clusterless_mark_glm` raise `ValidationError` for the KDE parameters `waveform_std`, `position_std` and `block_size`, which they used to accept and ignore. Their fit functions no longer take these parameters, and `fit_sorted_spikes_diffusion_encoding_model` and `fit_sorted_spikes_mrf_encoding_model` no longer take the unused `block_size`. A direct call passing them raises `TypeError`.
+
 ### Less memory and work in chunked decoding and covariate Viterbi
 
 - With `n_chunks > 1`, prediction no longer keeps the per-chunk causal, predictive and acausal posteriors on the device alongside their concatenations, which lowers the peak device memory of chunked decoding.

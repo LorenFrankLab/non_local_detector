@@ -14,6 +14,10 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_DEFAULT_PARAMS,
+    _SORTED_SPIKES_DEFAULT_PARAMS,
+)
 from non_local_detector.models import (
     ClusterlessDecoder,
     ContFragClusterlessClassifier,
@@ -22,8 +26,6 @@ from non_local_detector.models import (
     SortedSpikesDecoder,
 )
 from non_local_detector.models.base import (
-    _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
-    _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
     ObservationModel,
 )
 
@@ -549,14 +551,14 @@ class TestAlgorithmParamsResolution:
         Mutating the returned dict must not change the module-level
         default or later resolver calls.
         """
-        original = dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
+        original = dict(_CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"])
         d = ClusterlessDecoder()
         resolved = d._resolve_clusterless_algorithm_params()
-        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+        assert resolved == _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"]
         # Fresh copy, not a reference to the module-level constant
-        assert resolved is not _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+        assert resolved is not _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"]
         resolved["block_size"] = 5
-        assert _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS == original
+        assert _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"] == original
         assert d._resolve_clusterless_algorithm_params() == original
 
     def test_resolver_returns_distinct_dicts_across_instances(self):
@@ -566,7 +568,7 @@ class TestAlgorithmParamsResolution:
         r1 = d1._resolve_clusterless_algorithm_params()
         r2 = d2._resolve_clusterless_algorithm_params()
         assert r1 is not r2
-        assert r1 == r2 == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+        assert r1 == r2 == _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"]
 
     def test_resolver_copies_user_dict(self):
         """A user-supplied dict is copied by the resolver, not aliased."""
@@ -583,8 +585,8 @@ class TestAlgorithmParamsResolution:
         """Same resolver contract for sorted-spikes params."""
         d = SortedSpikesDecoder()
         resolved = d._resolve_sorted_spikes_algorithm_params()
-        assert resolved == _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS
-        assert resolved is not _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS
+        assert resolved == _SORTED_SPIKES_DEFAULT_PARAMS["sorted_spikes_kde"]
+        assert resolved is not _SORTED_SPIKES_DEFAULT_PARAMS["sorted_spikes_kde"]
 
     @pytest.mark.parametrize(
         "model_cls",
@@ -600,7 +602,7 @@ class TestAlgorithmParamsResolution:
         d = model_cls()
         assert d.clusterless_algorithm_params is None
         resolved = d._resolve_clusterless_algorithm_params()
-        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+        assert resolved == _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"]
 
     def test_sklearn_clone_roundtrips(self):
         """sklearn.clone() must round-trip without raising.

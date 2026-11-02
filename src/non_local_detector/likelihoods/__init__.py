@@ -1,5 +1,7 @@
+import inspect
 from collections.abc import Callable
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     clusterless_diffusion,
     clusterless_gmm,
@@ -22,6 +24,7 @@ from non_local_detector.likelihoods.clusterless_mark_glm import (
     fit_clusterless_mark_glm_encoding_model,
     predict_clusterless_mark_glm_log_likelihood,
 )
+from non_local_detector.likelihoods.common import DEFAULT_WAVEFORM_STD
 from non_local_detector.likelihoods.mark_reference import (  # noqa
     fit_mark_references,
 )
@@ -81,6 +84,90 @@ _CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
         predict_clusterless_mark_glm_log_likelihood,
     ),
 }
+# The parameters each algorithm's fit receives when a detector's
+# ``*_algorithm_params`` is None; a user dict replaces them. The detectors'
+# position bandwidth, 6.0, is wider than the fits' own sqrt(12.5) default.
+_SORTED_SPIKES_DEFAULT_PARAMS: dict[str, dict] = {
+    "sorted_spikes_glm": {},
+    "sorted_spikes_kde": {"position_std": 6.0, "block_size": 10_000},
+    "sorted_spikes_diffusion": {"position_std": 6.0},
+    "sorted_spikes_mrf": {},
+}
+_CLUSTERLESS_DEFAULT_PARAMS: dict[str, dict] = {
+    "clusterless_kde": {
+        "waveform_std": DEFAULT_WAVEFORM_STD,
+        "position_std": 6.0,
+        "block_size": 10_000,
+    },
+    "clusterless_gmm": {},
+    "clusterless_diffusion": {
+        "waveform_std": DEFAULT_WAVEFORM_STD,
+        "position_std": 6.0,
+        "block_size": 10_000,
+    },
+    "clusterless_mark_glm": {},
+}
+
+
+def _resolve_fit_params(
+    algorithms: dict[str, tuple[Callable, Callable]],
+    default_params: dict[str, dict],
+    algorithm: str,
+    params: dict | None,
+    params_name: str,
+) -> dict:
+    """Return a fresh dict of the fit parameters for a detector's algorithm.
+
+    Parameters
+    ----------
+    algorithms : dict
+        The registry holding ``algorithm``'s ``(fit, predict)`` pair.
+    default_params : dict
+        The registry's per-algorithm defaults.
+    algorithm : str
+        A key of ``algorithms``.
+    params : dict or None
+        The detector's algorithm params. None selects the algorithm's
+        defaults; a dict replaces them.
+    params_name : str
+        The detector argument ``params`` came from, for the error message.
+
+    Returns
+    -------
+    params : dict
+        A copy, so mutating it changes neither the defaults nor the user's dict.
+
+    Raises
+    ------
+    ValidationError
+        If a key is not a fit parameter the user may set: one with a default,
+        other than ``weights`` and the private ``_``-prefixed ones. The
+        detector supplies the fit's data, environment and weights itself. A
+        fit that takes ``**kwargs`` is not checked.
+    """
+    resolved = dict(default_params[algorithm] if params is None else params)
+    parameters = inspect.signature(algorithms[algorithm][0]).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return resolved  # a fit taking ``**kwargs`` accepts any name
+    accepted = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+        and name != "weights"
+        and not name.startswith("_")
+    ]
+    unknown = sorted(set(resolved) - set(accepted))
+    if unknown:
+        raise ValidationError(
+            f"unknown {algorithm} parameter(s) in {params_name}: {', '.join(unknown)}",
+            expected=f"parameters among: {', '.join(accepted)}",
+            got=", ".join(f"{name}={resolved[name]!r}" for name in unknown),
+            hint="Check the spelling, and that the parameter belongs to "
+            f"{algorithm}: each algorithm accepts only its own fit parameters.",
+        )
+    return resolved
+
+
 # Each clusterless algorithm's mark-kernel width, from its fit parameters, which
 # the mark reference adds in quadrature to each feature's training spread (see
 # ``fit_mark_references``).

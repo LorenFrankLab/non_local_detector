@@ -410,7 +410,6 @@ def fit_sorted_spikes_diffusion_encoding_model(
     weights: np.ndarray | None = None,
     position_std: float = float(np.sqrt(12.5)),
     rank: int | None = None,
-    block_size: int = 100,
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
     *,
@@ -445,13 +444,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
         this bandwidth (``~ area / position_std**2`` modes, independent of grid
         fineness), so large grids avoid a full dense eigendecomposition. Pass an
         explicit integer to force a fixed rank, or a value ``>= n_interior_bins`` for
-        the exact full basis. Must be an explicit parameter so
-        ``sorted_spikes_algorithm_params={"rank": ...}`` is not dropped by the base
-        class's signature filter.
-    block_size : int, optional
-        Accepted for signature compatibility with the shared sorted-spikes params
-        (the default params include ``block_size``), by default 100; not used by the
-        diffusion smoother.
+        the exact full basis.
     local_interpolation : {"linear", "nearest"}, optional
         How local likelihood evaluates full-grid rate maps at the animal's position, by
         default "linear". ``"linear"`` interpolates within connected interior stencils

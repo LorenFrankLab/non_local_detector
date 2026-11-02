@@ -778,7 +778,6 @@ def fit_sorted_spikes_mrf_encoding_model(
     tol: float = 1e-10,
     log_penalty_bounds: tuple[float, float] = _LOG_PENALTY_BOUNDS,
     reml_xatol: float = 0.001,
-    block_size: int = 100,
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
     *,
@@ -816,8 +815,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         mgcv's ``bs="mrf"`` default, which uses the full rank (all regions) and only
         truncates when ``k`` is set below the region count; the 250 cap silently drops
         the highest-frequency modes on large grids (pass an explicit ``rank`` to
-        override). Must be an explicit parameter so a user-supplied ``rank`` is not
-        dropped by the base class's signature filter.
+        override).
     penalty : float or None, optional
         The smoothing parameter ``lambda`` of the penalty
         ``(lambda / 2) * gamma_k^T diag(d) gamma_k``. None (default) selects it by
@@ -833,9 +831,6 @@ def fit_sorted_spikes_mrf_encoding_model(
         (-8.0, 20.0).
     reml_xatol : float, optional
         Scalar optimizer tolerance for REML penalty selection, by default 1e-3.
-    block_size : int, optional
-        Accepted for signature compatibility with sorted-spikes likelihood defaults, by
-        default 100; unused by the MRF fit.
     local_interpolation : {"linear", "nearest"}, optional
         How local likelihood evaluates full-grid rate maps at the animal's position, by
         default "linear". ``"linear"`` interpolates within connected interior stencils

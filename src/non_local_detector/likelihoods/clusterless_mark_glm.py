@@ -37,7 +37,6 @@ Limitations:
 
 from __future__ import annotations
 
-import inspect
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -407,11 +406,7 @@ def fit_clusterless_mark_glm_encoding_model(
     disable_progress_bar: bool = False,
     encoding_time_range: np.ndarray | None = None,
     valid_position_intervals: np.ndarray | None = None,
-    waveform_std: object = None,
-    position_std: object = None,
-    block_size: object = None,
     _encoding_support: object = None,
-    **kwargs: object,
 ) -> dict:
     """Fit the clusterless mark-mixture GLM encoding model.
 
@@ -471,14 +466,8 @@ def fit_clusterless_mark_glm_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
-    waveform_std, position_std, block_size : optional
-        Ignored. A detector's default ``clusterless_algorithm_params`` hold
-        these KDE parameters and are passed to every clusterless algorithm.
     _encoding_support : EncodingSupport, optional
         Internal: the detector's precomputed encoding support.
-    **kwargs
-        Any other name raises a ``ValidationError`` that lists the valid
-        parameters.
 
     Returns
     -------
@@ -506,23 +495,6 @@ def fit_clusterless_mark_glm_encoding_model(
         encoding_exposure_seconds : float
             Weighted encoding occupancy time in seconds.
     """
-    if kwargs:
-        valid = [
-            name
-            for name, parameter in inspect.signature(
-                fit_clusterless_mark_glm_encoding_model
-            ).parameters.items()
-            if parameter.kind is inspect.Parameter.KEYWORD_ONLY
-            and not name.startswith("_")
-        ]
-        raise ValidationError(
-            "unknown clusterless_mark_glm fit parameter(s): "
-            f"{', '.join(sorted(kwargs))}",
-            expected=f"parameters among: {', '.join(valid)}",
-            got=", ".join(f"{name}={value!r}" for name, value in kwargs.items()),
-            hint="Check the spelling. A detector passes its "
-            "clusterless_algorithm_params to this fit.",
-        )
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
