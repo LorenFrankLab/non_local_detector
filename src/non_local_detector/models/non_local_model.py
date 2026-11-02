@@ -10,6 +10,7 @@ from non_local_detector.models._docstrings import document_model
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
+    _validate_penalty_params,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
@@ -95,44 +96,6 @@ def _get_conditional_non_local_posterior(
     # would return [] for the stacked "state_bins" case and break normalization.
     position_dims = [d for d in acausal_posterior.dims if d != "time"]
     return acausal_posterior / acausal_posterior.sum(position_dims)
-
-
-def _validate_penalty_params(
-    non_local_position_penalty: float, non_local_penalty_std: float
-) -> None:
-    """Validate non-local position penalty parameters.
-
-    Parameters
-    ----------
-    non_local_position_penalty : float
-        Magnitude of the Gaussian penalty. Must be non-negative.
-    non_local_penalty_std : float
-        Standard deviation of the penalty Gaussian in position units.
-        Must be strictly positive.
-
-    Raises
-    ------
-    ValidationError
-        If ``non_local_position_penalty < 0`` or
-        ``non_local_penalty_std <= 0``.
-    """
-    if non_local_position_penalty < 0:
-        raise ValidationError(
-            "non_local_position_penalty must be >= 0",
-            expected="non_local_position_penalty >= 0",
-            got=f"{non_local_position_penalty}",
-            hint="A negative penalty would reward non-local states near the animal's "
-            "position instead of suppressing them. Use 0.0 to disable the penalty.",
-        )
-    if non_local_penalty_std <= 0:
-        raise ValidationError(
-            "non_local_penalty_std must be > 0",
-            expected="non_local_penalty_std > 0",
-            got=f"{non_local_penalty_std}",
-            hint="Standard deviation controls the width of the Gaussian penalty "
-            "and is used as a divisor. A value <= 0 would cause divide-by-zero "
-            "or invalid behavior.",
-        )
 
 
 _NON_LOCAL_DOC = """Detector of non-local activity, such as replay, from $data.

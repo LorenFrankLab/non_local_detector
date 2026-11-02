@@ -1137,6 +1137,44 @@ def _group_weights(
     return group_weights
 
 
+def _validate_penalty_params(
+    non_local_position_penalty: float, non_local_penalty_std: float
+) -> None:
+    """Validate non-local position penalty parameters.
+
+    Parameters
+    ----------
+    non_local_position_penalty : float
+        Magnitude of the Gaussian penalty. Must be non-negative.
+    non_local_penalty_std : float
+        Standard deviation of the penalty Gaussian in position units.
+        Must be strictly positive.
+
+    Raises
+    ------
+    ValidationError
+        If ``non_local_position_penalty < 0`` or
+        ``non_local_penalty_std <= 0``.
+    """
+    if non_local_position_penalty < 0:
+        raise ValidationError(
+            "non_local_position_penalty must be >= 0",
+            expected="non_local_position_penalty >= 0",
+            got=f"{non_local_position_penalty}",
+            hint="A negative penalty would reward non-local states near the animal's "
+            "position instead of suppressing them. Use 0.0 to disable the penalty.",
+        )
+    if non_local_penalty_std <= 0:
+        raise ValidationError(
+            "non_local_penalty_std must be > 0",
+            expected="non_local_penalty_std > 0",
+            got=f"{non_local_penalty_std}",
+            hint="Standard deviation controls the width of the Gaussian penalty "
+            "and is used as a divisor. A value <= 0 would cause divide-by-zero "
+            "or invalid behavior.",
+        )
+
+
 def _normalize_frozen_discrete_transition_rows(
     frozen_rows: FrozenTransitionRows,
     is_no_spike_state: np.ndarray,
@@ -1590,6 +1628,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 ),
             )
 
+    def _non_local_position_penalty(self) -> float:
+        """The non-local position penalty, validated; 0.0 without one.
+
+        Validated where it is used, so values set after construction with
+        ``set_params`` are checked too.
+
+        Returns
+        -------
+        penalty : float
+
+        Raises
+        ------
+        ValidationError
+            If ``non_local_position_penalty < 0`` or
+            ``non_local_penalty_std <= 0``.
+        """
+        if not hasattr(self, "non_local_position_penalty"):
+            return 0.0
+        _validate_penalty_params(
+            self.non_local_position_penalty, self.non_local_penalty_std
+        )
+        return self.non_local_position_penalty
+
     def _decode_reads_position(self) -> bool:
         """Whether the decode likelihood reads the animal's position.
 
@@ -1604,7 +1665,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """
         return bool(
             any(obs.is_local for obs in self.observation_models)
-            or getattr(self, "non_local_position_penalty", 0.0) > 0
+            or self._non_local_position_penalty() > 0
         )
 
     def _compute_non_local_position_penalty(
@@ -5641,7 +5702,7 @@ class ClusterlessDetector(_DetectorBase):
         logger.info("Computing log likelihood...")
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
-        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        non_local_penalty = self._non_local_position_penalty()
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):
@@ -6951,7 +7012,7 @@ class SortedSpikesDetector(_DetectorBase):
         # pointwise in the decoding time, so they are evaluated at the requested
         # bins' centers; the spike likelihoods bin against the full edges.
 
-        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        non_local_penalty = self._non_local_position_penalty()
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):
