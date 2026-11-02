@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 from track_linearization import get_linearized_position
 
+from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.environment import Environment
+from non_local_detector.likelihoods.common import get_position_at_time
 
 pytestmark = pytest.mark.unit
 
@@ -70,3 +72,47 @@ def test_without_track_graph_points_are_unchanged(points, n_points):
     sample = points[:n_points]
 
     assert environment.decoding_position(sample) is sample
+
+
+# Callers that read position in the grid's coordinates follow the same rule: on
+# a track graph, one-column position is already linear.
+
+
+def test_position_at_time_keeps_prelinearized_track_position(track_environment, points):
+    """Interpolating linear position at its own sample times returns it as is."""
+    time = np.arange(len(points)) / 50.0
+    linear = track_environment.decoding_position(points)
+
+    result = get_position_at_time(time, linear, time, track_environment)
+
+    np.testing.assert_allclose(result, linear, rtol=0, atol=1e-12)
+
+
+def test_empirical_movement_prelinearized_matches_raw_track_position(
+    track_environment, points
+):
+    raw = EmpiricalMovement().make_state_transition((track_environment,), points)
+    prelinearized = EmpiricalMovement().make_state_transition(
+        (track_environment,), track_environment.decoding_position(points)
+    )
+
+    np.testing.assert_array_equal(prelinearized, raw)
+
+
+def test_empirical_movement_without_samples_matches_open_field(
+    track_environment, points
+):
+    """No samples in the selection leaves every row empty, as on an open field."""
+    open_field = Environment(place_bin_size=2.0).fit_place_grid(points)
+    labels = np.zeros(len(points))
+
+    track = EmpiricalMovement(encoding_group=1).make_state_transition(
+        (track_environment,), points, encoding_group_labels=labels
+    )
+    grid = EmpiricalMovement(encoding_group=1).make_state_transition(
+        (open_field,), points, encoding_group_labels=labels
+    )
+
+    n_track_bins = len(track_environment.place_bin_centers_)
+    np.testing.assert_array_equal(track, np.zeros((n_track_bins, n_track_bins)))
+    np.testing.assert_array_equal(grid, np.zeros_like(grid))

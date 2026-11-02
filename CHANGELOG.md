@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Environment position helper
 
 - `Environment.decoding_position(points)` returns points in the coordinates the place grid is binned in: on a track graph, multi-dimensional points are linearized (using the environment's linearization cache) and one-column points are taken as already linear; otherwise the points are returned unchanged. The likelihood fits and `initialize_environments` use it instead of their own copies of this rule. Outputs are unchanged.
+- **Fixed:** `get_position_at_time` and `EmpiricalMovement.make_state_transition` follow the same rule. On a track graph they linearized every position, so one-column position that was already linear was projected onto the track again and came out wrong: a direct call of `fit_sorted_spikes_kde_encoding_model`, `fit_clusterless_kde_encoding_model` or `fit_clusterless_gmm_encoding_model` with linear position put the spikes at wrong positions (their occupancy already took one-column position as linear), and `EmpiricalMovement` binned wrong transitions. Detectors are unaffected: they reject one-column position for track-graph environments and pass raw `(x, y)` position.
+- **Fixed:** an `EmpiricalMovement` on a track graph whose selection (`is_training`, encoding group and environment) has no samples returns an all-zero block, as on an open field, instead of raising `ValueError: operands could not be broadcast together`. This happened in a detector with an `EmpiricalMovement` for an encoding group other than 0 fit without `encoding_group_labels`.
 
 ### Each likelihood algorithm has its own default parameters
 
