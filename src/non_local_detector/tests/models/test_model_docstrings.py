@@ -1,4 +1,11 @@
-"""Every model class documents each constructor parameter, for its data type."""
+"""Model class docstrings: complete, current, and alike within each pair.
+
+Each model has a sorted-spikes and a clusterless class with the same states
+and defaults. Their docstrings are written out in each class, so these tests
+keep them from drifting: every constructor parameter is documented in order
+with its current default, and the two docstrings of a pair differ only in
+the data-type wording listed in ``_CLUSTERLESS_TO_SORTED``.
+"""
 
 import inspect
 
@@ -64,7 +71,6 @@ def test_docstring_names_its_own_class_and_data(cls):
     data = "clusterless" if "Clusterless" in cls.__name__ else "sorted spike"
     assert f"{cls.__name__}()" in doc
     assert data in doc.splitlines()[0]
-    assert "$" not in doc
 
 
 def _documented_default(default):
@@ -83,3 +89,66 @@ def test_documented_scalar_defaults_match_signature(cls):
             assert _documented_default(default) in entries[name], (
                 f"{cls.__name__}.{name}: default {default!r} not documented"
             )
+
+
+MODEL_PAIRS = list(zip(MODEL_CLASSES[::2], MODEL_CLASSES[1::2], strict=True))
+
+# The only wording allowed to differ between a clusterless docstring and its
+# sorted-spikes twin, as (clusterless text, sorted-spikes text), applied in
+# order.
+_CLUSTERLESS_TO_SORTED = [
+    (
+        """clusterless_algorithm : str, optional
+    Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
+    by default "clusterless_kde".
+clusterless_algorithm_params : dict or None, optional
+    Parameters for the clusterless algorithm. If ``None`` (the default),
+    the module-level ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are
+    copied into a fresh dict at fit time. User-supplied dicts are stored
+    as-is for sklearn ``clone()`` compatibility and copied on use.""",
+        """sorted_spikes_algorithm : str, optional
+    Sorted-spikes likelihood algorithm, a key of
+    ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
+sorted_spikes_algorithm_params : dict or None, optional
+    Parameters for the sorted-spikes algorithm. If ``None`` (the default),
+    the module-level ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are
+    copied into a fresh dict at fit time. User-supplied dicts are stored
+    as-is for sklearn ``clone()`` compatibility and copied on use.""",
+    ),
+    (
+        """no_spike_rate : float, optional
+    Firing rate in Hz of each electrode in a No-Spike state, by default
+    1e-10. The marks of its spikes are scored with the training-fitted
+    reference density ``mark_reference_``.""",
+        """no_spike_rate : float, optional
+    Firing rate in Hz of each neuron in a No-Spike state, by default
+    1e-10.""",
+    ),
+    (
+        "position_time, position, spike_times, spike_waveform_features",
+        "position_time, position, spike_times",
+    ),
+    ("spike_times, spike_waveform_features", "spike_times"),
+    ("clusterless spike data", "sorted spike data"),
+]
+
+
+@pytest.mark.parametrize(
+    "sorted_cls, clusterless_cls",
+    MODEL_PAIRS,
+    ids=[sorted_cls.__name__ for sorted_cls, _ in MODEL_PAIRS],
+)
+def test_pair_docstrings_differ_only_in_data_type(sorted_cls, clusterless_cls):
+    """Rewriting the clusterless docstring's data-type wording gives the
+    sorted-spikes docstring exactly."""
+    clusterless_doc = inspect.getdoc(clusterless_cls) or ""
+    for clusterless_text, sorted_text in _CLUSTERLESS_TO_SORTED:
+        assert clusterless_text in clusterless_doc, (
+            f"{clusterless_cls.__name__} lacks its data-type text: "
+            f"{clusterless_text.splitlines()[0]!r}"
+        )
+        clusterless_doc = clusterless_doc.replace(clusterless_text, sorted_text)
+    clusterless_doc = clusterless_doc.replace(
+        clusterless_cls.__name__, sorted_cls.__name__
+    )
+    assert clusterless_doc == inspect.getdoc(sorted_cls)
