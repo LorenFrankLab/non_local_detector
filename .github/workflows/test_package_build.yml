@@ -54,6 +54,9 @@ jobs:
         run: uv run --no-sync ruff check src/ --output-format=github
       - name: Run ruff formatting check
         run: uv run --no-sync ruff format --check src/
+      # Strict, over the package without its tests ([tool.mypy] in pyproject).
+      - name: Run mypy
+        run: uv run --no-sync mypy
       - name: Lint the workflows
         uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
         with:
