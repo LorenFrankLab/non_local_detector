@@ -209,6 +209,11 @@ def test_covariate_em_on_one_bin_converges(transition_representation):
         discrete_transition_covariate_data={"speed": np.array([0.5])},
         max_iter=5,
         estimate_encoding_model=False,
+        # On one bin the initial conditions are a one-observation maximum
+        # likelihood fit, which EM approaches with ever smaller gains rather
+        # than converging in a few iterations; this test is about the
+        # transitions, so they are held fixed.
+        estimate_initial_conditions=False,
         transition_representation=transition_representation,
     )
     assert model.converged_
