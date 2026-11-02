@@ -1048,6 +1048,8 @@ def chunked_filter_smoother(
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
     predictive_posterior_jax = jnp.concatenate(predictive_posterior)
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
+    # Release the per-chunk copies so they don't coexist with the concatenations
+    del causal_posterior, predictive_posterior
 
     # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
@@ -1075,6 +1077,7 @@ def chunked_filter_smoother(
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
+    del acausal_posterior
 
     # Convert to NumPy only at the very end for API compatibility
     return (
@@ -1702,6 +1705,8 @@ def chunked_filter_smoother_covariate_dependent(
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
     predictive_posterior_jax = jnp.concatenate(predictive_posterior)
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
+    # Release the per-chunk copies so they don't coexist with the concatenations
+    del causal_posterior, predictive_posterior
 
     # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
@@ -1734,6 +1739,7 @@ def chunked_filter_smoother_covariate_dependent(
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
+    del acausal_posterior
 
     # Convert to NumPy only at the very end for API compatibility
     return (
