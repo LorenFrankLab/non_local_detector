@@ -948,8 +948,10 @@ class CovariateTransitionFit(NamedTuple):
 # REML searches the curvature-penalty strength over this grid of log10
 # strengths, then refines the best grid point within one decade to this
 # log10 tolerance. Above 1e6 the fitted curve is already its linear limit
-# (transitions move by < 0.002) and the row's Hessian has condition numbers
-# above 1e13, so its log-determinant, and the LAML, are numerical noise.
+# (transitions move by < 0.002) and the LAML is flat (within 4e-4 nats to
+# 1e7 in one test). From about 3e7 the inner fit stops converging (its
+# Hessian's condition number passes 1e14), so the LAML it gives is wrong:
+# by 0.2 nats at 3e8 and 37 at 1e10 in that test.
 # The grid reaches 1e-12 because the penalty is on the covariate rescaled
 # between the spline's boundaries: a boundary far beyond the data (e.g. set
 # by tracking glitches) moves the useful strengths down by decades, and the
@@ -1496,6 +1498,8 @@ def _precision_log_pdet(
     Returns
     -------
     log_pdet : float
+        Without an L2 penalty, up to a constant that does not depend on the
+        strengths.
     """
     n_coefficients = penalties.shape[-1]
     log_pdet = 0.0
@@ -1503,19 +1507,28 @@ def _precision_log_pdet(
     for strength, term in zip(strengths, penalties, strict=True):
         columns = np.flatnonzero(np.any(term != 0.0, axis=0))
         n_term_columns += columns.size
-        eigenvalues = np.linalg.eigvalsh(term[np.ix_(columns, columns)])
         if l2_penalty > 0.0:
+            eigenvalues = np.linalg.eigvalsh(term[np.ix_(columns, columns)])
             log_pdet += np.sum(
                 np.log(2.0 * (l2_penalty + strength * np.maximum(eigenvalues, 0.0)))
             )
         else:
-            # A term's null directions are round-off (about 1e-20 of its
-            # largest eigenvalue) while a range stretched by outliers leaves
-            # genuine ones below 1e-11, so the rank uses LAPACK's tolerance,
-            # not a fixed cutoff.
-            rank = np.linalg.matrix_rank(term, hermitian=True)
-            log_pdet += rank * np.log(2.0 * strength) + np.sum(
-                np.log(eigenvalues[eigenvalues.size - rank :])
+            # A range stretched by outliers puts genuine eigenvalues of the
+            # penalty at 1e-16 of its largest, among its null directions'
+            # round-off. Scaled by its diagonal (a congruence, which keeps the
+            # rank) they sit near 1e-2, far above round-off. The log
+            # pseudo-determinant of the scaled penalty plus that of the
+            # scaling is exact for a full-rank penalty and otherwise off by a
+            # constant in the strength, which the LAML's comparisons cancel.
+            block = term[np.ix_(columns, columns)]
+            diagonal = np.diag(block)
+            scaled = block / np.sqrt(np.outer(diagonal, diagonal))
+            rank = np.linalg.matrix_rank(scaled, hermitian=True)
+            scaled_eigenvalues = np.linalg.eigvalsh(scaled)
+            log_pdet += (
+                rank * np.log(2.0 * strength)
+                + np.sum(np.log(scaled_eigenvalues[scaled_eigenvalues.size - rank :]))
+                + np.sum(np.log(diagonal))
             )
     if l2_penalty > 0.0:
         # Penalized columns outside every spline term carry the L2 penalty.
@@ -1944,9 +1957,51 @@ def _block_loss(
     return -jnp.sum((response + prior_per_bin) * log_probabilities)
 
 
+@jax.jit
+def _block_hessian(
+    coefficients: jnp.ndarray,
+    design_matrix: jnp.ndarray,
+    response: jnp.ndarray,
+    prior_per_bin: jnp.ndarray,
+) -> jnp.ndarray:
+    """Hessian of :func:`_block_loss` in closed form.
+
+    With weights ``w_t = r_t + prior_per_bin`` summing to ``W_t`` and free
+    probabilities ``p_t`` (all but the last state), the loss's Hessian in
+    the logits ``z_t`` is ``W_t (diag(p_t) - p_t p_t')``, so the Hessian in
+    the coefficients is ``sum_t x_t x_t' (x) W_t (diag(p_t) - p_t p_t')``.
+    About 4x faster than ``jax.hessian``, which differentiates the gradient
+    once per coefficient.
+
+    Parameters
+    ----------
+    coefficients : jnp.ndarray, shape (n_coefficients * (n_states - 1),)
+        Ordered (coefficient, logit).
+    design_matrix : jnp.ndarray, shape (n_block, n_coefficients)
+    response : jnp.ndarray, shape (n_block, n_states)
+    prior_per_bin : jnp.ndarray, shape (n_states,)
+
+    Returns
+    -------
+    hessian : jnp.ndarray, shape (n_coefficients * (n_states - 1),) * 2
+    """
+    n_coefficients = design_matrix.shape[1]
+    free = jnp.exp(
+        jax_centered_log_softmax_forward(
+            design_matrix @ coefficients.reshape((n_coefficients, -1))
+        )
+    )[:, :-1]
+    n_free = free.shape[1]
+    weight = jnp.sum(response + prior_per_bin, axis=1)
+    curvature = weight[:, None, None] * (
+        free[:, :, None] * jnp.eye(n_free) - free[:, :, None] * free[:, None, :]
+    )
+    hessian = jnp.einsum("tc,tjk,td->cjdk", design_matrix, curvature, design_matrix)
+    return hessian.reshape((n_coefficients * n_free, n_coefficients * n_free))
+
+
 _jit_block_loss = jax.jit(_block_loss)
 _block_loss_and_gradient = jax.jit(jax.value_and_grad(_block_loss))
-_block_hessian = jax.jit(jax.hessian(_block_loss))
 
 
 def _transition_blocks(
