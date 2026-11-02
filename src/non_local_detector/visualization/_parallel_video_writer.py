@@ -386,7 +386,7 @@ def create_parallel_video(
 
     # Use TemporaryDirectory context manager for automatic cleanup (even on SIGINT)
     with tempfile.TemporaryDirectory(prefix="parallel_video_frames_") as tmpdir:
-        pattern = os.path.join(tmpdir, "frame_%06d.png")
+        pattern = str(Path(tmpdir) / "frame_%06d.png")
         print(f"[parallel] Writing frames to {tmpdir}")
 
         # Render chunks in parallel

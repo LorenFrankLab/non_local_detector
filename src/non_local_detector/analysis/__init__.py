@@ -1,4 +1,3 @@
-# flake8: noqa
 from non_local_detector.analysis.distance1D import (
     get_ahead_behind_distance,
     get_map_speed,

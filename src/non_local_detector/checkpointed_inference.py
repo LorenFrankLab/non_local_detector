@@ -162,7 +162,7 @@ def _available_host_bytes() -> int | None:
         host = int(psutil.virtual_memory().available)
     except ImportError:
         try:
-            with open("/proc/meminfo") as meminfo:
+            with Path("/proc/meminfo").open() as meminfo:
                 for line in meminfo:
                     if line.startswith("MemAvailable:"):
                         host = int(line.split()[1]) * 1024

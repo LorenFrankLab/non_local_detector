@@ -4932,19 +4932,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.em_monotonicity_violations_.append(n_iter)
 
                 logger.info(
-                    f"iteration {n_iter}, "
-                    f"likelihood: {marginal_log_likelihoods[-1]}, "
-                    f"penalized: {objectives[-1]}, "
-                    f"change: {objective_change}"
-                    + (
+                    "iteration %s, likelihood: %s, penalized: %s, change: %s%s",
+                    n_iter,
+                    marginal_log_likelihoods[-1],
+                    objectives[-1],
+                    objective_change,
+                    (
                         f", transition change: {transition_change}"
                         if prior_changes
                         else ""
-                    )
+                    ),
                 )
             else:
                 logger.info(
-                    f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
+                    "iteration %s, likelihood: %s",
+                    n_iter,
+                    marginal_log_likelihoods[-1],
                 )
             # The next E-step evaluates this M-step's output; it is checked
             # against this E-step, both under this M-step's prior.
@@ -5314,7 +5317,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         filename : str, optional
             Filename to save the model, by default "model.pkl".
         """
-        with open(filename, "wb") as f:
+        with Path(filename).open("wb") as f:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     @staticmethod
@@ -5337,7 +5340,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         _DetectorBase
             Loaded detector instance
         """
-        with open(filename, "rb") as f:
+        with Path(filename).open("rb") as f:
             return pickle.load(f)
 
     @staticmethod

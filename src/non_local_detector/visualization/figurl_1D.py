@@ -21,7 +21,7 @@ try:
         -------
         xr.DataArray
         """
-        discretized = np.multiply(series, 255).astype(np.uint8)  # type: ignore
+        discretized = np.multiply(series, 255).astype(np.uint8)
         stacked = discretized.stack(unified_index=["time", "position"])  # type: ignore[union-attr]
         return stacked.where(stacked > 0, drop=True).astype(np.uint8)
 
@@ -43,7 +43,7 @@ try:
         indexed_counts = xr.DataArray(counts, coords={"time": times})
         _, good_counts = xr.align(
             base_data.time, indexed_counts, join="left", fill_value=0
-        )  # type: ignore
+        )
 
         return good_counts.values.astype(np.uint8)
 

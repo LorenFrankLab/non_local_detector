@@ -123,6 +123,10 @@ ignore = [
     "ISC001",  # conflicts with the formatter
     "B008",    # do not perform function calls in argument defaults
     "PERF203", # try in a loop: zero-cost from Python 3.11; per-item handling needs it
+    # pandas-vet cannot tell pandas from xarray (.values, .unstack) or JAX (.at).
+    "PD008",
+    "PD010",
+    "PD011",
 ]
 # Math notation in docstrings, comments and messages.
 allowed-confusables = ["×", "σ", "α", "γ", "∪"]

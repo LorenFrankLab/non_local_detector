@@ -56,6 +56,7 @@ import warnings
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -830,7 +831,7 @@ class Environment:
         filename : str, optional
             File name to save the environment to. Defaults to "environment.pkl".
         """
-        with open(filename, "wb") as file_handle:
+        with Path(filename).open("wb") as file_handle:
             pickle.dump(self, file_handle)
 
     @classmethod
@@ -847,7 +848,7 @@ class Environment:
         Environment
             The loaded environment object.
         """
-        with open(filename, "rb") as f:
+        with Path(filename).open("rb") as f:
             return pickle.load(f)
 
     def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
@@ -1680,7 +1681,8 @@ def extract_bin_info_from_track_graph(
     )
 
     return (
-        pd.merge(nodes_df.reset_index(), edge_avg_linear_position, on="edge_id")
+        nodes_df.reset_index()
+        .merge(edge_avg_linear_position, on="edge_id")
         .sort_values(by=["edge_avg_linear_position", "linear_position"], axis="rows")
         .set_index("node_id")
         .drop(columns="edge_avg_linear_position")

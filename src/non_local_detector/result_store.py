@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import bisect
 import json
-import os
 import re
 import shutil
 import tempfile
@@ -153,7 +152,7 @@ class IncrementalResultWriter:
             raise FileExistsError(self.path)
         # Rename within one parent filesystem: readers see either no result or
         # every data/coordinate file plus a complete manifest, never partial data.
-        os.rename(self._temporary, self.path)
+        self._temporary.rename(self.path)
         self._published = True
         return self.path
 

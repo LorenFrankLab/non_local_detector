@@ -154,37 +154,35 @@ def make_simulated_run_data(
     position = position_1d[:, np.newaxis]  # Shape: (n_time, 1)
 
     # Generate multiunit data (NaN-padded format) using existing simulator
-    multiunits = []
     if not make_inbound_outbound_neurons:
-        for place_means in place_field_means.reshape((n_tetrodes, -1)):
-            multiunits.append(
-                simulate_multiunit_with_place_fields(
-                    place_means,
-                    position_1d,
-                    mark_spacing=10,
-                    n_mark_dims=4,
-                    place_variance=place_field_variance,
-                    sampling_frequency=sampling_frequency,
-                    rng=rng,
-                )
+        multiunits = [
+            simulate_multiunit_with_place_fields(
+                place_means,
+                position_1d,
+                mark_spacing=10,
+                n_mark_dims=4,
+                place_variance=place_field_variance,
+                sampling_frequency=sampling_frequency,
+                rng=rng,
             )
+            for place_means in place_field_means.reshape((n_tetrodes, -1))
+        ]
     else:
         trajectory_direction, _ = get_trajectory_direction(position_1d)
-        for direction in np.unique(trajectory_direction):
-            is_condition = trajectory_direction == direction
-            for place_means in place_field_means.reshape((n_tetrodes, -1)):
-                multiunits.append(
-                    simulate_multiunit_with_place_fields(
-                        place_means,
-                        position_1d,
-                        mark_spacing=10,
-                        n_mark_dims=4,
-                        sampling_frequency=sampling_frequency,
-                        place_variance=place_field_variance,
-                        is_condition=is_condition,
-                        rng=rng,
-                    )
-                )
+        multiunits = [
+            simulate_multiunit_with_place_fields(
+                place_means,
+                position_1d,
+                mark_spacing=10,
+                n_mark_dims=4,
+                sampling_frequency=sampling_frequency,
+                place_variance=place_field_variance,
+                is_condition=trajectory_direction == direction,
+                rng=rng,
+            )
+            for direction in np.unique(trajectory_direction)
+            for place_means in place_field_means.reshape((n_tetrodes, -1))
+        ]
 
     # Stack: (n_time, n_features, n_electrodes)
     multiunits = np.stack(multiunits, axis=-1)

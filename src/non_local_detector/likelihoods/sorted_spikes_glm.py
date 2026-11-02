@@ -268,7 +268,9 @@ def _track_branches(graph) -> list[list[tuple]]:
     for node in sorted(anchors, key=str):
         for neighbor in sorted(graph.neighbors(node), key=str):
             if frozenset((node, neighbor)) not in seen:
-                branches.append(walk(node, neighbor))
+                # A loop, not a comprehension: walk() adds to the `seen` the
+                # condition reads.
+                branches.append(walk(node, neighbor))  # noqa: PERF401
     for u, v in sorted(graph.edges(), key=str):  # cycles with no anchor
         if frozenset((u, v)) not in seen:
             branches.append(walk(u, v))
