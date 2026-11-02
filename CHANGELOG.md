@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Less memory and work in chunked decoding and covariate Viterbi
 
+- `predict` and `estimate_parameters` no longer copy every (n_time, n_state_bins) posterior to the host: `predict` copies the smoothed posterior and the outputs you request, and EM computes its transition statistics from the posteriors on the device. On a 567k-bin clusterless decode with EM, peak host memory fell from 13.9 GB to 7.8 GB, with unchanged device memory and identical results. `chunked_filter_smoother` and `chunked_filter_smoother_covariate_dependent` take `host_outputs`; pass `False` to keep the posteriors on the device.
 - With `n_chunks > 1`, prediction no longer keeps the per-chunk causal, predictive and acausal posteriors on the device alongside their concatenations, which lowers the peak device memory of chunked decoding.
 - `most_likely_sequence` with covariate-dependent discrete transitions takes the log of the small per-state transition matrices instead of the expanded state-bin matrix at every time step; the decoded sequence is bit-identical on CPU.
 - The per-chunk checks for impossible (all `-inf`) and NaN likelihood rows run as one compiled pass with a single transfer to the host.

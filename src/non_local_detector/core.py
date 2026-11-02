@@ -838,6 +838,7 @@ def _chunked_filter_smoother(
     dtype: jnp.dtype,
     degenerate_indices_out: list | None,
     accumulate_log_likelihoods: bool,
+    host_outputs: bool,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1039,16 +1040,18 @@ def _chunked_filter_smoother(
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
     del acausal_posterior
 
-    # Convert to NumPy only at the very end for API compatibility
+    # The state probabilities are small and always go to the host; the
+    # (n_time, n_state_bins) posteriors only when the caller wants host arrays.
+    spatial = np.asarray if host_outputs else jnp.asarray
     return (
-        np.asarray(acausal_posterior_jax),
+        spatial(acausal_posterior_jax),
         np.asarray(acausal_state_probabilities_jax),
         float(marginal_likelihood),
         np.asarray(causal_state_probabilities_jax),
         np.asarray(predictive_state_probabilities_jax),
         log_likelihoods,  # Keep as original (may be None or NumPy)
-        np.asarray(causal_posterior_jax),
-        np.asarray(predictive_posterior_jax),
+        spatial(causal_posterior_jax),
+        spatial(predictive_posterior_jax),
     )
 
 
@@ -1067,6 +1070,7 @@ def chunked_filter_smoother(
     degenerate_indices_out: list | None = None,
     *,
     accumulate_log_likelihoods: bool = False,
+    host_outputs: bool = True,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1120,6 +1124,11 @@ def chunked_filter_smoother(
         it only when the caller explicitly asked for the log likelihoods.
         Keyword-only, and last, so that it cannot capture a positional argument
         aimed at a parameter that predates it (``dtype``). By default False.
+    host_outputs : bool, optional, keyword-only
+        If True (the default), the three (n_time, n_state_bins) posteriors are
+        returned as NumPy arrays. If False, they stay on the device as JAX
+        arrays, so a caller that needs only some of them, or computes on them
+        on the device, does not copy all three to the host.
 
     Returns
     -------
@@ -1181,6 +1190,7 @@ def chunked_filter_smoother(
         dtype=dtype,
         degenerate_indices_out=degenerate_indices_out,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
+        host_outputs=host_outputs,
     )
 
 
@@ -1572,6 +1582,7 @@ def chunked_filter_smoother_covariate_dependent(
     degenerate_indices_out: list | None = None,
     *,
     accumulate_log_likelihoods: bool = False,
+    host_outputs: bool = True,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1629,6 +1640,11 @@ def chunked_filter_smoother_covariate_dependent(
         it only when the caller explicitly asked for the log likelihoods.
         Keyword-only, and last, so that it cannot capture a positional argument
         aimed at a parameter that predates it (``dtype``). By default False.
+    host_outputs : bool, optional, keyword-only
+        If True (the default), the three (n_time, n_state_bins) posteriors are
+        returned as NumPy arrays. If False, they stay on the device as JAX
+        arrays, so a caller that needs only some of them, or computes on them
+        on the device, does not copy all three to the host.
 
     Returns
     -------
@@ -1706,6 +1722,7 @@ def chunked_filter_smoother_covariate_dependent(
         dtype=dtype,
         degenerate_indices_out=degenerate_indices_out,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
+        host_outputs=host_outputs,
     )
 
 
