@@ -550,7 +550,7 @@ def test_mass_invariance_across_ranks():
     """
     s = _sim(seed=2, hi=12.0)
     env = s["env"]
-    graph, node_order, bin_sizes = environment_graph(env)
+    _graph, node_order, _bin_sizes = environment_graph(env)
     n_bins = node_order.shape[0]
     full_rank = n_bins
     half_rank = max(1, n_bins // 2)

@@ -284,7 +284,7 @@ def test_truncated_eigsh_falls_back_when_shift_invert_fails(monkeypatch):
     monkeypatch.setattr(sparse_linalg, "eigsh", flaky_eigsh)
 
     L = build_laplacian(path_graph(30))
-    trunc_vals, trunc_vecs = diffusion_eigenbasis(L, rank=6)
+    trunc_vals, _trunc_vecs = diffusion_eigenbasis(L, rank=6)
     # rank=None uses dense eigh (not eigsh), so the reference is unaffected.
     dense_vals, _ = diffusion_eigenbasis(L, rank=None)
 
@@ -901,7 +901,7 @@ def test_environment_graph_disconnected_components_mass_conserved():
 
     L = build_laplacian(graph)
     # A truncated basis must still carry both null modes.
-    eigvals, eigvecs = diffusion_eigenbasis(L, rank=6)
+    eigvals, _eigvecs = diffusion_eigenbasis(L, rank=6)
     assert np.count_nonzero(eigvals < 1e-9) == 2
 
     # Label nodes by component; mass placed in one component stays there.

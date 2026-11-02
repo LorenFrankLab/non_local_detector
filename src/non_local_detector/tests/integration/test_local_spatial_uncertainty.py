@@ -26,14 +26,14 @@ DECODE_WINDOW = slice(9_000, 33_000)
 def simulated_data():
     """Generate simulated data for testing."""
     (
-        speed,
+        _speed,
         position,
         spike_times,
         time,
-        event_times,
-        sampling_frequency,
+        _event_times,
+        _sampling_frequency,
         is_event,
-        place_fields,
+        _place_fields,
     ) = make_simulated_data(n_neurons=30)
 
     return {

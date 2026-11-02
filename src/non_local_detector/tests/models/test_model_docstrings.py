@@ -138,7 +138,7 @@ sorted_spikes_algorithm_params : dict or None, optional
 
 
 @pytest.mark.parametrize(
-    "sorted_cls, clusterless_cls",
+    ("sorted_cls", "clusterless_cls"),
     MODEL_PAIRS,
     ids=[sorted_cls.__name__ for sorted_cls, _ in MODEL_PAIRS],
 )

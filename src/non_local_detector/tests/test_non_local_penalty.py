@@ -27,7 +27,7 @@ class TestValidatePenaltyParams:
     """Test _validate_penalty_params directly."""
 
     @pytest.mark.parametrize(
-        "penalty, sigma",
+        ("penalty", "sigma"),
         [(0.0, 1.0), (1.5, 2.0), (1.0, 1e-15)],
         ids=["defaults", "positive-penalty", "very-small-sigma"],
     )
@@ -36,7 +36,7 @@ class TestValidatePenaltyParams:
         _validate_penalty_params(penalty, sigma)
 
     @pytest.mark.parametrize(
-        "penalty, sigma, match",
+        ("penalty", "sigma", "match"),
         [
             (-1.0, 1.0, "non_local_position_penalty must be >= 0"),
             # Zero sigma would divide by zero
@@ -65,7 +65,7 @@ class TestDetectorPenaltyValidation:
     """Test that detector constructors validate penalty params."""
 
     @pytest.mark.parametrize(
-        "kwargs, match",
+        ("kwargs", "match"),
         [
             ({"non_local_position_penalty": -0.5}, "non_local_position_penalty"),
             ({"non_local_penalty_std": 0.0}, "non_local_penalty_std"),
@@ -127,7 +127,7 @@ class TestPenaltyValidatedWhenDecoding:
     """Values set after construction (``set_params``) are validated at use."""
 
     @pytest.mark.parametrize(
-        "params, match",
+        ("params", "match"),
         [
             ({"non_local_position_penalty": -1.0}, "non_local_position_penalty"),
             ({"non_local_penalty_std": 0.0}, "non_local_penalty_std"),

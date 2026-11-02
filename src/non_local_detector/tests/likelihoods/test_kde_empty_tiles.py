@@ -14,7 +14,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(
-    "tile_size, streaming",
+    ("tile_size", "streaming"),
     [(None, False), (4, False), (4, True)],
     ids=["untiled", "tiled", "streamed"],
 )

@@ -603,7 +603,7 @@ class TestExpandedDiscreteTransitionCounts:
         posteriors = self._stationary_posteriors(
             rng, n_time, n_bins, state_ind, n_states
         )
-        causal, predictive, acausal, continuous, discrete, full = posteriors
+        causal, predictive, acausal, _continuous, _discrete, full = posteriors
         assert np.any(predictive == 0.0)
         expected = _expanded_responses_numpy_reference(
             causal, predictive, acausal, full, state_ind
@@ -792,7 +792,7 @@ class TestExpandedDiscreteTransitionCounts:
             )
 
     @pytest.mark.parametrize(
-        "estimator, transition_args, match",
+        ("estimator", "transition_args", "match"),
         [
             # Broadcastable expanded transitions should not produce silent counts
             (

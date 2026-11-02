@@ -102,7 +102,7 @@ def place_field_core_median_rel_errors(env, std, diff_pf, kde_pf):
 def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffusion):
     """Fit returns the contract keys; place_fields are FULL-GRID with zeros off-track."""
     env = env_2d
-    time, position, spike_times, encoding = three_neuron_diffusion
+    _time, _position, _spike_times, encoding = three_neuron_diffusion
 
     assert set(encoding) >= ENCODING_DICT_KEYS
 
@@ -1210,7 +1210,7 @@ def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_fit):
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "algorithm, algorithm_params",
+    ("algorithm", "algorithm_params"),
     [
         ("sorted_spikes_diffusion", {"position_std": 6.0}),
         ("sorted_spikes_mrf", {"rank": 40}),

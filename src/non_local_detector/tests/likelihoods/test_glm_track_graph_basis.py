@@ -326,7 +326,7 @@ def test_glm_predict_and_pickle_with_track_graph_basis(y_track):
 
 
 @pytest.mark.parametrize(
-    "nodes, edges",
+    ("nodes", "edges"),
     [
         # A loop attached at a junction (a lollipop).
         (

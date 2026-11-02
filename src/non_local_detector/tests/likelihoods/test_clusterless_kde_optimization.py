@@ -169,7 +169,7 @@ class TestScaledGemmJointIntensity:
     # At 8 features many intensities sit far below LOG_EPS; they still count.
     # Feature count does not select an approximation: 9D is exact too.
     @pytest.mark.parametrize(
-        "seed, n_enc, n_dec, n_pos, n_wf",
+        ("seed", "n_enc", "n_dec", "n_pos", "n_wf"),
         [(42, 500, 50, 100, 4), (42, 500, 50, 100, 8), (900, 1000, 100, 200, 9)],
         ids=["4d", "8d", "9d"],
     )

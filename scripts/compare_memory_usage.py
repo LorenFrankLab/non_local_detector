@@ -49,7 +49,7 @@ def measure_memory_usage(func, *args, n_runs=5):
         result = func(*args)
         result.block_until_ready()
 
-        current, peak = tracemalloc.get_traced_memory()
+        _current, peak = tracemalloc.get_traced_memory()
         peak_memories.append(peak - baseline_mem)
 
     tracemalloc.stop()
@@ -203,7 +203,7 @@ def main():
             std = jnp.ones(n_dims)
 
             # Theoretical analysis
-            orig_theory, opt_theory = analyze_array_allocations(
+            _orig_theory, _opt_theory = analyze_array_allocations(
                 config["n_eval"], config["n_samples"], n_dims
             )
 

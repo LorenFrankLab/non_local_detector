@@ -50,7 +50,7 @@ def _make_kde_matched_gmm(
         A GMM with equal weights, means at the sample positions,
         and diagonal covariance matching the KDE bandwidth.
     """
-    n_components, n_features = means.shape
+    n_components, _n_features = means.shape
     means = jnp.asarray(means)
     bandwidths = jnp.asarray(bandwidths)
 

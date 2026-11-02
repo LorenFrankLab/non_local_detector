@@ -723,7 +723,7 @@ def test_auto_em_warns_when_memory_alone_rules_out_dense_em(reason, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "kwargs, expected",
+    ("kwargs", "expected"),
     [
         (
             {"transition_representation": "dense"},

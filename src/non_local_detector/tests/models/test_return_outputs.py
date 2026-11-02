@@ -245,7 +245,7 @@ class TestReturnOutputsParameter:
         assert "predictive_posterior" not in results
 
     @pytest.mark.parametrize(
-        "return_outputs, exc, match",
+        ("return_outputs", "exc", "match"),
         [
             ("invalid_option", ValueError, "Invalid return_outputs"),
             ({"filter", "invalid_option"}, ValueError, "Invalid outputs"),

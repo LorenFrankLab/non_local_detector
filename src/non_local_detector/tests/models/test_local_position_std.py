@@ -299,7 +299,7 @@ class TestComputeLocalPositionKernel:
         """Kernel exp sums to 1 per time step (valid log-probability)."""
         import jax.numpy as jnp
 
-        detector, position = self._make_fitted_detector(local_position_std=5.0)
+        detector, _position = self._make_fitted_detector(local_position_std=5.0)
         env = detector.environments[0]
 
         n_time = 10
@@ -326,7 +326,7 @@ class TestComputeLocalPositionKernel:
         """Kernel peak is at the bin nearest to animal position."""
         import jax.numpy as jnp
 
-        detector, position = self._make_fitted_detector(local_position_std=5.0)
+        detector, _position = self._make_fitted_detector(local_position_std=5.0)
         env = detector.environments[0]
 
         # Animal at position 50
@@ -385,7 +385,7 @@ class TestComputeLocalPositionKernel:
         """Output shape is (n_time, n_interior_bins)."""
         import jax.numpy as jnp
 
-        detector, position = self._make_fitted_detector(local_position_std=5.0)
+        detector, _position = self._make_fitted_detector(local_position_std=5.0)
         env = detector.environments[0]
 
         n_time = 7
@@ -407,7 +407,7 @@ class TestComputeLocalPositionKernel:
         """NaN positions produce uniform (flat) kernel, not NaN or crash."""
         import jax.numpy as jnp
 
-        detector, position = self._make_fitted_detector(local_position_std=5.0)
+        detector, _position = self._make_fitted_detector(local_position_std=5.0)
         env = detector.environments[0]
 
         # All NaN positions

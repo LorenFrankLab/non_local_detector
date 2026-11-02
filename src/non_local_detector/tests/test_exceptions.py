@@ -36,7 +36,7 @@ class TestCommonMessageFormatting:
     """Test message formatting shared by every exception class."""
 
     @pytest.mark.parametrize(
-        "exc_cls, message",
+        ("exc_cls", "message"),
         [
             (ValidationError, "Something went wrong"),
             (FittingError, "Model fitting failed"),
@@ -58,7 +58,7 @@ class TestCommonMessageFormatting:
         assert str(error) == message
 
     @pytest.mark.parametrize(
-        "exc_cls, message, kwargs, expected",
+        ("exc_cls", "message", "kwargs", "expected"),
         [
             (
                 ValidationError,

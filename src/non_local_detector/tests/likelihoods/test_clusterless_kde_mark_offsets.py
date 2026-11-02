@@ -104,7 +104,7 @@ def test_mark_kernel_opposite_finite_features_with_large_bandwidth(x64):
 
 
 @pytest.mark.parametrize(
-    "dtype,encoding_value,decoding_value",
+    ("dtype", "encoding_value", "decoding_value"),
     [(np.uint16, 100, 124), (np.int16, 20000, -20000)],
 )
 def test_mark_kernel_integer_features_do_not_wrap(

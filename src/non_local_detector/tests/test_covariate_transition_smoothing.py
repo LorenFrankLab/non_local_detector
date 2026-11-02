@@ -651,7 +651,7 @@ class TestRemlSmoothness:
         the unsmoothed fit of the same basis."""
         errors = {"none": [], "reml": []}
         for seed in range(4):
-            _, speed, design, truth, response = _row_problem(seed=20 + seed)
+            _, _speed, design, truth, response = _row_problem(seed=20 + seed)
             for name, smoothness in (("none", 0.0), ("reml", "reml")):
                 fit = _fit_covariate_transition(
                     np.zeros((design.shape[1], N_STATES, N_STATES - 1)),

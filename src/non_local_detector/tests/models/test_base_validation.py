@@ -125,7 +125,7 @@ class TestValidateProbabilityDistributions:
     """Test _validate_probability_distributions method."""
 
     @pytest.mark.parametrize(
-        "initial_conditions, exc, match",
+        ("initial_conditions", "exc", "match"),
         [
             # Shape (2, 1) has length 2, so it passes the count checks and
             # reaches the dimensionality check.
@@ -169,7 +169,7 @@ class TestValidateNumericalParameters:
     """Test _validate_numerical_parameters method."""
 
     @pytest.mark.parametrize(
-        "kwargs, match",
+        ("kwargs", "match"),
         [
             ({"discrete_transition_concentration": -1.0}, ">= 1.0"),
             ({"discrete_transition_concentration": 0.0}, ">= 1.0"),
@@ -231,7 +231,7 @@ class TestValidateDiscreteTransitionType:
     """Test _validate_discrete_transition_type method."""
 
     @pytest.mark.parametrize(
-        "transition_matrix, exc, match",
+        ("transition_matrix", "exc", "match"),
         [
             (np.array([[0.7, 0.3], [np.nan, 0.5]]), DataError, "non-finite"),
             (np.array([[0.7, 0.3], [np.inf, 0.0]]), DataError, "non-finite"),
@@ -260,7 +260,7 @@ class TestValidateDiscreteTransitionType:
             )
 
     @pytest.mark.parametrize(
-        "transition_matrix, match",
+        ("transition_matrix", "match"),
         [
             # 3x3 matrix but the model has 2 states
             (

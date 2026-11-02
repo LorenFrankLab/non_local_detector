@@ -903,7 +903,7 @@ class Environment:
         except (AttributeError, ValueError):
             # Sample is a sequence of 1D arrays.
             sample = np.atleast_2d(sample).T
-            N, D = sample.shape
+            _N, D = sample.shape
 
         nbin = np.empty(D, np.intp)
         for i in range(D):

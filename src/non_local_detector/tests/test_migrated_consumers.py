@@ -251,7 +251,7 @@ def test_shipped_notebook_likelihood_calls_execute(name):
 
 
 @pytest.mark.parametrize(
-    "filename, fit_name, predict_name",
+    ("filename", "fit_name", "predict_name"),
     [
         ("profile_memory.py", "fit_reference", "predict_reference"),
         ("profile_memory.py", "fit_log", "predict_log"),

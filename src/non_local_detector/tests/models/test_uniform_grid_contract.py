@@ -127,7 +127,7 @@ def test_base_viterbi_with_custom_likelihood_cannot_bypass_uniformity(
 @pytest.mark.integration
 @pytest.mark.parametrize("entry", ["predict", "viterbi", "likelihood", "cached"])
 @pytest.mark.parametrize(
-    "clock,tolerance",
+    ("clock", "tolerance"),
     [
         (np.nan, 0.0),
         (np.inf, 0.0),

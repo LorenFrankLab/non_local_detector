@@ -46,7 +46,7 @@ def test_aggregation_never_mixes_regions():
     when their positions fall in the same cell."""
     position = np.array([[4.9], [5.1], [5.0], [5.05]])
     region = np.array([0, 1, 0, 1])
-    mean_position, cell_counts, cell_exposure = _aggregate_by_position_cell(
+    mean_position, _cell_counts, cell_exposure = _aggregate_by_position_cell(
         position, np.ones((1, 4)), np.ones(4), cell_size=10.0, region=region
     )
     assert cell_exposure.size == 2

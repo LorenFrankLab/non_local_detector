@@ -887,7 +887,7 @@ def test_component_with_any_exposure_is_fit_not_floored():
     """'Unoccupied' means exactly zero exposure: one exposed right-room sample with
     the neurons' spikes is information, so that component is fit, not EPS-floored,
     and no unoccupied-component warning is raised."""
-    env, position = make_two_room_env()
+    _env, position = make_two_room_env()
     weights = np.zeros(position.shape[0])
     weights[np.flatnonzero(position[:, 0] > 20.0)[0]] = 1.0
     with warnings.catch_warnings():

@@ -162,7 +162,7 @@ def test_later_active_entry_rejected_before_any_backend_or_hmm_work(
 
 @pytest.mark.integration
 def test_unused_legacy_entry_does_not_block_current_observations(multi_entry_recording):
-    fitted, time, position, spike_args, _, _, _ = multi_entry_recording
+    fitted, _time, _position, spike_args, _, _, _ = multi_entry_recording
     detector = copy.deepcopy(fitted)
     edges = np.arange(21) * 0.002
     expected = detector.predict(

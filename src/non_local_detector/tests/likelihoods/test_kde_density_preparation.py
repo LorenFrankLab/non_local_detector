@@ -111,7 +111,7 @@ def test_kde_true_density_keeps_custom_prediction_and_unfitted_errors():
 
 
 @pytest.mark.parametrize(
-    "fit,predict,clusterless",
+    ("fit", "predict", "clusterless"),
     [
         (
             fit_sorted_spikes_kde_encoding_model,

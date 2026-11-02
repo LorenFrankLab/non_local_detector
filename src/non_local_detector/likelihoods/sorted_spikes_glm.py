@@ -226,7 +226,7 @@ def make_spline_design_matrix(
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     # ``inner_knots`` is read by name by the patsy formula below.
-    varying_dimensions, inner_knots = _spline_inner_knots(
+    varying_dimensions, _inner_knots = _spline_inner_knots(
         position, place_bin_edges, knot_spacing
     )
     if not len(varying_dimensions):

@@ -254,7 +254,7 @@ class TestLocalNonlocalFiniteness:
     """
 
     @pytest.mark.parametrize(
-        "fit, predict",
+        ("fit", "predict"),
         [
             (_fit_sorted_kde, _predict_sorted_kde),
             (_fit_sorted_glm, _predict_sorted_glm),

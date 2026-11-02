@@ -98,7 +98,7 @@ def _fit(recording):
 
 
 def _predict(recording, encoding, is_local):
-    env, position_time, position, times, marks = recording
+    _env, position_time, position, times, marks = recording
     rng = np.random.default_rng(3)
     decode_times = [np.sort(rng.uniform(0.0, 4.0, 60)) for _ in times]
     decode_marks = [rng.normal(0.0, 30.0, (60, 4)) for _ in times]

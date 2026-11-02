@@ -107,7 +107,7 @@ def recording(request):
 
 
 def predict(recording, is_local, row_slice):
-    env, position_time, position, encoding, times, marks, edges = recording
+    _env, position_time, position, encoding, times, marks, edges = recording
     return predict_clusterless_kde_log_likelihood(
         position_time,
         position,

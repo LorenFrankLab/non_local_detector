@@ -182,7 +182,7 @@ def test_sorted_hz_requires_an_explicit_physical_grid(checker):
     "checker", [uniform_rescaled_ISIs, point_process_residuals, TimeRescaling]
 )
 @pytest.mark.parametrize(
-    "kwargs, message",
+    ("kwargs", "message"),
     [
         ({"rate_units": "wat"}, "rate_units"),
         ({"time": np.arange(3.0)}, "expected_counts"),

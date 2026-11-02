@@ -121,7 +121,7 @@ def test_tail_intensity_is_independent_of_other_decoding_spikes(enc_tile_size):
 @pytest.mark.unit
 @pytest.mark.parametrize("enc_tile_size", [None, 1, 2])
 @pytest.mark.parametrize(
-    "n_features,gap",
+    ("n_features", "gap"),
     [
         (8, 100.0),  # beyond the unit-scaled window, inside the shifted one
         (16, 150.0),  # flushes even in the shifted GEMM: needs the exact reduction
@@ -159,7 +159,7 @@ def test_opposing_mark_and_position_support_preserves_joint_density(
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "enc_tile_size, pos_tile_size",
+    ("enc_tile_size", "pos_tile_size"),
     [(None, None), (64, None), (64, 70)],
     ids=["untiled", "encoding-tiles", "encoding-and-position-tiles"],
 )

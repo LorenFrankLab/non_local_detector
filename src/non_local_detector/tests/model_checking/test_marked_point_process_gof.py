@@ -726,7 +726,7 @@ def test_mdci_in_one_bin_equals_the_conditional_at_that_bin(separated, algorithm
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_transforms_reject_missing_positions(separated, algorithm, transform):
     """A tracking gap raises instead of being read as a position bin."""
-    environment, models = separated
+    _environment, models = separated
     position_time = np.linspace(0.0, 1.0, 11)
     position = np.full((11, 1), 20.0)
     position[4:7] = np.nan
