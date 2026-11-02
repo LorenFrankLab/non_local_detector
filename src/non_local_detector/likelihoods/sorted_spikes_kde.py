@@ -85,7 +85,6 @@ from non_local_detector.likelihoods.common import (
     validate_bandwidth,
     validate_encoding_contract,
     validate_population_lengths,
-    validate_weights,
     weighted_mean_rate,
 )
 from non_local_detector.time_edges import (
@@ -339,7 +338,6 @@ def fit_sorted_spikes_kde_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     n_dims = 1 if environment.track_graph is not None else position.shape[1]
     position_std = validate_bandwidth(position_std, n_dims, "position_std")
     warn_if_tracking_is_sparse(support, position, position_std)
@@ -356,11 +354,6 @@ def fit_sorted_spikes_kde_encoding_model(
             )
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
-    if weights is None:
-        weights = jnp.ones((position.shape[0],))
-    else:
-        weights = validate_weights(weights, position.shape[0])
-
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
         position, exposure_weights
     )

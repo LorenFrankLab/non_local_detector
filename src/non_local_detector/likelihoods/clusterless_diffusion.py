@@ -111,7 +111,6 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
-    validate_weights,
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
@@ -362,12 +361,7 @@ def fit_clusterless_diffusion_encoding_model(
             "Call environment.fit_place_grid() first."
         )
 
-    position = position if np.ndim(position) > 1 else np.asarray(position)[:, None]
-    validate_finite(position, "position")
     n_time_position = position.shape[0]
-    if weights is None:
-        weights = np.ones((n_time_position,))
-    weights = validate_weights(weights, n_time_position)
     position_std = _validate_diffusion_params(
         position_std, waveform_std, heat_kernel_rank, memory_budget, block_size
     )

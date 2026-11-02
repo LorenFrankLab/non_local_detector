@@ -3,49 +3,10 @@ from collections.abc import Hashable
 import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
 import xarray as xr
-from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
 from non_local_detector.environment import find_environment_by_name
+from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
 from non_local_detector.models.base import _DetectorBase
-
-
-def _gaussian_smooth(
-    data: np.ndarray,
-    sigma: float,
-    sampling_frequency: float,
-    axis: int = 0,
-    truncate: int = 8,
-) -> np.ndarray:
-    """Apply 1D Gaussian smoothing to data along specified axis.
-
-    The standard deviation of the gaussian is in the units of the sampling
-    frequency. The function is just a wrapper around scipy's
-    `gaussian_filter1d`, The support is truncated at 8 by default, instead
-    of 4 in `gaussian_filter1d`.
-
-    Parameters
-    ----------
-    data : np.ndarray
-        Input data to be smoothed.
-    sigma : float
-        Standard deviation of the Gaussian kernel in units of sampling frequency.
-    sampling_frequency : float
-        Sampling rate of the data in Hz.
-    axis : int, optional
-        Axis along which to apply smoothing, by default 0.
-    truncate : int, optional
-        Truncate the Gaussian kernel at this many standard deviations,
-        by default 8.
-
-    Returns
-    -------
-    smoothed_data : np.ndarray
-        Smoothed data with same shape as input.
-
-    """
-    return gaussian_filter1d(
-        data, sigma * sampling_frequency, truncate=truncate, axis=axis, mode="constant"
-    )
 
 
 def _get_MAP_estimate_2d_position_edges(

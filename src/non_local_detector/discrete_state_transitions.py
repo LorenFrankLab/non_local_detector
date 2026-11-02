@@ -2934,6 +2934,61 @@ class DiscreteStationaryCustom:
         return np.asarray(self.values), None, None
 
 
+def _initial_nonstationary_transition(
+    discrete_transition: np.ndarray,
+    formula: str,
+    covariate_data: pd.DataFrame | dict | None,
+    smoothness: float | str,
+) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
+    """Initial structures of a covariate-driven transition from its intercept matrix.
+
+    Parameters
+    ----------
+    discrete_transition : np.ndarray, shape (n_states, n_states)
+        Transition matrix the intercept coefficients reproduce.
+    formula : str
+        Patsy formula for the transition design matrix.
+    covariate_data : pd.DataFrame or dict
+        Covariates named in ``formula``, one row per time step.
+    smoothness : float or str
+        The model's ``smoothness`` setting, checked against the design.
+
+    Returns
+    -------
+    initial_discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+    initial_discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+    discrete_transition_design_matrix : patsy.DesignMatrix
+    """
+    n_states = len(discrete_transition)
+
+    # NA_action="raise" prevents patsy from silently dropping rows with NaN
+    # covariates, which would misalign the design matrix (n_time) against the
+    # full-length posteriors/responses in the M-step.
+    discrete_transition_design_matrix = dmatrix(
+        formula, covariate_data, NA_action="raise"
+    )
+    if discrete_transition_design_matrix.shape[0] == 0:
+        raise ValueError("No covariate data provided for the transition matrix.")
+    _check_smoothness_design(smoothness, discrete_transition_design_matrix)
+
+    n_time, n_coefficients = discrete_transition_design_matrix.shape
+
+    discrete_transition_coefficients = np.zeros(
+        (n_coefficients, n_states, n_states - 1)
+    )
+    discrete_transition_coefficients[0] = centered_softmax_inverse(discrete_transition)
+
+    discrete_transition = discrete_transition[np.newaxis] * np.ones(
+        (n_time, n_states, n_states)
+    )
+
+    return (
+        discrete_transition,
+        discrete_transition_coefficients,
+        discrete_transition_design_matrix,
+    )
+
+
 @dataclass
 class DiscreteNonStationaryDiagonal:
     """Non-stationary transition matrix driven by covariates.
@@ -2991,37 +3046,11 @@ class DiscreteNonStationaryDiagonal:
         discrete_transition_design_matrix : patsy.DesignMatrix
             The design matrix derived from the formula and covariate data.
         """
-
-        n_states = len(self.diagonal_values)
-        discrete_transition = make_transition_from_diag(self.diagonal_values)
-
-        # NA_action="raise" prevents patsy from silently dropping rows with NaN
-        # covariates, which would misalign the design matrix (n_time) against the
-        # full-length posteriors/responses in the M-step.
-        discrete_transition_design_matrix = dmatrix(
-            self.formula, covariate_data, NA_action="raise"
-        )
-        if discrete_transition_design_matrix.shape[0] == 0:
-            raise ValueError("No covariate data provided for the transition matrix.")
-        _check_smoothness_design(self.smoothness, discrete_transition_design_matrix)
-
-        n_time, n_coefficients = discrete_transition_design_matrix.shape
-
-        discrete_transition_coefficients = np.zeros(
-            (n_coefficients, n_states, n_states - 1)
-        )
-        discrete_transition_coefficients[0] = centered_softmax_inverse(
-            discrete_transition
-        )
-
-        discrete_transition = discrete_transition[np.newaxis] * np.ones(
-            (n_time, n_states, n_states)
-        )
-
-        return (
-            discrete_transition,
-            discrete_transition_coefficients,
-            discrete_transition_design_matrix,
+        return _initial_nonstationary_transition(
+            make_transition_from_diag(self.diagonal_values),
+            self.formula,
+            covariate_data,
+            self.smoothness,
         )
 
 
@@ -3082,37 +3111,8 @@ class DiscreteNonStationaryCustom:
         discrete_transition_design_matrix : patsy.DesignMatrix
             The design matrix derived from the formula and covariate data.
         """
-
-        n_states = len(self.values)
-        discrete_transition = self.values
-
-        # NA_action="raise" prevents patsy from silently dropping rows with NaN
-        # covariates, which would misalign the design matrix (n_time) against the
-        # full-length posteriors/responses in the M-step.
-        discrete_transition_design_matrix = dmatrix(
-            self.formula, covariate_data, NA_action="raise"
-        )
-        if discrete_transition_design_matrix.shape[0] == 0:
-            raise ValueError("No covariate data provided for the transition matrix.")
-        _check_smoothness_design(self.smoothness, discrete_transition_design_matrix)
-
-        n_time, n_coefficients = discrete_transition_design_matrix.shape
-
-        discrete_transition_coefficients = np.zeros(
-            (n_coefficients, n_states, n_states - 1)
-        )
-        discrete_transition_coefficients[0] = centered_softmax_inverse(
-            discrete_transition
-        )
-
-        discrete_transition = discrete_transition[np.newaxis] * np.ones(
-            (n_time, n_states, n_states)
-        )
-
-        return (
-            discrete_transition,
-            discrete_transition_coefficients,
-            discrete_transition_design_matrix,
+        return _initial_nonstationary_transition(
+            self.values, self.formula, covariate_data, self.smoothness
         )
 
 

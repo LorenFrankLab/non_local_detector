@@ -60,7 +60,6 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     environment_grid_fingerprint,
-    validate_weights,
 )
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
@@ -898,10 +897,6 @@ def fit_sorted_spikes_mrf_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    position = position if position.ndim > 1 else position[:, np.newaxis]
-    if weights is None:
-        weights = np.ones((position.shape[0],))
-    weights = validate_weights(weights, position.shape[0])
     warn_if_no_encoding_exposure(
         exposure_weights, "Sorted-spikes MRF", clusterless=False
     )

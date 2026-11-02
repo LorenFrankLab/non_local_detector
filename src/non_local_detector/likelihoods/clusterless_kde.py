@@ -61,7 +61,6 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
-    validate_weights,
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.mark_reference import (
@@ -1705,10 +1704,6 @@ def fit_clusterless_kde_encoding_model(
             "Call environment.fit_place_grid() first."
         )
 
-    position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
-    if weights is None:
-        weights = np.ones((position.shape[0],))
-    weights = validate_weights(np.asarray(weights), position.shape[0])
     # Weighted occupancy time in seconds: each sample's weight times the
     # tracking time it covers (its integrated interpolation exposure). Gaps from
     # is_training / encoding-group masks carry weight 0 and are not charged as

@@ -246,10 +246,21 @@ def _degenerate_and_nan_masks(
         from impossible data. ``_condition_on`` lets the NaN reach the posterior
         so it stays visible.
     """
-    ll_array = jnp.asarray(log_likelihoods)
-    degenerate_mask = np.asarray(ll_array.max(axis=-1) == -jnp.inf)
-    nan_mask = np.asarray(jnp.any(jnp.isnan(ll_array), axis=-1))
+    degenerate_mask, nan_mask = jax.device_get(
+        _degenerate_and_nan_masks_device(jnp.asarray(log_likelihoods))
+    )
     return degenerate_mask, nan_mask
+
+
+@jax.jit
+def _degenerate_and_nan_masks_device(
+    log_likelihoods: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Device-side masks of ``_degenerate_and_nan_masks`` in one fused pass."""
+    return (
+        log_likelihoods.max(axis=-1) == -jnp.inf,
+        jnp.any(jnp.isnan(log_likelihoods), axis=-1),
+    )
 
 
 def _accumulate_chunk_degeneracy(
@@ -1037,6 +1048,8 @@ def chunked_filter_smoother(
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
     predictive_posterior_jax = jnp.concatenate(predictive_posterior)
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
+    # Release the per-chunk copies so they don't coexist with the concatenations
+    del causal_posterior, predictive_posterior
 
     # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
@@ -1064,6 +1077,7 @@ def chunked_filter_smoother(
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
+    del acausal_posterior
 
     # Convert to NumPy only at the very end for API compatibility
     return (
@@ -1691,6 +1705,8 @@ def chunked_filter_smoother_covariate_dependent(
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
     predictive_posterior_jax = jnp.concatenate(predictive_posterior)
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
+    # Release the per-chunk copies so they don't coexist with the concatenations
+    del causal_posterior, predictive_posterior
 
     # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
@@ -1723,6 +1739,7 @@ def chunked_filter_smoother_covariate_dependent(
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
+    del acausal_posterior
 
     # Convert to NumPy only at the very end for API compatibility
     return (
@@ -1774,16 +1791,17 @@ def _viterbi_covariate_dependent_impl(
     # Handles zero probabilities correctly (returns -inf, not NaN)
     log_continuous_transition_matrix = _safe_log(continuous_transition_matrix)
     log_initial_distribution = _safe_log(initial_distribution)
+    # Log the (n_time, n_states, n_states) discrete matrices, not the expanded
+    # (n_state_bins, n_state_bins) ones: same values, n_states² logs per step
+    log_discrete_transition_matrix = _safe_log(discrete_transition_matrix)
 
     # Run the backward pass
     # Index discrete transitions per-step to avoid materializing T×N_bins×N_bins array
     def _backward_pass(best_next_score, args):
-        t, discrete_transition_matrix_t = args
-        # Index states and compute log per-step (avoids T×N×N materialization)
-        discrete_t_indexed = _index_discrete_transition(
-            discrete_transition_matrix_t, state_ind
+        t, log_discrete_transition_matrix_t = args
+        log_discrete_t = _index_discrete_transition(
+            log_discrete_transition_matrix_t, state_ind
         )
-        log_discrete_t = _safe_log(discrete_t_indexed)
 
         # Build log-space transition matrix: log(A * B) = log(A) + log(B)
         log_transition_matrix = log_continuous_transition_matrix + log_discrete_t
@@ -1796,7 +1814,7 @@ def _viterbi_covariate_dependent_impl(
     best_second_score, best_next_states = jax.lax.scan(
         _backward_pass,
         jnp.zeros(num_states),
-        (jnp.arange(num_timesteps - 1), discrete_transition_matrix[:-1]),
+        (jnp.arange(num_timesteps - 1), log_discrete_transition_matrix[:-1]),
         reverse=True,
     )
 

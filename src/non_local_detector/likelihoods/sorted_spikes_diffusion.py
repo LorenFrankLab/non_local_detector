@@ -47,7 +47,6 @@ from non_local_detector.likelihoods.common import (
     resolve_row_slice,
     validate_encoding_contract,
     validate_population_lengths,
-    validate_weights,
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
@@ -505,10 +504,6 @@ def fit_sorted_spikes_diffusion_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    position = position if position.ndim > 1 else position[:, np.newaxis]
-    if weights is None:
-        weights = np.ones((position.shape[0],))
-    weights = validate_weights(weights, position.shape[0])
     local_interpolation = _validate_local_interpolation(local_interpolation)
     # Coerce position_std to a plain float: it becomes part of the bandwidth-keyed rank
     # cache key, so a JAX scalar/array (unhashable) would raise. The heat kernel is

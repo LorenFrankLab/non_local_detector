@@ -27,6 +27,7 @@ import xarray as xr
 from non_local_detector.core import (
     _HMM_SCAN_UNROLL,
     _condition_on,
+    _degenerate_and_nan_masks_device,
     _divide_safe,
     _float64_evidence,
     _normalize,
@@ -436,8 +437,7 @@ def _prepare_chunk(values, missing):
     checksum : jax.Array of uint32, shape (2,)
     """
     values = jnp.where(missing[:, None], jnp.zeros((), values.dtype), values)
-    degenerate = values.max(axis=-1) == -jnp.inf
-    nan = jnp.any(jnp.isnan(values), axis=-1)
+    degenerate, nan = _degenerate_and_nan_masks_device(values)
     bits = jax.lax.bitcast_convert_type(values, jnp.uint32).ravel()
     positions = jnp.arange(bits.size, dtype=jnp.uint32)
     checksum = jnp.stack(

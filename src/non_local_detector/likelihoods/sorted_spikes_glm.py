@@ -92,7 +92,6 @@ from non_local_detector.likelihoods.common import (
     snap_off_track_positions,
     validate_encoding_contract,
     validate_population_lengths,
-    validate_weights,
 )
 from non_local_detector.likelihoods.no_spike import _poisson_row_log_likelihood
 from non_local_detector.time_edges import (
@@ -1382,7 +1381,6 @@ def fit_sorted_spikes_glm_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     warn_if_no_encoding_exposure(
         exposure_weights, "Sorted-spikes GLM", clusterless=False
     )
@@ -1400,11 +1398,6 @@ def fit_sorted_spikes_glm_encoding_model(
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
     )
-
-    if weights is None:
-        weights = jnp.ones((position.shape[0],))
-    else:
-        weights = validate_weights(weights, position.shape[0])
 
     encoding_positions = position[support.indices]
     if (
