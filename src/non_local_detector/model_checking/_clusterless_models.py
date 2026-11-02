@@ -89,11 +89,7 @@ def _gaussian_log_kernel(points, centers, std, block_elements=2**18):
 
 def _interior_bins(environment):
     """Interior bin centers and a full-grid to interior index map."""
-    interior = (
-        np.ones(len(environment.place_bin_centers_), dtype=bool)
-        if environment.is_track_interior_ is None
-        else np.asarray(environment.is_track_interior_).ravel()
-    )
+    interior = environment.is_track_interior_flat_
     full_to_local = _full_to_local(np.flatnonzero(interior), interior.size)
     return np.asarray(environment.place_bin_centers_, float)[interior], full_to_local
 

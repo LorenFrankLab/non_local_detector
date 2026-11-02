@@ -874,12 +874,7 @@ def _find_environment(environments, name):
 
 
 def _mask(environment):
-    count = len(environment.place_bin_centers_)
-    return (
-        np.ones(count, dtype=bool)
-        if environment.is_track_interior_ is None
-        else np.asarray(environment.is_track_interior_, dtype=bool).ravel()
-    )
+    return environment.is_track_interior_flat_
 
 
 def _gaussian_block(transition, environment):

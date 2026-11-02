@@ -1731,9 +1731,7 @@ def fit_clusterless_kde_encoding_model(
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
         position, exposure_weights
     )
-    if environment.track_graph is not None and position.shape[1] > 1:
-        # convert to 1D
-        occupancy_samples = environment._linear_position(occupancy_samples)[:, None]
+    occupancy_samples = environment.decoding_position(occupancy_samples)
     occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
         occupancy_samples, weights=jnp.asarray(occupancy_weights)
     )

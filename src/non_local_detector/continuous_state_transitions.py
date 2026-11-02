@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
 from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError
@@ -208,16 +207,7 @@ class RandomWalk:
         else:
             # Linearized position
             transition_matrix = self._handle_with_track_graph()
-        if self.environment.is_track_interior_ is not None:
-            is_track_interior = self.environment.is_track_interior_.ravel()
-        else:
-            if self.environment.place_bin_centers_ is None:
-                raise ValueError(
-                    "place_bin_centers_ is required when is_track_interior_ is None"
-                )
-            is_track_interior = np.ones(
-                len(self.environment.place_bin_centers_), dtype=bool
-            )
+        is_track_interior = self.environment.is_track_interior_flat_
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
         return _normalize_row_probability(transition_matrix)
@@ -361,10 +351,7 @@ class Uniform:
         else:
             raise ValueError("Environment must have defined place bin centers")
 
-        if self.environment1.is_track_interior_ is not None:
-            is_track_interior1 = self.environment1.is_track_interior_.ravel()
-        else:
-            is_track_interior1 = np.ones(n_bins1, dtype=bool)
+        is_track_interior1 = self.environment1.is_track_interior_flat_
 
         if self.environment2_name is None:
             n_bins2 = n_bins1
@@ -378,10 +365,7 @@ class Uniform:
             else:
                 raise ValueError("Environment must have defined place bin centers")
 
-            if self.environment2.is_track_interior_ is not None:
-                is_track_interior2 = self.environment2.is_track_interior_.ravel()
-            else:
-                is_track_interior2 = np.ones(n_bins2, dtype=bool)
+            is_track_interior2 = self.environment2.is_track_interior_flat_
 
         transition_matrix = np.ones((n_bins1, n_bins2))
 
@@ -426,10 +410,7 @@ class Identity:
 
         transition_matrix = np.identity(n_bins)
 
-        if self.environment.is_track_interior_ is not None:
-            is_track_interior = self.environment.is_track_interior_.ravel()
-        else:
-            is_track_interior = np.ones(n_bins, dtype=bool)
+        is_track_interior = self.environment.is_track_interior_flat_
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
 
@@ -474,7 +455,9 @@ class EmpiricalMovement:
         environments : tuple[Environment, ...]
             Tuple of available environments in the model.
         position : np.ndarray, shape (n_time, n_dims)
-            Position of the animal.
+            Position of the animal. On a track graph, multi-dimensional
+            position is linearized and one-column position is taken as linear
+            (see ``Environment.decoding_position``).
         is_training : np.ndarray, shape (n_time,), optional
             Boolean mask to select time points for training. Defaults to all points.
         encoding_group_labels : np.ndarray, shape (n_time,), optional
@@ -504,20 +487,9 @@ class EmpiricalMovement:
             is_environment = environment_labels == self.environment_name
 
         position = position if position.ndim > 1 else position[:, np.newaxis]
-        position = position[is_training & is_encoding & is_environment]
-
-        if (
-            self.environment.edges_ is not None
-            and len(self.environment.edges_) == 1
-            and self.environment.track_graph is not None
-        ):
-            position = get_linearized_position(
-                position=position,
-                track_graph=self.environment.track_graph,
-                edge_order=self.environment.edge_order,
-                edge_spacing=self.environment.edge_spacing,
-            ).linear_position.to_numpy()
-            position = position if position.ndim > 1 else position[:, np.newaxis]
+        position = self.environment.decoding_position(
+            position[is_training & is_encoding & is_environment]
+        )
 
         if self.is_time_reversed:
             samples = np.concatenate((position[1:], position[:-1]), axis=1)

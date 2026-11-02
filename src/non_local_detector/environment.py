@@ -364,6 +364,56 @@ class Environment:
             cache.popitem(last=False)
         return result.copy()
 
+    def decoding_position(self, points: np.ndarray) -> np.ndarray:
+        """Map points into the coordinates the place grid is binned in.
+
+        On a track graph, multi-dimensional points (raw ``(x, y)`` tracking)
+        are linearized onto the track; points with one column, or a 1-D array,
+        are taken as already linear and returned unchanged. Without a track
+        graph the points are returned unchanged.
+
+        Parameters
+        ----------
+        points : np.ndarray, shape (n_points, n_position_dims) or (n_points,)
+            Positions, such as the animal's tracked position.
+
+        Returns
+        -------
+        decoding_points : np.ndarray, shape (n_points, n_decoding_dims)
+            ``n_decoding_dims`` is 1 for linearized points and
+            ``n_position_dims`` otherwise. Unchanged input is returned as is,
+            the same object, including a 1-D array; an empty array of
+            multi-dimensional points on a track graph gives shape ``(0, 1)``.
+        """
+        if self.track_graph is None or np.ndim(points) < 2 or points.shape[1] == 1:
+            return points
+        if points.shape[0] == 0:
+            return np.empty((0, 1))
+        return self._linear_position(points)[:, None]
+
+    @property
+    def is_track_interior_flat_(self) -> np.ndarray:
+        """Flattened interior-bin mask, all bins interior when none is set.
+
+        Returns
+        -------
+        is_track_interior : np.ndarray, shape (n_bins,)
+            Boolean mask over ``place_bin_centers_`` (flattened
+            ``is_track_interior_``).
+
+        Raises
+        ------
+        ValueError
+            If neither ``is_track_interior_`` nor ``place_bin_centers_`` is set.
+        """
+        if self.is_track_interior_ is not None:
+            return np.asarray(self.is_track_interior_, dtype=bool).ravel()
+        if self.place_bin_centers_ is None:
+            raise ValueError(
+                "place_bin_centers_ is required when is_track_interior_ is None"
+            )
+        return np.ones(len(self.place_bin_centers_), dtype=bool)
+
     def _validate_track_graph(self) -> None:
         """Validate track_graph and its required parameters.
 
@@ -1811,10 +1861,7 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
     if environment.place_bin_centers_ is None:
         raise ValueError("place_bin_centers_ is required for track graph construction")
 
-    if environment.is_track_interior_ is not None:
-        interior_data = environment.is_track_interior_.ravel()
-    else:
-        interior_data = np.ones(len(environment.place_bin_centers_), dtype=bool)
+    interior_data = environment.is_track_interior_flat_
 
     for node_id, (node_position, is_interior) in enumerate(
         zip(

@@ -346,21 +346,12 @@ def fit_sorted_spikes_kde_encoding_model(
         exposure_weights, "Sorted-spikes KDE", clusterless=False
     )
 
-    if environment.is_track_interior_ is not None:
-        is_track_interior = environment.is_track_interior_.ravel()
-    else:
-        if environment.place_bin_centers_ is None:
-            raise ValueError(
-                "place_bin_centers_ is required when is_track_interior_ is None"
-            )
-        is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
+    is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
         position, exposure_weights
     )
-    if environment.track_graph is not None and position.shape[1] > 1:
-        # convert to 1D
-        occupancy_samples = environment._linear_position(occupancy_samples)[:, None]
+    occupancy_samples = environment.decoding_position(occupancy_samples)
     occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
         occupancy_samples, weights=occupancy_weights
     )

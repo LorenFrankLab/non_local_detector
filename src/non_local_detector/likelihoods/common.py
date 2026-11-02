@@ -833,11 +833,14 @@ def get_position_at_time(
     position : jnp.ndarray, shape (n_time_position, n_dims_position)
     spike_times : jnp.ndarray, shape (n_spikes,)
     env : Environment | None, optional
-        The spatial environment, by default None
+        The spatial environment, by default None. On a track graph,
+        multi-dimensional position is linearized after interpolation and
+        one-column position is taken as linear (see
+        ``Environment.decoding_position``).
 
     Returns
     -------
-    position_at_spike_times : np.ndarray, shape (n_spikes, n_dims_position)
+    position_at_spike_times : np.ndarray, shape (n_spikes, n_decoding_dims)
     """
     if encoding_support is None:
         position_at_spike_times = scipy.interpolate.interpn(
@@ -845,13 +848,8 @@ def get_position_at_time(
         )
     else:
         position_at_spike_times = encoding_support.interpolate(position, spike_times)
-    if env is not None and env.track_graph is not None:
-        if position_at_spike_times.shape[0] > 0:
-            position_at_spike_times = env._linear_position(position_at_spike_times)[
-                :, None
-            ]
-        else:
-            position_at_spike_times = np.array([])[:, None]
+    if env is not None:
+        position_at_spike_times = env.decoding_position(position_at_spike_times)
 
     return position_at_spike_times
 
@@ -890,11 +888,7 @@ def snap_off_track_positions(
         return position
     edges = environment.edges_
     n_bins = [len(dimension_edges) - 1 for dimension_edges in edges]
-    is_interior = (
-        np.ones(np.prod(n_bins), dtype=bool)
-        if environment.is_track_interior_ is None
-        else np.asarray(environment.is_track_interior_).ravel()
-    )
+    is_interior = environment.is_track_interior_flat_
     finite = np.all(np.isfinite(points), axis=1)
     in_grid = finite & np.all(
         [
