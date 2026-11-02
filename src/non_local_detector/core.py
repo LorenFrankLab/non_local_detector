@@ -246,10 +246,21 @@ def _degenerate_and_nan_masks(
         from impossible data. ``_condition_on`` lets the NaN reach the posterior
         so it stays visible.
     """
-    ll_array = jnp.asarray(log_likelihoods)
-    degenerate_mask = np.asarray(ll_array.max(axis=-1) == -jnp.inf)
-    nan_mask = np.asarray(jnp.any(jnp.isnan(ll_array), axis=-1))
+    degenerate_mask, nan_mask = jax.device_get(
+        _degenerate_and_nan_masks_device(jnp.asarray(log_likelihoods))
+    )
     return degenerate_mask, nan_mask
+
+
+@jax.jit
+def _degenerate_and_nan_masks_device(
+    log_likelihoods: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Device-side masks of ``_degenerate_and_nan_masks`` in one fused pass."""
+    return (
+        log_likelihoods.max(axis=-1) == -jnp.inf,
+        jnp.any(jnp.isnan(log_likelihoods), axis=-1),
+    )
 
 
 def _accumulate_chunk_degeneracy(
