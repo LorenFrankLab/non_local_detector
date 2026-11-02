@@ -2295,11 +2295,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
                 else:
                     raise ValueError("Environment place_bin_centers_ cannot be None")
-                if environment.is_track_interior_ is not None:
-                    is_track_interior.append(environment.is_track_interior_.ravel())
-                else:
-                    # Default fallback: all positions are track interior
-                    is_track_interior.append(np.ones(bin_sizes[-1], dtype=bool))
+                is_track_interior.append(environment.is_track_interior_flat_)
 
         self.state_ind_ = np.concatenate(state_ind)
         self.n_state_bins_ = len(self.state_ind_)

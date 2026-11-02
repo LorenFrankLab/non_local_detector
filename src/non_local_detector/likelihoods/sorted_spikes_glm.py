@@ -1387,14 +1387,7 @@ def fit_sorted_spikes_glm_encoding_model(
     # Use position_time directly so spike counts, design matrix, and
     # weights all share the same time grid.
 
-    if environment.is_track_interior_ is not None:
-        is_track_interior = environment.is_track_interior_.ravel()
-    else:
-        if environment.place_bin_centers_ is None:
-            raise ValueError(
-                "place_bin_centers_ is required when is_track_interior_ is None"
-            )
-        is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
+    is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
     )

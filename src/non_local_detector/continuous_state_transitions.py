@@ -207,16 +207,7 @@ class RandomWalk:
         else:
             # Linearized position
             transition_matrix = self._handle_with_track_graph()
-        if self.environment.is_track_interior_ is not None:
-            is_track_interior = self.environment.is_track_interior_.ravel()
-        else:
-            if self.environment.place_bin_centers_ is None:
-                raise ValueError(
-                    "place_bin_centers_ is required when is_track_interior_ is None"
-                )
-            is_track_interior = np.ones(
-                len(self.environment.place_bin_centers_), dtype=bool
-            )
+        is_track_interior = self.environment.is_track_interior_flat_
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
         return _normalize_row_probability(transition_matrix)
@@ -360,10 +351,7 @@ class Uniform:
         else:
             raise ValueError("Environment must have defined place bin centers")
 
-        if self.environment1.is_track_interior_ is not None:
-            is_track_interior1 = self.environment1.is_track_interior_.ravel()
-        else:
-            is_track_interior1 = np.ones(n_bins1, dtype=bool)
+        is_track_interior1 = self.environment1.is_track_interior_flat_
 
         if self.environment2_name is None:
             n_bins2 = n_bins1
@@ -377,10 +365,7 @@ class Uniform:
             else:
                 raise ValueError("Environment must have defined place bin centers")
 
-            if self.environment2.is_track_interior_ is not None:
-                is_track_interior2 = self.environment2.is_track_interior_.ravel()
-            else:
-                is_track_interior2 = np.ones(n_bins2, dtype=bool)
+            is_track_interior2 = self.environment2.is_track_interior_flat_
 
         transition_matrix = np.ones((n_bins1, n_bins2))
 
@@ -425,10 +410,7 @@ class Identity:
 
         transition_matrix = np.identity(n_bins)
 
-        if self.environment.is_track_interior_ is not None:
-            is_track_interior = self.environment.is_track_interior_.ravel()
-        else:
-            is_track_interior = np.ones(n_bins, dtype=bool)
+        is_track_interior = self.environment.is_track_interior_flat_
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
 

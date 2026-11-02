@@ -389,6 +389,29 @@ class Environment:
             return np.empty((0, 1))
         return self._linear_position(points)[:, None]
 
+    @property
+    def is_track_interior_flat_(self) -> np.ndarray:
+        """Flattened interior-bin mask, all bins interior when none is set.
+
+        Returns
+        -------
+        is_track_interior : np.ndarray, shape (n_bins,)
+            Boolean mask over ``place_bin_centers_`` (flattened
+            ``is_track_interior_``).
+
+        Raises
+        ------
+        ValueError
+            If neither ``is_track_interior_`` nor ``place_bin_centers_`` is set.
+        """
+        if self.is_track_interior_ is not None:
+            return self.is_track_interior_.ravel()
+        if self.place_bin_centers_ is None:
+            raise ValueError(
+                "place_bin_centers_ is required when is_track_interior_ is None"
+            )
+        return np.ones(len(self.place_bin_centers_), dtype=bool)
+
     def _validate_track_graph(self) -> None:
         """Validate track_graph and its required parameters.
 
@@ -1836,10 +1859,7 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
     if environment.place_bin_centers_ is None:
         raise ValueError("place_bin_centers_ is required for track graph construction")
 
-    if environment.is_track_interior_ is not None:
-        interior_data = environment.is_track_interior_.ravel()
-    else:
-        interior_data = np.ones(len(environment.place_bin_centers_), dtype=bool)
+    interior_data = environment.is_track_interior_flat_
 
     for node_id, (node_position, is_interior) in enumerate(
         zip(

@@ -647,15 +647,7 @@ def fit_clusterless_gmm_encoding_model(
     warn_if_no_encoding_exposure(exposure_weights, "Clusterless GMM", clusterless=True)
     occupancy_sample_weight = _gmm_sample_weight(exposure_weights, False)
 
-    # Interior bins (cached)
-    if environment.is_track_interior_ is not None:
-        is_track_interior = environment.is_track_interior_.ravel()
-    else:
-        if environment.place_bin_centers_ is None:
-            raise ValueError(
-                "place_bin_centers_ is required when is_track_interior_ is None"
-            )
-        is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
+    is_track_interior = environment.is_track_interior_flat_
 
     # Occupancy/GPI position: linear position on a track graph.
     pos_for_occ = _as_jnp(environment.decoding_position(position))

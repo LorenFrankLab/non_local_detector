@@ -513,10 +513,7 @@ def fit_clusterless_mark_glm_encoding_model(
         exposure_weights, "Clusterless mark GLM", clusterless=True
     )
 
-    if environment.is_track_interior_ is not None:
-        is_track_interior = environment.is_track_interior_.ravel()
-    else:
-        is_track_interior = np.ones(len(environment.place_bin_centers_), dtype=bool)
+    is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
     )

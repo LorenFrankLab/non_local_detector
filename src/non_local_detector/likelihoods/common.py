@@ -888,11 +888,7 @@ def snap_off_track_positions(
         return position
     edges = environment.edges_
     n_bins = [len(dimension_edges) - 1 for dimension_edges in edges]
-    is_interior = (
-        np.ones(np.prod(n_bins), dtype=bool)
-        if environment.is_track_interior_ is None
-        else np.asarray(environment.is_track_interior_).ravel()
-    )
+    is_interior = environment.is_track_interior_flat_
     finite = np.all(np.isfinite(points), axis=1)
     in_grid = finite & np.all(
         [
