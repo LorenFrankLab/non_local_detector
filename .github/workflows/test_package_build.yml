@@ -54,6 +54,14 @@ jobs:
         run: uv run --no-sync ruff check src/ --output-format=github
       - name: Run ruff formatting check
         run: uv run --no-sync ruff format --check src/
+      - name: Lint the workflows
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        with:
+          persona: regular
+          # Report as annotations; uploading to code scanning would need
+          # security-events: write.
+          advanced-security: false
+          annotations: true
 
   test:
     name: Test Python ${{ matrix.python-version }} (${{ matrix.os }})
