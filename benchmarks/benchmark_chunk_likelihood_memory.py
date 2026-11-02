@@ -1039,7 +1039,7 @@ def main(argv: list[str] | None = None) -> int:
             "jax": jax.__version__,
             **provenance(__file__),
         }
-        with open(args.json, "w") as handle:
+        with Path(args.json).open("w") as handle:
             json.dump(results, handle, indent=2)
         print(f"\nRaw results written to {args.json}")
 

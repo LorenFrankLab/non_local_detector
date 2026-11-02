@@ -678,9 +678,11 @@ def main():
             options = jax.profiler.ProfileOptions()
             options.python_tracer_level = args.xprof_python_tracer_level
             profiler = StageProfiler(jax, False, None)
-            with instrumented(profiler, detector_class):
-                with jax.profiler.trace(str(args.xprof_dir), profiler_options=options):
-                    run_em(max_iter=1)
+            with (
+                instrumented(profiler, detector_class),
+                jax.profiler.trace(str(args.xprof_dir), profiler_options=options),
+            ):
+                run_em(max_iter=1)
             report["xprof"] = str(args.xprof_dir)
             write_report()
         if args.cprofile:

@@ -37,15 +37,15 @@ def analyze_extreme_features():
     n_features = 4
 
     # Extreme feature values (large distances)
-    np.random.seed(42)
-    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 50 + 100)
-    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 50 + 200)
+    rng = np.random.default_rng(42)
+    dec_features = jnp.array(rng.standard_normal((n_dec_spikes, n_features)) * 50 + 100)
+    enc_features = jnp.array(rng.standard_normal((n_enc_spikes, n_features)) * 50 + 200)
     waveform_stds = jnp.array([10.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 2.0
 
     # Position distance
-    enc_positions = jnp.array(np.random.uniform(0, 100, (n_enc_spikes, 1)))
+    enc_positions = jnp.array(rng.uniform(0, 100, (n_enc_spikes, 1)))
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
 

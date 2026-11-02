@@ -2,6 +2,7 @@
 """Inspect JAXpr (JAX intermediate representation) for understanding compilation."""
 
 import sys
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -189,11 +190,11 @@ When GEMM wins:
 
     # Save full HLO for inspection
     print("\nSaving full HLO representations to files...")
-    with open("/tmp/hlo_linear.txt", "w") as f:
+    with Path("/tmp/hlo_linear.txt").open("w") as f:
         f.write(hlo_linear)
     print("  Linear HLO saved to: /tmp/hlo_linear.txt")
 
-    with open("/tmp/hlo_gemm.txt", "w") as f:
+    with Path("/tmp/hlo_gemm.txt").open("w") as f:
         f.write(hlo_gemm)
     print("  GEMM HLO saved to: /tmp/hlo_gemm.txt")
 

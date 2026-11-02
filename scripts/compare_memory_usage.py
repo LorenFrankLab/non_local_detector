@@ -197,9 +197,9 @@ def main():
             print(f"{n_dims}D Features")
             print(f"{'-' * 70}")
 
-            np.random.seed(42)
-            eval_points = jnp.array(np.random.randn(config["n_eval"], n_dims))
-            samples = jnp.array(np.random.randn(config["n_samples"], n_dims))
+            rng = np.random.default_rng(42)
+            eval_points = jnp.array(rng.standard_normal((config["n_eval"], n_dims)))
+            samples = jnp.array(rng.standard_normal((config["n_samples"], n_dims)))
             std = jnp.ones(n_dims)
 
             # Theoretical analysis

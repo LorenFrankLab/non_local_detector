@@ -70,9 +70,9 @@ def main():
     results = []
 
     for n_dims in dimensions:
-        np.random.seed(42)
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        rng = np.random.default_rng(42)
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.ones(n_dims)
 
         # Time original (clusterless_kde.py)
@@ -133,9 +133,9 @@ def main():
     print()
 
     for n_dims in [2, 10]:
-        np.random.seed(42)
-        eval_points = jnp.array(np.random.randn(50, n_dims))
-        samples = jnp.array(np.random.randn(100, n_dims))
+        rng = np.random.default_rng(42)
+        eval_points = jnp.array(rng.standard_normal((50, n_dims)))
+        samples = jnp.array(rng.standard_normal((100, n_dims)))
         std = jnp.ones(n_dims)
 
         result_orig = kde_distance_original(eval_points, samples, std)
