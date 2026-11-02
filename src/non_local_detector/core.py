@@ -1,13 +1,18 @@
 import functools
 import logging
 from collections.abc import Callable
+from typing import Any, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.typing import ArrayLike
 
 logger = logging.getLogger(__name__)
+
+# Concrete array inputs: the functions below call array methods (``.sum``,
+# ``.dtype``, indexing), which the scalar members of ``jax.typing.ArrayLike``
+# do not provide.
+ArrayLike: TypeAlias = jax.Array | np.ndarray
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
@@ -35,7 +40,7 @@ def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     c = u.sum(axis=axis, keepdims=True)
     u = u / jnp.where(c == 0.0, 1.0, c)
-    return u, c.squeeze(axis)
+    return cast(jax.Array, u), cast(jax.Array, c.squeeze(axis))
 
 
 # Helper functions for the two key filtering steps
@@ -79,7 +84,10 @@ def _condition_on_primal(
     # when the dominant prior mass is itself subnormal. (XLA CPU flushes
     # subnormals to zero, so there they are simply unreachable; the floor
     # matters on backends that preserve them.)
-    joint_shift = jnp.maximum(joint_shift, jnp.log(jnp.finfo(probs.dtype).tiny))
+    joint_shift = jnp.maximum(
+        joint_shift,
+        jnp.log(jnp.finfo(probs.dtype).tiny),  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
+    )
 
     # The first shift excludes unreachable maxima; the second rescales tiny
     # prior mass before exponentiation. Multiply the prior in probability
@@ -97,7 +105,7 @@ def _condition_on_primal(
 
 
 @jax.custom_jvp
-def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
+def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Condition on new emissions, given in the form of log likelihoods
     for each discrete state, while avoiding numerical underflow.
 
@@ -204,7 +212,7 @@ def _condition_on_jvp(
     # is never repaired here. A strict ``where`` rather than ``jnp.minimum``:
     # at an exact tie ``minimum`` splits its derivative between operands and
     # would halve second derivatives of a derivative that sits on the bound.
-    finfo = jnp.finfo(probs.dtype)
+    finfo = jnp.finfo(probs.dtype)  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
     max_exponent = jnp.nextafter(jnp.log(finfo.max), jnp.asarray(0.0, probs.dtype))
     exponent = jnp.where(exponent > max_exponent, max_exponent, exponent)
     weight_dot = jnp.exp(exponent) * probs_dot + posterior * ll_dot
@@ -266,7 +274,7 @@ def _degenerate_and_nan_masks_device(
 def _accumulate_chunk_degeneracy(
     log_likelihood_chunk: ArrayLike,
     time_inds: np.ndarray,
-    degenerate_indices_out: list | None,
+    degenerate_indices_out: list[int] | None,
 ) -> tuple[int, int]:
     """Tally a chunk's degenerate/NaN steps at one host sync point.
 
@@ -466,7 +474,9 @@ def _filter_impl(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+) -> tuple[
+    tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
+]:
     """JIT-compiled forward pass of the forward-backward algorithm.
 
     See :func:`filter` for the user-facing wrapper that adds host-side
@@ -480,7 +490,9 @@ def _filter_impl(
     chunked drivers report :func:`_float64_evidence` of the increments.
     """
 
-    def _step(carry, ll):
+    def _step(
+        carry: tuple[jax.Array, jax.Array], ll: Any
+    ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
         log_normalizer, predicted_probs = carry
 
         filtered_probs, log_norm = _condition_on(predicted_probs, ll)
@@ -494,7 +506,10 @@ def _filter_impl(
         )
 
     return jax.lax.scan(
-        _step, (0.0, initial_distribution), log_likelihoods, unroll=_HMM_SCAN_UNROLL
+        _step,
+        (0.0, initial_distribution),  # type: ignore[arg-type]  # carry starts as a Python float, becomes an Array
+        log_likelihoods,
+        unroll=_HMM_SCAN_UNROLL,
     )
 
 
@@ -630,7 +645,7 @@ def _smoother_impl(
         initial = filtered_probs[-1]
 
     def _step(
-        smoothed_probs_next: jnp.ndarray, args: tuple[jnp.ndarray, int]
+        smoothed_probs_next: Any, args: tuple[ArrayLike, ArrayLike]
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         filtered_probs_t, t = args
 
@@ -668,7 +683,9 @@ _smoother_internal = jax.jit(
 ROW_SLICE_ATTRIBUTE = "accepts_row_slice"
 
 
-def row_slice_aware(log_likelihood_func: Callable[..., ArrayLike]):
+def row_slice_aware(
+    log_likelihood_func: Callable[..., ArrayLike],
+) -> Callable[..., ArrayLike]:
     """Mark a likelihood callback as accepting the ``row_slice`` keyword.
 
     A marked callback bins the spikes against the FULL decoding ``time`` it is
@@ -779,7 +796,7 @@ def _store_chunk_rows(
 def _call_log_likelihood_chunk(
     log_likelihood_func: Callable[..., ArrayLike],
     time: np.ndarray,
-    log_likelihood_args: tuple,
+    log_likelihood_args: tuple[Any, ...],
     time_inds: np.ndarray,
     is_missing_chunk: np.ndarray | None,
 ) -> ArrayLike:
@@ -823,31 +840,31 @@ def _state_marginals(posterior: jnp.ndarray, aggregation: jnp.ndarray) -> jnp.nd
 
 
 def _chunked_filter_smoother(
-    filter_chunk: Callable[..., tuple],
+    filter_chunk: Callable[..., tuple[Any, ...]],
     smoother_chunk: Callable[..., jnp.ndarray],
     *,
     time: np.ndarray,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
-    log_likelihood_args: tuple,
+    log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None,
     n_chunks: int,
     log_likelihoods: np.ndarray | None,
     cache_log_likelihoods: bool,
     dtype: jnp.dtype,
-    degenerate_indices_out: list | None,
+    degenerate_indices_out: list[int] | None,
     accumulate_log_likelihoods: bool,
     host_outputs: bool,
 ) -> tuple[
-    np.ndarray,
+    np.ndarray | jax.Array,
     np.ndarray,
     float,
     np.ndarray,
     np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
+    np.ndarray | None,
+    np.ndarray | jax.Array,
+    np.ndarray | jax.Array,
 ]:
     """Chunked forward-backward shared by the stationary and covariate drivers.
 
@@ -907,15 +924,14 @@ def _chunked_filter_smoother(
     )  # (n_state_bins, n_states)
 
     # Initialize variables that may be referenced in loop conditionals
-    predicted_probs_next = None
-    acausal_posterior_chunk = None
+    predicted_probs_next: jax.Array | None = None
+    acausal_posterior_chunk: jax.Array | None = None
 
     # Precompute or convert log_likelihoods to JAX once
     if cache_log_likelihoods and log_likelihoods is None:
-        log_likelihoods = log_likelihood_func(
-            time,
-            *log_likelihood_args,
-            is_missing=is_missing,
+        log_likelihoods = cast(
+            np.ndarray,
+            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
         )
     log_likelihoods_jax = (
         jnp.asarray(log_likelihoods, dtype=dtype)
@@ -932,7 +948,7 @@ def _chunked_filter_smoother(
         time_inds = jnp.asarray(time_inds_np)
 
         if log_likelihoods_jax is not None:
-            log_likelihood_chunk = log_likelihoods_jax[time_inds]
+            log_likelihood_chunk: ArrayLike = log_likelihoods_jax[time_inds]
         else:
             is_missing_chunk = (
                 is_missing[time_inds_np] if is_missing is not None else None
@@ -1026,7 +1042,7 @@ def _chunked_filter_smoother(
             initial=(
                 causal_posterior_jax[-1]
                 if chunk_id == 0
-                else acausal_posterior_chunk[0]
+                else cast(jax.Array, acausal_posterior_chunk)[0]
             ),
             time_inds=time_inds,
             n_time=n_time,
@@ -1062,25 +1078,25 @@ def chunked_filter_smoother(
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
-    log_likelihood_args: tuple,
+    log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
-    degenerate_indices_out: list | None = None,
+    degenerate_indices_out: list[int] | None = None,
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
 ) -> tuple[
-    np.ndarray,
+    np.ndarray | jax.Array,
     np.ndarray,
     float,
     np.ndarray,
     np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
+    np.ndarray | None,
+    np.ndarray | jax.Array,
+    np.ndarray | jax.Array,
 ]:
     """Filter and smooth the state probabilities in chunks.
 
@@ -1155,11 +1171,14 @@ def chunked_filter_smoother(
         initial_distribution: jnp.ndarray,
         log_likelihoods: jnp.ndarray,
         time_inds: jnp.ndarray,  # noqa: ARG001 -- chunked-filter callback signature
-    ) -> tuple:
-        return _filter_internal(
-            initial_distribution=initial_distribution,
-            transition_matrix=transition_matrix_jax,
-            log_likelihoods=log_likelihoods,
+    ) -> tuple[Any, ...]:
+        return cast(
+            tuple[Any, ...],
+            _filter_internal(
+                initial_distribution=initial_distribution,
+                transition_matrix=transition_matrix_jax,
+                log_likelihoods=log_likelihoods,
+            ),
         )
 
     def smoother_chunk(
@@ -1168,12 +1187,15 @@ def chunked_filter_smoother(
         time_inds: jnp.ndarray,
         n_time: int,
     ) -> jnp.ndarray:
-        return _smoother_internal(
-            transition_matrix=transition_matrix_jax,
-            filtered_probs=filtered_probs,
-            initial=initial,
-            ind=time_inds,
-            n_time=n_time,
+        return cast(
+            jax.Array,
+            _smoother_internal(
+                transition_matrix=transition_matrix_jax,
+                filtered_probs=filtered_probs,
+                initial=initial,
+                ind=time_inds,
+                n_time=n_time,
+            ),
         )
 
     return _chunked_filter_smoother(
@@ -1225,7 +1247,9 @@ def _viterbi_impl(
     log_initial_distribution = _safe_log(initial_distribution)
 
     # Run the backward pass
-    def _backward_pass(best_next_score, t):
+    def _backward_pass(
+        best_next_score: jax.Array, t: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
         scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
         best_next_state = jnp.argmax(scores, axis=1)
         best_next_score = jnp.max(scores, axis=1)
@@ -1240,7 +1264,9 @@ def _viterbi_impl(
     )
 
     # Run the forward pass
-    def _forward_pass(state, best_next_state):
+    def _forward_pass(
+        state: jax.Array, best_next_state: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
         next_state = best_next_state[state]
         return next_state, next_state
 
@@ -1261,7 +1287,7 @@ def most_likely_sequence(
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
-    log_likelihood_args: tuple,
+    log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
@@ -1303,10 +1329,9 @@ def most_likely_sequence(
         raise NotImplementedError(msg)
 
     if log_likelihoods is None:
-        log_likelihoods = log_likelihood_func(
-            time,
-            *log_likelihood_args,
-            is_missing=is_missing,
+        log_likelihoods = cast(
+            np.ndarray,
+            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
         )
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
@@ -1332,7 +1357,7 @@ def most_likely_sequence(
 
 
 ## Covariate dependent filtering and smoothing ##
-def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype) -> jnp.ndarray:
+def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jnp.ndarray:
     """One-hot discrete-state membership of each state bin.
 
     Parameters
@@ -1427,7 +1452,9 @@ def _filter_covariate_dependent_impl(
     continuous_transition_matrix: ArrayLike,
     state_ind: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+) -> tuple[
+    tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
+]:
     """JIT-compiled covariate-dependent forward pass.
 
     See :func:`filter_covariate_dependent` for the user-facing wrapper that
@@ -1440,8 +1467,10 @@ def _filter_covariate_dependent_impl(
     )
 
     def _step(
-        carry: tuple[float, jnp.ndarray], args: tuple[jnp.ndarray, jnp.ndarray]
-    ) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+        carry: tuple[jnp.ndarray, jnp.ndarray], args: tuple[ArrayLike, ArrayLike]
+    ) -> tuple[
+        tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
+    ]:
         log_normalizer, predicted_probs = carry
         ll, discrete_transition_matrix_t = args
 
@@ -1463,7 +1492,7 @@ def _filter_covariate_dependent_impl(
 
     return jax.lax.scan(
         _step,
-        (0.0, initial_distribution),
+        (0.0, initial_distribution),  # type: ignore[arg-type]  # carry starts as a Python float, becomes an Array
         (log_likelihoods, discrete_transition_matrix),
         unroll=_HMM_SCAN_UNROLL,
     )
@@ -1584,7 +1613,9 @@ def _smoother_covariate_dependent_impl(
         continuous_transition_matrix.dtype,
     )
 
-    def _step(smoothed_probs_next, args):
+    def _step(
+        smoothed_probs_next: Any, args: tuple[ArrayLike, ArrayLike, ArrayLike]
+    ) -> tuple[jax.Array, jax.Array]:
         filtered_probs_t, discrete_transition_matrix_t, t = args
 
         predicted_probs = _covariate_forward_product(
@@ -1635,25 +1666,25 @@ def chunked_filter_smoother_covariate_dependent(
     discrete_transition_matrix: np.ndarray,
     continuous_transition_matrix: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
-    log_likelihood_args: tuple,
+    log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
-    degenerate_indices_out: list | None = None,
+    degenerate_indices_out: list[int] | None = None,
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
 ) -> tuple[
-    np.ndarray,
+    np.ndarray | jax.Array,
     np.ndarray,
     float,
     np.ndarray,
     np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
+    np.ndarray | None,
+    np.ndarray | jax.Array,
+    np.ndarray | jax.Array,
 ]:
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
 
@@ -1743,14 +1774,17 @@ def chunked_filter_smoother_covariate_dependent(
         initial_distribution: jnp.ndarray,
         log_likelihoods: jnp.ndarray,
         time_inds: jnp.ndarray,
-    ) -> tuple:
+    ) -> tuple[Any, ...]:
         # Donated: the time slice is fresh and single-use.
-        return _filter_covariate_dependent_internal(
-            initial_distribution=initial_distribution,
-            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
-            continuous_transition_matrix=continuous_transition_matrix_jax,
-            state_ind=state_ind_jax,
-            log_likelihoods=log_likelihoods,
+        return cast(
+            tuple[Any, ...],
+            _filter_covariate_dependent_internal(
+                initial_distribution=initial_distribution,
+                discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+                continuous_transition_matrix=continuous_transition_matrix_jax,
+                state_ind=state_ind_jax,
+                log_likelihoods=log_likelihoods,
+            ),
         )
 
     def smoother_chunk(
@@ -1760,14 +1794,17 @@ def chunked_filter_smoother_covariate_dependent(
         n_time: int,
     ) -> jnp.ndarray:
         # Donated: the time slice is fresh and single-use.
-        return _smoother_covariate_dependent_internal(
-            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
-            continuous_transition_matrix=continuous_transition_matrix_jax,
-            state_ind=state_ind_jax,
-            filtered_probs=filtered_probs,
-            initial=initial,
-            ind=time_inds,
-            n_time=n_time,
+        return cast(
+            jax.Array,
+            _smoother_covariate_dependent_internal(
+                discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+                continuous_transition_matrix=continuous_transition_matrix_jax,
+                state_ind=state_ind_jax,
+                filtered_probs=filtered_probs,
+                initial=initial,
+                ind=time_inds,
+                n_time=n_time,
+            ),
         )
 
     return _chunked_filter_smoother(
@@ -1832,7 +1869,9 @@ def _viterbi_covariate_dependent_impl(
 
     # Run the backward pass
     # Index discrete transitions per-step to avoid materializing T×N_bins×N_bins array
-    def _backward_pass(best_next_score, args):
+    def _backward_pass(
+        best_next_score: jax.Array, args: tuple[jax.Array, jax.Array]
+    ) -> tuple[jax.Array, jax.Array]:
         t, log_discrete_transition_matrix_t = args
         # log T[i, j] + next[j] = log C[i, j] + (log D[s_i, s_j] + next[j]).
         # The bracket depends on i only through s_i, so build it per source
@@ -1859,7 +1898,9 @@ def _viterbi_covariate_dependent_impl(
     )
 
     # Run the forward pass
-    def _forward_pass(state, best_next_state):
+    def _forward_pass(
+        state: jax.Array, best_next_state: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
         next_state = best_next_state[state]
         return next_state, next_state
 
@@ -1882,7 +1923,7 @@ def most_likely_sequence_covariate_dependent(
     discrete_transition_matrix: np.ndarray,
     continuous_transition_matrix: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
-    log_likelihood_args: tuple,
+    log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
@@ -1930,10 +1971,9 @@ def most_likely_sequence_covariate_dependent(
         raise NotImplementedError(msg)
 
     if log_likelihoods is None:
-        log_likelihoods = log_likelihood_func(
-            time,
-            *log_likelihood_args,
-            is_missing=is_missing,
+        log_likelihoods = cast(
+            np.ndarray,
+            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
         )
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
