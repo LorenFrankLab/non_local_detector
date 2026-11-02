@@ -1339,30 +1339,93 @@ def _index_discrete_transition(
     return discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
 
 
-def _get_transition_matrix(
-    discrete_transition_matrix_t: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-) -> jnp.ndarray:
-    """Get the transition matrix for the current time point.
-
-    Combines the discrete and continuous transition matrices.
+def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype) -> jnp.ndarray:
+    """One-hot discrete-state membership of each state bin.
 
     Parameters
     ----------
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
+    n_states : int
+    dtype : dtype
+
+    Returns
+    -------
+    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+    """
+    return (state_ind[None, :] == jnp.arange(n_states)[:, None]).astype(dtype)
+
+
+def _covariate_forward_product(
+    probs: ArrayLike,
+    discrete_transition_matrix_t: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    one_hot: ArrayLike,
+) -> jnp.ndarray:
+    """Propagate probabilities forward through one covariate-dependent step.
+
+    Computes ``probs @ T`` for the joint transition
+    ``T[i, j] = C[i, j] * D[s_i, s_j]`` without building ``T``: grouping the
+    source bins by discrete state ``k`` gives
+    ``out[j] = sum_k D[k, s_j] * (probs * (s == k)) @ C[:, j]``, so each step
+    reads ``C`` once in a single (n_states, n_state_bins) matrix product.
+
+    Parameters
+    ----------
+    probs : jnp.ndarray, shape (n_state_bins,)
     discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
     continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
     state_ind : jnp.ndarray, shape (n_state_bins,)
         Maps each state bin to its discrete state.
+    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+        ``_state_one_hot(state_ind, n_states, dtype)``.
 
     Returns
     -------
-    transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    propagated : jnp.ndarray, shape (n_state_bins,)
     """
-    discrete_indexed = _index_discrete_transition(
-        discrete_transition_matrix_t, state_ind
+    # HIGHEST: the default CUDA precision (TF32) would round these products.
+    per_state = jnp.matmul(
+        one_hot * probs,
+        continuous_transition_matrix,
+        precision=jax.lax.Precision.HIGHEST,
     )
-    return continuous_transition_matrix * discrete_indexed
+    return jnp.sum(discrete_transition_matrix_t[:, state_ind] * per_state, axis=0)
+
+
+def _covariate_backward_product(
+    values: ArrayLike,
+    discrete_transition_matrix_t: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    one_hot: ArrayLike,
+) -> jnp.ndarray:
+    """Pull values backward through one covariate-dependent step.
+
+    Computes ``T @ values`` for ``T[i, j] = C[i, j] * D[s_i, s_j]`` without
+    building ``T``: ``out[i] = sum_k D[s_i, k] * C[i, :] @ (values * (s == k))``.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n_state_bins,)
+    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
+    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+        ``_state_one_hot(state_ind, n_states, dtype)``.
+
+    Returns
+    -------
+    pulled : jnp.ndarray, shape (n_state_bins,)
+    """
+    per_state = jnp.matmul(
+        continuous_transition_matrix,
+        (one_hot * values).T,
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    return jnp.sum(discrete_transition_matrix_t[state_ind, :] * per_state, axis=1)
 
 
 def _filter_covariate_dependent_impl(
@@ -1377,6 +1440,11 @@ def _filter_covariate_dependent_impl(
     See :func:`filter_covariate_dependent` for the user-facing wrapper that
     adds host-side diagnostics. Outputs as in :func:`_filter_impl`.
     """
+    one_hot = _state_one_hot(
+        state_ind,
+        discrete_transition_matrix.shape[-1],
+        continuous_transition_matrix.dtype,
+    )
 
     def _step(
         carry: tuple[float, jnp.ndarray], args: tuple[jnp.ndarray, jnp.ndarray]
@@ -1386,8 +1454,12 @@ def _filter_covariate_dependent_impl(
 
         filtered_probs, log_norm = _condition_on(predicted_probs, ll)
         log_normalizer += log_norm
-        predicted_probs_next = filtered_probs @ _get_transition_matrix(
-            discrete_transition_matrix_t, continuous_transition_matrix, state_ind
+        predicted_probs_next = _covariate_forward_product(
+            filtered_probs,
+            discrete_transition_matrix_t,
+            continuous_transition_matrix,
+            state_ind,
+            one_hot,
         )
 
         return (log_normalizer, predicted_probs_next), (
@@ -1513,21 +1585,28 @@ def _smoother_covariate_dependent_impl(
         ind = jnp.arange(n_time)
     if initial is None:
         initial = filtered_probs[-1]
+    one_hot = _state_one_hot(
+        state_ind,
+        discrete_transition_matrix.shape[-1],
+        continuous_transition_matrix.dtype,
+    )
 
     def _step(smoothed_probs_next, args):
         filtered_probs_t, discrete_transition_matrix_t, t = args
 
-        transition_matrix = _get_transition_matrix(
+        predicted_probs = _covariate_forward_product(
+            filtered_probs_t,
             discrete_transition_matrix_t,
             continuous_transition_matrix,
             state_ind,
+            one_hot,
         )
-
-        # Compute predicted probs once and reuse (avoids redundant matmul)
-        predicted_probs = filtered_probs_t @ transition_matrix
-
-        smoothed_probs = filtered_probs_t * (
-            transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
+        smoothed_probs = filtered_probs_t * _covariate_backward_product(
+            _divide_safe(smoothed_probs_next, predicted_probs),
+            discrete_transition_matrix_t,
+            continuous_transition_matrix,
+            state_ind,
+            one_hot,
         ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
         smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
 
@@ -1605,10 +1684,11 @@ def chunked_filter_smoother_covariate_dependent(
     is_missing : np.ndarray, shape (n_time,), optional
     n_chunks : int, optional
         Number of chunks to split the data into, by default 1.
-        The discrete transition is expanded to the joint
-        (n_state_bins, n_state_bins) transition one time step at a time inside
-        the scan, so the (n_time, n_state_bins, n_state_bins) joint transition
-        is never materialized; ``n_chunks=1`` is feasible even on long sessions.
+        Each step applies the discrete transition per discrete state on top of
+        the continuous transition, so no joint (n_state_bins, n_state_bins)
+        transition is built per step and the (n_time, n_state_bins,
+        n_state_bins) one never exists; ``n_chunks=1`` is feasible even on long
+        sessions.
     log_likelihoods : np.ndarray, optional
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached instead of recomputed for each chunk, by default True
@@ -1653,9 +1733,9 @@ def chunked_filter_smoother_covariate_dependent(
         continuous_transition_matrix, dtype=dtype
     )
     # Convert the discrete transitions but do not expand them to state bins:
-    # each chunk takes its time slice, and the scan body indexes the states
-    # per step, so the joint (n_time, n_state_bins, n_state_bins) transition
-    # is never materialized.
+    # each chunk takes its time slice, and the scan body applies them per
+    # discrete state, so no joint (n_state_bins, n_state_bins) transition is
+    # materialized.
     discrete_transition_matrix_jax = jnp.asarray(
         discrete_transition_matrix, dtype=dtype
     )
