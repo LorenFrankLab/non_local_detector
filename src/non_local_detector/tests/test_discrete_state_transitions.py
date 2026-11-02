@@ -390,7 +390,7 @@ class TestPredictDiscreteStateTransitions:
 
         new_design = np.column_stack((np.ones_like(speed), speed))
         logits = np.einsum("tc,csk->tsk", new_design, coefficients)
-        logits = np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1)
+        logits = np.concatenate((logits, np.zeros((*logits.shape[:-1], 1))), axis=-1)
         expected = softmax(logits, axis=-1)
         assert isinstance(result, np.ndarray)
         assert result.shape == (speed.size, 3, 3)

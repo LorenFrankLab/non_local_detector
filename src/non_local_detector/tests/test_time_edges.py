@@ -270,7 +270,7 @@ def test_grid_generator_rejects_unresolvable_requested_width_before_allocation(
 def test_finite_edges_with_overflowed_duration_are_rejected():
     """Finite endpoints must still describe a finite physical duration."""
     extreme = np.finfo(np.float64).max
-    with pytest.raises(DataError, match="finite.*duration"):
+    with pytest.raises(DataError, match=r"finite.*duration"):
         uniform_time_bin_width(np.array([-extreme, extreme]))
 
 

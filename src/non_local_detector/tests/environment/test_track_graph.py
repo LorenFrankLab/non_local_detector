@@ -43,8 +43,7 @@ def make_env_graph(place_bin_size=1.0, direction=(1.0, 0.0)):
         edge_order=edge_order,
         edge_spacing=edge_spacing,
     )
-    env = env.fit_place_grid()
-    return env
+    return env.fit_place_grid()
 
 
 def test_fit_place_grid_with_track_graph_produces_centers_and_edges():

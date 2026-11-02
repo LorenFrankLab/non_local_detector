@@ -222,8 +222,9 @@ def _agreement(model, exact, centers, radii):
     distance = np.linalg.norm(
         centers[np.argmax(a, 1)] - centers[np.argmax(b, 1)], axis=-1
     )
-    return (float(np.median(correlation)),) + tuple(
-        float(np.mean(distance <= radius)) for radius in radii
+    return (
+        float(np.median(correlation)),
+        *(float(np.mean(distance <= radius)) for radius in radii),
     )
 
 

@@ -93,7 +93,7 @@ def fail_unless_regenerating(path: Path) -> None:
 
 
 def save_pickle(path: Path, data: Any) -> None:
-    with open(path, "wb") as f:
+    with path.open("wb") as f:
         pickle.dump(data, f)
 
 
@@ -111,7 +111,7 @@ class _NumpyCompatUnpickler(pickle.Unpickler):
 
 
 def load_pickle(path: Path) -> Any:
-    with open(path, "rb") as f:
+    with path.open("rb") as f:
         return _NumpyCompatUnpickler(f).load()
 
 

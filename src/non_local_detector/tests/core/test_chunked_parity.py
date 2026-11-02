@@ -170,7 +170,7 @@ class TestChunkedEdgeCases:
         log_likes = jnp.zeros((n_time, n_states))
 
         # Act & Assert - Should raise ValueError
-        with pytest.raises(ValueError, match="n_chunks .* cannot exceed n_time"):
+        with pytest.raises(ValueError, match=r"n_chunks .* cannot exceed n_time"):
             run_chunked(init, trans, log_likes, n_chunks=10)  # More than n_time
 
     def test_chunked_with_single_timestep(self):

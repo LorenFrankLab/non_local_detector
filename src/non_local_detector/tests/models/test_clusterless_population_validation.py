@@ -181,9 +181,9 @@ def test_predict_rejects_nonfinite_decode_mark(fitted_decoder, sim, is_local, va
     """
     time_edges = time_edges_from_centers(sim.position_time[:N_DECODE])
     features = _with_nonfinite_mark(sim, before_time=time_edges[-1], value=value)
-    with pytest.raises(ValidationError, match="non-finite.*electrode 0"):
+    with pytest.raises(ValidationError, match=r"non-finite.*electrode 0"):
         _direct_predict(fitted_decoder, sim, features, time_edges, is_local)
-    with pytest.raises(ValidationError, match="non-finite.*electrode 0"):
+    with pytest.raises(ValidationError, match=r"non-finite.*electrode 0"):
         fitted_decoder.predict(sim.spike_times, features, time_edges=time_edges)
 
 
@@ -219,7 +219,7 @@ def test_mark_reference_likelihood_rejects_nonfinite_decode_mark(fitted_decoder,
     """No-Spike scores marks with the reference density alone; it checks them too."""
     time_edges = time_edges_from_centers(sim.position_time[:N_DECODE])
     features = _with_nonfinite_mark(sim, before_time=time_edges[-1])
-    with pytest.raises(ValidationError, match="non-finite.*electrode 0"):
+    with pytest.raises(ValidationError, match=r"non-finite.*electrode 0"):
         mark_reference_log_likelihood(
             fitted_decoder.mark_reference_, sim.spike_times, features, time_edges
         )

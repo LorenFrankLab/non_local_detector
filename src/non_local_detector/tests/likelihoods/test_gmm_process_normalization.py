@@ -52,7 +52,7 @@ def _fit_encoding(covariance_type, **kwargs):
     env = Environment(place_bin_size=1.0).fit_place_grid(
         position, infer_track_interior=False
     )
-    model = clusterless_gmm.fit_clusterless_gmm_encoding_model(
+    return clusterless_gmm.fit_clusterless_gmm_encoding_model(
         time,
         position,
         [spike_times],
@@ -66,7 +66,6 @@ def _fit_encoding(covariance_type, **kwargs):
         disable_progress_bar=True,
         **kwargs,
     )
-    return model
 
 
 def _position_log_density(joint, points):

@@ -1,6 +1,7 @@
 """Saved-model units are checked for every encoding entry actually dispatched."""
 
 import copy
+import functools
 
 import numpy as np
 import pytest
@@ -321,16 +322,20 @@ def test_missing_encoding_container_cannot_bypass_concrete_model_guard(
 
     monkeypatch.setattr(base, "chunked_filter_smoother", unexpected_work)
     monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_work)
+    if entry == "cached":
+        call = functools.partial(
+            detector._predict,
+            edges,
+            log_likelihoods=np.zeros(
+                (20, detector.is_track_interior_state_bins_.sum())
+            ),
+        )
+    else:
+        call = functools.partial(
+            base._DetectorBase.most_likely_sequence, detector, edges
+        )
     with pytest.raises(ValidationError, match="fit"):
-        if entry == "cached":
-            detector._predict(
-                edges,
-                log_likelihoods=np.zeros(
-                    (20, detector.is_track_interior_state_bins_.sum())
-                ),
-            )
-        else:
-            base._DetectorBase.most_likely_sequence(detector, edges)
+        call()
 
 
 @pytest.mark.integration

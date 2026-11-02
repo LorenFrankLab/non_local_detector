@@ -8,6 +8,8 @@ a non-interior bin), the local row is the non-local row's entry for the
 nearest interior bin.
 """
 
+from itertools import pairwise
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -135,7 +137,7 @@ def _held_decode_inputs(held, is_clusterless):
             np.concatenate(
                 [
                     rng.uniform(start, stop, rng.integers(2, 5))
-                    for start, stop in zip(time_edges[:-1], time_edges[1:], strict=True)
+                    for start, stop in pairwise(time_edges)
                 ]
             )
         )

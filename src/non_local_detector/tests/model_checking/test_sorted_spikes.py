@@ -7,9 +7,9 @@ its true conditional intensity, produces unit-rate output (uniform rescaled
 ISIs with mean ~0.5 and a small Kolmogorov-Smirnov distance).
 """
 
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np

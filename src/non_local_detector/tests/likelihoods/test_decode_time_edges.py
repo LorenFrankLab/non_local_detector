@@ -7,6 +7,8 @@ outside ``[time_edges[0], time_edges[-1]]`` are not counted. Positions for the
 local paths are evaluated at the bin centers.
 """
 
+from itertools import pairwise
+
 import numpy as np
 import pytest
 
@@ -58,10 +60,10 @@ def test_any_row_partition_reproduces_the_full_counts(ascending):
     for cuts in ([0, 4, 11], [0, 1, 10, 11], [0, 5, 6, 11]):
         parts = [
             get_spikecount_per_time_bin(spikes, time_edges=edges, row_slice=slice(a, b))
-            for a, b in zip(cuts[:-1], cuts[1:], strict=True)
+            for a, b in pairwise(cuts)
         ]
         np.testing.assert_array_equal(np.concatenate(parts), full)
-        for a, b in zip(cuts[:-1], cuts[1:], strict=True):
+        for a, b in pairwise(cuts):
             selection = select_spikes_in_rows(spikes, a, b, time_edges=edges)
             assert selection.n_rows == b - a
             assert np.all((selection.bin_ind >= 0) & (selection.bin_ind < b - a))

@@ -1,6 +1,7 @@
 """Batched sorted likelihoods retain an independent per-neuron reference."""
 
 import math
+from itertools import pairwise
 
 import jax
 import jax.numpy as jnp
@@ -308,7 +309,7 @@ def test_irregular_grid_rows_do_not_depend_on_partition(
     for bounds in [(0, 8, 200), (0, 70, 130, 200), (0, 3, 11, 64, 195, 199, 200)]:
         parts = [
             function(**arguments, row_slice=slice(start, stop))
-            for start, stop in zip(bounds[:-1], bounds[1:], strict=True)
+            for start, stop in pairwise(bounds)
         ]
         np.testing.assert_allclose(np.concatenate(parts), full, **EXACT)
 

@@ -82,8 +82,7 @@ def line_env_50cm():
     )
     # Fit with dummy position
     dummy_pos = np.linspace(0.0, 50.0, 11)[:, None]
-    env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
-    return env
+    return env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
 
 
 def _local_ll(

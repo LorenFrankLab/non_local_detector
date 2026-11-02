@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tracemalloc
+from itertools import pairwise
 from pathlib import Path
 
 import jax
@@ -159,9 +160,7 @@ def row_partitions(n_time: int) -> list[list[slice]]:
     # Irregular: chunk lengths 1, 4, 2, rest.
     for cuts in ([1, 5, 7], [2, 3, 11], [6]):
         bounds = [0, *cuts, n_time]
-        partitions.append(
-            [slice(a, b) for a, b in zip(bounds[:-1], bounds[1:], strict=True) if a < b]
-        )
+        partitions.append([slice(a, b) for a, b in pairwise(bounds) if a < b])
     return partitions
 
 

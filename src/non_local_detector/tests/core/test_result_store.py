@@ -53,24 +53,20 @@ def test_explicit_large_read_budget_and_small_slice(tmp_path):
 
 def test_partial_or_overlapping_writer_cannot_publish(tmp_path):
     path = tmp_path / "result"
-    with (
-        pytest.raises(ValueError, match="coverage"),
-        IncrementalResultWriter(
-            path, {"posterior": (("time", "state_bins"), (10, 3), np.float32)}, {}
-        ) as writer,
-    ):
+    with IncrementalResultWriter(
+        path, {"posterior": (("time", "state_bins"), (10, 3), np.float32)}, {}
+    ) as writer:
         writer.write("posterior", 0, np.ones((3, 3), np.float32))
-        writer.complete()
+        with pytest.raises(ValueError, match="coverage"):
+            writer.complete()
     assert not path.exists()
     assert not list(tmp_path.glob(".result-*"))
-    with (
-        pytest.raises(ValueError, match="overlap"),
-        IncrementalResultWriter(
-            path, {"posterior": (("time", "state_bins"), (10, 3), np.float32)}, {}
-        ) as writer,
-    ):
+    with IncrementalResultWriter(
+        path, {"posterior": (("time", "state_bins"), (10, 3), np.float32)}, {}
+    ) as writer:
         writer.write("posterior", 0, np.ones((3, 3), np.float32))
-        writer.write("posterior", 2, np.ones((3, 3), np.float32))
+        with pytest.raises(ValueError, match="overlap"):
+            writer.write("posterior", 2, np.ones((3, 3), np.float32))
 
 
 def test_writer_exception_cleans_staging_without_touching_existing(tmp_path):
@@ -81,15 +77,17 @@ def test_writer_exception_cleans_staging_without_touching_existing(tmp_path):
     with pytest.raises(FileExistsError):
         IncrementalResultWriter(existing, {}, {})
     assert marker.read_text() == "original"
-    with (
-        pytest.raises(RuntimeError),
-        IncrementalResultWriter(
+
+    def fail_after_first_write():
+        with IncrementalResultWriter(
             tmp_path / "new", {"x": (("time",), (2,), np.float32)}, {}
-        ) as writer,
-    ):
-        writer.write("x", 0, np.ones(2, np.float32))
-        msg = "I/O failure"
-        raise RuntimeError(msg)
+        ) as writer:
+            writer.write("x", 0, np.ones(2, np.float32))
+            msg = "I/O failure"
+            raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="I/O failure"):
+        fail_after_first_write()
     assert not (tmp_path / "new").exists()
     assert not list(tmp_path.glob(".new-*"))
 
@@ -151,7 +149,7 @@ def test_loader_rejects_corrupt_chunk_manifest_before_returning(tmp_path, corrup
     else:
         np.save(path / chunks[1]["file"], np.ones((2, 3), np.float64))
     manifest_path.write_text(json.dumps(manifest))
-    with pytest.raises(ValueError, match="coverage|chunk|manifest"):
+    with pytest.raises(ValueError, match=r"coverage|chunk|manifest"):
         open_result_store(path)
 
 
@@ -214,12 +212,16 @@ def test_writer_rejects_overlap_in_any_order(tmp_path):
     variables = {"posterior": (("time", "state_bins"), (12, 2), np.float32)}
     for first, second in [((0, 5), (4, 9)), ((4, 9), (0, 5)), ((2, 6), (0, 12))]:
         path = tmp_path / f"result-{first[0]}-{second[0]}"
-        with pytest.raises(ValueError, match="overlap"):
-            with IncrementalResultWriter(path, variables, {}) as writer:
-                for start, stop in (first, second):
-                    writer.write(
-                        "posterior", start, np.zeros((stop - start, 2), np.float32)
-                    )
+        with IncrementalResultWriter(path, variables, {}) as writer:
+            writer.write(
+                "posterior", first[0], np.zeros((first[1] - first[0], 2), np.float32)
+            )
+            with pytest.raises(ValueError, match="overlap"):
+                writer.write(
+                    "posterior",
+                    second[0],
+                    np.zeros((second[1] - second[0], 2), np.float32),
+                )
     path = tmp_path / "adjacent"
     with IncrementalResultWriter(path, variables, {}) as writer:
         for start, stop in [(5, 9), (0, 5), (9, 12)]:

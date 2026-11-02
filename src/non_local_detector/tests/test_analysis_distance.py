@@ -339,9 +339,8 @@ class TestGetMapSpeedBoundaryHandling:
     """
 
     @pytest.mark.parametrize("n_time", [3, 4, 5, 100])
-    def test_get_map_speed_boundary_appends_trailing(
-        self, n_time, _identity_gaussian_smooth
-    ):
+    @pytest.mark.usefixtures("_identity_gaussian_smooth")
+    def test_get_map_speed_boundary_appends_trailing(self, n_time):
         """Trailing speed is the backward difference between the last two nodes.
 
         The final edge is given a distinct weight so the trailing backward
@@ -423,9 +422,8 @@ class TestGetMapSpeedBoundaryHandling:
             ) / (2.0 * dt)
             np.testing.assert_allclose(speed[t], expected_interior, atol=1e-10)
 
-    def test_get_map_speed_monotone_on_constant_velocity(
-        self, _identity_gaussian_smooth
-    ):
+    @pytest.mark.usefixtures("_identity_gaussian_smooth")
+    def test_get_map_speed_monotone_on_constant_velocity(self):
         """A linear trajectory with constant velocity yields equal interior speeds.
 
         Boundary samples use one-sided differences but, for a uniform-spacing

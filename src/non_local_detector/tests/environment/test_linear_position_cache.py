@@ -98,7 +98,7 @@ def test_cache_evicts_oldest_entries_beyond_its_byte_budget(
 ):
     # Room for two 500-point float64 results.
     monkeypatch.setattr(environment_module, "_LINEAR_POSITION_CACHE_BYTES", 8_000)
-    shifted = [points + [0.0, offset] for offset in (0.0, 0.01, 0.02)]
+    shifted = [points + np.array([0.0, offset]) for offset in (0.0, 0.01, 0.02)]
     for array in shifted:
         track_environment._linear_position(array)
     track_environment._linear_position(shifted[2])  # newest: cached

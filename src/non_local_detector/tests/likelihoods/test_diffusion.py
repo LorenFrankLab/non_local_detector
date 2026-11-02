@@ -560,7 +560,7 @@ def test_diffuse_bandwidth_independent_of_bin_size_2d():
     t = sigma**2 / 2.0
     half_extent = 3.5 * sigma  # >3σ containment so truncation barely affects std
     for spacing in (0.5, 1.0, 2.0, 4.0):
-        n = int(round(2 * half_extent / spacing))
+        n = round(2 * half_extent / spacing)
         L = build_laplacian(grid_graph_2d(n, n, spacing))
         center = (n // 2) * n + (n // 2)
         source = np.zeros(L.shape[0])
@@ -577,7 +577,7 @@ def test_moore_diagonal_edges_oversmooth():
 
     sigma, spacing = 4.0, 1.0
     t = sigma**2 / 2.0
-    n = int(round(2 * 3.5 * sigma / spacing))
+    n = round(2 * 3.5 * sigma / spacing)
 
     face = grid_graph_2d(n, n, spacing)
     moore = face.copy()
@@ -1007,7 +1007,7 @@ def test_cached_objects_are_read_only():
         graph.add_edge(0, 99)
     for arr in (node_order, bin_sizes):
         assert not arr.flags.writeable
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="read-only"):
             arr[0] = 0
 
     eigvals, eigvecs = cached_eigenbasis(env, rank=None)
@@ -1079,7 +1079,7 @@ def test_check_bandwidth_rejects_nonpositive_sigma():
 def test_check_bandwidth_warns_when_undersmoothing():
     """A sigma below ~1 bin spacing warns; a comfortably larger sigma does not."""
     graph = environment_graph(make_2d_env())[0]  # 5.0-unit bin spacing
-    with pytest.warns(UserWarning):
+    with pytest.warns(UserWarning, match="below the characteristic bin spacing"):
         check_smoothing_bandwidth(1.0, graph)
     import warnings
 

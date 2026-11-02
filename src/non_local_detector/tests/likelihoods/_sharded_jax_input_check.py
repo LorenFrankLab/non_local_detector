@@ -235,7 +235,7 @@ def run(meshes) -> int:
             # exact and deterministic, so it carries the assertion.
             ok = (not cached) if EXPECT_NO_HOST_COPY[axis_type] else True
             failures += not ok
-            print(
+            print(  # noqa: T201  # stdout is the protocol the parent test reads
                 f"{'OK  ' if ok else 'FAIL'} {name:22s} is_local={is_local!s:5s} "
                 f"axis={axis_type:8s} features_host_cached={cached!s:5s} "
                 f"peak_rss_growth={growth:12,d} {RSS_UNIT} (informational; one "
@@ -250,7 +250,7 @@ if __name__ == "__main__":
     except EnvironmentUnavailable as exc:
         # The parent test requires exactly this marker before it skips, so an
         # unrelated exit status 2 (Python could not open this file, say) fails.
-        print(f"SKIP {type(exc).__name__}: {exc}")
+        print(f"SKIP {type(exc).__name__}: {exc}")  # noqa: T201  # parent reads stdout
         raise SystemExit(EXIT_ENVIRONMENT) from None
     # ``run`` is deliberately NOT wrapped: an exception while fitting, predicting
     # or asserting prints its traceback and exits 1, which the parent test fails.

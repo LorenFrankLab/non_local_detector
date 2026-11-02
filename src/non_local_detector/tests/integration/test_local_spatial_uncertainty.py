@@ -159,8 +159,7 @@ def test_penalty_and_kernel_simultaneous(fit_predict):
 @pytest.fixture(scope="module")
 def clusterless_simulated_data():
     """Clusterless simulated data for testing: three runs (70 s)."""
-    sim = make_simulated_run_data(n_tetrodes=5, n_runs=3, seed=42)
-    return sim
+    return make_simulated_run_data(n_tetrodes=5, n_runs=3, seed=42)
 
 
 def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):

@@ -292,7 +292,7 @@ def test_auto_em_with_row_chunks_runs_dense_em():
     assert not _uses_operator(model)
     _assert_same_fit(auto, dense)
     model, data = _recording("sorted")
-    with pytest.raises(ValidationError, match="n_chunks .* cannot be combined"):
+    with pytest.raises(ValidationError, match=r"n_chunks .* cannot be combined"):
         model.estimate_parameters(
             **data,
             max_iter=1,
@@ -388,7 +388,9 @@ def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
     transitions = np.array(model.discrete_state_transitions_)
     encoding = model.encoding_model_
     log_likelihood = model.log_likelihood_
-    with pytest.raises(ValidationError, match="chunk_size|replay_cache_bytes|n_chunks"):
+    with pytest.raises(
+        ValidationError, match=r"chunk_size|replay_cache_bytes|n_chunks"
+    ):
         model.estimate_parameters(**data, max_iter=1, **options)
     np.testing.assert_array_equal(model.discrete_state_transitions_, transitions)
     assert model.encoding_model_ is encoding

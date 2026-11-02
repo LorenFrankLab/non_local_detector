@@ -180,7 +180,7 @@ def test_reference_rejects_float32_posterior(
     with precision_mode(True):
         model, fit, predict = checkpoint_recording("sorted")
         model.fit(**fit, transition_representation="structured")
-        with pytest.raises(ValueError, match="posterior.*float64"):
+        with pytest.raises(ValueError, match=r"posterior.*float64"):
             benchmark.reference64_prediction(
                 model, predict, chunk_size=13, checkpoint_dir=tmp_path
             )

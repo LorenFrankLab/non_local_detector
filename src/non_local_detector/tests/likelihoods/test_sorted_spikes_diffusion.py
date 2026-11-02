@@ -83,7 +83,7 @@ def place_field_core_median_rel_errors(env, std, diff_pf, kde_pf):
     0.4 * peak (where the field is well estimated). Shared by the drop-in and
     weighted-parity tests so both use the same honest, boundary-aware methodology.
     """
-    erode = int(round(std / env.place_bin_size))
+    erode = round(std / env.place_bin_size)
     core = binary_erosion(
         env.is_track_interior_.reshape(env.centers_shape_), iterations=erode
     ).ravel()

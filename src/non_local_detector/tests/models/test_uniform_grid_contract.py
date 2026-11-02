@@ -1,6 +1,7 @@
 """Uniform HMM grids remain required through cached and covariate paths."""
 
 import copy
+import functools
 
 import numpy as np
 import pytest
@@ -58,7 +59,7 @@ def test_cached_prediction_validates_grid_before_hmm_work(
         pytest.fail("Invalid edges must fail before the HMM runs")
 
     monkeypatch.setattr(base, "chunked_filter_smoother", unexpected_hmm)
-    with pytest.raises((DataError, ValidationError), match="uniform|bin width"):
+    with pytest.raises((DataError, ValidationError), match=r"uniform|bin width"):
         detector._predict(edges, log_likelihoods=cached, n_chunks=n_chunks)
     _assert_unchanged(detector, snapshot)
 
@@ -85,23 +86,27 @@ def test_irregular_covariate_grid_rejected_before_transition_or_fit_work(
     monkeypatch.setattr(detector, "fit", unexpected_work)
     monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_work)
     snapshot = _snapshot(detector)
+    covariates = {"speed": np.ones(2)}
+    if entry == "predict":
+        call = functools.partial(
+            detector.predict,
+            *args,
+            time_edges=edges,
+            discrete_transition_covariate_data=covariates,
+        )
+    elif entry == "estimate":
+        call = functools.partial(
+            detector.estimate_parameters,
+            time,
+            position,
+            *args,
+            time_edges=edges,
+            discrete_transition_covariate_data=covariates,
+        )
+    else:
+        call = functools.partial(detector.most_likely_sequence, *args, time_edges=edges)
     with pytest.raises(DataError, match="uniform"):
-        if entry == "predict":
-            detector.predict(
-                *args,
-                time_edges=edges,
-                discrete_transition_covariate_data={"speed": np.ones(2)},
-            )
-        elif entry == "estimate":
-            detector.estimate_parameters(
-                time,
-                position,
-                *args,
-                time_edges=edges,
-                discrete_transition_covariate_data={"speed": np.ones(2)},
-            )
-        else:
-            detector.most_likely_sequence(*args, time_edges=edges)
+        call()
     _assert_unchanged(detector, snapshot)
 
 
@@ -147,18 +152,20 @@ def test_invalid_transition_clock_requires_refit(
     detector._transition_time_bin_width_tolerance = tolerance
     edges = np.arange(3) * 0.004
     snapshot = _snapshot(detector)
+    if entry == "predict":
+        call = functools.partial(detector.predict, *args, time_edges=edges)
+    elif entry == "viterbi":
+        call = functools.partial(detector.most_likely_sequence, *args, time_edges=edges)
+    elif entry == "likelihood":
+        call = functools.partial(
+            detector.compute_log_likelihood, time, position, *args, time_edges=edges
+        )
+    else:
+        call = functools.partial(
+            detector._predict,
+            edges,
+            log_likelihoods=np.zeros((2, detector.is_track_interior_state_bins_.sum())),
+        )
     with pytest.raises(ValidationError, match="refit"):
-        if entry == "predict":
-            detector.predict(*args, time_edges=edges)
-        elif entry == "viterbi":
-            detector.most_likely_sequence(*args, time_edges=edges)
-        elif entry == "likelihood":
-            detector.compute_log_likelihood(time, position, *args, time_edges=edges)
-        else:
-            detector._predict(
-                edges,
-                log_likelihoods=np.zeros(
-                    (2, detector.is_track_interior_state_bins_.sum())
-                ),
-            )
+        call()
     _assert_unchanged(detector, snapshot)

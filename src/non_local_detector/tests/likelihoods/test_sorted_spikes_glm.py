@@ -37,8 +37,7 @@ def line_env_100cm():
         position_range=((0.0, 100.0),),
     )
     position = np.linspace(0, 100, 101)[:, None]
-    env = env.fit_place_grid(position=position, infer_track_interior=False)
-    return env
+    return env.fit_place_grid(position=position, infer_track_interior=False)
 
 
 @pytest.fixture

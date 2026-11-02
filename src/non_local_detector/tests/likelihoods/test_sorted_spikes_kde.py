@@ -171,7 +171,7 @@ def test_fit_sorted_spikes_kde_raises_without_place_grid():
     t_pos = jnp.linspace(0.0, 10.0, 11)
     pos = jnp.linspace(0.0, 10.0, 11)[:, None]
     spikes = [jnp.array([2.0]), jnp.array([3.0])]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="place_bin_centers_ is required"):
         fit_sorted_spikes_kde_encoding_model(
             position_time=t_pos,
             position=pos,

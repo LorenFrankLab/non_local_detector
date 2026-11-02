@@ -9,6 +9,7 @@ intensities independently of the code under test.
 """
 
 import functools
+import re
 
 import jax.numpy as jnp
 import numpy as np
@@ -483,7 +484,7 @@ def test_ks_uniformity_test_reports_each_coordinate():
 )
 def test_uniformity_tests_reject_points_outside_the_unit_cube(bad):
     for test in (ks_uniformity_test, pearson_chi_squared_test):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=re.escape("array in [0, 1]")):
             test(bad)
 
 
