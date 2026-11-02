@@ -381,8 +381,8 @@ class Environment:
         decoding_points : np.ndarray, shape (n_points, n_decoding_dims)
             ``n_decoding_dims`` is 1 for linearized points and
             ``n_position_dims`` otherwise. Unchanged input is returned as is,
-            including a 1-D array; an empty array of multi-dimensional points
-            on a track graph gives shape ``(0, 1)``.
+            the same object, including a 1-D array; an empty array of
+            multi-dimensional points on a track graph gives shape ``(0, 1)``.
         """
         if self.track_graph is None or np.ndim(points) < 2 or points.shape[1] == 1:
             return points
@@ -406,7 +406,7 @@ class Environment:
             If neither ``is_track_interior_`` nor ``place_bin_centers_`` is set.
         """
         if self.is_track_interior_ is not None:
-            return self.is_track_interior_.ravel()
+            return np.asarray(self.is_track_interior_, dtype=bool).ravel()
         if self.place_bin_centers_ is None:
             raise ValueError(
                 "place_bin_centers_ is required when is_track_interior_ is None"
