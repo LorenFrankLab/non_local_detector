@@ -1,4 +1,6 @@
 try:
+    from typing import cast
+
     import numpy as np
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
@@ -23,17 +25,19 @@ try:
         """
         discretized = np.multiply(series, 255).astype(np.uint8)
         stacked = discretized.stack(unified_index=["time", "position"])  # type: ignore[union-attr]
-        return stacked.where(stacked > 0, drop=True).astype(np.uint8)
+        return cast(
+            "xr.DataArray", stacked.where(stacked > 0, drop=True).astype(np.uint8)
+        )
 
     def get_observations_per_time(
-        trimmed_posterior: xr.DataArray, base_data: xr.Dataset
+        trimmed_posterior: xr.DataArray, base_data: xr.DataArray
     ) -> np.ndarray:
         """Get the number of observations per time.
 
         Parameters
         ----------
         trimmed_posterior : xr.DataArray
-        base_data : xr.Dataset
+        base_data : xr.DataArray
 
         Returns
         -------
@@ -60,7 +64,7 @@ try:
         """
         round_times = np.floor(1000 * times)
         median_delta_t_ms = np.median(np.diff(round_times)).item()
-        return 1000 / median_delta_t_ms  # from time-delta to Hz
+        return cast("float", 1000 / median_delta_t_ms)  # from time-delta to Hz
 
     def get_trimmed_bin_center_index(
         place_bin_centers: np.ndarray, trimmed_place_bin_centers: np.ndarray
@@ -230,7 +234,7 @@ try:
             ],
         )
 
-        return view.url(label="1D Decoding")
+        return cast("str", view.url(label="1D Decoding"))
 
 except ImportError:
     pass

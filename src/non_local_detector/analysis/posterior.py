@@ -1,6 +1,8 @@
+from typing import cast
+
 import numpy as np
 import xarray as xr
-from scipy.stats import rv_histogram  # type: ignore[import-untyped]
+from scipy.stats import rv_histogram
 
 
 def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
@@ -29,13 +31,15 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
         map_estimate = stacked_posterior.z[stacked_posterior.argmax("z")]
         map_estimate = np.asarray(map_estimate.values.tolist())
     except KeyError:
-        map_estimate = posterior.position[np.log(posterior).argmax("position")]
+        map_estimate = posterior.position[
+            cast("xr.DataArray", np.log(posterior)).argmax("position")
+        ]
         map_estimate = np.asarray(map_estimate)[:, np.newaxis]
     return map_estimate
 
 
 def sample_posterior(
-    posterior: xr.DataArray,
+    posterior: xr.DataArray | np.ndarray,
     place_bin_edges: np.ndarray,
     n_samples: int = 1000,
     rng: np.random.Generator | int | None = None,
@@ -69,7 +73,9 @@ def sample_posterior(
     """
     # Stack 2D positions into one dimension
     try:
-        posterior = posterior.stack(z=["x_position", "y_position"]).values
+        posterior = (
+            cast("xr.DataArray", posterior).stack(z=["x_position", "y_position"]).values
+        )
     except (KeyError, AttributeError):
         posterior = np.asarray(posterior)
 

@@ -1,7 +1,7 @@
 """Main code for simulating position and sorted spikes or clusterless spikes and waveforms."""
 
 import numpy as np
-from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
+from scipy.stats import multivariate_normal
 
 from non_local_detector.simulate._common import (
     get_trajectory_direction,

@@ -79,13 +79,16 @@ from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import matplotlib as mpl
 
 # Headless, deterministic rendering
 mpl.use("Agg")
 import matplotlib.pyplot as plt
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
 
 # Constants
 MIN_DPI = 72  # Matplotlib requires minimum 72 DPI for readable output
@@ -135,8 +138,8 @@ def _validate_inputs(
     n_frames: int,
     output_path: str,
     frame_data: Any,
-    render_frame_func: Callable,
-    setup_figure_func: Callable,
+    render_frame_func: Callable[..., Any],
+    setup_figure_func: Callable[..., Any],
     config: VideoConfig,
 ) -> None:
     """Validate user inputs and provide clear error messages.
@@ -273,8 +276,8 @@ def create_parallel_video(
     *,
     n_frames: int,
     output_path: str,
-    render_frame_func: Callable[[plt.Figure, dict[str, Any], int, Any], None],
-    setup_figure_func: Callable[[], tuple[plt.Figure, dict[str, Any]]],
+    render_frame_func: Callable[[Figure, dict[str, Any], int, Any], None],
+    setup_figure_func: Callable[[], tuple[Figure, dict[str, Any]]],
     frame_data: Any = None,
     config: VideoConfig = VideoConfig(),
 ) -> str:
@@ -430,8 +433,8 @@ def _render_chunk(
     end_frame: int,
     pattern: str,
     dpi: int,
-    render_frame_func: Callable[[plt.Figure, dict[str, Any], int, Any], None],
-    setup_figure_func: Callable[[], tuple[plt.Figure, dict[str, Any]]],
+    render_frame_func: Callable[[Figure, dict[str, Any], int, Any], None],
+    setup_figure_func: Callable[[], tuple[Figure, dict[str, Any]]],
     frame_data: Any,
 ) -> None:
     """Render a chunk of frames in a worker process.

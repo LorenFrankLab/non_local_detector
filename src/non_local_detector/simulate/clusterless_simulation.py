@@ -11,6 +11,7 @@ See ClusterlessSimOutput for the full contract definition.
 """
 
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 
@@ -155,7 +156,7 @@ def make_simulated_run_data(
 
     # Generate multiunit data (NaN-padded format) using existing simulator
     if not make_inbound_outbound_neurons:
-        multiunits = [
+        multiunits: list[np.ndarray] | np.ndarray = [
             simulate_multiunit_with_place_fields(
                 place_means,
                 position_1d,
@@ -185,7 +186,7 @@ def make_simulated_run_data(
         ]
 
     # Stack: (n_time, n_features, n_electrodes)
-    multiunits = np.stack(multiunits, axis=-1)
+    multiunits = np.stack(cast("list[np.ndarray]", multiunits), axis=-1)
     multiunits_spikes = np.any(~np.isnan(multiunits), axis=1)
 
     # Convert NaN-padded format to per-electrode lists
@@ -381,7 +382,13 @@ def make_fragmented_replay(
     replay_time = np.arange(N_TIME) / sampling_frequency
 
     n_total_neurons = place_field_means.size
-    neuron_inds = [1, n_total_neurons - 1, 10, n_total_neurons - 5, 8]
+    neuron_inds: list[int] | tuple[np.ndarray, ...] = [
+        1,
+        n_total_neurons - 1,
+        10,
+        n_total_neurons - 5,
+        8,
+    ]
     neuron_inds = np.unravel_index(neuron_inds, place_field_means.shape)
     spike_time_ind = [1, 3, 5, 7, 9]
     test_multiunits = np.full((replay_time.size, n_features, n_tetrodes), np.nan)

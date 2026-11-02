@@ -1,15 +1,16 @@
 """Align measured tracking data to the actual bins of a decoder result."""
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from numpy.typing import ArrayLike
 
 from non_local_detector.exceptions import ValidationError
 
 
-def _finite_runs(indices: np.ndarray, finite: np.ndarray):
+def _finite_runs(indices: np.ndarray, finite: np.ndarray) -> Iterator[np.ndarray]:
     """Yield contiguous original sample rows, retaining missing sample breaks."""
     indices = indices[finite[indices]]
     if indices.size:
@@ -21,7 +22,7 @@ def align_tracking_to_results(
     results: xr.Dataset,
     *,
     position_columns: Sequence[str],
-    valid_position_intervals,
+    valid_position_intervals: ArrayLike | None,
     categorical_columns: Sequence[str] = (),
     circular_columns: Sequence[str] = (),
 ) -> tuple[pd.DataFrame, np.ndarray]:
