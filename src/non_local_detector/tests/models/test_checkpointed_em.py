@@ -494,7 +494,8 @@ def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
             result_path=tmp_path / "b",
             store_log_likelihood=True,
         )
-    assert not (tmp_path / "a").exists() and not (tmp_path / "b").exists()
+    assert not (tmp_path / "a").exists()
+    assert not (tmp_path / "b").exists()
 
 
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
@@ -652,7 +653,8 @@ def test_default_replay_cache_is_capped_by_available_memory(available, monkeypat
         **data, max_iter=1, transition_representation="structured"
     )
     expected = 4 * 2**30 if available == 8 * 2**30 else 16 * 2**30
-    assert budgets and set(budgets) == {expected}
+    assert budgets
+    assert set(budgets) == {expected}
 
 
 def test_auto_em_device_memory_boundary(monkeypatch):

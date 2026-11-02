@@ -639,7 +639,8 @@ def test_encoding_fit_solves_all_cells_in_one_call(
     env, data = line_env_100cm, simple_spike_data
     encoding = _fit_encoding(env, data)
     n_cells = len(data["spike_times"])
-    assert len(calls) == 1 and calls[0][0] == n_cells
+    assert len(calls) == 1
+    assert calls[0][0] == n_cells
     assert encoding["coefficients"].shape[0] == n_cells
 
 

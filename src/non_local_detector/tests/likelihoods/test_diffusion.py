@@ -253,7 +253,8 @@ def test_connected_component_labels_matches_graph_components():
     graph = nx.disjoint_union(path_graph(4), path_graph(6))
     labels = connected_component_labels(graph)
     assert labels.shape == (10,)
-    assert set(labels[:4]) == {labels[0]} and set(labels[4:]) == {labels[4]}
+    assert set(labels[:4]) == {labels[0]}
+    assert set(labels[4:]) == {labels[4]}
     assert labels[0] != labels[4]  # different components -> different labels
 
 
@@ -353,7 +354,8 @@ def test_heat_kernel_rank_is_near_lossless():
     sigma, tol = 6.0, 1e-6
     full_vals, full_vecs = diffusion_eigenbasis(L, rank=None)
     rank = heat_kernel_rank(L, sigma, tol=tol)
-    assert rank is not None and rank < L.shape[0]  # this bandwidth truncates
+    assert rank is not None
+    assert rank < L.shape[0]
     trunc_vals, trunc_vecs = diffusion_eigenbasis(L, rank=rank)
 
     fields = rng.gamma(2.0, 1.0, size=(L.shape[0], 8))
@@ -466,7 +468,8 @@ def test_cached_heat_kernel_eigenbasis_reuses_probe_eigensolve(monkeypatch):
     # Eigensolves the pure rank probe performs (operates on the Laplacian, no caching).
     rank = heat_kernel_rank(laplacian, sigma)
     probe_eigensolves = calls["n"]
-    assert rank is not None and rank < laplacian.shape[0]
+    assert rank is not None
+    assert rank < laplacian.shape[0]
 
     # The fused builder does the same number of eigensolves -- no extra recompute.
     calls["n"] = 0

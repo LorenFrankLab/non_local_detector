@@ -54,9 +54,11 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal(kde_fit):
         assert key in enc
     occ = enc["occupancy"]
     pf = enc["place_fields"]
-    assert occ.ndim == 1 and occ.size > 0
+    assert occ.ndim == 1
+    assert occ.size > 0
     assert jnp.all(jnp.isfinite(occ))
-    assert pf.ndim == 2 and pf.shape[0] == len(spikes)
+    assert pf.ndim == 2
+    assert pf.shape[0] == len(spikes)
     assert jnp.all(pf > 0)
 
 
@@ -76,7 +78,8 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_
         is_local=False,
     )
     assert ll.shape[0] == t_edges.shape[0] - 1
-    assert ll.ndim == 2 and ll.shape[1] == int(enc["is_track_interior"].sum())
+    assert ll.ndim == 2
+    assert ll.shape[1] == int(enc["is_track_interior"].sum())
     assert jnp.all(jnp.isfinite(ll))
 
     # Local

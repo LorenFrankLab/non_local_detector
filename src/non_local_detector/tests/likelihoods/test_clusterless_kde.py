@@ -99,7 +99,8 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
     )
     # shape: (n_bins, n_interior_bins), one row per decode bin
     assert ll_nonlocal.shape[0] == t_edges.shape[0] - 1
-    assert ll_nonlocal.ndim == 2 and ll_nonlocal.shape[1] > 0
+    assert ll_nonlocal.ndim == 2
+    assert ll_nonlocal.shape[1] > 0
     assert jnp.all(jnp.isfinite(ll_nonlocal))
 
     ll_local = predict_clusterless_kde_log_likelihood(
@@ -219,7 +220,8 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
     )
 
     assert ll_nonlocal.shape[0] == t_edges.shape[0] - 1
-    assert ll_nonlocal.ndim == 2 and ll_nonlocal.shape[1] > 0
+    assert ll_nonlocal.ndim == 2
+    assert ll_nonlocal.shape[1] > 0
     assert jnp.all(jnp.isfinite(ll_nonlocal))
 
     # Local prediction should also work

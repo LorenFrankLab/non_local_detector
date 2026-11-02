@@ -427,7 +427,8 @@ def test_selected_features_stay_paired_with_their_spike(shuffled):
                 N_BINS - 1,
             )
             np.testing.assert_array_equal(bin_ind, expected_rows - row_start)
-            assert np.all(bin_ind >= 0) and np.all(bin_ind < row_stop - row_start)
+            assert np.all(bin_ind >= 0)
+            assert np.all(bin_ind < row_stop - row_start)
             partition_ids.append(selected_ids)
 
         # A partition of the rows partitions the in-range spikes: each owned

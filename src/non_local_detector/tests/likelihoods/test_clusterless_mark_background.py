@@ -366,7 +366,8 @@ def test_diffusion_unvisited_bins_score_only_the_background():
     evidence = with_spikes[row] - silent[row]
     occupancy = np.asarray(model["occupancy"])
     unvisited = occupancy < 1e-6 * occupancy.max()
-    assert unvisited.sum() > 10 and (~unvisited).sum() > 10
+    assert unvisited.sum() > 10
+    assert (~unvisited).sum() > 10
     background = (
         LOG_RATE_EPS_HZ
         + model["mark_reference"][0].log_density(decode_marks[0])

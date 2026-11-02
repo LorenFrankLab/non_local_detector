@@ -88,7 +88,8 @@ def test_multi_block_matches_single_block():
         block_size=4,
         log_background=log_background,
     )
-    assert single.shape == (10, occ.shape[0]) and multi.shape == (10, occ.shape[0])
+    assert single.shape == (10, occ.shape[0])
+    assert multi.shape == (10, occ.shape[0])
     assert jnp.allclose(single, multi, rtol=1e-4, atol=1e-4)
 
 

@@ -24,14 +24,16 @@ def test_uniform_initial_conditions_local_and_no_spike(simple_1d_environment):
     )
     arr = ic.make_initial_conditions(local_obs, envs)
     assert arr.shape == (1,)
-    assert np.isclose(arr.sum(), 1.0) and np.isclose(arr[0], 1.0)
+    assert np.isclose(arr.sum(), 1.0)
+    assert np.isclose(arr[0], 1.0)
 
     # No-spike => single-bin initial conditions
     ns_obs = ObservationModel(
         environment_name=envs[0].environment_name, is_no_spike=True
     )
     arr2 = ic.make_initial_conditions(ns_obs, envs)
-    assert arr2.shape == (1,) and np.isclose(arr2[0], 1.0)
+    assert arr2.shape == (1,)
+    assert np.isclose(arr2[0], 1.0)
 
 
 @pytest.mark.unit

@@ -780,7 +780,8 @@ def _decode_time_edges(
         and _time_grid.uniform_width is not None
     )
     if prepared_uniform_grid:
-        assert _time_grid is not None and _time_grid.uniform_width is not None
+        assert _time_grid is not None
+        assert _time_grid.uniform_width is not None
         width = _time_grid.uniform_width
         uniform_tolerance = _time_grid.uniform_tolerance
     else:

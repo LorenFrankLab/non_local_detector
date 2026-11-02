@@ -191,7 +191,8 @@ def test_eager_environment_distances_match_networkx_shortest_paths(position_rang
         env.track_graphDD, weight="distance"
     ):
         expected[source, list(distances)] = list(distances.values())
-    assert np.isfinite(expected).any() and np.isinf(expected).any()
+    assert np.isfinite(expected).any()
+    assert np.isinf(expected).any()
     np.testing.assert_array_equal(env.distance_between_nodes_, expected)
 
 

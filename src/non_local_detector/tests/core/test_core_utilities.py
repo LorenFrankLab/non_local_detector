@@ -223,7 +223,8 @@ class TestSafeLog:
         # Assert
         if expected_result == "neg_inf":
             # Check for -inf (handles both explicit zero and underflow)
-            assert jnp.isinf(result[0]) and result[0] < 0
+            assert jnp.isinf(result[0])
+            assert result[0] < 0
         elif expected_result == "zero":
             assert jnp.allclose(result[0], 0.0)
         elif expected_result == "finite_positive":

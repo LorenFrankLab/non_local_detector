@@ -326,7 +326,8 @@ def test_transforms_are_uniform_for_data_from_the_fitted_model(
         spike_times,
         marks,
     )
-    assert u.shape == (len(spike_times),) and v.shape == marks.shape
+    assert u.shape == (len(spike_times),)
+    assert v.shape == marks.shape
     result = ks_uniformity_test(np.column_stack((u, v)))
     assert result.p_value.min() > 1e-3, result
 
@@ -467,8 +468,10 @@ def test_ks_uniformity_test_reports_each_coordinate():
     rng = np.random.default_rng(3)
     samples = np.column_stack((rng.uniform(size=2000), rng.beta(2, 2, size=2000)))
     result = ks_uniformity_test(samples)
-    assert result.statistic.shape == (2,) and result.p_value.shape == (2,)
-    assert result.p_value[0] > 0.01 and result.p_value[1] < 1e-6
+    assert result.statistic.shape == (2,)
+    assert result.p_value.shape == (2,)
+    assert result.p_value[0] > 0.01
+    assert result.p_value[1] < 1e-6
     np.testing.assert_allclose(
         result.statistic[1], stats.kstest(samples[:, 1], "uniform").statistic
     )

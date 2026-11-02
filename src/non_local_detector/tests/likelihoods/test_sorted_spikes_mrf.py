@@ -601,7 +601,8 @@ def test_step_halving_converges_on_near_zero_exposure_overshoot():
 
     # The full-step Newton diverges here (never reaches tol); step-halving converges.
     assert diagnostics["converged"]
-    assert np.all(np.isfinite(eta)) and np.all(np.isfinite(mu))
+    assert np.all(np.isfinite(eta))
+    assert np.all(np.isfinite(mu))
     # Monotone descent: the fit's objective is below the constant warm-start reference
     # (the diverged full-step fit's objective is ~1e10 -- far above it).
     assert penalized_objective(coeffs) < penalized_objective(np.zeros_like(coeffs))
@@ -661,7 +662,8 @@ def test_reml_helpers_handle_zero_neurons():
     penalty, objective = select_penalty_by_reml(
         counts, occupancy, basis, penalty_weights
     )
-    assert np.isfinite(penalty) and np.isfinite(objective)
+    assert np.isfinite(penalty)
+    assert np.isfinite(objective)
 
 
 def test_penalty_zero_is_respected_not_overridden(env_2d):

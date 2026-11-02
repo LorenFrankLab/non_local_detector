@@ -618,7 +618,8 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
         points, samples, std, 10_000, weights
     )
 
-    assert max(rows) == 64 and sum(rows) == 300
+    assert max(rows) == 64
+    assert sum(rows) == 300
     np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
 
 

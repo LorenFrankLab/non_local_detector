@@ -454,7 +454,8 @@ def _position_marginal(
         metadata describe the source joint fit; no marginal EM fit is performed
         and ``lower_bound_`` is None.
     """
-    assert joint.means_ is not None and joint.covariances_ is not None
+    assert joint.means_ is not None
+    assert joint.covariances_ is not None
     covariance = joint.covariances_
     if joint.covariance_type == "full":
         covariance = covariance[:, :n_position_dims, :n_position_dims]

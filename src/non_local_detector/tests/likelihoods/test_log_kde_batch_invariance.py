@@ -193,7 +193,8 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     background = np.asarray(log_background, np.float64)[:, None]
-    assert (reference < background - 100).any() and (reference > background).any()
+    assert (reference < background - 100).any()
+    assert (reference > background).any()
     assert np.all(out >= np.asarray(log_background)[:, None])
     np.testing.assert_allclose(
         out, np.logaddexp(reference, background), atol=1e-4, rtol=0

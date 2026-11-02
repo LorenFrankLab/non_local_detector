@@ -297,7 +297,8 @@ def test_fit_auto_truncation_is_near_lossless_and_reduces_rank():
 
     # The default fit truncated, and used exactly the resolved rank.
     resolved = heat_kernel_rank(env._diffusion_laplacian_, std)
-    assert resolved is not None and resolved < n_interior
+    assert resolved is not None
+    assert resolved < n_interior
     assert resolved in env._diffusion_eigenbasis_
 
     # Compare where the field is substantial: at EPS-floor bins the rate is ~0 and the

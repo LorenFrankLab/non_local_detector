@@ -899,7 +899,7 @@ class Environment:
 
         try:
             # Sample is an ND-array.
-            N, D = sample.shape
+            _N, D = sample.shape
         except (AttributeError, ValueError):
             # Sample is a sequence of 1D arrays.
             sample = np.atleast_2d(sample).T

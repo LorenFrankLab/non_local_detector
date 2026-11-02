@@ -591,7 +591,8 @@ class TestExpandedDiscreteTransitionCounts:
         monkeypatch.setattr(transitions, "_stationary_counts_block", record)
         blocked = counts()
 
-        assert max(block_rows) == 300 and sum(block_rows) == n_time - 1
+        assert max(block_rows) == 300
+        assert sum(block_rows) == n_time - 1
         np.testing.assert_allclose(blocked, whole, rtol=1e-6)
 
     @pytest.mark.parametrize("factorized", [True, False])

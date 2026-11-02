@@ -52,7 +52,8 @@ def test_fit_place_grid_with_track_graph_produces_centers_and_edges():
     assert env.place_bin_centers_ is not None
     assert env.place_bin_edges_ is not None
     # 1D linearized bins: centers are (n, 1)
-    assert env.place_bin_centers_.ndim == 2 and env.place_bin_centers_.shape[1] == 1
+    assert env.place_bin_centers_.ndim == 2
+    assert env.place_bin_centers_.shape[1] == 1
     # Centers monotonic in 1D
     centers = env.place_bin_centers_.squeeze()
     assert np.all(np.diff(centers) > 0)
@@ -100,7 +101,8 @@ def test_sorted_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         **enc,
         is_local=False,
     )
-    assert ll.shape[0] == time_edges.shape[0] - 1 and ll.ndim == 2
+    assert ll.shape[0] == time_edges.shape[0] - 1
+    assert ll.ndim == 2
 
 
 def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
@@ -141,7 +143,8 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         ),
         is_local=False,
     )
-    assert ll.shape[0] == time_edges.shape[0] - 1 and ll.ndim == 2
+    assert ll.shape[0] == time_edges.shape[0] - 1
+    assert ll.ndim == 2
 
 
 # =============================================================================
@@ -217,7 +220,8 @@ def test_get_distances_to_interior_bins_shape_1d_graph():
 
     n_interior = int(env.is_track_interior_.sum())
     assert distances.shape == (3, n_interior)
-    assert np.all(np.isfinite(distances)) and np.all(distances >= 0)
+    assert np.all(np.isfinite(distances))
+    assert np.all(distances >= 0)
     # Zero distance at the bin holding each position: [2, 3), [5, 6), [7, 8).
     np.testing.assert_array_equal(np.argmin(distances, axis=1), [2, 5, 7])
     np.testing.assert_array_equal(distances.min(axis=1), 0.0)

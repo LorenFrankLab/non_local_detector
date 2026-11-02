@@ -494,4 +494,5 @@ def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
         None,
     )
     assert kernel._cache_size() == 1
-    assert np.all(np.isfinite(first)) and np.all(np.isfinite(second))
+    assert np.all(np.isfinite(first))
+    assert np.all(np.isfinite(second))

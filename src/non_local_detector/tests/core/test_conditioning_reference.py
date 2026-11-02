@@ -816,7 +816,8 @@ class TestMultiStepEnumerationReference:
 
         def log_likelihood_func(time_idx, is_missing=None):
             rows = ll[np.asarray(time_idx, dtype=int)].copy()
-            assert is_missing is not None and len(is_missing) == len(rows)
+            assert is_missing is not None
+            assert len(is_missing) == len(rows)
             rows[is_missing] = 0.0
             return rows
 

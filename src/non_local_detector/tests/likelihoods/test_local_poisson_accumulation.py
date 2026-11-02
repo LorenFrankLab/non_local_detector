@@ -143,7 +143,8 @@ def test_large_no_spike_request_keeps_bounded_neuron_workspace(monkeypatch):
     edges = np.arange(3001) * 0.002
     result = no_spike.predict_no_spike_log_likelihood(events, time_edges=edges)
     expected = no_spike_reference(events, edges, 1e-10, slice(None))
-    assert max(rows) == 64 and sum(rows) == 3000
+    assert max(rows) == 64
+    assert sum(rows) == 3000
     np.testing.assert_array_equal(result, expected)
 
 
@@ -209,7 +210,8 @@ def test_large_local_kde_request_uses_bounded_compiled_blocks(monkeypatch, block
     small_count_blocks(monkeypatch, len(models))
     rows = record_rows(monkeypatch, sorted_spikes_kde, "_local_kde_log_likelihood")
     result = sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(**kwargs)
-    assert max(rows) == 64 and sum(rows) == 3000
+    assert max(rows) == 64
+    assert sum(rows) == 3000
     np.testing.assert_allclose(
         result, local_kde_reference(models, kwargs), rtol=1e-6, atol=1e-6
     )
@@ -310,7 +312,8 @@ def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
         is_local=True,
         time_edges=np.arange(3001) * 0.002,
     )
-    assert max(rows) == 64 and sum(rows) == 3000
+    assert max(rows) == 64
+    assert sum(rows) == 3000
     assert result.shape == (3000, 1)
     np.testing.assert_allclose(result[3], np.log(0.002) - 0.002, rtol=1e-6, atol=1e-6)
 

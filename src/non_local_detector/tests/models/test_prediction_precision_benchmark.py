@@ -24,7 +24,8 @@ def benchmark() -> ModuleType:
     if not SCRIPT.is_file():
         pytest.skip("benchmarks/ is not part of this installation")
     spec = importlib.util.spec_from_file_location("prediction_benchmark", SCRIPT)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

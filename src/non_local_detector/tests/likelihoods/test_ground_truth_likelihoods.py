@@ -421,11 +421,14 @@ def test_nonlocal_likelihood_tracks_the_exact_likelihood(algorithm, recording, f
         model, algorithm, test, edges, centers, _true_rates(centers[:, 0]), (5.0, 7.0)
     )
     if algorithm == "clusterless_gmm":
-        assert correlation > 0.4 and within_3 > 0.9
+        assert correlation > 0.4
+        assert within_3 > 0.9
     else:
-        assert correlation > 0.7 and within_2 > 0.95
+        assert correlation > 0.7
+        assert within_2 > 0.95
     wrong_correlation, _, wrong_within_3 = wrong
-    assert wrong_correlation < 0.3 and wrong_within_3 < 0.3
+    assert wrong_correlation < 0.3
+    assert wrong_within_3 < 0.3
     assert abs(offset) < LEVEL_TOLERANCE.get(algorithm, 0.5), (
         f"level off by {offset:.2f} nats per spike"
     )
@@ -497,11 +500,14 @@ def test_2d_nonlocal_likelihood_tracks_the_exact_likelihood(
         model, algorithm, test, edges, centers, _true_rates_2d(centers), (6.5,)
     )
     if algorithm == "clusterless_gmm":
-        assert correlation > 0.5 and within > 0.5
+        assert correlation > 0.5
+        assert within > 0.5
     else:
-        assert correlation > 0.8 and within > 0.85
+        assert correlation > 0.8
+        assert within > 0.85
     wrong_correlation, wrong_within = wrong
-    assert wrong_correlation < 0.3 and wrong_within < 0.3
+    assert wrong_correlation < 0.3
+    assert wrong_within < 0.3
     assert abs(offset) < LEVEL_TOLERANCE.get(algorithm, 0.5), (
         f"level off by {offset:.2f} nats per spike"
     )
