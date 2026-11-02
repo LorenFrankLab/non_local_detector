@@ -111,8 +111,10 @@ A four-state model:
 Parameters
 ----------
 discrete_initial_conditions : np.ndarray, shape (4,), optional
-    Initial probabilities of the four states, by default
-    ``[1.0, 0.0, 0.0, 0.0]``.
+    Initial probabilities of the four states, by default one transition
+    after Local, the Local row of the default transition matrix
+    (``[0.99, 0.005, 0.0025, 0.0025]``): most likely Local, but not
+    certainly. A state that starts at zero stays at zero through EM.
 continuous_initial_conditions_types : ContinuousInitialConditions, optional
     Initial position distribution of each state, by default uniform for
     all four.
