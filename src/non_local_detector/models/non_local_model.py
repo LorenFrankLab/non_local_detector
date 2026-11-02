@@ -219,8 +219,26 @@ Examples
 """
 
 
+class _NonLocalResultsMixin:
+    """Results helpers shared by the non-local detectors."""
+
+    state_names: list[str]
+    observation_models: list[ObservationModel]
+
+    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
+        """Posterior over position given that activity is non-local.
+
+        The non-local states are those whose observation model is neither
+        Local nor No-Spike, wherever they are listed. See
+        :func:`_get_conditional_non_local_posterior` for full documentation.
+        """
+        return _get_conditional_non_local_posterior(
+            results, self.state_names, self.observation_models
+        )
+
+
 @document_model(_NON_LOCAL_DOC, "sorted_spikes")
-class NonLocalSortedSpikesDetector(SortedSpikesDetector):
+class NonLocalSortedSpikesDetector(_NonLocalResultsMixin, SortedSpikesDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -280,20 +298,9 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_std = non_local_penalty_std
 
-    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
-        """Posterior over position given that activity is non-local.
-
-        The non-local states are those whose observation model is neither
-        Local nor No-Spike, wherever they are listed. See
-        :func:`_get_conditional_non_local_posterior` for full documentation.
-        """
-        return _get_conditional_non_local_posterior(
-            results, self.state_names, self.observation_models
-        )
-
 
 @document_model(_NON_LOCAL_DOC, "clusterless")
-class NonLocalClusterlessDetector(ClusterlessDetector):
+class NonLocalClusterlessDetector(_NonLocalResultsMixin, ClusterlessDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -352,14 +359,3 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_std)
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_std = non_local_penalty_std
-
-    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
-        """Posterior over position given that activity is non-local.
-
-        The non-local states are those whose observation model is neither
-        Local nor No-Spike, wherever they are listed. See
-        :func:`_get_conditional_non_local_posterior` for full documentation.
-        """
-        return _get_conditional_non_local_posterior(
-            results, self.state_names, self.observation_models
-        )

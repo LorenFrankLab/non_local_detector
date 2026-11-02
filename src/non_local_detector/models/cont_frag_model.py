@@ -99,8 +99,47 @@ Examples
 """
 
 
+class _ContFragResultsMixin:
+    """Results helpers shared by the continuous/fragmented classifiers."""
+
+    @staticmethod
+    def get_posterior(results: xr.Dataset) -> xr.DataArray:
+        """Extract posterior probabilities for continuous vs fragmented states.
+
+        This method extracts and sums the posterior probabilities across all
+        position bins to get the overall probability of each state (continuous
+        vs fragmented) at each time point. Every position dimension is
+        collapsed: the dim named ``position`` (1D) plus any dim whose name ends
+        in ``_position`` (``x_position``/``y_position`` for 2D, ``z_position``
+        and beyond for 3-6D, or ``dim{i}_position`` past six dimensions).
+
+        Parameters
+        ----------
+        results : xr.Dataset
+            Results dataset from model prediction containing acausal_posterior
+            with dimensions (time, state_bins) where state_bins combines
+            discrete states and position bins.
+
+        Returns
+        -------
+        xr.DataArray, shape (n_time, n_states)
+            Posterior probabilities for each state at each time point,
+            with dimensions (time, state) where states are
+            [Continuous, Fragmented]. The state dim is named ``state``
+            (singular), matching the MultiIndex level name on
+            ``acausal_posterior``.
+
+        Examples
+        --------
+        >>> results = classifier.predict(...)
+        >>> state_probs = classifier.get_posterior(results)
+        >>> continuous_prob = state_probs.sel(state='Continuous')
+        """
+        return _state_probabilities_from_results(results)
+
+
 @document_model(_CONT_FRAG_DOC, "sorted_spikes")
-class ContFragSortedSpikesClassifier(SortedSpikesDetector):
+class ContFragSortedSpikesClassifier(_ContFragResultsMixin, SortedSpikesDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -153,44 +192,9 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
 
-    @staticmethod
-    def get_posterior(results: xr.Dataset) -> xr.DataArray:
-        """Extract posterior probabilities for continuous vs fragmented states.
-
-        This method extracts and sums the posterior probabilities across all
-        position bins to get the overall probability of each state (continuous
-        vs fragmented) at each time point. Every position dimension is
-        collapsed: the dim named ``position`` (1D) plus any dim whose name ends
-        in ``_position`` (``x_position``/``y_position`` for 2D, ``z_position``
-        and beyond for 3-6D, or ``dim{i}_position`` past six dimensions).
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Results dataset from model prediction containing acausal_posterior
-            with dimensions (time, state_bins) where state_bins combines
-            discrete states and position bins.
-
-        Returns
-        -------
-        xr.DataArray, shape (n_time, n_states)
-            Posterior probabilities for each state at each time point,
-            with dimensions (time, state) where states are
-            [Continuous, Fragmented]. The state dim is named ``state``
-            (singular), matching the MultiIndex level name on
-            ``acausal_posterior``.
-
-        Examples
-        --------
-        >>> results = classifier.predict(test_spikes)
-        >>> state_probs = classifier.get_posterior(results)
-        >>> continuous_prob = state_probs.sel(state='Continuous')
-        """
-        return _state_probabilities_from_results(results)
-
 
 @document_model(_CONT_FRAG_DOC, "clusterless")
-class ContFragClusterlessClassifier(ClusterlessDetector):
+class ContFragClusterlessClassifier(_ContFragResultsMixin, ClusterlessDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -242,38 +246,3 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
-
-    @staticmethod
-    def get_posterior(results: xr.Dataset) -> xr.DataArray:
-        """Extract posterior probabilities for continuous vs fragmented states.
-
-        This method extracts and sums the posterior probabilities across all
-        position bins to get the overall probability of each state (continuous
-        vs fragmented) at each time point. Every position dimension is
-        collapsed: the dim named ``position`` (1D) plus any dim whose name ends
-        in ``_position`` (``x_position``/``y_position`` for 2D, ``z_position``
-        and beyond for 3-6D, or ``dim{i}_position`` past six dimensions).
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Results dataset from model prediction containing acausal_posterior
-            with dimensions (time, state_bins) where state_bins combines
-            discrete states and position bins.
-
-        Returns
-        -------
-        xr.DataArray, shape (n_time, n_states)
-            Posterior probabilities for each state at each time point,
-            with dimensions (time, state) where states are
-            [Continuous, Fragmented]. The state dim is named ``state``
-            (singular), matching the MultiIndex level name on
-            ``acausal_posterior``.
-
-        Examples
-        --------
-        >>> results = classifier.predict(test_clusterless_spikes)
-        >>> state_probs = classifier.get_posterior(results)
-        >>> continuous_prob = state_probs.sel(state='Continuous')
-        """
-        return _state_probabilities_from_results(results)
