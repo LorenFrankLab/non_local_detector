@@ -3302,9 +3302,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 # Will reuse previously computed likelihood
                 likelihood_results[state_id] = computed_likelihoods[likelihood_name]
 
-        # Assemble the per-state column blocks in one concatenation. Each block
-        # is cast to float32 and its penalty or local kernel added in float32,
-        # as a scatter into a float32 array would.
+        # Assemble the per-state column blocks in one concatenation. As the
+        # scatters into a float32 array did, each block is cast to float32 and
+        # its penalty or local kernel added at the term's precision, then the
+        # sum rounded to float32 once.
         env_penalties = {}
         env_kernels = {}
         blocks = []
@@ -3324,7 +3325,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     env_penalties[env_name] = self._compute_non_local_position_penalty(
                         row_time, position_time, position, env
                     )
-                block = block + jnp.asarray(env_penalties[env_name], dtype=jnp.float32)
+                block = (block + jnp.asarray(env_penalties[env_name])).astype(
+                    jnp.float32
+                )
             if self.local_position_std is not None and obs.is_local:
                 env_name = obs.environment_name
                 if env_name not in env_kernels:
@@ -3332,7 +3335,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     env_kernels[env_name] = self._compute_local_position_kernel(
                         row_time, position_time, position, env
                     )
-                block = block + jnp.asarray(env_kernels[env_name], dtype=jnp.float32)
+                block = (block + jnp.asarray(env_kernels[env_name])).astype(jnp.float32)
             blocks.append(block)
         log_likelihood = jnp.concatenate(blocks, axis=1)
 
