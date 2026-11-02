@@ -819,6 +819,38 @@ def test_dense_em_within_memory_does_not_warn(monkeypatch):
     assert not [w for w in caught if "Dense EM needs" in str(w.message)]
 
 
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+@pytest.mark.parametrize("representation", ["dense", "structured"])
+def test_estimate_parameters_rejects_every_bin_missing(family, representation):
+    """With no observed bin there is nothing to fit, so EM refuses to start.
+
+    Run anyway, EM drove every stay probability to 1 and then reported that
+    it had not converged, which points at max_iter instead of the mask.
+    The detector must be left unfitted.
+    """
+    from non_local_detector.exceptions import DataError
+
+    model, data = _recording(family)
+    n_time = len(data["time_edges"]) - 1
+    with pytest.raises(DataError, match="every decode time bin is missing"):
+        model.estimate_parameters(
+            **data,
+            is_missing=np.ones(n_time, dtype=bool),
+            max_iter=2,
+            transition_representation=representation,
+        )
+    assert not hasattr(model, "discrete_state_transitions_")
+    # One observed bin is enough to run.
+    is_missing = np.ones(n_time, dtype=bool)
+    is_missing[0] = False
+    model.estimate_parameters(
+        **data,
+        is_missing=is_missing,
+        max_iter=1,
+        transition_representation=representation,
+    )
+
+
 def _with_opaque_random_walks(model):
     """Swap RandomWalk blocks for a subclass the operator builder cannot read."""
     from dataclasses import dataclass, fields

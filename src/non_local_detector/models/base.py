@@ -59,7 +59,11 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ConfigurationError, ValidationError
+from non_local_detector.exceptions import (
+    ConfigurationError,
+    DataError,
+    ValidationError,
+)
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -819,6 +823,36 @@ def _decode_time_edges(
         )
     start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     return time_edges, decode_bin_centers(time_edges, start, stop)
+
+
+def _require_observed_bins(is_missing: np.ndarray | None) -> None:
+    """Reject EM when every decode bin is missing: there is nothing to fit.
+
+    Run anyway, EM moves the transitions on the prior dynamics alone (on a
+    simulated recording every stay probability went to 1) and then reports
+    non-convergence, pointing at ``max_iter`` instead of the mask.
+
+    Parameters
+    ----------
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Missing bins from ``_missing_bins``.
+
+    Raises
+    ------
+    DataError
+        If every bin is missing.
+    """
+    if is_missing is not None and is_missing.size and bool(np.all(is_missing)):
+        raise DataError(
+            "Cannot estimate parameters: every decode time bin is missing, so "
+            "EM has no observations to fit",
+            data_name="is_missing",
+            hint=(
+                "Check that is_missing is True only for missing bins, and that "
+                "position is tracked (finite) during time_edges, since bins "
+                "without tracked position are missing too."
+            ),
+        )
 
 
 def _missing_bins(
@@ -3826,10 +3860,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Subclasses have already combined ``is_missing`` with the bins
         # without tracked position via ``_missing_bins``.
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
-        # Units of ``tolerance``; with every bin missing, count one so the
-        # prior-only change is still judged.
+        # Units of ``tolerance``. Subclasses refuse to estimate with every bin
+        # missing (``_require_observed_bins``), so at least one is observed.
         n_missing = 0 if is_missing is None else int(np.count_nonzero(is_missing))
-        n_observed_bins = max(len(time_centers) - n_missing, 1)
+        n_observed_bins = len(time_centers) - n_missing
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
@@ -6271,6 +6305,8 @@ class ClusterlessDetector(_DetectorBase):
             reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
+        # Before the internal fit, so a refused estimate leaves the model as is.
+        _require_observed_bins(is_missing)
         self._fit_em_model(
             lambda representation: self.fit(
                 position_time,
@@ -7480,6 +7516,8 @@ class SortedSpikesDetector(_DetectorBase):
             reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
+        # Before the internal fit, so a refused estimate leaves the model as is.
+        _require_observed_bins(is_missing)
         self._fit_em_model(
             lambda representation: self.fit(
                 position_time,
