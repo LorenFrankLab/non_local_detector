@@ -21,57 +21,87 @@ from non_local_detector.types import (
 
 
 class SortedSpikesDecoder(SortedSpikesDetector):
-    """Decoder for sorted spike data using a single continuous state.
+    """Decoder of position from sorted spike data with a single continuous state.
 
-    This class provides a simplified interface for decoding position from sorted
-    spike data using Hidden Markov Models. It uses a single continuous state with
-    uniform initial conditions and configurable transition models.
+    The position follows a random walk and starts uniform over the track.
 
     Parameters
     ----------
     discrete_initial_conditions : np.ndarray, shape (1,), optional
-        Initial probabilities for discrete states, by default np.ones((1,)).
+        Initial probability of the state, by default ``[1.0]``.
     continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Types of continuous initial conditions, by default [UniformInitialConditions()].
+        Initial position distribution, by default ``[UniformInitialConditions()]``.
     discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transition, by default DiscreteStationaryDiagonal.
+        Discrete transition model, by default
+        ``DiscreteStationaryDiagonal(diagonal_values=[1.0])``.
     discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.0.
+        Dirichlet prior parameter of every entry of each discrete transition row
+        during EM re-estimation; ``discrete_transition_stickiness`` is added to
+        the self-transition. By default 1.1.
     discrete_transition_stickiness : Stickiness, optional
-        Stickiness parameter for discrete transitions, by default np.array([0.0]).
+        Added to the self-transition of the Dirichlet prior, by default ``[0.0]``.
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
         discrete transitions, equivalent to a Gaussian prior with standard
         deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
-        Types of continuous state transitions, by default None (uses RandomWalk).
+        Position dynamics, by default ``[[RandomWalk()]]``.
     observation_models : Observations, optional
-        Observation models for likelihood computation, by default [ObservationModel()].
+        Observation model of the state, by default ``[ObservationModel()]``.
     environments : Environments, optional
-        Environment specification, by default Environment(environment_name="").
+        Spatial environment, by default ``Environment(environment_name="")``.
     sorted_spikes_algorithm : str, optional
-        Algorithm for sorted spikes likelihood, by default "sorted_spikes_kde".
+        Sorted-spikes likelihood algorithm, a key of
+        ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
     sorted_spikes_algorithm_params : dict or None, optional
-        Parameters for the sorted spikes algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
+        Parameters for the sorted-spikes algorithm. If ``None`` (the default),
+        the module-level ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are
+        copied into a fresh dict at fit time. User-supplied dicts are stored
         as-is for sklearn ``clone()`` compatibility and copied on use.
     infer_track_interior : bool, optional
-        Whether to infer track interior, by default True.
+        Whether to infer the track interior from the positions visited during
+        fitting, by default True. Ignored for environments with a track graph.
     state_names : StateNames, optional
-        Names of the states, by default ["Continuous"].
+        Name of the state, by default ``["Continuous"]``.
     sampling_frequency : float, optional
-        Sampling frequency in Hz, by default 500.
+        Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
+        time range; ``predict`` and ``estimate_parameters`` use the
+        ``time_edges`` they are given. Transition probabilities are per decode
+        bin. By default 500.0.
     no_spike_rate : float, optional
-        Rate for no-spike observations, by default 1e-10.
+        Firing rate in Hz of each neuron in a No-Spike state, by default
+        1e-10.
+    discrete_transition_prior_weight : float or np.ndarray, optional
+        Dimensionless weight for data-adaptive Dirichlet prior scaling during
+        EM re-estimation of discrete transitions. When > 0, the prior
+        pseudo-counts are scaled by expected transition counts; a scalar
+        applies to every row, an array of shape ``(n_states,)`` per row. By
+        default 0.0 (the fixed-count prior from concentration and
+        stickiness).
+    frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
+        Discrete transition rows held at their initial values during EM
+        re-estimation. By default ``"no_spike"``: the rows of the states whose
+        observation model has ``is_no_spike=True``, wherever they are listed, so
+        a No-Spike self-transition cannot collapse to fit stray gaps between
+        spikes. Models without a No-Spike state freeze nothing. Row indices or
+        a boolean mask of shape ``(n_states,)`` select rows by position;
+        ``None`` freezes nothing.
 
     Examples
     --------
+    >>> from non_local_detector import (
+    ...     SortedSpikesDecoder,
+    ...     time_edges_from_centers,
+    ... )
     >>> decoder = SortedSpikesDecoder()
     >>> decoder.fit(position_time, position, spike_times)
-    >>> decoded_position = decoder.predict(spike_times, time_edges=time_edges)
+    >>> time_edges = time_edges_from_centers(position_time)
+    >>> results = decoder.predict(
+    ...     spike_times,
+    ...     time_edges=time_edges,
+    ... )
+    >>> results.acausal_posterior  # (n_time, n_position_bins)
     """
 
     def __init__(
@@ -79,7 +109,7 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         discrete_initial_conditions: np.ndarray | None = None,
         continuous_initial_conditions_types: ContinuousInitialConditions | None = None,
         discrete_transition_type: DiscreteTransitions | None = None,
-        discrete_transition_concentration: float = 1.0,
+        discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness | None = None,
         discrete_transition_regularization: float = 0.1,
         continuous_transition_types: ContinuousTransitions | None = None,
@@ -89,7 +119,7 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         sorted_spikes_algorithm_params: dict | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
-        sampling_frequency: float = 500,
+        sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
         frozen_discrete_transition_rows: FrozenTransitionRows = "no_spike",
@@ -128,59 +158,88 @@ class SortedSpikesDecoder(SortedSpikesDetector):
 
 
 class ClusterlessDecoder(ClusterlessDetector):
-    """Decoder for clusterless spike data using a single continuous state.
+    """Decoder of position from clusterless spike data with a single continuous state.
 
-    This class provides a simplified interface for decoding position from clusterless
-    (continuous) spike data using Hidden Markov Models. It uses a single continuous
-    state with uniform initial conditions and configurable transition models.
+    The position follows a random walk and starts uniform over the track.
 
     Parameters
     ----------
     discrete_initial_conditions : np.ndarray, shape (1,), optional
-        Initial probabilities for discrete states, by default np.ones((1,)).
+        Initial probability of the state, by default ``[1.0]``.
     continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Types of continuous initial conditions, by default [UniformInitialConditions()].
+        Initial position distribution, by default ``[UniformInitialConditions()]``.
     discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transition, by default DiscreteStationaryDiagonal.
+        Discrete transition model, by default
+        ``DiscreteStationaryDiagonal(diagonal_values=[1.0])``.
     discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.1.
+        Dirichlet prior parameter of every entry of each discrete transition row
+        during EM re-estimation; ``discrete_transition_stickiness`` is added to
+        the self-transition. By default 1.1.
     discrete_transition_stickiness : Stickiness, optional
-        Stickiness parameter for discrete transitions, by default np.array([0.0]).
+        Added to the self-transition of the Dirichlet prior, by default ``[0.0]``.
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
         discrete transitions, equivalent to a Gaussian prior with standard
         deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
-        Types of continuous state transitions, by default None (uses RandomWalk).
+        Position dynamics, by default ``[[RandomWalk()]]``.
     observation_models : Observations, optional
-        Observation models for likelihood computation, by default [ObservationModel()].
+        Observation model of the state, by default ``[ObservationModel()]``.
     environments : Environments, optional
-        Environment specification, by default Environment(environment_name="").
+        Spatial environment, by default ``Environment(environment_name="")``.
     clusterless_algorithm : str, optional
-        Algorithm for clusterless likelihood computation, by default "clusterless_kde".
+        Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
+        by default "clusterless_kde".
     clusterless_algorithm_params : dict or None, optional
-        Parameters for the clusterless algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
+        Parameters for the clusterless algorithm. If ``None`` (the default),
+        the module-level ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are
+        copied into a fresh dict at fit time. User-supplied dicts are stored
         as-is for sklearn ``clone()`` compatibility and copied on use.
     infer_track_interior : bool, optional
-        Whether to infer track interior, by default True.
+        Whether to infer the track interior from the positions visited during
+        fitting, by default True. Ignored for environments with a track graph.
     state_names : StateNames, optional
-        Names of the states, by default ["Continuous"].
+        Name of the state, by default ``["Continuous"]``.
     sampling_frequency : float, optional
-        Sampling frequency in Hz, by default 500.0.
+        Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
+        time range; ``predict`` and ``estimate_parameters`` use the
+        ``time_edges`` they are given. Transition probabilities are per decode
+        bin. By default 500.0.
     no_spike_rate : float, optional
-        Rate for no-spike observations, by default 1e-10.
+        Firing rate in Hz of each electrode in a No-Spike state, by default
+        1e-10. The marks of its spikes are scored with the training-fitted
+        reference density ``mark_reference_``.
+    discrete_transition_prior_weight : float or np.ndarray, optional
+        Dimensionless weight for data-adaptive Dirichlet prior scaling during
+        EM re-estimation of discrete transitions. When > 0, the prior
+        pseudo-counts are scaled by expected transition counts; a scalar
+        applies to every row, an array of shape ``(n_states,)`` per row. By
+        default 0.0 (the fixed-count prior from concentration and
+        stickiness).
+    frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
+        Discrete transition rows held at their initial values during EM
+        re-estimation. By default ``"no_spike"``: the rows of the states whose
+        observation model has ``is_no_spike=True``, wherever they are listed, so
+        a No-Spike self-transition cannot collapse to fit stray gaps between
+        spikes. Models without a No-Spike state freeze nothing. Row indices or
+        a boolean mask of shape ``(n_states,)`` select rows by position;
+        ``None`` freezes nothing.
 
     Examples
     --------
+    >>> from non_local_detector import (
+    ...     ClusterlessDecoder,
+    ...     time_edges_from_centers,
+    ... )
     >>> decoder = ClusterlessDecoder()
     >>> decoder.fit(position_time, position, spike_times, spike_waveform_features)
-    >>> decoded_position = decoder.predict(
-    ...     spike_times, spike_waveform_features, time_edges=time_edges
+    >>> time_edges = time_edges_from_centers(position_time)
+    >>> results = decoder.predict(
+    ...     spike_times, spike_waveform_features,
+    ...     time_edges=time_edges,
     ... )
+    >>> results.acausal_posterior  # (n_time, n_position_bins)
     """
 
     def __init__(

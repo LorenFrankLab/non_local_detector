@@ -9,6 +9,7 @@ from non_local_detector.models._defaults import (
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
+    _validate_penalty_params,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
@@ -96,154 +97,163 @@ def _get_conditional_non_local_posterior(
     return acausal_posterior / acausal_posterior.sum(position_dims)
 
 
-def _validate_penalty_params(
-    non_local_position_penalty: float, non_local_penalty_std: float
-) -> None:
-    """Validate non-local position penalty parameters.
+class _NonLocalMixin:
+    """Behaviour shared by the sorted-spikes and clusterless non-local detectors."""
 
-    Parameters
-    ----------
-    non_local_position_penalty : float
-        Magnitude of the Gaussian penalty. Must be non-negative.
-    non_local_penalty_std : float
-        Standard deviation of the penalty Gaussian in position units.
-        Must be strictly positive.
+    state_names: list[str]
+    observation_models: list[ObservationModel]
+    non_local_position_penalty: float
+    non_local_penalty_std: float
 
-    Raises
-    ------
-    ValidationError
-        If ``non_local_position_penalty < 0`` or
-        ``non_local_penalty_std <= 0``.
-    """
-    if non_local_position_penalty < 0:
-        raise ValidationError(
-            "non_local_position_penalty must be >= 0",
-            expected="non_local_position_penalty >= 0",
-            got=f"{non_local_position_penalty}",
-            hint="A negative penalty would reward non-local states near the animal's "
-            "position instead of suppressing them. Use 0.0 to disable the penalty.",
+    def _non_local_position_penalty(self) -> float:
+        """The non-local position penalty, validated where it is used.
+
+        Validating at use, not only at construction, also checks values set
+        later with ``set_params``.
+
+        Returns
+        -------
+        penalty : float
+
+        Raises
+        ------
+        ValidationError
+            If the penalty is negative or NaN, or its standard deviation is
+            not positive.
+        """
+        _validate_penalty_params(
+            self.non_local_position_penalty, self.non_local_penalty_std
         )
-    if non_local_penalty_std <= 0:
-        raise ValidationError(
-            "non_local_penalty_std must be > 0",
-            expected="non_local_penalty_std > 0",
-            got=f"{non_local_penalty_std}",
-            hint="Standard deviation controls the width of the Gaussian penalty "
-            "and is used as a divisor. A value <= 0 would cause divide-by-zero "
-            "or invalid behavior.",
+        return self.non_local_position_penalty
+
+    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
+        """Posterior over position given that activity is non-local.
+
+        The non-local states are those whose observation model is neither
+        Local nor No-Spike, wherever they are listed. See
+        :func:`_get_conditional_non_local_posterior` for full documentation.
+        """
+        return _get_conditional_non_local_posterior(
+            results, self.state_names, self.observation_models
         )
 
 
-class NonLocalSortedSpikesDetector(SortedSpikesDetector):
-    """Detector for non-local neural activity using sorted spike data.
+class NonLocalSortedSpikesDetector(_NonLocalMixin, SortedSpikesDetector):
+    """Detector of non-local activity, such as replay, from sorted spike data.
 
-    This class implements a Hidden Markov Model to detect neural replay events
-    and distinguish between local activity, no-spike periods, continuous non-local
-    activity, and fragmented non-local activity.
+    A four-state model:
 
-    The model uses four states:
-    - Local: Neural activity corresponding to the animal's current location
-    - No-Spike: Periods with no significant neural activity
-    - Non-Local Continuous: Replay events with continuous position decoding
-    - Non-Local Fragmented: Replay events with fragmented/discrete position jumps
+    - Local: activity represents the animal's current position.
+    - No-Spike: a near-silent firing model without position.
+    - Non-Local Continuous: the represented position follows a random walk.
+    - Non-Local Fragmented: the represented position jumps uniformly over the
+      track.
 
     Parameters
     ----------
     discrete_initial_conditions : np.ndarray, shape (4,), optional
-        Initial probabilities for the four states, by default [1.0, 0.0, 0.0, 0.0].
+        Initial probabilities of the four states, by default
+        ``[1.0, 0.0, 0.0, 0.0]``.
     continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Types of continuous initial conditions for each state, by default uniform.
+        Initial position distribution of each state, by default uniform for
+        all four.
     discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transition matrix, by default DiscreteStationaryCustom.
+        Discrete transition model, by default ``DiscreteStationaryCustom`` with
+        self-transition probabilities 0.99 (Local), 0.98 (No-Spike) and 0.96
+        (each Non-Local state): expected dwell times of 200, 100 and 50 ms in
+        2 ms bins. Local and the Non-Local states enter No-Spike with
+        probability 0.005.
     discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.0.
-    discrete_transition_stickiness : Stickiness, optional
-        Stickiness parameters for each state, by default [1e5, 1e5, 300.0, 300.0].
+        Dirichlet prior parameter of every entry of each discrete transition row
+        during EM re-estimation; ``discrete_transition_stickiness`` is added to
+        the self-transition. By default 1.0.
+    discrete_transition_stickiness : Stickiness, shape (4,), optional
+        Added to each state's self-transition in the Dirichlet prior, by default
+        ``[100000.0, 100000.0, 300.0, 300.0]``.
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
         discrete transitions, equivalent to a Gaussian prior with standard
         deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
-        Types of continuous state transitions for each state, by default None.
+        Position dynamics from each state (row) to each state (column), by
+        default ``Discrete()`` into Local and No-Spike, ``RandomWalk()`` within
+        Non-Local Continuous, and ``Uniform()`` otherwise.
     observation_models : Observations, optional
-        Observation models for each state, by default includes local and no-spike models.
+        Observation model of each state, by default
+        ``ObservationModel(is_local=True)``,
+        ``ObservationModel(is_no_spike=True)`` and ``ObservationModel()`` for
+        each Non-Local state. The states' roles are read from these flags.
     environments : Environments, optional
-        Environment specification, by default empty Environment.
+        Spatial environment, by default ``Environment(environment_name="")``.
     sorted_spikes_algorithm : str, optional
-        Algorithm for sorted spikes likelihood, by default "sorted_spikes_kde".
+        Sorted-spikes likelihood algorithm, a key of
+        ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
     sorted_spikes_algorithm_params : dict or None, optional
-        Parameters for the sorted spikes algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
+        Parameters for the sorted-spikes algorithm. If ``None`` (the default),
+        the module-level ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are
+        copied into a fresh dict at fit time. User-supplied dicts are stored
         as-is for sklearn ``clone()`` compatibility and copied on use.
     infer_track_interior : bool, optional
-        Whether to infer track interior, by default True.
+        Whether to infer the track interior from the positions visited during
+        fitting, by default True. Ignored for environments with a track graph.
     state_names : StateNames, optional
-        Names of the four states, by default ["Local", "No-Spike", "Non-Local Continuous", "Non-Local Fragmented"].
+        Names of the states, by default ``["Local", "No-Spike",
+        "Non-Local Continuous", "Non-Local Fragmented"]``.
     sampling_frequency : float, optional
-        Sampling frequency in Hz, by default 500.0.
+        Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
+        time range; ``predict`` and ``estimate_parameters`` use the
+        ``time_edges`` they are given. Transition probabilities are per decode
+        bin. By default 500.0.
     no_spike_rate : float, optional
-        Rate for no-spike observations, by default 1e-10.
+        Firing rate in Hz of each neuron in a No-Spike state, by default
+        1e-10.
     non_local_position_penalty : float, optional
-        Magnitude of the Gaussian penalty subtracted from the non-local
-        states' log-likelihood near the animal's position. Suppresses
-        non-local replay detection near the current location. By default
-        ``0.0`` (no penalty).
+        Magnitude, in nats, of the Gaussian penalty subtracted from the
+        Non-Local states' log-likelihood near the animal's position. Suppresses
+        non-local detection near the current location. By default 0.0 (no
+        penalty). Must be >= 0.
     non_local_penalty_std : float, optional
-        Standard deviation of the Gaussian penalty, in the same units as
-        ``position`` (typically centimeters). Controls the spatial
-        extent of the suppression zone around the animal; distances use
-        shortest-path along the track graph. Must be strictly positive.
-        By default ``1.0``.
+        Standard deviation of the penalty Gaussian, in the units of
+        ``position`` (typically cm), by default 1.0. Distances are shortest
+        paths on the track graph. Must be > 0.
     discrete_transition_prior_weight : float or np.ndarray, optional
-        Dimensionless weight for data-adaptive Dirichlet prior scaling
-        during EM re-estimation of discrete transitions. By default
-        ``0.0`` (fixed-count prior).
+        Dimensionless weight for data-adaptive Dirichlet prior scaling during
+        EM re-estimation of discrete transitions. When > 0, the prior
+        pseudo-counts are scaled by expected transition counts; a scalar
+        applies to every row, an array of shape ``(n_states,)`` per row. By
+        default 0.0 (the fixed-count prior from concentration and
+        stickiness).
     frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
-        Discrete transition rows to freeze during EM re-estimation. By
-        default ``"no_spike"``, which freezes the No-Spike state's row
-        (found from ``observation_models``, wherever it is listed) so its
-        self-transition cannot collapse to fit stray spike gaps. Row
-        indices or a boolean mask select rows by position; ``None``
-        disables row freezing.
+        Discrete transition rows held at their initial values during EM
+        re-estimation. By default ``"no_spike"``: the rows of the states whose
+        observation model has ``is_no_spike=True``, wherever they are listed, so
+        a No-Spike self-transition cannot collapse to fit stray gaps between
+        spikes. Models without a No-Spike state freeze nothing. Row indices or
+        a boolean mask of shape ``(n_states,)`` select rows by position;
+        ``None`` freezes nothing.
     local_position_std : float or None, optional
-        Controls the Local state's spatial representation:
+        Spatial representation of the Local state:
 
-        - ``None`` (default): legacy behavior. Local state occupies a
-          single bin; the likelihood is evaluated at the animal's exact
-          interpolated position (continuous).
-        - ``0.0``: delta-kernel multi-bin local. Local state spans all
-          position bins, with the kernel concentrated at the single bin
-          containing the animal. The per-bin likelihood is evaluated at
-          bin centers (discrete); only the animal's bin contributes
-          finite mass, the rest are suppressed.
-        - ``> 0``: multi-bin local with a Gaussian kernel of standard
-          deviation ``local_position_std`` (same units as ``position``,
-          typically centimeters) on the shortest-path track-graph
-          distance. Models spatial uncertainty in the local
-          representation.
-
-        All three modes produce a valid posterior.
-
-    Attributes
-    ----------
-    non_local_position_penalty : float
-        Stored copy of the ``non_local_position_penalty`` constructor
-        argument.
-    non_local_penalty_std : float
-        Stored copy of the ``non_local_penalty_std`` constructor argument.
-    local_position_std : float or None
-        Stored copy of the ``local_position_std`` constructor argument.
+        - ``None`` (default): Local occupies a single bin; its likelihood is
+          evaluated at the animal's interpolated position.
+        - ``0.0``: Local spans all position bins, with all mass at the bin
+          containing the animal; the likelihood is evaluated at bin centers.
+        - ``> 0``: Local spans all position bins with a Gaussian kernel of this
+          standard deviation (units of ``position``, typically cm) on the
+          shortest-path track-graph distance, modelling spatial uncertainty.
 
     Examples
     --------
+    >>> from non_local_detector import (
+    ...     NonLocalSortedSpikesDetector,
+    ...     time_edges_from_centers,
+    ... )
     >>> detector = NonLocalSortedSpikesDetector()
     >>> detector.fit(position_time, position, spike_times)
     >>> results = detector.predict(
     ...     spike_times,
-    ...     time_edges=time_edges,
+    ...     time_edges=time_edges_from_centers(position_time),
     ...     position=position,
     ...     position_time=position_time,
     ... )
@@ -309,130 +319,124 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_std = non_local_penalty_std
 
-    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
-        """Posterior over position given that activity is non-local.
 
-        The non-local states are those whose observation model is neither
-        Local nor No-Spike, wherever they are listed. See
-        :func:`_get_conditional_non_local_posterior` for full documentation.
-        """
-        return _get_conditional_non_local_posterior(
-            results, self.state_names, self.observation_models
-        )
+class NonLocalClusterlessDetector(_NonLocalMixin, ClusterlessDetector):
+    """Detector of non-local activity, such as replay, from clusterless spike data.
 
+    A four-state model:
 
-class NonLocalClusterlessDetector(ClusterlessDetector):
-    """Detector for non-local neural activity using clusterless spike data.
-
-    This class implements a Hidden Markov Model to detect neural replay events
-    from clusterless (continuous) spike features, distinguishing between local
-    activity, no-spike periods, continuous non-local activity, and fragmented
-    non-local activity.
-
-    The model uses four states:
-    - Local: Neural activity corresponding to the animal's current location
-    - No-Spike: Periods with no significant neural activity
-    - Non-Local Continuous: Replay events with continuous position decoding
-    - Non-Local Fragmented: Replay events with fragmented/discrete position jumps
+    - Local: activity represents the animal's current position.
+    - No-Spike: a near-silent firing model without position.
+    - Non-Local Continuous: the represented position follows a random walk.
+    - Non-Local Fragmented: the represented position jumps uniformly over the
+      track.
 
     Parameters
     ----------
     discrete_initial_conditions : np.ndarray, shape (4,), optional
-        Initial probabilities for the four states, by default [1.0, 0.0, 0.0, 0.0].
+        Initial probabilities of the four states, by default
+        ``[1.0, 0.0, 0.0, 0.0]``.
     continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Types of continuous initial conditions for each state, by default uniform.
+        Initial position distribution of each state, by default uniform for
+        all four.
     discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transition matrix, by default DiscreteStationaryCustom.
+        Discrete transition model, by default ``DiscreteStationaryCustom`` with
+        self-transition probabilities 0.99 (Local), 0.98 (No-Spike) and 0.96
+        (each Non-Local state): expected dwell times of 200, 100 and 50 ms in
+        2 ms bins. Local and the Non-Local states enter No-Spike with
+        probability 0.005.
     discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.0.
-    discrete_transition_stickiness : Stickiness, optional
-        Stickiness parameters for each state, by default [1e5, 1e5, 300.0, 300.0].
+        Dirichlet prior parameter of every entry of each discrete transition row
+        during EM re-estimation; ``discrete_transition_stickiness`` is added to
+        the self-transition. By default 1.0.
+    discrete_transition_stickiness : Stickiness, shape (4,), optional
+        Added to each state's self-transition in the Dirichlet prior, by default
+        ``[100000.0, 100000.0, 300.0, 300.0]``.
     discrete_transition_regularization : float, optional
         L2 penalty on the non-intercept coefficients of covariate-dependent
         discrete transitions, equivalent to a Gaussian prior with standard
         deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
         Stationary transitions do not use it.
     continuous_transition_types : ContinuousTransitions, optional
-        Types of continuous state transitions for each state, by default None.
+        Position dynamics from each state (row) to each state (column), by
+        default ``Discrete()`` into Local and No-Spike, ``RandomWalk()`` within
+        Non-Local Continuous, and ``Uniform()`` otherwise.
     observation_models : Observations, optional
-        Observation models for each state, by default includes local and no-spike models.
+        Observation model of each state, by default
+        ``ObservationModel(is_local=True)``,
+        ``ObservationModel(is_no_spike=True)`` and ``ObservationModel()`` for
+        each Non-Local state. The states' roles are read from these flags.
     environments : Environments, optional
-        Environment specification, by default empty Environment.
+        Spatial environment, by default ``Environment(environment_name="")``.
     clusterless_algorithm : str, optional
-        Algorithm for clusterless likelihood computation, by default "clusterless_kde".
+        Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
+        by default "clusterless_kde".
     clusterless_algorithm_params : dict or None, optional
-        Parameters for the clusterless algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
+        Parameters for the clusterless algorithm. If ``None`` (the default),
+        the module-level ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are
+        copied into a fresh dict at fit time. User-supplied dicts are stored
         as-is for sklearn ``clone()`` compatibility and copied on use.
     infer_track_interior : bool, optional
-        Whether to infer track interior, by default True.
+        Whether to infer the track interior from the positions visited during
+        fitting, by default True. Ignored for environments with a track graph.
     state_names : StateNames, optional
-        Names of the four states, by default ["Local", "No-Spike", "Non-Local Continuous", "Non-Local Fragmented"].
+        Names of the states, by default ``["Local", "No-Spike",
+        "Non-Local Continuous", "Non-Local Fragmented"]``.
     sampling_frequency : float, optional
-        Sampling frequency in Hz, by default 500.0.
+        Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
+        time range; ``predict`` and ``estimate_parameters`` use the
+        ``time_edges`` they are given. Transition probabilities are per decode
+        bin. By default 500.0.
     no_spike_rate : float, optional
-        Rate for no-spike observations, by default 1e-10.
+        Firing rate in Hz of each electrode in a No-Spike state, by default
+        1e-10. The marks of its spikes are scored with the training-fitted
+        reference density ``mark_reference_``.
     non_local_position_penalty : float, optional
-        Magnitude of the Gaussian penalty subtracted from the non-local
-        states' log-likelihood near the animal's position. Suppresses
-        non-local replay detection near the current location. By default
-        ``0.0`` (no penalty).
+        Magnitude, in nats, of the Gaussian penalty subtracted from the
+        Non-Local states' log-likelihood near the animal's position. Suppresses
+        non-local detection near the current location. By default 0.0 (no
+        penalty). Must be >= 0.
     non_local_penalty_std : float, optional
-        Standard deviation of the Gaussian penalty, in the same units as
-        ``position`` (typically centimeters). Controls the spatial
-        extent of the suppression zone around the animal; distances use
-        shortest-path along the track graph. Must be strictly positive.
-        By default ``1.0``.
+        Standard deviation of the penalty Gaussian, in the units of
+        ``position`` (typically cm), by default 1.0. Distances are shortest
+        paths on the track graph. Must be > 0.
     discrete_transition_prior_weight : float or np.ndarray, optional
-        Dimensionless weight for data-adaptive Dirichlet prior scaling
-        during EM re-estimation of discrete transitions. By default
-        ``0.0`` (fixed-count prior).
+        Dimensionless weight for data-adaptive Dirichlet prior scaling during
+        EM re-estimation of discrete transitions. When > 0, the prior
+        pseudo-counts are scaled by expected transition counts; a scalar
+        applies to every row, an array of shape ``(n_states,)`` per row. By
+        default 0.0 (the fixed-count prior from concentration and
+        stickiness).
     frozen_discrete_transition_rows : {"no_spike"}, array-like, or None, optional
-        Discrete transition rows to freeze during EM re-estimation. By
-        default ``"no_spike"``, which freezes the No-Spike state's row
-        (found from ``observation_models``, wherever it is listed) so its
-        self-transition cannot collapse to fit stray spike gaps. Row
-        indices or a boolean mask select rows by position; ``None``
-        disables row freezing.
+        Discrete transition rows held at their initial values during EM
+        re-estimation. By default ``"no_spike"``: the rows of the states whose
+        observation model has ``is_no_spike=True``, wherever they are listed, so
+        a No-Spike self-transition cannot collapse to fit stray gaps between
+        spikes. Models without a No-Spike state freeze nothing. Row indices or
+        a boolean mask of shape ``(n_states,)`` select rows by position;
+        ``None`` freezes nothing.
     local_position_std : float or None, optional
-        Controls the Local state's spatial representation:
+        Spatial representation of the Local state:
 
-        - ``None`` (default): legacy behavior. Local state occupies a
-          single bin; the likelihood is evaluated at the animal's exact
-          interpolated position (continuous).
-        - ``0.0``: delta-kernel multi-bin local. Local state spans all
-          position bins, with the kernel concentrated at the single bin
-          containing the animal. The per-bin likelihood is evaluated at
-          bin centers (discrete); only the animal's bin contributes
-          finite mass, the rest are suppressed.
-        - ``> 0``: multi-bin local with a Gaussian kernel of standard
-          deviation ``local_position_std`` (same units as ``position``,
-          typically centimeters) on the shortest-path track-graph
-          distance. Models spatial uncertainty in the local
-          representation.
-
-        All three modes produce a valid posterior.
-
-    Attributes
-    ----------
-    non_local_position_penalty : float
-        Stored copy of the ``non_local_position_penalty`` constructor
-        argument.
-    non_local_penalty_std : float
-        Stored copy of the ``non_local_penalty_std`` constructor argument.
-    local_position_std : float or None
-        Stored copy of the ``local_position_std`` constructor argument.
+        - ``None`` (default): Local occupies a single bin; its likelihood is
+          evaluated at the animal's interpolated position.
+        - ``0.0``: Local spans all position bins, with all mass at the bin
+          containing the animal; the likelihood is evaluated at bin centers.
+        - ``> 0``: Local spans all position bins with a Gaussian kernel of this
+          standard deviation (units of ``position``, typically cm) on the
+          shortest-path track-graph distance, modelling spatial uncertainty.
 
     Examples
     --------
+    >>> from non_local_detector import (
+    ...     NonLocalClusterlessDetector,
+    ...     time_edges_from_centers,
+    ... )
     >>> detector = NonLocalClusterlessDetector()
     >>> detector.fit(position_time, position, spike_times, spike_waveform_features)
     >>> results = detector.predict(
-    ...     spike_times,
-    ...     spike_waveform_features,
-    ...     time_edges=time_edges,
+    ...     spike_times, spike_waveform_features,
+    ...     time_edges=time_edges_from_centers(position_time),
     ...     position=position,
     ...     position_time=position_time,
     ... )
@@ -497,14 +501,3 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_std)
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_std = non_local_penalty_std
-
-    def get_conditional_non_local_posterior(self, results: xr.Dataset) -> xr.DataArray:
-        """Posterior over position given that activity is non-local.
-
-        The non-local states are those whose observation model is neither
-        Local nor No-Spike, wherever they are listed. See
-        :func:`_get_conditional_non_local_posterior` for full documentation.
-        """
-        return _get_conditional_non_local_posterior(
-            results, self.state_names, self.observation_models
-        )
