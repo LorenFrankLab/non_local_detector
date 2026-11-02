@@ -1165,7 +1165,7 @@ def predict_clusterless_diffusion_log_likelihood(
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     is_local: bool = False,
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],

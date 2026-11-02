@@ -473,7 +473,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     log_occupancy: jnp.ndarray | None = None,
     environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,

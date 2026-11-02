@@ -852,13 +852,13 @@ def predict_clusterless_gmm_log_likelihood(
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
     environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-    **kwargs,
+    **kwargs,  # noqa: ARG001 -- shared likelihood-algorithm signature
 ) -> jnp.ndarray:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.

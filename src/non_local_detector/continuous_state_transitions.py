@@ -602,7 +602,7 @@ class Discrete:
     is just an identity matrix.
     """
 
-    def make_state_transition(self, *args, **kwargs) -> np.ndarray:
+    def make_state_transition(self, *args, **kwargs) -> np.ndarray:  # noqa: ARG002 -- shared make_state_transition signature
         """Creates a continuous transition matrix for a discrete state space.
 
         Since there is no continuous spatial component, the transition matrix

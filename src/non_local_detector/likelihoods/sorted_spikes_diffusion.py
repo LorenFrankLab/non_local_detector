@@ -599,13 +599,13 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     position: np.ndarray,
     spike_times: list[np.ndarray],
     environment: Environment,
-    occupancy: np.ndarray,
+    occupancy: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
     mean_rates: list[float],
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
     is_track_interior: np.ndarray,
     node_order: np.ndarray | None = None,
-    bin_sizes: np.ndarray | None = None,
+    bin_sizes: np.ndarray | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
     is_local: bool = False,
@@ -614,7 +614,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,

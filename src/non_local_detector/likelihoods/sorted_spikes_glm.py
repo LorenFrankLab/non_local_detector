@@ -1277,9 +1277,9 @@ def fit_sorted_spikes_glm_encoding_model(
     spike_times: list[jnp.ndarray],
     environment: Environment,
     place_bin_edges: np.ndarray,
-    edges: np.ndarray,
+    edges: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
     is_track_interior: np.ndarray,
-    is_track_boundary: np.ndarray,
+    is_track_boundary: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
     weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float | None = None,
@@ -1459,7 +1459,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,

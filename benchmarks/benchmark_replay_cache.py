@@ -203,7 +203,7 @@ def run(args, devices, preflight):
             cache = folder / "likelihoods"
             cache.mkdir()
 
-            def callback(full_edges, *, row_slice, is_missing):
+            def callback(full_edges, *, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
                 nonlocal generated, reads, writes, max_host_chunk
                 assert full_edges is edges
                 start, stop = row_slice.start, row_slice.stop

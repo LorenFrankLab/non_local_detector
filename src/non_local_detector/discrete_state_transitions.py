@@ -2696,10 +2696,10 @@ class _QuantileBSpline:
     def transform(
         self,
         x,
-        n_knots: int = 5,
-        degree: int = 3,
-        lower_quantile: float = 0.0,
-        upper_quantile: float = 1.0,
+        n_knots: int = 5,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        degree: int = 3,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        lower_quantile: float = 0.0,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        upper_quantile: float = 1.0,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
     ) -> np.ndarray:
         return self._spline.transform(
             np.clip(np.asarray(x, dtype=float), self._lower, self._upper)
@@ -2819,7 +2819,12 @@ class _CyclicBSpline:
         return periodic
 
     def transform(
-        self, x, lower: float, upper: float, n_knots: int = 8, degree: int = 3
+        self,
+        x,
+        lower: float,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        upper: float,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        n_knots: int = 8,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        degree: int = 3,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
     ) -> np.ndarray:
         extended, start = self._extended()
         period = self._upper - self._lower
@@ -2913,7 +2918,7 @@ class DiscreteStationaryDiagonal:
 
     diagonal_values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:  # noqa: ARG002 -- shared make_state_transition signature
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -2946,7 +2951,7 @@ class DiscreteStationaryCustom:
 
     values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:  # noqa: ARG002 -- shared make_state_transition signature
         """Constructs the initial discrete transition matrix.
 
         Returns

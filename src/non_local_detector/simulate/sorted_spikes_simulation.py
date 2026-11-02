@@ -62,7 +62,7 @@ def _simulate_sinusoidal_position_by_period(
 def create_place_field(
     place_field_mean: float,
     position: np.ndarray,
-    sampling_frequency: float = SAMPLING_FREQUENCY,
+    sampling_frequency: float = SAMPLING_FREQUENCY,  # noqa: ARG001 -- unused; kept so existing calls work
     is_condition: np.ndarray | None = None,
     place_field_std_deviation: float = np.sqrt(12.5),
     max_firing_rate: float = 20.0,

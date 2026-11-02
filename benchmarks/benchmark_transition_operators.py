@@ -90,7 +90,7 @@ def main():
             observation_models=observations,
             local_position_std=None,
             state_ind_=state_ind,
-            _get_environment_by_name=lambda name: env,
+            _get_environment_by_name=lambda name: env,  # noqa: ARG005 -- environment lookup signature
         )
         _DetectorBase.initialize_continuous_state_transition(namespace, descriptors)
         dense = (

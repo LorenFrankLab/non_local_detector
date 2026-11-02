@@ -573,7 +573,9 @@ def fit_backend(name: str, encoding) -> FittedBackend:
 
 
 def selection_sizes(
-    backend: FittedBackend, recording: Recording, row_slice: slice
+    backend: FittedBackend,  # noqa: ARG001 -- same signature as the other selection helpers
+    recording: Recording,
+    row_slice: slice,
 ) -> dict[str, int]:
     """Recompute, from the public helper, what the call selects for this chunk.
 

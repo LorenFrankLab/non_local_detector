@@ -867,7 +867,7 @@ class LazyDenseTransition:
         msg = "Structured transitions are read-only; choose the dense representation to edit a matrix"
         raise TypeError(msg)
 
-    def astype(self, dtype, **kwargs):
+    def astype(self, dtype, **kwargs):  # noqa: ARG002 -- ndarray.astype signature
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 
 

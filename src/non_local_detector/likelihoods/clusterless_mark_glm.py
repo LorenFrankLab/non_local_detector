@@ -891,7 +891,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,

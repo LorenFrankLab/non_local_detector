@@ -61,7 +61,7 @@ def measure_memory_usage(func, *args, n_runs=5):
     return avg_peak_mb, std_peak_mb
 
 
-def estimate_jax_device_memory(func, *args, n_runs=3):
+def estimate_jax_device_memory(func, *args, n_runs=3):  # noqa: ARG001 -- unused
     """Estimate JAX device memory usage.
 
     This measures the size of JAX arrays created during execution.

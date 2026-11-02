@@ -71,7 +71,7 @@ def worker(args):
     edges = np.arange(args.rows + 1, dtype=float) * 0.002
     columns = np.arange(args.bins, dtype=dtype)[None, :]
 
-    def ll(time_edges, *, row_slice, is_missing):
+    def ll(time_edges, *, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
         rows = np.arange(row_slice.start, row_slice.stop, dtype=dtype)[:, None]
         return -np.square(
             np.sin(

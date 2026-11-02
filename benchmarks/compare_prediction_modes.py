@@ -89,7 +89,10 @@ def _prepare_reference_likelihood(model: Any, predict: dict) -> Callable:
     centers = (edges[:-1] + edges[1:]) / 2
 
     def likelihood(
-        full_edges: np.ndarray, *, row_slice: slice, is_missing: np.ndarray
+        full_edges: np.ndarray,  # noqa: ARG001 -- likelihood callback signature
+        *,
+        row_slice: slice,
+        is_missing: np.ndarray,
     ) -> Any:
         return prepared(centers, *args, row_slice=row_slice, is_missing=is_missing)
 

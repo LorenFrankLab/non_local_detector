@@ -331,7 +331,7 @@ def _prepare_likelihood_callback(
 
     if accepts_row_slice(callback):
 
-        def row_callback(row_time, *args, row_slice=None, **kwargs):
+        def row_callback(row_time, *args, row_slice=None, **kwargs):  # noqa: ARG001 -- likelihood callback signature
             row_start, row_stop = resolve_row_slice(row_slice, n_bins)
             return checked(
                 evaluate(time_edges, *args, row_slice=row_slice, **kwargs),
@@ -341,7 +341,7 @@ def _prepare_likelihood_callback(
         row_slice_aware(row_callback)  # marks the function in place
         return row_callback
 
-    def chunk_callback(row_time, *args, row_slice=None, **kwargs):
+    def chunk_callback(row_time, *args, row_slice=None, **kwargs):  # noqa: ARG001 -- likelihood callback signature
         row_start, row_stop = resolve_row_slice(row_slice, n_bins)
         if (row_start, row_stop) != (0, n_bins):
             msg = "Chunked custom likelihoods must be row_slice_aware"
@@ -3173,7 +3173,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         return {}
 
     def _no_spike_mark_log_likelihood(
-        self, spike_data, time_edges, row_slice, spike_time_order
+        self,
+        spike_data,  # noqa: ARG002 -- subclasses override and use them
+        time_edges,  # noqa: ARG002 -- subclasses override and use them
+        row_slice,  # noqa: ARG002 -- subclasses override and use them
+        spike_time_order,  # noqa: ARG002 -- subclasses override and use them
     ) -> jnp.ndarray | None:
         """Term added to the No-Spike log likelihood, or None when there is none."""
         return None
@@ -3903,7 +3907,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             _time_grid=time_grid,
         )
 
-        def likelihood(full_edges, *, row_slice, is_missing):
+        def likelihood(full_edges, *, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
             return prepared(
                 centers,
                 *log_likelihood_args,

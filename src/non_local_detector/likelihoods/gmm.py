@@ -114,7 +114,7 @@ def _estimate_gaussian_covariances_full(
 def _estimate_gaussian_covariances_tied(
     resp: Array,
     X: Array,
-    nk: Array,
+    nk: Array,  # noqa: ARG001 -- covariance-type dispatch signature
     means: Array,
     reg_covar: float,
 ) -> Array:

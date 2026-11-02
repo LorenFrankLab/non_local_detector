@@ -1154,7 +1154,7 @@ def chunked_filter_smoother(
     def filter_chunk(
         initial_distribution: jnp.ndarray,
         log_likelihoods: jnp.ndarray,
-        time_inds: jnp.ndarray,
+        time_inds: jnp.ndarray,  # noqa: ARG001 -- chunked-filter callback signature
     ) -> tuple:
         return _filter_internal(
             initial_distribution=initial_distribution,
