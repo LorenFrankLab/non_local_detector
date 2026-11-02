@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With `n_chunks > 1`, prediction no longer keeps the per-chunk causal, predictive and acausal posteriors on the device alongside their concatenations, which lowers the peak device memory of chunked decoding.
 - `most_likely_sequence` with covariate-dependent discrete transitions takes the log of the small per-state transition matrices instead of the expanded state-bin matrix at every time step; the decoded sequence is bit-identical.
 - The per-chunk checks for impossible (all `-inf`) and NaN likelihood rows run as one compiled pass with a single transfer to the host.
+- With a stationary transition, smoothing reuses the filter's one-step-ahead predictions instead of recomputing them, one fewer state-bin transition product per time step. Filtering and smoothing 5,000 time bins over 2,500 state bins on CPU take 2.1-2.6 s instead of 3.4-4.1 s (medians of repeated runs, with one or four chunks). The posteriors are bit-identical. `smoother` accepts the filter's predictions as optional `predicted_probs` and `predicted_probs_next`. Covariate-dependent transitions still recompute them: there, building each step's transition matrix for a single product let XLA on CPU fuse it into that product, which made smoothing 2.4 times slower.
 
 ### State roles come from the observation models, not list position
 

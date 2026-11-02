@@ -762,6 +762,30 @@ class TestMultiStepEnumerationReference:
         np.testing.assert_allclose(np.asarray(smoothed), ref["smoothed"], atol=1e-5)
         assert float(evidence) == pytest.approx(ref["log_evidence"], abs=1e-4)
 
+    def test_smoother_reusing_filter_predictions(self):
+        """Smoothing from the filter's predicted rows matches enumeration.
+
+        The predictions are the filter's own rows plus its final carry, the
+        row after the last, so the terminal step uses the real prediction.
+        """
+        initial, transitions, ll = _tiny_model()
+        ref = enumerate_reference(initial, transitions[0], ll)
+        transition = jnp.asarray(transitions[0])
+        (_, predicted_next), (filtered, predicted) = filter(
+            jnp.asarray(initial), transition, jnp.asarray(ll)
+        )
+
+        smoothed = smoother(
+            transition,
+            filtered,
+            predicted_probs=predicted,
+            predicted_probs_next=predicted_next,
+        )
+
+        np.testing.assert_allclose(np.asarray(smoothed), ref["smoothed"], atol=1e-5)
+        with pytest.raises(ValueError, match="both predicted_probs"):
+            smoother(transition, filtered, predicted_probs=predicted)
+
     def test_constant_covariate_matches_stationary_expanded(self):
         initial, discrete, continuous, state_ind, ll, expanded = _covariate_model()
         discrete_const = np.broadcast_to(discrete[0], discrete.shape).copy()

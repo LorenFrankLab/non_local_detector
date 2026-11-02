@@ -1,6 +1,7 @@
 import functools
 import logging
 from collections.abc import Callable
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -595,12 +596,128 @@ def filter(
     return (marginal, predicted_probs_next), (filtered, predicted)
 
 
+def _smoother_scan(
+    transition_matrix_at: Callable[[Any], jnp.ndarray],
+    transition_xs: Any,
+    filtered_probs: ArrayLike,
+    initial: ArrayLike | None,
+    ind: ArrayLike | None,
+    n_time: int | None,
+    predicted_probs: ArrayLike | None = None,
+    predicted_probs_next: ArrayLike | None = None,
+) -> jnp.ndarray:
+    """Backward smoothing scan shared by the stationary and covariate smoothers.
+
+    The update at row ``t`` divides the smoothed row ``t + 1`` by the
+    prediction ``filtered_probs[t] @ transition_matrix_t``, which is the
+    filter's predicted row ``t + 1``. When the filter's predicted rows are
+    supplied the scan carries each row back one step instead of recomputing
+    that product: one fewer ``(n_states, n_states)`` product per time step.
+
+    Parameters
+    ----------
+    transition_matrix_at : callable
+        Maps the per-step slice of ``transition_xs`` to the transition matrix
+        from row ``t`` to row ``t + 1``, shape (n_states, n_states).
+    transition_xs : pytree or None
+        Per-step transition inputs scanned with the rows (None if stationary).
+    filtered_probs : jnp.ndarray, shape (n_time, n_states)
+    initial : jnp.ndarray, shape (n_states,) or None
+        Smoothed row after the last row (its filtered row if None).
+    ind : jnp.ndarray, shape (n_time,) or None
+        Global row indices (``arange(n_time)`` if None).
+    n_time : int or None
+        Global number of rows; the update at row ``n_time - 1`` keeps the
+        filtered row.
+    predicted_probs : jnp.ndarray, shape (n_time, n_states) or None
+        The filter's predicted rows for the same rows as ``filtered_probs``.
+    predicted_probs_next : jnp.ndarray, shape (n_states,) or None
+        The filter's prediction for the row after the last.
+
+    Returns
+    -------
+    smoothed_probs : jnp.ndarray, shape (n_time, n_states)
+    """
+    if (predicted_probs is None) != (predicted_probs_next is None):
+        raise ValueError(
+            "Pass both predicted_probs and predicted_probs_next, or neither."
+        )
+    if n_time is None:
+        n_time = filtered_probs.shape[0]
+    if ind is None:
+        ind = jnp.arange(n_time)
+    if initial is None:
+        initial = filtered_probs[-1]
+
+    def _update(
+        smoothed_probs_next: jnp.ndarray,
+        filtered_probs_t: jnp.ndarray,
+        predicted_probs_next_t: jnp.ndarray,
+        transition_matrix: jnp.ndarray,
+        t: jnp.ndarray,
+    ) -> jnp.ndarray:
+        smoothed_probs = filtered_probs_t * (
+            transition_matrix
+            @ _divide_safe(smoothed_probs_next, predicted_probs_next_t)
+        ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
+        smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
+        return smoothed_probs
+
+    if predicted_probs is None:
+
+        def _step(
+            smoothed_probs_next: jnp.ndarray, args: tuple
+        ) -> tuple[jnp.ndarray, jnp.ndarray]:
+            filtered_probs_t, transition_xs_t, t = args
+            transition_matrix = transition_matrix_at(transition_xs_t)
+            smoothed_probs = _update(
+                smoothed_probs_next,
+                filtered_probs_t,
+                filtered_probs_t @ transition_matrix,
+                transition_matrix,
+                t,
+            )
+            return smoothed_probs, smoothed_probs
+
+        return jax.lax.scan(
+            _step,
+            initial,
+            (filtered_probs, transition_xs, ind),
+            reverse=True,
+            unroll=_HMM_SCAN_UNROLL,
+        )[1]
+
+    def _step_reusing_predictions(
+        carry: tuple[jnp.ndarray, jnp.ndarray], args: tuple
+    ) -> tuple[tuple[jnp.ndarray, jnp.ndarray], jnp.ndarray]:
+        smoothed_probs_next, predicted_probs_next_t = carry
+        filtered_probs_t, predicted_probs_t, transition_xs_t, t = args
+        smoothed_probs = _update(
+            smoothed_probs_next,
+            filtered_probs_t,
+            predicted_probs_next_t,
+            transition_matrix_at(transition_xs_t),
+            t,
+        )
+        return (smoothed_probs, predicted_probs_t), smoothed_probs
+
+    return jax.lax.scan(
+        _step_reusing_predictions,
+        (initial, predicted_probs_next),
+        (filtered_probs, predicted_probs, transition_xs, ind),
+        reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
+    )[1]
+
+
 def _smoother_impl(
     transition_matrix: ArrayLike,
     filtered_probs: ArrayLike,
     initial: ArrayLike | None = None,
     ind: ArrayLike | None = None,
     n_time: int | None = None,
+    predicted_probs: ArrayLike | None = None,
+    predicted_probs_next: ArrayLike | None = None,
 ) -> jnp.ndarray:
     """Smoother step.
 
@@ -616,41 +733,30 @@ def _smoother_impl(
         Time indices, by default None
     n_time : int, optional
         Number of time points, by default None
+    predicted_probs : jnp.ndarray, shape (n_time, n_states), optional
+        The filter's one-step-ahead predicted rows for the same time points as
+        ``filtered_probs``. With ``predicted_probs_next``, saves recomputing
+        ``filtered_probs[t] @ transition_matrix`` at every step. By default
+        None (computed).
+    predicted_probs_next : jnp.ndarray, shape (n_states,), optional
+        The filter's prediction for the time point after the last one (its
+        final carry). Required with ``predicted_probs``. By default None.
 
     Returns
     -------
     smoothed_probs : jnp.ndarray, shape (n_time, n_states)
         Smoothed state probabilities
     """
-    if n_time is None:
-        n_time = filtered_probs.shape[0]
-    if ind is None:
-        ind = jnp.arange(n_time)
-    if initial is None:
-        initial = filtered_probs[-1]
-
-    def _step(
-        smoothed_probs_next: jnp.ndarray, args: tuple[jnp.ndarray, int]
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        filtered_probs_t, t = args
-
-        # Compute predicted probs once and reuse (avoids redundant matmul)
-        predicted_probs = filtered_probs_t @ transition_matrix
-
-        smoothed_probs = filtered_probs_t * (
-            transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
-        ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
-        smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
-
-        return smoothed_probs, smoothed_probs
-
-    return jax.lax.scan(
-        _step,
+    return _smoother_scan(
+        lambda _: transition_matrix,
+        None,
+        filtered_probs,
         initial,
-        (filtered_probs, ind),
-        reverse=True,
-        unroll=_HMM_SCAN_UNROLL,
-    )[1]
+        ind,
+        n_time,
+        predicted_probs,
+        predicted_probs_next,
+    )
 
 
 # Apply JIT without donation - tests reuse inputs
@@ -838,6 +944,7 @@ def _chunked_filter_smoother(
     dtype: jnp.dtype,
     degenerate_indices_out: list | None,
     accumulate_log_likelihoods: bool,
+    reuse_predictions: bool,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -867,6 +974,10 @@ def _chunked_filter_smoother(
         one chunk backward from ``initial``, the smoothed row after the chunk
         (the last filtered row for the final chunk), as :func:`_smoother_impl`
         does.
+    reuse_predictions : bool, keyword-only
+        If True, ``smoother_chunk`` also receives ``predicted_probs``, the
+        filter's predicted rows of the chunk, and ``predicted_probs_next``,
+        its predicted row after the chunk.
 
     The remaining parameters and the returns are those of
     :func:`chunked_filter_smoother`.
@@ -1013,8 +1124,26 @@ def _chunked_filter_smoother(
     del causal_posterior, predictive_posterior
 
     # Backward pass: accumulate JAX arrays
+    # The smoother divides by filtered row t times the transition from t, which
+    # is the filter's predicted row t + 1. When reusing predictions, it gets
+    # those rows instead of recomputing the product. The row after a chunk is
+    # the first predicted row of the chunk smoothed before it, or the filter's
+    # final prediction.
     for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
         time_inds = jnp.asarray(time_inds_np)
+        reuse_kwargs = {}
+        if reuse_predictions:
+            # Not donated, so one chunk reads the concatenation without a copy.
+            predicted_probs_chunk = (
+                predictive_posterior_jax
+                if len(time_chunks) == 1
+                else predictive_posterior_jax[time_inds]
+            )
+            reuse_kwargs = {
+                "predicted_probs": predicted_probs_chunk,
+                "predicted_probs_next": predicted_probs_next,
+            }
+            predicted_probs_next = predicted_probs_chunk[0]
 
         # Donated: the filtered_probs slice (a copy) and the initial boundary
         # row are single-use per iteration.
@@ -1028,6 +1157,7 @@ def _chunked_filter_smoother(
             ),
             time_inds=time_inds,
             n_time=n_time,
+            **reuse_kwargs,
         )
         acausal_posterior.append(acausal_posterior_chunk)
         acausal_state_probabilities.append(
@@ -1154,7 +1284,9 @@ def chunked_filter_smoother(
 
     def smoother_chunk(
         filtered_probs: jnp.ndarray,
+        predicted_probs: jnp.ndarray,
         initial: jnp.ndarray,
+        predicted_probs_next: jnp.ndarray,
         time_inds: jnp.ndarray,
         n_time: int,
     ) -> jnp.ndarray:
@@ -1164,6 +1296,8 @@ def chunked_filter_smoother(
             initial=initial,
             ind=time_inds,
             n_time=n_time,
+            predicted_probs=predicted_probs,
+            predicted_probs_next=predicted_probs_next,
         )
 
     return _chunked_filter_smoother(
@@ -1181,6 +1315,7 @@ def chunked_filter_smoother(
         dtype=dtype,
         degenerate_indices_out=degenerate_indices_out,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
+        reuse_predictions=True,
     )
 
 
@@ -1506,40 +1641,26 @@ def _smoother_covariate_dependent_impl(
     Returns
     -------
     smoothed_probs : jnp.ndarray, shape (n_time, n_state_bins)
+
+    Notes
+    -----
+    Unlike :func:`smoother`, this recomputes the filter's predictions
+    ``filtered_probs[t] @ transition_matrix_t`` rather than taking them as
+    inputs. The step builds ``transition_matrix_t`` for its other product
+    anyway, and with a single use XLA on CPU fuses that construction into the
+    remaining matrix-vector product, which made the smoother 2.4x slower
+    (2,500 state bins).
     """
-    if n_time is None:
-        n_time = filtered_probs.shape[0]
-    if ind is None:
-        ind = jnp.arange(n_time)
-    if initial is None:
-        initial = filtered_probs[-1]
-
-    def _step(smoothed_probs_next, args):
-        filtered_probs_t, discrete_transition_matrix_t, t = args
-
-        transition_matrix = _get_transition_matrix(
-            discrete_transition_matrix_t,
-            continuous_transition_matrix,
-            state_ind,
-        )
-
-        # Compute predicted probs once and reuse (avoids redundant matmul)
-        predicted_probs = filtered_probs_t @ transition_matrix
-
-        smoothed_probs = filtered_probs_t * (
-            transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
-        ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
-        smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
-
-        return smoothed_probs, smoothed_probs
-
-    return jax.lax.scan(
-        _step,
+    return _smoother_scan(
+        lambda discrete_transition_matrix_t: _get_transition_matrix(
+            discrete_transition_matrix_t, continuous_transition_matrix, state_ind
+        ),
+        discrete_transition_matrix,
+        filtered_probs,
         initial,
-        (filtered_probs, discrete_transition_matrix, ind),
-        reverse=True,
-        unroll=_HMM_SCAN_UNROLL,
-    )[1]
+        ind,
+        n_time,
+    )
 
 
 # Apply JIT without donation - tests reuse inputs
@@ -1706,6 +1827,7 @@ def chunked_filter_smoother_covariate_dependent(
         dtype=dtype,
         degenerate_indices_out=degenerate_indices_out,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
+        reuse_predictions=False,
     )
 
 
