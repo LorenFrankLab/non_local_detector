@@ -26,6 +26,10 @@ import numpy as np
 from scipy.special import logsumexp  # type: ignore[import-untyped]
 
 from non_local_detector.likelihoods.common import KDEModel, kde_log_density
+from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    _full_to_local,
+    _interior_bin_indices,
+)
 from non_local_detector.model_checking.conditional_marks import (
     GaussianMixtureConditionalCDF,
 )
@@ -90,12 +94,13 @@ def _interior_bins(environment):
         if environment.is_track_interior_ is None
         else np.asarray(environment.is_track_interior_).ravel()
     )
-    full_to_local = np.full(interior.size, -1)
-    full_to_local[np.flatnonzero(interior)] = np.arange(interior.sum())
+    full_to_local = _full_to_local(np.flatnonzero(interior), interior.size)
     return np.asarray(environment.place_bin_centers_, float)[interior], full_to_local
 
 
-def _require_bins(bins):
+def _require_interior_bins(environment, positions, full_to_local):
+    """Interior-bin indices of ``positions``; raise if any is off the track."""
+    bins = _interior_bin_indices(environment, positions, full_to_local)
     if np.any(bins < 0):
         raise ValueError("positions must lie in interior bins of the environment")
     return bins
@@ -196,9 +201,7 @@ class _KDEElectrode(_MarkKernelMixture):
         )
 
     def bin_indices(self, positions):
-        return _require_bins(
-            self.full_to_local[self.environment.get_bin_ind(positions)]
-        )
+        return _require_interior_bins(self.environment, positions, self.full_to_local)
 
     def _log_position_kernel_at_bins(self):
         return _gaussian_log_kernel(self.bin_centers, self.positions, self.position_std)
@@ -246,8 +249,9 @@ class _DiffusionElectrode(_MarkKernelMixture):
             raise ValueError(f"electrode {electrode} has no fitted encoding spikes")
         node_order = np.asarray(model["node_order"])
         self.n_bins = node_order.size
-        self.full_to_local = np.full(len(self.environment.place_bin_centers_), -1)
-        self.full_to_local[node_order] = np.arange(self.n_bins)
+        self.full_to_local = _full_to_local(
+            node_order, len(self.environment.place_bin_centers_)
+        )
         self.marks = np.asarray(model["encoding_marks"][electrode], float)
         self.weights = np.asarray(model["encoding_weights"][electrode], float)
         self.waveform_std = np.broadcast_to(
@@ -290,9 +294,7 @@ class _DiffusionElectrode(_MarkKernelMixture):
         )
 
     def bin_indices(self, positions):
-        return _require_bins(
-            self.full_to_local[self.environment.get_bin_ind(positions)]
-        )
+        return _require_interior_bins(self.environment, positions, self.full_to_local)
 
     def ground_intensity(self, positions):
         return self._ground_at_bins[self.bin_indices(positions)]
@@ -409,9 +411,7 @@ class _GMMElectrode:
         )
 
     def bin_indices(self, positions):
-        return _require_bins(
-            self.full_to_local[self.environment.get_bin_ind(positions)]
-        )
+        return _require_interior_bins(self.environment, positions, self.full_to_local)
 
     def log_intensity_at_bins(self, marks):
         """``log mu + log p_joint(b, m_i) - log p_occ(b)``, (n_bins, n)."""
