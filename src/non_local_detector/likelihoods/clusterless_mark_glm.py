@@ -536,7 +536,6 @@ def fit_clusterless_mark_glm_encoding_model(
         spike_times=spike_times,
         spike_waveform_features=spike_waveform_features,
     )
-    position = position if position.ndim > 1 else position[:, None]
     weight_sum = float(exposure_weights.sum())
     warn_if_no_encoding_exposure(
         exposure_weights, "Clusterless mark GLM", clusterless=True

@@ -51,7 +51,6 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_population_lengths,
     validate_spike_feature_pair,
-    validate_weights,
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.gmm import (
@@ -671,15 +670,12 @@ def fit_clusterless_gmm_encoding_model(
         spike_times=spike_times,
         spike_waveform_features=spike_waveform_features,
     )
-    position = _as_jnp(position if position.ndim > 1 else position[:, None])
+    position = _as_jnp(position)
     # NOTE: Do NOT convert position_time to JAX! It causes float64→float32 precision loss
     # with large timestamp values (e.g., Unix timestamps), creating apparent duplicates.
     # Keep as numpy for interpolation (scipy.interpolate.interpn requires numpy anyway).
     position_time = np.asarray(position_time)
 
-    if weights is None:
-        weights = np.ones((position.shape[0],))
-    weights = validate_weights(np.asarray(weights), position.shape[0])
     # Weighted occupancy time in seconds: per-sample weight times the tracking
     # time each sample covers (its integrated interpolation exposure).
     weight_sum = float(exposure_weights.sum())
