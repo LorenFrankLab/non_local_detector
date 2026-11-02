@@ -131,11 +131,19 @@ def _resolve_fit_params(
     Raises
     ------
     ValidationError
-        If a key is not a fit parameter the user may set: one with a default,
+        If ``algorithm`` is not registered, or a key is not a fit parameter
+        the user may set: one with a default,
         other than ``weights`` and the private ``_``-prefixed ones. The
         detector supplies the fit's data, environment and weights itself. A
         fit that takes ``**kwargs`` is not checked.
     """
+    if algorithm not in algorithms:
+        algorithm_name = params_name.removesuffix("_params")
+        raise ValidationError(
+            f"Unknown {algorithm_name} {algorithm!r}",
+            expected=f"one of {sorted(algorithms)}",
+            got=repr(algorithm),
+        )
     resolved = dict(default_params[algorithm] if params is None else params)
     parameters = inspect.signature(algorithms[algorithm][0]).parameters
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):

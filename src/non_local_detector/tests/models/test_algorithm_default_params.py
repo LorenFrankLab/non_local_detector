@@ -225,6 +225,14 @@ def test_sorted_unknown_param_raises(sim, algorithm, typo, accepted):
     assert accepted in str(error.value)
 
 
+def test_unknown_sorted_algorithm_raises():
+    """An unregistered algorithm name raises ValidationError listing the names."""
+    decoder = _sorted_decoder("sorted_spikes_kde_typo")
+    with pytest.raises(ValidationError, match="sorted_spikes_kde_typo") as error:
+        decoder._resolve_sorted_spikes_algorithm_params()
+    assert "sorted_spikes_kde" in str(error.value)
+
+
 def test_sorted_glm_geometry_is_not_a_user_param(sim):
     """The detector supplies the GLM's environment geometry itself."""
     decoder = _sorted_decoder("sorted_spikes_glm", {"edges": None})

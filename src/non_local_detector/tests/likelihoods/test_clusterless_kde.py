@@ -37,7 +37,7 @@ def test_block_size_default_is_the_detectors(function):
         .default,
     )
     default = inspect.signature(function).parameters["block_size"].default
-    assert default == detector_default
+    assert default == detector_default == 10_000
 
 
 def test_select_spikes_in_rows_right_edge_last_bin():
