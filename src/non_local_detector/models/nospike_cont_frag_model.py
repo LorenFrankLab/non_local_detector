@@ -4,6 +4,7 @@ from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
 )
+from non_local_detector.models._docstrings import document_model
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
@@ -19,84 +20,63 @@ from non_local_detector.types import (
     Stickiness,
 )
 
+_NO_SPIKE_CONT_FRAG_DOC = """Classifier of No-Spike, continuous and fragmented periods from $data.
 
+A three-state model. The No-Spike state is a near-silent firing model
+without position; in the Continuous state the decoded position follows a
+random walk, and in the Fragmented state it jumps uniformly over the track.
+
+Parameters
+----------
+discrete_initial_conditions : np.ndarray, shape (3,), optional
+    Initial probabilities of [No-Spike, Continuous, Fragmented], by default
+    ``[1/3, 1/3, 1/3]``.
+continuous_initial_conditions_types : ContinuousInitialConditions, optional
+    Initial position distribution of each state, by default uniform for
+    all three.
+discrete_transition_type : DiscreteTransitions, optional
+    Discrete transition model, by default ``DiscreteStationaryCustom`` with
+    self-transition probabilities 0.99 (No-Spike), 0.9 (Continuous) and
+    0.98 (Fragmented); Continuous and Fragmented enter No-Spike with
+    probability 1e-5.
+$discrete_transition_concentration
+discrete_transition_stickiness : Stickiness, shape (3,), optional
+    Added to each state's self-transition in the Dirichlet prior, by default
+    ``[100000.0, 30.0, 200.0]``.
+$discrete_transition_regularization
+continuous_transition_types : ContinuousTransitions, optional
+    Position dynamics from each state (row) to each state (column), by
+    default ``[[Discrete(), Uniform(), Uniform()], [Discrete(), RandomWalk(),
+    Uniform()], [Discrete(), Uniform(), Uniform()]]``.
+observation_models : Observations, optional
+    Observation model of each state, by default
+    ``ObservationModel(is_no_spike=True)`` for No-Spike and
+    ``ObservationModel()`` for the others.
+environments : Environments, optional
+    Spatial environment, by default ``Environment(environment_name="")``.
+$algorithm_parameters
+$infer_track_interior
+state_names : StateNames, optional
+    Names of the states, by default
+    ``["No-Spike", "Continuous", "Fragmented"]``.
+$sampling_frequency
+$no_spike_rate
+$discrete_transition_prior_weight
+$frozen_discrete_transition_rows
+
+Examples
+--------
+>>> from non_local_detector import $cls, time_edges_from_centers
+>>> classifier = $cls()
+>>> classifier.fit($fit_example)
+>>> time_edges = time_edges_from_centers(position_time)
+>>> results = classifier.predict($predict_example, time_edges=time_edges)
+>>> results.acausal_state_probabilities  # (n_time, n_states)
+"""
+
+
+@document_model(_NO_SPIKE_CONT_FRAG_DOC, "sorted_spikes")
 class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
-    """Classifier for no-spike, continuous, and fragmented states using sorted spike data.
-
-    This classifier uses a three-state Hidden Markov Model to distinguish between
-    no-spike periods, continuous non-local activity, and fragmented non-local
-    activity using sorted spike data. This model explicitly handles periods of
-    neural silence alongside different types of replay events.
-
-    The three states are:
-    - No-Spike: Periods with minimal neural activity (uses Discrete transitions)
-    - Continuous: Smooth spatial replay trajectories (uses RandomWalk)
-    - Fragmented: Disjointed spatial representations (uses Uniform)
-
-    The model uses custom transition matrices with high self-transition
-    probabilities to maintain state persistence, especially for no-spike periods.
-
-    Parameters
-    ----------
-    discrete_initial_conditions : np.ndarray, shape (3,), optional
-        Initial probabilities for [No-Spike, Continuous, Fragmented] states,
-        by default np.ones((3,)) / 3 (uniform distribution).
-    continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Initial condition types for continuous states, by default uniform
-        initial conditions for all three states.
-    discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transitions, by default custom stationary
-        transition matrix with specified probabilities.
-    discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.1.
-    discrete_transition_stickiness : Stickiness, shape (3,), optional
-        Stickiness parameters for state persistence, by default
-        [100000.0, 30.0, 200.0] with very high no-spike persistence.
-    discrete_transition_regularization : float, optional
-        L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions, equivalent to a Gaussian prior with standard
-        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
-        Stationary transitions do not use it.
-    continuous_transition_types : ContinuousTransitions or None, optional
-        Transition types for continuous states. If None, uses default:
-        [[Discrete(), Uniform(), Uniform()], [Discrete(), RandomWalk(), Uniform()],
-        [Discrete(), Uniform(), Uniform()]].
-    observation_models : Observations, optional
-        Observation models for likelihood computation, by default includes
-        a no-spike observation model.
-    environments : Environments, optional
-        Environment specifications, by default empty Environment.
-    sorted_spikes_algorithm : str, optional
-        Algorithm for sorted spikes likelihood, by default 'sorted_spikes_kde'.
-    sorted_spikes_algorithm_params : dict or None, optional
-        Parameters for the sorted spikes algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
-        as-is for sklearn ``clone()`` compatibility and copied on use.
-    infer_track_interior : bool, optional
-        Whether to infer track interior during decoding, by default True.
-    state_names : StateNames, optional
-        Names for the states, by default ['No-Spike', 'Continuous', 'Fragmented'].
-    sampling_frequency : float, optional
-        Data sampling frequency in Hz, by default 500.0.
-    no_spike_rate : float, optional
-        Rate parameter for no-spike periods, by default 1e-10.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from non_local_detector.models.nospike_cont_frag_model import NoSpikeContFragSortedSpikesClassifier
-    >>> # Create classifier with default parameters
-    >>> classifier = NoSpikeContFragSortedSpikesClassifier()
-    >>> # Fit to training data
-    >>> classifier.fit(position, spikes)
-    >>> # Classify test data
-    >>> results = classifier.predict(test_spikes)
-    >>> # Extract state probabilities
-    >>> state_probs = results.acausal_posterior.sum('position')
-    """
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -150,83 +130,8 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         )
 
 
+@document_model(_NO_SPIKE_CONT_FRAG_DOC, "clusterless")
 class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
-    """Classifier for no-spike, continuous, and fragmented states using clusterless data.
-
-    This classifier uses a three-state Hidden Markov Model to distinguish between
-    no-spike periods, continuous non-local activity, and fragmented non-local
-    activity using clusterless (continuous) spike data. This model explicitly
-    handles periods of neural silence alongside different types of replay events.
-
-    The three states are:
-    - No-Spike: Periods with minimal neural activity
-    - Continuous: Smooth spatial replay trajectories (uses RandomWalk)
-    - Fragmented: Disjointed spatial representations (uses Uniform)
-
-    Note: This implementation uses a simplified two-state continuous transition
-    model despite having three discrete states, which may be appropriate for
-    specific clusterless data analysis scenarios.
-
-    Parameters
-    ----------
-    discrete_initial_conditions : np.ndarray, shape (3,), optional
-        Initial probabilities for [No-Spike, Continuous, Fragmented] states,
-        by default np.ones((3,)) / 3 (uniform distribution).
-    continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Initial condition types for continuous states, by default uniform
-        initial conditions for all three states.
-    discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transitions, by default custom stationary
-        transition matrix with specified probabilities.
-    discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.1.
-    discrete_transition_stickiness : Stickiness, shape (3,), optional
-        Stickiness parameters for state persistence, by default
-        [100000.0, 30.0, 200.0] with very high no-spike persistence.
-    discrete_transition_regularization : float, optional
-        L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions, equivalent to a Gaussian prior with standard
-        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
-        Stationary transitions do not use it.
-    continuous_transition_types : ContinuousTransitions or None, optional
-        Transition types for continuous states. If None, uses simplified
-        two-state model: [[RandomWalk(), Uniform()], [Uniform(), Uniform()]].
-    observation_models : Observations, optional
-        Observation models for likelihood computation, by default includes
-        a no-spike observation model.
-    environments : Environments, optional
-        Environment specifications, by default empty Environment.
-    clusterless_algorithm : str, optional
-        Algorithm for clusterless data likelihood, by default 'clusterless_kde'.
-    clusterless_algorithm_params : dict or None, optional
-        Parameters for the clusterless algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
-        as-is for sklearn ``clone()`` compatibility and copied on use.
-    infer_track_interior : bool, optional
-        Whether to infer track interior during decoding, by default True.
-    state_names : StateNames, optional
-        Names for the states, by default ['No-Spike', 'Continuous', 'Fragmented'].
-    sampling_frequency : float, optional
-        Data sampling frequency in Hz, by default 500.0.
-    no_spike_rate : float, optional
-        Rate parameter for no-spike periods, by default 1e-10.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from non_local_detector.models.nospike_cont_frag_model import NoSpikeContFragClusterlessClassifier
-    >>> # Create classifier with default parameters
-    >>> classifier = NoSpikeContFragClusterlessClassifier()
-    >>> # Fit to training data
-    >>> classifier.fit(position, clusterless_spikes)
-    >>> # Classify test data
-    >>> results = classifier.predict(test_clusterless_spikes)
-    >>> # Extract state probabilities
-    >>> state_probs = results.acausal_posterior.sum('position')
-    """
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,

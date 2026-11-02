@@ -6,6 +6,7 @@ from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
 )
+from non_local_detector.models._docstrings import document_model
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
@@ -48,77 +49,58 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
     return unstacked.sum(position_dims)
 
 
+_CONT_FRAG_DOC = """Classifier of continuous vs. fragmented replay from $data.
+
+A two-state model. In the Continuous state the decoded position follows a
+random walk; in the Fragmented state it jumps uniformly over the track, and
+switching state places it uniformly too.
+
+Parameters
+----------
+discrete_initial_conditions : np.ndarray, shape (2,), optional
+    Initial probabilities of [Continuous, Fragmented], by default
+    ``[0.5, 0.5]``.
+continuous_initial_conditions_types : ContinuousInitialConditions, optional
+    Initial position distribution of each state, by default uniform for
+    both.
+discrete_transition_type : DiscreteTransitions, optional
+    Discrete transition model, by default ``DiscreteStationaryDiagonal``
+    with self-transition probability 0.98 for both states.
+$discrete_transition_concentration
+discrete_transition_stickiness : Stickiness, shape (2,), optional
+    Added to each state's self-transition in the Dirichlet prior, by default
+    ``[0.0, 0.0]``.
+$discrete_transition_regularization
+continuous_transition_types : ContinuousTransitions, optional
+    Position dynamics from each state (row) to each state (column), by
+    default ``[[RandomWalk(), Uniform()], [Uniform(), Uniform()]]``.
+observation_models : Observations, optional
+    Observation model of each state, by default
+    ``[ObservationModel(), ObservationModel()]``.
+environments : Environments, optional
+    Spatial environment, by default ``Environment(environment_name="")``.
+$algorithm_parameters
+$infer_track_interior
+state_names : StateNames, optional
+    Names of the states, by default ``["Continuous", "Fragmented"]``.
+$sampling_frequency
+$no_spike_rate
+$discrete_transition_prior_weight
+$frozen_discrete_transition_rows
+
+Examples
+--------
+>>> from non_local_detector import $cls, time_edges_from_centers
+>>> classifier = $cls()
+>>> classifier.fit($fit_example)
+>>> time_edges = time_edges_from_centers(position_time)
+>>> results = classifier.predict($predict_example, time_edges=time_edges)
+>>> state_probs = classifier.get_posterior(results)  # (n_time, n_states)
+"""
+
+
+@document_model(_CONT_FRAG_DOC, "sorted_spikes")
 class ContFragSortedSpikesClassifier(SortedSpikesDetector):
-    """Classifier for continuous vs fragmented non-local activity using sorted spike data.
-
-    This classifier uses a two-state Hidden Markov Model to distinguish between
-    continuous and fragmented non-local neural replay events in sorted spike data.
-    The continuous state models smooth spatial trajectories during replay, while
-    the fragmented state captures disjointed spatial representations.
-
-    The model transitions:
-    - Continuous state: Uses RandomWalk for within-state and Uniform for between-state transitions
-    - Fragmented state: Uses Uniform transitions for both within and between states
-
-    Parameters
-    ----------
-    discrete_initial_conditions : np.ndarray, shape (2,), optional
-        Initial probabilities for [Continuous, Fragmented] states, by default
-        np.ones((2,)) / 2 (uniform distribution).
-    continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Initial condition types for continuous states, by default uniform
-        initial conditions for both states.
-    discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transitions, by default stationary diagonal
-        with 98% self-transition probability.
-    discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.1.
-    discrete_transition_stickiness : Stickiness, shape (2,), optional
-        Stickiness parameters for state persistence, by default [0.0, 0.0].
-    discrete_transition_regularization : float, optional
-        L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions, equivalent to a Gaussian prior with standard
-        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
-        Stationary transitions do not use it.
-    continuous_transition_types : ContinuousTransitions or None, optional
-        Transition types for continuous states. If None, uses default:
-        [[RandomWalk(), Uniform()], [Uniform(), Uniform()]].
-    observation_models : Observations, optional
-        Observation models for likelihood computation, by default empty
-        ObservationModel instances.
-    environments : Environments, optional
-        Environment specifications, by default empty Environment.
-    sorted_spikes_algorithm : str, optional
-        Algorithm for sorted spikes likelihood, by default 'sorted_spikes_kde'.
-    sorted_spikes_algorithm_params : dict or None, optional
-        Parameters for the sorted spikes algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
-        as-is for sklearn ``clone()`` compatibility and copied on use.
-    infer_track_interior : bool, optional
-        Whether to infer track interior during decoding, by default True.
-    state_names : StateNames, optional
-        Names for the states, by default ['Continuous', 'Fragmented'].
-    sampling_frequency : float, optional
-        Data sampling frequency in Hz, by default 500.
-    no_spike_rate : float, optional
-        Rate parameter for no-spike periods, by default 1e-10.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from non_local_detector.models.cont_frag_model import ContFragSortedSpikesClassifier
-    >>> # Create classifier with default parameters
-    >>> classifier = ContFragSortedSpikesClassifier()
-    >>> # Fit to training data
-    >>> classifier.fit(position, spikes)
-    >>> # Classify test data
-    >>> results = classifier.predict(test_spikes)
-    >>> # Get state probabilities
-    >>> state_probs = classifier.get_posterior(results)
-    """
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -207,78 +189,8 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
         return _state_probabilities_from_results(results)
 
 
+@document_model(_CONT_FRAG_DOC, "clusterless")
 class ContFragClusterlessClassifier(ClusterlessDetector):
-    """Classifier for continuous vs fragmented non-local activity using clusterless data.
-
-    This classifier uses a two-state Hidden Markov Model to distinguish between
-    continuous and fragmented non-local neural replay events in clusterless
-    (continuous) spike data. The continuous state models smooth spatial trajectories
-    during replay, while the fragmented state captures disjointed spatial
-    representations.
-
-    The model transitions:
-    - Continuous state: Uses RandomWalk for within-state and Uniform for between-state transitions
-    - Fragmented state: Uses Uniform transitions for both within and between states
-
-    Parameters
-    ----------
-    discrete_initial_conditions : np.ndarray, shape (2,), optional
-        Initial probabilities for [Continuous, Fragmented] states, by default
-        np.ones((2,)) / 2 (uniform distribution).
-    continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Initial condition types for continuous states, by default uniform
-        initial conditions for both states.
-    discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transitions, by default stationary diagonal
-        with 98% self-transition probability.
-    discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.1.
-    discrete_transition_stickiness : Stickiness, shape (2,), optional
-        Stickiness parameters for state persistence, by default [0.0, 0.0].
-    discrete_transition_regularization : float, optional
-        L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions, equivalent to a Gaussian prior with standard
-        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
-        Stationary transitions do not use it.
-    continuous_transition_types : ContinuousTransitions or None, optional
-        Transition types for continuous states. If None, uses default:
-        [[RandomWalk(), Uniform()], [Uniform(), Uniform()]].
-    observation_models : Observations, optional
-        Observation models for likelihood computation, by default empty
-        ObservationModel instances.
-    environments : Environments, optional
-        Environment specifications, by default empty Environment.
-    clusterless_algorithm : str, optional
-        Algorithm for clusterless data likelihood, by default 'clusterless_kde'.
-    clusterless_algorithm_params : dict or None, optional
-        Parameters for the clusterless algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
-        as-is for sklearn ``clone()`` compatibility and copied on use.
-    infer_track_interior : bool, optional
-        Whether to infer track interior during decoding, by default True.
-    state_names : StateNames, optional
-        Names for the states, by default ['Continuous', 'Fragmented'].
-    sampling_frequency : float, optional
-        Data sampling frequency in Hz, by default 500.0.
-    no_spike_rate : float, optional
-        Rate parameter for no-spike periods, by default 1e-10.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from non_local_detector.models.cont_frag_model import ContFragClusterlessClassifier
-    >>> # Create classifier with default parameters
-    >>> classifier = ContFragClusterlessClassifier()
-    >>> # Fit to training data
-    >>> classifier.fit(position, clusterless_spikes)
-    >>> # Classify test data
-    >>> results = classifier.predict(test_clusterless_spikes)
-    >>> # Get state probabilities
-    >>> state_probs = classifier.get_posterior(results)
-    """
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,

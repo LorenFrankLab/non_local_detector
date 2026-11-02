@@ -4,6 +4,7 @@ from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
 )
+from non_local_detector.models._docstrings import document_model
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
@@ -19,80 +20,65 @@ from non_local_detector.types import (
     Stickiness,
 )
 
+_MULTI_ENVIRONMENT_DOC = """Classifier of which of two environments $data represents.
 
+A two-state model, one state per environment. Within an environment the
+decoded position follows a random walk; switching environment places it
+uniformly in the other one.
+
+Parameters
+----------
+discrete_initial_conditions : np.ndarray, shape (2,), optional
+    Initial probabilities of [env1, env2], by default ``[1.0, 0.0]``.
+continuous_initial_conditions_types : ContinuousInitialConditions, optional
+    Initial position distribution of each state, by default uniform for
+    both.
+discrete_transition_type : DiscreteTransitions, optional
+    Discrete transition model, by default ``DiscreteStationaryDiagonal``
+    with self-transition probabilities ``[0.999, 0.98]``.
+$discrete_transition_concentration
+discrete_transition_stickiness : Stickiness, shape (2,), optional
+    Added to each state's self-transition in the Dirichlet prior, by default
+    ``[200.0, 30.0]``.
+$discrete_transition_regularization
+continuous_transition_types : ContinuousTransitions, optional
+    Position dynamics from each state (row) to each state (column), by
+    default ``RandomWalk`` within an environment and ``Uniform`` between
+    them.
+observation_models : Observations, optional
+    Observation model of each state, by default
+    ``ObservationModel(environment_name="env1")`` and
+    ``ObservationModel(environment_name="env2")``.
+environments : Environments, optional
+    The two spatial environments, by default
+    ``Environment(environment_name="env1")`` and
+    ``Environment(environment_name="env2")``.
+$algorithm_parameters
+$infer_track_interior
+state_names : StateNames, optional
+    Names of the states, by default ``["env1", "env2"]``.
+$sampling_frequency
+$no_spike_rate
+$discrete_transition_prior_weight
+$frozen_discrete_transition_rows
+
+Examples
+--------
+>>> from non_local_detector import $cls, time_edges_from_centers
+>>> classifier = $cls()
+>>> # environment_labels: ("env1" or "env2") for each position sample
+>>> classifier.fit(
+...     $fit_example,
+...     environment_labels=environment_labels,
+... )
+>>> time_edges = time_edges_from_centers(position_time)
+>>> results = classifier.predict($predict_example, time_edges=time_edges)
+>>> results.acausal_state_probabilities  # (n_time, n_states)
+"""
+
+
+@document_model(_MULTI_ENVIRONMENT_DOC, "sorted_spikes")
 class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
-    """Classifier for multi-environment neural activity using sorted spike data.
-
-    This classifier uses a two-state Hidden Markov Model to distinguish between
-    neural activity corresponding to two different spatial environments using
-    sorted spike data. Each state represents neural activity associated with
-    a specific environment, allowing classification of which environment the
-    animal is mentally representing.
-
-    The model transitions:
-    - Environment 1: Uses RandomWalk within env1, Uniform transition to env2
-    - Environment 2: Uses Uniform transition from env1, RandomWalk within env2
-
-    Parameters
-    ----------
-    discrete_initial_conditions : np.ndarray, shape (2,), optional
-        Initial probabilities for [env1, env2] states, by default
-        np.array([1.0, 0.0]) (starts in environment 1).
-    continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Initial condition types for continuous states, by default uniform
-        initial conditions for both environments.
-    discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transitions, by default stationary diagonal
-        with high self-transition probabilities [99.9%, 98%].
-    discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.1.
-    discrete_transition_stickiness : Stickiness, shape (2,), optional
-        Stickiness parameters for state persistence, by default [200.0, 30.0]
-        favoring environment 1 persistence.
-    discrete_transition_regularization : float, optional
-        L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions, equivalent to a Gaussian prior with standard
-        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
-        Stationary transitions do not use it.
-    continuous_transition_types : ContinuousTransitions or None, optional
-        Transition types for continuous states. If None, uses environment-specific
-        transitions with RandomWalk within environments and Uniform between.
-    observation_models : Observations, optional
-        Observation models for each environment, by default environment-specific
-        ObservationModel instances.
-    environments : Environments, optional
-        Environment specifications, by default [env1, env2] Environment instances.
-    sorted_spikes_algorithm : str, optional
-        Algorithm for sorted spikes likelihood, by default 'sorted_spikes_kde'.
-    sorted_spikes_algorithm_params : dict or None, optional
-        Parameters for the sorted spikes algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
-        as-is for sklearn ``clone()`` compatibility and copied on use.
-    infer_track_interior : bool, optional
-        Whether to infer track interior during decoding, by default True.
-    state_names : StateNames, optional
-        Names for the environments, by default ['env1', 'env2'].
-    sampling_frequency : float, optional
-        Data sampling frequency in Hz, by default 500.
-    no_spike_rate : float, optional
-        Rate parameter for no-spike periods, by default 1e-10.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from non_local_detector.models.multienvironment_model import MultiEnvironmentSortedSpikesClassifier
-    >>> # Create classifier with default parameters
-    >>> classifier = MultiEnvironmentSortedSpikesClassifier()
-    >>> # Fit to training data from both environments
-    >>> classifier.fit(position, spikes)
-    >>> # Classify test data
-    >>> results = classifier.predict(test_spikes)
-    >>> # Extract environment probabilities
-    >>> env_probs = results.acausal_posterior.sum('position')
-    """
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
@@ -146,78 +132,8 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         )
 
 
+@document_model(_MULTI_ENVIRONMENT_DOC, "clusterless")
 class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
-    """Classifier for multi-environment neural activity using clusterless data.
-
-    This classifier uses a two-state Hidden Markov Model to distinguish between
-    neural activity corresponding to two different spatial environments using
-    clusterless (continuous) spike data. Each state represents neural activity
-    associated with a specific environment, allowing classification of which
-    environment the animal is mentally representing.
-
-    The model uses simplified transitions with RandomWalk dynamics, suitable
-    for clusterless data analysis in multi-environment contexts.
-
-    Parameters
-    ----------
-    discrete_initial_conditions : np.ndarray, shape (2,), optional
-        Initial probabilities for [env1, env2] states, by default
-        np.array([1.0, 0.0]) (starts in environment 1).
-    continuous_initial_conditions_types : ContinuousInitialConditions, optional
-        Initial condition types for continuous states, by default uniform
-        initial conditions for both environments.
-    discrete_transition_type : DiscreteTransitions, optional
-        Type of discrete state transitions, by default stationary diagonal
-        with high self-transition probabilities [99.9%, 98%].
-    discrete_transition_concentration : float, optional
-        Concentration parameter for discrete transitions, by default 1.1.
-    discrete_transition_stickiness : Stickiness, shape (2,), optional
-        Stickiness parameters for state persistence, by default [200.0, 30.0]
-        favoring environment 1 persistence.
-    discrete_transition_regularization : float, optional
-        L2 penalty on the non-intercept coefficients of covariate-dependent
-        discrete transitions, equivalent to a Gaussian prior with standard
-        deviation ``1 / sqrt(2 * regularization)`` on each, by default 0.1.
-        Stationary transitions do not use it.
-    continuous_transition_types : ContinuousTransitions or None, optional
-        Transition types for continuous states. If None, uses RandomWalk
-        dynamics for clusterless data.
-    observation_models : Observations, optional
-        Observation models for each environment, by default environment-specific
-        ObservationModel instances.
-    environments : Environments, optional
-        Environment specifications, by default [env1, env2] Environment instances.
-    clusterless_algorithm : str, optional
-        Algorithm for clusterless data likelihood, by default 'clusterless_kde'.
-    clusterless_algorithm_params : dict or None, optional
-        Parameters for the clusterless algorithm. If ``None`` (the
-        default), the module-level
-        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied
-        into a fresh dict at fit time. User-supplied dicts are stored
-        as-is for sklearn ``clone()`` compatibility and copied on use.
-    infer_track_interior : bool, optional
-        Whether to infer track interior during decoding, by default True.
-    state_names : StateNames, optional
-        Names for the environments, by default ['env1', 'env2'].
-    sampling_frequency : float, optional
-        Data sampling frequency in Hz, by default 500.0.
-    no_spike_rate : float, optional
-        Rate parameter for no-spike periods, by default 1e-10.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from non_local_detector.models.multienvironment_model import MultiEnvironmentClusterlessClassifier
-    >>> # Create classifier with default parameters
-    >>> classifier = MultiEnvironmentClusterlessClassifier()
-    >>> # Fit to training data from both environments
-    >>> classifier.fit(position, clusterless_spikes)
-    >>> # Classify test data
-    >>> results = classifier.predict(test_clusterless_spikes)
-    >>> # Extract environment probabilities
-    >>> env_probs = results.acausal_posterior.sum('position')
-    """
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray | None = None,
