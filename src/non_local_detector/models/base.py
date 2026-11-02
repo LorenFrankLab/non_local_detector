@@ -166,6 +166,7 @@ class _LikelihoodPositionContext:
         *,
         reads_position: bool = True,
         warn_outside_tracking: bool = False,
+        stacklevel: int = 5,
     ) -> "_LikelihoodPositionContext":
         missing = _missing_bins(
             time_edges,
@@ -175,7 +176,7 @@ class _LikelihoodPositionContext:
             reads_position=reads_position,
             warn_outside_tracking=warn_outside_tracking,
             # Through this method and compute_log_likelihood to its caller.
-            stacklevel=5,
+            stacklevel=stacklevel,
         )
         prepared = position
         all_missing = False
@@ -3128,6 +3129,570 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             "and decoding, including when tracking is missing.",
                         )
 
+    _SPIKE_DATA_NAMES: tuple[str, ...] = ()
+    """Names of the spike-data arrays, in the order the decode methods take them."""
+    _PREDICT_EXAMPLE: str = ""
+    """Example ``predict`` call shown in validation errors."""
+
+    def _likelihood_predict_function(self) -> Callable:
+        """The predict function of the detector's likelihood algorithm."""
+        raise NotImplementedError
+
+    def _likelihood_predict_kwargs(self) -> dict:
+        """Keyword arguments passed to every state's likelihood prediction."""
+        return {}
+
+    def _no_spike_mark_log_likelihood(
+        self, spike_data, time_edges, row_slice, spike_time_order
+    ) -> jnp.ndarray | None:
+        """Term added to the No-Spike log likelihood, or None when there is none."""
+        return None
+
+    def _compute_spike_log_likelihood(
+        self,
+        position_time: np.ndarray,
+        position: np.ndarray | None,
+        spike_data: tuple,
+        is_missing: np.ndarray | None,
+        row_slice: slice | None,
+        *,
+        time_edges: np.ndarray,
+        _no_spike_time_bin_sizes: np.ndarray | None,
+        _time_grid: _DecodeTimeGrid | None,
+        _position_context: _LikelihoodPositionContext | None,
+        _spike_time_order: _SpikeTimeOrder | None,
+    ) -> jnp.ndarray:
+        """Body of the detectors' ``compute_log_likelihood``.
+
+        ``spike_data`` holds the spike arrays named by ``_SPIKE_DATA_NAMES``,
+        and the other arguments are those of ``compute_log_likelihood``.
+        """
+        self._validate_time_contract()
+        time_edges, row_time = _decode_time_edges(
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            _time_grid=_time_grid,
+            row_slice=row_slice,
+        )
+        _time_grid = _uniform_time_grid(time_edges, _time_grid)
+        if position is not None and position_time is None:
+            raise ValidationError("position_time is required when position is provided")
+        needs_position = self._decode_reads_position()
+        if not isinstance(
+            _position_context, _LikelihoodPositionContext
+        ) or not _position_context.matches(
+            time_edges, position_time, position, needs_position
+        ):
+            # Without a prepared context this is a direct call, so it warns
+            # like the other public decode entry points.
+            _position_context = _LikelihoodPositionContext.prepare(
+                time_edges,
+                position_time,
+                position,
+                reads_position=needs_position,
+                warn_outside_tracking=_position_context is None,
+                # One frame deeper than the public compute_log_likelihood.
+                stacklevel=6,
+            )
+        self._validate_decode_population(*spike_data)
+        position_missing = _position_context.is_missing
+        logger.info("Computing log likelihood...")
+        if _spike_time_order is None:
+            _spike_time_order = _SpikeTimeOrder()
+        non_local_penalty = self._non_local_position_penalty()
+        if position is None and needs_position:
+            reason = []
+            if np.any([obs.is_local for obs in self.observation_models]):
+                reason.append("local observation models")
+            if non_local_penalty > 0:
+                reason.append("non_local_position_penalty > 0")
+            raise ValidationError(
+                f"Missing required parameter: position (needed for {', '.join(reason)})",
+                expected="position array with shape (n_time, n_dims)",
+                got="None",
+                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
+                example="    results = detector.predict(..., time_edges=time_edges, position=position, position_time=position_time)",
+            )
+        if position is not None:
+            self._validate_position_dimensionality(position, context="predict")
+
+        row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
+        n_rows = row_stop - row_start
+        # Position interpolation, local kernels and the non-local penalty are
+        # pointwise in the decoding time, so they are evaluated at the requested
+        # bins' centers; the spike likelihoods bin against the full edges.
+        if is_missing is None:
+            is_missing = np.zeros(n_rows, dtype=bool)
+        else:
+            is_missing = np.asarray(is_missing, dtype=bool)
+            if is_missing.shape != (n_rows,):
+                raise ValidationError(
+                    "is_missing must have one entry per requested decode bin"
+                )
+        if position_missing is not None:
+            is_missing = is_missing | position_missing[row_start:row_stop]
+        if _position_context.all_missing:
+            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
+        position = _position_context.position
+
+        likelihood_func = self._likelihood_predict_function()
+
+        # Interior state bins per state. state_ind_ is built state by state, so
+        # each state's bins are one contiguous block of columns.
+        n_state_columns = np.bincount(
+            self.state_ind_[self.is_track_interior_state_bins_],
+            minlength=len(self.observation_models),
+        )
+
+        # Use dict for O(1) lookup instead of list
+        computed_likelihoods = {}
+
+        # Compute all likelihoods first (stays in JAX/GPU if available)
+        likelihood_results = {}
+        for state_id, obs in enumerate(self.observation_models):
+            # Multi-bin local computes full spatial likelihood (is_local=False)
+            # then adds position kernel afterward
+            effective_is_local = obs.is_local and self.local_position_std is None
+
+            likelihood_name = (
+                obs.environment_name,
+                obs.encoding_group,
+                effective_is_local,
+                obs.is_no_spike,
+            )
+
+            if obs.is_no_spike:
+                no_spike_log_likelihood = predict_no_spike_log_likelihood(
+                    spike_data[0],
+                    self.no_spike_rate,
+                    time_edges=time_edges,
+                    row_slice=row_slice,
+                    # The fitted setting, as the other likelihoods receive it.
+                    # No-Spike may have no encoding entry; default to showing the bar.
+                    disable_progress_bar=self.encoding_model_.get(
+                        likelihood_name[:2], {}
+                    ).get("disable_progress_bar", False),
+                    _time_bin_sizes=_no_spike_time_bin_sizes,
+                    _spike_time_order=_spike_time_order,
+                    _time_grid=_time_grid,
+                )
+                mark_log_likelihood = self._no_spike_mark_log_likelihood(
+                    spike_data, time_edges, row_slice, _spike_time_order
+                )
+                likelihood_results[state_id] = (
+                    no_spike_log_likelihood
+                    if mark_log_likelihood is None
+                    else no_spike_log_likelihood + mark_log_likelihood
+                )
+            elif likelihood_name not in computed_likelihoods:
+                likelihood_results[state_id] = likelihood_func(
+                    position_time,
+                    position,
+                    *spike_data,
+                    time_edges=time_edges,
+                    **self.encoding_model_[likelihood_name[:2]],
+                    **self._likelihood_predict_kwargs(),
+                    is_local=effective_is_local,
+                    row_slice=row_slice,
+                    _spike_time_order=_spike_time_order,
+                    _time_grid=_time_grid,
+                )
+                computed_likelihoods[likelihood_name] = state_id
+            else:
+                # Will reuse previously computed likelihood
+                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
+
+        # Assemble the per-state column blocks in one concatenation. As the
+        # scatters into a float32 array did, each block is cast to float32 and
+        # its penalty or local kernel added at the term's precision, then the
+        # sum rounded to float32 once.
+        env_penalties = {}
+        env_kernels = {}
+        blocks = []
+        for state_id, obs in enumerate(self.observation_models):
+            result = likelihood_results[state_id]
+            if isinstance(result, int):
+                # Reuse the likelihood computed for an earlier state
+                result = likelihood_results[result]
+            block = jnp.broadcast_to(
+                jnp.asarray(result, dtype=jnp.float32),
+                (n_rows, int(n_state_columns[state_id])),
+            )
+            if non_local_penalty > 0 and not obs.is_local and not obs.is_no_spike:
+                env_name = obs.environment_name
+                if env_name not in env_penalties:
+                    env = self._get_environment_by_name(env_name)
+                    env_penalties[env_name] = self._compute_non_local_position_penalty(
+                        row_time, position_time, position, env
+                    )
+                block = (block + jnp.asarray(env_penalties[env_name])).astype(
+                    jnp.float32
+                )
+            if self.local_position_std is not None and obs.is_local:
+                env_name = obs.environment_name
+                if env_name not in env_kernels:
+                    env = self._get_environment_by_name(env_name)
+                    env_kernels[env_name] = self._compute_local_position_kernel(
+                        row_time, position_time, position, env
+                    )
+                block = (block + jnp.asarray(env_kernels[env_name])).astype(jnp.float32)
+            blocks.append(block)
+        log_likelihood = jnp.concatenate(blocks, axis=1)
+
+        # Apply missing data mask
+        is_missing = jnp.asarray(is_missing)
+        return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
+
+    def _predict_spikes(
+        self,
+        spike_data: tuple,
+        *,
+        time_edges: np.ndarray,
+        position: np.ndarray | None,
+        position_time: np.ndarray | None,
+        is_missing: np.ndarray | None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None,
+        cache_likelihood: bool,
+        n_chunks: int,
+        inference_mode: str,
+        output_mode: str,
+        chunk_size: int | None,
+        result_path: str | Path | None,
+        checkpoint_dir: str | Path | None,
+        selected_intervals: np.ndarray | None,
+        max_read_bytes: int,
+        replay_cache_bytes: int | None,
+        return_outputs: str | list[str] | set[str] | None,
+        save_log_likelihood_to_results: bool | None,
+        save_causal_posterior_to_results: bool | None,
+    ) -> xr.Dataset:
+        """Body of the detectors' ``predict``; see ``_compute_spike_log_likelihood``."""
+        if position is not None and position_time is None:
+            raise ValidationError(
+                "position_time is required when position is provided",
+                expected="position_time array with shape (n_time_position,)",
+                got="None",
+                hint="Provide position_time corresponding to the position samples",
+                example=self._PREDICT_EXAMPLE,
+            )
+
+        self._validate_time_contract()
+        time_edges, time_centers = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+            stacklevel=5,
+        )
+
+        # Handle deprecated boolean flags
+        if (
+            save_log_likelihood_to_results is not None
+            or save_causal_posterior_to_results is not None
+        ):
+            warnings.warn(
+                "save_log_likelihood_to_results and save_causal_posterior_to_results "
+                "are deprecated. Use return_outputs parameter instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+            # Convert old flags to new format
+            outputs_from_flags = set()
+            if save_log_likelihood_to_results:
+                outputs_from_flags.add("log_likelihood")
+            if save_causal_posterior_to_results:
+                outputs_from_flags.add("filter")
+
+            if return_outputs is not None:
+                raise ValueError(
+                    "Cannot specify both return_outputs and deprecated "
+                    "save_*_to_results flags. Use return_outputs only."
+                )
+            return_outputs = outputs_from_flags if outputs_from_flags else None
+
+        # Normalize return_outputs to canonical set
+        requested_outputs = _normalize_return_outputs(return_outputs)
+
+        # The log likelihood has to be materialized when the caller asks for it.
+        # Unchunked, that means caching the single full-time evaluation. Chunked,
+        # caching is not available (``_predict`` disables it), so the chunked
+        # path accumulates the per-chunk rows instead -- which allocates the
+        # same full (n_time, n_state_bins) array, the documented exception to
+        # per-chunk allocation.
+        _validate_inference_arguments(
+            inference_mode,
+            output_mode,
+            cache_likelihood,
+            n_chunks,
+            chunk_size,
+            result_path,
+            checkpoint_dir,
+            selected_intervals,
+            replay_cache_bytes,
+        )
+        return_log_likelihood = "log_likelihood" in requested_outputs
+        if (
+            inference_mode == "dense"
+            and return_log_likelihood
+            and not cache_likelihood
+            and n_chunks == 1
+        ):
+            cache_likelihood = True
+
+        predicted_transitions = None
+        if discrete_transition_covariate_data is not None:
+            if self.discrete_transition_coefficients_ is None:
+                raise ValueError(
+                    "discrete_transition_coefficients_ is None but covariate data provided"
+                )
+            predicted_transitions = predict_discrete_state_transitions(
+                self.discrete_transition_design_matrix_,
+                self.discrete_transition_coefficients_,
+                discrete_transition_covariate_data,
+            )
+            _validate_covariate_time_length(predicted_transitions, time_centers)
+        if inference_mode == "checkpointed":
+            return self._predict_checkpointed(
+                time_edges=time_edges,
+                log_likelihood_args=(
+                    position_time,
+                    position,
+                    *spike_data,
+                ),
+                is_missing=is_missing,
+                discrete_transitions=predicted_transitions,
+                output_mode=output_mode,
+                chunk_size=chunk_size,
+                result_path=result_path,
+                checkpoint_dir=checkpoint_dir,
+                selected_intervals=selected_intervals,
+                requested_outputs=requested_outputs,
+                return_outputs=return_outputs,
+                max_read_bytes=max_read_bytes,
+                replay_cache_bytes=replay_cache_bytes,
+            )
+
+        (
+            acausal_posterior,
+            acausal_state_probabilities,
+            marginal_log_likelihood,
+            causal_state_probabilities,
+            predictive_state_probabilities,
+            log_likelihood,
+            causal_posterior,
+            predictive_posterior,
+        ) = self._predict(
+            time_edges=time_edges,
+            log_likelihood_args=(
+                position_time,
+                position,
+                *spike_data,
+            ),
+            is_missing=is_missing,
+            cache_likelihood=cache_likelihood,
+            n_chunks=n_chunks,
+            discrete_state_transitions=predicted_transitions,
+            accumulate_log_likelihoods=return_log_likelihood,
+        )
+
+        return self._convert_results_to_xarray(
+            time_centers,
+            acausal_posterior,
+            acausal_state_probabilities,
+            marginal_log_likelihood,
+            time_edges=time_edges,
+            is_missing=is_missing,
+            log_likelihood=(
+                log_likelihood if "log_likelihood" in requested_outputs else None
+            ),
+            causal_posterior=(
+                causal_posterior if "filter" in requested_outputs else None
+            ),
+            causal_state_probabilities=(
+                causal_state_probabilities if "filter" in requested_outputs else None
+            ),
+            predictive_state_probabilities=(
+                predictive_state_probabilities
+                if "predictive" in requested_outputs
+                else None
+            ),
+            predictive_posterior=(
+                predictive_posterior
+                if "predictive_posterior" in requested_outputs
+                else None
+            ),
+        )
+
+    def _estimate_spike_parameters(
+        self,
+        position_time: np.ndarray,
+        position: np.ndarray,
+        spike_data: tuple,
+        *,
+        time_edges: np.ndarray,
+        is_missing: np.ndarray | None,
+        is_training: np.ndarray | None,
+        encoding_group_labels: np.ndarray | None,
+        environment_labels: np.ndarray | None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None,
+        estimate_initial_conditions: bool,
+        estimate_discrete_transition: bool,
+        estimate_encoding_model: bool,
+        max_iter: int,
+        tolerance: float,
+        cache_likelihood: bool,
+        store_log_likelihood: bool,
+        n_chunks: int,
+        return_outputs: str | list[str] | set[str] | None,
+        save_log_likelihood_to_results: bool | None,
+        min_encoding_local_mass: float,
+        min_encoding_local_ess: float,
+        encoding_update_damping: float,
+        encoding_time_range: np.ndarray | None,
+        valid_position_intervals: np.ndarray | None,
+        transition_representation: str,
+        max_dense_transition_bytes: int,
+        chunk_size: int | None,
+        result_path: str | Path | None,
+        replay_cache_bytes: int | None,
+    ) -> xr.Dataset:
+        """Body of the detectors' ``estimate_parameters``; see ``_compute_spike_log_likelihood``."""
+        _validate_encoding_update_damping(encoding_update_damping)
+        # Before the internal fit, which replaces the fitted state.
+        transition_representation = _resolve_em_options(
+            transition_representation,
+            n_chunks,
+            chunk_size,
+            result_path,
+            store_log_likelihood,
+            replay_cache_bytes,
+        )
+        time_edges, _ = _validate_estimation_arguments(
+            time_edges,
+            n_chunks,
+            return_outputs,
+            save_log_likelihood_to_results,
+            min_encoding_local_mass,
+            min_encoding_local_ess,
+        )
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+        # Mirror predict(): bins without tracked position are missing
+        # observations in the E-step.
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+            stacklevel=5,
+        )
+        # Before the internal fit, so a refused estimate leaves the model as is.
+        _require_observed_bins(is_missing)
+        self._fit_em_model(
+            lambda representation: self.fit(
+                position_time,
+                position,
+                *spike_data,
+                is_training=is_training,
+                encoding_group_labels=encoding_group_labels,
+                environment_labels=environment_labels,
+                discrete_transition_covariate_data=discrete_transition_covariate_data,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
+                transition_representation=representation,
+                max_dense_transition_bytes=max_dense_transition_bytes,
+            ),
+            transition_representation,
+            len(time_edges) - 1,
+            structured_required=bool(
+                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
+            ),
+        )
+        self._encoding_model_data = {
+            "position_time": position_time,
+            "position": position,
+            **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
+            "is_training": is_training,
+            "encoding_group_labels": encoding_group_labels,
+            "environment_labels": environment_labels,
+            "encoding_time_range": encoding_time_range,
+            "valid_position_intervals": valid_position_intervals,
+        }
+
+        return _DetectorBase.estimate_parameters(
+            self,
+            time_edges=time_edges,
+            log_likelihood_args=(
+                position_time,
+                position,
+                *spike_data,
+            ),
+            is_missing=is_missing,
+            estimate_initial_conditions=estimate_initial_conditions,
+            estimate_discrete_transition=estimate_discrete_transition,
+            estimate_encoding_model=estimate_encoding_model,
+            max_iter=max_iter,
+            tolerance=tolerance,
+            cache_likelihood=cache_likelihood,
+            store_log_likelihood=store_log_likelihood,
+            n_chunks=n_chunks,
+            return_outputs=return_outputs,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            replay_cache_bytes=replay_cache_bytes,
+        )
+
+    def _most_likely_spike_sequence(
+        self,
+        spike_data: tuple,
+        *,
+        time_edges: np.ndarray,
+        position: np.ndarray | None,
+        position_time: np.ndarray | None,
+        is_missing: np.ndarray | None,
+        n_chunks: int,
+    ) -> pd.DataFrame:
+        """Body of the detectors' ``most_likely_sequence``; see ``_compute_spike_log_likelihood``."""
+        self._validate_time_contract()
+        time_edges, _ = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+        is_missing = _missing_bins(
+            time_edges,
+            is_missing,
+            position_time,
+            position,
+            reads_position=self._decode_reads_position(),
+            warn_outside_tracking=True,
+            stacklevel=5,
+        )
+        return _DetectorBase.most_likely_sequence(
+            self,
+            time_edges=time_edges,
+            log_likelihood_args=(
+                position_time,
+                position,
+                *spike_data,
+            ),
+            is_missing=is_missing,
+            n_chunks=n_chunks,
+        )
+
     def _learned_transition_time_bin_width(self) -> tuple[float | None, float]:
         """Bin width the discrete transitions were learned at, and its precision.
 
@@ -3737,9 +4302,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "approximate: if dense EM fits, pass "
                 'transition_representation="dense" to estimate_parameters.',
                 UserWarning,
-                # Through _fit_em_model, estimate_parameters and its
-                # requires_time_edges wrapper to the caller.
-                stacklevel=5,
+                # Through _fit_em_model, _estimate_spike_parameters,
+                # estimate_parameters and its requires_time_edges wrapper to
+                # the caller.
+                stacklevel=6,
             )
         logger.info(
             "EM with transition_representation='auto': %s (%d interior state "
@@ -5574,6 +6140,35 @@ class ClusterlessDetector(_DetectorBase):
             )
         return self
 
+    _SPIKE_DATA_NAMES = ("spike_times", "spike_waveform_features")
+    _PREDICT_EXAMPLE = (
+        "    results = detector.predict(\n"
+        "        spike_times=spike_times, spike_waveform_features=features,\n"
+        "        time_edges=time_edges, position=position,\n"
+        "        position_time=position_time\n"
+        "    )"
+    )
+
+    def _likelihood_predict_function(self) -> Callable:
+        return self._clusterless_algorithm_functions()[1]
+
+    def _likelihood_predict_kwargs(self) -> dict:
+        # One reference for every state and No-Spike, so their
+        # mark densities cancel consistently between states.
+        return {"mark_reference": self.mark_reference_}
+
+    def _no_spike_mark_log_likelihood(
+        self, spike_data, time_edges, row_slice, spike_time_order
+    ) -> jnp.ndarray:
+        # Marked No-Spike intensity: no_spike_rate * q(mark).
+        return mark_reference_log_likelihood(
+            self.mark_reference_,
+            *spike_data,
+            time_edges,
+            row_slice=row_slice,
+            _spike_time_order=spike_time_order,
+        )
+
     @row_slice_aware
     @requires_time_edges
     def compute_log_likelihood(
@@ -5658,198 +6253,18 @@ class ClusterlessDetector(_DetectorBase):
         log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
-        self._validate_time_contract()
-        time_edges, row_time = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
+        return self._compute_spike_log_likelihood(
+            position_time,
+            position,
+            (spike_times, spike_waveform_features),
+            is_missing,
+            row_slice,
+            time_edges=time_edges,
+            _no_spike_time_bin_sizes=_no_spike_time_bin_sizes,
             _time_grid=_time_grid,
-            row_slice=row_slice,
+            _position_context=_position_context,
+            _spike_time_order=_spike_time_order,
         )
-        _time_grid = _uniform_time_grid(time_edges, _time_grid)
-        if position is not None and position_time is None:
-            raise ValidationError("position_time is required when position is provided")
-        needs_position = self._decode_reads_position()
-        if not isinstance(
-            _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(
-            time_edges, position_time, position, needs_position
-        ):
-            # Without a prepared context this is a direct call, so it warns
-            # like the other public decode entry points.
-            _position_context = _LikelihoodPositionContext.prepare(
-                time_edges,
-                position_time,
-                position,
-                reads_position=needs_position,
-                warn_outside_tracking=_position_context is None,
-            )
-        self._validate_decode_population(spike_times, spike_waveform_features)
-        position_missing = _position_context.is_missing
-        logger.info("Computing log likelihood...")
-        if _spike_time_order is None:
-            _spike_time_order = _SpikeTimeOrder()
-        non_local_penalty = self._non_local_position_penalty()
-        if position is None and needs_position:
-            reason = []
-            if np.any([obs.is_local for obs in self.observation_models]):
-                reason.append("local observation models")
-            if non_local_penalty > 0:
-                reason.append("non_local_position_penalty > 0")
-            raise ValidationError(
-                f"Missing required parameter: position (needed for {', '.join(reason)})",
-                expected="position array with shape (n_time, n_dims)",
-                got="None",
-                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
-                example="    results = detector.predict(..., time_edges=time_edges, position=position, position_time=position_time)",
-            )
-        if position is not None:
-            self._validate_position_dimensionality(position, context="predict")
-
-        row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
-        n_rows = row_stop - row_start
-        # Position interpolation, local kernels and the non-local penalty are
-        # pointwise in the decoding time, so they are evaluated at the requested
-        # bins' centers; the spike likelihoods bin against the full edges.
-        if is_missing is None:
-            is_missing = np.zeros(n_rows, dtype=bool)
-        else:
-            is_missing = np.asarray(is_missing, dtype=bool)
-            if is_missing.shape != (n_rows,):
-                raise ValidationError(
-                    "is_missing must have one entry per requested decode bin"
-                )
-        if position_missing is not None:
-            is_missing = is_missing | position_missing[row_start:row_stop]
-        if _position_context.all_missing:
-            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
-        position = _position_context.position
-
-        _, likelihood_func = self._clusterless_algorithm_functions()
-
-        # Pre-compute state bins mask for all states (avoid recomputation in loop)
-        interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]
-        state_bin_masks = {
-            state_id: interior_state_ind == state_id
-            for state_id in range(len(self.observation_models))
-        }
-
-        # Use dict for O(1) lookup instead of list
-        computed_likelihoods = {}
-
-        # Compute all likelihoods first (stays in JAX/GPU if available)
-        likelihood_results = {}
-        for state_id, obs in enumerate(self.observation_models):
-            # Multi-bin local computes full spatial likelihood (is_local=False)
-            # then adds position kernel afterward
-            effective_is_local = obs.is_local and self.local_position_std is None
-
-            likelihood_name = (
-                obs.environment_name,
-                obs.encoding_group,
-                effective_is_local,
-                obs.is_no_spike,
-            )
-
-            if obs.is_no_spike:
-                # Marked No-Spike intensity: no_spike_rate * q(mark).
-                likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    spike_times,
-                    self.no_spike_rate,
-                    time_edges=time_edges,
-                    row_slice=row_slice,
-                    # The fitted setting, as the other likelihoods receive it.
-                    # No-Spike may have no encoding entry; default to showing the bar.
-                    disable_progress_bar=self.encoding_model_.get(
-                        likelihood_name[:2], {}
-                    ).get("disable_progress_bar", False),
-                    _time_bin_sizes=_no_spike_time_bin_sizes,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                ) + mark_reference_log_likelihood(
-                    self.mark_reference_,
-                    spike_times,
-                    spike_waveform_features,
-                    time_edges,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                )
-            elif likelihood_name not in computed_likelihoods:
-                likelihood_results[state_id] = likelihood_func(
-                    position_time,
-                    position,
-                    spike_times,
-                    spike_waveform_features,
-                    time_edges=time_edges,
-                    **self.encoding_model_[likelihood_name[:2]],
-                    # One reference for every state and No-Spike, so their
-                    # mark densities cancel consistently between states.
-                    mark_reference=self.mark_reference_,
-                    is_local=effective_is_local,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                )
-                computed_likelihoods[likelihood_name] = state_id
-            else:
-                # Will reuse previously computed likelihood
-                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
-
-        # Assemble final array (single pass, stays in JAX)
-        log_likelihood = jnp.zeros(
-            (n_rows, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
-        )
-
-        for state_id in range(len(self.observation_models)):
-            is_state_bin = state_bin_masks[state_id]
-            result = likelihood_results[state_id]
-
-            if isinstance(result, int):
-                # Reuse from previously computed state
-                source_mask = state_bin_masks[result]
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    log_likelihood[:, source_mask]
-                )
-            else:
-                # Set new likelihood values
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
-
-        # Apply non-local position penalty if configured
-        if non_local_penalty > 0:
-            # Cache penalties per environment to avoid recomputation
-            env_penalties = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if not obs.is_local and not obs.is_no_spike:
-                    env_name = obs.environment_name
-                    if env_name not in env_penalties:
-                        env = self._get_environment_by_name(env_name)
-                        env_penalties[env_name] = (
-                            self._compute_non_local_position_penalty(
-                                row_time, position_time, position, env
-                            )
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_penalties[env_name]
-                    )
-
-        # Apply local position kernel if configured
-        if self.local_position_std is not None:
-            env_kernels = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if obs.is_local:
-                    env_name = obs.environment_name
-                    if env_name not in env_kernels:
-                        env = self._get_environment_by_name(env_name)
-                        env_kernels[env_name] = self._compute_local_position_kernel(
-                            row_time, position_time, position, env
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_kernels[env_name]
-                    )
-
-        # Apply missing data mask
-        return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     @requires_time_edges
     def predict(
@@ -6030,173 +6445,26 @@ class ClusterlessDetector(_DetectorBase):
         ...     spike_times, time_edges=time_edges, return_outputs='all'
         ... )
         """
-        if position is not None and position_time is None:
-            raise ValidationError(
-                "position_time is required when position is provided",
-                expected="position_time array with shape (n_time_position,)",
-                got="None",
-                hint="Provide position_time corresponding to the position samples",
-                example="    results = detector.predict(\n"
-                "        spike_times=spike_times, spike_waveform_features=features,\n"
-                "        time_edges=time_edges, position=position,\n"
-                "        position_time=position_time\n"
-                "    )",
-            )
-
-        self._validate_time_contract()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-
-        # Handle deprecated boolean flags
-        if (
-            save_log_likelihood_to_results is not None
-            or save_causal_posterior_to_results is not None
-        ):
-            warnings.warn(
-                "save_log_likelihood_to_results and save_causal_posterior_to_results "
-                "are deprecated. Use return_outputs parameter instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-            # Convert old flags to new format
-            outputs_from_flags = set()
-            if save_log_likelihood_to_results:
-                outputs_from_flags.add("log_likelihood")
-            if save_causal_posterior_to_results:
-                outputs_from_flags.add("filter")
-
-            if return_outputs is not None:
-                raise ValueError(
-                    "Cannot specify both return_outputs and deprecated "
-                    "save_*_to_results flags. Use return_outputs only."
-                )
-            return_outputs = outputs_from_flags if outputs_from_flags else None
-
-        # Normalize return_outputs to canonical set
-        requested_outputs = _normalize_return_outputs(return_outputs)
-
-        # The log likelihood has to be materialized when the caller asks for it.
-        # Unchunked, that means caching the single full-time evaluation. Chunked,
-        # caching is not available (``_predict`` disables it), so the chunked
-        # path accumulates the per-chunk rows instead -- which allocates the
-        # same full (n_time, n_state_bins) array, the documented exception to
-        # per-chunk allocation.
-        _validate_inference_arguments(
-            inference_mode,
-            output_mode,
-            cache_likelihood,
-            n_chunks,
-            chunk_size,
-            result_path,
-            checkpoint_dir,
-            selected_intervals,
-            replay_cache_bytes,
-        )
-        return_log_likelihood = "log_likelihood" in requested_outputs
-        if (
-            inference_mode == "dense"
-            and return_log_likelihood
-            and not cache_likelihood
-            and n_chunks == 1
-        ):
-            cache_likelihood = True
-
-        predicted_transitions = None
-        if discrete_transition_covariate_data is not None:
-            if self.discrete_transition_coefficients_ is None:
-                raise ValueError(
-                    "discrete_transition_coefficients_ is None but covariate data provided"
-                )
-            predicted_transitions = predict_discrete_state_transitions(
-                self.discrete_transition_design_matrix_,
-                self.discrete_transition_coefficients_,
-                discrete_transition_covariate_data,
-            )
-            _validate_covariate_time_length(predicted_transitions, time_centers)
-        if inference_mode == "checkpointed":
-            return self._predict_checkpointed(
-                time_edges=time_edges,
-                log_likelihood_args=(
-                    position_time,
-                    position,
-                    spike_times,
-                    spike_waveform_features,
-                ),
-                is_missing=is_missing,
-                discrete_transitions=predicted_transitions,
-                output_mode=output_mode,
-                chunk_size=chunk_size,
-                result_path=result_path,
-                checkpoint_dir=checkpoint_dir,
-                selected_intervals=selected_intervals,
-                requested_outputs=requested_outputs,
-                return_outputs=return_outputs,
-                max_read_bytes=max_read_bytes,
-                replay_cache_bytes=replay_cache_bytes,
-            )
-
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            log_likelihood,
-            causal_posterior,
-            predictive_posterior,
-        ) = self._predict(
+        return self._predict_spikes(
+            (spike_times, spike_waveform_features),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
-            discrete_state_transitions=predicted_transitions,
-            accumulate_log_likelihoods=return_log_likelihood,
-        )
-
-        return self._convert_results_to_xarray(
-            time_centers,
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            time_edges=time_edges,
-            is_missing=is_missing,
-            log_likelihood=(
-                log_likelihood if "log_likelihood" in requested_outputs else None
-            ),
-            causal_posterior=(
-                causal_posterior if "filter" in requested_outputs else None
-            ),
-            causal_state_probabilities=(
-                causal_state_probabilities if "filter" in requested_outputs else None
-            ),
-            predictive_state_probabilities=(
-                predictive_state_probabilities
-                if "predictive" in requested_outputs
-                else None
-            ),
-            predictive_posterior=(
-                predictive_posterior
-                if "predictive_posterior" in requested_outputs
-                else None
-            ),
+            inference_mode=inference_mode,
+            output_mode=output_mode,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            selected_intervals=selected_intervals,
+            max_read_bytes=max_read_bytes,
+            replay_cache_bytes=replay_cache_bytes,
+            return_outputs=return_outputs,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
+            save_causal_posterior_to_results=save_causal_posterior_to_results,
         )
 
     @requires_time_edges
@@ -6367,80 +6635,16 @@ class ClusterlessDetector(_DetectorBase):
         results : xr.Dataset
             Results of the decoding.
         """
-        _validate_encoding_update_damping(encoding_update_damping)
-        # Before the internal fit, which replaces the fitted state.
-        transition_representation = _resolve_em_options(
-            transition_representation,
-            n_chunks,
-            chunk_size,
-            result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
-        )
-        time_edges, _ = _validate_estimation_arguments(
-            time_edges,
-            n_chunks,
-            return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
-        )
-        # Mirror predict(): bins without tracked position are missing
-        # observations in the E-step.
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
+        return self._estimate_spike_parameters(
             position_time,
-            None
-            if position is None
-            else (position[:, np.newaxis] if position.ndim == 1 else position),
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        # Before the internal fit, so a refused estimate leaves the model as is.
-        _require_observed_bins(is_missing)
-        self._fit_em_model(
-            lambda representation: self.fit(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-                is_training=is_training,
-                encoding_group_labels=encoding_group_labels,
-                environment_labels=environment_labels,
-                discrete_transition_covariate_data=discrete_transition_covariate_data,
-                encoding_time_range=encoding_time_range,
-                valid_position_intervals=valid_position_intervals,
-                transition_representation=representation,
-                max_dense_transition_bytes=max_dense_transition_bytes,
-            ),
-            transition_representation,
-            len(time_edges) - 1,
-            structured_required=bool(
-                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
-            ),
-        )
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "spike_waveform_features": spike_waveform_features,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-            "encoding_time_range": encoding_time_range,
-            "valid_position_intervals": valid_position_intervals,
-        }
-
-        return super().estimate_parameters(
+            position,
+            (spike_times, spike_waveform_features),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-            ),
             is_missing=is_missing,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
@@ -6453,6 +6657,11 @@ class ClusterlessDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
+            encoding_update_damping=encoding_update_damping,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
             chunk_size=chunk_size,
             result_path=result_path,
             replay_cache_bytes=replay_cache_bytes,
@@ -6494,28 +6703,11 @@ class ClusterlessDetector(_DetectorBase):
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
         """
-        self._validate_time_contract()
-        time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        return super().most_likely_sequence(
+        return self._most_likely_spike_sequence(
+            (spike_times, spike_waveform_features),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
             n_chunks=n_chunks,
         )
@@ -6873,6 +7065,17 @@ class SortedSpikesDetector(_DetectorBase):
             )
         return self
 
+    _SPIKE_DATA_NAMES = ("spike_times",)
+    _PREDICT_EXAMPLE = (
+        "    results = detector.predict(\n"
+        "        spike_times=spike_times, time_edges=time_edges,\n"
+        "        position=position, position_time=position_time\n"
+        "    )"
+    )
+
+    def _likelihood_predict_function(self) -> Callable:
+        return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm][1]
+
     @row_slice_aware
     @requires_time_edges
     def compute_log_likelihood(
@@ -6954,188 +7157,18 @@ class SortedSpikesDetector(_DetectorBase):
         log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
-        self._validate_time_contract()
-        time_edges, row_time = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
+        return self._compute_spike_log_likelihood(
+            position_time,
+            position,
+            (spike_times,),
+            is_missing,
+            row_slice,
+            time_edges=time_edges,
+            _no_spike_time_bin_sizes=_no_spike_time_bin_sizes,
             _time_grid=_time_grid,
-            row_slice=row_slice,
+            _position_context=_position_context,
+            _spike_time_order=_spike_time_order,
         )
-        _time_grid = _uniform_time_grid(time_edges, _time_grid)
-        if position is not None and position_time is None:
-            raise ValidationError("position_time is required when position is provided")
-        needs_position = self._decode_reads_position()
-        if not isinstance(
-            _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(
-            time_edges, position_time, position, needs_position
-        ):
-            # Without a prepared context this is a direct call, so it warns
-            # like the other public decode entry points.
-            _position_context = _LikelihoodPositionContext.prepare(
-                time_edges,
-                position_time,
-                position,
-                reads_position=needs_position,
-                warn_outside_tracking=_position_context is None,
-            )
-        self._validate_decode_population(spike_times)
-        position_missing = _position_context.is_missing
-        logger.info("Computing log likelihood...")
-        if _spike_time_order is None:
-            _spike_time_order = _SpikeTimeOrder()
-        row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
-        n_rows = row_stop - row_start
-        # Position interpolation, local kernels and the non-local penalty are
-        # pointwise in the decoding time, so they are evaluated at the requested
-        # bins' centers; the spike likelihoods bin against the full edges.
-
-        non_local_penalty = self._non_local_position_penalty()
-        if position is None and needs_position:
-            reason = []
-            if np.any([obs.is_local for obs in self.observation_models]):
-                reason.append("local observation models")
-            if non_local_penalty > 0:
-                reason.append("non_local_position_penalty > 0")
-            raise ValidationError(
-                f"Missing required parameter: position (needed for {', '.join(reason)})",
-                expected="position array with shape (n_time, n_dims)",
-                got="None",
-                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
-                example="    results = detector.predict(..., time_edges=time_edges, position=position, position_time=position_time)",
-            )
-        if position is not None:
-            self._validate_position_dimensionality(position, context="predict")
-
-        if is_missing is None:
-            is_missing = np.zeros(n_rows, dtype=bool)
-        else:
-            is_missing = np.asarray(is_missing, dtype=bool)
-            if is_missing.shape != (n_rows,):
-                raise ValidationError(
-                    "is_missing must have one entry per requested decode bin"
-                )
-        if position_missing is not None:
-            is_missing = is_missing | position_missing[row_start:row_stop]
-        if _position_context.all_missing:
-            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
-        position = _position_context.position
-
-        _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
-
-        # Pre-compute state bins mask for all states (avoid recomputation in loop)
-        interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]
-        state_bin_masks = {
-            state_id: interior_state_ind == state_id
-            for state_id in range(len(self.observation_models))
-        }
-
-        # Use dict for O(1) lookup instead of list
-        computed_likelihoods = {}
-
-        # Compute all likelihoods first (stays in JAX/GPU if available)
-        likelihood_results = {}
-        for state_id, obs in enumerate(self.observation_models):
-            # Multi-bin local computes full spatial likelihood (is_local=False)
-            # then adds position kernel afterward
-            effective_is_local = obs.is_local and self.local_position_std is None
-
-            likelihood_name = (
-                obs.environment_name,
-                obs.encoding_group,
-                effective_is_local,
-                obs.is_no_spike,
-            )
-
-            if obs.is_no_spike:
-                likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    spike_times,
-                    self.no_spike_rate,
-                    time_edges=time_edges,
-                    row_slice=row_slice,
-                    # The fitted setting, as the other likelihoods receive it.
-                    # No-Spike may have no encoding entry; default to showing the bar.
-                    disable_progress_bar=self.encoding_model_.get(
-                        likelihood_name[:2], {}
-                    ).get("disable_progress_bar", False),
-                    _time_bin_sizes=_no_spike_time_bin_sizes,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                )
-            elif likelihood_name not in computed_likelihoods:
-                likelihood_results[state_id] = likelihood_func(
-                    position_time,
-                    position,
-                    spike_times,
-                    time_edges=time_edges,
-                    **self.encoding_model_[likelihood_name[:2]],
-                    is_local=effective_is_local,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                )
-                computed_likelihoods[likelihood_name] = state_id
-            else:
-                # Will reuse previously computed likelihood
-                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
-
-        # Assemble final array (single pass, stays in JAX)
-        log_likelihood = jnp.zeros(
-            (n_rows, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
-        )
-
-        for state_id in range(len(self.observation_models)):
-            is_state_bin = state_bin_masks[state_id]
-            result = likelihood_results[state_id]
-
-            if isinstance(result, int):
-                # Reuse from previously computed state
-                source_mask = state_bin_masks[result]
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    log_likelihood[:, source_mask]
-                )
-            else:
-                # Set new likelihood values
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
-
-        # Apply non-local position penalty if configured
-        if non_local_penalty > 0:
-            # Cache penalties per environment to avoid recomputation
-            env_penalties = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if not obs.is_local and not obs.is_no_spike:
-                    env_name = obs.environment_name
-                    if env_name not in env_penalties:
-                        env = self._get_environment_by_name(env_name)
-                        env_penalties[env_name] = (
-                            self._compute_non_local_position_penalty(
-                                row_time, position_time, position, env
-                            )
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_penalties[env_name]
-                    )
-
-        # Apply local position kernel if configured
-        if self.local_position_std is not None:
-            env_kernels = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if obs.is_local:
-                    env_name = obs.environment_name
-                    if env_name not in env_kernels:
-                        env = self._get_environment_by_name(env_name)
-                        env_kernels[env_name] = self._compute_local_position_kernel(
-                            row_time, position_time, position, env
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_kernels[env_name]
-                    )
-
-        # Apply missing data mask
-        is_missing = jnp.asarray(is_missing)
-        return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     @requires_time_edges
     def predict(
@@ -7237,167 +7270,26 @@ class SortedSpikesDetector(_DetectorBase):
         xr.Dataset
             Predicted posterior probabilities.
         """
-        if position is not None and position_time is None:
-            raise ValidationError(
-                "position_time is required when position is provided",
-                expected="position_time array with shape (n_time_position,)",
-                got="None",
-                hint="Provide position_time corresponding to the position samples",
-                example="    results = detector.predict(\n"
-                "        spike_times=spike_times, time_edges=time_edges,\n"
-                "        position=position, position_time=position_time\n"
-                "    )",
-            )
-
-        self._validate_time_contract()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-
-        # Handle deprecated boolean flags
-        if (
-            save_log_likelihood_to_results is not None
-            or save_causal_posterior_to_results is not None
-        ):
-            warnings.warn(
-                "save_log_likelihood_to_results and save_causal_posterior_to_results "
-                "are deprecated. Use return_outputs parameter instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-            # Convert old flags to new format
-            outputs_from_flags = set()
-            if save_log_likelihood_to_results:
-                outputs_from_flags.add("log_likelihood")
-            if save_causal_posterior_to_results:
-                outputs_from_flags.add("filter")
-
-            if return_outputs is not None:
-                raise ValueError(
-                    "Cannot specify both return_outputs and deprecated "
-                    "save_*_to_results flags. Use return_outputs only."
-                )
-            return_outputs = outputs_from_flags if outputs_from_flags else None
-
-        # Normalize return_outputs to canonical set
-        requested_outputs = _normalize_return_outputs(return_outputs)
-
-        # The log likelihood has to be materialized when the caller asks for it.
-        # Unchunked, that means caching the single full-time evaluation. Chunked,
-        # caching is not available (``_predict`` disables it), so the chunked
-        # path accumulates the per-chunk rows instead -- which allocates the
-        # same full (n_time, n_state_bins) array, the documented exception to
-        # per-chunk allocation.
-        _validate_inference_arguments(
-            inference_mode,
-            output_mode,
-            cache_likelihood,
-            n_chunks,
-            chunk_size,
-            result_path,
-            checkpoint_dir,
-            selected_intervals,
-            replay_cache_bytes,
-        )
-        return_log_likelihood = "log_likelihood" in requested_outputs
-        if (
-            inference_mode == "dense"
-            and return_log_likelihood
-            and not cache_likelihood
-            and n_chunks == 1
-        ):
-            cache_likelihood = True
-
-        predicted_transitions = None
-        if discrete_transition_covariate_data is not None:
-            if self.discrete_transition_coefficients_ is None:
-                raise ValueError(
-                    "discrete_transition_coefficients_ is None but covariate data provided"
-                )
-            predicted_transitions = predict_discrete_state_transitions(
-                self.discrete_transition_design_matrix_,
-                self.discrete_transition_coefficients_,
-                discrete_transition_covariate_data,
-            )
-            _validate_covariate_time_length(predicted_transitions, time_centers)
-
-        if inference_mode == "checkpointed":
-            return self._predict_checkpointed(
-                time_edges=time_edges,
-                log_likelihood_args=(position_time, position, spike_times),
-                is_missing=is_missing,
-                discrete_transitions=predicted_transitions,
-                output_mode=output_mode,
-                chunk_size=chunk_size,
-                result_path=result_path,
-                checkpoint_dir=checkpoint_dir,
-                selected_intervals=selected_intervals,
-                requested_outputs=requested_outputs,
-                return_outputs=return_outputs,
-                max_read_bytes=max_read_bytes,
-                replay_cache_bytes=replay_cache_bytes,
-            )
-
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            log_likelihood,
-            causal_posterior,
-            predictive_posterior,
-        ) = self._predict(
+        return self._predict_spikes(
+            (spike_times,),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
-            discrete_state_transitions=predicted_transitions,
-            accumulate_log_likelihoods=return_log_likelihood,
-        )
-
-        return self._convert_results_to_xarray(
-            time_centers,
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            time_edges=time_edges,
-            is_missing=is_missing,
-            log_likelihood=(
-                log_likelihood if "log_likelihood" in requested_outputs else None
-            ),
-            causal_posterior=(
-                causal_posterior if "filter" in requested_outputs else None
-            ),
-            causal_state_probabilities=(
-                causal_state_probabilities if "filter" in requested_outputs else None
-            ),
-            predictive_state_probabilities=(
-                predictive_state_probabilities
-                if "predictive" in requested_outputs
-                else None
-            ),
-            predictive_posterior=(
-                predictive_posterior
-                if "predictive_posterior" in requested_outputs
-                else None
-            ),
+            inference_mode=inference_mode,
+            output_mode=output_mode,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            selected_intervals=selected_intervals,
+            max_read_bytes=max_read_bytes,
+            replay_cache_bytes=replay_cache_bytes,
+            return_outputs=return_outputs,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
+            save_causal_posterior_to_results=save_causal_posterior_to_results,
         )
 
     @requires_time_edges
@@ -7442,7 +7334,7 @@ class SortedSpikesDetector(_DetectorBase):
         ----------
         position_time : np.ndarray, shape (n_time_position,)
             Time of each position sample
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : np.ndarray, shape (n_time_position, n_position_dims)
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
             Each element of the list is an array of spike times for a neuron
@@ -7569,76 +7461,16 @@ class SortedSpikesDetector(_DetectorBase):
         xr.Dataset
             Results of the decoding
         """
-        _validate_encoding_update_damping(encoding_update_damping)
-        # Before the internal fit, which replaces the fitted state.
-        transition_representation = _resolve_em_options(
-            transition_representation,
-            n_chunks,
-            chunk_size,
-            result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
-        )
-        time_edges, _ = _validate_estimation_arguments(
-            time_edges,
-            n_chunks,
-            return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
-        )
-        position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Mirror predict(): bins without tracked position are missing
-        # observations in the E-step.
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
+        return self._estimate_spike_parameters(
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        # Before the internal fit, so a refused estimate leaves the model as is.
-        _require_observed_bins(is_missing)
-        self._fit_em_model(
-            lambda representation: self.fit(
-                position_time,
-                position,
-                spike_times,
-                is_training=is_training,
-                encoding_group_labels=encoding_group_labels,
-                environment_labels=environment_labels,
-                discrete_transition_covariate_data=discrete_transition_covariate_data,
-                encoding_time_range=encoding_time_range,
-                valid_position_intervals=valid_position_intervals,
-                transition_representation=representation,
-                max_dense_transition_bytes=max_dense_transition_bytes,
-            ),
-            transition_representation,
-            len(time_edges) - 1,
-            structured_required=bool(
-                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
-            ),
-        )
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-            "encoding_time_range": encoding_time_range,
-            "valid_position_intervals": valid_position_intervals,
-        }
-
-        return super().estimate_parameters(
+            (spike_times,),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-            ),
             is_missing=is_missing,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
@@ -7651,6 +7483,11 @@ class SortedSpikesDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
+            encoding_update_damping=encoding_update_damping,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
             chunk_size=chunk_size,
             result_path=result_path,
             replay_cache_bytes=replay_cache_bytes,
@@ -7689,27 +7526,11 @@ class SortedSpikesDetector(_DetectorBase):
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
         """
-        self._validate_time_contract()
-        time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        return super().most_likely_sequence(
+        return self._most_likely_spike_sequence(
+            (spike_times,),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
             n_chunks=n_chunks,
         )

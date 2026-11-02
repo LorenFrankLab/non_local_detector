@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With `n_chunks > 1`, prediction no longer keeps the per-chunk causal, predictive and acausal posteriors on the device alongside their concatenations, which lowers the peak device memory of chunked decoding.
 - `most_likely_sequence` with covariate-dependent discrete transitions takes the log of the small per-state transition matrices instead of the expanded state-bin matrix at every time step; the decoded sequence is bit-identical.
 - The per-chunk checks for impossible (all `-inf`) and NaN likelihood rows run as one compiled pass with a single transfer to the host.
+- `compute_log_likelihood` assembles the per-state likelihoods, non-local penalty and local kernel with one concatenation instead of a full-size copy per state and per term: 4.4x faster on CPU for a four-state non-local decode of 100,000 bins x 259 state bins (0.38 s to 0.09 s). Output is bit-identical on CPU, with or without `JAX_ENABLE_X64`; on GPU it agrees within the run-to-run variation of GPU reductions.
 
 ### State roles come from the observation models, not list position
 
