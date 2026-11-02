@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from jax.nn import log_softmax
+from jax.typing import ArrayLike
 from patsy import (  # type: ignore[import-untyped]
     DesignInfo,
     DesignMatrix,
@@ -114,6 +115,15 @@ def _state_aggregation_matrix(state_ind: np.ndarray) -> np.ndarray:
 def _n_states_from_state_ind(state_ind: np.ndarray) -> int:
     """Return the number of discrete states represented by expanded bins."""
     return int(np.max(state_ind)) + 1
+
+
+def _host_or_device(posterior: ArrayLike) -> np.ndarray | jax.Array:
+    """A posterior as an array, leaving a device array on the device.
+
+    Converting a JAX array with ``np.asarray`` would copy it to the host only
+    for the estimators to upload it again.
+    """
+    return posterior if isinstance(posterior, jax.Array) else np.asarray(posterior)
 
 
 def _validate_expanded_posterior_shapes(
@@ -401,8 +411,8 @@ def _stationary_counts(
 
     Parameters
     ----------
-    causal_posterior, predictive_posterior, acausal_posterior : np.ndarray
-        Shape (n_time, n_state_bins), on the host.
+    causal_posterior, predictive_posterior, acausal_posterior : np.ndarray or jax.Array
+        Shape (n_time, n_state_bins). Host arrays are uploaded block by block.
     transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
         The expanded stationary transition.
     state_ind : np.ndarray, shape (n_state_bins,)
@@ -413,7 +423,7 @@ def _stationary_counts(
     counts : jnp.ndarray, shape (n_states, n_states)
     """
     n_time, n_state_bins = causal_posterior.shape
-    itemsize = np.result_type(causal_posterior, acausal_posterior).itemsize
+    itemsize = np.result_type(causal_posterior.dtype, acausal_posterior.dtype).itemsize
     rows = max(1, _PAIR_SUM_BLOCK_BYTES // (max(n_state_bins, 1) * itemsize))
     state_ind = jnp.asarray(state_ind)
     counts = jnp.zeros(
@@ -743,9 +753,9 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
         Exact expected transition counts from each discrete state to each
         discrete state at each time.
     """
-    causal_posterior = np.asarray(causal_posterior)
-    predictive_posterior = np.asarray(predictive_posterior)
-    acausal_posterior = np.asarray(acausal_posterior)
+    causal_posterior = _host_or_device(causal_posterior)
+    predictive_posterior = _host_or_device(predictive_posterior)
+    acausal_posterior = _host_or_device(acausal_posterior)
     state_ind = np.asarray(state_ind, dtype=int)
     n_time, n_state_bins = _validate_expanded_posterior_shapes(
         causal_posterior,
@@ -820,9 +830,9 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
         If ``discrete_transition_matrix`` is not stationary with shape
         ``(n_states, n_states)``.
     """
-    causal_posterior = np.asarray(causal_posterior)
-    predictive_posterior = np.asarray(predictive_posterior)
-    acausal_posterior = np.asarray(acausal_posterior)
+    causal_posterior = _host_or_device(causal_posterior)
+    predictive_posterior = _host_or_device(predictive_posterior)
+    acausal_posterior = _host_or_device(acausal_posterior)
     state_ind = np.asarray(state_ind, dtype=int)
     n_time, n_state_bins = _validate_expanded_posterior_shapes(
         causal_posterior,

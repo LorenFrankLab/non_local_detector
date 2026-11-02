@@ -3497,7 +3497,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         return self._convert_results_to_xarray(
             time_centers,
-            acausal_posterior,
+            np.asarray(acausal_posterior),
             acausal_state_probabilities,
             marginal_log_likelihood,
             time_edges=time_edges,
@@ -3506,7 +3506,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood if "log_likelihood" in requested_outputs else None
             ),
             causal_posterior=(
-                causal_posterior if "filter" in requested_outputs else None
+                np.asarray(causal_posterior) if "filter" in requested_outputs else None
             ),
             causal_state_probabilities=(
                 causal_state_probabilities if "filter" in requested_outputs else None
@@ -3517,7 +3517,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 else None
             ),
             predictive_posterior=(
-                predictive_posterior
+                np.asarray(predictive_posterior)
                 if "predictive_posterior" in requested_outputs
                 else None
             ),
@@ -3748,14 +3748,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Returns
         -------
-        acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        acausal_posterior : jax.Array, shape (n_time, n_state_bins)
         acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
         marginal_log_likelihood : float
         causal_state_probabilities : np.ndarray, shape (n_time, n_states)
         predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
         log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
-        causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        causal_posterior : jax.Array, shape (n_time, n_state_bins)
+        predictive_posterior : jax.Array, shape (n_time, n_state_bins)
+
+        The three posteriors stay on the device: callers copy to the host only
+        the ones they return or need there.
         """
         if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
             self, "encoding_model_"
@@ -3826,6 +3829,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
                 degenerate_indices_out=degenerate_out,
+                host_outputs=False,
             )
         else:
             result = chunked_filter_smoother_covariate_dependent(
@@ -3844,6 +3848,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
                 degenerate_indices_out=degenerate_out,
+                host_outputs=False,
             )
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
         return result
@@ -4681,7 +4686,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     log_likelihoods=run_log_likelihoods,
                     n_chunks=n_chunks,
                 )
-                first_smoothed = acausal_posterior[0]
+                first_smoothed = np.asarray(acausal_posterior[0])
             # Reusable by the next iteration: the likelihood depends only on the
             # data and the encoding model, and the M-step below clears this when
             # it updates the encoding model. ``None`` when the likelihood was not
@@ -4821,6 +4826,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     transition_change = float(np.max(np.abs(moved)))
             else:
                 log_prior_before = log_prior_after = 0.0
+            # The dense E-step's posteriors are device arrays; release them
+            # before the next E-step allocates its own.
+            acausal_posterior = causal_posterior = predictive_posterior = None
 
             if estimate_initial_conditions:
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
@@ -5108,7 +5116,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         results = self._convert_results_to_xarray(
             time_centers,
-            acausal_posterior,
+            np.asarray(acausal_posterior),
             acausal_state_probabilities,
             traces["marginal_log_likelihoods"],
             time_edges=time_edges,
@@ -5117,7 +5125,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood if "log_likelihood" in requested_outputs else None
             ),
             causal_posterior=(
-                causal_posterior if "filter" in requested_outputs else None
+                np.asarray(causal_posterior) if "filter" in requested_outputs else None
             ),
             causal_state_probabilities=(
                 causal_state_probabilities if "filter" in requested_outputs else None
@@ -5128,7 +5136,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 else None
             ),
             predictive_posterior=(
-                predictive_posterior
+                np.asarray(predictive_posterior)
                 if "predictive_posterior" in requested_outputs
                 else None
             ),
