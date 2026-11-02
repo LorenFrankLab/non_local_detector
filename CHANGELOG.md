@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Environment position helper
+
+- `Environment.decoding_position(points)` returns points in the coordinates the place grid is binned in: on a track graph, multi-dimensional points are linearized (using the environment's linearization cache) and one-column points are taken as already linear; otherwise the points are returned unchanged. The likelihood fits and `initialize_environments` use it instead of their own copies of this rule. Outputs are unchanged.
+
 ### Each likelihood algorithm has its own default parameters
 
 - When `sorted_spikes_algorithm_params` or `clusterless_algorithm_params` is `None`, the fit receives its algorithm's defaults (`_SORTED_SPIKES_DEFAULT_PARAMS` and `_CLUSTERLESS_DEFAULT_PARAMS` in `non_local_detector.likelihoods`) instead of one dictionary per data type (the private `_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS` and `_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS` of `non_local_detector.models.base`, now removed). Apart from the position bandwidth (next item), the values that reach every fit are unchanged. A user dictionary still replaces the defaults rather than merging with them.

@@ -520,13 +520,7 @@ def fit_clusterless_mark_glm_encoding_model(
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
     )
-    encoding_positions = position[support.indices]
-    if (
-        environment.track_graph is not None
-        and encoding_positions.shape[1] > 1
-        and len(encoding_positions)
-    ):
-        encoding_positions = environment._linear_position(encoding_positions)[:, None]
+    encoding_positions = environment.decoding_position(position[support.indices])
 
     # Position of each tracking sample within the support (-1 outside it).
     support_position = np.full(len(position), -1)

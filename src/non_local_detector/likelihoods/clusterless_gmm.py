@@ -657,12 +657,8 @@ def fit_clusterless_gmm_encoding_model(
             )
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
 
-    # If environment has a graph and positions are 2D+, linearize to 1D for occupancy/GPI
-    if environment.track_graph is not None and position.shape[1] > 1:
-        position1D = environment._linear_position(np.asarray(position))[:, None]
-        pos_for_occ = _as_jnp(position1D)
-    else:
-        pos_for_occ = position
+    # Occupancy/GPI position: linear position on a track graph.
+    pos_for_occ = _as_jnp(environment.decoding_position(position))
 
     # Count the rows the GMM will actually fit on, using the array it fits: its
     # zero-weight cutoff depends on that array's dtype, so counting every

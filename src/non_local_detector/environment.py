@@ -363,6 +363,32 @@ class Environment:
             cache.popitem(last=False)
         return result.copy()
 
+    def decoding_position(self, points: np.ndarray) -> np.ndarray:
+        """Points in the coordinates the place grid is binned in.
+
+        On a track graph, multi-dimensional points (raw ``(x, y)`` tracking)
+        are linearized onto the track; points with one column, or a 1-D array,
+        are taken as already linear and returned unchanged. Without a track
+        graph the points are returned unchanged.
+
+        Parameters
+        ----------
+        points : np.ndarray, shape (n_points, n_position_dims) or (n_points,)
+
+        Returns
+        -------
+        decoding_points : np.ndarray, shape (n_points, n_decoding_dims)
+            ``n_decoding_dims`` is 1 for linearized points and
+            ``n_position_dims`` otherwise. Unchanged input is returned as is,
+            including a 1-D array; an empty array of multi-dimensional points
+            on a track graph gives shape ``(0, 1)``.
+        """
+        if self.track_graph is None or np.ndim(points) < 2 or points.shape[1] == 1:
+            return points
+        if points.shape[0] == 0:
+            return np.empty((0, 1))
+        return self._linear_position(points)[:, None]
+
     def _validate_track_graph(self) -> None:
         """Validate track_graph and its required parameters.
 

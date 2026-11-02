@@ -1399,17 +1399,9 @@ def fit_sorted_spikes_glm_encoding_model(
         environment.place_bin_centers_[is_track_interior]
     )
 
-    encoding_positions = position[support.indices]
-    if (
-        environment.track_graph is not None
-        and encoding_positions.shape[1] > 1
-        and len(encoding_positions)
-    ):
-        # The spline is defined on the track's 1-D bin edges, as the KDE fits
-        # and the prediction path use linear position.
-        encoding_positions = environment._linear_position(
-            np.asarray(encoding_positions)
-        )[:, None]
+    # The spline is defined on the track's 1-D bin edges, as the KDE fits and
+    # the prediction path use linear position.
+    encoding_positions = environment.decoding_position(position[support.indices])
     if len(support.indices) and len(spike_times):
         event_counts = np.stack(
             [
