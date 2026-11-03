@@ -320,7 +320,6 @@ def test_transforms_are_uniform_for_data_from_the_fitted_model(
     position_time, position, spike_times, marks = simulate(algorithm, 11)
     u, v = transform(
         model,
-        algorithm,
         0,
         position_time,
         position,
@@ -343,7 +342,6 @@ def test_transforms_reject_shifted_marks(simulate, fitted, algorithm, transform)
     position_time, position, spike_times, marks = simulate(algorithm, 12)
     _, v = transform(
         model,
-        algorithm,
         0,
         position_time,
         position,
@@ -365,9 +363,7 @@ def test_ircm_rejects_a_doubled_rate(simulate, fitted, algorithm):
         doubled["summed_ground_process_intensity"] = 2.0 * np.asarray(
             model["summed_ground_process_intensity"]
         )
-    u, _ = ircm_transform(
-        doubled, algorithm, 0, position_time, position, spike_times, marks
-    )
+    u, _ = ircm_transform(doubled, 0, position_time, position, spike_times, marks)
     assert ks_uniformity_test(u[:, None]).p_value[0] < 1e-6
 
 
@@ -379,12 +375,9 @@ def test_feature_order_reorders_the_sequential_conditionals(
     """The first transformed mark is conditioned on no other mark feature."""
     model = fitted[algorithm]
     position_time, position, spike_times, marks = simulate(algorithm, 14, duration=40.0)
-    _, forward = ircm_transform(
-        model, algorithm, 0, position_time, position, spike_times, marks
-    )
+    _, forward = ircm_transform(model, 0, position_time, position, spike_times, marks)
     _, backward = ircm_transform(
         model,
-        algorithm,
         0,
         position_time,
         position,
@@ -398,13 +391,13 @@ def test_feature_order_reorders_the_sequential_conditionals(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
-def test_transforms_reject_an_unknown_algorithm(transform):
-    """The algorithm name is checked before the encoding model is read."""
+@pytest.mark.parametrize("recorded", [{}, {"algorithm": "sorted_spikes_kde"}])
+def test_transforms_reject_an_unknown_algorithm(transform, recorded):
+    """The recorded algorithm is checked before the encoding model is read."""
     time = np.linspace(0.0, 1.0, 11)
-    with pytest.raises(ValueError, match="algorithm"):
+    with pytest.raises(ValueError, match="fitted by a clusterless algorithm"):
         transform(
-            {},
-            "sorted_spikes_kde",
+            recorded,
             0,
             time,
             np.linspace(0.0, 10.0, 11)[:, None],
@@ -422,8 +415,7 @@ def test_transforms_name_an_unsupported_clusterless_algorithm(transform):
         ValueError, match="model checking does not support 'clusterless_mark_glm'"
     ):
         transform(
-            {},
-            "clusterless_mark_glm",
+            {"algorithm": "clusterless_mark_glm"},
             0,
             time,
             np.linspace(0.0, 10.0, 11)[:, None],
@@ -577,9 +569,7 @@ def test_ircm_mark_cdfs_equal_the_models_conditional_mixture(
     position = np.linspace(8.0, 92.0, 1001)[:, None]
     spike_times = np.sort(rng.uniform(0.0, 10.0, 25))
     marks = rng.normal(1.5, 1.5, (25, 2))
-    _, v = ircm_transform(
-        model, algorithm, 0, position_time, position, spike_times, marks
-    )
+    _, v = ircm_transform(model, 0, position_time, position, spike_times, marks)
     spike_positions = np.interp(spike_times, position_time, position[:, 0])[:, None]
     expected = _expected_conditional_cdfs(
         algorithm, model, environment, spike_positions, marks
@@ -616,9 +606,7 @@ def test_mdci_equals_a_direct_sum_over_bins(recording, fitted, algorithm):
     position = (50.0 + 30.0 * np.sin(position_time))[:, None]
     spike_times = np.sort(rng.uniform(0.0, 10.0, 15))
     marks = rng.normal(1.5, 1.5, (15, 2))
-    u, v = mdci_transform(
-        model, algorithm, 0, position_time, position, spike_times, marks
-    )
+    u, v = mdci_transform(model, 0, position_time, position, spike_times, marks)
 
     bin_centers = environment.place_bin_centers_
     sample_bins = environment.get_bin_ind(position)
@@ -708,6 +696,7 @@ def separated():
             disable_progress_bar=True,
         )
     models["clusterless_gmm"] = {
+        "algorithm": "clusterless_gmm",
         "environment": environment,
         "mean_rates": [1.0],
         "joint_models": [_hand_built_gmm([[0.0, 0.0, 0.0], [40.0, 40.0, 40.0]])],
@@ -734,11 +723,9 @@ def test_mdci_in_one_bin_equals_the_conditional_at_that_bin(separated, algorithm
     position = np.full((11, 1), environment.place_bin_centers_[0, 0])
     spike_times = np.array([0.25, 0.5, 0.9])
     marks = np.array([[40.0, 20.0], [40.0, 39.0], [1.0, 1.0]])
-    u, v = mdci_transform(
-        model, algorithm, 0, position_time, position, spike_times, marks
-    )
+    u, v = mdci_transform(model, 0, position_time, position, spike_times, marks)
     _, expected_v = ircm_transform(
-        model, algorithm, 0, position_time, position, spike_times, marks
+        model, 0, position_time, position, spike_times, marks
     )
     np.testing.assert_allclose(u, spike_times, rtol=1e-12)
     np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
@@ -756,7 +743,6 @@ def test_transforms_reject_missing_positions(separated, algorithm, transform):
     with pytest.raises(ValueError, match="position must be finite"):
         transform(
             models[algorithm],
-            algorithm,
             0,
             position_time,
             position,
@@ -807,11 +793,9 @@ def test_diffusion_mdci_keeps_marks_far_from_every_reachable_spike():
     position = np.repeat(at_first_spike, 11, axis=0)
     spike_times = np.array([0.5])
     marks = np.array([[40.0, 20.0]])
-    u, v = mdci_transform(
-        model, "clusterless_diffusion", 0, position_time, position, spike_times, marks
-    )
+    u, v = mdci_transform(model, 0, position_time, position, spike_times, marks)
     _, expected_v = ircm_transform(
-        model, "clusterless_diffusion", 0, position_time, position, spike_times, marks
+        model, 0, position_time, position, spike_times, marks
     )
     np.testing.assert_allclose(u, spike_times, rtol=1e-12)
     np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
@@ -868,7 +852,6 @@ def test_kde_transforms_are_invariant_to_a_common_mark_offset(transform):
             results.append(
                 transform(
                     model,
-                    "clusterless_kde",
                     0,
                     np.array([0.0, 1.0]),
                     np.array([[0.5], [9.5]]),

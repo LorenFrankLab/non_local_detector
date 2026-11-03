@@ -23,7 +23,8 @@ class EncodingModel(TypedDict):
     ----------
     algorithm : str
         The registered name of the algorithm whose fit produced the model. A
-        detector refuses to decode with another algorithm.
+        detector refuses to decode with another algorithm, and model checking
+        selects its intensity from it.
     environment : Environment
         The fitted environment the model's arrays describe.
     environment_grid : dict[str, Any]

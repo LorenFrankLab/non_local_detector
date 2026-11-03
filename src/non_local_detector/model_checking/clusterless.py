@@ -27,10 +27,6 @@ from scipy.special import logsumexp
 
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.common import get_position_at_time
-from non_local_detector.model_checking._clusterless_models import (
-    SUPPORTED_ALGORITHMS,
-    electrode_model,
-)
 from non_local_detector.model_checking.conditional_marks import (
     GaussianMixtureConditionalCDF as GaussianMixtureConditionalCDF,
 )
@@ -236,23 +232,36 @@ def _prepare_inputs(
     return time, positions, spike_times, spike_positions, marks
 
 
-def _check_algorithm(algorithm: str) -> None:
-    if algorithm in SUPPORTED_ALGORITHMS:
-        return
-    if algorithm in _CLUSTERLESS_ALGORITHMS:
+def _electrode_intensity(
+    encoding_model: dict[str, Any],
+) -> Callable[[dict[str, Any], int], Any]:
+    """The registered intensity builder of the algorithm that fitted the model."""
+    supported = sorted(
+        name
+        for name, record in _CLUSTERLESS_ALGORITHMS.items()
+        if record.electrode_intensity is not None
+    )
+    algorithm = encoding_model.get("algorithm")
+    record = _CLUSTERLESS_ALGORITHMS.get(algorithm)  # type: ignore[arg-type]
+    if record is None:
+        msg = (
+            "encoding_model must be fitted by a clusterless algorithm, one of "
+            f"{supported}; it records {algorithm!r}. Refit an encoding model "
+            "that records none."
+        )
+        raise ValueError(msg)
+    if record.electrode_intensity is None:
         msg = (
             f"model checking does not support {algorithm!r}: its mark intensity "
             f"is not implemented for the transforms. Supported algorithms: "
-            f"{SUPPORTED_ALGORITHMS}"
+            f"{supported}"
         )
-    else:
-        msg = f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
-    raise ValueError(msg)
+        raise ValueError(msg)
+    return record.electrode_intensity
 
 
 def ircm_transform(
     encoding_model: dict[str, Any],
-    algorithm: str,
     electrode: int,
     position_time: np.ndarray,
     position: np.ndarray,
@@ -283,11 +292,10 @@ def ircm_transform(
     ----------
     encoding_model : dict
         A fitted clusterless encoding model, as stored in a detector's
-        ``encoding_model_``.
-    algorithm : str
-        The algorithm that fitted it: ``"clusterless_kde"``,
-        ``"clusterless_gmm"`` or ``"clusterless_diffusion"``.
-        ``"clusterless_mark_glm"`` is not supported.
+        ``encoding_model_``. The algorithm it records must be
+        ``"clusterless_kde"``, ``"clusterless_gmm"`` or
+        ``"clusterless_diffusion"``; ``"clusterless_mark_glm"`` is not
+        supported.
     electrode : int
         Index of the electrode in the encoding model.
     position_time : np.ndarray, shape (n_time,)
@@ -318,11 +326,11 @@ def ircm_transform(
     model, and so ``Lambda`` and ``f(m | x)``, is defined on the interior bins
     and read at the bin containing the position.
     """
-    _check_algorithm(algorithm)
+    electrode_intensity = _electrode_intensity(encoding_model)
     time, positions, spike_times, spike_positions, marks = _prepare_inputs(
         encoding_model, position_time, position, spike_times, spike_waveform_features
     )
-    model = electrode_model(encoding_model, algorithm, electrode)
+    model = electrode_intensity(encoding_model, electrode)
     ground = model.ground_intensity(positions)
     ground_at_spikes = model.ground_intensity(spike_positions)
     if not np.all(np.isfinite(ground_at_spikes) & (ground_at_spikes > 0)):
@@ -385,7 +393,6 @@ def _time_in_bins(
 
 def mdci_transform(
     encoding_model: dict[str, Any],
-    algorithm: str,
     electrode: int,
     position_time: np.ndarray,
     position: np.ndarray,
@@ -415,11 +422,10 @@ def mdci_transform(
     ----------
     encoding_model : dict
         A fitted clusterless encoding model, as stored in a detector's
-        ``encoding_model_``.
-    algorithm : str
-        The algorithm that fitted it: ``"clusterless_kde"``,
-        ``"clusterless_gmm"`` or ``"clusterless_diffusion"``.
-        ``"clusterless_mark_glm"`` is not supported.
+        ``encoding_model_``. The algorithm it records must be
+        ``"clusterless_kde"``, ``"clusterless_gmm"`` or
+        ``"clusterless_diffusion"``; ``"clusterless_mark_glm"`` is not
+        supported.
     electrode : int
         Index of the electrode in the encoding model.
     position_time : np.ndarray, shape (n_time,)
@@ -452,11 +458,11 @@ def mdci_transform(
     samples. The approximation error shrinks with the bin size relative to the
     position bandwidth.
     """
-    _check_algorithm(algorithm)
+    electrode_intensity = _electrode_intensity(encoding_model)
     time, positions, spike_times, _, marks = _prepare_inputs(
         encoding_model, position_time, position, spike_times, spike_waveform_features
     )
-    model = electrode_model(encoding_model, algorithm, electrode)
+    model = electrode_intensity(encoding_model, electrode)
     sample_bins = model.bin_indices(positions)
     total_time = _time_in_bins(time, sample_bins, model.n_bins, time[-1:])[0]
     with np.errstate(divide="ignore"):
