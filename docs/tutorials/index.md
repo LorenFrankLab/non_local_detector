@@ -8,6 +8,9 @@ Each page links to its source, a [jupytext](https://jupytext.readthedocs.io)
 percent-format Python script. Run it as a script, or open it as a notebook
 with `jupytext --to notebook <file>.py`.
 
+- [Classifying replay dynamics](04_classifying_replay_dynamics.py): fit a
+  classifier with continuous, fragmented and No-Spike states on running, decode
+  a whole session, and classify simulated replay events of each type.
 - [Decoding with clusterless spikes](03_decoding_clusterless.py): decode position
   from unsorted spikes and their waveform features with `ClusterlessDecoder`,
   fit on running and applied to a whole session.
