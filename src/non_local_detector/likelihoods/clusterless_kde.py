@@ -405,6 +405,7 @@ def log_kde_distance(
     def log_gaussian_per_dim(
         eval_dim: jax.Array, sample_dim: jax.Array, sigma: jax.Array
     ) -> jax.Array:
+        """Log Gaussian kernel of one dimension, shape (n_samples, n_eval)."""
         return cast(
             jax.Array,
             log_gaussian_pdf(
@@ -474,7 +475,20 @@ def log_kde_distance_streaming(
     log_distance_acc = jnp.zeros((n_samp, n_eval))
 
     def accumulate_dim(dim_idx: int, acc: jnp.ndarray) -> jnp.ndarray:
-        """Accumulate log-Gaussian contribution from one dimension."""
+        """Accumulate the log-Gaussian contribution of one dimension.
+
+        Parameters
+        ----------
+        dim_idx : int
+            Index of the dimension to add.
+        acc : jnp.ndarray, shape (n_samp, n_eval)
+            Running sum of the log-Gaussian kernels of the earlier dimensions.
+
+        Returns
+        -------
+        acc : jnp.ndarray, shape (n_samp, n_eval)
+            ``acc`` plus the log-Gaussian kernel of dimension ``dim_idx``.
+        """
         # Extract 1D slices for this dimension
         eval_d = jax.lax.dynamic_slice_in_dim(eval_points, dim_idx, 1, axis=1).squeeze(
             axis=1
@@ -1094,10 +1108,17 @@ def estimate_log_joint_mark_intensity(
     Parameters
     ----------
     decoding_spike_waveform_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
+        Waveform features (marks) of the spikes to score.
     encoding_spike_waveform_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
+        Waveform features (marks) of the encoding spikes that define the kernel
+        density.
     waveform_stds : jnp.ndarray, shape (n_features,)
+        Gaussian kernel standard deviation of each waveform feature.
     occupancy : jnp.ndarray, shape (n_position_bins,)
+        Occupancy density at each position bin. The intensity is divided by it
+        unless ``log_occupancy`` is given.
     mean_rate : float
+        Mean firing rate of the electrode, in Hz.
     log_position_distance : jnp.ndarray | None, shape (n_encoding_spikes, n_position_bins)
         Log-space position kernel (output of log_kde_distance). Required if use_streaming=False.
         Using log-space prevents underflow from multi-dimensional Gaussian products.
@@ -1571,10 +1592,17 @@ def block_estimate_log_joint_mark_intensity(
     Parameters
     ----------
     decoding_spike_waveform_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
+        Waveform features (marks) of the spikes to score.
     encoding_spike_waveform_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
+        Waveform features (marks) of the encoding spikes that define the kernel
+        density.
     waveform_stds : jnp.ndarray, shape (n_features,)
+        Gaussian kernel standard deviation of each waveform feature.
     occupancy : jnp.ndarray, shape (n_position_bins,)
+        Occupancy density at each position bin. The intensity is divided by it
+        unless ``log_occupancy`` is given.
     mean_rate : float
+        Mean firing rate of the electrode, in Hz.
     log_position_distance : jnp.ndarray | None, shape (n_encoding_spikes, n_position_bins)
         Log-space position kernel. Prevents underflow in multi-dimensional position spaces.
         Can be None if use_streaming=True.
@@ -1721,9 +1749,9 @@ def fit_clusterless_kde_encoding_model(
         per-electrode ground-process KDE, and the mean rate, and are interpolated
         onto each spike's time to form the ``encoding_weights`` used at decode time.
     position_std : float, optional
-        Gaussian smoothing standard deviation for position, by default sqrt(12.5)
+        Gaussian smoothing standard deviation for position, by default sqrt(12.5).
     waveform_std : float, optional
-        Gaussian smoothing standard deviation for waveform, by default 24.0
+        Gaussian smoothing standard deviation for waveform, by default 24.0.
     block_size : int, optional
         Decoding spikes per block, by default 10,000, matching the
         detectors' default. It is stored with the model and used at
@@ -1739,7 +1767,7 @@ def fit_clusterless_kde_encoding_model(
         the full ``(n_encoding, n_position_bins)`` kernel; requires
         ``enc_tile_size``. By default False.
     disable_progress_bar : bool, optional
-        Turn off progress bar, by default False
+        Turn off progress bar, by default False.
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
@@ -1750,6 +1778,9 @@ def fit_clusterless_kde_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
@@ -1940,8 +1971,6 @@ def predict_clusterless_kde_log_likelihood(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Time of each position sample (used only by the local path; accepted for
         signature parity when ``is_local`` is False).
@@ -1966,7 +1995,7 @@ def predict_clusterless_kde_log_likelihood(
         Per-electrode encoding positions, each of shape
         (n_encoding_spikes, n_position_dims).
     environment : Environment
-        The spatial environment
+        The spatial environment.
     mean_rates : jnp.ndarray, shape (n_electrodes,)
         Mean firing rate for each electrode.
     summed_ground_process_intensity : jnp.ndarray, shape (n_interior_bins,)
@@ -1977,12 +2006,12 @@ def predict_clusterless_kde_log_likelihood(
     waveform_std : jnp.ndarray
         Gaussian smoothing standard deviation for waveform.
     is_local : bool, optional
-        If True, compute the log likelihood at the animal's position, by default False
+        If True, compute the log likelihood at the animal's position, by default False.
     block_size : int, optional
         Decoding spikes per block, by default 10,000, matching the
         detectors' default.
     disable_progress_bar : bool, optional
-        Turn off progress bar, by default False
+        Turn off progress bar, by default False.
     enc_tile_size : int | None, optional
         Encoding samples are always reduced in tiles of at most 2048 rows; a
         smaller value lowers peak memory further and selects the block-wise path.
@@ -2006,22 +2035,8 @@ def predict_clusterless_kde_log_likelihood(
         against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
-    environment_grid : dict | None, optional
-        The fit's record of the environment's grid (see
-        ``environment_grid_fingerprint``), by default None, which skips the
-        check (a model fitted before the grid was recorded). Prediction raises
-        if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
-        Internal ordering preparation that a detector prediction shares across
-        observation states and chunks. Direct callers omit it; the spike-time
-        ordering is then verified on this call.
-    mark_reference : list of MarkReference or None, keyword-only
-        Normalized reference mark density per electrode, from
-        ``fit_mark_references`` (a detector passes its ``mark_reference_``).
-        Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
-        electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
-        states do not depend on the waveform units. None for an electrode means
-        no training marks; its background is the bare rate.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).
@@ -2032,6 +2047,25 @@ def predict_clusterless_kde_log_likelihood(
         Log occupancy density at the interior bins, as returned by the fit.
         Used by the non-local path, which computes it from ``occupancy_model``
         when None; the local path ignores it.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
+    mark_reference : list of MarkReference or None, keyword-only
+        Normalized reference mark density per electrode, from
+        ``fit_mark_references`` (a detector passes its ``mark_reference_``).
+        Each spike's intensity gains ``RATE_EPS_HZ * q(mark)`` and each
+        electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
+        states do not depend on the waveform units. None for an electrode means
+        no training marks; its background is the bare rate.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
@@ -2292,7 +2326,7 @@ def compute_local_log_likelihood(
         Decoding spikes per block, by default 10,000, matching the
         detectors' default.
     disable_progress_bar : bool, optional
-        Turn off progress bar, by default False
+        Turn off progress bar, by default False.
     encoding_weights : list[jnp.ndarray] | None, optional
         Per-electrode encoding-spike weights, each shape (n_encoding_spikes,). By
         default None (uniform); weight the local marginal density KDE per electrode.
@@ -2307,10 +2341,14 @@ def compute_local_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, 1)
+        Log likelihood at the animal's position for each requested decoding bin.
     """
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges

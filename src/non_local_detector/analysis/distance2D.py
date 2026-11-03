@@ -1,3 +1,5 @@
+"""Distances, directions and speeds of decoded positions in 2D environments."""
+
 import logging
 import warnings
 from collections.abc import Sequence
@@ -18,16 +20,20 @@ logger = logging.getLogger(__name__)
 def make_2D_track_graph_from_environment(
     environment: Environment,
 ) -> nx.Graph:
-    """Creates a graph of the position where on track nodes are
-    connected by edges.
+    """Create a graph of the environment's on-track position bins.
+
+    On-track bins are the nodes and neighboring bins are connected by edges.
 
     Parameters
     ----------
     environment : Environment
+        Fitted environment whose place bins define the graph.
 
     Returns
     -------
     track_graph : nx.Graph
+        Graph with place bins as nodes (position in the ``pos`` attribute) and
+        edges carrying a ``distance`` attribute.
     """
 
     return make_nD_track_graph_from_environment(environment)
@@ -53,7 +59,6 @@ def get_bin_ind(sample: np.ndarray, edges: Sequence[np.ndarray]) -> np.ndarray:
     bin_ind : np.ndarray, shape (n_time,)
         Flattened bin indices for each sample point. Uses row-major ordering
         to convert multidimensional bin coordinates to linear indices.
-
     """
     try:
         # Sample is an ND-array.
@@ -96,15 +101,20 @@ def get_map_estimate_direction_from_track_graph(
     edges: Sequence[np.ndarray],
     precomputed_distance: bool = False,
 ) -> np.ndarray:
-    """Get the direction of the MAP estimate of the decoded position from the
-    animal's head position.
+    """Get the direction of the MAP estimate from the animal's head position.
+
+    The direction is the heading, along the shortest path on the track graph,
+    from the head position toward the MAP decoded position.
 
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
+        Position of the animal's head.
     map_estimate : np.ndarray, shape (n_time, 2)
+        MAP decoded position.
     track_graph : nx.Graph
-    edges : list
+        Graph of the environment's place bins.
+    edges : list of np.ndarray
         Bin edges for each spatial dimension.
     precomputed_distance : bool, optional
         If True, use precomputed distance matrix for graph lookups,
@@ -113,7 +123,8 @@ def get_map_estimate_direction_from_track_graph(
     Returns
     -------
     map_estimate_direction : np.ndarray, shape (n_time,)
-
+        Direction in radians of the first step along the shortest path from the
+        head position to the MAP estimate.
     """
     node_positions = nx.get_node_attributes(track_graph, "pos")
 
@@ -223,7 +234,9 @@ def get_2D_distance(
     Parameters
     ----------
     position1 : np.ndarray, shape (n_time, 2)
+        First set of positions.
     position2 : np.ndarray, shape (n_time, 2)
+        Second set of positions.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
         ``Environment.track_graphDD``). If None, distances are Euclidean.
@@ -232,11 +245,15 @@ def get_2D_distance(
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
+        If True, compute all-pairs graph distances once and look them up;
+        otherwise compute one shortest path per time point. By default True.
 
     Returns
     -------
     distance : np.ndarray, shape (n_time,)
-
+        Distance between the two positions at each time point. Euclidean if
+        `track_graph` is None, otherwise the shortest path length along the
+        graph (``inf`` if no path exists).
     """
     position1 = np.asarray(position1)
     position2 = np.asarray(position2)
@@ -299,16 +316,20 @@ def head_direction_simliarity(
     edges: Sequence[np.ndarray] | None = None,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
-    """Cosine similarity of the head direction vector with the vector from the
-    animal's head to MAP estimate of the decoded position.
+    """Cosine similarity of the head direction with the direction to the MAP.
+
+    Compares the head direction with the vector from the animal's head to the
+    MAP estimate of the decoded position.
 
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
+        Position of the animal's head.
     head_direction : np.ndarray, shape (n_time,)
         Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
         heading vector ``v``), not a 2-D vector.
     map_estimate : np.ndarray, shape (n_time, 2)
+        MAP decoded position.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
         ``Environment.track_graphDD``). If None, distances are Euclidean.
@@ -317,11 +338,14 @@ def head_direction_simliarity(
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
+        If True, use a precomputed all-pairs shortest-path table for graph
+        lookups. Only used when `track_graph` is given. By default False.
 
     Returns
     -------
     cosine_similarity : np.ndarray, shape (n_time,)
-
+        Cosine of the angle between the head direction and the direction to the
+        MAP estimate; 1 means directly ahead, -1 directly behind.
     """
     head_position = np.asarray(head_position)
     head_direction = np.asarray(head_direction)
@@ -358,17 +382,20 @@ def get_ahead_behind_distance2D(
     edges: Sequence[np.ndarray] | None = None,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
-    """Distance of the MAP decoded position to the animal's head position where
-     the sign indicates if the decoded position is in front of the
-     head (positive) or behind (negative).
+    """Signed distance of the MAP decoded position from the animal's head.
+
+    The sign indicates if the decoded position is in front of the head
+    (positive) or behind (negative).
 
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
+        Position of the animal's head.
     head_direction : np.ndarray, shape (n_time,)
         Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
         heading vector ``v``), not a 2-D vector.
     map_position : np.ndarray, shape (n_time, 2)
+        MAP decoded position.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
         ``Environment.track_graphDD``). If None, distances are Euclidean.
@@ -377,11 +404,14 @@ def get_ahead_behind_distance2D(
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
+        If True, use a precomputed all-pairs shortest-path table for graph
+        lookups. Only used when `track_graph` is given. By default False.
 
     Returns
     -------
     ahead_behind_distance : np.ndarray, shape (n_time,)
-
+        Signed distance (positive ahead of the head, negative behind), in the
+        units of the position.
     """
 
     distance = get_2D_distance(
@@ -415,14 +445,20 @@ def get_velocity(
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
-        MAP decoded position
+        MAP decoded position.
     time : np.ndarray, shape (n_time,), optional
+        Time of each sample used to take the gradient. If None, sample indices
+        are used, by default None.
     sigma : float, optional
+        Standard deviation of the Gaussian smoothing kernel in seconds,
+        by default 0.0025.
     sampling_frequency : float, optional
+        Sampling frequency of the data in Hz, by default 500.
 
     Returns
     -------
     decoded_velocity : np.ndarray, shape (n_time, n_position_dims)
+        Smoothed velocity of the decoded position.
     """
     if time is None:
         time = np.arange(position.shape[0])
@@ -442,9 +478,11 @@ def get_speed(velocity: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     velocity : np.ndarray, shape (n_time, n_position_dims)
+        Velocity of the decoded position.
 
     Returns
     -------
-    speed: np.ndarray, shape (n_time,)
+    speed : np.ndarray, shape (n_time,)
+        Euclidean norm of the velocity at each time point.
     """
     return cast("np.ndarray", np.sqrt(np.sum(velocity**2, axis=1)))

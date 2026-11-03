@@ -1,3 +1,5 @@
+"""Visualization tools: static plots, movies, and interactive figurl views."""
+
 try:
     from non_local_detector.visualization.figurl_1D import (
         create_interactive_1D_decoding_figurl,

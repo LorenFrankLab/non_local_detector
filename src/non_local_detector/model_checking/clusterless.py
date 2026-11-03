@@ -403,10 +403,27 @@ def mdci_transform(
 
     Parameters
     ----------
-    encoding_model, algorithm, electrode, position_time, position, spike_times,
-    spike_waveform_features, feature_order
-        As for :func:`ircm_transform`. ``position_time`` spans the period
-        ``[0, T]``.
+    encoding_model : dict
+        A fitted clusterless encoding model, as stored in a detector's
+        ``encoding_model_``.
+    algorithm : str
+        The algorithm that fitted it: ``"clusterless_kde"``,
+        ``"clusterless_gmm"`` or ``"clusterless_diffusion"``.
+    electrode : int
+        Index of the electrode in the encoding model.
+    position_time : np.ndarray, shape (n_time,)
+        Strictly increasing sample times in seconds of the evaluated period,
+        spanning ``[0, T]``.
+    position : np.ndarray, shape (n_time,) or (n_time, n_position_dims)
+        The animal's position at ``position_time``, finite at every sample.
+        It is interpolated and linearized for track graphs as during fitting.
+        Split the period at tracking gaps.
+    spike_times : np.ndarray, shape (n_spikes,)
+        Ordered spike times of the electrode within ``position_time``.
+    spike_waveform_features : np.ndarray, shape (n_spikes, n_features)
+        The spikes' marks.
+    feature_order : sequence of int, optional
+        The order in which mark features are conditioned; identity by default.
 
     Returns
     -------
@@ -529,6 +546,8 @@ def pearson_chi_squared_test(
     Returns
     -------
     result : ChiSquaredUniformityResult
+        Named tuple with the chi-square ``statistic``, its ``p_value``, the
+        ``degrees_of_freedom`` and the ``n_bins_per_dim`` used.
     """
     samples = _unit_cube_samples(samples)
     n_samples, n_dims = samples.shape
