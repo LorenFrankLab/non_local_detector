@@ -128,6 +128,7 @@ nav:
       - Core Concepts: getting-started/core-concepts.md
   - Tutorials:
       - tutorials/index.md
+      - Data format and environments: tutorials/01_data_and_environments.py
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md
