@@ -744,7 +744,7 @@ def test_chunked_estimate_parameters_returns_requested_log_likelihood(
     """EM must also deliver a requested log likelihood when chunked.
 
     ``estimate_parameters`` reaches the chunked drivers through the same
-    ``_DetectorBase._estimate_parameters`` final E-step for both detector
+    ``_DetectorBase._run_em`` final E-step for both detector
     families, so the sorted-spikes case covers the shared code path.
     """
     sim = sorted_simulation
