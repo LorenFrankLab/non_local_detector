@@ -1,10 +1,9 @@
 """The chunked drivers' likelihood-callback contract.
 
-The drivers accept arbitrary user callables, so the row information cannot be
-injected into every callback. A callback marked with ``row_slice_aware``
-receives the FULL ``time`` plus the chunk's global row range and therefore owns
-every spike exactly once; an unmarked (legacy) callable keeps the historical
-``time[chunk]`` call and is not a global-binning implementation. Both branches
+A callback marked with ``row_slice_aware`` receives the FULL ``time`` plus the
+chunk's global row range and therefore owns every spike exactly once. An
+unmarked callable cannot be evaluated chunk by chunk (a ``time[chunk]`` call
+would drop the spikes between chunks), so the drivers reject it there. Both
 are covered here, together with the row accumulation that makes an explicitly
 requested log likelihood available when caching is off.
 """
@@ -65,8 +64,8 @@ def row_aware_callback(time, spike_times, calls, is_missing=None, row_slice=None
     return poisson_log_likelihood(time, spike_times, row_slice=row_slice)
 
 
-def legacy_callback(time, spike_times, calls, is_missing=None):
-    """Legacy callback: only ever sees the rows' own timestamps (no ``row_slice``)."""
+def unmarked_callback(time, spike_times, calls, is_missing=None):
+    """Unmarked callback: takes no ``row_slice``, so it can only see a whole timeline."""
     calls.append(np.asarray(time))
     return poisson_log_likelihood(time, spike_times)
 
@@ -117,9 +116,8 @@ def test_marker_is_visible_through_the_bound_method():
     """``accepts_row_slice`` must see the mark through every common wrapper.
 
     Bound methods forward attribute lookups on their own; ``functools.partial``
-    and ``__wrapped__``-recording decorators do not, and a missed mark silently
-    demotes the callback to the legacy branch (boundary spikes dropped, numbers
-    still plausible).
+    and ``__wrapped__``-recording decorators do not, and a missed mark would
+    reject a valid callback for chunked evaluation.
     """
 
     class Detector:
@@ -127,7 +125,7 @@ def test_marker_is_visible_through_the_bound_method():
         def compute_log_likelihood(self, time, is_missing=None, row_slice=None):
             return None
 
-        def legacy(self, time, is_missing=None):
+        def unmarked(self, time, is_missing=None):
             return None
 
     detector = Detector()
@@ -147,9 +145,9 @@ def test_marker_is_visible_through_the_bound_method():
     )
     assert accepts_row_slice(wrapping_decorator)
 
-    assert not accepts_row_slice(legacy_callback)
-    assert not accepts_row_slice(detector.legacy)
-    assert not accepts_row_slice(functools.partial(legacy_callback, np.zeros(2)))
+    assert not accepts_row_slice(unmarked_callback)
+    assert not accepts_row_slice(detector.unmarked)
+    assert not accepts_row_slice(functools.partial(unmarked_callback, np.zeros(2)))
 
 
 @pytest.mark.unit
@@ -169,47 +167,45 @@ def test_row_aware_callback_gets_full_time_and_tiling_rows(driver, problem):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("driver", DRIVERS, ids=DRIVER_IDS)
-def test_legacy_callback_gets_the_sliced_time_and_no_row_slice(driver, problem):
-    """An unmarked callback keeps the historical chunk-local call.
+def test_unmarked_callback_is_rejected_when_evaluated_per_chunk(driver, problem):
+    """Chunk-by-chunk evaluation of an unmarked callback raises before any call.
 
-    It is called with ``time[chunk]`` and no ``row_slice`` keyword -- injecting
-    one would raise ``TypeError`` against this signature. Chunk-local clipping
-    then loses the boundary spikes, which is why a legacy callable must not be
-    presented as a global-binning implementation.
+    A ``time[chunk]`` call would clip a callback that bins against its
+    timeline and drop the boundary spikes while returning plausible numbers,
+    so there is no chunk-local fallback.
     """
     calls: list = []
-    chunked = run_driver(driver, problem, legacy_callback, calls, N_CHUNKS)
-    unchunked = run_driver(driver, problem, legacy_callback, [], 1)
-
-    row_chunks = np.array_split(np.arange(N_TIME), N_CHUNKS)
-    assert len(calls) == N_CHUNKS
-    for recorded_time, chunk in zip(calls, row_chunks, strict=True):
-        np.testing.assert_array_equal(recorded_time, problem["time"][chunk])
-
-    # Documented limitation: the legacy call drops the boundary spikes.
-    assert not np.isclose(chunked[2], unchunked[2], **PARITY_KWARGS)
+    with pytest.raises(ValueError, match="row_slice_aware"):
+        run_driver(driver, problem, unmarked_callback, calls, N_CHUNKS)
+    assert calls == []
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("driver", DRIVERS, ids=DRIVER_IDS)
-def test_legacy_callback_under_chunking_is_warned_about_once(driver, problem, caplog):
-    """Chunking an unmarked callback must not be silent.
+def test_unmarked_callback_is_called_once_on_the_full_time(driver, problem):
+    """One chunk, or cached likelihoods, call an unmarked callback once.
 
-    The legacy branch returns plausible numbers with the boundary spikes
-    missing, so the driver logs one warning per call naming the fix
-    (``row_slice_aware``). A marked callback, or a single chunk, warns nothing.
+    It receives the whole ``time`` and no ``row_slice``, so it bins every
+    spike, and the chunked-cached result equals the single-chunk one.
     """
-    with caplog.at_level("WARNING", logger="non_local_detector.core"):
-        run_driver(driver, problem, legacy_callback, [], N_CHUNKS)
-    warnings = [r for r in caplog.records if "row_slice_aware" in r.getMessage()]
-    assert len(warnings) == 1
-    assert warnings[0].levelname == "WARNING"
+    single_calls: list = []
+    cached_calls: list = []
+    single = run_driver(driver, problem, unmarked_callback, single_calls, 1)
+    cached = run_driver(
+        driver,
+        problem,
+        unmarked_callback,
+        cached_calls,
+        N_CHUNKS,
+        cache_log_likelihoods=True,
+    )
+    reference = run_driver(driver, problem, row_aware_callback, [], N_CHUNKS)
 
-    caplog.clear()
-    with caplog.at_level("WARNING", logger="non_local_detector.core"):
-        run_driver(driver, problem, legacy_callback, [], 1)
-        run_driver(driver, problem, row_aware_callback, [], N_CHUNKS)
-    assert not [r for r in caplog.records if "row_slice_aware" in r.getMessage()]
+    for calls in (single_calls, cached_calls):
+        assert len(calls) == 1
+        np.testing.assert_array_equal(calls[0], problem["time"])
+    np.testing.assert_allclose(cached[2], single[2], **PARITY_KWARGS)
+    np.testing.assert_allclose(reference[2], single[2], **PARITY_KWARGS)
 
 
 @pytest.mark.unit
