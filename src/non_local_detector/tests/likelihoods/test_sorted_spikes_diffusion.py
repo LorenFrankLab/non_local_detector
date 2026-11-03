@@ -375,6 +375,8 @@ def test_predict_signature_matches_encoding_dict(env_2d):
     } <= params
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 def test_kde_dropin_equivalence_on_wall_less_field():
     """On a wall-less open field with matched bandwidth, diffusion place fields track
     KDE place fields at interior bins away from the boundary (pins units/scale)."""
@@ -413,6 +415,8 @@ def test_kde_dropin_equivalence_on_wall_less_field():
     assert max(medians) < 0.05
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 def test_nonuniform_weights_parity_with_kde(env_2d):
     """Non-uniform (posterior-like) weights: diffusion mean_rates match KDE's, and the
     weighted place fields track KDE's weighted result (spike fields are weighted by
@@ -816,6 +820,10 @@ def _local_log_likelihood(env, position, place_fields, local_interpolation):
     )
 
 
+# off-grid positions are the test input.
+@pytest.mark.filterwarnings(
+    "ignore:\\d+ position\\(s\\) snapped to the nearest interior bin:UserWarning"
+)
 def test_local_linear_interpolation_falls_back_to_nearest_off_grid(env_2d):
     """A position outside the grid has no interpolation stencil, so linear local
     mode falls back to the nearest-bin local likelihood."""
@@ -864,6 +872,8 @@ def test_local_linear_interpolation_falls_back_to_nearest_across_a_wall():
     assert not np.isclose(blended, -nearest_ll[0, 0])
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 def test_no_rate_leak_across_impassable_barrier():
     """A cell that fires only in the left room has ~zero estimated rate in the right
     room: the diffusion smoother cannot cross the disconnected graph, whereas the
@@ -1005,6 +1015,8 @@ def test_truncated_rank_conserves_per_component_occupancy_mass():
     np.testing.assert_allclose(truncated, full, atol=1e-9)
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 def test_less_edge_bias_than_kde():
     """The reflecting (Neumann) graph boundary preserves a flat density to the edge,
     whereas the Euclidean KDE loses kernel mass past the wall.
@@ -1119,6 +1131,8 @@ def test_predict_rejects_population_mismatch(
         )
 
 
+# default rank cap is incidental here.
+@pytest.mark.filterwarnings("ignore:MRF basis auto-capped:UserWarning")
 @pytest.mark.integration
 @pytest.mark.parametrize("algorithm", ["sorted_spikes_diffusion", "sorted_spikes_mrf"])
 def test_detectors_reject_population_mismatch(env_2d, algorithm):
@@ -1251,7 +1265,6 @@ def test_end_to_end_sorted_spikes_decoder(algorithm, algorithm_params):
         time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
-        save_log_likelihood_to_results=False,
     )
 
     posterior = results.acausal_posterior

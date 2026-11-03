@@ -21,7 +21,11 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
-pytestmark = pytest.mark.integration
+# These tests cap max_iter for speed, so EM stops before convergence.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning"),
+]
 
 N_PREDICT = 2_001
 

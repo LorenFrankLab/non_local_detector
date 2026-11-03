@@ -544,7 +544,10 @@ def _laml(design_matrix, response, coefficients, smoothness, penalty, l2_penalty
             for strength, term in zip(strengths, penalties, strict=True)
         )
     log_pdet *= N_STATES - 1
-    return -loss + 0.5 * log_pdet - 0.5 * np.linalg.slogdet(hessian)[1]
+    # The reference evaluates strengths where the Hessian is singular.
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        log_det = np.linalg.slogdet(hessian)[1]
+    return -loss + 0.5 * log_pdet - 0.5 * log_det
 
 
 def _assert_reml_matches_the_grid_best(design, response, ridge: float) -> None:

@@ -99,6 +99,10 @@ class TestEncodingModelDataCleanup:
     slow/integration tests are deselected.
     """
 
+    # max_iter=1 keeps this fast; the test checks cleanup, not convergence.
+    @pytest.mark.filterwarnings(
+        "ignore:EM did not converge after max_iter=:UserWarning"
+    )
     def test_estimate_parameters_deletes_encoding_model_data(self):
         sim = make_simulated_run_data(
             n_tetrodes=1,

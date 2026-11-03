@@ -242,6 +242,10 @@ def gapped_clusterless_run(clusterless_two_run_sim):
 
 
 @pytest.mark.integration
+# A fully masked electrode is fitted as zero-rate on purpose, and each backend says so.
+@pytest.mark.filterwarnings(
+    r"ignore:(Clusterless (GMM|mark GLM).{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
+)
 @pytest.mark.parametrize("algorithm", CLUSTERLESS_ALGORITHMS)
 def test_clusterless_exposure_uses_full_timeline_mask(
     gapped_clusterless_run, algorithm
@@ -300,6 +304,14 @@ def test_clusterless_exposure_uses_full_timeline_mask(
 
 
 @pytest.mark.integration
+# The test asserts the "no training samples" warning; the backend's zero-exposure
+# and zero-rate electrode warnings are the same condition seen from the fit.
+@pytest.mark.filterwarnings(
+    r"ignore:Clusterless (diffusion|GMM|KDE|mark GLM) encoding has zero training exposure:UserWarning"
+)
+@pytest.mark.filterwarnings(
+    r"ignore:(Clusterless (GMM|mark GLM).{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
+)
 @pytest.mark.parametrize("algorithm", CLUSTERLESS_ALGORITHMS)
 def test_clusterless_group_without_training_coverage(gapped_clusterless_run, algorithm):
     """A group observed only outside training owns no spikes and has zero
@@ -332,6 +344,11 @@ def test_clusterless_group_without_training_coverage(gapped_clusterless_run, alg
 
 
 @pytest.mark.integration
+# The test asserts the "no training samples" warning; the backend's zero-exposure
+# warning is the same condition seen from the fit.
+@pytest.mark.filterwarnings(
+    r"ignore:Sorted-spikes (KDE|GLM|diffusion|MRF) encoding has zero training exposure:UserWarning"
+)
 @pytest.mark.parametrize(
     "algorithm",
     [
@@ -369,6 +386,8 @@ def test_sorted_group_without_training_coverage(clusterless_sim, algorithm):
 
 
 @pytest.mark.integration
+# max_iter=2 is a speed cap, so EM stops before convergence.
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
 def test_glm_em_refit_with_gapped_mask_and_off_sample_spikes():
     """EM re-fits the GLM with fractional Local-state weights times a gapped
     training mask, with spikes between position samples. The re-fit place fields

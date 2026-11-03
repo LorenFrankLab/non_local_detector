@@ -214,8 +214,10 @@ class TestSafeLog:
     )
     def test_safe_log_edge_cases(self, value, expected_result):
         """Test behavior at numerical boundaries."""
-        # Arrange
-        x = jnp.array([value])
+        # Arrange: 1e100 does not fit in float32 on purpose (extreme input), so
+        # the cast overflow warning is expected.
+        with np.errstate(over="ignore"):
+            x = jnp.array([value])
 
         # Act
         result = _safe_log(x)
@@ -357,7 +359,10 @@ class TestDivideSafe:
     def test_divide_safe_no_nans_or_infs(self):
         """Should never produce NaN or inf values."""
         # Arrange
-        a = jnp.array([0.0, 1.0, 1e-100, 1e100])
+        # 1e100 does not fit in float32 on purpose (extreme input); the cast
+        # overflow warning is expected.
+        with np.errstate(over="ignore"):
+            a = jnp.array([0.0, 1.0, 1e-100, 1e100])
         b = jnp.array([0.0, 0.0, 0.0, 0.0])
 
         # Act

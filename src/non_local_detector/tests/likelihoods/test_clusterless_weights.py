@@ -356,6 +356,8 @@ def _fit_gmm(env, t_pos, pos, spikes, feats, weights):
     )
 
 
+# zero-rate electrode: observed spikes are scored by the background by design.
+@pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning")
 def test_all_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
     """All-zero weights must warn and produce a finite zero-rate model, not crash.
 
@@ -385,6 +387,8 @@ def test_all_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
     assert np.all(np.isfinite(np.asarray(enc["summed_ground_process_intensity"])))
 
 
+# zero-rate electrode: observed spikes are scored by the background by design.
+@pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning")
 def test_per_electrode_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
     """An electrode whose spikes all fall in the zero-weight region must not crash.
 
@@ -510,6 +514,10 @@ def test_gmm_component_counts_use_the_fitted_array_dtype(simple_1d_environment):
     assert encoding["gmm_effective_components"]["joint"] == [4]
 
 
+# all-zero weights give zero exposure by design.
+@pytest.mark.filterwarnings(
+    "ignore:Clusterless KDE encoding has zero training exposure:UserWarning"
+)
 def test_all_zero_weights_are_finite_clusterless_kde(simple_1d_environment):
     """All-zero weights: the KDE fit stays finite with zero mean rate (no NaN/crash)."""
     env = simple_1d_environment

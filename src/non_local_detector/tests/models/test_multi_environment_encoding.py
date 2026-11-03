@@ -24,7 +24,6 @@ from non_local_detector.observation_models import ObservationModel
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.filterwarnings("ignore:Position data appears to be 1D"),
     # The animal jumps between environments once, between two samples.
     pytest.mark.filterwarnings("ignore:Tracking moves up to"),
 ]

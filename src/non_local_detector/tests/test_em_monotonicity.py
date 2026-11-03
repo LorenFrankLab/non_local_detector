@@ -284,6 +284,10 @@ class TestEncodingUpdateGuards:
             f"{[str(w.message) for w in unexpected]}"
         )
 
+    # max_iter is capped for speed, so EM stops before converging.
+    @pytest.mark.filterwarnings(
+        "ignore:EM did not converge after max_iter=:UserWarning"
+    )
     def test_sorted_spikes_glm_encoding_runs_end_to_end(self, sorted_sim):
         """NonLocalSortedSpikesDetector with GLM encoding updates should
         run to completion without errors."""

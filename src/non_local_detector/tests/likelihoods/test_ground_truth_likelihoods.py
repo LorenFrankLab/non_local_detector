@@ -43,8 +43,6 @@ from non_local_detector.likelihoods.common import DEFAULT_WAVEFORM_STD
 
 pytestmark = [
     pytest.mark.integration,
-    # The simulated track is deliberately a 1-D open field.
-    pytest.mark.filterwarnings("ignore:Position data appears to be 1D"),
     # The 2-D MRF keeps its default reduced rank (250 of 600 bins).
     pytest.mark.filterwarnings("ignore:MRF basis auto-capped"),
 ]

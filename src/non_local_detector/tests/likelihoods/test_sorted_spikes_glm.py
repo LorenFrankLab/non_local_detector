@@ -567,6 +567,10 @@ def _spy_l2_penalty(monkeypatch):
 class TestLogRatePrior:
     """By default the coefficient penalty is a Gaussian prior on log-rate."""
 
+    # test fits with loose solver settings; convergence is not under test.
+    @pytest.mark.filterwarnings(
+        "ignore:GLM Poisson regression may not have converged:UserWarning"
+    )
     @pytest.mark.parametrize(
         ("kwargs", "prior_std"),
         [

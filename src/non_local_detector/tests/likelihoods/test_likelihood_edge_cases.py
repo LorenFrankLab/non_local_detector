@@ -333,6 +333,8 @@ def test_clusterless_gmm_single_spike_per_electrode():
 # ---------------------------------------------------------------------------
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 def test_sorted_kde_very_small_bandwidth():
     """Very small KDE bandwidth should not produce NaN."""
     env = _make_env_1d()

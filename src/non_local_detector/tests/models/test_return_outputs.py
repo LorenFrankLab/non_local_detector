@@ -351,7 +351,10 @@ class TestBackwardCompatibility:
         """Test that mixing old flags and new parameter raises error."""
         detector, spike_times, time, position = simple_fitted_detector
 
-        with pytest.raises(ValueError, match="Cannot specify both"):
+        with (
+            pytest.warns(DeprecationWarning, match="save_log_likelihood_to_results"),
+            pytest.raises(ValueError, match="Cannot specify both"),
+        ):
             detector.predict(
                 spike_times=spike_times,
                 time_edges=time_edges_from_centers(time),

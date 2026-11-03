@@ -1043,6 +1043,8 @@ def test_local_finite_and_zero_rate():
 # ----------------------------------------------------------------------------
 
 
+# small position_std is incidental to this test.
+@pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning")
 def test_validation_fit():
     """Every fit-time input contract raises ValidationError, and the
     in-window / out-of-window encoding-feature split matches clusterless_kde."""
@@ -1490,6 +1492,8 @@ def test_agreement_with_kde_simple_geometry():
     )
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 @pytest.mark.integration
 def test_geometry_no_barrier_leak():
     """THE headline geometry test: a decode spike's mark evidence must not cross an
@@ -1782,6 +1786,10 @@ def test_a_weak_source_whose_kernel_tail_underflows_is_not_lost(weak_nats):
     )
 
 
+# off-grid positions are the test input.
+@pytest.mark.filterwarnings(
+    "ignore:\\d+ position\\(s\\) snapped to the nearest interior bin:UserWarning"
+)
 @pytest.mark.integration
 @pytest.mark.parametrize("n_flagged", [3, 40])
 @pytest.mark.parametrize("streamed", [False, True], ids=["dense", "streamed"])

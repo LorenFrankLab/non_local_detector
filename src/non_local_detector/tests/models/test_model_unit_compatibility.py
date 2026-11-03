@@ -343,6 +343,11 @@ def test_missing_encoding_container_cannot_bypass_concrete_model_guard(
     "algorithm",
     [*_SORTED_SPIKES_ALGORITHMS, *_CLUSTERLESS_ALGORITHMS],
 )
+# The mark GLM initializes its mixture with k-means, which finds fewer
+# distinct points than components on this tiny fixture.
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
 def test_direct_predictors_validate_supplied_units_and_default_to_hz(algorithm):
     from non_local_detector.tests.models._helpers import _decoder
 

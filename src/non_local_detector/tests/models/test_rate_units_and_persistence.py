@@ -21,6 +21,11 @@ from non_local_detector.tests.models._helpers import ALGORITHMS, _decoder
 
 
 @pytest.mark.integration
+# Five events at one position leave KMeans with duplicate points, which the GMM
+# backend initializes from; the calibrated rate does not depend on the clusters.
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize("position_frequency", [30, 500])
 def test_known_rate_is_calibrated_through_public_fit_and_predict(
@@ -62,6 +67,11 @@ def test_known_rate_is_calibrated_through_public_fit_and_predict(
 
 
 @pytest.mark.integration
+# The default position_std is below the 5-unit bin spacing; the test checks
+# persistence, not the smoothing width.
+@pytest.mark.filterwarnings(
+    r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
+)
 @pytest.mark.parametrize(
     "algorithm",
     # The GLMs' patsy spline basis (DesignInfo) cannot be pickled.
@@ -157,6 +167,8 @@ def test_unknown_contract_is_rejected_before_likelihood(
 
 
 @pytest.mark.integration
+# max_iter=1 is a speed cap, so EM stops before convergence.
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
 def test_estimation_refits_legacy_contract_before_decoding(contract_recording):
     """The supported recovery path fits physical units from original recording."""
     fitted, time, position, args = contract_recording

@@ -26,6 +26,12 @@ from non_local_detector.exceptions import ValidationError
 REJECTED_DAMPING = [0.5, -0.1, np.nan]
 
 
+# These tests cap max_iter for speed, so EM stops before convergence.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:EM did not converge after max_iter:UserWarning"
+)
+
+
 @pytest.fixture(scope="module")
 def sorted_inputs(sorted_sim):
     time, position, spike_times = sorted_sim

@@ -104,6 +104,11 @@ def test_viterbi_accepts_same_position_free_call_as_predict(recording):
 
 
 @pytest.mark.integration
+# The gap sits at the end of a 100-sample recording, so the last decode bin
+# extends past the tracked period; the test is about the masked Local likelihood.
+@pytest.mark.filterwarnings(
+    r"ignore:\d+ of \d+ decode bins extend more than half a position sample:UserWarning"
+)
 @pytest.mark.parametrize(
     "missing_during_fit", [False, True], ids=["tracked-fit", "gapped-fit"]
 )

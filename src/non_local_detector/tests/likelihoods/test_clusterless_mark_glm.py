@@ -702,6 +702,8 @@ def test_decoder_decodes_a_simulated_run():
     assert np.median(error) < 4.0
 
 
+# max_iter is capped for speed.
+@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")
 @pytest.mark.integration
 def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
     from non_local_detector.models import NonLocalClusterlessDetector

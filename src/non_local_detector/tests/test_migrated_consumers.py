@@ -366,6 +366,8 @@ def test_real_data_notebook_covariate_plot_uses_aligned_rows():
 
 
 @pytest.mark.parametrize("distance_name", ["cont_dist", "con_frag_dist"])
+# The notebook code ends with plt.show(); the tests draw with Agg.
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
 def test_real_data_notebook_trajectory_and_distance_plot_use_actual_bins(
     distance_name,
 ):

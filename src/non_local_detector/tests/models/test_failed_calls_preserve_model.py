@@ -25,6 +25,11 @@ from non_local_detector.likelihoods import (
 )
 from non_local_detector.tests.models._helpers import _assert_unchanged, _snapshot
 
+# These tests cap max_iter for speed, so EM stops before convergence.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:EM did not converge after max_iter:UserWarning"
+)
+
 FAMILIES = ["sorted", "clusterless"]
 N_DECODE = 300
 
@@ -204,6 +209,11 @@ def test_fit_failing_after_rebuilding_state_restores_detector(
 
 
 @pytest.mark.unit
+# Training on the first half leaves the clusterless sim's other encoding group
+# without exposure; the refit warns about it and carries on.
+@pytest.mark.filterwarnings(
+    "ignore:Encoding group \\d+ in environment '' has no training samples:UserWarning"
+)
 def test_successful_calls_store_and_replace_outputs(family_data, fitted):
     """After a failed call, successful calls still produce their outputs: an
     encoding refit replaces the model and drops the stale stored likelihood,

@@ -103,13 +103,17 @@ def test_glm_group_without_training_coverage_returns_eps_model():
         infer_track_interior=False,
     )
 
-    detector.fit(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        is_training=is_training,
-        encoding_group_labels=encoding_groups,
-    )
+    with (
+        pytest.warns(UserWarning, match="has no training samples with positive"),
+        pytest.warns(UserWarning, match="Sorted-spikes GLM encoding has zero training"),
+    ):
+        detector.fit(
+            position_time=time,
+            position=position,
+            spike_times=spike_times,
+            is_training=is_training,
+            encoding_group_labels=encoding_groups,
+        )
 
     encoding_model = detector.encoding_model_[("", 1)]
     assert np.all(np.isfinite(encoding_model["coefficients"]))

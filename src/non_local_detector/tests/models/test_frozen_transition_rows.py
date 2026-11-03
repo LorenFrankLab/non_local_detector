@@ -38,6 +38,11 @@ from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_
 # Four states with the No-Spike state second, as in the non-local detector.
 NO_SPIKE_1 = np.array([False, True, False, False])
 
+# These tests cap max_iter for speed, so EM stops before convergence.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:EM did not converge after max_iter:UserWarning"
+)
+
 ALL_MODEL_CLASSES = [
     SortedSpikesDecoder,
     ClusterlessDecoder,

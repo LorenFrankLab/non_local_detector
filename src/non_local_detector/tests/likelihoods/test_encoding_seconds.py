@@ -3,6 +3,21 @@
 import numpy as np
 import pytest
 
+pytestmark = [
+    # Tiny synthetic fixtures: a small position_std and zero-rate electrodes are
+    # properties of the fixture, not under test here.
+    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
+    # k-means seeding finds fewer distinct points than components on the tiny fixtures.
+    pytest.mark.filterwarnings(
+        "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
+    ),
+]
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
@@ -128,6 +143,8 @@ def test_acquisition_bounds_do_not_authorize_interpolation_across_a_gap():
         )
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 @pytest.mark.integration
 @pytest.mark.parametrize("sampling_frequency", [30, 500])
 def test_all_fitted_rates_are_hz_and_empty_bins_use_seconds(sampling_frequency):
@@ -217,6 +234,8 @@ def test_all_fitted_rates_are_hz_and_empty_bins_use_seconds(sampling_frequency):
             )
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 @pytest.mark.integration
 @pytest.mark.parametrize("case", ["clipped", "missing", "disconnected"])
 def test_all_backends_fit_the_same_declared_support(case):

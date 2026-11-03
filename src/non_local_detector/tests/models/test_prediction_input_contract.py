@@ -27,6 +27,12 @@ from non_local_detector.tests.models._helpers import (
     _snapshot,
 )
 
+# The population fixtures fit diffusion with the default position_std; the
+# smoothing width is not what these tests check.
+pytestmark = pytest.mark.filterwarnings(
+    r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
+)
+
 
 def _fit_population(algorithm, *, local=False):
     """Fit a decoder, or with ``local`` a detector with a Local state.

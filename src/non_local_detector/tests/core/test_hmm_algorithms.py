@@ -545,6 +545,11 @@ class TestFilterDegenerateTimestepWarning:
 
 
 @pytest.mark.unit
+# These tests pass ``dtype=jnp.float64`` explicitly while JAX x64 is off, so JAX
+# truncates to float32 and warns; the truncation is incidental to what they check.
+@pytest.mark.filterwarnings(
+    "ignore:Explicitly requested dtype float64 requested in asarray is not available:UserWarning"
+)
 class TestChunkedFilterDegenerateWarning:
     """Degenerate-step tally across chunks in ``chunked_filter_smoother``."""
 

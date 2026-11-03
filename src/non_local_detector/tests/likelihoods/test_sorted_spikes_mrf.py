@@ -404,6 +404,8 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d):
     )
 
 
+# max_iter=1 is the solver control under test.
+@pytest.mark.filterwarnings("ignore:MRF penalized-Poisson:UserWarning")
 def test_fixed_penalty_solver_controls_are_reported(env_2d):
     """Caller-supplied solver controls are honored and reported in the encoding."""
     env = env_2d
@@ -686,6 +688,8 @@ def test_penalty_zero_is_respected_not_overridden(env_2d):
     assert not np.allclose(fit(0.0), fit(1.0))
 
 
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 def test_weighted_fit_mean_rates_match_kde(env_2d):
     """Non-uniform (posterior-like) weights: MRF mean_rates match KDE's, confirming
     the weighted occupancy/spike pixellation feeding the exposure offset is correct."""
@@ -764,6 +768,10 @@ def test_weighted_place_fields_match_subset_fit(env_2d):
         assert rel < 0.01
 
 
+# zero weights give zero exposure by design.
+@pytest.mark.filterwarnings(
+    "ignore:Sorted-spikes MRF encoding has zero training exposure:UserWarning"
+)
 def test_zero_effective_weight_returns_eps_place_fields(env_2d):
     """All-zero weights (or an encoding group / environment with zero posterior mass)
     give zero occupancy, so the Poisson exposure is zero and the rate is unidentified.
@@ -815,6 +823,8 @@ def _fit_two_rooms_with_right_room_weights(right_room_weights):
 
 
 @pytest.mark.unit
+# default rank cap is incidental here.
+@pytest.mark.filterwarnings("ignore:MRF basis auto-capped:UserWarning")
 def test_unoccupied_component_returns_eps_place_fields_and_warns():
     """A disconnected component with zero exposure has an unidentified rate.
 
@@ -847,6 +857,8 @@ def test_unoccupied_component_returns_eps_place_fields_and_warns():
 
 
 @pytest.mark.unit
+# default rank cap is incidental here.
+@pytest.mark.filterwarnings("ignore:MRF basis auto-capped:UserWarning")
 def test_spike_counts_in_unoccupied_component_are_ignored(monkeypatch):
     """Spike counts binned in a zero-exposure component carry no rate information.
 
@@ -884,6 +896,8 @@ def test_spike_counts_in_unoccupied_component_are_ignored(monkeypatch):
     )
 
 
+# default rank cap is incidental here.
+@pytest.mark.filterwarnings("ignore:MRF basis auto-capped:UserWarning")
 @pytest.mark.unit
 def test_component_with_any_exposure_is_fit_not_floored():
     """'Unoccupied' means exactly zero exposure: one exposed right-room sample with
@@ -917,6 +931,8 @@ def test_uniform_rate_is_recovered_under_sparse_tracking():
     assert np.max(np.abs(place_field / 10.0 - 1.0)) < 0.1
 
 
+# default rank cap is incidental here.
+@pytest.mark.filterwarnings("ignore:MRF basis auto-capped:UserWarning")
 def test_default_rank_covers_disconnected_components(monkeypatch):
     """The default rank cap must never drop a disconnected component's null mode:
     cached_eigenbasis requires rank >= n_components. A highly fragmented environment can
