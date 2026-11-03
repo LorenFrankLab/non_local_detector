@@ -2127,8 +2127,8 @@ def chunked_filter_smoother(
     Raises
     ------
     ValidationError
-        If ``dtype`` is not float32, or float64 with JAX's 64-bit mode on; an
-        input's shape does not match ``n_time = len(time)`` and
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
@@ -2278,8 +2278,8 @@ def most_likely_sequence(
     Raises
     ------
     ValidationError
-        If ``dtype`` is not float32, or float64 with JAX's 64-bit mode on; an
-        input's shape does not match ``n_time = len(time)`` and
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
@@ -2595,8 +2595,8 @@ def chunked_filter_smoother_covariate_dependent(
     Raises
     ------
     ValidationError
-        If ``dtype`` is not float32, or float64 with JAX's 64-bit mode on; an
-        input's shape does not match ``n_time = len(time)`` and
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
@@ -2789,8 +2789,8 @@ def most_likely_sequence_covariate_dependent(
     Raises
     ------
     ValidationError
-        If ``dtype`` is not float32, or float64 with JAX's 64-bit mode on; an
-        input's shape does not match ``n_time = len(time)`` and
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
