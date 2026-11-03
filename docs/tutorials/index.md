@@ -8,6 +8,10 @@ Each page links to its source, a [jupytext](https://jupytext.readthedocs.io)
 percent-format Python script. Run it as a script, or open it as a notebook
 with `jupytext --to notebook <file>.py`.
 
+- [Decoding a session with sorted spikes](02_decoding_sorted_spikes.py): fit
+  a `SortedSpikesDecoder` on the running periods, decode a whole session,
+  measure the decoding error and save the results, on a linear track, a
+  circular track and in a 2-D open field.
 - [Detecting non-local events across a session](05_detecting_non_local_events.py):
   fit on running, decode a whole session, extract replay events and describe
   each one.
