@@ -28,6 +28,7 @@ from numpy.typing import ArrayLike, DTypeLike, NDArray
 
 from non_local_detector.core import (
     TransitionOperator,
+    TransitionProducts,
     _check_shape,
     _CovariateTransition,
     _degenerate_and_nan_masks_device,
@@ -390,7 +391,7 @@ def checkpointed_forward_backward(
     log_likelihood_func: Callable[..., Any],
     *,
     transition_matrix: ArrayLike | None = None,
-    transition_operator: TransitionOperator | None = None,
+    transition_operator: TransitionProducts | None = None,
     discrete_transition_matrix: ArrayLike | None = None,
     continuous_transition_matrix: ArrayLike | None = None,
     state_ind: ArrayLike | None = None,
@@ -418,8 +419,10 @@ def checkpointed_forward_backward(
     discarded, so compiled likelihood kernels see one row count.
     This driver applies neutral likelihoods to missing rows and checks replay
     determinism. ``transition_operator`` is a registered JAX pytree implementing
-    :class:`~non_local_detector.core.TransitionOperator`; ``weight`` is None or
-    the global discrete row.
+    :class:`~non_local_detector.core.TransitionProducts` (``forward`` and
+    ``backward``), or :class:`~non_local_detector.core.TransitionOperator` when
+    transition statistics are requested; ``weight`` is None or the global
+    discrete row.
     Alternatively supply a dense stationary matrix, or continuous/discrete
     factors and ``state_ind`` for the covariate path.
 
@@ -476,11 +479,15 @@ def checkpointed_forward_backward(
         Dense stationary transition matrix, nonnegative with each row summing
         to at most 1. Used when neither ``transition_operator`` nor
         ``discrete_transition_matrix`` is given.
-    transition_operator : TransitionOperator, optional
-        Registered JAX pytree implementing
-        :class:`~non_local_detector.core.TransitionOperator`, used instead of
-        a dense matrix. Its products are not checked against the probability
-        contract below; ``discrete_transition_matrix`` still is.
+    transition_operator : TransitionProducts, optional
+        Registered JAX pytree used instead of a dense matrix. Filtering and
+        smoothing need only :class:`~non_local_detector.core.TransitionProducts`
+        (``forward`` and ``backward``); ``transition_statistics`` needs a
+        :class:`~non_local_detector.core.TransitionOperator`, which adds
+        ``pair_products`` and ``backward_and_pairs`` (inherited only by
+        subclassing ``TransitionOperator``). Its products are not checked
+        against the probability contract below; ``discrete_transition_matrix``
+        still is.
     discrete_transition_matrix : array_like, shape (n_time, n_states, n_states), optional
         Per-row discrete state transition weights for the covariate path,
         combined with ``continuous_transition_matrix``: nonnegative, each row
@@ -554,7 +561,8 @@ def checkpointed_forward_backward(
         changes between passes.
     TypeError
         If ``transition_operator`` is not a registered JAX pytree implementing
-        :class:`~non_local_detector.core.TransitionOperator`.
+        :class:`~non_local_detector.core.TransitionProducts`, or, with
+        ``transition_statistics``, :class:`~non_local_detector.core.TransitionOperator`.
     """
     if (
         isinstance(chunk_size, bool)
@@ -722,23 +730,27 @@ def checkpointed_forward_backward(
                 f"{type(transition_operator).__name__}."
             )
             raise TypeError(msg)
-        if not isinstance(transition_operator, TransitionOperator):
+        protocol, required = (
+            (TransitionProducts, ("forward", "backward"))
+            if transition_statistics is None
+            else (
+                TransitionOperator,
+                ("forward", "backward", "pair_products", "backward_and_pairs"),
+            )
+        )
+        if not isinstance(transition_operator, protocol):
             missing_methods = [  # type: ignore[unreachable]  # runtime check of caller input
                 name
-                for name in (
-                    "forward",
-                    "backward",
-                    "pair_products",
-                    "backward_and_pairs",
-                )
+                for name in required
                 if not callable(getattr(transition_operator, name, None))
             ]
             msg = (
-                "transition_operator must implement "
-                "non_local_detector.core.TransitionOperator; "
+                f"transition_operator must implement "
+                f"non_local_detector.core.{protocol.__name__}"
+                f"{'' if transition_statistics is None else ' for transition_statistics'}; "
                 f"{type(transition_operator).__name__} lacks "
-                f"{', '.join(missing_methods)}. Subclass TransitionOperator "
-                "to inherit backward_and_pairs."
+                f"{', '.join(missing_methods)}. Subclassing TransitionOperator "
+                "provides backward_and_pairs."
             )
             raise TypeError(msg)
         # Transfer array leaves once; each jitted chunk call would otherwise

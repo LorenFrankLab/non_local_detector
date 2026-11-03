@@ -9,6 +9,7 @@ from non_local_detector.checkpointed_inference import checkpointed_forward_backw
 from non_local_detector.continuous_state_transitions import Uniform
 from non_local_detector.core import (
     TransitionOperator,
+    TransitionProducts,
     _CovariateTransition,
     _StationaryTransition,
 )
@@ -45,7 +46,9 @@ OPERATORS = {
 
 @pytest.mark.parametrize("name", OPERATORS)
 def test_operators_satisfy_the_protocol(name):
-    assert isinstance(OPERATORS[name](), TransitionOperator)
+    operator = OPERATORS[name]()
+    assert isinstance(operator, TransitionOperator)
+    assert isinstance(operator, TransitionProducts)
 
 
 @pytest.mark.parametrize("name", ["stationary", "covariate", "block"])
@@ -89,15 +92,60 @@ class _ForwardBackwardOnly:
         return cls(*children)
 
 
-def test_checkpointed_rejects_a_nonconforming_operator_before_any_callback():
+def _checkpointed(operator, likelihood, **kwargs):
+    return checkpointed_forward_backward(
+        np.arange(5) * 0.002,
+        np.full(N_BINS, 1 / N_BINS, dtype=np.float32),
+        likelihood,
+        transition_operator=operator,
+        state_ind=STATE_IND,
+        **kwargs,
+    )
+
+
+def test_checkpointed_prediction_needs_only_the_transition_products():
+    """A forward/backward-only operator decodes like the dense matrix."""
+    matrix = _matrix()
+    log_likelihoods = np.random.default_rng(5).normal(size=(4, N_BINS))
+
+    def likelihood(edges, **kw):
+        return log_likelihoods[kw["row_slice"]]
+
+    products = _checkpointed(_ForwardBackwardOnly(matrix), likelihood)
+    dense = checkpointed_forward_backward(
+        np.arange(5) * 0.002,
+        np.full(N_BINS, 1 / N_BINS, dtype=np.float32),
+        likelihood,
+        transition_matrix=np.asarray(matrix),
+        state_ind=STATE_IND,
+    )
+    np.testing.assert_allclose(
+        products.dataset.acausal_state_probabilities,
+        dense.dataset.acausal_state_probabilities,
+        rtol=1e-5,
+    )
+
+
+def test_checkpointed_statistics_reject_products_only_before_any_callback():
     calls = []
     with pytest.raises(TypeError, match="pair_products") as caught:
-        checkpointed_forward_backward(
-            np.arange(5) * 0.002,
-            np.full(N_BINS, 1 / N_BINS, dtype=np.float32),
+        _checkpointed(
+            _ForwardBackwardOnly(_matrix()),
             lambda edges, **kw: calls.append(1) or np.zeros((4, N_BINS)),
-            transition_operator=_ForwardBackwardOnly(_matrix()),
-            state_ind=STATE_IND,
+            transition_statistics="counts",
         )
-    assert "TransitionOperator" in str(caught.value)
+    message = str(caught.value)
+    assert "TransitionOperator for transition_statistics" in message
+    assert "backward_and_pairs" in message
     assert calls == []
+
+
+def test_checkpointed_rejects_an_operator_without_products():
+    @jax.tree_util.register_pytree_node_class
+    class ForwardOnly(_ForwardBackwardOnly):
+        backward = None
+
+    with pytest.raises(
+        TypeError, match="TransitionProducts; ForwardOnly lacks backward"
+    ):
+        _checkpointed(ForwardOnly(_matrix()), lambda edges, **kw: None)

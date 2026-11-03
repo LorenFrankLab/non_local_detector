@@ -479,27 +479,22 @@ _HMM_SCAN_UNROLL = 8
 
 ## Transition operators and the shared passes ##
 # Every HMM pass (filter, smoother, Viterbi) has one scan body below. The
-# transition model enters only through a ``TransitionOperator``. Viterbi uses
-# the dense operators' ``log()`` twin, whose ``scores`` gives the max-plus
-# terms.
+# transition model enters only through an operator: the filter and smoother
+# need ``TransitionProducts``, and the smoother's transition statistics need a
+# full ``TransitionOperator``. Viterbi uses the dense operators' ``log()``
+# twin, whose ``scores`` gives the max-plus terms.
 
 
 @runtime_checkable
-class TransitionOperator(Protocol):
+class TransitionProducts(Protocol):
     """Products with a joint transition ``T`` between state bins.
 
-    The filter and smoother see the transition model only through these
-    products, so a structured operator never has to build ``T``. An operator
-    is a registered JAX pytree whose methods are pure JAX. ``weight`` is None
-    for a stationary operator or the row's (n_states, n_states) discrete
-    transition matrix.
-
-    Implementers are the dense ``_StationaryTransition`` and
-    ``_CovariateTransition`` here and the structured
-    ``BlockTransitionOperator`` and ``FusedBlockTransition`` in
-    ``transition_operators``. Subclass this protocol to inherit the unfused
-    ``backward_and_pairs``; an operator that shares work between the two
-    products overrides it.
+    The minimum interface of an operator for filtering and smoothing: the
+    passes see the transition model only through these products, so a
+    structured operator never has to build ``T``. An operator is a registered
+    JAX pytree whose methods are pure JAX. ``weight`` is None for a stationary
+    operator or the row's (n_states, n_states) discrete transition matrix.
+    Expected discrete transition counts need a :class:`TransitionOperator`.
     """
 
     def forward(
@@ -511,6 +506,24 @@ class TransitionOperator(Protocol):
     def backward(self, values: jax.Array, weight: jax.Array | None, /) -> jax.Array:
         """``T @ values``, shape (n_state_bins,)."""
         ...
+
+
+@runtime_checkable
+class TransitionOperator(TransitionProducts, Protocol):
+    """Transition products plus the per-state-pair terms of EM's statistics.
+
+    The interface an operator needs when the smoother also returns expected
+    discrete transition counts. An implementer must define ``forward``,
+    ``backward`` and ``pair_products``. ``backward_and_pairs`` is inherited,
+    unfused, only by a class that subclasses this protocol; a class that
+    satisfies it structurally, without subclassing, must define it too. An
+    operator that shares work between the two products overrides it.
+
+    Implementers are the dense ``_StationaryTransition`` and
+    ``_CovariateTransition`` here and the structured
+    ``BlockTransitionOperator`` and ``FusedBlockTransition`` in
+    ``transition_operators``.
+    """
 
     def pair_products(
         self, filtered: jax.Array, ratio: jax.Array, weight: jax.Array | None, /
@@ -869,7 +882,7 @@ def _filter_scan(
     evidence: ArrayLike | float,
     log_likelihoods: ArrayLike,
     weights: ArrayLike | None,
-    operator: TransitionOperator,
+    operator: TransitionProducts,
     *,
     keep_rows: bool,
     keep_predictive: bool,
@@ -887,7 +900,7 @@ def _filter_scan(
     weights : array, shape (n_rows, n_states, n_states), or None
         Per-row discrete transitions handed to ``operator`` (None for a
         stationary operator).
-    operator : TransitionOperator
+    operator : TransitionProducts
     keep_rows, keep_predictive, keep_increments : bool
         Which per-row outputs to emit (static under jit).
 
@@ -928,7 +941,7 @@ def _filter_scan(
 def _smoother_scan(
     filtered: ArrayLike,
     weights: ArrayLike | None,
-    operator: TransitionOperator,
+    operator: TransitionProducts,
     next_smoothed: ArrayLike,
     rows: ArrayLike,
     n_time: int,
@@ -941,7 +954,8 @@ def _smoother_scan(
     ----------
     filtered : array, shape (n_rows, n_state_bins)
     weights : array, shape (n_rows, n_states, n_states), or None
-    operator : TransitionOperator
+    operator : TransitionProducts
+        A :class:`TransitionOperator` when ``pair_statistics`` is set.
     next_smoothed : array, shape (n_state_bins,)
         Smoothed row after the last row (any row of the right shape for the
         recording's final row, which is its own smoothed row).
@@ -963,12 +977,22 @@ def _smoother_scan(
         (n_rows, n_states, n_states).
     """
 
+    paired: TransitionOperator | None = None
+    if pair_statistics:
+        if not isinstance(operator, TransitionOperator):
+            msg = (
+                "Transition statistics need a TransitionOperator; "
+                f"{type(operator).__name__} has only the transition products"
+            )
+            raise TypeError(msg)
+        paired = operator
+
     def step(following: jax.Array, args: tuple[Any, Any, Any]) -> Any:
         current, weight, row = args
         predicted = operator.forward(current, weight)
         ratio = _divide_safe(following, predicted)
-        if pair_statistics:
-            backward, pairs = operator.backward_and_pairs(ratio, current, weight)
+        if paired is not None:
+            backward, pairs = paired.backward_and_pairs(ratio, current, weight)
         else:
             backward = operator.backward(ratio, weight)
         smoothed = current * backward * (row < n_time - 1) + current * (

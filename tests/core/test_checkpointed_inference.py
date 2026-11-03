@@ -861,17 +861,14 @@ def test_production_grid_uniform_marginals_preserve_pairwise_normalization(tmp_p
     initial = np.full(len(state_ind), 1 / len(state_ind), dtype=np.float32)
 
     @jax.tree_util.register_pytree_node_class
-    class Identity(TransitionOperator):
+    class Identity:
+        """Prediction-only operator: just the transition products."""
+
         def forward(self, values, discrete_weights=None):
             return values
 
         def backward(self, values, discrete_weights=None):
             return values
-
-        def pair_products(self, filtered, ratio, discrete_weights=None):
-            return jnp.diag(
-                jax.ops.segment_sum(filtered * ratio, state_ind, num_segments=4)
-            )
 
         def tree_flatten(self):
             return (), None
