@@ -36,7 +36,7 @@ def _make_cont_frag_results(
 
     Unlike the paired-column ``make_state_bins_results`` factory, this takes a
     per-axis ``position_grid`` and forms the full Cartesian product (one bin per
-    grid cell), matching the layout ``_convert_results_to_xarray`` produces.
+    grid cell), matching the layout ``convert_results_to_xarray`` produces.
 
     Parameters
     ----------

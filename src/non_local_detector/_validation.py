@@ -681,3 +681,44 @@ def ensure_graph_edges_have_attribute(
             hint=f"Ensure all '{attribute}' values are {sample_value_type.__name__}",
             example=f"    {name}.edges[{sample_edge}]['{attribute}'] = {sample_value_type.__name__}(...)",
         )
+
+
+def validate_weights(weights: ArrayLike, n_time: int) -> np.ndarray:
+    """Validate per-sample weights shared by the sorted-spikes and clusterless fits.
+
+    Weights feed both the occupancy field and the spike counts, so an invalid
+    array corrupts the whole encoding silently; validate once at the fit entry.
+
+    Parameters
+    ----------
+    weights : np.ndarray, shape (n_time,)
+        Per-sample weights (e.g. posterior state probabilities during EM).
+    n_time : int
+        Expected number of samples (``position.shape[0]``).
+
+    Returns
+    -------
+    weights : np.ndarray, shape (n_time,)
+        The weights as a float array.
+
+    Raises
+    ------
+    ValidationError
+        If ``weights`` is not 1-D of length ``n_time``, or contains non-finite or
+        negative values.
+    """
+    weights = np.asarray(weights, dtype=float)
+
+    if weights.shape != (n_time,):
+        msg = f"weights must have shape ({n_time},), got {weights.shape}"
+        raise ValidationError(msg)
+
+    if not np.all(np.isfinite(weights)):
+        msg = "weights must contain only finite values"
+        raise ValidationError(msg)
+
+    if np.any(weights < 0):
+        msg = "weights must be non-negative"
+        raise ValidationError(msg)
+
+    return weights

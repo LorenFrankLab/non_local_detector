@@ -81,10 +81,6 @@ def test_binned_fit_is_as_close_to_the_truth_as_the_per_sample_fit():
         position,
         spike_times,
         env,
-        env.place_bin_edges_,
-        env.edges_,
-        env.is_track_interior_,
-        env.is_track_boundary_,
         disable_progress_bar=True,
     )
     interior = env.is_track_interior_.ravel()
@@ -167,10 +163,6 @@ def test_2d_basis_drops_columns_without_support_on_the_environment(monkeypatch):
         position,
         spike_times,
         env,
-        env.place_bin_edges_,
-        env.edges_,
-        env.is_track_interior_,
-        env.is_track_boundary_,
     )
     enc = fit_sorted_spikes_glm_encoding_model(*args, disable_progress_bar=True)
     monkeypatch.setattr(sorted_spikes_glm, "_GLM_COLUMN_SUPPORT_TOL", -1.0)
@@ -212,10 +204,6 @@ def _open_field_fit(bin_size, box, field_center, field_std, n_time):
         position,
         spikes,
         env,
-        env.place_bin_edges_,
-        env.edges_,
-        env.is_track_interior_,
-        env.is_track_boundary_,
     )
     return args, position, distance
 
@@ -276,10 +264,6 @@ def test_fit_cells_are_narrower_than_the_actual_knot_intervals():
         position,
         spikes,
         env,
-        env.place_bin_edges_,
-        env.edges_,
-        env.is_track_interior_,
-        env.is_track_boundary_,
         disable_progress_bar=True,
     )
     interior = env.is_track_interior_.ravel()

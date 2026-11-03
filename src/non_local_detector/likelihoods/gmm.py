@@ -839,7 +839,7 @@ class GaussianMixtureModel:
     """
     Gaussian Mixture Model (GMM) with EM in JAX.
 
-    Attributes
+    Parameters
     ----------
     n_components : int
         Number of mixture components (K).
@@ -871,6 +871,9 @@ class GaussianMixtureModel:
         User-provided initial means.
     covariances_init : Array | None, shape depends on covariance_type, default=None
         User-provided initial covariances.
+
+    Attributes
+    ----------
     weights_ : Array, shape (n_components,)
         Learned mixture weights.
     means_ : Array, shape (n_components, n_features)

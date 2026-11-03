@@ -68,7 +68,8 @@ Only after user approval can snapshots be updated.
 
 `non_local_detector` is a Python package for decoding non-local neural activity from electrophysiological data. It uses Bayesian inference with Hidden Markov Models (HMMs) and various likelihood models to detect spatial replay events and decode position from neural spike data.
 
-Likelihood algorithms are registered in the `_SORTED_SPIKES_ALGORITHMS` and
+Likelihood algorithms are registered as `LikelihoodAlgorithm` records (fit, predict,
+default params, mark reference scale) in the `_SORTED_SPIKES_ALGORITHMS` and
 `_CLUSTERLESS_ALGORITHMS` dictionaries — a new algorithm must be added there to be reachable.
 
 ## Numerical Accuracy Standards

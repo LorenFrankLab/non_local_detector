@@ -128,5 +128,14 @@ the details.
   [xarray](https://docs.xarray.dev) `Dataset` with
   `acausal_posterior` (`(n_time, n_state_bins)`: the probability of each state
   and position given all the spikes) and `acausal_state_probabilities`
-  (`(n_time, n_states)`). Ask for more with `return_outputs`, e.g.
-  `"filter"` for the causal (past-only) estimates or `"log_likelihood"`.
+  (`(n_time, n_states)`; `(n_time,)` for single-state models such as
+  decoders). Ask for more with `return_outputs`, e.g. `"filter"` for the
+  causal (past-only) estimates or `"log_likelihood"`. Every dimension,
+  coordinate, variable and attribute of the result is listed in
+  [Result layout](../result_layout.md).
+
+States without a position (Local and No-Spike) have no position bins, so
+unstacking `acausal_posterior` yourself misplaces their probability. For
+models that have them, use
+[`get_spatial_posterior`](../api/non_local_detector/analysis/posterior.md) to get
+per-position probabilities.

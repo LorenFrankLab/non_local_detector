@@ -6,6 +6,7 @@ import pytest
 
 from non_local_detector import SortedSpikesDecoder, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import ALGORITHMS, _decoder
 
 mpl.use("Agg")
 import matplotlib.pyplot as plt
@@ -23,13 +24,29 @@ def fitted_decoder_and_data():
     return decoder, time, position, spike_times
 
 
-def test_decoder_predict_progress_bar_is_not_labeled_non_local(
-    fitted_decoder_and_data, capfd
-):
-    decoder, time, position, spike_times = fitted_decoder_and_data
+# Diffusion fits with the default position_std on these 5-unit bins; the
+# smoothing width is not what this test checks.
+@pytest.mark.filterwarnings(
+    r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
+)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_decoder_predict_progress_bar_is_not_labeled_non_local(algorithm, capfd):
+    """A decoder's spatial likelihood is labeled by position bin, never Non-Local."""
+    family = "sorted_spikes" if algorithm.startswith("sorted") else "clusterless"
+    decoder = _decoder(algorithm)
+    params = decoder.get_params()[f"{family}_algorithm_params"]
+    decoder.set_params(
+        **{f"{family}_algorithm_params": {**params, "disable_progress_bar": False}}
+    )
+    time = np.arange(100) * 0.002
+    position = (50 + 8 * np.sin(time * 40))[:, None]
+    data = [[np.array([0.021, 0.067, 0.121, 0.167])]]
+    if family == "clusterless":
+        data.append([np.array([[0.1], [-0.1], [0.2], [-0.2]])])
+    decoder.fit(time, position, *data)
     capfd.readouterr()
     decoder.predict(
-        spike_times,
+        *data,
         time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,

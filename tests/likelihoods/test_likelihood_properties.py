@@ -114,10 +114,6 @@ def _fit_sorted_glm(env, t, pos, spike_times):
         position=jnp.asarray(pos),
         spike_times=spike_times,
         environment=env,
-        place_bin_edges=env.place_bin_edges_,
-        edges=env.edges_,
-        is_track_interior=env.is_track_interior_,
-        is_track_boundary=env.is_track_boundary_,
         disable_progress_bar=True,
     )
 

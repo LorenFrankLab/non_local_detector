@@ -37,7 +37,6 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     common,
 )
 from non_local_detector.likelihoods.common import (
@@ -532,7 +531,9 @@ def fit_backend_mark_reference(name, data):
         data["position_time"],
         data["encoding_spike_times"],
         data["encoding_features"],
-        _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**BACKEND_FIT_PARAMS.get(name, {})),
+        _CLUSTERLESS_ALGORITHMS[name].mark_reference_scale(
+            **BACKEND_FIT_PARAMS.get(name, {})
+        ),
         position=data["position"],
     )
 
@@ -1017,11 +1018,11 @@ def allocation_backends(allocation_data):
     """Fit the clusterless backends whose per-chunk allocation this pins."""
     fitted = {}
     for name in sorted(_CLUSTERLESS_ALGORITHMS):
-        fit_func, predict_func = _CLUSTERLESS_ALGORITHMS[name]
+        record = _CLUSTERLESS_ALGORITHMS[name]
         fitted[name] = (
-            predict_func,
+            record.predict,
             {
-                **fit_func(
+                **record.fit(
                     position_time=allocation_data["position_time"],
                     position=allocation_data["position"],
                     spike_times=allocation_data["encoding_spike_times"],

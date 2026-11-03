@@ -100,8 +100,21 @@ def _cells_by_tetrode(place_field_means: np.ndarray, n_tetrodes: int) -> np.ndar
     np.ndarray, shape (n_tetrodes, n_cells_per_tetrode)
         Place-field centers grouped by tetrode. The cell at
         ``[tetrode, cell]`` has mark center ``cell * mark_spacing``.
+
+    Raises
+    ------
+    ValueError
+        If the number of cells is not a multiple of ``n_tetrodes``.
     """
-    return np.asarray(place_field_means).reshape((n_tetrodes, -1))
+    place_field_means = np.asarray(place_field_means)
+    if place_field_means.size % n_tetrodes != 0:
+        msg = (
+            f"{place_field_means.size} cells cannot be split evenly among "
+            f"{n_tetrodes} tetrodes; pass a number of place_field_means that "
+            "is a multiple of n_tetrodes."
+        )
+        raise ValueError(msg)
+    return place_field_means.reshape((n_tetrodes, -1))
 
 
 def _mark_centers(n_cells_per_tetrode: int, mark_spacing: float) -> np.ndarray:

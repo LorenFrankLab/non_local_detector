@@ -15,6 +15,22 @@ pytestmark = [
 N_TIME, N_STATES = 50, 4
 
 
+@pytest.fixture(autouse=True)
+def fresh_kernels():
+    """Forget each kernel's compiled programs so this test lowers it again.
+
+    JAX warns about an unusable donation only when it lowers a program, so a
+    kernel another test already ran with these shapes would pass vacuously.
+    """
+    for kernel in (
+        core._filter_internal,
+        core._smoother_internal,
+        core._filter_covariate_dependent_internal,
+        core._smoother_covariate_dependent_internal,
+    ):
+        kernel.clear_cache()
+
+
 @pytest.fixture
 def inputs():
     rng = np.random.default_rng(0)
