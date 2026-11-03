@@ -180,7 +180,7 @@ for cell in range(n_cells):
         np.sort(bin_start[bins_with_spikes] + rng.uniform(0, dt, bins_with_spikes.size))
     )
 
-# Waveform features: 4 tetrodes channels, mean amplitude 40-300 uV per cell,
+# Waveform features: 4 channels per tetrode, mean amplitude 40-300 uV per cell,
 # with 10 uV of noise on each spike.
 n_tetrodes = 10
 cell_tetrode = np.arange(n_cells) // (n_cells // n_tetrodes)
