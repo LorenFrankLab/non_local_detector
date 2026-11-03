@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from non_local_detector.models import base
+from non_local_detector.models import _results
 
 pytestmark = pytest.mark.unit
 
@@ -17,8 +17,8 @@ def test_masked_posterior_fills_exterior_bins_with_nan(n_time, dtype, monkeypatc
     is_track_interior = rng.random(23) < 0.6
     data = rng.random((n_time, is_track_interior.sum())).astype(dtype)
     # Seven rows per block, so 37 rows span six blocks and a partial one.
-    monkeypatch.setattr(base, "_MASKED_POSTERIOR_BLOCK_BYTES", 7 * 23 * 4)
-    result = base._DetectorBase._create_masked_posterior(
+    monkeypatch.setattr(_results, "_MASKED_POSTERIOR_BLOCK_BYTES", 7 * 23 * 4)
+    result = _results.create_masked_posterior(
         data, is_track_interior, len(is_track_interior)
     )
     expected = np.full((n_time, 23), np.nan, dtype=np.float32)
