@@ -216,10 +216,10 @@ diagnostics cover the entire recording even if only a few rows are returned.
 
 ## CPU and CUDA qualification
 
-Both paths use JAX and the same statistical model. Structured transition products,
-sorted count accumulation, linear marked-intensity products and dense
-state-probability aggregation request the highest multiplication precision so
-CUDA does not silently use TF32 for these products. Native likelihood and
+Both paths use JAX and the same statistical model. Transition products (dense,
+covariate and structured), sorted count accumulation, linear marked-intensity
+products and dense state-probability aggregation request the highest
+multiplication precision so CUDA does not silently use TF32 for these products. Native likelihood and
 posterior arrays remain float32; checkpointed evidence totals use host float64.
 Actual float64 posterior qualification belongs to the pure numerical core with
 x64 enabled.
