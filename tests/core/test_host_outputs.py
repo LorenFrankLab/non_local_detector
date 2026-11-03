@@ -82,8 +82,8 @@ def test_device_posteriors_equal_host_posteriors(model, covariate, n_chunks):
 
 @pytest.mark.parametrize("covariate", [False, True])
 def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
-    """Positional unpacking keeps working: the historical fields come first, in
-    the old tuple order, followed by the degenerate time indices."""
+    """The historical fields come first, in the old tuple order, followed by
+    the degenerate time indices, so unpacking takes nine names."""
     result = _decode(model, covariate, n_chunks=2, host_outputs=True)
     assert isinstance(result, FilterSmootherResult)
     assert FilterSmootherResult._fields == (
