@@ -354,7 +354,7 @@ class TestValidateDiscreteTransitionType:
         decoder = _two_state_decoder(
             two_state_environment, discrete_transition_type=Sticky()
         )
-        decoder.initialize_discrete_state_transition()
+        decoder._initialize_discrete_state_transition()
         np.testing.assert_array_equal(
             decoder.discrete_state_transitions_, [[0.95, 0.05], [0.05, 0.95]]
         )
@@ -378,7 +378,7 @@ class TestValidateDiscreteTransitionType:
             two_state_environment, discrete_transition_type=Mislabeled()
         )
         with pytest.raises(ValidationError, match="is_stationary"):
-            decoder.initialize_discrete_state_transition()
+            decoder._initialize_discrete_state_transition()
 
 
 @pytest.mark.unit
