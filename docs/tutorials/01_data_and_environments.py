@@ -313,8 +313,10 @@ plt.show()
 # probability for each bin, so the bin size sets the spatial resolution and,
 # along with the number of time bins, the memory and time decoding takes.
 # You pass an `Environment` to a model, and the model's `fit` builds the grid
-# from the positions it is given by calling `fit_place_grid`; here we call
-# `fit_place_grid` ourselves to look at the result.
+# from the positions it is given by calling `fit_place_grid` on its own copy
+# of the environment: the fitted copies are in `model.environments`, and the
+# environment you passed stays unfitted, so several models can share one. Here
+# we call `fit_place_grid` ourselves to look at the result.
 #
 # ### A 1-D open field
 #
