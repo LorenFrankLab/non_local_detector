@@ -1,3 +1,9 @@
+"""Position decoders with a single continuous state.
+
+Decoders of position from sorted spikes or clusterless data under a random-walk
+movement model.
+"""
+
 from typing import Any
 
 import numpy as np
