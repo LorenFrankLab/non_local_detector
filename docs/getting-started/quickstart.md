@@ -80,6 +80,9 @@ non-local states. The last two contain no spikes at all: the simulation pauses
 the cells there, and the detector puts that time in the **No-Spike** state
 instead, since silence says nothing about which position is represented.
 
+The fifth event is zero-length (58.50-58.50 s): it falls within a single time
+bin, so its mean is over one bin.
+
 ## What happened
 
 1. **Environment.** The detector built a grid of 2 cm position bins over the

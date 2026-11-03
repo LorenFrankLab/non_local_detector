@@ -43,6 +43,7 @@ def test_posterior_panel_uses_non_local_states_whatever_their_names():
         time_slice=time_slice,
     )
     drawn = np.asarray(plt.gcf().axes[2].collections[0].get_array())
+    time_label = plt.gcf().axes[-1].get_xlabel()
     plt.close("all")
 
     expected = detector.get_conditional_non_local_posterior(
@@ -50,3 +51,5 @@ def test_posterior_panel_uses_non_local_states_whatever_their_names():
     ).values
     np.testing.assert_allclose(drawn.reshape(expected.T.shape), expected.T)
     assert np.isfinite(drawn).all()
+    # results.time is in seconds.
+    assert time_label == "Time [s]"

@@ -25,8 +25,7 @@ probability of each state and the posterior over position.
 ## Where to start
 
 - [Installation](getting-started/installation.md)
-- [Quickstart](getting-started/quickstart.md): detect simulated replay events
-  in about 20 lines.
+- [Quickstart](getting-started/quickstart.md): detect simulated replay events.
 - [Core concepts](getting-started/core-concepts.md): environments, states,
   likelihood models, transitions and time bins.
 - [API reference](api/non_local_detector/index.md)

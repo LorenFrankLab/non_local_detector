@@ -12,7 +12,10 @@ import pandas as pd
 import xarray as xr
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar  # type: ignore[import-untyped]  # mpl_toolkits ships no stubs
 
-from non_local_detector.analysis.posterior import get_spatial_posterior
+from non_local_detector.analysis.posterior import (
+    get_spatial_posterior,
+    maximum_a_posteriori_estimate,
+)
 from non_local_detector.visualization._parallel_video_writer import (
     VideoConfig,
     create_parallel_video,
@@ -91,14 +94,8 @@ def make_single_environment_movie(
     # Prepare data
     is_track_interior = classifier.environments[0].is_track_interior_
     posterior = _spatial_posterior_for_movie(results, time_slice, is_track_interior)
-    map_position_ind = posterior.argmax(["x_position", "y_position"])
-    map_position = np.stack(
-        (
-            posterior.x_position[map_position_ind["x_position"]].values,
-            posterior.y_position[map_position_ind["y_position"]].values,
-        ),
-        axis=1,
-    )
+    # NaN (no dot) for frames with no mass on a position bin.
+    map_position = maximum_a_posteriori_estimate(posterior)
 
     position = np.asarray(position_info.iloc[time_slice][position_name])
     direction = np.asarray(position_info.iloc[time_slice][direction_name])

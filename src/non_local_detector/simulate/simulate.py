@@ -77,7 +77,8 @@ def simulate_position_with_pauses(
     Returns
     -------
     position : np.ndarray, shape (n_time,)
-        Position trajectory including pauses at endpoints.
+        Position trajectory including a pause at the far end of the track
+        (``track_height``).
     """
     position = simulate_position(time, track_height, running_speed)
     # Samples within tolerance of the track end form one run per arrival; pause
