@@ -1368,9 +1368,12 @@ def _require_row_slice_aware(
 # normalized row in float32 shifts its sum by at most eps32 / 2 = 6e-8, and
 # normalizing it in float32 with pairwise (NumPy) or tree (XLA) sums by about
 # 2e-7 at any row length; a sequential float32 sum drifts like sqrt(n) * eps32,
-# 2.4e-5 measured over a 50,000-bin row. 1e-4 admits all of these, and a row
-# sum excess within it inflates the log evidence by at most 1e-4 nats per time
-# bin.
+# 2.4e-5 measured over a 50,000-bin row. 1e-4 admits all of these. The check
+# guards against gross errors, such as unnormalized inputs; it is not a
+# precision guarantee. A row excess within it inflates the log evidence by up
+# to about 1e-4 nats per time bin on the stationary path and 2e-4 on the
+# covariate path, where the discrete-row and continuous-block tolerances
+# compound.
 PROBABILITY_SUM_TOLERANCE = 1e-4
 
 _SUPPORTED_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
