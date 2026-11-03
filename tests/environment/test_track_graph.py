@@ -429,7 +429,7 @@ def test_environment_value_eq_does_not_raise_on_fitted_arrays():
 
 
 def test_find_environment_by_name():
-    """find_environment_by_name returns the matching env or raises KeyError."""
+    """find_environment_by_name returns the matching env or raises ValidationError."""
     env_a = Environment(environment_name="track1", place_bin_size=2.0)
     env_b = Environment(environment_name="track2", place_bin_size=2.0)
     envs = (env_a, env_b)
@@ -437,5 +437,7 @@ def test_find_environment_by_name():
     assert find_environment_by_name(envs, "track1") is env_a
     assert find_environment_by_name(envs, "track2") is env_b
 
-    with pytest.raises(KeyError, match="missing"):
+    with pytest.raises(
+        ValidationError, match=r"'missing'[\s\S]*\['track1', 'track2'\]"
+    ):
         find_environment_by_name(envs, "missing")

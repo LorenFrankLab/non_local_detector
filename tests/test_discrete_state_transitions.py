@@ -14,6 +14,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
+    InitialDiscreteTransition,
     centered_softmax_forward,
     centered_softmax_inverse,
     dirichlet_neg_log_likelihood,
@@ -350,6 +351,34 @@ class TestDiscreteStationaryCustom:
         assert_stochastic_matrix(trans_mat)
         assert coeffs is None
         assert design is None
+
+
+@pytest.mark.parametrize(
+    ("model", "covariate_data"),
+    [
+        (DiscreteStationaryDiagonal(diagonal_values=np.array([0.9, 0.8])), None),
+        (DiscreteStationaryCustom(values=np.array([[0.7, 0.3], [0.2, 0.8]])), None),
+        (
+            DiscreteNonStationaryDiagonal(
+                diagonal_values=np.array([0.9, 0.8]), formula="1 + speed"
+            ),
+            {"speed": np.linspace(0.0, 10.0, 5)},
+        ),
+    ],
+    ids=["stationary_diagonal", "stationary_custom", "nonstationary"],
+)
+def test_make_state_transition_returns_named_initial_transition(model, covariate_data):
+    """Stationary and covariate transitions return the same named result."""
+    initial = model.make_state_transition(covariate_data)
+    assert isinstance(initial, InitialDiscreteTransition)
+    if covariate_data is None:
+        assert initial.transition_matrix.shape == (2, 2)
+        assert initial.coefficients is None
+        assert initial.design_matrix is None
+    else:
+        assert initial.transition_matrix.shape == (5, 2, 2)
+        assert initial.coefficients.shape == (2, 2, 1)
+        assert initial.design_matrix.shape == (5, 2)
 
 
 class TestPredictDiscreteStateTransitions:

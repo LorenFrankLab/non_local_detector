@@ -14,9 +14,11 @@ from non_local_detector.continuous_state_transitions import (
     Identity,
     RandomWalk,
     RandomWalkDirection1,
+    TransitionContext,
     Uniform,
 )
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.models._defaults import _ModelDefaults
 from non_local_detector.models.base import _DetectorBase
@@ -151,7 +153,7 @@ def test_invalid_scalar_gaussian_shape_is_rejected_before_dense_allocation(monke
 @pytest.mark.unit
 def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
     class Custom:
-        def make_state_transition(self, environments):
+        def make_state_transition(self, environments, context=None):
             msg = "opaque constructor cannot reinterpret sparse distances"
             raise AssertionError(msg)
 
@@ -171,7 +173,7 @@ def test_slotted_custom_transition_preserves_explicit_eager_dense_fallback():
     class Custom:
         __slots__ = ()
 
-        def make_state_transition(self, environments):
+        def make_state_transition(self, environments, context=None):
             return np.eye(len(environments[0].place_bin_centers_))
 
     env = environment((3, 4))
@@ -186,7 +188,7 @@ def test_slotted_custom_never_receives_a_temporary_dense_environment():
     class Custom:
         __slots__ = ("environment",)
 
-        def make_state_transition(self, environments):
+        def make_state_transition(self, environments, context=None):
             self.environment = environments[0]
             msg = "opaque lazy fallback must reject before construction"
             raise AssertionError(msg)
@@ -281,9 +283,6 @@ def dense_reference(
         observation_models=observations,
         local_position_std=local_std,
     )
-    model._get_environment_by_name = lambda name: next(
-        env for env in envs if env.environment_name == name
-    )
     _DetectorBase.initialize_continuous_state_transition(model, transitions, **context)
     return model.continuous_state_transitions_, model.state_ind_
 
@@ -322,6 +321,67 @@ def test_scalar_to_spatial_transition_without_environment_is_rejected(
             (1, count),
             allow_dense_fallback=allow_dense_fallback,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "transitions",
+    [
+        [[Uniform("missing")]],
+        [[RandomWalk("missing")]],
+        [[Discrete(), Uniform("missing")], [Discrete(), Identity("track")]],
+    ],
+)
+def test_unknown_environment_name_lists_available_names(transitions):
+    """Dense and structured construction report a missing environment alike."""
+    env = environment(name="track")
+    n_bins = len(env.place_bin_centers_)
+    sizes = (n_bins,) if len(transitions) == 1 else (1, n_bins)
+    with pytest.raises(ValidationError, match=r"'missing'[\s\S]*\['track'\]"):
+        dense_reference(transitions, [env], sizes)
+    with pytest.raises(ValidationError, match=r"'missing'[\s\S]*\['track'\]"):
+        build_transition_operator(transitions, [env], sizes)
+
+
+@pytest.mark.unit
+def test_custom_transition_without_context_gets_a_migration_hint():
+    """A transition written before ``context`` existed fails with a hint."""
+
+    class OldStyle:
+        environment_name = ""
+
+        def make_state_transition(self, environments):
+            return np.eye(len(environments[0].place_bin_centers_))
+
+    env = environment((3, 4))
+    match = r"OldStyle\.make_state_transition[\s\S]*context=None"
+    with pytest.raises(ValidationError, match=match):
+        dense_reference([[OldStyle()]], [env], (12,))
+    with pytest.raises(ValidationError, match=match):
+        build_transition_operator(
+            [[OldStyle()]], [env], (12,), allow_dense_fallback=True
+        )
+
+
+@pytest.mark.unit
+def test_cross_environment_discrete_with_multibin_local_is_rejected():
+    """Dense and structured construction share the multi-bin Local rule."""
+    env1, env2 = environment((5,), "one"), environment((5,), "two")
+    observations = [
+        ObservationModel("one", is_local=True),
+        ObservationModel("two"),
+    ]
+    transitions = [[Discrete(), Discrete()], [Uniform("two", "one"), Identity("two")]]
+    match = (
+        r"^Cross-environment Discrete\(\) transition between 'one' and 'two' "
+        r"is not supported with multi-bin local \(local_position_std is set\)\. "
+        r"Use explicit Uniform\(environment_name=\.\.\., "
+        r"environment2_name=\.\.\.\) instead\.$"
+    )
+    with pytest.raises(ValueError, match=match):
+        dense_reference(transitions, [env1, env2], (5, 5), observations, 2.0)
+    with pytest.raises(ValueError, match=match):
+        build_transition_operator(transitions, [env1, env2], (5, 5), observations, 2.0)
 
 
 def assert_products(operator, dense, dtype):
@@ -693,17 +753,52 @@ def test_fallback_receives_original_empirical_context_and_defaults():
     transitions = [[EmpiricalMovement()]]
     dense, _ = dense_reference(transitions, [env], (5,), **context)
     operator = build_transition_operator(
-        transitions, [env], (5,), allow_dense_fallback=True, **context
+        transitions,
+        [env],
+        (5,),
+        allow_dense_fallback=True,
+        context=TransitionContext(**context),
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
-    # Base defaults absent labels to group zero before calling the empirical
-    # estimator, rather than its standalone "all groups" default.
+    # The context defaults absent labels to group zero, as the detector fit
+    # always has.
     transitions = [[EmpiricalMovement(encoding_group=1)]]
     dense, _ = dense_reference(transitions, [env], (5,), position=position)
     operator = build_transition_operator(
-        transitions, [env], (5,), allow_dense_fallback=True, position=position
+        transitions,
+        [env],
+        (5,),
+        allow_dense_fallback=True,
+        context=TransitionContext(position),
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n_bins", [5, 8], ids=["no_holes", "holes"])
+def test_empirical_movement_scalar_blocks_match_dense_constructor(n_bins):
+    """Scalar-to-spatial and spatial-to-scalar EmpiricalMovement blocks agree."""
+    env = environment((n_bins,))
+    interior = env.is_track_interior_.ravel()
+    assert interior.all() == (n_bins == 5)
+    env.edges_ = (np.arange(n_bins + 1.0) - 0.5,)
+    position = np.resize(np.arange(float(n_bins)), 6 * n_bins)[:, None]
+    transitions = [
+        [Discrete(), EmpiricalMovement()],
+        [EmpiricalMovement(), EmpiricalMovement()],
+    ]
+    sizes = (1, n_bins)
+    dense, _ = dense_reference(transitions, [env], sizes, position=position)
+    operator = build_transition_operator(
+        transitions,
+        [env],
+        sizes,
+        allow_dense_fallback=True,
+        context=TransitionContext(position),
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
+    np.testing.assert_array_equal(dense[0, 1:], interior / interior.sum())
+    np.testing.assert_array_equal(dense[1:, 0], np.ones(n_bins))
 
 
 @pytest.mark.unit

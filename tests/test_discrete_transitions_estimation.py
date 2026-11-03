@@ -55,7 +55,7 @@ class _FixedTransition:
     def __init__(self, transition_matrix: np.ndarray):
         self.transition_matrix = np.asarray(transition_matrix, dtype=float)
 
-    def make_state_transition(self, environments):
+    def make_state_transition(self, environments, context=None):
         return self.transition_matrix
 
 

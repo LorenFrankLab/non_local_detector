@@ -122,18 +122,23 @@ def find_environment_by_name(
 
     Raises
     ------
-    KeyError
-        If no environment with the given name is present.
+    ValidationError
+        If no environment with the given name is present. The message lists
+        the available names.
     """
     for env in environments:
         if env.environment_name == name:
             return env
-    msg = (
-        f"No environment with name {name!r} in environments list of "
-        f"length {len(environments)}; available names: "
-        f"{[e.environment_name for e in environments]}"
+    available = [env.environment_name for env in environments]
+    msg = f"No environment named {name!r}"
+    raise ValidationError(
+        msg,
+        got=f"environment names {available}",
+        hint=(
+            "Give each transition and observation model the environment_name "
+            "of one of the detector's environments."
+        ),
     )
-    raise KeyError(msg)
 
 
 def _is_unfitted_value(value: Any, default: Any) -> bool:

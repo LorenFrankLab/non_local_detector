@@ -87,7 +87,20 @@ Fitted firing rates are in Hz.
   states: `RandomWalk` (Gaussian steps, `movement_var` per time bin),
   `Uniform` (jump anywhere), `Identity` (stay put), `Discrete` (the state has
   no position, as in Local and No-Spike) and `EmpiricalMovement` (learned
-  from the animal's own movement).
+  from the animal's own movement). Each is a `ContinuousTransition`: its
+  `make_state_transition(environments, context=None)` returns the block of
+  probabilities from each source bin to each destination bin, and `context`
+  (a `TransitionContext`) holds the fit's position and labels. A custom
+  transition with this method can be used in the same place, with three
+  caveats. The method is not called for a block between a one-bin state
+  (No-Spike, or Local without `local_position_std`) and a spatial state: from the one-bin state the block
+  is uniform over the interior of the environment named by the
+  transition's `environment_name`, which it must have, and into it every
+  bin moves there with probability 1. A custom transition has no structured
+  operator, so `transition_representation="structured"` rejects it.
+  `"auto"` builds its dense block, except when an environment's graph
+  distances are deferred, as for an open-field grid fit with a non-dense
+  representation; use `"dense"` there.
 - **Discrete transitions** set how the states follow one another:
   `DiscreteStationaryDiagonal` and `DiscreteStationaryCustom` for fixed
   probabilities, and `DiscreteNonStationaryDiagonal` and
