@@ -35,9 +35,7 @@ The full suite takes a long time; during development run the tests for the code 
 | `unit` | Unit tests |
 | `integration` | End-to-end and multi-component tests |
 | `property` | Property-based tests (Hypothesis) of mathematical invariants |
-| `snapshot` | Snapshot regression tests |
 | `slow` | Slow tests; deselect with `-m "not slow"` |
-| `gpu` | Needs a GPU |
 
 Every warning is an error in the test suite, unless a test expects it (`pytest.warns`) or marks it incidental with a reason (`pytest.mark.filterwarnings`). Tests should be deterministic (fixed seeds) and use the shared fixtures in `tests/conftest.py`. New tests should say what they verify and fail when the behavior breaks.
 
@@ -75,9 +73,9 @@ This package produces scientific results, so a change that alters numbers needs 
 - A refactor must leave outputs unchanged (to floating-point noise, about 1e-14). Compare outputs before and after.
 - A deliberate algorithm change should stay within about 1e-10 of the old results, or come with a justification for the larger difference.
 - After touching the HMM algorithms, likelihoods, transitions or initial conditions, check the invariants: posteriors sum to one, transition matrices are row-stochastic, log-probabilities are finite, covariances are positive semi-definite, and likelihoods are non-negative. The property tests under `tests/properties/` check these.
-- The golden regression tests (`tests/test_golden_regression.py`, data in `tests/golden_data/`) and the snapshot tests pin known-good outputs. Do not regenerate their data to make a failing test pass. If a difference is intended, explain in the pull request what changed, by how much, why it is correct, and which invariants still hold, and a maintainer will approve updating the data.
+- The golden regression tests (`tests/test_golden_regression.py`, pickled data in `tests/golden_data/`) pin known-good outputs. Do not regenerate their data to make a failing test pass. If a difference is intended, explain in the pull request what changed, by how much, why it is correct, and which invariants still hold, and a maintainer will approve updating the data.
 - Do not loosen tolerances or convergence criteria without the same explanation.
-- After changing JAX code, check for unexpected recompilation, NaN/Inf in outputs, and unchanged shapes. Run `pytest -m gpu` on a CUDA machine if you changed GPU-specific paths.
+- After changing JAX code, check for unexpected recompilation, NaN/Inf in outputs, and unchanged shapes. If you changed GPU-specific paths, run the relevant tests on a CUDA machine.
 
 ## Changelog
 

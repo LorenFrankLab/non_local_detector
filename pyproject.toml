@@ -223,11 +223,9 @@ timeout = 900
 # Test markers for selective running
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "gpu: marks tests that require GPU",
     "integration: marks integration tests",
     "unit: marks unit tests",
     "property: marks property-based tests",
-    "snapshot: marks snapshot regression tests (update with --snapshot-update)",
 ]
 
 [tool.codespell]

@@ -23,7 +23,7 @@ Task-specific combinations:
 - **Modify an algorithm**: `scientific-tdd` to implement with tests, then `numerical-validation` to verify invariants.
 - **Optimize or debug JAX**: `jax` skill for the approach, then `numerical-validation` to confirm numerical equivalence.
 - **Upgrade dependencies**: run the full test suite and numerical validation, and check for deprecation warnings and behavioral changes.
-- **Add tests**: follow the patterns in `tests/`, use `conftest.py` fixtures, and tag with the `unit` / `integration` / `property` / `snapshot` markers.
+- **Add tests**: follow the patterns in `tests/`, use `conftest.py` fixtures, and tag with the `unit` / `integration` / `property` / `slow` markers.
 
 ### Environment Rules
 
@@ -46,21 +46,17 @@ Task-specific combinations:
 - Run numerical validation
 
 **YOU MUST ASK PERMISSION before:**
-- **Updating snapshots** (`--snapshot-update`) - REQUIRES FULL ANALYSIS FIRST
 - **Committing changes** (`git commit`)
 - **Pushing to remote** (`git push`)
 - **Modifying golden regression data files**
 - **Changing numerical tolerances or convergence criteria**
 
-### Snapshot Update Approval Process
+### Golden Regression Data
 
-When snapshot tests show changes, YOU MUST provide a full analysis before requesting
-approval. The required four-part format (diff, explanation, invariant validation,
-before/after test case) and a worked example live in
-`.claude/skills/numerical-validation/SKILL.md` (Steps 8-9 and "Approval Process") —
-load that skill before proposing a snapshot update.
-
-Only after user approval can snapshots be updated.
+There are no snapshot tests. Regression protection is `tests/test_golden_regression.py`
+with pickled golden data in `tests/golden_data/`. If it fails, do not regenerate the
+data; report what changed, by how much, why, and which invariants still hold
+(see `.claude/skills/numerical-validation/SKILL.md`), and ask before modifying it.
 
 ---
 
@@ -89,7 +85,7 @@ Run numerical validation (use `numerical-validation` skill) when modifying:
 Tolerance thresholds by change type, the five mathematical invariants that must always
 hold (probability normalization, stochastic transition matrices, finite log-probabilities,
 positive semi-definite covariances, non-negative likelihoods), and the property /
-golden-regression / snapshot commands to run are in
+golden-regression commands to run are in
 `.claude/skills/numerical-validation/SKILL.md` (Steps 4-7).
 
 ## JAX Code Requirements
