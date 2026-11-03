@@ -66,7 +66,13 @@ N_TEST = 400
 
 @pytest.fixture(scope="module")
 def run_data():
-    sim = make_simulated_run_data(n_runs=1, seed=0)
+    # Pins the cell layout these tests were written against. With the default
+    # on-track layout the last tetrode fires for the first time inside the test
+    # window, so it has an empty training set, which this unit-invariance
+    # check does not cover.
+    sim = make_simulated_run_data(
+        n_runs=1, seed=0, place_field_means=np.arange(0, 200, 10)
+    )
     time, position = sim.position_time, sim.position
     cut, stop = time[N_TRAIN], time[N_TRAIN + N_TEST]
     environment = Environment(place_bin_size=5.0)

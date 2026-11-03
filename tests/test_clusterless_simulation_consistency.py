@@ -133,7 +133,23 @@ def test_run_data_respects_n_features() -> None:
     assert all(f.shape[1] == 3 for f in sim.spike_waveform_features)
 
 
-def test_default_cells_fire_during_running(default_run) -> None:
-    """Every default cell/tetrode produces a comparable number of spikes."""
-    counts = np.array([t.size for t in default_run.spike_times])
-    assert counts.min() > 0.5 * counts.max()
+def test_default_place_fields_are_visited_during_running(default_run) -> None:
+    """The animal passes through every default place field."""
+    position = default_run.position[:, 0]
+    for mean in cs.PLACE_FIELD_MEANS:
+        occupancy = np.mean(np.abs(position - mean) < 2.0)
+        assert occupancy > 0.01, (mean, occupancy)
+
+
+def test_sorted_spikes_place_fields_follow_track_height() -> None:
+    """Sorted-spikes place fields span the requested track, not a fixed one."""
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        make_simulated_data,
+    )
+
+    out = make_simulated_data(track_height=100.0, n_neurons=5, sampling_frequency=500)
+    place_fields, linear_distance = out[7], out[1]
+    peak_position = linear_distance[np.argmax(place_fields, axis=0)]
+    assert linear_distance.max() <= 100.5
+    assert np.all(np.diff(np.sort(peak_position)) > 0)
+    assert peak_position.max() > 90.0

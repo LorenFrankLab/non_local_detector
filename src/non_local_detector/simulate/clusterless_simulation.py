@@ -76,7 +76,8 @@ SAMPLING_FREQUENCY = 1000
 TRACK_HEIGHT = 175
 RUNNING_SPEED = 15
 PLACE_FIELD_VARIANCE = 12.5
-PLACE_FIELD_MEANS = np.arange(0, 200, 10)
+N_CELLS = 20
+PLACE_FIELD_MEANS = np.linspace(0.0, TRACK_HEIGHT, N_CELLS)
 N_RUNS = 15
 REPLAY_SPEEDUP = 120.0
 N_TETRODES = 5
@@ -149,7 +150,8 @@ def make_simulated_run_data(
     place_field_means : np.ndarray, shape (n_neurons,), optional
         Location of the center of the Gaussian place fields. Cells are assigned
         to tetrodes in contiguous blocks, so ``n_neurons`` must be divisible by
-        ``n_tetrodes``. Default is np.arange(0, 200, 10).
+        ``n_tetrodes``. Default is 20 cells evenly spaced over
+        ``[0, TRACK_HEIGHT]``, so every field is on the default track.
     n_tetrodes : int, optional
         Total number of tetrodes to simulate. Default is 5.
     n_features : int, optional
@@ -428,12 +430,13 @@ def make_fragmented_replay(
     replay_time = np.arange(N_TIME) / sampling_frequency
 
     n_total_neurons = place_field_means.size
+    # Modulo keeps the indices valid for any number of cells.
     neuron_inds: list[int] | tuple[np.ndarray, ...] = [
-        1,
+        1 % n_total_neurons,
         n_total_neurons - 1,
-        10,
-        n_total_neurons - 5,
-        8,
+        10 % n_total_neurons,
+        (n_total_neurons - 5) % n_total_neurons,
+        8 % n_total_neurons,
     ]
     neuron_inds = np.unravel_index(neuron_inds, place_field_means.shape)
     spike_time_ind = [1, 3, 5, 7, 9]
@@ -458,6 +461,9 @@ def make_hover_continuous_hover_replay(
     track_height: float = TRACK_HEIGHT,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Make a simulated replay that first is stationary, then is continuous, then is stationary again.
+
+    The stationary segments hover on the first and last cell, which lie on
+    the track for the default ``place_field_means``.
 
     Parameters
     ----------
@@ -543,7 +549,7 @@ def make_fragmented_hover_fragmented_replay(
     }
     _, test_multiunits1 = make_fragmented_replay(**layout)
     _, test_multiunits2 = make_hover_replay(
-        hover_neuron_ind=6, **layout
+        hover_neuron_ind=6 % place_field_means.size, **layout
     )
     _, test_multiunits3 = make_fragmented_replay(**layout)
 

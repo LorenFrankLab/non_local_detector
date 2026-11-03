@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Simulators
+
+- **Fixed:** the clusterless replay simulators and `make_simulated_run_data` share one default `MARK_SPACING` (10). The replays defaulted to 5 while the run data used 10, so a model fit on the run data decoded the default replays at the wrong place (the default hover replay at 90 cm instead of 100, the continuous replay ending at 170 cm). `make_simulated_run_data` takes new `mark_spacing` and `n_features` arguments, and `make_hover_continuous_hover_replay`, `make_fragmented_hover_fragmented_replay` and `make_fragmented_continuous_fragmented_replay` take `place_field_means`, `n_tetrodes`, `n_features` and `mark_spacing` (the two with a continuous segment also `track_height`), so they can be made to match the run data.
+- **Fixed:** the default `PLACE_FIELD_MEANS` are 20 cells evenly spaced over `[0, TRACK_HEIGHT]`, instead of `np.arange(0, 200, 10)`, whose last two cells (180 and 190 cm) were beyond the 175 cm track and almost never fired; the default hover replay and `make_hover_continuous_hover_replay` hovered on the 190 cm cell.
+- **Fixed:** `make_continuous_replay` uses its `n_tetrodes` argument and the number of cells per tetrode from `place_field_means`, instead of a hard-coded 5 tetrodes and 4 cells per tetrode. `make_fragmented_replay` and the fragmented mixture helpers no longer raise `IndexError` for fewer than 11 cells.
+- **Fixed:** `sorted_spikes_simulation.make_simulated_data` spaces its place fields over its `track_height` argument instead of the module constant, so a non-default `track_height` no longer leaves fields beyond the track. Default output is unchanged.
+- Default simulated data changes: `make_simulated_run_data()` with the default `place_field_means` has different cell positions (same marks), and the default replays have different marks (spacing 10) and positions. Calls that pass `place_field_means` explicitly produce identical run data.
+
 ### Environment grid helpers
 
 - `Environment.is_track_interior_flat_` is the interior mask over the flattened place bins, shape `(n_bins,)`, with every bin interior when `is_track_interior_` is unset. The likelihood fits, continuous transitions, structured transition operators, state indexing, off-track snapping and clusterless model checking use it instead of their own copies. Outputs are unchanged.
