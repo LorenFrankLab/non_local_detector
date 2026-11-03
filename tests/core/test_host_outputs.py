@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.core import (
+    FilterSmootherResult,
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
 )
@@ -16,7 +17,12 @@ from non_local_detector.discrete_state_transitions import (
 pytestmark = pytest.mark.unit
 
 N_TIME, STATE_IND = 40, np.array([0, 0, 0, 1, 1, 2])
-SPATIAL = (0, 6, 7)  # acausal, causal and predictive posteriors
+SPATIAL = ("acausal_posterior", "causal_posterior", "predictive_posterior")
+STATE_PROBABILITIES = (
+    "acausal_state_probabilities",
+    "causal_state_probabilities",
+    "predictive_state_probabilities",
+)
 
 
 @pytest.fixture(scope="module")
@@ -63,13 +69,38 @@ def _decode(model, covariate, n_chunks, host_outputs):
 def test_device_posteriors_equal_host_posteriors(model, covariate, n_chunks):
     host = _decode(model, covariate, n_chunks, host_outputs=True)
     device = _decode(model, covariate, n_chunks, host_outputs=False)
-    for index in SPATIAL:
-        assert isinstance(host[index], np.ndarray)
-        assert isinstance(device[index], jax.Array)
-        np.testing.assert_array_equal(np.asarray(device[index]), host[index])
-    for index in (1, 3, 4):  # state probabilities stay on the host either way
-        assert isinstance(device[index], np.ndarray)
-        np.testing.assert_array_equal(device[index], host[index])
+    for name in SPATIAL:
+        assert isinstance(getattr(host, name), np.ndarray)
+        assert isinstance(getattr(device, name), jax.Array)
+        np.testing.assert_array_equal(
+            np.asarray(getattr(device, name)), getattr(host, name)
+        )
+    for name in STATE_PROBABILITIES:  # stay on the host either way
+        assert isinstance(getattr(device, name), np.ndarray)
+        np.testing.assert_array_equal(getattr(device, name), getattr(host, name))
+
+
+@pytest.mark.parametrize("covariate", [False, True])
+def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
+    """Positional unpacking keeps working: fields are in the old tuple order."""
+    result = _decode(model, covariate, n_chunks=2, host_outputs=True)
+    assert isinstance(result, FilterSmootherResult)
+    assert FilterSmootherResult._fields == (
+        "acausal_posterior",
+        "acausal_state_probabilities",
+        "marginal_log_likelihood",
+        "causal_state_probabilities",
+        "predictive_state_probabilities",
+        "log_likelihoods",
+        "causal_posterior",
+        "predictive_posterior",
+    )
+    (acausal, _, marginal, _, _, log_likelihoods, causal, _) = result
+    assert acausal is result.acausal_posterior
+    assert causal is result.causal_posterior
+    assert marginal == result.marginal_log_likelihood
+    assert isinstance(marginal, float)
+    np.testing.assert_array_equal(log_likelihoods, model["log_likelihoods"])
 
 
 @pytest.mark.parametrize(

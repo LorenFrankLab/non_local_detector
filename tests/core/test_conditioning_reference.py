@@ -35,6 +35,7 @@ from non_local_detector.core import (
     filter_covariate_dependent,
     most_likely_sequence,
     most_likely_sequence_covariate_dependent,
+    row_slice_aware,
     smoother,
     smoother_covariate_dependent,
     viterbi,
@@ -817,8 +818,9 @@ class TestMultiStepEnumerationReference:
         ll_without_missing[is_missing] = 0.0
         ref = enumerate_reference(initial, expanded, ll_without_missing)
 
-        def log_likelihood_func(time_idx, is_missing=None):
-            rows = ll[np.asarray(time_idx, dtype=int)].copy()
+        @row_slice_aware
+        def log_likelihood_func(time_idx, is_missing=None, row_slice=None):
+            rows = ll[np.asarray(time_idx, dtype=int)][row_slice or slice(None)].copy()
             assert is_missing is not None
             assert len(is_missing) == len(rows)
             rows[is_missing] = 0.0
