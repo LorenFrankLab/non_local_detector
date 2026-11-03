@@ -104,7 +104,4 @@ After changing JAX code, verify:
 
 ### Array annotations
 
-- NumPy side: inputs `numpy.typing.ArrayLike` (only if the function converts them; ndarray-only code keeps `np.ndarray`), outputs `NDArray[<dtype>]` or `np.ndarray`.
-- JAX side: inputs `jax.typing.ArrayLike`, outputs `jax.Array`. Never `jnp.ndarray` (an alias of `jax.Array`).
-- Dtypes: `DTypeLike`. Keep `list[...]` for per-neuron / per-electrode lists of arrays.
-- Shapes live in NumPy-style docstrings, e.g. `(n_time, n_position_bins)`.
+Follow the convention in `CONTRIBUTING.md` ("Array annotations"): ArrayLike inputs, `jax.Array` / `NDArray` outputs, never `jnp.ndarray`.
