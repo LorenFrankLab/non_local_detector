@@ -113,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Likelihood tests pass the fit's whole encoding dictionary to `predict_*`, as the detectors do. Hand-copied keys had left out `environment_grid` and `rate_units`, so the grid and unit checks never ran in those tests, and the clusterless KDE recomputed `log_occupancy` instead of using the fitted one.
 - Duplicate test helpers and copy-paste tests are consolidated into shared fixtures and parametrized tests, and the slowest EM, covariate-pickling and goodness-of-fit tests fit smaller recordings or cache repeated simulations (`test_em_monotonicity.py` 119 s → 12 s locally).
 - **Changed:** the sdist lists what it ships (`only-include`: `src`, `tests`, `README.md`, `LICENSE`, `CHANGELOG.md`, `pyproject.toml`) instead of excluding a few paths. Built from a clean checkout it is 2.9 MB instead of 9.9 MB, because it no longer carries `notebooks/`, `.claude/` or `docs/`, and a local build no longer picks up untracked directories (42.7 MB before).
+- **Fixed:** `environment.yml` and `environment_gpu.yml` had drifted from `pyproject.toml`: old floors (`numpy >=1.25`, `scipy >=1.10`, ...), a `python <3.14` cap, and no `pytest-timeout`, so `pytest` stopped with "Unknown config option: timeout" under `--strict-config`. They now carry the `pyproject.toml` floors and the `test` and `dev` tools (`pytest-timeout`, `psutil` and `mypy` added), and `tests/test_environment_files.py` fails when they disagree again.
 
 ### Reproducible posterior samples
 
