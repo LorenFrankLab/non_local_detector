@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.initial_conditions import (
     UniformInitialConditions,
     estimate_initial_conditions,
@@ -65,20 +66,27 @@ def test_estimate_initial_conditions_returns_first_row():
 
 
 @pytest.mark.unit
-def test_uniform_initial_conditions_no_track_interior(simple_1d_environment):
-    """Test when environment has no track interior mask."""
+def test_uniform_initial_conditions_unfitted_environment_raises(simple_1d_environment):
+    """An environment without a fitted track interior is an error, not a
+    one-bin distribution."""
     env = simple_1d_environment
-    env.is_track_interior_ = None  # No mask
-    envs = (env,)
-    ic = UniformInitialConditions()
+    env.is_track_interior_ = None
     obs = ObservationModel(environment_name=env.environment_name, is_local=False)
+    with pytest.raises(ValidationError, match="not fitted"):
+        UniformInitialConditions().make_initial_conditions(obs, (env,))
 
-    # Act
-    arr = ic.make_initial_conditions(obs, envs)
 
-    # Assert - should fallback to single bin
-    assert arr.shape == (1,)
-    assert np.isclose(arr[0], 1.0)
+@pytest.mark.unit
+def test_uniform_initial_conditions_without_interior_bins_raises(
+    simple_1d_environment,
+):
+    """An environment with no interior bins is an error, not a uniform
+    distribution over its exterior bins."""
+    env = simple_1d_environment
+    env.is_track_interior_ = np.zeros(env.centers_shape_, dtype=bool)
+    obs = ObservationModel(environment_name=env.environment_name, is_local=False)
+    with pytest.raises(ValidationError, match="no interior bins"):
+        UniformInitialConditions().make_initial_conditions(obs, (env,))
 
 
 @pytest.mark.unit
