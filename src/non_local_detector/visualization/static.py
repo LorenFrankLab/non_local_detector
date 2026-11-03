@@ -13,6 +13,7 @@ from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.models.base import SortedSpikesDetector
 
 
 def get_multiunit_firing_rate(
@@ -128,13 +129,17 @@ def plot_non_local_model(
         time_slice = slice(results.time.values[0], results.time.values[-1])
 
     env = detector.environments[0]
-    try:
-        place_fields = detector.encoding_model_[("", 0)]["place_fields"]
+    if isinstance(detector, SortedSpikesDetector):
+        # Sort neurons by the position of their place-field peak.
+        obs = next(o for o in detector.observation_models if not o.is_no_spike)
+        place_fields = detector.encoding_model_[
+            (obs.environment_name, obs.encoding_group)
+        ]["place_fields"]
         neuron_sort_ind = np.argsort(
             env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()  # type: ignore[index]  # set by fit; unfitted env fails at runtime
         )
         cell_label = "Neuron"
-    except KeyError:
+    else:
         neuron_sort_ind = np.arange(len(spike_times))
         cell_label = "Electrode\nGroup"
 

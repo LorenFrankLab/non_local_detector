@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### API hygiene
 
+- **Fixed:** `plot_non_local_model` finds sorted-spikes place fields through the detector's own observation model instead of the hard-coded `("", 0)` key, so it no longer silently falls back to electrode-group ordering when the environment is named or the encoding group is not 0.
 - **Fixed:** the `ContinuousTransitions` type alias includes `Identity`, which the transition operators already accept.
 - `ValidationError`, `ConfigurationError` and `DataError` also subclass `ValueError`, so `except ValueError` catches them (and `except NonLocalDetectorError` still does). Package code mixes these with plain `ValueError`, which previously could not be caught together.
 - **Removed:** `FittingError` and `ConvergenceError` (and their top-level exports). They were never raised anywhere in the package.
