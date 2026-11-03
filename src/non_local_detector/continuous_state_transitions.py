@@ -1,10 +1,11 @@
 """Classes for constructing different types of movement models."""
 
 from dataclasses import dataclass
+from typing import Any, cast
 
-import networkx as nx  # type: ignore[import-untyped]
+import networkx as nx
 import numpy as np
-from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
+from scipy.stats import multivariate_normal
 
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError
@@ -58,7 +59,7 @@ def _random_walk_on_track_graph(
     movement_mean: float,
     movement_var: float,
     place_bin_center_ind_to_node: np.ndarray,
-    distance_between_nodes: dict[int, dict[int, float]],
+    distance_between_nodes: dict[int, dict[int, float]] | LazyGraphDistances,
 ) -> np.ndarray:
     """Estimates the random walk probabilities based on the spatial
     topology given by the track graph.
@@ -309,7 +310,10 @@ class RandomWalk:
             self.movement_mean,
             self.movement_var,
             place_bin_center_ind_to_node,
-            self.environment.distance_between_nodes_,
+            cast(
+                dict[int, dict[int, float]] | LazyGraphDistances,
+                self.environment.distance_between_nodes_,
+            ),
         )
 
 
@@ -440,7 +444,7 @@ class EmpiricalMovement:
     """
 
     environment_name: str = ""
-    encoding_group: str = 0
+    encoding_group: str | int = 0
     speedup: int = 1
     is_time_reversed: bool = False
 
@@ -503,7 +507,7 @@ class EmpiricalMovement:
         # environments whose ranges were inferred from their position data.
         state_transition, _ = np.histogramdd(
             samples,
-            bins=self.environment.edges_ * 2,
+            bins=cast(tuple[np.ndarray, ...], self.environment.edges_) * 2,
         )
         original_shape = state_transition.shape
         n_position_dims = position.shape[1]
@@ -602,7 +606,7 @@ class Discrete:
     is just an identity matrix.
     """
 
-    def make_state_transition(self, *args, **kwargs) -> np.ndarray:  # noqa: ARG002 -- shared make_state_transition signature
+    def make_state_transition(self, *args: Any, **kwargs: Any) -> np.ndarray:  # noqa: ARG002 -- shared make_state_transition signature
         """Creates a continuous transition matrix for a discrete state space.
 
         Since there is no continuous spatial component, the transition matrix

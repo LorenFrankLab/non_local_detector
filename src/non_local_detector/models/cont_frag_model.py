@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import numpy as np
 import xarray as xr
 
@@ -46,7 +48,7 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
             "Expected a dim named 'position' or ending in '_position'."
         )
         raise ValueError(msg)
-    return unstacked.sum(position_dims)
+    return cast("xr.DataArray", unstacked.sum(position_dims))
 
 
 class _ContFragResultsMixin:
@@ -193,7 +195,7 @@ class ContFragSortedSpikesClassifier(_ContFragResultsMixin, SortedSpikesDetector
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
-        sorted_spikes_algorithm_params: dict | None = None,
+        sorted_spikes_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
@@ -340,7 +342,7 @@ class ContFragClusterlessClassifier(_ContFragResultsMixin, ClusterlessDetector):
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         clusterless_algorithm: str = "clusterless_kde",
-        clusterless_algorithm_params: dict | None = None,
+        clusterless_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,

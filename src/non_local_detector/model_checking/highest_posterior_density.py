@@ -5,7 +5,7 @@ from non_local_detector._position_dims import get_position_dims
 
 
 def get_highest_posterior_threshold(
-    posterior: xr.DataArray, coverage: float = 0.95
+    posterior: xr.DataArray | np.ndarray, coverage: float = 0.95
 ) -> np.ndarray:
     """Estimate the posterior threshold for highest posterior density (HPD) regions.
 
@@ -16,7 +16,7 @@ def get_highest_posterior_threshold(
 
     Parameters
     ----------
-    posterior : xarray.DataArray, shape (n_time, n_position_bins) or
+    posterior : xarray.DataArray or np.ndarray, shape (n_time, n_position_bins) or
         shape (n_time, n_x_bins, n_y_bins)
         Posterior probability distributions over position at each time point.
         The non-time dimensions are flattened for processing.

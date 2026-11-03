@@ -1,7 +1,7 @@
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 import xarray as xr
 
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
@@ -115,7 +115,7 @@ def plot_non_local_model(
     try:
         place_fields = detector.encoding_model_[("", 0)]["place_fields"]
         neuron_sort_ind = np.argsort(
-            env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
+            env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()  # type: ignore[index]  # set by fit; unfitted env fails at runtime
         )
         cell_label = "Neuron"
     except KeyError:
@@ -137,14 +137,14 @@ def plot_non_local_model(
         gridspec_kw={"height_ratios": [2, 1, 3, 1]},
     )
 
-    t, x = np.meshgrid(results_time, env.place_bin_centers_)
+    t, x = np.meshgrid(results_time, env.place_bin_centers_)  # type: ignore[arg-type]  # set by fit
 
     conditional_non_local_acausal_posterior = (
         detector.get_conditional_non_local_posterior(results.sel(time=time_slice))
         .values.reshape(len(results_time), -1)
         .copy()
     )
-    conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
+    conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan  # type: ignore[operator]  # set by fit
 
     new_spike_times = [
         spike_times[neuron_id][

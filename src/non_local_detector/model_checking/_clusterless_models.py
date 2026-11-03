@@ -20,11 +20,14 @@ the decoder's own definitions. Time integrals for the MDCI transform use the
 environment's interior place bins, as the non-local likelihood does.
 """
 
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
 import numpy as np
-from scipy.special import logsumexp  # type: ignore[import-untyped]
+from numpy.typing import ArrayLike
+from scipy.special import logsumexp
 
+from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import KDEModel, kde_log_density
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
@@ -42,7 +45,9 @@ SUPPORTED_ALGORITHMS = (
 _BATCH = 512
 
 
-def electrode_model(encoding_model: dict, algorithm: str, electrode: int) -> Any:
+def electrode_model(
+    encoding_model: dict[str, Any], algorithm: str, electrode: int
+) -> Any:
     """The fitted intensity of one electrode, for a supported algorithm."""
     if algorithm == "clusterless_kde":
         return _KDEElectrode(encoding_model, electrode)
@@ -54,7 +59,12 @@ def electrode_model(encoding_model: dict, algorithm: str, electrode: int) -> Any
     raise ValueError(msg)
 
 
-def _gaussian_log_kernel(points, centers, std, block_elements=2**18):
+def _gaussian_log_kernel(
+    points: ArrayLike,
+    centers: ArrayLike,
+    std: ArrayLike,
+    block_elements: int = 2**18,
+) -> np.ndarray:
     """``log N(points_i; centers_j, diag(std**2))``, shape (n_points, n_centers).
 
     Each coordinate is subtracted before it is squared, so a large common
@@ -86,14 +96,16 @@ def _gaussian_log_kernel(points, centers, std, block_elements=2**18):
     return result
 
 
-def _interior_bins(environment):
+def _interior_bins(environment: Environment) -> tuple[np.ndarray, np.ndarray]:
     """Interior bin centers and a full-grid to interior index map."""
     interior = environment.is_track_interior_flat_
     full_to_local = _full_to_local(np.flatnonzero(interior), interior.size)
     return np.asarray(environment.place_bin_centers_, float)[interior], full_to_local
 
 
-def _require_interior_bins(environment, positions, full_to_local):
+def _require_interior_bins(
+    environment: Environment, positions: np.ndarray, full_to_local: np.ndarray
+) -> np.ndarray:
     """Interior-bin indices of ``positions``; raise if any is off the track."""
     bins = _interior_bin_indices(environment, positions, full_to_local)
     if np.any(bins < 0):
@@ -115,7 +127,7 @@ class _MarkKernelMixture:
     waveform_std: np.ndarray
     n_bins: int
 
-    def _mark_cdf(self):
+    def _mark_cdf(self) -> GaussianMixtureConditionalCDF:
         return GaussianMixtureConditionalCDF(
             self.weights,
             self.marks,
@@ -124,7 +136,12 @@ class _MarkKernelMixture:
             batch_size=128,
         )
 
-    def _time_integrated_cdf(self, log_mass, marks, feature_order):
+    def _time_integrated_cdf(
+        self,
+        log_mass: np.ndarray,
+        marks: np.ndarray,
+        feature_order: Sequence[int] | np.ndarray | None,
+    ) -> np.ndarray:
         """CDFs of the mark mixture with component weights ``w_j exp(log_mass_j)``."""
         with np.errstate(divide="ignore"):
             log_weights = np.log(self.weights) + log_mass
@@ -137,20 +154,21 @@ class _MarkKernelMixture:
             feature_order,
         )
 
-    def _log_mark_kernel(self, marks):
+    def _log_mark_kernel(self, marks: np.ndarray) -> np.ndarray:
         """``log w_j + log K_m(m_i - m_j)``, shape (n_encoding, n_marks)."""
         with np.errstate(divide="ignore"):
             log_weights = np.log(self.weights)
-        return (
+        return cast(
+            np.ndarray,
             _gaussian_log_kernel(marks, self.marks, self.waveform_std).T
-            + log_weights[:, None]
+            + log_weights[:, None],
         )
 
 
 class _KDEElectrode(_MarkKernelMixture):
     """Clusterless KDE: Gaussian position and mark kernels on encoding spikes."""
 
-    def __init__(self, model: dict, electrode: int) -> None:
+    def __init__(self, model: dict[str, Any], electrode: int) -> None:
         self.environment = model["environment"]
         self.mean_rate = float(model["mean_rates"][electrode])
         self.occupancy_model: KDEModel = model["occupancy_model"]
@@ -186,34 +204,45 @@ class _KDEElectrode(_MarkKernelMixture):
             kde_log_density(self.occupancy_model, self.bin_centers), float
         )
 
-    def ground_intensity(self, positions):
+    def ground_intensity(self, positions: np.ndarray) -> np.ndarray:
         log_ratio = np.asarray(
             kde_log_density(self.gpi_model, positions), float
         ) - np.asarray(kde_log_density(self.occupancy_model, positions), float)
-        return self.mean_rate * np.exp(log_ratio)
+        return cast(np.ndarray, self.mean_rate * np.exp(log_ratio))
 
-    def conditional_mark_cdf(self, positions, marks, feature_order):
+    def conditional_mark_cdf(
+        self,
+        positions: np.ndarray,
+        marks: np.ndarray,
+        feature_order: Sequence[int] | np.ndarray | None,
+    ) -> np.ndarray:
         return self.conditional_cdf.transform(
             marks, feature_order=feature_order, given_positions=positions
         )
 
-    def bin_indices(self, positions):
+    def bin_indices(self, positions: np.ndarray) -> np.ndarray:
         return _require_interior_bins(self.environment, positions, self.full_to_local)
 
-    def _log_position_kernel_at_bins(self):
+    def _log_position_kernel_at_bins(self) -> np.ndarray:
         return _gaussian_log_kernel(self.bin_centers, self.positions, self.position_std)
 
-    def log_intensity_at_bins(self, marks):
+    def log_intensity_at_bins(self, marks: np.ndarray) -> np.ndarray:
         """``log lambda(b, m_i)``, shape (n_bins, n_marks)."""
         position = self._log_position_kernel_at_bins()  # (n_bins, n_encoding)
         offset = np.log(self.mean_rate) - np.log(self.weights.sum())
-        return (
+        return cast(
+            np.ndarray,
             _log_matmul_exp(position, self._log_mark_kernel(marks))
             + offset
-            - self._log_occupancy_at_bins[:, None]
+            - self._log_occupancy_at_bins[:, None],
         )
 
-    def time_integrated_mark_cdf(self, time_in_bins, marks, feature_order):
+    def time_integrated_mark_cdf(
+        self,
+        time_in_bins: np.ndarray,
+        marks: np.ndarray,
+        feature_order: Sequence[int] | np.ndarray | None,
+    ) -> np.ndarray:
         """CDFs of ``Gamma(m) / integral(Gamma)``, ``Gamma(m) = int lambda dt``."""
         with np.errstate(divide="ignore"):
             log_time = np.log(time_in_bins)
@@ -233,7 +262,7 @@ class _DiffusionElectrode(_MarkKernelMixture):
     kernels weighted by the kernel's columns.
     """
 
-    def __init__(self, model: dict, electrode: int) -> None:
+    def __init__(self, model: dict[str, Any], electrode: int) -> None:
         from non_local_detector.likelihoods.clusterless_diffusion import (
             _log_intensity_scale,
             spatial_kernel_columns,
@@ -291,23 +320,30 @@ class _DiffusionElectrode(_MarkKernelMixture):
             np.exp(self.log_heat) @ spike_field[self.sources]
         )
 
-    def bin_indices(self, positions):
+    def bin_indices(self, positions: np.ndarray) -> np.ndarray:
         return _require_interior_bins(self.environment, positions, self.full_to_local)
 
-    def ground_intensity(self, positions):
-        return self._ground_at_bins[self.bin_indices(positions)]
+    def ground_intensity(self, positions: np.ndarray) -> np.ndarray:
+        return cast(np.ndarray, self._ground_at_bins[self.bin_indices(positions)])
 
-    def conditional_mark_cdf(self, positions, marks, feature_order):
+    def conditional_mark_cdf(
+        self,
+        positions: np.ndarray,
+        marks: np.ndarray,
+        feature_order: Sequence[int] | np.ndarray | None,
+    ) -> np.ndarray:
         bins = self.bin_indices(positions)
 
-        def log_weights(first, last):
-            return self.log_heat[bins[first:last]][:, self.source_index]
+        def log_weights(first: int, last: int) -> np.ndarray:
+            return cast(
+                np.ndarray, self.log_heat[bins[first:last]][:, self.source_index]
+            )
 
         return self._mark_cdf().transform(
             marks, feature_order=feature_order, component_log_weights=log_weights
         )
 
-    def log_intensity_at_bins(self, marks):
+    def log_intensity_at_bins(self, marks: np.ndarray) -> np.ndarray:
         """``log lambda(b, m_i)``, shape (n_bins, n_marks)."""
         # log sum_{j in source} w_j K_m(m_i - m_j), shape (n_sources, n_marks),
         # shifted per source so that no source's sum underflows.
@@ -321,11 +357,18 @@ class _DiffusionElectrode(_MarkKernelMixture):
         )
         with np.errstate(divide="ignore"):
             log_by_source = np.log(by_source) + shift
-        return (
-            _log_matmul_exp(self.log_heat, log_by_source) + self._log_bin_scale[:, None]
+        return cast(
+            np.ndarray,
+            _log_matmul_exp(self.log_heat, log_by_source)
+            + self._log_bin_scale[:, None],
         )
 
-    def time_integrated_mark_cdf(self, time_in_bins, marks, feature_order):
+    def time_integrated_mark_cdf(
+        self,
+        time_in_bins: np.ndarray,
+        marks: np.ndarray,
+        feature_order: Sequence[int] | np.ndarray | None,
+    ) -> np.ndarray:
         with np.errstate(divide="ignore"):
             log_time = np.log(time_in_bins)
         log_mass = logsumexp(
@@ -334,7 +377,7 @@ class _DiffusionElectrode(_MarkKernelMixture):
         return self._time_integrated_cdf(log_mass, marks, feature_order)
 
 
-def _full_covariances(model) -> np.ndarray:
+def _full_covariances(model: Any) -> np.ndarray:
     """A fitted GMM's covariances as ``(n_components, n_dims, n_dims)``."""
     covariances = np.asarray(model.covariances_, dtype=np.float64)
     n_components, n_dims = np.shape(model.means_)
@@ -356,7 +399,7 @@ class _GMMElectrode:
     the joint mixture's conditional mark density.
     """
 
-    def __init__(self, model: dict, electrode: int) -> None:
+    def __init__(self, model: dict[str, Any], electrode: int) -> None:
         self.joint = model["joint_models"][electrode]
         if self.joint is None:
             msg = f"electrode {electrode} has no fitted encoding spikes"
@@ -391,28 +434,34 @@ class _GMMElectrode:
         )
 
     @staticmethod
-    def _score(model, points):
+    def _score(model: Any, points: ArrayLike) -> np.ndarray:
         return np.asarray(model.score_samples(np.asarray(points)), float)
 
-    def _log_ground(self, positions):
-        return (
+    def _log_ground(self, positions: np.ndarray) -> np.ndarray:
+        return cast(
+            np.ndarray,
             np.log(self.mean_rate)
             + self._score(self.gpi, positions)
-            - self._score(self.occupancy, positions)
+            - self._score(self.occupancy, positions),
         )
 
-    def ground_intensity(self, positions):
-        return np.exp(self._log_ground(positions))
+    def ground_intensity(self, positions: np.ndarray) -> np.ndarray:
+        return cast(np.ndarray, np.exp(self._log_ground(positions)))
 
-    def conditional_mark_cdf(self, positions, marks, feature_order):
+    def conditional_mark_cdf(
+        self,
+        positions: np.ndarray,
+        marks: np.ndarray,
+        feature_order: Sequence[int] | np.ndarray | None,
+    ) -> np.ndarray:
         return self.conditional_cdf.transform(
             marks, feature_order=feature_order, given_positions=positions
         )
 
-    def bin_indices(self, positions):
+    def bin_indices(self, positions: np.ndarray) -> np.ndarray:
         return _require_interior_bins(self.environment, positions, self.full_to_local)
 
-    def log_intensity_at_bins(self, marks):
+    def log_intensity_at_bins(self, marks: np.ndarray) -> np.ndarray:
         """``log mu + log p_joint(b, m_i) - log p_occ(b)``, (n_bins, n)."""
         result = np.empty((self.n_bins, len(marks)))
         for first in range(0, len(marks), _BATCH):
@@ -427,9 +476,14 @@ class _GMMElectrode:
             result[:, first : first + len(block)] = self._score(
                 self.joint, points
             ).reshape(self.n_bins, len(block))
-        return result + self._log_rate_over_occupancy_at_bins[:, None]
+        return cast(np.ndarray, result + self._log_rate_over_occupancy_at_bins[:, None])
 
-    def time_integrated_mark_cdf(self, time_in_bins, marks, feature_order):
+    def time_integrated_mark_cdf(
+        self,
+        time_in_bins: np.ndarray,
+        marks: np.ndarray,
+        feature_order: Sequence[int] | np.ndarray | None,
+    ) -> np.ndarray:
         """CDFs of the mixture over (bin, component) that ``Gamma(m)`` forms.
 
         ``Gamma(m) = sum_b time(b) Lambda(b) sum_k r_k(b) N(m; mu_k|b, S_k|b)``,
@@ -460,8 +514,13 @@ class _GMMElectrode:
 
 
 def _log_weighted_mixture_cdf(
-    log_weights, means, covariances, covariance_type, marks, feature_order
-):
+    log_weights: np.ndarray,
+    means: np.ndarray,
+    covariances: np.ndarray,
+    covariance_type: str,
+    marks: np.ndarray,
+    feature_order: Sequence[int] | np.ndarray | None,
+) -> np.ndarray:
     """Sequential CDFs of a mixture whose component weights are given as logs.
 
     The weights stay in log space while the mixture is conditioned on each
@@ -487,7 +546,7 @@ def _log_weighted_mixture_cdf(
     )
 
 
-def _log_matmul_exp(log_a, log_b):
+def _log_matmul_exp(log_a: np.ndarray, log_b: np.ndarray) -> np.ndarray:
     """``log(exp(log_a) @ exp(log_b))`` in float64.
 
     Rows of ``log_a`` and columns of ``log_b`` are shifted by their maxima
@@ -508,4 +567,4 @@ def _log_matmul_exp(log_a, log_b):
     for first in range(0, rows.size, block):
         row, column = rows[first : first + block], columns[first : first + block]
         result[row, column] = logsumexp(log_a[row] + log_b[:, column].T, axis=1)
-    return result
+    return cast(np.ndarray, result)

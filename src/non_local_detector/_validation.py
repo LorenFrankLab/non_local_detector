@@ -9,18 +9,19 @@ These functions are for internal use only (note the leading underscore in module
 from typing import Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from non_local_detector.exceptions import DataError, ValidationError
 
 
 def ensure_probability_distribution(
-    arr: np.ndarray, name: str, tolerance: float = 1e-6
+    arr: ArrayLike, name: str, tolerance: float = 1e-6
 ) -> None:
     """Verify array is a valid probability distribution (sums to 1).
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array that should sum to 1.0
     name : str
         Name of the array for error messages
@@ -384,7 +385,7 @@ def ensure_monotonic_increasing(
             )
 
 
-def ensure_matching_lengths(arr1, arr2, name1: str, name2: str) -> None:
+def ensure_matching_lengths(arr1: Any, arr2: Any, name1: str, name2: str) -> None:
     """Verify two arrays have matching lengths.
 
     Parameters
@@ -599,6 +600,7 @@ def ensure_graph_nodes_have_attribute(
 
     if nodes_with_wrong_type:
         sample_node, sample_type = nodes_with_wrong_type[0]
+        assert sample_value_type is not None  # wrong-type entries need a type
 
         msg = f"{name} node attribute '{attribute}' has wrong type"
         raise ValidationError(
@@ -669,6 +671,7 @@ def ensure_graph_edges_have_attribute(
 
     if edges_with_wrong_type:
         sample_edge, sample_type = edges_with_wrong_type[0]
+        assert sample_value_type is not None  # wrong-type entries need a type
 
         msg = f"{name} edge attribute '{attribute}' has wrong type"
         raise ValidationError(

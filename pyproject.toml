@@ -33,7 +33,8 @@ dependencies = [
     "xarray >=2024.11",
     "scikit-learn >=1.6",
     "threadpoolctl >=3.0",
-    "patsy >=0.5.2",
+    # 0.5.6 is the first release without pandas is_categorical_dtype warnings.
+    "patsy >=0.5.6",
     "tqdm >=4.60",
     "track_linearization >=2.4.0",
     "matplotlib >=3.10",
@@ -146,19 +147,28 @@ allowed-confusables = ["×", "σ", "α", "γ", "∪"]
 
 # MyPy configuration
 [tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false  # Start lenient, can tighten later
-disallow_incomplete_defs = false
-check_untyped_defs = true
-disallow_untyped_decorators = false
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
+files = ["src/non_local_detector"]
+exclude = ["src/non_local_detector/tests/"]
+mypy_path = "src"
+# Target 3.12 so mypy can parse NumPy's stubs, which use PEP 695 `type`
+# statements (only valid for python_version >= 3.12). Runtime 3.10 support is
+# verified by the test matrix.
+python_version = "3.12"
+strict = true
 warn_unreachable = true
-strict_equality = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+# Libraries without stubs we install.
+[[tool.mypy.overrides]]
+module = [
+    "networkx.*",
+    "pandas.*",
+    "psutil.*",
+    "scipy.*",
+    "sortingview.*",
+    "threadpoolctl.*",
+]
+ignore_missing_imports = true
 
 # Coverage configuration
 [tool.coverage.run]

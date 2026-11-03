@@ -1,6 +1,6 @@
 # Run `uvx pre-commit install` once; then every commit runs these.
-# `uvx pre-commit run --all-files` runs them by hand. CI runs ruff and zizmor
-# directly.
+# `uvx pre-commit run --all-files` runs them by hand. CI runs ruff, mypy and
+# zizmor directly.
 ci:
   autoupdate_schedule: monthly
   autofix_commit_msg: "style: pre-commit fixes"
@@ -55,3 +55,16 @@ repos:
     rev: v1.31.1
     hooks:
       - id: zizmor
+
+  # The project environment's mypy, so it sees the installed dependencies.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        # --no-sync: never rebuild the shared venv from a hook
+        entry: uv run --no-sync mypy
+        language: system
+        types: [python]
+        files: '^src/non_local_detector/'
+        exclude: '^src/non_local_detector/tests/'
+        pass_filenames: false

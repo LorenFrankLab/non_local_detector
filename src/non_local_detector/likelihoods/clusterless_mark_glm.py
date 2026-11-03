@@ -41,16 +41,20 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
+from typing import Any, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy.special import logsumexp  # type: ignore[import-untyped]
+from numpy.typing import ArrayLike
+from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
+from scipy.special import logsumexp
 from sklearn.mixture import BayesianGaussianMixture  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
@@ -89,7 +93,6 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     GLM_LOG_RATE_PRIOR_STD,
-    DesignInfo,
     SelectedColumnsDesign,
     TrackGraphBasis,
     _fit_rate_maps,
@@ -153,10 +156,11 @@ class MarkMixture:
         log_det = np.sum(
             np.log(np.diagonal(self.precisions_cholesky, axis1=1, axis2=2)), axis=1
         )
-        return (
+        return cast(
+            np.ndarray,
             log_det[None]
             - 0.5 * marks.shape[1] * np.log(2.0 * np.pi)
-            - 0.5 * np.sum(standardized**2, axis=2)
+            - 0.5 * np.sum(standardized**2, axis=2),
         )
 
     def responsibilities(self, marks: np.ndarray) -> np.ndarray:
@@ -173,10 +177,13 @@ class MarkMixture:
             Rows sum to 1.
         """
         log_joint = self.log_component_density(marks) + np.log(self.weights)[None]
-        return np.exp(log_joint - logsumexp(log_joint, axis=1, keepdims=True))
+        return cast(
+            np.ndarray,
+            np.exp(log_joint - logsumexp(log_joint, axis=1, keepdims=True)),
+        )
 
 
-class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
+class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):  # type: ignore[misc]  # sklearn is untyped
     """Variational Bayes Gaussian mixture whose samples count by a weight.
 
     Scales each sample's responsibilities by its weight in the initialization
@@ -223,7 +230,7 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
             raise RuntimeError(msg)
         return self
 
-    def _check_parameters(self, X, *args, **kwargs):
+    def _check_parameters(self, X: np.ndarray, *args: Any, **kwargs: Any) -> None:
         """Weighted default mean and covariance priors."""
         self._n_check_parameters += 1
         super()._check_parameters(X, *args, **kwargs)
@@ -251,7 +258,7 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
                 "spherical": np.diag(covariance).mean(),
             }[self.covariance_type]
 
-    def _compute_lower_bound(self, log_resp, log_prob_norm):
+    def _compute_lower_bound(self, log_resp: np.ndarray, log_prob_norm: float) -> float:
         """Variational bound with each sample's entropy term weighted."""
         self._n_lower_bound += 1
         # scikit-learn's bound has -sum_i sum_k r_ik log r_ik; the weighted
@@ -260,18 +267,23 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):
         entropy_correction = np.sum(
             (1.0 - self._sample_weight)[:, None] * np.exp(log_resp) * log_resp
         )
-        return super()._compute_lower_bound(log_resp, log_prob_norm) + (
-            entropy_correction
+        return cast(
+            float,
+            super()._compute_lower_bound(log_resp, log_prob_norm) + entropy_correction,
         )
 
-    def _initialize(self, X, resp, *args, **kwargs):
+    def _initialize(
+        self, X: np.ndarray, resp: np.ndarray, *args: Any, **kwargs: Any
+    ) -> Any:
         """Weighted initial sufficient statistics."""
         self._n_initialize += 1
         return super()._initialize(
             X, resp * self._sample_weight[:, None], *args, **kwargs
         )
 
-    def _m_step(self, X, log_resp, *args, **kwargs):
+    def _m_step(
+        self, X: np.ndarray, log_resp: np.ndarray, *args: Any, **kwargs: Any
+    ) -> Any:
         """Weighted M-step."""
         self._n_m_step += 1
         return super()._m_step(
@@ -406,10 +418,10 @@ def fit_clusterless_mark_glm_encoding_model(
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     spike_block_size: int = 1000,
     disable_progress_bar: bool = False,
-    encoding_time_range: np.ndarray | None = None,
-    valid_position_intervals: np.ndarray | None = None,
-    _encoding_support: object = None,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> dict[str, Any]:
     """Fit the clusterless mark-mixture GLM encoding model.
 
     Parameters
@@ -517,7 +529,7 @@ def fit_clusterless_mark_glm_encoding_model(
 
     is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
-        environment.place_bin_centers_[is_track_interior]
+        cast(np.ndarray, environment.place_bin_centers_)[is_track_interior]
     )
     encoding_positions = environment.decoding_position(position[support.indices])
 
@@ -525,7 +537,9 @@ def fit_clusterless_mark_glm_encoding_model(
     support_position = np.full(len(position), -1)
     support_position[support.indices] = np.arange(len(support.indices))
     mark_mixtures: list[MarkMixture | None] = []
-    mean_rates, mark_dimensions, spike_events = [], [], []
+    mean_rates: list[float] = []
+    mark_dimensions: list[int] = []
+    spike_events: list[_SpikeEvent] = []
     for electrode, (electrode_times, electrode_marks) in enumerate(
         zip(spike_times, spike_waveform_features, strict=True)
     ):
@@ -585,7 +599,7 @@ def fit_clusterless_mark_glm_encoding_model(
 
     emission_design_info, coefficients, interior_rates = _fit_rate_maps(
         environment,
-        environment.place_bin_edges_,
+        cast(np.ndarray, environment.place_bin_edges_),
         interior_place_bin_centers,
         encoding_positions,
         _soft_cell_counts(spike_events),
@@ -594,14 +608,14 @@ def fit_clusterless_mark_glm_encoding_model(
         log_rate_prior_std=log_rate_prior_std,
         n_maps=sum(event[0].n_components for event in spike_events),
     )
-    coefficients = np.asarray(coefficients)
-    interior_rates = np.asarray(interior_rates)
-    rate_coefficients: list[np.ndarray | None] = []
+    coefficients = np.asarray(coefficients)  # type: ignore[assignment]  # name reused for the host copy
+    interior_rates = np.asarray(interior_rates)  # type: ignore[assignment]  # name reused for the host copy
+    rate_coefficients: list[np.ndarray | jax.Array | None] = []
     log_rate_maps: list[np.ndarray | None] = []
     first = 0
-    for mixture in mark_mixtures:
+    for mixture in mark_mixtures:  # type: ignore[assignment]  # name reused; elements may be None
         if mixture is None:
-            rate_coefficients.append(None)
+            rate_coefficients.append(None)  # type: ignore[unreachable]  # follows from the name reuse above
             log_rate_maps.append(None)
             continue
         maps = slice(first, first + mixture.n_components)
@@ -631,8 +645,14 @@ def fit_clusterless_mark_glm_encoding_model(
     }
 
 
+# Per fitted electrode: mixture, marks, left/right support positions and shares.
+_SpikeEvent: TypeAlias = tuple[
+    MarkMixture, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]
+
+
 def _soft_cell_counts(
-    spike_events: list[tuple],
+    spike_events: list[_SpikeEvent],
 ) -> Callable[[np.ndarray, int], np.ndarray]:
     """Sum each spike's shares, split by its mark responsibilities, into cells.
 
@@ -737,8 +757,9 @@ def _masked_log_density(
     log_density = _estimate_log_gaussian_prob(
         features, means, precisions_cholesky, "full"
     )
-    return jnp.where(
-        is_component[None] & ~jnp.isnan(log_density), log_density, -jnp.inf
+    return cast(
+        jnp.ndarray,
+        jnp.where(is_component[None] & ~jnp.isnan(log_density), log_density, -jnp.inf),
     )
 
 
@@ -817,8 +838,11 @@ def _add_electrode_intensities(
             indices_are_sorted=indices_are_sorted,
         )
 
-    return jax.lax.fori_loop(
-        0, features.shape[0] // block_size, add_block, log_likelihood
+    return cast(
+        jnp.ndarray,
+        jax.lax.fori_loop(
+            0, features.shape[0] // block_size, add_block, log_likelihood
+        ),
     )
 
 
@@ -903,7 +927,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     mark_reference: list[MarkReference | None],
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
-    environment_grid: dict | None = None,
+    environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:

@@ -4,14 +4,15 @@ from collections import OrderedDict
 from collections.abc import Callable, Sequence, Sized
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.interpolate  # type: ignore[import-untyped]
-import scipy.spatial  # type: ignore[import-untyped]
+import scipy.interpolate
+import scipy.spatial
 from jax.nn import logsumexp
+from numpy.typing import ArrayLike, NDArray
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
@@ -23,6 +24,9 @@ from non_local_detector.time_edges import (
     validate_time_edges,
 )
 
+if TYPE_CHECKING:
+    from non_local_detector.encoding_time import EncodingSupport
+
 # JAX exposes this exception only privately. Older supported releases predate
 # explicit sharding and may lack the type; an empty tuple catches nothing.
 try:
@@ -31,6 +35,8 @@ except ImportError:
     _JAX_SHARDING_ERRORS: tuple[type[Exception], ...] = ()
 else:
     _JAX_SHARDING_ERRORS = (_JaxShardingTypeError,)
+
+_T = TypeVar("_T")
 
 EPS = 1e-15
 LOG_EPS = np.log(EPS)
@@ -44,12 +50,12 @@ DEFAULT_WAVEFORM_STD = 24.0
 
 
 def log_bin_duration_evidence(
-    spike_times,
-    time_edges,
-    row_slice,
-    spike_time_order,
+    spike_times: Sequence[np.ndarray | jax.Array],
+    time_edges: NDArray[np.float64],
+    row_slice: slice | None,
+    spike_time_order: "_SpikeTimeOrder | None",
     *,
-    intensity_time_scale=1.0,
+    intensity_time_scale: float = 1.0,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """The marked-process event term ``N_bin * log(duration / intensity_time_scale)``.
@@ -75,7 +81,9 @@ def log_bin_duration_evidence(
     )
 
 
-def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
+def as_std_array(
+    std: "jnp.ndarray | np.ndarray | float | int", n_dims: int
+) -> jnp.ndarray:
     """Broadcast a scalar kernel bandwidth to a per-dimension array.
 
     A single ``jnp.ndim`` check covers Python ``int``/``float``, NumPy scalars
@@ -102,7 +110,7 @@ def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
     return jnp.asarray(std)
 
 
-def validate_bandwidth(std, n_dims: int, name: str) -> jnp.ndarray:
+def validate_bandwidth(std: Any, n_dims: int, name: str) -> jnp.ndarray:
     """Kernel bandwidths as a per-dimension array, rejecting unusable values.
 
     A zero, negative or non-finite bandwidth would fit a degenerate kernel that
@@ -160,7 +168,7 @@ def validate_bandwidth(std, n_dims: int, name: str) -> jnp.ndarray:
     return jnp.asarray(values)
 
 
-def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
+def validate_weights(weights: np.ndarray | jax.Array, n_time: int) -> np.ndarray:
     """Validate per-sample weights shared by the sorted-spikes and clusterless fits.
 
     Weights feed both the occupancy field and the spike counts, so an invalid
@@ -281,7 +289,7 @@ def validate_population_lengths(unit_name: str, **populations: Sized | None) -> 
     return expected
 
 
-def environment_grid_fingerprint(environment: Environment) -> dict:
+def environment_grid_fingerprint(environment: Environment) -> dict[str, Any]:
     """Identify the fitted place grid that an encoding model's arrays describe.
 
     Encoding models store occupancy, rates and interior masks per bin of the
@@ -304,7 +312,9 @@ def environment_grid_fingerprint(environment: Environment) -> dict:
         a copy of every bin, and holds only Python values, so it pickles with
         the encoding model.
     """
-    centers_shape = tuple(int(n) for n in environment.centers_shape_)
+    centers_shape = tuple(
+        int(n) for n in cast(tuple[int, ...], environment.centers_shape_)
+    )
     # A grid without an interior mask treats every bin as interior.
     is_track_interior = (
         np.ones(centers_shape, dtype=bool)
@@ -315,7 +325,10 @@ def environment_grid_fingerprint(environment: Environment) -> dict:
     for array in (
         np.asarray(environment.place_bin_centers_, dtype="<f8"),
         is_track_interior,
-        *(np.asarray(edge, dtype="<f8") for edge in environment.edges_),
+        *(
+            np.asarray(edge, dtype="<f8")
+            for edge in cast(tuple[NDArray[Any], ...], environment.edges_)
+        ),
     ):
         digest.update(repr(array.shape).encode())
         digest.update(np.ascontiguousarray(array).tobytes())
@@ -329,7 +342,7 @@ def environment_grid_fingerprint(environment: Environment) -> dict:
 def validate_encoding_contract(
     rate_units: str | None,
     environment: Environment,
-    environment_grid: dict | None,
+    environment_grid: dict[str, Any] | None,
 ) -> None:
     """Require Hz rates fit on the environment's current grid.
 
@@ -477,11 +490,11 @@ def validate_spike_feature_population(
 
 
 def interpolate_weights_at_spike_times(
-    spike_times: np.ndarray,
-    position_time: np.ndarray,
-    weights: np.ndarray,
+    spike_times: np.ndarray | jax.Array,
+    position_time: np.ndarray | jax.Array,
+    weights: np.ndarray | jax.Array,
     *,
-    encoding_support=None,
+    encoding_support: "EncodingSupport | None" = None,
 ) -> np.ndarray:
     """Per-spike weights: the per-sample ``weights`` linearly interpolated onto times.
 
@@ -506,8 +519,11 @@ def interpolate_weights_at_spike_times(
     """
     if encoding_support is not None:
         return encoding_support.interpolate(weights, spike_times, fill_value=0.0)
-    return np.interp(
-        np.asarray(spike_times), np.asarray(position_time), np.asarray(weights)
+    return cast(
+        np.ndarray,
+        np.interp(
+            np.asarray(spike_times), np.asarray(position_time), np.asarray(weights)
+        ),
     )
 
 
@@ -536,7 +552,9 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
 _EMISSION_BLOCK_ROWS = 64
 
 
-def _matrix_emission_is_safe(rates, durations, accumulator_dtype):
+def _matrix_emission_is_safe(
+    rates: jax.Array, durations: jax.Array, accumulator_dtype: Any
+) -> jax.Array:
     """Whether the Poisson emission can use the log-rate matrix product.
 
     Parameters
@@ -554,8 +572,10 @@ def _matrix_emission_is_safe(rates, durations, accumulator_dtype):
         have the accumulator dtype. No duration value enters, so every row
         range of a decode grid takes the same path.
     """
-    return jnp.all(jnp.isfinite(rates) & (rates > 0)) & (
-        jnp.result_type(rates, durations) == accumulator_dtype
+    return cast(
+        jax.Array,
+        jnp.all(jnp.isfinite(rates) & (rates > 0))
+        & (jnp.result_type(rates, durations) == accumulator_dtype),
     )
 
 
@@ -613,8 +633,8 @@ def _poisson_nonlocal_log_likelihood(
     usable_rates = jnp.isfinite(rates) & (rates > 0)
     log_rates = jnp.log(jnp.where(usable_rates, rates, 1).astype(matrix_dtype))
 
-    def emit_block(block_counts, block_durations):
-        def matrix_accumulation(_):
+    def emit_block(block_counts: jax.Array, block_durations: jax.Array) -> jax.Array:
+        def matrix_accumulation(_: None) -> jax.Array:
             block_counts_float = block_counts.astype(matrix_dtype)
             n_spikes = block_counts_float.sum(axis=1, keepdims=True)
             # log(rate * duration) = log(rate) + log(duration): one product
@@ -633,15 +653,17 @@ def _poisson_nonlocal_log_likelihood(
             )
             return values.astype(accumulator_dtype)
 
-        def xlogy_accumulation(_):
-            def add_neuron(likelihood, neuron):
+        def xlogy_accumulation(_: None) -> jax.Array:
+            def add_neuron(
+                likelihood: jax.Array, neuron: tuple[jax.Array, jax.Array]
+            ) -> tuple[jax.Array, None]:
                 neuron_counts, neuron_rates = neuron
-                product = jax.lax.optimization_barrier(
+                product = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # untyped in JAX
                     neuron_rates[None, :] * block_durations[:, None]
                 )
                 # Floating counts give integer inputs a zero tangent instead of
                 # float0, so rate and duration derivatives pass through.
-                contribution = jax.lax.optimization_barrier(
+                contribution = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # untyped in JAX
                     jax.scipy.special.xlogy(
                         neuron_counts.astype(jnp.result_type(neuron_counts, product))[
                             :, None
@@ -649,7 +671,7 @@ def _poisson_nonlocal_log_likelihood(
                         product,
                     )
                 )
-                return jax.lax.optimization_barrier(likelihood + contribution), None
+                return jax.lax.optimization_barrier(likelihood + contribution), None  # type: ignore[no-untyped-call]  # untyped in JAX
 
             likelihood, _ = jax.lax.scan(
                 add_neuron,
@@ -658,14 +680,15 @@ def _poisson_nonlocal_log_likelihood(
             )
             return likelihood
 
-        return jax.lax.cond(
-            matrix_is_safe, matrix_accumulation, xlogy_accumulation, None
+        return cast(
+            jax.Array,
+            jax.lax.cond(matrix_is_safe, matrix_accumulation, xlogy_accumulation, None),
         )
 
-    def durations_at(first):
+    def durations_at(first: jax.Array | int) -> jax.Array:
         return jax.lax.dynamic_slice(row_durations, (first,), (block_rows,))
 
-    def update_edge_block(number, result):
+    def update_edge_block(number: int, result: jax.Array) -> jax.Array:
         first = number * block_rows
         # Indexing the requested rows directly, with zero counts outside them
         # and those rows dropped from the result, copies neither the counts
@@ -677,7 +700,7 @@ def _poisson_nonlocal_log_likelihood(
         )
         return result.at[rows].set(block, mode="drop")
 
-    def update_interior_block(number, result):
+    def update_interior_block(number: jax.Array, result: jax.Array) -> jax.Array:
         first = number * block_rows
         block = emit_block(
             jax.lax.dynamic_slice(counts, (first - lead, 0), (block_rows, n_neurons)),
@@ -713,7 +736,7 @@ def _concatenate_row_blocks(
     row_start: int,
     row_stop: int,
     n_neurons: int,
-    evaluate,
+    evaluate: Callable[[int, int], jax.Array],
     desc: str,
     disable_progress_bar: bool,
 ) -> jnp.ndarray:
@@ -797,11 +820,14 @@ def _blocked_nonlocal_poisson_log_likelihood(
         # Verify each neuron's spike ordering once, not once per block.
         _spike_time_order = _SpikeTimeOrder()
     if row_start == row_stop:
-        return _poisson_nonlocal_log_likelihood(
-            jnp.zeros((0, len(spike_times))), rates, durations, summed_rates
+        return cast(
+            jax.Array,
+            _poisson_nonlocal_log_likelihood(
+                jnp.zeros((0, len(spike_times))), rates, durations, summed_rates
+            ),
         )
 
-    def evaluate(start, stop):
+    def evaluate(start: int, stop: int) -> jax.Array:
         counts = _spike_counts_matrix(
             spike_times,
             time_edges,
@@ -812,12 +838,15 @@ def _blocked_nonlocal_poisson_log_likelihood(
         )
         # Emission blocks start at multiples of 64 decode rows, so a row sits
         # at the same position of the same block shape in every row range.
-        return _poisson_nonlocal_log_likelihood(
-            jnp.asarray(counts),
-            rates,
-            durations[start - row_start : stop - row_start],
-            summed_rates,
-            start % _EMISSION_BLOCK_ROWS,
+        return cast(
+            jax.Array,
+            _poisson_nonlocal_log_likelihood(
+                jnp.asarray(counts),
+                rates,
+                durations[start - row_start : stop - row_start],
+                summed_rates,
+                start % _EMISSION_BLOCK_ROWS,
+            ),
         )
 
     return _concatenate_row_blocks(
@@ -832,11 +861,11 @@ def _blocked_nonlocal_poisson_log_likelihood(
 
 def get_position_at_time(
     time: np.ndarray | jnp.ndarray,
-    position: jnp.ndarray,
+    position: np.ndarray | jnp.ndarray,
     spike_times: np.ndarray | jnp.ndarray,
     env: Environment | None = None,
     *,
-    encoding_support=None,
+    encoding_support: "EncodingSupport | None" = None,
 ) -> np.ndarray:
     """Get the position at the time of each spike.
 
@@ -864,7 +893,7 @@ def get_position_at_time(
     if env is not None:
         position_at_spike_times = env.decoding_position(position_at_spike_times)
 
-    return position_at_spike_times
+    return cast(np.ndarray, position_at_spike_times)
 
 
 def snap_off_track_positions(
@@ -899,7 +928,7 @@ def snap_off_track_positions(
     points = position if position.ndim > 1 else position[:, np.newaxis]
     if points.shape[0] == 0:
         return position
-    edges = environment.edges_
+    edges = cast(tuple[NDArray[Any], ...], environment.edges_)
     n_bins = [len(dimension_edges) - 1 for dimension_edges in edges]
     is_interior = environment.is_track_interior_flat_
     finite = np.all(np.isfinite(points), axis=1)
@@ -923,7 +952,7 @@ def snap_off_track_positions(
                 0,
                 n_bins[dim] - 1,
             )
-            for side in ("left", "right")
+            for side in cast(tuple[Literal["left", "right"], ...], ("left", "right"))
         ]
         for dim, dimension_edges in enumerate(edges)
     ]
@@ -992,13 +1021,13 @@ class _SpikeTimeOrder:
 
     def __init__(self) -> None:
         self._entries: dict[int, tuple[object, np.ndarray, bool]] = {}
-        self._prepared: dict[tuple, tuple[tuple, object]] = {}
-        self._kde_prepared: OrderedDict[tuple, tuple[tuple, object, int]] = (
-            OrderedDict()
-        )
+        self._prepared: dict[tuple[Any, ...], tuple[tuple[Any, ...], Any]] = {}
+        self._kde_prepared: OrderedDict[
+            tuple[Any, ...], tuple[tuple[Any, ...], Any, int]
+        ] = OrderedDict()
         self._kde_prepared_bytes = 0
 
-    def memo(self, name: str, sources: tuple, build):
+    def memo(self, name: str, sources: tuple[Any, ...], build: Callable[[], _T]) -> _T:
         """Return ``build()``, computed once per ``name`` and ``sources`` identities.
 
         ``sources`` are kept alive so their ids cannot be reused during the
@@ -1007,9 +1036,11 @@ class _SpikeTimeOrder:
         key = (name, *map(id, sources))
         if key not in self._prepared:
             self._prepared[key] = (sources, build())
-        return self._prepared[key][1]
+        return cast(_T, self._prepared[key][1])
 
-    def memo_kde(self, name: str, sources: tuple, build):
+    def memo_kde(
+        self, name: str, sources: tuple[Any, ...], build: Callable[[], _T]
+    ) -> _T:
         """Prediction-scoped preparation, bounding values and retained source arrays.
 
         Counting source arrays conservatively includes already resident inputs.
@@ -1018,7 +1049,7 @@ class _SpikeTimeOrder:
         key = (name, *map(id, sources))
         if key in self._kde_prepared:
             self._kde_prepared.move_to_end(key)
-            return self._kde_prepared[key][1]
+            return cast(_T, self._kde_prepared[key][1])
         value = build()
         size = sum(
             int(getattr(leaf, "nbytes", 0))
@@ -1035,7 +1066,7 @@ class _SpikeTimeOrder:
             self._kde_prepared_bytes += size
         return value
 
-    def get(self, spike_times) -> tuple[np.ndarray, bool]:
+    def get(self, spike_times: ArrayLike) -> tuple[np.ndarray, bool]:
         """Return the original input's host values and established ordering."""
         key = id(spike_times)
         if key not in self._entries:
@@ -1067,7 +1098,7 @@ class SpikeSelection:
 
 @requires_time_edges
 def select_spikes_in_rows(
-    spike_times: np.ndarray,
+    spike_times: np.ndarray | jax.Array,
     row_start: int,
     row_stop: int,
     *,
@@ -1186,7 +1217,9 @@ def _segmented_inclusive_sum(starts: jnp.ndarray, values: jnp.ndarray) -> jnp.nd
     position = jnp.arange(n)
     broadcast = (n,) + (1,) * (values.ndim - 1)
 
-    def step(k, carry):
+    def step(
+        k: jax.Array, carry: tuple[jax.Array, jax.Array]
+    ) -> tuple[jax.Array, jax.Array]:
         reaches_start, sums = carry
         shift = jnp.left_shift(1, k)
         # Rows that already reach a start (all rows below ``shift`` do) keep
@@ -1195,12 +1228,15 @@ def _segmented_inclusive_sum(starts: jnp.ndarray, values: jnp.ndarray) -> jnp.nd
         sums = jnp.where(keep, sums, jnp.roll(sums, shift, axis=0) + sums)
         return reaches_start | jnp.roll(reaches_start, shift), sums
 
-    return jax.lax.fori_loop(0, max(n - 1, 0).bit_length(), step, (starts, values))[1]
+    return cast(
+        jax.Array,
+        jax.lax.fori_loop(0, max(n - 1, 0).bit_length(), step, (starts, values))[1],
+    )
 
 
 def _segment_totals(
     values: jnp.ndarray,
-    segment_ids: jnp.ndarray,
+    segment_ids: jax.Array | np.ndarray,
     num_segments: int,
     indices_are_sorted: bool,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -1245,7 +1281,7 @@ def _scatter_add_segment_totals(
     output: jnp.ndarray,
     sums: jnp.ndarray,
     targets: jnp.ndarray,
-    column_start=None,
+    column_start: int | jax.Array | None = None,
 ) -> jnp.ndarray:
     """Add each segment's total to its row of ``output``; drop every other row.
 
@@ -1337,7 +1373,7 @@ def deterministic_segment_sum(
     return _scatter_add_segment_totals(jnp.zeros(shape, values.dtype), sums, targets)
 
 
-def _reduces_sequentially(values) -> bool:
+def _reduces_sequentially(values: jax.Array) -> bool:
     """Whether ``values`` live on CPU, where XLA scatter adds updates in order.
 
     Traced values carry no device, so the default backend decides; a CPU
@@ -1355,8 +1391,8 @@ def _bucketed_size(n: int) -> int:
 
 
 def deterministic_row_sum(
-    values: jnp.ndarray,
-    row_ids: jnp.ndarray,
+    values: jax.Array | np.ndarray,
+    row_ids: jax.Array | np.ndarray,
     n_rows: int,
     *,
     indices_are_sorted: bool = False,
@@ -1410,14 +1446,17 @@ def deterministic_row_sum(
             row_ids = jnp.concatenate(
                 [row_ids, jnp.full(padding, n_rows, dtype=row_ids.dtype)]
             )
-    return deterministic_segment_sum(values, row_ids, n_rows, indices_are_sorted)
+    return cast(
+        jax.Array,
+        deterministic_segment_sum(values, row_ids, n_rows, indices_are_sorted),
+    )
 
 
 def deterministic_row_add(
     output: jnp.ndarray,
-    values: jnp.ndarray,
-    row_ids: jnp.ndarray,
-    column_start=0,
+    values: jax.Array | np.ndarray,
+    row_ids: jax.Array | np.ndarray,
+    column_start: int | jax.Array = 0,
     *,
     indices_are_sorted: bool = False,
 ) -> jnp.ndarray:
@@ -1507,7 +1546,7 @@ def sum_spikes_into_rows(
     # Padding rows are dropped from the sum.
     n_padded = _padded_sample_count(len(indices)) if on_host else None
     return deterministic_row_sum(
-        jnp.asarray(_pad_rows(values, n_padded)) if on_host else values,
+        jnp.asarray(_pad_rows(values, cast(int, n_padded))) if on_host else values,
         spike_row_ids(selection, n_padded),
         selection.n_rows,
         indices_are_sorted=selection.indices_are_sorted,
@@ -1582,7 +1621,7 @@ def log_gaussian_pdf(
     divisor = sigma
     if x.size == 1 or mean.size == 1:
         shape = jnp.broadcast_shapes(x.shape, mean.shape, jnp.shape(sigma))
-        divisor = jax.lax.optimization_barrier(jnp.broadcast_to(sigma, shape))
+        divisor = jax.lax.optimization_barrier(jnp.broadcast_to(sigma, shape))  # type: ignore[no-untyped-call]  # untyped in JAX
     return -0.5 * ((x - mean) / divisor) ** 2 - jnp.log(sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
@@ -1729,7 +1768,10 @@ def block_kde(
     if block_size > 0 and -(-n_eval_points // block_size) > _UNROLLED_KDE_BLOCKS:
         # Many small blocks (large sample sets) run as one compiled loop
         # instead of one dispatch per block.
-        return _compiled_block_kde(eval_points, samples, std, block_size, weights)
+        return cast(
+            jax.Array,
+            _compiled_block_kde(eval_points, samples, std, block_size, weights),
+        )
     blocks = [
         kde(eval_points[start : start + block_size], samples, std, weights)
         for start in range(0, n_eval_points, block_size)
@@ -1794,7 +1836,7 @@ def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -
     return block_size * _quarter_octave(-(-n_spikes // block_size))
 
 
-def _pad_rows(array, n_rows: int) -> np.ndarray:
+def _pad_rows(array: ArrayLike, n_rows: int) -> np.ndarray:
     """Zero rows appended on the host to reach ``n_rows``."""
     array = np.asarray(array)
     padding = np.zeros((n_rows - array.shape[0], *array.shape[1:]), array.dtype)
@@ -1827,7 +1869,7 @@ def _padded_samples(
     samples, weights : jnp.ndarray, shape (n_padded, n_dims) and (n_padded,)
     """
 
-    def build():
+    def build() -> tuple[jax.Array, jax.Array]:
         n_samples = count(np.shape(samples)[0])
         sample_weights = (
             np.ones(np.shape(samples)[0]) if weights is None else np.asarray(weights)
@@ -1852,7 +1894,13 @@ _UNROLLED_KDE_BLOCKS = 8
 _KDE_BLOCK_KERNEL_BYTES = 256 * 1024**2
 
 
-def _kde_block_rows(block_size: int, eval_points, samples, std, weights) -> int:
+def _kde_block_rows(
+    block_size: int,
+    eval_points: jax.Array | np.ndarray,
+    samples: jax.Array | np.ndarray,
+    std: jax.Array,
+    weights: jax.Array | np.ndarray,
+) -> int:
     """Evaluation rows per block: ``block_size``, reduced to the kernel budget.
 
     Parameters
@@ -1874,12 +1922,22 @@ def _kde_block_rows(block_size: int, eval_points, samples, std, weights) -> int:
     """
     # _log_kernel_matrix accumulates into the default float type.
     accumulator = jax.dtypes.canonicalize_dtype(jnp.float64)
-    itemsize = jnp.result_type(eval_points, samples, std, weights, accumulator).itemsize
+    itemsize: int = jnp.result_type(
+        eval_points, samples, std, weights, accumulator
+    ).itemsize
     budget_rows = _KDE_BLOCK_KERNEL_BYTES // (max(samples.shape[0], 1) * itemsize)
     return min(block_size, max(1, budget_rows))
 
 
-def _traced_blocks(blocked, kernel, points, samples, std, block_size, weights):
+def _traced_blocks(
+    blocked: Callable[..., jax.Array],
+    kernel: Callable[..., jax.Array],
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+) -> jax.Array:
     """Blocked KDE inside a trace, with a bounded graph for any row count.
 
     Rows per block are reduced so one block's kernel matrix fits
@@ -1897,10 +1955,16 @@ def _traced_blocks(blocked, kernel, points, samples, std, block_size, weights):
         lambda block: kernel(block, samples, std, weights),
         padded.reshape(n_blocks, block_size, points.shape[1]),
     )
-    return values.reshape(-1)[:n_points]
+    return cast(jax.Array, values.reshape(-1)[:n_points])
 
 
-def _traced_block_kde(points, samples, std, block_size, weights):
+def _traced_block_kde(
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+) -> jax.Array:
     """``block_kde`` inside a trace, with a bounded graph for any row count.
 
     Each point's density depends only on that point, so the unrolled and
@@ -1957,7 +2021,9 @@ _compiled_block_log_kde = jax.jit(
 )
 
 
-def _relative_weights(weights: jnp.ndarray):
+def _relative_weights(
+    weights: jnp.ndarray,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Weights relative to the largest, their logs, and their sum.
 
     Parameters
@@ -1987,13 +2053,13 @@ def _relative_weights(weights: jnp.ndarray):
     # without changing ordinary-weight arithmetic; the barrier prevents
     # cancellation of this protective scale during compiler reassociation.
     positive_weights, weight_scale = jax.lax.cond(
-        weight_scale > 1.0 / jnp.finfo(positive_weights.dtype).tiny,
-        lambda pair: jax.lax.optimization_barrier((pair[0] * 0.25, pair[1] * 0.25)),
+        weight_scale > 1.0 / jnp.finfo(positive_weights.dtype).tiny,  # type: ignore[no-untyped-call]  # untyped in JAX
+        lambda pair: jax.lax.optimization_barrier((pair[0] * 0.25, pair[1] * 0.25)),  # type: ignore[no-untyped-call]  # untyped in JAX
         lambda pair: pair,
         (positive_weights, weight_scale),
     )
     relative_weights = positive_weights / weight_scale
-    representable = relative_weights >= jnp.finfo(relative_weights.dtype).tiny
+    representable = relative_weights >= jnp.finfo(relative_weights.dtype).tiny  # type: ignore[no-untyped-call]  # untyped in JAX
     log_weights = jnp.where(
         representable,
         jnp.log(jnp.where(representable, relative_weights, 1.0)),
@@ -2040,7 +2106,7 @@ def log_kde(
     log_total = jnp.log(jnp.where(total > 0, total, 1.0))
     positive = weights > 0
 
-    def supported(_):
+    def supported(_: None) -> jax.Array:
         # Offset each point by its largest weighted term, so weights of any
         # representable ratio contribute. Each kernel is taken relative to the
         # offset before its log weight is added: adding a log weight to a huge
@@ -2073,11 +2139,14 @@ def log_kde(
         return jnp.where(jnp.any(jnp.isnan(K_log), axis=0), jnp.nan, values)
 
     # Bypass undefined empty reductions, including their derivatives.
-    return jax.lax.cond(
-        jnp.any(positive),
-        supported,
-        lambda _: jnp.full(eval_points.shape[0], LOG_EPS),
-        None,
+    return cast(
+        jax.Array,
+        jax.lax.cond(
+            jnp.any(positive),
+            supported,
+            lambda _: jnp.full(eval_points.shape[0], LOG_EPS),
+            None,
+        ),
     )
 
 
@@ -2119,7 +2188,10 @@ def block_log_kde(
     # Collect per-block log-densities and concatenate once (see block_kde).
     block_size = _kde_block_rows(block_size, eval_points, samples, std, weights)
     if block_size > 0 and -(-n_eval // block_size) > _UNROLLED_KDE_BLOCKS:
-        return _compiled_block_log_kde(eval_points, samples, std, block_size, weights)
+        return cast(
+            jax.Array,
+            _compiled_block_log_kde(eval_points, samples, std, block_size, weights),
+        )
     blocks = [
         log_kde(eval_points[start : start + block_size], samples, std, weights)
         for start in range(0, n_eval, block_size)
@@ -2183,7 +2255,9 @@ class KDEModel:
     weights_: jnp.ndarray | None = field(init=False, default=None)
 
     def fit(
-        self, samples: jnp.ndarray, weights: jnp.ndarray | None = None
+        self,
+        samples: jnp.ndarray | np.ndarray,
+        weights: jnp.ndarray | np.ndarray | None = None,
     ) -> "KDEModel":
         """Fit the model.
 
@@ -2261,10 +2335,11 @@ class KDEModel:
         values = block_log_kde(
             eval_points, self.samples_, std, block_size, self.weights_
         )
+        assert self.weights_ is not None  # set together with samples_ in fit
         return jnp.where(jnp.sum(self.weights_) > 0.0, values, -jnp.inf)
 
 
-def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
+def kde_log_density(model: KDEModel, points: jnp.ndarray | np.ndarray) -> jnp.ndarray:
     """True log density, with zero total fitted weight represented as zero mass.
 
     No samples or zero total weight gives ``-inf`` at every point, unlike
@@ -2279,6 +2354,7 @@ def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
         if model.samples_ is None:
             msg = "This KDE instance is not fitted yet."
             raise RuntimeError(msg)
+        assert model.weights_ is not None  # set together with samples_ in fit
         points = jnp.asarray(points)
         if points.ndim == 1:
             points = points[:, None]
@@ -2291,14 +2367,21 @@ def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
             _sorted_sample_keys(points, model.samples_, model.weights_),
         )
     # Preserve custom KDE subclasses' predict_log implementations.
-    values = model.predict_log(points)
-    total = jnp.sum(model.weights_)
+    values = model.predict_log(cast(jax.Array, points))
+    total = jnp.sum(cast(jax.Array, model.weights_))
     return jnp.where(
         jnp.isnan(total), jnp.nan, jnp.where(total > 0.0, values, -jnp.inf)
     )
 
 
-def _true_kde_log_density(points, samples, std, block_size, weights, keys=None):
+def _true_kde_log_density(
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+    keys: jax.Array | None = None,
+) -> jax.Array:
     """True log density of fitted KDE leaves, outside jit.
 
     One compiled scaled pass (see :func:`_scaled_kde_log_density`), then the
@@ -2328,8 +2411,14 @@ def _true_kde_log_density(points, samples, std, block_size, weights, keys=None):
 
 
 def _repair_in_log_space(
-    values, needs_log_space, points, samples, std, block_size, weights
-):
+    values: jax.Array,
+    needs_log_space: NDArray[np.bool_],
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+) -> jax.Array:
     """Replace the flagged points of a scaled pass with log-space values.
 
     Parameters
@@ -2352,7 +2441,9 @@ def _repair_in_log_space(
     return values.at[index].set(exact[: index.size])
 
 
-def _kde_log_densities(models, points) -> list:
+def _kde_log_densities(
+    models: Sequence["KDEModel"], points: jax.Array | np.ndarray
+) -> list[jax.Array]:
     """True log densities of several fitted KDEs at the same points.
 
     ``kde_log_density`` for each model, with fewer compiled kernels: models
@@ -2374,8 +2465,8 @@ def _kde_log_densities(models, points) -> list:
     points = jnp.asarray(points)
     if points.ndim == 1:
         points = points[:, None]
-    results = [None] * len(models)
-    groups: dict = {}
+    results: list[jax.Array] = [None] * len(models)  # type: ignore[list-item]  # every slot is filled before return
+    groups: dict[tuple[Any, ...], list[int]] = {}
     for index, model in enumerate(models):
         if type(model) is not KDEModel:
             results[index] = kde_log_density(model, points)
@@ -2383,18 +2474,23 @@ def _kde_log_densities(models, points) -> list:
         if model.samples_ is None:
             msg = "This KDE instance is not fitted yet."
             raise RuntimeError(msg)
-        std = np.asarray(as_std_array(model.std, points.shape[1]))
+        assert model.weights_ is not None  # set together with samples_ in fit
+        std_bytes = np.asarray(as_std_array(model.std, points.shape[1])).tobytes()
         key = (
             _padded_sample_count(model.samples_.shape[0]),
             points.shape[0] if model.block_size is None else model.block_size,
-            std.tobytes(),
+            std_bytes,
             np.dtype(model.samples_.dtype).str,
             np.dtype(model.weights_.dtype).str,
         )
         groups.setdefault(key, []).append(index)
     for (n_padded, block_size, _, _, _), members in groups.items():
-        samples = np.stack([_pad_rows(models[i].samples_, n_padded) for i in members])
-        weights = np.stack([_pad_rows(models[i].weights_, n_padded) for i in members])
+        samples = np.stack(
+            [_pad_rows(cast(jax.Array, models[i].samples_), n_padded) for i in members]
+        )
+        weights = np.stack(
+            [_pad_rows(cast(jax.Array, models[i].weights_), n_padded) for i in members]
+        )
         std = as_std_array(models[members[0]].std, points.shape[1])
         keys = None
         if points.shape[1] == 1:
@@ -2446,7 +2542,13 @@ def _padded_index(index: np.ndarray) -> np.ndarray:
     )
 
 
-def _log_space_kde_log_density(points, samples, std, block_size, weights):
+def _log_space_kde_log_density(
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+) -> jax.Array:
     """True log density evaluated entirely in log space.
 
     Re-evaluates the points a scaled pass flags; traced callers use it
@@ -2461,7 +2563,9 @@ def _log_space_kde_log_density(points, samples, std, block_size, weights):
     )
 
 
-def _sorted_sample_keys(points, samples, weights):
+def _sorted_sample_keys(
+    points: jax.Array, samples: jax.Array | np.ndarray, weights: jax.Array
+) -> jax.Array | None:
     """Sorted 1D sample positions for :func:`_kde_log_scale`, or None.
 
     Samples without positive weight become ``inf``, which sorts last. The
@@ -2486,7 +2590,9 @@ def _sorted_sample_keys(points, samples, weights):
     return jnp.asarray(np.sort(keys.astype(samples.dtype, copy=False)))
 
 
-def _nearest_sample_log_kernel(points, keys, std):
+def _nearest_sample_log_kernel(
+    points: jax.Array, keys: jax.Array, std: jax.Array
+) -> jax.Array:
     """Each 1D point's largest log kernel, at its nearest key by binary search.
 
     Parameters
@@ -2509,10 +2615,12 @@ def _nearest_sample_log_kernel(points, keys, std):
     nearest = jnp.where(
         jnp.abs(points[:, 0] - left) <= jnp.abs(points[:, 0] - right), left, right
     )
-    return log_gaussian_pdf(points[:, 0], nearest, std[0])
+    return cast(jax.Array, log_gaussian_pdf(points[:, 0], nearest, std[0]))
 
 
-def _kde_log_scale(points, std, keys=None):
+def _kde_log_scale(
+    points: jax.Array, std: jax.Array, keys: jax.Array | None = None
+) -> jax.Array:
     """Per-point upper bound on the largest log kernel over positive weights.
 
     With sorted 1D ``keys`` (:func:`_sorted_sample_keys`) the nearest
@@ -2536,10 +2644,19 @@ def _kde_log_scale(points, std, keys=None):
     if keys is None:
         return jnp.full(points.shape[0], peak)
     scale = _nearest_sample_log_kernel(points, keys, std)
-    return jax.lax.stop_gradient(jnp.where(jnp.isfinite(scale), scale, peak))
+    return cast(
+        jax.Array, jax.lax.stop_gradient(jnp.where(jnp.isfinite(scale), scale, peak))
+    )
 
 
-def _scaled_kde_log_density(points, samples, std, block_size, weights, keys=None):
+def _scaled_kde_log_density(
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+    keys: jax.Array | None = None,
+) -> tuple[jax.Array, jax.Array]:
     """True log density in one pass per block, each point scaled first.
 
     Each point's log kernels are shifted by :func:`_kde_log_scale` before
@@ -2579,7 +2696,7 @@ def _scaled_kde_log_density(points, samples, std, block_size, weights, keys=None
 
     scale = _kde_log_scale(points, std, keys)
 
-    def block_values(block):
+    def block_values(block: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array]:
         block_points, block_scale = block
         log_kernel = _log_kernel_matrix(block_points, samples, std)
         scaled = jnp.matmul(
@@ -2600,8 +2717,8 @@ def _scaled_kde_log_density(points, samples, std, block_size, weights, keys=None
         )
         lost = (
             samples.shape[0]
-            * jnp.finfo(scaled.dtype).tiny
-            / (4 * jnp.finfo(scaled.dtype).eps)
+            * jnp.finfo(scaled.dtype).tiny  # type: ignore[no-untyped-call]  # untyped in JAX
+            / (4 * jnp.finfo(scaled.dtype).eps)  # type: ignore[no-untyped-call]  # untyped in JAX
         )
         needs_log_space = scaled < lost
         return values, needs_log_space
@@ -2629,13 +2746,25 @@ def _scaled_kde_log_density(points, samples, std, block_size, weights, keys=None
 
 
 @partial(jax.jit, static_argnames=("block_size",))
-def _compiled_scaled_kde_log_density(points, samples, std, block_size, weights, keys):
+def _compiled_scaled_kde_log_density(
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+    keys: jax.Array | None,
+) -> tuple[jax.Array, jax.Array]:
     """The scaled pass for :func:`kde_log_density`, which repairs on the host."""
     return _scaled_kde_log_density(points, samples, std, block_size, weights, keys)
 
 
 def _batched_kde_rows(
-    block_size: int, n_models: int, points, samples, std, weights
+    block_size: int,
+    n_models: int,
+    points: jax.Array,
+    samples: jax.Array | np.ndarray,
+    std: jax.Array,
+    weights: jax.Array | np.ndarray,
 ) -> tuple[int, int]:
     """Models per batch and query rows per block for batched KDE passes.
 
@@ -2666,8 +2795,15 @@ def _batched_kde_rows(
 
 @partial(jax.jit, static_argnames=("block_size", "batch_size"))
 def _compiled_batched_scaled_kde_log_density(
-    points, samples, std, block_size, weights, keys, *, batch_size
-):
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    block_size: int,
+    weights: jax.Array,
+    keys: jax.Array | None,
+    *,
+    batch_size: int,
+) -> tuple[jax.Array, jax.Array]:
     """The scaled pass for each of a stack of models, ``batch_size`` at a time.
 
     ``samples`` has shape ``(n_models, n_samples, n_dims)`` and ``weights``
@@ -2675,7 +2811,9 @@ def _compiled_batched_scaled_kde_log_density(
     flags of shape ``(n_models, n_points)``.
     """
 
-    def one_model(leaf):
+    def one_model(
+        leaf: tuple[jax.Array, jax.Array, jax.Array | None],
+    ) -> tuple[jax.Array, jax.Array]:
         model_samples, model_weights, model_keys = leaf
         return _scaled_kde_log_density(
             points,
@@ -2686,7 +2824,10 @@ def _compiled_batched_scaled_kde_log_density(
             model_keys,
         )
 
-    return jax.lax.map(one_model, (samples, weights, keys), batch_size=batch_size)
+    return cast(
+        tuple[jax.Array, jax.Array],
+        jax.lax.map(one_model, (samples, weights, keys), batch_size=batch_size),
+    )
 
 
 _compiled_log_space_kde_log_density = jax.jit(
@@ -2697,11 +2838,16 @@ _KDE_PREPARATION_ENTRIES = 256
 
 
 def _prepared_kde_log_density(
-    model, points, spike_time_order, *, predict_log=None, policy=""
-):
+    model: KDEModel,
+    points: np.ndarray,
+    spike_time_order: _SpikeTimeOrder,
+    *,
+    predict_log: Callable[[KDEModel, Any], jax.Array] | None = None,
+    policy: str = "",
+) -> jax.Array:
     """Cache true density for immutable points and fitted leaves during prediction."""
 
-    def predict():
+    def predict() -> jax.Array:
         if predict_log is None:
             return kde_log_density(model, points)
         return predict_log(model, points)
@@ -2714,18 +2860,18 @@ def _prepared_kde_log_density(
 
 
 def _prepare_kde_local_inputs(
-    model,
-    position_time,
-    position,
-    environment,
-    time_grid,
-    row_start,
-    row_stop,
-    spike_time_order,
+    model: KDEModel,
+    position_time: np.ndarray | jax.Array,
+    position: np.ndarray | jax.Array,
+    environment: Environment,
+    time_grid: _DecodeTimeGrid,
+    row_start: int,
+    row_stop: int,
+    spike_time_order: _SpikeTimeOrder,
     *,
-    predict_log=None,
-    policy="",
-):
+    predict_log: Callable[[KDEModel, Any], jax.Array] | None = None,
+    policy: str = "",
+) -> tuple[np.ndarray, jax.Array]:
     """Interpolate one row range and prepare its occupancy density once.
 
     The cache belongs to one immutable prediction. A new prediction rechecks
@@ -2750,7 +2896,11 @@ def _prepare_kde_local_inputs(
     )
 
 
-def log_density_intensity(mean_rate, log_density, log_occupancy):
+def log_density_intensity(
+    mean_rate: jax.Array | float,
+    log_density: jax.Array,
+    log_occupancy: jax.Array,
+) -> jax.Array:
     """Log(rate * density / occupancy), with density ratios formed before rates.
 
     An unsupported occupancy or numerator gives zero signal, rather than NaN
@@ -2768,16 +2918,16 @@ def log_density_intensity(mean_rate, log_density, log_occupancy):
 
 
 def local_kde_log_ratio(
-    positions,
-    marks,
-    encoding_positions,
-    encoding_marks,
-    position_std,
-    mark_std,
-    log_occupancy,
-    weights,
-    block_size,
-):
+    positions: jax.Array,
+    marks: jax.Array,
+    encoding_positions: jax.Array,
+    encoding_marks: jax.Array,
+    position_std: jax.Array,
+    mark_std: jax.Array,
+    log_occupancy: jax.Array,
+    weights: jax.Array,
+    block_size: int,
+) -> jax.Array:
     """Joint KDE/occupancy ratio, dividing position kernels before adding marks.
 
     Keeping the mark term separate preserves its normalizer when position log
@@ -2789,8 +2939,10 @@ def local_kde_log_ratio(
     samples = jnp.concatenate((encoding_positions, encoding_marks), axis=1)
     std = jnp.concatenate((position_std, mark_std))
 
-    def kernel(query, samples, std, weights):
-        def supported(_):
+    def kernel(
+        query: jax.Array, samples: jax.Array, std: jax.Array, weights: jax.Array
+    ) -> jax.Array:
+        def supported(_: None) -> jax.Array:
             log_occ = query[:, -1]
             safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
             log_position = (
@@ -2813,14 +2965,23 @@ def local_kde_log_ratio(
             ) - jnp.log(jnp.sum(weights))
             return jnp.where(jnp.isneginf(log_occ), -jnp.inf, ratio)
 
-        return jax.lax.cond(
-            jnp.sum(weights) > 0.0,
-            supported,
-            lambda _: jnp.full(query.shape[0], -jnp.inf),
-            None,
+        return cast(
+            jax.Array,
+            jax.lax.cond(
+                jnp.sum(weights) > 0.0,
+                supported,
+                lambda _: jnp.full(query.shape[0], -jnp.inf),
+                None,
+            ),
         )
 
-    def blocked(query, samples, std, rows, weights):
+    def blocked(
+        query: jax.Array,
+        samples: jax.Array,
+        std: jax.Array,
+        rows: int,
+        weights: jax.Array,
+    ) -> jax.Array:
         return jnp.concatenate(
             [
                 kernel(query[start : start + rows], samples, std, weights)
@@ -2964,7 +3125,7 @@ def select_decode_marks(
 
 @requires_time_edges
 def get_spikecount_per_time_bin(
-    spike_times: np.ndarray,
+    spike_times: np.ndarray | jax.Array,
     row_slice: slice | None = None,
     *,
     time_edges: np.ndarray,

@@ -1339,8 +1339,10 @@ class TestRemlInsideEM:
     @pytest.mark.filterwarnings(
         "ignore:EM did not converge after max_iter=:UserWarning"
     )
-    # The M-step is monkeypatched to jump, so EM's penalized objective decreases.
+    # The M-step is monkeypatched to jump, so EM's penalized objective decreases,
+    # at an iteration and, depending on rounding, at the final E-step too.
     @pytest.mark.filterwarnings("ignore:EM iteration \\d+:UserWarning")
+    @pytest.mark.filterwarnings("ignore:Final E-step penalized:UserWarning")
     def test_each_check_uses_the_m_steps_new_smoothness(self, monkeypatch):
         """The previous objective of every check is the earlier E-step's
         marginal log-likelihood plus the log prior of the M-step's input

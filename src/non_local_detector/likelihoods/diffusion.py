@@ -26,7 +26,7 @@ fields being smoothed), it is computed once and cached on the ``Environment`` vi
 import heapq
 import warnings
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -273,7 +273,7 @@ def _weyl_exponent(eigvals: np.ndarray) -> float:
     if not 0.0 < low < high:
         return 1.0
     local = np.log(n_modes / half) / np.log(high / low)
-    return min(max(round(2.0 * local), 1), 2) / 2.0
+    return cast(float, min(max(round(2.0 * local), 1), 2) / 2.0)
 
 
 def _adaptive_heat_kernel_basis(
@@ -437,7 +437,9 @@ def n_connected_components(environment: "Environment") -> int:
     environment_graph(environment)
     return int(
         scipy.sparse.csgraph.connected_components(
-            environment._diffusion_laplacian_, directed=False, return_labels=False
+            environment._diffusion_laplacian_,  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+            directed=False,
+            return_labels=False,
         )
     )
 
@@ -506,7 +508,7 @@ def diffuse(
             out=np.zeros_like(input_mass, dtype=float),
             where=clipped_mass > 0,
         )
-        return clipped[rows] * scale
+        return cast(np.ndarray, clipped[rows] * scale)
 
     if component_labels is None:
         return _rescale_rows_to_input_mass(np.arange(clipped.shape[0]))
@@ -519,7 +521,9 @@ def diffuse(
 
 
 @partial(jax.jit, static_argnames=("n_components",))
-def _component_mass_sum(fields, labels, n_components):
+def _component_mass_sum(
+    fields: jax.Array, labels: jax.Array, n_components: int
+) -> jax.Array:
     """Sum each component's masses, one masked reduction per component.
 
     Masking and summing are fused; no component-by-node-by-field array is
@@ -528,16 +532,23 @@ def _component_mass_sum(fields, labels, n_components):
     """
     output = jnp.zeros((n_components, *fields.shape[1:]), dtype=fields.dtype)
 
-    def sum_component(component, masses):
+    def sum_component(component: jax.Array, masses: jax.Array) -> jax.Array:
         mask = (labels == component).reshape((-1, *((1,) * (fields.ndim - 1))))
         mass = jnp.sum(jnp.where(mask, fields, 0), axis=0)
         return masses.at[component].set(mass, unique_indices=True)
 
-    return jax.lax.fori_loop(0, n_components, sum_component, output)
+    return cast(jax.Array, jax.lax.fori_loop(0, n_components, sum_component, output))
 
 
 @partial(jax.jit, static_argnames=("sigma", "n_components"))
-def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components):
+def _heat_kernel_apply_jit(
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
+    sigma: float,
+    fields: jax.Array,
+    labels: jax.Array,
+    n_components: int,
+) -> jax.Array:
     """Jitted core of :func:`heat_kernel_apply` (see it for the full contract)."""
     t = sigma**2 / 2.0
     coeff = jnp.exp(-t * eigvals)  # (m,)
@@ -550,7 +561,7 @@ def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components
     in_mass = _component_mass_sum(fields, labels, n_components)
     cl_mass = _component_mass_sum(clipped, labels, n_components)
     scale = jnp.where(cl_mass > 0, in_mass / jnp.where(cl_mass > 0, cl_mass, 1.0), 0.0)
-    return clipped * scale[labels]  # gather back to (n_bins, n_fields)
+    return cast(jax.Array, clipped * scale[labels])  # gather back to (n_bins, n_fields)
 
 
 def heat_kernel_apply(
@@ -606,8 +617,11 @@ def heat_kernel_apply(
             n_components = (
                 int(np.asarray(component_labels).max()) + 1
             )  # host sync — non-hot path only
-    return _heat_kernel_apply_jit(
-        eigvals, eigvecs, float(sigma), fields, labels, int(n_components)
+    return cast(
+        jnp.ndarray,
+        _heat_kernel_apply_jit(
+            eigvals, eigvecs, float(sigma), fields, labels, int(n_components)
+        ),
     )
 
 
@@ -636,7 +650,7 @@ def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
     return np.where(mass > 0, smoothed / safe / bin_sizes[:, np.newaxis], 0.0)
 
 
-def _resolved_occupancy(occupancy):
+def _resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Array:
     """Bins whose diffused occupancy the heat kernel resolves.
 
     Occupancy is itself a diffused field, so in unvisited bins it is numerical
@@ -708,7 +722,7 @@ def environment_graph(
     """
     cached = getattr(environment, "_diffusion_graph_", None)
     if cached is not None:
-        return cached
+        return cast(tuple[nx.Graph, np.ndarray, np.ndarray], cached)
 
     if environment.is_track_interior_ is None or environment.place_bin_centers_ is None:
         msg = "environment must be fitted before building the diffusion graph"
@@ -748,8 +762,8 @@ def environment_graph(
     nx.freeze(graph)
     node_order.setflags(write=False)
     bin_sizes.setflags(write=False)
-    environment._diffusion_laplacian_ = build_laplacian(graph)
-    environment._diffusion_graph_ = result
+    environment._diffusion_laplacian_ = build_laplacian(graph)  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+    environment._diffusion_graph_ = result  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
     return result
 
 
@@ -804,7 +818,10 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
 
 
 def _freeze_and_cache(
-    cache: dict, rank: int | None, eigvals: np.ndarray, eigvecs: np.ndarray
+    cache: dict[int | None, tuple[np.ndarray, np.ndarray]],
+    rank: int | None,
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Freeze a basis read-only, store it under ``rank``, and return it.
 
@@ -850,15 +867,15 @@ def cached_eigenbasis(
     cache = getattr(environment, "_diffusion_eigenbasis_", None)
     if cache is None:
         cache = {}
-        environment._diffusion_eigenbasis_ = cache
+        environment._diffusion_eigenbasis_ = cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
 
     if rank in cache:
-        return cache[rank]
+        return cast(tuple[np.ndarray, np.ndarray], cache[rank])
 
     # Build (and cache) the Laplacian snapshot; environment_graph runs first so a
     # later mutation of the returned graph cannot reach this L.
     environment_graph(environment)
-    laplacian = environment._diffusion_laplacian_
+    laplacian = environment._diffusion_laplacian_  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
 
     if rank is not None and None in cache:
         eigvals, eigvecs = cache[None]
@@ -917,7 +934,7 @@ def cached_heat_kernel_eigenbasis(
     rank_cache = getattr(environment, "_diffusion_heat_kernel_rank_", None)
     if rank_cache is None:
         rank_cache = {}
-        environment._diffusion_heat_kernel_rank_ = rank_cache
+        environment._diffusion_heat_kernel_rank_ = rank_cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
 
     key = (sigma, tol, dense_fraction)
     if key in rank_cache:
@@ -927,7 +944,10 @@ def cached_heat_kernel_eigenbasis(
 
     environment_graph(environment)  # ensures the cached Laplacian snapshot
     rank, eigvals, eigvecs = _adaptive_heat_kernel_basis(
-        environment._diffusion_laplacian_, sigma, tol, dense_fraction
+        environment._diffusion_laplacian_,  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+        sigma,
+        tol,
+        dense_fraction,
     )
     rank_cache[key] = rank
     if rank is None:
@@ -938,9 +958,9 @@ def cached_heat_kernel_eigenbasis(
     cache = getattr(environment, "_diffusion_eigenbasis_", None)
     if cache is None:
         cache = {}
-        environment._diffusion_eigenbasis_ = cache
+        environment._diffusion_eigenbasis_ = cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
     if rank in cache:
-        return cache[rank]
+        return cast(tuple[np.ndarray, np.ndarray], cache[rank])
     # Independent copies of the probe's final basis (sliced to the resolved rank) so the
     # frozen cache entry does not alias the probe's arrays.
     return _freeze_and_cache(
@@ -987,15 +1007,15 @@ def get_device_basis(
     # cache key must name the SAME device the cached arrays are placed on.
     device = (
         jax.local_devices()[0]
-        if jax.config.jax_default_device is None
-        else jax.config.jax_default_device
+        if jax.config.jax_default_device is None  # type: ignore[attr-defined]  # config option registered dynamically by JAX
+        else jax.config.jax_default_device  # type: ignore[attr-defined]  # config option registered dynamically by JAX
     )
     dtype = jnp.float32
     key = (int(resolved_rank), device, dtype)
     cache = getattr(environment, "_diffusion_device_basis_", None)
     if cache is None:
         cache = {}
-        environment._diffusion_device_basis_ = cache
+        environment._diffusion_device_basis_ = cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
     if key not in cache:
         eigvals, eigvecs = cached_eigenbasis(environment, resolved_rank)
         # Component labels from the existing helper (indexed by interior-bin/node
@@ -1009,15 +1029,15 @@ def get_device_basis(
             jax.device_put(np.asarray(labels_host, dtype=np.int32), device),
             n_components,
         )
-    return cache[key]
+    return cast(tuple[jax.Array, jax.Array, jax.Array, int], cache[key])
 
 
 def _nd_grid_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
     """Adapter branch for N-D / 1D grid environments (``track_graph is None``)."""
-    node_order = np.where(environment.is_track_interior_.ravel())[0]
-    track_graph = environment.track_graphDD
+    node_order = np.where(cast(np.ndarray, environment.is_track_interior_).ravel())[0]
+    track_graph = cast(nx.Graph, environment.track_graphDD)
     subgraph = track_graph.subgraph(node_order)
     positions = nx.get_node_attributes(track_graph, "pos")
     relabel = {old: new for new, old in enumerate(node_order)}
@@ -1031,8 +1051,10 @@ def _nd_grid_graph(
             graph.add_edge(relabel[u], relabel[v], distance=data["distance"])
 
     # bin_sizes = product of per-dimension bin widths, over the interior bins.
-    widths = [np.diff(edge) for edge in environment.edges_]
-    bin_volume = np.ones(environment.centers_shape_)
+    widths = [
+        np.diff(edge) for edge in cast(tuple[np.ndarray, ...], environment.edges_)
+    ]
+    bin_volume = np.ones(cast(tuple[int, ...], environment.centers_shape_))
     for axis_width in np.meshgrid(*widths, indexing="ij"):
         bin_volume = bin_volume * axis_width
     bin_sizes = bin_volume.ravel()[node_order]
@@ -1044,24 +1066,26 @@ def _linearized_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
     """Adapter branch for linearized ``track_graph`` environments."""
-    is_interior = environment.is_track_interior_.ravel()
+    is_interior = cast(np.ndarray, environment.is_track_interior_).ravel()
     node_order = np.where(is_interior)[0]
 
     # Substrate node id for each interior place bin (gap bins carry -1 and are
     # excluded); order matches place_bin_centers_ / is_track_interior_.
-    node_ids = environment.place_bin_centers_nodes_df_.node_id.to_numpy()
+    node_ids = cast(Any, environment.place_bin_centers_nodes_df_).node_id.to_numpy()
     interior_node_ids = node_ids[is_interior].astype(int)
     centers = {int(nid) for nid in interior_node_ids}
     local_of = {int(nid): local for local, nid in enumerate(interior_node_ids)}
 
-    substrate = environment.track_graph_with_bin_centers_edges_
+    substrate = cast(nx.Graph, environment.track_graph_with_bin_centers_edges_)
     graph = nx.Graph()
     graph.add_nodes_from(range(interior_node_ids.size))
     for start in interior_node_ids:
         for neighbor, distance in _neighbor_centers(substrate, int(start), centers):
             graph.add_edge(local_of[int(start)], local_of[neighbor], distance=distance)
 
-    bin_sizes = np.diff(environment.place_bin_edges_.ravel())[is_interior]
+    bin_sizes = np.diff(cast(np.ndarray, environment.place_bin_edges_).ravel())[
+        is_interior
+    ]
     return graph, node_order, bin_sizes
 
 

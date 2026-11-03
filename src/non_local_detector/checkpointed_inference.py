@@ -15,14 +15,17 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import xarray as xr
+from numpy.typing import ArrayLike, DTypeLike, NDArray
 
 from non_local_detector.core import (
     _HMM_SCAN_UNROLL,
@@ -192,7 +195,7 @@ def default_replay_cache_bytes() -> int:
     return int(min(DEFAULT_REPLAY_CACHE_BYTES, available // 2))
 
 
-def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
+def default_chunk_size(n_bins: int, dtype: DTypeLike = np.float32) -> int:
     """Rows per checkpoint chunk so one likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
 
     Parameters
@@ -214,29 +217,38 @@ def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
 
 @jax.tree_util.register_pytree_node_class
 class _DenseTransition:
-    def __init__(self, matrix, state_ind, n_states):
+    def __init__(self, matrix: jax.Array, state_ind: jax.Array, n_states: int) -> None:
         self.matrix, self.state_ind, self.n_states = matrix, state_ind, n_states
 
-    def _matrix(self, discrete_weights):
+    def _matrix(self, discrete_weights: jax.Array | None) -> jax.Array:
         if discrete_weights is None:
             return self.matrix
         return self.matrix * discrete_weights[jnp.ix_(self.state_ind, self.state_ind)]
 
-    def forward(self, probabilities, discrete_weights=None):
+    def forward(
+        self, probabilities: jax.Array, discrete_weights: jax.Array | None = None
+    ) -> jax.Array:
         return jnp.matmul(
             probabilities,
             self._matrix(discrete_weights),
             precision=jax.lax.Precision.HIGHEST,
         )
 
-    def backward(self, values, discrete_weights=None):
+    def backward(
+        self, values: jax.Array, discrete_weights: jax.Array | None = None
+    ) -> jax.Array:
         return jnp.matmul(
             self._matrix(discrete_weights),
             values,
             precision=jax.lax.Precision.HIGHEST,
         )
 
-    def pair_products(self, filtered, ratio, discrete_weights=None):
+    def pair_products(
+        self,
+        filtered: jax.Array,
+        ratio: jax.Array,
+        discrete_weights: jax.Array | None = None,
+    ) -> jax.Array:
         """Per-state-pair terms of ``filtered @ T * ratio``; see the block operator."""
         states = jax.nn.one_hot(self.state_ind, self.n_states, dtype=filtered.dtype)
         precision = jax.lax.Precision.HIGHEST
@@ -247,30 +259,33 @@ class _DenseTransition:
         )
         return jnp.matmul(source_rows, states * ratio[:, None], precision=precision)
 
-    def tree_flatten(self):
+    def tree_flatten(self) -> tuple[tuple[jax.Array, jax.Array], int]:
         return (self.matrix, self.state_ind), self.n_states
 
     @classmethod
-    def tree_unflatten(cls, aux, children):
+    def tree_unflatten(
+        cls, aux: int, children: tuple[jax.Array, jax.Array]
+    ) -> _DenseTransition:
         return cls(*children, aux)
 
 
 @partial(jax.jit, static_argnames=("keep_rows", "keep_predictive", "keep_increments"))
 def _forward_chunk(
-    initial,
-    evidence,
-    likelihoods,
-    weights,
-    operator,
+    initial: jax.Array,
+    evidence: jax.Array,
+    likelihoods: jax.Array,
+    weights: jax.Array | None,
+    operator: Any,
     *,
-    keep_rows,
-    keep_predictive,
-    keep_increments=False,
-):
-    def step(carry, args):
+    keep_rows: bool,
+    keep_predictive: bool,
+    keep_increments: bool = False,
+) -> tuple[Any, Any]:
+    def step(carry: tuple[jax.Array, jax.Array], args: tuple[Any, Any]) -> Any:
         total, predicted = carry
         ll, weight = args
         filtered, increment = _condition_on(predicted, ll)
+        out: Any
         if keep_rows:
             out = (
                 filtered,
@@ -288,8 +303,15 @@ def _forward_chunk(
 
 @partial(jax.jit, static_argnames=("pair_statistics",))
 def _backward_chunk(
-    filtered, weights, operator, next_smoothed, rows, n_time, *, pair_statistics=False
-):
+    filtered: jax.Array,
+    weights: jax.Array | None,
+    operator: Any,
+    next_smoothed: jax.Array,
+    rows: jax.Array,
+    n_time: int,
+    *,
+    pair_statistics: bool = False,
+) -> tuple[Any, Any]:
     """Smooth one chunk in reverse.
 
     With ``pair_statistics``, also return each row's expected discrete
@@ -298,7 +320,7 @@ def _backward_chunk(
     recording row, which has no successor).
     """
 
-    def step(following, args):
+    def step(following: jax.Array, args: tuple[Any, Any, Any]) -> Any:
         current, weight, row = args
         predicted = operator.forward(current, weight)
         ratio = _divide_safe(following, predicted)
@@ -328,7 +350,7 @@ def _backward_chunk(
 
 
 @jax.jit
-def _sum_state_rows(values, columns):
+def _sum_state_rows(values: jax.Array, columns: jax.Array) -> jax.Array:
     """Use a tree reduction instead of sequential indexed accumulation.
 
     Only one state's columns from the current chunk are gathered at a time.
@@ -350,13 +372,13 @@ class CheckpointedResult:
 
     dataset: xr.Dataset
     marginal_log_likelihood: float
-    diagnostics: dict
+    diagnostics: dict[str, Any]
     result_path: Path | None = None
     first_smoothed: np.ndarray | None = None
     transition_statistics: np.ndarray | None = None
 
 
-def _selected_rows(selected, n_time):
+def _selected_rows(selected: ArrayLike | None, n_time: int) -> NDArray[np.intp]:
     if selected is None:
         return np.arange(n_time)
     selected = np.asarray(selected)
@@ -377,7 +399,7 @@ def _selected_rows(selected, n_time):
     return selected.astype(np.intp, copy=False)
 
 
-def _sum_evidence(chunks):
+def _sum_evidence(chunks: Iterable[float]) -> float:
     """Float64 sum of per-chunk evidence with IEEE nonfinite propagation.
 
     Holds one float per chunk. Exceptions raised while producing chunks
@@ -403,7 +425,7 @@ def _sum_evidence(chunks):
     return total
 
 
-def _mix32(bits):
+def _mix32(bits: jax.Array) -> jax.Array:
     """Bijective 32-bit integer hash (lowbias32) in wrapping uint32 arithmetic."""
     bits = bits ^ (bits >> 16)
     bits = bits * jnp.uint32(0x7FEB352D)
@@ -413,7 +435,9 @@ def _mix32(bits):
 
 
 @jax.jit
-def _prepare_chunk(values, missing):
+def _prepare_chunk(
+    values: jax.Array, missing: jax.Array
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Neutralize missing rows; return diagnostic masks and a replay checksum.
 
     The checksum holds two wrapping uint32 sums over the value bits: one
@@ -453,30 +477,30 @@ def _prepare_chunk(values, missing):
 
 
 def checkpointed_forward_backward(
-    time_edges,
-    initial_distribution,
-    log_likelihood_func,
+    time_edges: ArrayLike,
+    initial_distribution: ArrayLike,
+    log_likelihood_func: Callable[..., Any],
     *,
-    transition_matrix=None,
-    transition_operator=None,
-    discrete_transition_matrix=None,
-    continuous_transition_matrix=None,
-    state_ind=None,
-    n_states=None,
-    is_missing=None,
-    chunk_size=2000,
-    output_mode="compact",
-    result_path=None,
-    checkpoint_dir=None,
-    return_outputs=None,
-    selected_rows=None,
-    dtype=np.float32,
-    max_read_bytes=DEFAULT_MAX_READ_BYTES,
-    result_attrs=None,
-    evidence_accumulation="stable",
-    transition_statistics=None,
-    replay_cache_bytes=0,
-):
+    transition_matrix: ArrayLike | None = None,
+    transition_operator: Any = None,
+    discrete_transition_matrix: ArrayLike | None = None,
+    continuous_transition_matrix: ArrayLike | None = None,
+    state_ind: ArrayLike | None = None,
+    n_states: int | None = None,
+    is_missing: ArrayLike | None = None,
+    chunk_size: int = 2000,
+    output_mode: str = "compact",
+    result_path: str | Path | None = None,
+    checkpoint_dir: str | Path | None = None,
+    return_outputs: str | Iterable[str] | None = None,
+    selected_rows: ArrayLike | None = None,
+    dtype: DTypeLike = np.float32,
+    max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+    result_attrs: dict[str, Any] | Callable[[float], dict[str, Any]] | None = None,
+    evidence_accumulation: str = "stable",
+    transition_statistics: str | None = None,
+    replay_cache_bytes: int = 0,
+) -> CheckpointedResult:
     """Filter once, replay each chunk in reverse, and emit exact requested rows.
 
     The likelihood callback receives ``(full_edges, row_slice=global_slice,
@@ -531,7 +555,7 @@ def checkpointed_forward_backward(
     """
     if (
         isinstance(chunk_size, bool)
-        or not isinstance(chunk_size, (int, np.integer))
+        or not isinstance(chunk_size, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
         or chunk_size <= 0
     ):
         msg = "chunk_size must be a positive integer"
@@ -544,7 +568,7 @@ def checkpointed_forward_backward(
         raise ValueError(msg)
     if (
         isinstance(replay_cache_bytes, bool)
-        or not isinstance(replay_cache_bytes, (int, np.integer))
+        or not isinstance(replay_cache_bytes, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
         or replay_cache_bytes < 0
     ):
         msg = "replay_cache_bytes must be a nonnegative integer"
@@ -555,7 +579,7 @@ def checkpointed_forward_backward(
     if dtype not in (np.dtype("float32"), np.dtype("float64")):
         msg = "dtype must be float32 or float64"
         raise ValueError(msg)
-    if dtype == np.dtype("float64") and not jax.config.x64_enabled:
+    if dtype == np.dtype("float64") and not jax.config.x64_enabled:  # type: ignore[attr-defined]  # jax.config attributes are defined dynamically
         msg = "float64 requires JAX_ENABLE_X64=1; precision is not silently downgraded"
         raise ValueError(msg)
     initial = np.asarray(initial_distribution, dtype=dtype)
@@ -580,7 +604,7 @@ def checkpointed_forward_backward(
     n_states = minimum_states if n_states is None else n_states
     if (
         isinstance(n_states, bool)
-        or not isinstance(n_states, (int, np.integer))
+        or not isinstance(n_states, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
         or n_states < minimum_states
     ):
         msg = "n_states must include every declared state_ind value"
@@ -625,7 +649,11 @@ def checkpointed_forward_backward(
     weights = (
         None if not covariate else np.asarray(discrete_transition_matrix, dtype=dtype)
     )
-    if covariate and weights.shape != (n_time, n_states, n_states):
+    if covariate and cast("NDArray[Any]", weights).shape != (
+        n_time,
+        n_states,
+        n_states,
+    ):
         msg = "Discrete transition rows must match the full recording/state dimensions"
         raise ValueError(msg)
     if transition_operator is None:
@@ -677,7 +705,7 @@ def checkpointed_forward_backward(
     }
     if outputs & _SPATIAL:
         coordinates["state_bins"] = (("state_bins",), np.arange(n_bins))
-    arrays = (
+    arrays: dict[str, NDArray[Any]] | None = (
         {name: np.empty(shapes[name], dtype=dtype) for name in outputs}
         if result_path is None
         else None
@@ -701,7 +729,7 @@ def checkpointed_forward_backward(
         )
     )
     boundaries = range(0, n_time, int(chunk_size))
-    diagnostics = {
+    diagnostics: dict[str, Any] = {
         "n_degenerate": 0,
         "n_nan": 0,
         "max_chunk_rows": 0,
@@ -723,7 +751,9 @@ def checkpointed_forward_backward(
         else None
     )
 
-    def likelihood(start, stop):
+    def likelihood(
+        start: int, stop: int
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Return device ``(values, degenerate, nan, checksum)`` for one chunk."""
         # A short last chunk is evaluated over the final chunk_size rows and
         # trimmed, so every callback has one shape and reuses compiled kernels.
@@ -739,9 +769,12 @@ def checkpointed_forward_backward(
             raise ValueError(msg)
         diagnostics["likelihood_evaluations"] += 1
         diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - first)
-        return _prepare_chunk(values[start - first :], jnp.asarray(missing[start:stop]))
+        return cast(
+            "tuple[jax.Array, jax.Array, jax.Array, jax.Array]",
+            _prepare_chunk(values[start - first :], jnp.asarray(missing[start:stop])),
+        )
 
-    def emit(name, start, stop, values):
+    def emit(name: str, start: int, stop: int, values: Any) -> None:
         first, last = np.searchsorted(selected, [start, stop])
         if first == last:
             return
@@ -754,15 +787,22 @@ def checkpointed_forward_backward(
             else values[rows]
         )
         if writer is None:
+            assert arrays is not None  # arrays is built whenever result_path is None
             arrays[name][first:last] = values
         else:
             writer.write(name, int(first), values)
 
-    def emit_chunk(start, stop, chunk_outputs, chunk_statistics=None):
+    def emit_chunk(
+        start: int,
+        stop: int,
+        chunk_outputs: dict[str, Any],
+        chunk_statistics: Any = None,
+    ) -> None:
         for name, value in chunk_outputs.items():
             emit(name, start, stop, value)
         if chunk_statistics is None:
             return
+        assert statistics is not None  # chunk statistics exist only when requested
         if transition_statistics == "counts":
             statistics[...] += np.asarray(chunk_statistics, np.float64)
         else:
@@ -771,8 +811,8 @@ def checkpointed_forward_backward(
     try:
         with tempfile.TemporaryDirectory(
             prefix="checkpoints-", dir=checkpoint_parent
-        ) as folder:
-            folder = Path(folder)
+        ) as folder_name:
+            folder = Path(folder_name)
             predicted, evidence = jnp.asarray(initial), jnp.asarray(0, dtype=dtype)
 
             # Filtered rows suffice unless an output needs the likelihood or the
@@ -782,19 +822,20 @@ def checkpointed_forward_backward(
                 "predictive_posterior",
                 "predictive_state_probabilities",
             }
-            cached_rows, cached_likelihoods = {}, {}
+            cached_rows: dict[int, NDArray[Any]] = {}
+            cached_likelihoods: dict[int, NDArray[Any]] = {}
 
             def finish_forward_chunk(
-                start,
-                stop,
-                predicted,
-                evidence,
-                degenerate,
-                nan,
-                checksum,
-                cached,
-                increments,
-            ):
+                start: int,
+                stop: int,
+                predicted: jax.Array,
+                evidence: jax.Array,
+                degenerate: Any,
+                nan: Any,
+                checksum: jax.Array,
+                cached: jax.Array | None,
+                increments: Any,
+            ) -> Any:
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
                 if cached is not None:
                     (cached_rows if cache_rows else cached_likelihoods)[start] = (
@@ -820,7 +861,7 @@ def checkpointed_forward_backward(
                     else 0.0
                 )
 
-            def forward_increment_sums():
+            def forward_increment_sums() -> Iterator[Any]:
                 nonlocal predicted, evidence
                 # Each chunk's host work runs after the next chunk is dispatched,
                 # so device computation overlaps host transfers and disk writes.
@@ -1002,6 +1043,7 @@ def checkpointed_forward_backward(
             **packed_masks,
         }
         if writer is None:
+            assert arrays is not None  # arrays is built whenever result_path is None
             dataset = xr.Dataset(
                 {name: (dims[name], arrays[name]) for name in outputs},
                 coords=coordinates,
@@ -1009,6 +1051,7 @@ def checkpointed_forward_backward(
             )
         else:
             writer.complete(attrs)
+            assert result_path is not None  # a writer exists only with result_path
             dataset = open_result_store(result_path, max_read_bytes=max_read_bytes)
         return CheckpointedResult(
             dataset,

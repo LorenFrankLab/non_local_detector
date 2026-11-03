@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 
 from non_local_detector.models._defaults import (
@@ -132,7 +134,7 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
-        sorted_spikes_algorithm_params: dict | None = None,
+        sorted_spikes_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
@@ -286,7 +288,7 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         clusterless_algorithm: str = "clusterless_kde",
-        clusterless_algorithm_params: dict | None = None,
+        clusterless_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,

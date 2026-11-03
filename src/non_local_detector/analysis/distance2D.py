@@ -1,7 +1,9 @@
 import logging
 import warnings
+from collections.abc import Sequence
+from typing import cast
 
-import networkx as nx  # type: ignore[import-untyped]
+import networkx as nx
 import numpy as np
 
 from non_local_detector.environment import (
@@ -31,7 +33,7 @@ def make_2D_track_graph_from_environment(
     return make_nD_track_graph_from_environment(environment)
 
 
-def get_bin_ind(sample: np.ndarray, edges: list) -> np.ndarray:
+def get_bin_ind(sample: np.ndarray, edges: Sequence[np.ndarray]) -> np.ndarray:
     """Find the bin indices for multidimensional sample points.
 
     Determines which bin each sample point belongs to in a multidimensional
@@ -91,7 +93,7 @@ def get_map_estimate_direction_from_track_graph(
     head_position: np.ndarray,
     map_estimate: np.ndarray,
     track_graph: nx.Graph,
-    edges: list,
+    edges: Sequence[np.ndarray],
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Get the direction of the MAP estimate of the decoded position from the
@@ -131,10 +133,11 @@ def get_map_estimate_direction_from_track_graph(
         # >= 3.5 (the package supports networkx >= 3.4). Iterate the generator
         # lazily when available — processing one source at a time avoids holding
         # all O(n_nodes^2) paths at once — and fall back to .items() for the dict.
-        # networkx 3.4 warns of that change; both shapes are handled below.
+        # networkx 3.4 warns of that change; both shapes are handled below. The
+        # warning text starts with blank lines, hence the leading \s*.
         with warnings.catch_warnings():
             warnings.filterwarnings(
-                "ignore", "shortest_path will return an iterator", FutureWarning
+                "ignore", r"\s*shortest_path will return an iterator", FutureWarning
             )
             all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
         if isinstance(all_pairs_paths, dict):
@@ -212,7 +215,7 @@ def get_2D_distance(
     position1: np.ndarray,
     position2: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list | None = None,
+    edges: Sequence[np.ndarray] | None = None,
     precomputed_distance: bool = True,
 ) -> np.ndarray:
     """Distance of two points along the graph of the track.
@@ -285,7 +288,7 @@ def get_2D_distance(
                         "No path between %s and %s", node_ids1[i], node_ids2[i]
                     )
 
-    return distance
+    return cast("np.ndarray", distance)
 
 
 def head_direction_simliarity(
@@ -293,7 +296,7 @@ def head_direction_simliarity(
     head_direction: np.ndarray,
     map_estimate: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list | None = None,
+    edges: Sequence[np.ndarray] | None = None,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Cosine similarity of the head direction vector with the vector from the
@@ -344,7 +347,7 @@ def head_direction_simliarity(
             head_position, map_estimate, track_graph, edges, precomputed_distance
         )
 
-    return np.cos(head_direction - map_estimate_direction)
+    return cast("np.ndarray", np.cos(head_direction - map_estimate_direction))
 
 
 def get_ahead_behind_distance2D(
@@ -352,7 +355,7 @@ def get_ahead_behind_distance2D(
     head_direction: np.ndarray,
     map_position: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list | None = None,
+    edges: Sequence[np.ndarray] | None = None,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Distance of the MAP decoded position to the animal's head position where
@@ -398,7 +401,7 @@ def get_ahead_behind_distance2D(
     # If there is no direction same point, arbitrarily set to positive
     ahead_behind[np.isclose(ahead_behind, 0.0)] = 1.0
 
-    return ahead_behind * distance
+    return cast("np.ndarray", ahead_behind * distance)
 
 
 def get_velocity(
@@ -444,4 +447,4 @@ def get_speed(velocity: np.ndarray) -> np.ndarray:
     -------
     speed: np.ndarray, shape (n_time,)
     """
-    return np.sqrt(np.sum(velocity**2, axis=1))
+    return cast("np.ndarray", np.sqrt(np.sum(velocity**2, axis=1)))

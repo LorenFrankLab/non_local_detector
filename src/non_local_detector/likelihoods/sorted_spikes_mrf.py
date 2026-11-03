@@ -44,15 +44,18 @@ likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
 
 import warnings
 from functools import partial
+from typing import Any, TypeAlias
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.optimize
 from jax import lax
+from numpy.typing import ArrayLike
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
@@ -253,7 +256,9 @@ def _validate_mrf_problem(
 _matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
 
 
-def _penalized_hessian(basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.ndarray):
+def _penalized_hessian(
+    basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.ndarray
+) -> jax.Array:
     """Batched penalized Hessian ``Bᵀ diag(mu_k) B + diag(penalty_diag)`` per neuron.
 
     The 3-operand einsum is compiled by XLA to an efficient batched matmul (unlike
@@ -267,6 +272,9 @@ def _penalized_hessian(basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.nd
     )
 
 
+_NewtonState: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+
+
 @partial(jax.jit, static_argnames=("max_iter",))
 def _newton_fit_jax(
     counts: jnp.ndarray,
@@ -276,7 +284,7 @@ def _newton_fit_jax(
     max_iter: int,
     tol: jnp.ndarray,
     rate_scale: float = 1.0,
-):
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Batched penalized-Poisson Newton/IRLS with per-neuron step-halving (jit).
 
     All inputs are ``_FIT_DTYPE`` and the whole loop compiles to batched linear
@@ -288,7 +296,9 @@ def _newton_fit_jax(
         tol, _FIT_TOL_FLOOR
     )  # float32-safe floor on the relative-objective decrease
 
-    def penalized_neg_loglik(coeffs, eta, mu):
+    def penalized_neg_loglik(
+        coeffs: jax.Array, eta: jax.Array, mu: jax.Array
+    ) -> jax.Array:
         loglik = jnp.sum(
             counts * (eta - jnp.log(rate_scale)) - mu, axis=0
         )  # (n_neurons,)
@@ -301,7 +311,7 @@ def _newton_fit_jax(
     basis_pinv_ones = jnp.linalg.lstsq(basis, jnp.ones(n_bins, basis.dtype))[0]
     coeffs0 = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
 
-    def newton_cond(state):
+    def newton_cond(state: _NewtonState) -> jax.Array:
         _coeffs, iteration, _max_step, rel_decrease = state
         # Converge on the penalized objective (-loglik + penalty), not the coefficient
         # step. A Poisson GAM in a Laplacian eigenbasis has an unpenalized null
@@ -313,7 +323,7 @@ def _newton_fit_jax(
         # coefficient-step test cannot.
         return (iteration < max_iter) & (rel_decrease >= tol)
 
-    def newton_body(state):
+    def newton_body(state: _NewtonState) -> _NewtonState:
         coeffs, iteration, _max_step, _rel = state
         eta = _matmul(basis, coeffs)
         mu = occupancy[:, None] * jnp.exp(
@@ -329,7 +339,7 @@ def _newton_fit_jax(
             coeffs, eta, mu
         )  # (n_neurons,), current coeffs
 
-        def is_worse(scale):
+        def is_worse(scale: jax.Array) -> jax.Array:
             trial = coeffs + scale[None, :] * step.T
             trial_eta = _matmul(basis, trial)
             trial_mu = occupancy[:, None] * jnp.exp(
@@ -345,11 +355,13 @@ def _newton_fit_jax(
                 trial_objective <= objective + _DESCENT_TOL * (1.0 + jnp.abs(objective))
             )
 
-        def halving_cond(hstate):
+        def halving_cond(hstate: tuple[jax.Array, int]) -> jax.Array:
             scale, halvings = hstate
             return (halvings < _MAX_STEP_HALVINGS) & jnp.any(is_worse(scale))
 
-        def halving_body(hstate):
+        def halving_body(
+            hstate: tuple[jax.Array, int],
+        ) -> tuple[jax.Array, int]:
             scale, halvings = hstate
             return jnp.where(is_worse(scale), 0.5 * scale, scale), halvings + 1
 
@@ -796,10 +808,10 @@ def fit_sorted_spikes_mrf_encoding_model(
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
     *,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> dict[str, Any]:
     """Fit a population MRF-GAM encoding model for sorted spikes.
 
     Pixellates spike counts and occupancy onto interior bins, uses the ``rank``

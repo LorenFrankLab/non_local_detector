@@ -1,5 +1,6 @@
 import inspect
 from collections.abc import Callable
+from typing import Any
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
@@ -47,7 +48,7 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
     predict_sorted_spikes_mrf_log_likelihood,
 )
 
-_SORTED_SPIKES_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
+_SORTED_SPIKES_ALGORITHMS: dict[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
     "sorted_spikes_glm": (
         fit_sorted_spikes_glm_encoding_model,
         predict_sorted_spikes_glm_log_likelihood,
@@ -65,7 +66,7 @@ _SORTED_SPIKES_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
         predict_sorted_spikes_mrf_log_likelihood,
     ),
 }
-_CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
+_CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
     "clusterless_kde": (
         fit_clusterless_kde_encoding_model,
         predict_clusterless_kde_log_likelihood,
@@ -86,13 +87,13 @@ _CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
 # The parameters each algorithm's fit receives when a detector's
 # ``*_algorithm_params`` is None, beyond the fit's own defaults; a user dict
 # replaces them. Bandwidths come from the fits (position_std sqrt(12.5)).
-_SORTED_SPIKES_DEFAULT_PARAMS: dict[str, dict] = {
+_SORTED_SPIKES_DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "sorted_spikes_glm": {},
     "sorted_spikes_kde": {"block_size": 10_000},
     "sorted_spikes_diffusion": {},
     "sorted_spikes_mrf": {},
 }
-_CLUSTERLESS_DEFAULT_PARAMS: dict[str, dict] = {
+_CLUSTERLESS_DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "clusterless_kde": {},
     "clusterless_gmm": {},
     "clusterless_diffusion": {},
@@ -101,12 +102,12 @@ _CLUSTERLESS_DEFAULT_PARAMS: dict[str, dict] = {
 
 
 def _resolve_fit_params(
-    algorithms: dict[str, tuple[Callable, Callable]],
-    default_params: dict[str, dict],
+    algorithms: dict[str, tuple[Callable[..., Any], Callable[..., Any]]],
+    default_params: dict[str, dict[str, Any]],
     algorithm: str,
-    params: dict | None,
+    params: dict[str, Any] | None,
     params_name: str,
-) -> dict:
+) -> dict[str, Any]:
     """Return a fresh dict of the fit parameters for a detector's algorithm.
 
     Parameters

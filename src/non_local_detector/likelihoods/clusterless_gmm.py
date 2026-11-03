@@ -15,14 +15,17 @@ from __future__ import annotations
 import warnings
 from dataclasses import replace
 from functools import partial
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from numpy.typing import ArrayLike
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
@@ -54,6 +57,7 @@ from non_local_detector.likelihoods.common import (
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.gmm import (
+    CovType,
     GaussianMixtureModel,
     _as_floating,
     _compute_precision_cholesky,
@@ -79,7 +83,7 @@ DEFAULT_GMM_REG_COVAR = 1.0
 # ---------------------------------------------------------------------
 
 
-def _as_jnp(x) -> jnp.ndarray:
+def _as_jnp(x: Any) -> jnp.ndarray:
     """Input as a JAX array, with integer or boolean features as floats.
 
     Parameters
@@ -95,7 +99,7 @@ def _as_jnp(x) -> jnp.ndarray:
     return _as_floating(x)
 
 
-def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
+def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray | np.ndarray) -> jnp.ndarray:
     """Log density under a fitted GMM.
 
     Parameters
@@ -110,7 +114,7 @@ def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
     log_density : jnp.ndarray, shape (n_samples,)
         Log probability density for each sample.
     """
-    return gmm.score_samples(X)
+    return gmm.score_samples(cast(jnp.ndarray, X))
 
 
 def _gmm_density(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
@@ -167,7 +171,9 @@ _LOCAL_SPIKE_BLOCK = 1000
 def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jnp.ndarray, ...]:
     """Fitted means, Cholesky precisions and weights, for compiled scoring."""
     gmm._check_fitted()
-    return gmm.means_, gmm.precisions_chol_, gmm.weights_
+    return cast(
+        tuple[jnp.ndarray, ...], (gmm.means_, gmm.precisions_chol_, gmm.weights_)
+    )
 
 
 def _gmm_score(
@@ -175,9 +181,12 @@ def _gmm_score(
 ) -> jnp.ndarray:
     """Traceable ``GaussianMixtureModel.score_samples`` on fitted parameters."""
     means, precisions_chol, weights = parameters
-    return _estimate_log_prob_resp(
-        points, means, precisions_chol, covariance_type, weights
-    )[0]
+    return cast(
+        jnp.ndarray,
+        _estimate_log_prob_resp(
+            points, means, precisions_chol, covariance_type, weights
+        )[0],
+    )
 
 
 @partial(
@@ -224,7 +233,7 @@ def _add_electrode_gmm_intensities(
     n_bins = bin_centers.shape[0]
     tiled_bins = jnp.tile(bin_centers, (block_size, 1))
 
-    def add_block(number, log_likelihood):
+    def add_block(number: jax.Array, log_likelihood: jax.Array) -> jax.Array:
         first = number * block_size
         block = jax.lax.dynamic_slice_in_dim(features, first, block_size)
         rows = jax.lax.dynamic_slice_in_dim(row_ids, first, block_size)
@@ -245,8 +254,11 @@ def _add_electrode_gmm_intensities(
             indices_are_sorted=indices_are_sorted,
         )
 
-    return jax.lax.fori_loop(
-        0, features.shape[0] // block_size, add_block, log_likelihood
+    return cast(
+        jnp.ndarray,
+        jax.lax.fori_loop(
+            0, features.shape[0] // block_size, add_block, log_likelihood
+        ),
     )
 
 
@@ -377,7 +389,7 @@ def _ground_process_intensity(
 
 def _fit_gmm_density(
     X: jnp.ndarray,
-    weights: jnp.ndarray | None,
+    weights: jnp.ndarray | np.ndarray | None,
     n_components: int,
     random_state: int | None,
     covariance_type: str = "full",
@@ -420,7 +432,7 @@ def _fit_gmm_density(
     key = jax.random.PRNGKey(0 if random_state is None else random_state)
     gmm = GaussianMixtureModel(
         n_components=n_components,
-        covariance_type=covariance_type,
+        covariance_type=cast("CovType", covariance_type),
         reg_covar=reg_covar,
         max_iter=max_iter,
         tol=tol,
@@ -480,7 +492,9 @@ def _position_marginal(
 # ---------------------------------------------------------------------
 
 
-def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
+def _gmm_sample_weight(
+    weights: np.ndarray, weights_was_none: bool
+) -> np.ndarray | None:
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
     Returns None when the caller passed no weights (keeps a direct unweighted
@@ -522,12 +536,12 @@ def mark_reference_scale(
 
 
 def fit_clusterless_gmm_encoding_model(
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
+    position_time: jnp.ndarray | np.ndarray,
+    position: jnp.ndarray | np.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
-    weights: jnp.ndarray | None = None,
+    weights: jnp.ndarray | np.ndarray | None = None,
     *,
     gmm_components_occupancy: int = 32,
     gmm_components_joint: int = 64,
@@ -540,10 +554,10 @@ def fit_clusterless_gmm_encoding_model(
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
     disable_progress_bar: bool = False,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> dict[str, Any]:
     """
     Fit the clusterless encoding model using GMMs.
 
@@ -677,7 +691,9 @@ def fit_clusterless_gmm_encoding_model(
             stacklevel=user_stacklevel(),
         )
 
-    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+    interior_place_bin_centers = cast(np.ndarray, environment.place_bin_centers_)[
+        is_track_interior
+    ]
 
     # Fit occupancy GMM and precompute per-bin terms
     occupancy_model = _fit_gmm_density(
@@ -694,7 +710,7 @@ def fit_clusterless_gmm_encoding_model(
 
     gpi_models: list[GaussianMixtureModel | None] = []
     joint_models: list[GaussianMixtureModel | None] = []
-    mean_rates: list[float] = []
+    mean_rates: list[float | jax.Array] = []
     effective_gpi_components: list[int] = []
     effective_joint_components: list[int] = []
     mark_dimensions: list[int] = []
@@ -832,9 +848,9 @@ def fit_clusterless_gmm_encoding_model(
 
 @requires_time_edges
 def predict_clusterless_gmm_log_likelihood(
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
-    spike_times: list[jnp.ndarray],
+    position_time: jnp.ndarray | np.ndarray,
+    position: jnp.ndarray | np.ndarray,
+    spike_times: list[np.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
@@ -855,10 +871,10 @@ def predict_clusterless_gmm_log_likelihood(
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
-    environment_grid: dict | None = None,
+    environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-    **kwargs,  # noqa: ARG001 -- shared likelihood-algorithm signature
+    **kwargs: Any,  # noqa: ARG001 -- shared likelihood-algorithm signature
 ) -> jnp.ndarray:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.
@@ -1062,7 +1078,7 @@ def predict_clusterless_gmm_log_likelihood(
         if n_spikes == 0:
             continue
         selected_feats = select_decode_marks(elect_feats, selection, electrode)
-        log_background = background_log_intensity(
+        log_background: np.ndarray | jax.Array = background_log_intensity(
             reference, selected_feats, LOG_RATE_EPS_HZ
         )
         if joint_gmm is None:
@@ -1146,9 +1162,9 @@ def predict_clusterless_gmm_log_likelihood(
 
 def compute_local_log_likelihood(
     time_edges: np.ndarray,
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
-    spike_times: list[jnp.ndarray],
+    position_time: jnp.ndarray | np.ndarray,
+    position: jnp.ndarray | np.ndarray,
+    spike_times: list[np.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
