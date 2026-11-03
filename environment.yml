@@ -17,7 +17,6 @@ dependencies:
 - tqdm >=4.60
 - track_linearization
 - matplotlib >=3.7
-- seaborn >=0.12
 - ipython
 - ruff
 - pre-commit
