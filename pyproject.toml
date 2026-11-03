@@ -192,6 +192,16 @@ addopts = [
 ]
 xfail_strict = true
 log_level = "INFO"
+# Every warning fails its test unless the test expects it (pytest.warns) or
+# marks it as incidental (pytest.mark.filterwarnings, with the reason).
+filterwarnings = [
+    "error",
+    # JAX on CPU cannot reuse donated buffers and says so; nothing is wrong.
+    "ignore:Some donated buffers were not usable:UserWarning",
+    # Most tests decode 1-D open fields on purpose;
+    # test_position_dimensionality_validation checks the warning itself.
+    "ignore:Position data appears to be 1D but no track_graph:UserWarning",
+]
 # Per-test limit from pytest-timeout (in the test extra), locally and in CI.
 timeout = 900
 
