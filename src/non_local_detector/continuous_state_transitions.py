@@ -10,16 +10,20 @@ data-driven transitions such as :class:`EmpiricalMovement` read.
 import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import networkx as nx
 import numpy as np
 from scipy.stats import multivariate_normal
 
+from non_local_detector import _validation as val
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
+
+if TYPE_CHECKING:
+    from non_local_detector.transition_operators import Block
 
 
 @dataclass(frozen=True, eq=False)
@@ -70,22 +74,31 @@ class ContinuousTransition(Protocol):
     """A model of movement between the place bins of two discrete states.
 
     The detectors call ``make_state_transition`` only for blocks between two
-    spatial states or two one-bin states. A block between a one-bin state
-    (No-Spike, or Local without ``local_position_std``) and a spatial state
-    is set without calling it: from the one-bin state it is uniform over the
-    interior bins of the environment named by the transition's
-    ``environment_name``, which the transition must have; into the one-bin
-    state every bin moves there with probability 1.
+    spatial states or two one-bin states, and check that the block it
+    returns has the two states' shape, is finite and non-negative, and has
+    rows that sum to 1 (or 0, for bins nothing can leave). A block between a
+    one-bin state (No-Spike, or Local without ``local_position_std``) and a
+    spatial state is set without calling it: from the one-bin state it is
+    uniform over the interior bins of the environment named by the
+    transition's ``environment_name``; into the one-bin state every bin
+    moves there with probability 1.
 
-    Only the package's ``Uniform``, ``Identity``, ``Discrete`` and Euclidean
-    ``RandomWalk`` (on a complete Cartesian grid) have structured operators.
-    With ``transition_representation="structured"`` any other transition
-    raises ``UnsupportedTransitionError``; with ``"auto"`` its dense block is
-    built from ``make_state_transition``, but a transition outside the
-    package is refused when an environment's graph distances are deferred
-    (as for an open-field grid fit with a non-dense representation). Use
-    ``"dense"`` for such a transition.
+    A transition has a structured operator only if it implements
+    ``transition_operators.SupportsStructuredBlock``, as the package's
+    ``Uniform``, ``Identity``, ``Discrete`` and Euclidean ``RandomWalk`` (on a
+    complete Cartesian grid) do. With ``transition_representation=
+    "structured"`` any other transition raises ``UnsupportedTransitionError``;
+    with ``"auto"`` its dense block is built from ``make_state_transition``,
+    but a transition without ``SupportsStructuredBlock`` is refused when an
+    environment's graph distances are deferred (as for an open-field grid fit
+    with a non-dense representation). Use ``"dense"`` for such a transition.
     """
+
+    @property
+    def environment_name(self) -> str | None:
+        """Name of the environment of the source bins; None for a transition
+        without place bins, such as ``Discrete``."""
+        ...
 
     def make_state_transition(
         self,
@@ -246,8 +259,47 @@ class _DropsLegacyEnvironment:
         self.__dict__.update(state)
 
 
+class _EnvironmentBlock:
+    """``SupportsStructuredBlock`` defaults of a transition within one
+    environment.
+
+    Its dense block spans the bins of ``environment_name`` in both
+    directions, and it reads no graph distances.
+    """
+
+    environment_name: str
+
+    def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:
+        """``(n_bins, n_bins)`` of ``environment_name``, without building
+        the block."""
+        environment = find_environment_by_name(environments, self.environment_name)
+        n_bins = len(cast(np.ndarray, environment.place_bin_centers_))
+        return (n_bins, n_bins)
+
+    def graph_distance_environment(
+        self,
+        environments: Sequence[Environment],  # noqa: ARG002 -- SupportsStructuredBlock signature
+    ) -> Environment | None:
+        """None: ``make_state_transition`` reads no graph distances."""
+        return None
+
+
+def _no_structured_block(transition: object) -> "Block":
+    """Refuse a structured block for a transition that has none."""
+    from non_local_detector.transition_operators import (
+        _DENSE_BLOCK_HINT,
+        UnsupportedTransitionError,
+    )
+
+    msg = f"{type(transition).__name__} has no structured operator; {_DENSE_BLOCK_HINT}"
+    raise UnsupportedTransitionError(msg)
+
+
+_DIRECTIONS = ("inward", "outward")
+
+
 @dataclass
-class RandomWalk(_DropsLegacyEnvironment):
+class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     """A transition where the movement stays locally close in space.
 
     Attributes
@@ -263,7 +315,13 @@ class RandomWalk(_DropsLegacyEnvironment):
         Defaults to False (Euclidean).
     direction : ("inward", "outward"), optional
         If using manifold distance on a 2D track, constrain movement direction
-        relative to the track center. Defaults to None (no constraint).
+        relative to the track center (case-insensitive). Defaults to None (no
+        constraint).
+
+    Raises
+    ------
+    ValidationError
+        If ``direction`` is not None, "inward" or "outward".
     """
 
     environment_name: str = ""
@@ -271,6 +329,40 @@ class RandomWalk(_DropsLegacyEnvironment):
     movement_mean: float = 0.0
     use_manifold_distance: bool = False
     direction: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.direction is not None and self.direction.lower() not in _DIRECTIONS:
+            msg = f"direction must be 'inward' or 'outward', got {self.direction!r}"
+            raise ValidationError(
+                msg,
+                hint="Use direction=None for an unconstrained random walk.",
+            )
+
+    def structured_block(self, environments: Sequence[Environment]) -> "Block":
+        """Separable Gaussian block of a Euclidean random walk on a complete
+        Cartesian grid.
+
+        Raises
+        ------
+        UnsupportedTransitionError
+            For a track graph, manifold distance, a direction, a
+            non-separable covariance or a grid whose float32 product would
+            underflow.
+        """
+        from non_local_detector.transition_operators import _gaussian_block
+
+        return _gaussian_block(
+            self, find_environment_by_name(environments, self.environment_name)
+        )
+
+    def graph_distance_environment(
+        self, environments: Sequence[Environment]
+    ) -> Environment | None:
+        """The environment whose graph distances a manifold-distance random
+        walk reads; None for a Euclidean one."""
+        if not self.use_manifold_distance:
+            return None
+        return find_environment_by_name(environments, self.environment_name)
 
     def make_state_transition(
         self,
@@ -291,12 +383,6 @@ class RandomWalk(_DropsLegacyEnvironment):
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized transition probability matrix.
         """
-        if self.direction is not None and self.direction.lower() not in (
-            "inward",
-            "outward",
-        ):
-            msg = f"direction must be 'inward' or 'outward', got '{self.direction}'"
-            raise ValueError(msg)
         environment = find_environment_by_name(environments, self.environment_name)
         # ``direction`` is only consulted on the N-D-grid manifold-distance path
         # (no track_graph + use_manifold_distance=True). On every other path it
@@ -373,14 +459,10 @@ class RandomWalk(_DropsLegacyEnvironment):
                             "distance_between_nodes_."
                         ),
                     )
-                direction_funcs = {
+                direction_func = {
                     "inward": np.greater_equal,
                     "outward": np.less_equal,
-                }
-                direction_func = direction_funcs.get(self.direction.lower())
-                if direction_func is None:
-                    msg = f"direction must be 'inward' or 'outward', got '{self.direction}'"
-                    raise ValueError(msg)
+                }[self.direction.lower()]
 
                 centrality = nx.closeness_centrality(
                     environment.track_graphDD, distance="distance"
@@ -433,7 +515,7 @@ class RandomWalk(_DropsLegacyEnvironment):
 
 
 @dataclass
-class Uniform(_DropsLegacyEnvironment):
+class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
     """Transition where all valid destination bins are equally likely.
 
     Attributes
@@ -447,6 +529,35 @@ class Uniform(_DropsLegacyEnvironment):
 
     environment_name: str = ""
     environment2_name: str | None = None
+
+    def structured_block(self, environments: Sequence[Environment]) -> "Block":
+        """Rank-one block from the interior of ``environment_name`` to the
+        interior of ``environment2_name`` (or the same environment)."""
+        from non_local_detector.transition_operators import UniformBlock
+
+        source = find_environment_by_name(
+            environments, self.environment_name
+        ).is_track_interior_flat_
+        destination = (
+            source.copy()
+            if self.environment2_name is None
+            else find_environment_by_name(
+                environments, self.environment2_name
+            ).is_track_interior_flat_
+        )
+        return UniformBlock(
+            source,
+            destination,
+            np.array(1.0 / destination.sum() if destination.any() else 0.0),
+        )
+
+    def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:
+        """``(n_bins1, n_bins2)`` of the two environments."""
+        n_bins1, _ = super().dense_block_shape(environments)
+        if self.environment2_name is None:
+            return (n_bins1, n_bins1)
+        environment2 = find_environment_by_name(environments, self.environment2_name)
+        return (n_bins1, len(cast(np.ndarray, environment2.place_bin_centers_)))
 
     def make_state_transition(
         self,
@@ -500,7 +611,7 @@ class Uniform(_DropsLegacyEnvironment):
 
 
 @dataclass
-class Identity(_DropsLegacyEnvironment):
+class Identity(_DropsLegacyEnvironment, _EnvironmentBlock):
     """A transition where the movement must stay within the same place bin.
 
     Attributes
@@ -510,6 +621,16 @@ class Identity(_DropsLegacyEnvironment):
     """
 
     environment_name: str = ""
+
+    def structured_block(self, environments: Sequence[Environment]) -> "Block":
+        """Identity block on the interior of ``environment_name``."""
+        from non_local_detector.transition_operators import IdentityBlock
+
+        return IdentityBlock(
+            find_environment_by_name(
+                environments, self.environment_name
+            ).is_track_interior_flat_
+        )
 
     def make_state_transition(
         self,
@@ -547,7 +668,7 @@ class Identity(_DropsLegacyEnvironment):
 
 
 @dataclass
-class EmpiricalMovement(_DropsLegacyEnvironment):
+class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
     """A transition matrix estimated from the animal's actual movement patterns.
 
     Attributes
@@ -568,6 +689,13 @@ class EmpiricalMovement(_DropsLegacyEnvironment):
     encoding_group: str | int = 0
     speedup: int = 1
     is_time_reversed: bool = False
+
+    def structured_block(
+        self,
+        environments: Sequence[Environment],  # noqa: ARG002 -- SupportsStructuredBlock signature
+    ) -> "Block":
+        """None exists; raises ``UnsupportedTransitionError``."""
+        return _no_structured_block(self)
 
     def make_state_transition(
         self,
@@ -645,7 +773,7 @@ class EmpiricalMovement(_DropsLegacyEnvironment):
 
 
 @dataclass
-class RandomWalkDirection1(_DropsLegacyEnvironment):
+class RandomWalkDirection1(_DropsLegacyEnvironment, _EnvironmentBlock):
     """A Gaussian random walk constrained to move in one direction (increasing index).
 
     Only valid for 1D environments.
@@ -660,6 +788,13 @@ class RandomWalkDirection1(_DropsLegacyEnvironment):
 
     environment_name: str = ""
     movement_var: float = 6.0
+
+    def structured_block(
+        self,
+        environments: Sequence[Environment],  # noqa: ARG002 -- SupportsStructuredBlock signature
+    ) -> "Block":
+        """None exists; raises ``UnsupportedTransitionError``."""
+        return _no_structured_block(self)
 
     def make_state_transition(
         self,
@@ -688,7 +823,7 @@ class RandomWalkDirection1(_DropsLegacyEnvironment):
 
 
 @dataclass
-class RandomWalkDirection2(_DropsLegacyEnvironment):
+class RandomWalkDirection2(_DropsLegacyEnvironment, _EnvironmentBlock):
     """A Gaussian random walk constrained to move in one direction (decreasing index).
 
     Only valid for 1D environments.
@@ -703,6 +838,13 @@ class RandomWalkDirection2(_DropsLegacyEnvironment):
 
     environment_name: str = ""
     movement_var: float = 6.0
+
+    def structured_block(
+        self,
+        environments: Sequence[Environment],  # noqa: ARG002 -- SupportsStructuredBlock signature
+    ) -> "Block":
+        """None exists; raises ``UnsupportedTransitionError``."""
+        return _no_structured_block(self)
 
     def make_state_transition(
         self,
@@ -736,6 +878,34 @@ class Discrete:
     Essentially, there is no continuous state space, so the transition matrix
     is just an identity matrix.
     """
+
+    @property
+    def environment_name(self) -> None:
+        """None: a discrete state has no place bins."""
+        return None
+
+    def structured_block(
+        self,
+        environments: Sequence[Environment] = (),  # noqa: ARG002 -- SupportsStructuredBlock signature
+    ) -> "Block":
+        """The (1, 1) identity block."""
+        from non_local_detector.transition_operators import IdentityBlock
+
+        return IdentityBlock(np.ones(1, dtype=bool))
+
+    def dense_block_shape(
+        self,
+        environments: Sequence[Environment] = (),  # noqa: ARG002 -- SupportsStructuredBlock signature
+    ) -> tuple[int, int]:
+        """(1, 1): a discrete state has one bin."""
+        return (1, 1)
+
+    def graph_distance_environment(
+        self,
+        environments: Sequence[Environment] = (),  # noqa: ARG002 -- SupportsStructuredBlock signature
+    ) -> Environment | None:
+        """None: no graph distances are read."""
+        return None
 
     def make_state_transition(
         self,
@@ -813,6 +983,35 @@ def _multi_bin_local_transition(
     return Uniform(environment_name=local_observation.environment_name)
 
 
+def _check_continuous_transition(transition: object) -> None:
+    """Check that a transition has the ``ContinuousTransition`` members.
+
+    Raises
+    ------
+    ValidationError
+        If it lacks ``make_state_transition`` or ``environment_name``.
+    """
+    if not isinstance(transition, ContinuousTransition):
+        missing = [
+            name
+            for name in ("make_state_transition", "environment_name")
+            if not hasattr(transition, name)
+        ]
+        msg = f"{type(transition).__name__} is not a ContinuousTransition"
+        raise ValidationError(
+            msg,
+            expected=(
+                "make_state_transition(environments, context=None) and an "
+                "environment_name attribute"
+            ),
+            got=f"an object without {' or '.join(missing)}",
+            hint=(
+                "Give the transition an environment_name: the environment of "
+                "its source bins, or None if it has no place bins."
+            ),
+        )
+
+
 def _scalar_to_spatial_destination(
     transition: ContinuousTransition, environments: Sequence[Environment]
 ) -> np.ndarray:
@@ -834,16 +1033,22 @@ def _scalar_to_spatial_destination(
 
     Raises
     ------
-    ValueError
-        If the transition has no ``environment_name``.
+    ValidationError
+        If the transition's ``environment_name`` is None.
     """
-    if not hasattr(transition, "environment_name"):
+    if transition.environment_name is None:
         # No fallback may broadcast a scalar block across the destination bins.
         msg = (
-            "Transition must have an environment_name attribute for discrete "
-            "to continuous transitions"
+            f"{type(transition).__name__} has environment_name=None, so it "
+            "cannot set a block from a one-bin state to a spatial state"
         )
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            hint=(
+                "Use a transition naming the destination environment, e.g. "
+                "Uniform(environment_name=...)."
+            ),
+        )
     return find_environment_by_name(
         environments, transition.environment_name
     ).is_track_interior_flat_
@@ -853,14 +1058,18 @@ def _make_transition_block(
     transition: ContinuousTransition,
     environments: Sequence[Environment],
     context: TransitionContext | None,
+    shape: tuple[int, int],
 ) -> np.ndarray:
-    """Call ``transition.make_state_transition(environments, context)``.
+    """Call ``transition.make_state_transition(environments, context)`` and
+    check the block it returns.
 
     Parameters
     ----------
     transition : ContinuousTransition
     environments : sequence of Environment
     context : TransitionContext or None
+    shape : tuple of int
+        ``(n_source_bins, n_destination_bins)`` of the two states.
 
     Returns
     -------
@@ -870,13 +1079,18 @@ def _make_transition_block(
     ------
     ValidationError
         If ``make_state_transition`` cannot take ``(environments, context)``,
-        as a custom transition written before ``context`` existed.
+        as a custom transition written before ``context`` existed, or returns
+        a block that is not ``shape``, has negative values, or has a row that
+        sums to neither 1 nor 0.
+    DataError
+        If the block has NaN or infinite values.
     """
+    name = type(transition).__name__
     try:
         inspect.signature(transition.make_state_transition).bind(environments, context)
     except TypeError:
         msg = (
-            f"{type(transition).__name__}.make_state_transition cannot be "
+            f"{name}.make_state_transition cannot be "
             "called as make_state_transition(environments, context)"
         )
         raise ValidationError(
@@ -888,4 +1102,20 @@ def _make_transition_block(
                 "context=None)`."
             ),
         ) from None
-    return transition.make_state_transition(environments, context)
+    block = np.asarray(transition.make_state_transition(environments, context))
+    label = f"{name}.make_state_transition(...)"
+    if block.shape != shape:
+        msg = f"{label} returned a block with the wrong shape"
+        raise ValidationError(
+            msg,
+            expected=f"shape {shape}, (source state bins, destination state bins)",
+            got=f"shape {block.shape}",
+            hint=(
+                "Return one row per bin of the source state's environment and "
+                "one column per bin of the destination state's environment."
+            ),
+        )
+    val.ensure_all_finite(block, label)
+    val.ensure_all_non_negative(block, label)
+    val.ensure_stochastic_matrix(block, label, allow_zero_rows=True)
+    return block

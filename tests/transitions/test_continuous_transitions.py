@@ -13,7 +13,7 @@ from non_local_detector.continuous_state_transitions import (
     Uniform,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ConfigurationError
+from non_local_detector.exceptions import ConfigurationError, ValidationError
 from tests.conftest import assert_stochastic_matrix
 
 pytestmark = pytest.mark.unit
@@ -63,16 +63,21 @@ def test_random_walk_with_directional_constraints(simple_1d_environment):
     )
 
 
-def test_random_walk_invalid_direction_raises(simple_1d_environment):
-    """Invalid direction string should raise ValueError."""
-    env = simple_1d_environment
-    rw = RandomWalk(
-        environment_name=env.environment_name,
-        movement_var=3.0,
-        direction="sideways",
-    )
-    with pytest.raises(ValueError, match="direction must be 'inward' or 'outward'"):
-        rw.make_state_transition((env,))
+def test_random_walk_invalid_direction_raises_at_construction():
+    """An invalid direction is rejected when the RandomWalk is made, not
+    only when its matrix is built."""
+    with pytest.raises(
+        ValidationError, match="direction must be 'inward' or 'outward'"
+    ):
+        RandomWalk(movement_var=3.0, direction="sideways")
+
+
+def test_environment_name_is_part_of_the_protocol():
+    """Every package transition declares environment_name; Discrete has no
+    place bins, so its environment_name is None."""
+    assert Discrete().environment_name is None
+    assert RandomWalk("track").environment_name == "track"
+    assert vars(Discrete()) == {}
 
 
 def test_identity_transition_is_identity_masked(simple_1d_environment):

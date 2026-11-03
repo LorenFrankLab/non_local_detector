@@ -153,6 +153,8 @@ def test_invalid_scalar_gaussian_shape_is_rejected_before_dense_allocation(monke
 @pytest.mark.unit
 def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
     class Custom:
+        environment_name = ""
+
         def make_state_transition(self, environments, context=None):
             msg = "opaque constructor cannot reinterpret sparse distances"
             raise AssertionError(msg)
@@ -172,6 +174,7 @@ def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
 def test_slotted_custom_transition_preserves_explicit_eager_dense_fallback():
     class Custom:
         __slots__ = ()
+        environment_name = ""
 
         def make_state_transition(self, environments, context=None):
             return np.eye(len(environments[0].place_bin_centers_))
@@ -187,6 +190,7 @@ def test_slotted_custom_transition_preserves_explicit_eager_dense_fallback():
 def test_slotted_custom_never_receives_a_temporary_dense_environment():
     class Custom:
         __slots__ = ("environment",)
+        environment_name = ""
 
         def make_state_transition(self, environments, context=None):
             self.environment = environments[0]
@@ -1159,3 +1163,137 @@ def test_opaque_custom_error_names_the_dense_representation():
             (len(env.place_bin_centers_),),
             allow_dense_fallback=True,
         )
+
+
+def _custom_returning(matrix):
+    """A custom transition whose dense block is ``matrix``."""
+
+    class Custom:
+        environment_name = ""
+
+        def make_state_transition(self, environments, context=None):
+            return matrix
+
+    return Custom()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("matrix", "match"),
+    [
+        (np.ones((1, 1)), "shape"),
+        (np.ones((12,)), "shape"),
+        (np.full((12, 12), 2.0 / 12), "row-stochastic"),
+        (np.eye(12) * 2.0 - np.roll(np.eye(12), 1, axis=1), "non-negative"),
+        (np.full((12, 12), np.nan), "non-finite"),
+    ],
+    ids=["broadcast-scalar", "one-dimensional", "rows-sum-to-two", "negative", "nan"],
+)
+def test_invalid_custom_block_is_rejected_in_dense_and_operator_paths(matrix, match):
+    """A custom transition's block must be its states' shape, non-negative,
+    and have rows summing to 1 or 0; otherwise both constructions fail
+    instead of broadcasting it into the transition."""
+    env = environment((3, 4))
+    with pytest.raises(ValueError, match=match):
+        dense_reference([[_custom_returning(matrix)]], [env], (12,))
+    with pytest.raises(ValueError, match=match):
+        build_transition_operator(
+            [[_custom_returning(matrix)]], [env], (12,), allow_dense_fallback=True
+        )
+
+
+@pytest.mark.unit
+def test_custom_block_with_empty_rows_is_accepted():
+    """Rows summing to 0 (bins nothing can leave) are valid."""
+    matrix = np.eye(12)
+    matrix[[0, 3]] = 0.0
+    env = environment((3, 4))
+    dense, _ = dense_reference([[_custom_returning(matrix)]], [env], (12,))
+    np.testing.assert_array_equal(dense, matrix)
+    operator = build_transition_operator(
+        [[_custom_returning(matrix)]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), matrix)
+
+
+@pytest.mark.unit
+def test_spatial_discrete_block_is_rejected_instead_of_broadcast():
+    """A one-bin Discrete block between two spatial states is not broadcast
+    into a matrix of ones."""
+    env = environment((3, 4))
+    with pytest.raises(ValueError, match="shape"):
+        dense_reference([[Discrete()]], [env], (12,))
+    with pytest.raises(ValueError, match="shape"):
+        build_transition_operator(
+            [[Discrete()]], [env], (12,), allow_dense_fallback=True
+        )
+
+
+@pytest.mark.unit
+def test_transition_without_environment_name_is_rejected():
+    """A continuous transition must declare environment_name."""
+
+    class Nameless:
+        def make_state_transition(self, environments, context=None):
+            return np.eye(12)
+
+    env = environment((3, 4))
+    with pytest.raises(ValidationError, match="environment_name"):
+        dense_reference([[Nameless()]], [env], (12,))
+    with pytest.raises(ValidationError, match="environment_name"):
+        build_transition_operator(
+            [[Nameless()]], [env], (12,), allow_dense_fallback=True
+        )
+
+
+@pytest.mark.unit
+def test_custom_transition_opts_into_a_structured_block():
+    """A custom class implementing SupportsStructuredBlock gets its block
+    without a dense constructor, even with no dense fallback allowed."""
+    from non_local_detector.transition_operators import (
+        IdentityBlock,
+        SupportsStructuredBlock,
+    )
+
+    class Stay:
+        environment_name = ""
+
+        def make_state_transition(self, environments, context=None):
+            msg = "the structured block must be used"
+            raise AssertionError(msg)
+
+        def structured_block(self, environments):
+            return IdentityBlock(environments[0].is_track_interior_flat_)
+
+        def dense_block_shape(self, environments):
+            n_bins = len(environments[0].place_bin_centers_)
+            return (n_bins, n_bins)
+
+        def graph_distance_environment(self, environments):
+            return None
+
+    env = environment((3, 4))
+    assert isinstance(Stay(), SupportsStructuredBlock)
+    operator = build_transition_operator([[Stay()]], [env], (12,))
+    np.testing.assert_array_equal(
+        np.asarray(LazyDenseTransition(operator)),
+        np.diag(env.is_track_interior_flat_.astype(float)),
+    )
+
+
+@pytest.mark.unit
+def test_subclass_overriding_make_state_transition_falls_back_to_dense():
+    """A RandomWalk subclass with its own make_state_transition does not
+    inherit the Gaussian structured block."""
+
+    class Stay(RandomWalk):
+        def make_state_transition(self, environments, context=None):
+            return np.eye(len(environments[0].place_bin_centers_))
+
+    env = environment((3, 4), holes=False)
+    with pytest.raises(UnsupportedTransitionError):
+        build_transition_operator([[Stay()]], [env], (12,))
+    operator = build_transition_operator(
+        [[Stay()]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), np.eye(12))

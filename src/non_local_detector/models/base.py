@@ -48,9 +48,9 @@ from non_local_detector.checkpointed_inference import (
 )
 from non_local_detector.continuous_state_transitions import (
     TransitionContext,
+    _check_continuous_transition,
     _make_transition_block,
     _multi_bin_local_transition,
-    _scalar_to_spatial_destination,
 )
 from non_local_detector.core import (
     accepts_row_slice,
@@ -121,7 +121,10 @@ from non_local_detector.time_edges import (
     requires_time_edges,
     uniform_time_edges,
 )
-from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
+from non_local_detector.transition_operators import (
+    DEFAULT_MAX_DENSE_BYTES,
+    _one_bin_block,
+)
 
 try:
     from non_local_detector._version import __version__ as _PACKAGE_VERSION
@@ -2710,6 +2713,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         for from_state, row in enumerate(self.continuous_transition_types):
             for to_state, transition in enumerate(row):
+                _check_continuous_transition(transition)
                 inds = np.ix_(
                     self.state_ind_ == from_state, self.state_ind_ == to_state
                 )
@@ -2721,23 +2725,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     self.local_position_std,
                 )
 
-                n_row_bins = np.max(inds[0].shape)
-                n_col_bins = np.max(inds[1].shape)
+                n_row_bins = int(np.max(inds[0].shape))
+                n_col_bins = int(np.max(inds[1].shape))
 
-                if np.logical_and(n_row_bins == 1, n_col_bins > 1):
-                    destination = _scalar_to_spatial_destination(
-                        transition, self.environments
+                # Blocks between a one-bin and a spatial state follow the
+                # structured operator's rule, so both representations agree.
+                one_bin_block = _one_bin_block(
+                    transition, self.environments, n_row_bins, n_col_bins
+                )
+                if one_bin_block is not None:
+                    self.continuous_state_transitions_[inds] = one_bin_block.entries(
+                        np.arange(n_row_bins)[:, np.newaxis],
+                        np.arange(n_col_bins)[np.newaxis],
                     )
-                    self.continuous_state_transitions_[inds] = (
-                        destination / destination.sum()
-                    )
-                elif n_row_bins > 1 and n_col_bins == 1:
-                    # Spatial to non-spatial: each source bin transitions
-                    # to the single target bin with probability 1.
-                    self.continuous_state_transitions_[inds] = np.ones((n_row_bins, 1))
                 else:
                     self.continuous_state_transitions_[inds] = _make_transition_block(
-                        transition, self.environments, context
+                        transition,
+                        self.environments,
+                        context,
+                        (n_row_bins, n_col_bins),
                     )
 
     def __getstate__(self) -> dict[str, Any]:

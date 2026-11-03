@@ -10,7 +10,7 @@ import itertools
 from collections.abc import Sequence
 from copy import copy
 from dataclasses import dataclass, field, fields, replace
-from typing import Any, TypeAlias, TypeVar, cast
+from typing import Any, Protocol, TypeAlias, TypeVar, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -21,19 +21,14 @@ from scipy.stats import multivariate_normal, norm
 
 from non_local_detector.continuous_state_transitions import (
     ContinuousTransition,
-    Discrete,
-    EmpiricalMovement,
-    Identity,
     RandomWalk,
-    RandomWalkDirection1,
-    RandomWalkDirection2,
     TransitionContext,
-    Uniform,
+    _check_continuous_transition,
     _make_transition_block,
     _multi_bin_local_transition,
     _scalar_to_spatial_destination,
 )
-from non_local_detector.environment import Environment, find_environment_by_name
+from non_local_detector.environment import Environment
 from non_local_detector.exceptions import NonLocalDetectorError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
@@ -1588,12 +1583,98 @@ def _gaussian_block(
     return GaussianGridBlock(factors, mask, normalizer)
 
 
-def _structured_block(
-    transition: Any,
+@runtime_checkable
+class SupportsStructuredBlock(Protocol):
+    """A continuous transition the operator builder can plan without
+    calling ``make_state_transition``.
+
+    A transition opts into structured operators by implementing these
+    methods alongside its ``make_state_transition``, as the package's
+    transitions do. A subclass that overrides ``make_state_transition``
+    without also overriding ``structured_block`` is treated as a transition
+    without them. Transitions without them fall back to their dense block
+    with ``transition_representation="auto"``.
+    """
+
+    def structured_block(self, environments: Sequence[Environment]) -> Block:
+        """The exact block between two spatial (or two one-bin) states.
+
+        Parameters
+        ----------
+        environments : sequence of Environment
+            The model's fitted environments.
+
+        Returns
+        -------
+        block : Block
+            Equal to ``make_state_transition(environments)``.
+
+        Raises
+        ------
+        UnsupportedTransitionError
+            If this configuration has no exact structured block; its dense
+            block is then planned from ``dense_block_shape`` and
+            ``graph_distance_environment``.
+        """
+        ...
+
+    def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:
+        """Shape of ``make_state_transition``'s block, without building it."""
+        ...
+
+    def graph_distance_environment(
+        self, environments: Sequence[Environment]
+    ) -> Environment | None:
+        """The environment whose graph distances ``make_state_transition``
+        reads, or None. Deferred distances are densified for it within the
+        dense budget."""
+        ...
+
+
+def _defining_class_index(cls: type, name: str) -> int:
+    """Position in ``cls.__mro__`` of the class that defines ``name``."""
+    return next(index for index, base in enumerate(cls.__mro__) if name in vars(base))
+
+
+def _planned(transition: object) -> SupportsStructuredBlock | None:
+    """The transition if its ``SupportsStructuredBlock`` methods describe its
+    ``make_state_transition``, else None."""
+    if not isinstance(transition, SupportsStructuredBlock):
+        return None
+    cls = type(transition)
+    if _defining_class_index(cls, "structured_block") > _defining_class_index(
+        cls, "make_state_transition"
+    ):
+        return None
+    return transition
+
+
+def _one_bin_block(
+    transition: ContinuousTransition,
     environments: Sequence[Environment],
     source_size: int,
     target_size: int,
-) -> UniformBlock | IdentityBlock | GaussianGridBlock:
+) -> UniformBlock | None:
+    """The block between a one-bin state and a spatial state, or None.
+
+    From a one-bin state (No-Spike, or Local without ``local_position_std``)
+    the block is uniform over the interior bins of the environment named by
+    the transition's ``environment_name``; into one, every bin moves there
+    with probability 1. Both the dense and the structured transition use
+    this block, without calling ``make_state_transition``.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+    environments : sequence of Environment
+    source_size, target_size : int
+        Bins of the source and destination states.
+
+    Returns
+    -------
+    block : UniformBlock or None
+        None unless exactly one of the two states has one bin.
+    """
     if source_size == 1 and target_size > 1:
         destination = _scalar_to_spatial_destination(transition, environments)
         normalization = np.array(
@@ -1604,83 +1685,48 @@ def _structured_block(
         return UniformBlock(
             np.ones(source_size, dtype=bool), np.ones(1, dtype=bool), np.array(1.0)
         )
-    if isinstance(transition, EmpiricalMovement):
+    return None
+
+
+def _structured_block(
+    transition: ContinuousTransition,
+    environments: Sequence[Environment],
+    source_size: int,
+    target_size: int,
+) -> Block:
+    block = _one_bin_block(transition, environments, source_size, target_size)
+    if block is not None:
+        return block
+    planned = _planned(transition)
+    if planned is None:
         msg = (
-            "EmpiricalMovement is built from the fit data and has no "
-            f"structured operator; {_DENSE_BLOCK_HINT}"
+            f"No proven exact structured operator for {type(transition).__name__}; "
+            f"{_DENSE_BLOCK_HINT}"
         )
         raise UnsupportedTransitionError(msg)
-    if type(transition) is Discrete and source_size == target_size == 1:
-        return IdentityBlock(np.ones(1, dtype=bool))
-    if type(transition) is Uniform:
-        source = _mask(
-            find_environment_by_name(environments, transition.environment_name)
-        )
-        destination = (
-            source.copy()
-            if transition.environment2_name is None
-            else _mask(
-                find_environment_by_name(environments, transition.environment2_name)
-            )
-        )
-        return UniformBlock(
-            source,
-            destination,
-            np.array(1.0 / destination.sum() if destination.any() else 0.0),
-        )
-    if type(transition) is Identity:
-        return IdentityBlock(
-            _mask(find_environment_by_name(environments, transition.environment_name))
-        )
-    if type(transition) is RandomWalk:
-        return _gaussian_block(
-            transition,
-            find_environment_by_name(environments, transition.environment_name),
-        )
-    msg = (
-        f"No proven exact structured operator for {type(transition).__name__}; "
-        f"{_DENSE_BLOCK_HINT}"
-    )
-    raise UnsupportedTransitionError(msg)
+    return planned.structured_block(environments)
 
 
-# Package transitions whose dense constructors the fallback planner understands.
-_KNOWN_TRANSITIONS = (
-    Discrete,
-    Uniform,
-    Identity,
-    RandomWalk,
-    RandomWalkDirection1,
-    RandomWalkDirection2,
-    EmpiricalMovement,
+# Every block type, to tell planned blocks from transitions awaiting a dense
+# constructor.
+_BLOCK_TYPES = (
+    UniformBlock,
+    IdentityBlock,
+    GaussianGridBlock,
+    DenseBlock,
+    RestrictedBlock,
 )
-# Blocks built without a dense constructor.
-_STRUCTURED_BLOCKS = (UniformBlock, IdentityBlock, GaussianGridBlock)
 
 
-def _check_known_fallback_shape(
-    transition: Any, environments: Sequence[Environment], expected: tuple[int, int]
+def _check_fallback_shape(
+    transition: object, environments: Sequence[Environment], expected: tuple[int, int]
 ) -> None:
-    """Fail invalid primitive shapes before their dense constructor allocates."""
-    if type(transition) is Discrete:
-        shape = (1, 1)
-    elif type(transition) in _KNOWN_TRANSITIONS:
-        env = find_environment_by_name(environments, transition.environment_name)
-        count = len(cast(np.ndarray, env.place_bin_centers_))
-        other = count
-        if type(transition) is Uniform and transition.environment2_name is not None:
-            other = len(
-                cast(
-                    np.ndarray,
-                    find_environment_by_name(
-                        environments, transition.environment2_name
-                    ).place_bin_centers_,
-                )
-            )
-        shape = (count, other)
-    else:
+    """Fail an invalid planned shape before its dense constructor allocates."""
+    planned = _planned(transition)
+    if planned is None:
         return
-    if np.broadcast_shapes(shape, expected) != expected:
+    shape = planned.dense_block_shape(environments)
+    if shape != expected:
         msg = (
             f"Dense transition block shape {shape} does not match state bins {expected}"
         )
@@ -1700,15 +1746,18 @@ def build_transition_operator(
 ) -> BlockTransitionOperator:
     """Build exact padded conditional blocks and preflight dense fallback.
 
-    Uniform, Identity, scalar ``Discrete``, scalar-to-spatial and
-    spatial-to-scalar blocks, and Euclidean, nondirectional RandomWalks with
-    a scalar mean and separable covariance on complete Cartesian grids are
+    Scalar-to-spatial and spatial-to-scalar blocks, and the blocks of
+    transitions implementing ``SupportsStructuredBlock`` (Uniform, Identity,
+    scalar ``Discrete``, and Euclidean, nondirectional RandomWalks with a
+    scalar mean and separable covariance on complete Cartesian grids) are
     built without dense matrices.
     Scalar/spatial blocks and the multi-bin Local ``Discrete`` upgrade match
     the dense detector constructor. Any other block raises
     ``UnsupportedTransitionError`` unless ``allow_dense_fallback=True``; the
     retained dense blocks plus the temporary dense graph distances that
-    manifold RandomWalk fallbacks need must then fit ``max_dense_bytes``.
+    ``graph_distance_environment`` names must then fit ``max_dense_bytes``.
+    Dense blocks are checked like the dense constructor's (shape, finite,
+    non-negative, rows summing to 1 or 0).
 
     Parameters
     ----------
@@ -1752,6 +1801,7 @@ def build_transition_operator(
     for source, row in enumerate(transition_types):
         planned_row: list[Any] = []
         for target, transition in enumerate(row):
+            _check_continuous_transition(transition)
             if observation_models is not None:
                 transition = _multi_bin_local_transition(
                     transition,
@@ -1770,7 +1820,7 @@ def build_transition_operator(
             except UnsupportedTransitionError:
                 if not allow_dense_fallback:
                     raise
-                _check_known_fallback_shape(
+                _check_fallback_shape(
                     transition, environments, (sizes[source], sizes[target])
                 )
                 fallback_bytes += (
@@ -1786,9 +1836,10 @@ def build_transition_operator(
     distance_environments = {}
     for row in plan:
         for block in row:
-            if isinstance(block, _STRUCTURED_BLOCKS):
+            if isinstance(block, _BLOCK_TYPES):
                 continue
-            if type(block) not in _KNOWN_TRANSITIONS and any(
+            planned = _planned(block)
+            if planned is None and any(
                 isinstance(env.distance_between_nodes_, LazyGraphDistances)
                 for env in environments
             ):
@@ -1798,10 +1849,15 @@ def build_transition_operator(
                     'transition_representation="dense"'
                 )
                 raise UnsupportedTransitionError(msg)
-            if type(block) is RandomWalk and block.use_manifold_distance:
-                env = find_environment_by_name(environments, block.environment_name)
-                if isinstance(env.distance_between_nodes_, LazyGraphDistances):
-                    distance_environments[id(env)] = env
+            env = (
+                None
+                if planned is None
+                else planned.graph_distance_environment(environments)
+            )
+            if env is not None and isinstance(
+                env.distance_between_nodes_, LazyGraphDistances
+            ):
+                distance_environments[id(env)] = env
     distance_bytes = sum(
         cast(LazyGraphDistances, env.distance_between_nodes_).shape[0] ** 2 * 8
         for env in distance_environments.values()
@@ -1825,15 +1881,12 @@ def build_transition_operator(
     for source, row in enumerate(plan):
         result: list[Block] = []
         for target, block in enumerate(row):
-            if isinstance(block, _STRUCTURED_BLOCKS):
+            if isinstance(block, _BLOCK_TYPES):
                 result.append(block)
                 continue
-            matrix = _make_transition_block(block, fallback_environments, context)
-            matrix = np.array(
-                np.broadcast_to(matrix, (sizes[source], sizes[target])),
-                dtype=float,
-                copy=True,
+            matrix = _make_transition_block(
+                block, fallback_environments, context, (sizes[source], sizes[target])
             )
-            result.append(DenseBlock(matrix))
+            result.append(DenseBlock(np.array(matrix, dtype=float, copy=True)))
         blocks.append(tuple(result))
     return BlockTransitionOperator(tuple(blocks), sizes)
