@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `non_local_detector.__all__` lists the public names the package re-exports.
 - `simulate.sorted_spikes_simulation.make_continuous_replay` documents its actual parameters; its docstring listed five it does not take.
 
+### Environment ownership, state and serialization
+
+- `Environment` declares its derived-data cache as one field, read and written with `get_cached(key)`, `set_cached(key, value, transient=False)` and `clear_cache()`. `fit_place_grid` clears it and pickling drops entries stored with `transient=True`. The dense bin-distance matrix, the track-linearization cache and the diffusion likelihood's interior-bin graph, Laplacian, eigenbases, resolved heat-kernel ranks and device basis live there instead of in undeclared attributes (`_bin_distance_matrix_`, `_linear_position_cache_`, `_diffusion_graph_`, `_diffusion_laplacian_`, `_diffusion_eigenbasis_`, `_diffusion_heat_kernel_rank_`, `_diffusion_device_basis_`), which are gone. Outputs are unchanged. Environments pickled before this change still load; their old cache attributes are ignored and the caches rebuilt on first use.
+
 ### Environment grid helpers
 
 - `Environment.is_track_interior_flat_` is the interior mask over the flattened place bins, shape `(n_bins,)`, with every bin interior when `is_track_interior_` is unset. The likelihood fits, continuous transitions, structured transition operators, state indexing, off-track snapping and clusterless model checking use it instead of their own copies. Outputs are unchanged.

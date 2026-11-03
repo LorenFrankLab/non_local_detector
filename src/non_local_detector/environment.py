@@ -55,7 +55,7 @@ import pickle
 import warnings
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
@@ -201,35 +201,13 @@ class Environment:
         Info about nodes representing bin centers (only for 1D).
     nodes_df_ : pd.DataFrame or None
         Combined info about all nodes in the augmented graph (only for 1D).
-    _bin_distance_matrix_ : np.ndarray, optional
-        Lazily-built ``(n_total_bins, n_total_bins)`` dense distance
-        matrix indexed by bin (not node). Populated on first call to
-        :meth:`get_distances_to_interior_bins` when a 1D track graph is
-        used, and invalidated by :meth:`fit_place_grid`. Off-track bins
-        produce NaN rows/columns. Used to avoid the ``O(n_time * n_bins)``
-        Python dict-of-dicts lookup on every ``predict`` call.
-    _diffusion_graph_ : tuple, optional
-        Lazily-built ``(graph, node_order, bin_sizes)`` interior-bin graph for the
-        sorted-spikes diffusion likelihood, populated by
-        ``likelihoods.diffusion.environment_graph`` and invalidated by
-        :meth:`fit_place_grid`.
-    _diffusion_laplacian_ : scipy.sparse matrix, optional
-        Snapshot of the interior-bin graph Laplacian taken when ``_diffusion_graph_``
-        is built, so the cached eigenbasis is immune to later edge-attribute
-        mutations of the returned graph. Invalidated by :meth:`fit_place_grid`.
-    _diffusion_eigenbasis_ : dict, optional
-        Lazily-built cache of graph-Laplacian eigenbases keyed by ``rank`` for the
-        sorted-spikes diffusion likelihood, populated by
-        ``likelihoods.diffusion.cached_eigenbasis`` and invalidated by
-        :meth:`fit_place_grid`.
-    _diffusion_device_basis_ : dict, optional
-        Transient cache of the device-resident (JAX) eigenbasis for the
-        ``clusterless_diffusion`` predict matmul, keyed by
-        ``(resolved_rank, device, dtype)``, populated by
-        ``likelihoods.diffusion.get_device_basis``. Invalidated by
-        :meth:`fit_place_grid` and excluded from pickling via
-        :meth:`__getstate__` (its JAX ``Device`` key is unpicklable; it is
-        lazily rebuilt from the host basis after load).
+    _cache : dict
+        Derived data computed from the fitted grid on first use, such as the
+        dense bin-distance matrix, track linearizations and likelihood-specific
+        graphs and eigenbases. Read and written through
+        :meth:`get_cached` and :meth:`set_cached`; cleared by
+        :meth:`fit_place_grid`. Entries stored with ``transient=True`` are not
+        pickled.
     """
 
     environment_name: str = ""
@@ -262,6 +240,10 @@ class Environment:
     nodes_df_: pd.DataFrame | None = None
     # Internal flag
     _is_fitted: bool = False
+    # Derived-data cache; see ``get_cached``.
+    _cache: dict[str, tuple[Any, bool]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     # ``Environment`` uses identity-based equality and hashing: the dataclass is
     # declared ``eq=False`` (above), so both ``__eq__`` and ``__hash__`` stay
@@ -322,19 +304,66 @@ class Environment:
             # Note: We can't validate shape until we know the grid dimensions
 
     def __getstate__(self) -> dict[str, Any]:
-        """Exclude the transient device-basis cache from pickling.
+        """Pickle the environment without its transient cache entries.
 
-        ``_diffusion_device_basis_`` (populated by
-        :func:`non_local_detector.likelihoods.diffusion.get_device_basis`) is keyed
-        in part by a JAX ``Device`` object and holds device-resident ``jnp``
-        arrays; neither is meaningfully picklable/restorable across processes, so
-        it is dropped here and rebuilt lazily (on the next predict call) after
-        unpickling.
+        Entries cached with ``transient=True`` (for example device-resident JAX
+        arrays keyed by a ``Device``) cannot be restored in another process;
+        they are rebuilt on first use after unpickling.
         """
         state = self.__dict__.copy()
-        state.pop("_diffusion_device_basis_", None)  # transient JAX device cache
-        state.pop("_linear_position_cache_", None)  # rebuilt on demand
+        state["_cache"] = {
+            key: entry for key, entry in self._cache.items() if not entry[1]
+        }
         return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore a pickled environment, including pickles made without a cache."""
+        self.__dict__.update(state)
+        self.__dict__.setdefault("_cache", {})
+
+    def get_cached(self, key: str) -> Any:
+        """Return the derived data cached under ``key``, or None.
+
+        Parameters
+        ----------
+        key : str
+            Cache key chosen by the computation that stored the value.
+
+        Returns
+        -------
+        value : Any
+            The cached value, or None if nothing is cached under ``key``.
+        """
+        entry = self._cache.get(key)
+        return None if entry is None else entry[0]
+
+    def set_cached(self, key: str, value: Any, *, transient: bool = False) -> Any:
+        """Cache derived data under ``key`` until the grid is refit.
+
+        The value must be a function of this environment's fitted grid only:
+        :meth:`fit_place_grid` clears every entry.
+
+        Parameters
+        ----------
+        key : str
+            Cache key, unique to the computation that stores the value.
+        value : Any
+            The derived data.
+        transient : bool, optional
+            If True, the entry is not pickled (for values that cannot be
+            restored in another process). By default False.
+
+        Returns
+        -------
+        value : Any
+            ``value``, so a cache miss can store and use it in one expression.
+        """
+        self._cache[key] = (value, transient)
+        return value
+
+    def clear_cache(self) -> None:
+        """Drop all cached derived data."""
+        self._cache = {}
 
     def _linear_position(self, points: "np.ndarray | jax.Array") -> np.ndarray:
         """Linear position of points on the track graph, cached by value.
@@ -356,7 +385,9 @@ class Environment:
         key = hashlib.blake2b(
             np.asarray(points.shape).tobytes() + points.tobytes(), digest_size=16
         ).digest()
-        cache = self.__dict__.setdefault("_linear_position_cache_", OrderedDict())
+        cache = self.get_cached("linear_position")
+        if cache is None:
+            cache = self.set_cached("linear_position", OrderedDict(), transient=True)
         if key in cache:
             cache.move_to_end(key)
             return cast("np.ndarray", cache[key].copy())
@@ -675,26 +706,8 @@ class Environment:
             if position.ndim == 1:
                 position = position[:, np.newaxis]
 
-        # Invalidate cached dense distance matrix if it exists (used by
-        # get_distances_to_interior_bins for 1D track graph kernels).
-        if hasattr(self, "_bin_distance_matrix_"):
-            del self._bin_distance_matrix_
-
-        # Invalidate the cached diffusion interior-bin graph, Laplacian, eigenbasis,
-        # and resolved heat-kernel ranks (used by the sorted-spikes diffusion
-        # likelihood); the grid is about to be rebuilt, so any cached basis is stale.
-        if hasattr(self, "_diffusion_graph_"):
-            del self._diffusion_graph_
-        if hasattr(self, "_diffusion_laplacian_"):
-            del self._diffusion_laplacian_
-        if hasattr(self, "_diffusion_eigenbasis_"):
-            del self._diffusion_eigenbasis_
-        if hasattr(self, "_diffusion_heat_kernel_rank_"):
-            del self._diffusion_heat_kernel_rank_
-        if hasattr(self, "_diffusion_device_basis_"):
-            del self._diffusion_device_basis_
-        if hasattr(self, "_linear_position_cache_"):
-            del self._linear_position_cache_
+        # Cached derived data describes the grid that is about to be rebuilt.
+        self.clear_cache()
 
         if self.track_graph is None:
             if position is None:
@@ -1144,8 +1157,8 @@ class Environment:
 
         Returns an ``(n_positions, n_interior_bins)`` matrix of distances
         along the track manifold when a track graph is available
-        (uses a lazily-built dense distance matrix cached as
-        ``_bin_distance_matrix_`` for efficient ``np.ix_`` lookup), or
+        (uses a lazily-built dense bin-distance matrix, cached on the
+        environment, for efficient ``np.ix_`` lookup), or
         Euclidean distances otherwise. Positions that would otherwise
         land in gap bins are snapped to the nearest interior bin by
         :meth:`get_bin_ind`, so no NaN rows are produced for envs with
@@ -1199,7 +1212,8 @@ class Environment:
 
             # Lazily build and cache dense (n_bins, n_bins) distance matrix
             # indexed by bin. Off-track bins (node_id == -1) get NaN.
-            if getattr(self, "_bin_distance_matrix_", None) is None:
+            bin_dist = self.get_cached("bin_distance_matrix")
+            if bin_dist is None:
                 bin_to_node = np.asarray(self.place_bin_centers_nodes_df_.node_id)
                 n_total_bins = len(bin_to_node)
                 bin_dist = np.full((n_total_bins, n_total_bins), np.nan)
@@ -1213,14 +1227,12 @@ class Environment:
                         if dst_node == -1:
                             continue
                         bin_dist[src_bin, dst_bin] = src_distances.get(dst_node, np.inf)
-                self._bin_distance_matrix_ = bin_dist
+                self.set_cached("bin_distance_matrix", bin_dist)
 
             position_bin_inds = self.get_bin_ind(np.asarray(positions))
             return cast(
                 "np.ndarray",
-                self._bin_distance_matrix_[
-                    np.ix_(position_bin_inds, interior_bin_indices)
-                ],
+                bin_dist[np.ix_(position_bin_inds, interior_bin_indices)],
             )
 
         if isinstance(self.distance_between_nodes_, LazyGraphDistances):

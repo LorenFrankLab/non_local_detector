@@ -200,7 +200,7 @@ def test_refit_requires_encoding_refit() -> None:
         position_std=POSITION_STD,
         disable_progress_bar=True,
     )
-    assert hasattr(env, "_diffusion_device_basis_")
+    assert env.get_cached("diffusion_device_basis") is not None
 
     decode_time = np.linspace(position_time[0], position_time[-1], 6)
     log_likelihood = predict_clusterless_diffusion_log_likelihood(
@@ -215,7 +215,7 @@ def test_refit_requires_encoding_refit() -> None:
         **encoding_model,
     )
     assert np.all(np.isfinite(np.asarray(log_likelihood)))
-    assert hasattr(env, "_diffusion_device_basis_")
+    assert env.get_cached("diffusion_device_basis") is not None
 
     # --- rebuild the grid with a wider position span (no fixed position_range to
     # pin it, so the grid genuinely changes shape): device cache must be dropped ---
@@ -224,7 +224,7 @@ def test_refit_requires_encoding_refit() -> None:
     env.fit_place_grid(position=new_position, infer_track_interior=True)
     n_interior_new = int(env.is_track_interior_.ravel().sum())
     assert n_interior_new != n_interior_original
-    assert not hasattr(env, "_diffusion_device_basis_")
+    assert env.get_cached("diffusion_device_basis") is None
 
     # --- the old encoding model is grid-bound and stale; re-fit against the
     # rebuilt grid rather than reusing it ---
@@ -240,7 +240,7 @@ def test_refit_requires_encoding_refit() -> None:
         position_std=POSITION_STD,
         disable_progress_bar=True,
     )
-    assert hasattr(env, "_diffusion_device_basis_")
+    assert env.get_cached("diffusion_device_basis") is not None
 
     new_decode_time = np.linspace(new_position_time[0], new_position_time[-1], 6)
     new_log_likelihood = np.asarray(
