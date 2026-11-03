@@ -1304,12 +1304,12 @@ def _check_driver_inputs(
     Raises
     ------
     ValueError
-        If ``dtype`` is not a floating dtype, ``time`` is not a nonempty
+        If ``dtype`` is not float32 or float64, ``time`` is not a nonempty
         vector, or any array does not match ``n_time = len(time)`` and
         ``n_state_bins = len(initial_distribution)``.
     """
-    if np.dtype(dtype).kind != "f":
-        msg = f"dtype must be a floating dtype (float32 or float64), got {dtype}"
+    if np.dtype(dtype) not in (np.dtype(np.float32), np.dtype(np.float64)):
+        msg = f"dtype must be float32 or float64, got {np.dtype(dtype)}"
         raise ValueError(msg)
     if np.ndim(time) != 1 or np.shape(time)[0] == 0:
         msg = f"time must be a nonempty vector, got shape {np.shape(time)}"
@@ -1775,7 +1775,7 @@ def chunked_filter_smoother(
     Raises
     ------
     ValueError
-        If ``dtype`` is not floating, an input's shape does not match
+        If ``dtype`` is not float32 or float64, an input's shape does not match
         ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
         or ``log_likelihood_func`` returns the wrong shape.
     """
@@ -1923,7 +1923,7 @@ def most_likely_sequence(
     Raises
     ------
     ValueError
-        If ``dtype`` is not floating, an input's shape does not match
+        If ``dtype`` is not float32 or float64, an input's shape does not match
         ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
         or ``log_likelihood_func`` returns the wrong shape.
     """
@@ -2243,7 +2243,7 @@ def chunked_filter_smoother_covariate_dependent(
     Raises
     ------
     ValueError
-        If ``dtype`` is not floating, an input's shape does not match
+        If ``dtype`` is not float32 or float64, an input's shape does not match
         ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
         or ``log_likelihood_func`` returns the wrong shape.
     """
@@ -2433,7 +2433,7 @@ def most_likely_sequence_covariate_dependent(
     Raises
     ------
     ValueError
-        If ``dtype`` is not floating, an input's shape does not match
+        If ``dtype`` is not float32 or float64, an input's shape does not match
         ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
         or ``log_likelihood_func`` returns the wrong shape.
     """

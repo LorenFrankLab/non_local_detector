@@ -1,5 +1,7 @@
 """The public HMM drivers reject mismatched shapes and dtypes at entry."""
 
+import re
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -11,6 +13,7 @@ from non_local_detector.core import (
     most_likely_sequence_covariate_dependent,
     row_slice_aware,
 )
+from tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
 
@@ -84,41 +87,99 @@ def test_valid_inputs_pass(name):
     _call(name, _inputs())
 
 
+# (argument, bad value, the exact message it must raise)
 BAD = {
-    "short log_likelihoods": ("log_likelihoods", np.zeros((N_TIME - 1, N_BINS))),
-    "wrong-bin log_likelihoods": ("log_likelihoods", np.zeros((N_TIME, N_BINS + 1))),
-    "short is_missing": ("is_missing", np.zeros(N_TIME - 1, dtype=bool)),
-    "2-D time": ("time", np.zeros((N_TIME, 1))),
-    "empty time": ("time", np.zeros(0)),
-    "integer dtype": ("dtype", jnp.int32),
+    "short log_likelihoods": (
+        "log_likelihoods",
+        np.zeros((N_TIME - 1, N_BINS)),
+        (
+            f"log_likelihoods must have shape ({N_TIME}, {N_BINS}), "
+            f"got ({N_TIME - 1}, {N_BINS})"
+        ),
+    ),
+    "wrong-bin log_likelihoods": (
+        "log_likelihoods",
+        np.zeros((N_TIME, N_BINS + 1)),
+        (
+            f"log_likelihoods must have shape ({N_TIME}, {N_BINS}), "
+            f"got ({N_TIME}, {N_BINS + 1})"
+        ),
+    ),
+    "short is_missing": (
+        "is_missing",
+        np.zeros(N_TIME - 1, dtype=bool),
+        f"is_missing must have shape ({N_TIME},), got ({N_TIME - 1},)",
+    ),
+    "2-D time": (
+        "time",
+        np.zeros((N_TIME, 1)),
+        f"time must be a nonempty vector, got shape ({N_TIME}, 1)",
+    ),
+    "empty time": (
+        "time",
+        np.zeros(0),
+        "time must be a nonempty vector, got shape (0,)",
+    ),
+    "integer dtype": (
+        "dtype",
+        jnp.int32,
+        "dtype must be float32 or float64, got int32",
+    ),
+    # Floating, but not a dtype the drivers support: rejected, not downcast.
+    "float16 dtype": (
+        "dtype",
+        jnp.float16,
+        "dtype must be float32 or float64, got float16",
+    ),
+    "bfloat16 dtype": (
+        "dtype",
+        jnp.bfloat16,
+        "dtype must be float32 or float64, got bfloat16",
+    ),
 }
 
 
 @pytest.mark.parametrize("name", DRIVERS)
 @pytest.mark.parametrize("case", BAD)
 def test_mismatched_inputs_raise(name, case):
-    key, value = BAD[case]
-    with pytest.raises(ValueError, match=key):
+    key, value, message = BAD[case]
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _call(name, _inputs(), **{key: value})
+
+
+@pytest.mark.parametrize("name", DRIVERS)
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_supported_dtypes_pass(name, dtype):
+    with precision_mode(dtype == jnp.float64):
+        _call(name, _inputs(), dtype=dtype)
 
 
 @pytest.mark.parametrize("name", DRIVERS)
 def test_mismatched_transition_raises(name):
     key = DRIVERS[name][1][-1]
-    with pytest.raises(ValueError, match=key):
+    message = (
+        f"{key} must have shape ({N_BINS}, {N_BINS}), got ({N_BINS + 1}, {N_BINS + 1})"
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _call(name, _inputs(), **{key: np.eye(N_BINS + 1)})
 
 
 @pytest.mark.parametrize("name", ["chunked_covariate", "viterbi_covariate"])
 def test_discrete_transitions_must_match_time_and_states(name):
     inputs = _inputs()
-    with pytest.raises(ValueError, match="discrete_transition_matrix"):
+    with pytest.raises(
+        ValueError, match=r"^discrete_transition_matrix must have shape \(6, 2, 2\)"
+    ):
         _call(
             name,
             inputs,
             discrete_transition_matrix=inputs["discrete_transition_matrix"][1:],
         )
-    with pytest.raises(ValueError, match="discrete state 1"):
+    with pytest.raises(
+        ValueError,
+        match=r"^state_ind refers to discrete state 1 but "
+        r"discrete_transition_matrix has 1 states$",
+    ):
         _call(
             name,
             inputs,
@@ -128,9 +189,13 @@ def test_discrete_transitions_must_match_time_and_states(name):
 
 @pytest.mark.parametrize("name", ["chunked", "chunked_covariate"])
 def test_state_ind_must_be_integer_per_bin(name):
-    with pytest.raises(ValueError, match="state_ind"):
+    with pytest.raises(
+        ValueError, match=r"^state_ind must have shape \(3,\), got \(2,\)$"
+    ):
         _call(name, _inputs(), state_ind=STATE_IND[:-1])
-    with pytest.raises(ValueError, match="integer"):
+    with pytest.raises(
+        ValueError, match=r"^state_ind must be integer, got dtype float64$"
+    ):
         _call(name, _inputs(), state_ind=STATE_IND.astype(float))
 
 
@@ -145,7 +210,9 @@ def test_callback_rows_must_match_the_request(name, cache):
         rows = inputs["log_likelihoods"][row_slice or slice(None)]
         return rows[:-1]
 
-    with pytest.raises(ValueError, match="log_likelihood_func output"):
+    with pytest.raises(
+        ValueError, match=r"^log_likelihood_func output must have shape \("
+    ):
         _call(
             name,
             inputs,
