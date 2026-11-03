@@ -108,10 +108,12 @@ class MarkReference:
         Parameters
         ----------
         marks : np.ndarray, shape (n_spikes, n_features)
+            Spike waveform features (marks), in the units the reference was fitted in.
 
         Returns
         -------
         log_density : np.ndarray, shape (n_spikes,)
+            Log of the normalized reference density at each mark.
         """
         marks = np.asarray(marks, dtype=np.float64)
         if marks.ndim != 2 or marks.shape[1] != self.location.shape[0]:
@@ -268,13 +270,17 @@ def background_log_intensity(
     Parameters
     ----------
     reference : MarkReference or None
+        Reference mark density of the electrode, or None when it has no
+        training marks.
     marks : np.ndarray, shape (n_spikes, n_features)
+        Waveform features (marks) of the spikes to score.
     log_rate : float
         Log background rate in the caller's intensity units.
 
     Returns
     -------
     log_background : np.ndarray, shape (n_spikes,)
+        Log background intensity of each spike.
     """
     if reference is None:
         return np.full(np.shape(marks)[0], log_rate)
@@ -291,10 +297,12 @@ def background_rate(n_electrodes: int) -> float:
     Parameters
     ----------
     n_electrodes : int
+        Number of electrodes.
 
     Returns
     -------
     rate : float
+        Summed background rate, in Hz.
     """
     return n_electrodes * RATE_EPS_HZ
 
@@ -314,16 +322,23 @@ def mark_reference_log_likelihood(
     Parameters
     ----------
     references : list of MarkReference or None, length n_electrodes
+        Reference mark density of each electrode; None skips the electrode.
     spike_times : list of np.ndarray, each shape (n_spikes,)
+        Decoding spike times for each electrode, in seconds.
     spike_waveform_features : list of np.ndarray, each shape (n_spikes, n_features)
+        Decoding waveform features (marks) for each electrode.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Full decoding bin edges.
     row_slice : slice, optional
         Requested decode bins; all bins by default.
+    _spike_time_order : _SpikeTimeOrder, optional
+        Internal ordering preparation shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, 1)
+        Sum of the reference log densities of the spikes in each requested bin.
     """
     validate_population_lengths(
         "electrode",

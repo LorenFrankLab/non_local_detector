@@ -1,3 +1,13 @@
+"""Core HMM forward-backward algorithms in JAX.
+
+This module implements filtering (the forward pass), smoothing (the backward
+pass) and Viterbi decoding for hidden Markov models whose states are discrete
+states crossed with spatial bins, in log-space for numerical stability. It
+includes chunked drivers that bound memory on long recordings, variants with
+covariate-dependent discrete transitions, and the EM convergence check.
+Adapted from dynamax (https://github.com/probml/dynamax) with modifications.
+"""
+
 import functools
 import logging
 from collections.abc import Callable
@@ -551,7 +561,7 @@ def filter(
     transition_matrix: ArrayLike,
     log_likelihoods: ArrayLike,
 ) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
-    """Performs the forward pass of the forward-backward algorithm (filtering).
+    """Perform the forward pass of the forward-backward algorithm (filtering).
 
     Computes the filtered state probabilities P(z_t | x_{1:t}) and the
     one-step-ahead predicted probabilities P(z_t | x_{1:t-1}) iteratively.
@@ -673,11 +683,12 @@ smoother = jax.jit(_smoother_impl)
 
 
 # Internal version with buffer donation for use in chunked drivers
-# Donates filtered_probs and initial - both are single-use in chunked loops.
+# Donates filtered_probs, which is single-use in chunked loops and has the
+# output's shape. ``initial`` is not donated: XLA can only reuse a donated buffer
+# for an output of the same shape and dtype, and no output is (n_states,), so
+# donating it only made JAX warn "Some donated buffers were not usable".
 # Donation is specified by name (call sites pass by keyword).
-_smoother_internal = jax.jit(
-    _smoother_impl, donate_argnames=("filtered_probs", "initial")
-)
+_smoother_internal = jax.jit(_smoother_impl, donate_argnames=("filtered_probs",))
 
 
 ROW_SLICE_ATTRIBUTE = "accepts_row_slice"
@@ -1103,10 +1114,14 @@ def chunked_filter_smoother(
     Parameters
     ----------
     time : np.ndarray, shape (n_time,)
+        Time of each decoding bin (bin centers, in seconds), passed to
+        ``log_likelihood_func``. Its length sets the number of time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
-        Connects the discrete states to the state space
+        Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
+        Initial probability of each state bin.
     transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+        Stationary transition probability between state bins.
     log_likelihood_func : callable
         Called as ``log_likelihood_func(time, *log_likelihood_args,
         is_missing=...)``. When the callable is marked by
@@ -1118,12 +1133,18 @@ def chunked_filter_smoother(
         the chunk and DROPS any spike falling between two chunks, so it is not a
         global-binning implementation. No new keyword is injected into it.
     log_likelihood_args : tuple
+        Extra positional arguments passed to ``log_likelihood_func`` after
+        ``time``.
     is_missing : np.ndarray, shape (n_time,), optional
+        True for time bins without observations, which get neutral
+        likelihoods. By default None (none missing).
     n_chunks : int, optional
-        Number of chunks to split the data into, by default 1
+        Number of chunks to split the data into, by default 1.
     log_likelihoods : np.ndarray | None, optional
+        Precomputed log likelihoods, shape (n_time, n_state_bins), used
+        instead of calling ``log_likelihood_func``. By default None.
     cache_log_likelihoods : bool, optional
-        If True, log likelihoods are cached, by default True
+        If True, log likelihoods are cached, by default True.
     dtype : jnp.dtype, optional
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
@@ -1154,6 +1175,7 @@ def chunked_filter_smoother(
     acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
         Smoothed state probabilities for each state index
     marginal_likelihood : float
+        Log marginal likelihood of the observations.
     causal_state_probabilities : np.ndarray, shape (n_time, n_states)
         Filtered state probabilities for each state index
     predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
@@ -1503,16 +1525,13 @@ _filter_covariate_dependent_jit = jax.jit(_filter_covariate_dependent_impl)
 
 
 # Internal version with buffer donation for use in chunked drivers
-# Donates initial_distribution, discrete_transition_matrix, and log_likelihoods.
-# dtm is chunked per-iteration so safe to donate. Donation is specified by name
-# because call sites pass by keyword.
+# Donates initial_distribution and log_likelihoods, which have outputs of their
+# shape to reuse. The (n_time, n_states, n_states) discrete_transition_matrix has
+# no such output, so donating it only made JAX warn "Some donated buffers were
+# not usable". Donation is specified by name because call sites pass by keyword.
 _filter_covariate_dependent_internal = jax.jit(
     _filter_covariate_dependent_impl,
-    donate_argnames=(
-        "initial_distribution",
-        "discrete_transition_matrix",
-        "log_likelihoods",
-    ),
+    donate_argnames=("initial_distribution", "log_likelihoods"),
 )
 
 
@@ -1528,14 +1547,21 @@ def filter_covariate_dependent(
     Parameters
     ----------
     initial_distribution : jnp.ndarray, shape (n_state_bins,)
+        Initial probability of each state bin.
     discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
+        Discrete state transition probabilities at each time bin.
     continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+        Transition probability between state bins within the continuous
+        state space.
     state_ind : jnp.ndarray, shape (n_state_bins,)
+        Connects the discrete states to the state space.
     log_likelihoods : jnp.ndarray, shape (n_time, n_state_bins)
+        Log likelihood of the observations for each state bin at each time.
 
     Returns
     -------
     marginal_likelihood : float
+        Log marginal likelihood of the observations.
     predicted_probs_next : jnp.ndarray, shape (n_state_bins,)
         Next one-step-ahead predicted state probabilities
     causal_posterior : jnp.ndarray, shape (n_time, n_state_bins)
@@ -1650,12 +1676,11 @@ smoother_covariate_dependent = jax.jit(_smoother_covariate_dependent_impl)
 
 
 # Internal version with buffer donation for use in chunked drivers
-# Donates discrete_transition_matrix, filtered_probs, and initial.
-# dtm is chunked per-iteration, all are single-use. Donation is specified by name
-# because call sites pass by keyword.
+# Donates filtered_probs, the only input with an output of its shape to reuse
+# (a donated buffer without one makes JAX warn "Some donated buffers were not
+# usable"). Donation is specified by name because call sites pass by keyword.
 _smoother_covariate_dependent_internal = jax.jit(
-    _smoother_covariate_dependent_impl,
-    donate_argnames=("discrete_transition_matrix", "filtered_probs", "initial"),
+    _smoother_covariate_dependent_impl, donate_argnames=("filtered_probs",)
 )
 
 
@@ -1691,10 +1716,17 @@ def chunked_filter_smoother_covariate_dependent(
     Parameters
     ----------
     time : np.ndarray, shape (n_time,)
+        Time of each decoding bin (bin centers, in seconds), passed to
+        ``log_likelihood_func``. Its length sets the number of time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
+        Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
+        Initial probability of each state bin.
     discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
+        Discrete state transition probabilities at each time bin.
     continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+        Transition probability between state bins within the continuous
+        state space.
     log_likelihood_func : callable
         Called as ``log_likelihood_func(time, *log_likelihood_args,
         is_missing=...)``. When the callable is marked by
@@ -1706,7 +1738,11 @@ def chunked_filter_smoother_covariate_dependent(
         the chunk and DROPS any spike falling between two chunks, so it is not a
         global-binning implementation. No new keyword is injected into it.
     log_likelihood_args : tuple
+        Extra positional arguments passed to ``log_likelihood_func`` after
+        ``time``.
     is_missing : np.ndarray, shape (n_time,), optional
+        True for time bins without observations, which get neutral
+        likelihoods. By default None (none missing).
     n_chunks : int, optional
         Number of chunks to split the data into, by default 1.
         Each step applies the discrete transition per discrete state on top of
@@ -1715,8 +1751,11 @@ def chunked_filter_smoother_covariate_dependent(
         n_state_bins) one never exists; ``n_chunks=1`` is feasible even on long
         sessions.
     log_likelihoods : np.ndarray, optional
+        Precomputed log likelihoods, shape (n_time, n_state_bins), used
+        instead of calling ``log_likelihood_func``. By default None.
     cache_log_likelihoods : bool, optional
-        If True, log likelihoods are cached instead of recomputed for each chunk, by default True
+        If True, log likelihoods are cached instead of recomputed for each
+        chunk, by default True.
     dtype : jnp.dtype, optional
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
@@ -1747,6 +1786,7 @@ def chunked_filter_smoother_covariate_dependent(
     acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
         Smoothed state probabilities for each state index
     marginal_likelihood : float
+        Log marginal likelihood of the observations.
     causal_state_probabilities : np.ndarray, shape (n_time, n_states)
         Filtered state probabilities for each state index
     predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
@@ -2052,7 +2092,6 @@ def check_converged(
         is below ``tolerance``. False while the objective stays ``-inf``.
     is_increasing : bool
         True if the objective did not decrease by more than float rounding.
-
     """
     log_likelihood = float(log_likelihood)
     previous_log_likelihood = float(previous_log_likelihood)

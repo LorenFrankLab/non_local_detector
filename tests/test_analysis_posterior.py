@@ -1,10 +1,12 @@
 """Tests for analysis/posterior.py — MAP estimate and posterior sampling."""
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
 from non_local_detector.analysis.posterior import (
+    get_spatial_posterior,
     maximum_a_posteriori_estimate,
     sample_posterior,
 )
@@ -210,3 +212,89 @@ class TestSamplePosterior:
         samples = sample_posterior(posterior, bin_edges, n_samples=50, rng=0)
 
         assert not np.array_equal(samples[0], samples[1])
+
+
+def _make_acausal_posterior(position_dims, n_time=3, seed=0):
+    """Raw ``acausal_posterior`` layout: Local has NaN position, NL has a grid."""
+    rng = np.random.default_rng(seed)
+    grids = [np.arange(3.0), np.arange(2.0)][: len(position_dims)]
+    grid = np.stack([g.ravel() for g in np.meshgrid(*grids, indexing="ij")], axis=1)
+    n_grid = len(grid)
+    tuples = [("Local", *([np.nan] * len(position_dims)))]
+    tuples += [("NL", *row) for row in grid]
+    index = pd.MultiIndex.from_tuples(tuples, names=["state", *position_dims])
+    values = rng.random((n_time, n_grid + 1))
+    values /= values.sum(axis=1, keepdims=True)
+    return xr.DataArray(
+        values,
+        dims=["time", "state_bins"],
+        coords={"time": np.arange(n_time) * 0.1, "state_bins": index},
+    )
+
+
+@pytest.mark.unit
+class TestGetSpatialPosterior:
+    """Position-less (NaN position) states must not land on a position bin."""
+
+    def test_1d_no_mass_on_last_bin_and_spatial_values_exact(self):
+        posterior = _make_acausal_posterior(["position"])
+        result = get_spatial_posterior(posterior)
+
+        assert result.dims == ("time", "state", "position")
+        assert list(result.state.values) == ["NL"]
+        np.testing.assert_array_equal(
+            result.sel(state="NL").values, posterior.values[:, 1:]
+        )
+        summed = result.sum("state")
+        np.testing.assert_array_equal(summed.values, posterior.values[:, 1:])
+        # Local's mass is excluded, so total < 1 per time bin
+        assert np.all(summed.sum("position").values < 1.0)
+
+    def test_2d_matches_spatial_values(self):
+        posterior = _make_acausal_posterior(["x_position", "y_position"])
+        result = get_spatial_posterior(posterior)
+
+        assert result.dims == ("time", "state", "x_position", "y_position")
+        np.testing.assert_array_equal(
+            result.sel(state="NL").values.reshape(3, -1), posterior.values[:, 1:]
+        )
+
+    def test_states_argument_selects_states(self):
+        posterior = _make_acausal_posterior(["position"])
+        result = get_spatial_posterior(posterior, states=["NL"])
+        assert list(result.state.values) == ["NL"]
+        with pytest.raises(ValueError, match="No state bins"):
+            get_spatial_posterior(posterior, states=["Local"])
+
+    def test_requires_state_bins(self):
+        with pytest.raises(ValueError, match="state_bins"):
+            get_spatial_posterior(
+                xr.DataArray(np.ones((2, 3)), dims=["time", "position"])
+            )
+
+
+@pytest.mark.unit
+class TestMapFromRawAcausalPosterior:
+    """MAP works on the raw ``state_bins`` posterior and ignores position-less states."""
+
+    @pytest.mark.parametrize(
+        "position_dims", [["position"], ["x_position", "y_position"]]
+    )
+    def test_position_less_state_does_not_create_last_bin_map(self, position_dims):
+        posterior = _make_acausal_posterior(position_dims, n_time=1)
+        values = posterior.values.copy()
+        values[0, 0] = 0.9  # large Local mass, no position
+        values[0, 1:] = 0.1 / (values.shape[1] - 1)
+        values[0, 2] = 0.05  # spatial peak at the second spatial bin
+        posterior = posterior.copy(data=values)
+
+        result = maximum_a_posteriori_estimate(posterior)
+
+        grid = np.stack(
+            [
+                posterior.indexes["state_bins"].get_level_values(n)[1:]
+                for n in position_dims
+            ],
+            axis=1,
+        )
+        np.testing.assert_array_equal(result[0], grid[1])

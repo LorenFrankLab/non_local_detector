@@ -1,3 +1,5 @@
+"""Simulate sorted-spike data for testing and validation: place-field spiking, running trajectories, and replay events."""
+
 from collections.abc import Sequence
 from typing import cast
 
@@ -110,8 +112,22 @@ def create_place_field(
 
 
 def gaussian_pdf(x: np.ndarray, mean: np.ndarray | float, sigma: float) -> np.ndarray:
-    """Compute the value of a Gaussian probability density function at x with
-    given mean and sigma."""
+    """Evaluate a Gaussian probability density function.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Points at which to evaluate the density.
+    mean : np.ndarray or float
+        Mean of the Gaussian. Broadcast against ``x``.
+    sigma : float
+        Standard deviation of the Gaussian.
+
+    Returns
+    -------
+    pdf : np.ndarray
+        Density at ``x``, with the broadcast shape of ``x`` and ``mean``.
+    """
     return cast(
         "np.ndarray",
         np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi)),
@@ -123,17 +139,23 @@ def estimate_position_distance(
     positions: np.ndarray,
     position_std: np.ndarray | float | Sequence[float],
 ) -> np.ndarray:
-    """Estimates the Euclidean distance between positions and position bins.
+    """Estimate the Gaussian kernel weight between positions and position bins.
 
     Parameters
     ----------
     place_bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
+        Centers of the position bins.
     positions : np.ndarray, shape (n_time, n_position_dims)
-    position_std : array_like, shape (n_position_dims,)
+        Position samples.
+    position_std : float or array_like, shape (n_position_dims,)
+        Standard deviation of the Gaussian kernel along each position
+        dimension. A scalar is used for every dimension.
 
     Returns
     -------
     position_distance : np.ndarray, shape (n_time, n_position_bins)
+        Product over dimensions of the Gaussian kernel density between each
+        position sample and each bin center (a similarity, not a distance).
     """
     n_time, n_position_dims = positions.shape
     n_position_bins = place_bin_centers.shape[0]
@@ -160,19 +182,28 @@ def estimate_position_density(
     block_size: int | None = 100,
     sample_weights: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Estimates a kernel density estimate over position bins using
-    Euclidean distances.
+    """Estimate a Gaussian kernel density over position bins.
 
     Parameters
     ----------
     place_bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
+        Centers of the position bins.
     positions : np.ndarray, shape (n_time, n_position_dims)
+        Position samples.
     position_std : float or array_like, shape (n_position_dims,)
-    sample_weights : None or np.ndarray, shape (n_time,)
+        Standard deviation of the Gaussian kernel along each position
+        dimension.
+    block_size : int or None, optional
+        Number of position bins processed at a time, to limit memory use. If
+        None, all bins are processed at once. By default 100.
+    sample_weights : None or np.ndarray, shape (n_time,), optional
+        Weight of each position sample in the average, by default None
+        (equal weights).
 
     Returns
     -------
     position_density : np.ndarray, shape (n_position_bins,)
+        Weighted average kernel density at each bin center.
     """
     n_position_bins = place_bin_centers.shape[0]
 
@@ -208,18 +239,31 @@ def get_firing_rate(
     Parameters
     ----------
     is_spike : np.ndarray, shape (n_time,)
+        Spike indicator (or spike count) per time bin.
     position : np.ndarray, shape (n_time, n_position_dims)
+        Position at each time bin.
     place_bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
+        Centers of the position bins.
     is_track_interior : np.ndarray, shape (n_position_bins,)
+        Boolean mask of position bins on the track.
     not_nan_position : np.ndarray, shape (n_time,)
+        Boolean mask of time bins with a valid (non-NaN) position.
     occupancy : np.ndarray, shape (n_position_bins,)
-    position_std : np.ndarray, shape (n_position_dims,
-    block_size : int, optional
-    weights : np.ndarray, optional
+        Kernel-smoothed occupancy density at each position bin.
+    position_std : np.ndarray, shape (n_position_dims,)
+        Standard deviation of the Gaussian position kernel along each
+        dimension.
+    block_size : int or None, optional
+        Number of position bins processed at a time. If None, set to
+        ``len(position)``. By default None.
+    weights : np.ndarray, shape (n_time,), optional
+        Weight of each time bin, by default None (equal weights).
 
     Returns
     -------
     rate : np.ndarray, shape (n_position_bins,)
+        Estimated firing rate at each position bin, in spikes per time bin
+        (not per second). Zero everywhere if there are no spikes.
     """
     # Set default block_size if None
     if block_size is None:
@@ -273,9 +317,12 @@ def simulate_two_state_inhomogenous_poisson(
     Returns
     -------
     time : np.ndarray, shape (n_time,)
-    position : np.ndarray, shape (n_time,)
+        Time in seconds.
+    position : np.ndarray, shape (n_time, 1)
+        Simulated back-and-forth position on a 170-unit track.
     spikes : np.ndarray, shape (n_time,)
-
+        Spike counts per time bin, summed over a neuron firing at 50
+        (inbound only) and a neuron firing at 150 (outbound only).
     """
     rng = np.random.default_rng(seed)
 
@@ -322,14 +369,21 @@ def simulate_linear_distance_with_pauses(
     Parameters
     ----------
     time : np.ndarray, shape (n_time,)
+        Time in seconds.
     track_height : float
+        Length of the linear track.
     running_speed : float, optional
+        Period, in seconds, of one back-and-forth traversal (passed as the
+        ``period`` of the underlying sinusoid), by default 10.0.
     pause : float, optional
+        Pause duration in seconds at each track end, by default 0.5.
     sampling_frequency : float, optional
+        Samples per second of ``time``, by default 1.0.
 
     Returns
     -------
     linear_distance : np.ndarray, shape (n_time,)
+        Linear distance along the track, ranging from 0 to ``track_height``.
     """
     linear_distance = _simulate_sinusoidal_position_by_period(
         time, track_height, running_speed
@@ -369,7 +423,6 @@ def make_continuous_replay(
     -------
     test_spikes : np.ndarray, shape (n_time, n_neurons)
         Binned spike indicator. 1 means spike occurred. 0 means no spike occurred.
-
     """
     neuron_order = (
         np.flip(np.arange(n_neurons), axis=0) if is_outbound else np.arange(n_neurons)
@@ -395,8 +448,13 @@ def make_fragmented_replay(
     Parameters
     ----------
     place_field_means : np.ndarray, shape (n_neurons,)
+        Place-field center of each neuron.
     sampling_frequency : float
+        Samples per second.
     cont_replay_speed : float
+        Speed of the continuous replay in meters per second (the fragmented
+        replay is 20 times faster). Place-field means are taken to be in
+        centimeters, so the speed is multiplied by 100 to match.
     seed : int | None, optional
         Random seed for reproducibility. Ignored if rng is provided.
     rng : np.random.Generator or None, optional
@@ -405,6 +463,8 @@ def make_fragmented_replay(
     Returns
     -------
     spikes : np.ndarray, shape (n_time, n_neurons)
+        Binned spike indicator for a random half of the neurons firing in
+        random order. 1 means spike occurred. 0 means no spike occurred.
     """
     if rng is None:
         rng = np.random.default_rng(seed)
@@ -449,9 +509,15 @@ def make_simulated_data(
     Parameters
     ----------
     track_height : float, optional
+        Length of the linear track, by default 170. Place fields are spaced
+        evenly over ``[0, track_height]``.
     sampling_frequency : int, optional
+        Samples per second, by default 1500.
     replay_speed : float, optional
+        Speed of the continuous replay events in meters per second, by
+        default 6.0.
     n_neurons : int, optional
+        Number of simulated neurons, by default 25.
     seed : int | None, optional
         Random seed for reproducibility. If None, uses current random state.
         Default is 0.
@@ -459,13 +525,22 @@ def make_simulated_data(
     Returns
     -------
     speed : np.ndarray, shape (n_time,)
+        Absolute speed of the simulated animal.
     linear_distance : np.ndarray, shape (n_time,)
+        Linear distance along the track.
     spike_times : list[np.ndarray]
+        Spike times in seconds for each neuron.
     time : np.ndarray, shape (n_time,)
+        Time in seconds.
     event_times : np.ndarray, shape (n_events, 2)
+        Start and end time, in seconds, of each simulated event.
     sampling_frequency : int
+        Samples per second (echo of the input).
     is_event : np.ndarray, shape (n_time,)
+        Boolean mask of times within the replay events (all events except the
+        last).
     place_fields : np.ndarray, shape (n_time, n_neurons)
+        Place-field firing rate of each neuron at each time.
     """
     rng = np.random.default_rng(seed)
 
@@ -486,8 +561,7 @@ def make_simulated_data(
     speed = np.insert(speed, 0, 0.0)
 
     # Simulate spikes
-    place_field_means = np.linspace(0, TRACK_HEIGHT, n_neurons)
-    place_field_means = place_field_means[place_field_means <= TRACK_HEIGHT]
+    place_field_means = np.linspace(0, track_height, n_neurons)
 
     place_fields = np.stack(
         [

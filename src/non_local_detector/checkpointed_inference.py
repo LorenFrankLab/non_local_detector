@@ -182,12 +182,15 @@ def _available_host_bytes() -> int | None:
 
 
 def default_replay_cache_bytes() -> int:
-    """Default replay cache: ``DEFAULT_REPLAY_CACHE_BYTES``, capped at half the
-    available host memory, so the cache cannot exhaust a smaller machine.
+    """Return the default replay cache size, in bytes.
+
+    This is ``DEFAULT_REPLAY_CACHE_BYTES``, capped at half the available host
+    memory, so the cache cannot exhaust a smaller machine.
 
     Returns
     -------
     replay_cache_bytes : int
+        Replay cache budget in bytes.
     """
     available = _available_host_bytes()
     if available is None:
@@ -196,14 +199,14 @@ def default_replay_cache_bytes() -> int:
 
 
 def default_chunk_size(n_bins: int, dtype: DTypeLike = np.float32) -> int:
-    """Rows per checkpoint chunk so one likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
+    """Return rows per chunk so a likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
 
     Parameters
     ----------
     n_bins : int
         Hidden state bins per row.
     dtype : numpy dtype, optional
-        Likelihood dtype.
+        Likelihood dtype, by default ``np.float32``.
 
     Returns
     -------
@@ -368,6 +371,25 @@ class CheckpointedResult:
     shape (n_bins,). ``transition_statistics`` holds the requested expected
     discrete transition counts, shape (n_states, n_states), or per-row
     responses, shape (n_time - 1, n_states, n_states).
+
+    Attributes
+    ----------
+    dataset : xarray.Dataset
+        Requested outputs for the selected rows, in memory or lazily read
+        from ``result_path``, with the run's diagnostics in ``attrs``.
+    marginal_log_likelihood : float
+        Log marginal likelihood of the whole recording.
+    diagnostics : dict
+        Whole-recording diagnostics, such as counts and indices of degenerate
+        and NaN rows and the number of likelihood evaluations.
+    result_path : Path or None
+        Directory of the disk result store, or None for an in-memory result.
+    first_smoothed : np.ndarray or None
+        Smoothed posterior of the first recording row, shape (n_bins,).
+    transition_statistics : np.ndarray or None
+        Expected discrete transition counts, shape (n_states, n_states), or
+        per-row responses, shape (n_time - 1, n_states, n_states); None unless
+        requested.
     """
 
     dataset: xr.Dataset
@@ -552,6 +574,91 @@ def checkpointed_forward_backward(
     cost two bytes per recording row while computing; exact NumPy index arrays
     cost up to two intp entries per row. Persisted masks use packed bits, avoiding
     per-row Python objects or large JSON index lists.
+
+    Parameters
+    ----------
+    time_edges : array_like, shape (n_time + 1,)
+        Uniform decoding bin boundaries in seconds.
+    initial_distribution : array_like, shape (n_bins,)
+        Initial probability of each hidden state bin.
+    log_likelihood_func : callable
+        Callback ``log_likelihood_func(time_edges, row_slice=..., is_missing=...)``
+        returning the log likelihood of the requested global rows,
+        shape (n_rows, n_bins).
+    transition_matrix : array_like, shape (n_bins, n_bins), optional
+        Dense stationary transition matrix. Used when neither
+        ``transition_operator`` nor ``discrete_transition_matrix`` is given.
+    transition_operator : registered JAX pytree, optional
+        Operator with pure-JAX ``forward(p, weight)`` and
+        ``backward(v, weight)`` methods, used instead of a dense matrix.
+    discrete_transition_matrix : array_like, shape (n_time, n_states, n_states), optional
+        Per-row discrete state transition weights for the covariate path,
+        combined with ``continuous_transition_matrix``.
+    continuous_transition_matrix : array_like, shape (n_bins, n_bins), optional
+        Dense continuous transition matrix used with
+        ``discrete_transition_matrix``.
+    state_ind : array_like of int, shape (n_bins,), optional
+        Discrete state index of each hidden bin. Required for
+        ``output_mode="compact"``; by default each bin is its own state.
+    n_states : int, optional
+        Number of discrete states; by default one more than the largest
+        ``state_ind``.
+    is_missing : array_like of bool, shape (n_time,), optional
+        Rows without observations, which get neutral likelihoods. By default
+        no row is missing.
+    chunk_size : int, optional
+        Number of rows per checkpoint chunk, by default 2000.
+    output_mode : {"compact", "spatial"}, optional
+        ``"compact"`` returns discrete-state probabilities; ``"spatial"``
+        returns per-bin posteriors. By default "compact".
+    result_path : str or Path, optional
+        If given, write the outputs to this new directory and return a lazy
+        view; otherwise outputs are held in memory.
+    checkpoint_dir : str or Path, optional
+        Parent directory for temporary checkpoints, by default the parent of
+        ``result_path`` (or the system temporary directory).
+    return_outputs : str or iterable of str, optional
+        Names of the outputs to return, such as ``"acausal_posterior"``,
+        ``"causal_posterior"``, ``"predictive_posterior"``, ``"log_likelihood"``
+        or the ``*_state_probabilities`` marginals. By default the acausal
+        state probabilities (compact) or posterior (spatial).
+    selected_rows : array_like, optional
+        Increasing row indices, or a boolean mask of shape (n_time,), of the
+        rows to return. Inference still uses all rows. By default all rows.
+    dtype : numpy dtype, optional
+        State-probability dtype, ``float32`` or ``float64`` (the latter
+        requires ``JAX_ENABLE_X64=1``), by default ``np.float32``.
+    max_read_bytes : int, optional
+        Largest single explicit read from a disk result, in bytes, by default
+        512 MiB.
+    result_attrs : dict or callable, optional
+        Attributes added to the returned dataset and store metadata, or a
+        callable mapping the marginal log likelihood to such a dict.
+    evidence_accumulation : {"stable", "reference"}, optional
+        ``"stable"`` sums evidence increments in host float64; ``"reference"``
+        keeps the original cumulative carry. By default "stable".
+    transition_statistics : {"counts", "responses"}, optional
+        Also compute expected discrete transition counts or per-row
+        responses. Requires an operator with ``pair_products``. By default
+        None.
+    replay_cache_bytes : int, optional
+        Host memory budget for keeping forward-pass chunks to avoid
+        recomputation in the replay, by default 0 (no cache).
+
+    Returns
+    -------
+    result : CheckpointedResult
+        Dataset of the requested outputs, the marginal log likelihood and
+        diagnostics.
+
+    Raises
+    ------
+    ValueError
+        If an argument is invalid, such as a non-positive ``chunk_size``, an
+        unrecognized output, or a likelihood callback that returns the wrong
+        shape or changes between passes.
+    TypeError
+        If ``transition_operator`` is not a registered JAX pytree.
     """
     if (
         isinstance(chunk_size, bool)

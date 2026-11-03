@@ -33,7 +33,18 @@ from non_local_detector.time_edges import (
 
 
 def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
-    """Durations in seconds for every bin of the full decode grid."""
+    """Compute the duration of every bin of the full decode grid.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges, in seconds.
+
+    Returns
+    -------
+    durations : np.ndarray, shape (n_bins,)
+        Duration of each decoding bin, in seconds.
+    """
     return np.diff(time_edges)
 
 
@@ -79,9 +90,6 @@ def predict_no_spike_log_likelihood(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Full decoding bin edges. The output has one row per bin before
-        applying ``row_slice``.
     spike_times : list[list[float]]
         Nested list where each inner list contains spike times for one neuron.
         Length equals number of neurons in the population.
@@ -93,6 +101,9 @@ def predict_no_spike_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges: the bin duration
         and the spike-to-row assignment are both taken from them, so the result
         equals the full-time result sliced by ``row_slice``.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Full decoding bin edges. The output has one row per bin before
+        applying ``row_slice``.
     disable_progress_bar : bool, default=False
         Turn off the per-block progress bar. Detectors pass their
         ``disable_progress_bar`` algorithm parameter.
@@ -104,6 +115,9 @@ def predict_no_spike_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
@@ -163,6 +177,7 @@ def predict_no_spike_log_likelihood(
     no_spike_rates = no_spike_rate * jnp.asarray(durations)
 
     def evaluate(start: int, stop: int) -> jax.Array:
+        """Return the log likelihood of rows ``start`` to ``stop`` (shape (stop - start, 1))."""
         counts = _spike_counts_matrix(
             cast("list[np.ndarray]", spike_times),
             time_edges,
