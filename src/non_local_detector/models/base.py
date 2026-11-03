@@ -929,6 +929,225 @@ class _EMFinalEStep:
     predictive_posterior: Any = None
 
 
+def _sample_times(values: ArrayLike) -> np.ndarray:
+    """``position_time`` as a 1-D numeric array, shape (n_time_position,)."""
+    times = np.asarray(values)
+    if times.ndim != 1 or times.dtype.kind not in "iuf":
+        msg = "position_time must be a one-dimensional array of times in seconds"
+        raise ValidationError(
+            msg,
+            expected="numeric array with shape (n_time_position,)",
+            got=f"{times.dtype} array with shape {times.shape}",
+        )
+    return times
+
+
+def _sample_positions(values: ArrayLike, n_time: int) -> np.ndarray:
+    """``position`` as a numeric array, shape (n_time,) or (n_time, n_position_dims)."""
+    position = np.asarray(values)
+    if position.ndim not in (1, 2) or position.dtype.kind not in "iuf":
+        msg = "position must be a numeric array with one row per position sample"
+        raise ValidationError(
+            msg,
+            expected="numeric array with shape (n_time_position,) or "
+            "(n_time_position, n_position_dims)",
+            got=f"{position.dtype} array with shape {position.shape}",
+        )
+    if position.shape[0] != n_time:
+        msg = "position must have one row per position_time sample"
+        raise ValidationError(
+            msg,
+            expected=f"{n_time} rows",
+            got=f"{position.shape[0]} rows",
+            hint="position and position_time describe the same samples.",
+        )
+    return position
+
+
+def _sample_mask(values: ArrayLike, n_time: int, name: str) -> np.ndarray:
+    """A boolean mask with one entry per position sample, shape (n_time,)."""
+    mask = np.asarray(values)
+    if mask.dtype != np.bool_:
+        msg = f"{name} must be a boolean array"
+        raise ValidationError(
+            msg,
+            expected="dtype bool",
+            got=f"dtype {mask.dtype}",
+            hint="Pass True/False per position sample, e.g. "
+            f"{name}=speed > 4; integers and floats are not read as a mask.",
+        )
+    if mask.shape != (n_time,):
+        msg = f"{name} must have one entry per position sample"
+        raise ValidationError(
+            msg,
+            expected=f"shape ({n_time},)",
+            got=f"shape {mask.shape}",
+            hint="A shorter or single-entry mask is not broadcast to every sample.",
+        )
+    return mask
+
+
+def _sample_labels(
+    values: ArrayLike,
+    n_time: int,
+    name: str,
+    *,
+    kinds: str,
+    contents: str,
+    compared_with: str,
+) -> np.ndarray:
+    """Labels with one entry per position sample, shape (n_time,).
+
+    ``kinds`` lists the accepted NumPy dtype kinds; ``contents`` and
+    ``compared_with`` describe them for the error message.
+    """
+    labels = np.asarray(values)
+    if labels.shape != (n_time,):
+        msg = f"{name} must have one label per position sample"
+        raise ValidationError(
+            msg, expected=f"shape ({n_time},)", got=f"shape {labels.shape}"
+        )
+    if labels.dtype.kind not in kinds:
+        msg = f"{name} must hold {contents}"
+        raise ValidationError(
+            msg,
+            expected=contents,
+            got=f"dtype {labels.dtype}",
+            hint=f"Each label is compared with {compared_with}.",
+        )
+    return labels
+
+
+@dataclass(frozen=True)
+class _EncodingInputs:
+    """Encoding data of a public fitting method, coerced and checked once.
+
+    Optional arrays stay None, so each fitting stage keeps its own default.
+
+    Attributes
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+    position : np.ndarray, shape (n_time_position,) or (n_time_position, n_position_dims)
+        As the caller gave it, so errors report the caller's shape.
+    is_training : np.ndarray of bool, shape (n_time_position,), or None
+    encoding_group_labels : np.ndarray of int or str, shape (n_time_position,), or None
+    environment_labels : np.ndarray of str, shape (n_time_position,), or None
+    weights : np.ndarray of float, shape (n_time_position,), or None
+    """
+
+    position_time: np.ndarray
+    position: np.ndarray
+    is_training: np.ndarray | None
+    encoding_group_labels: np.ndarray | None
+    environment_labels: np.ndarray | None
+    weights: np.ndarray | None = None
+
+    @classmethod
+    def from_arguments(
+        cls,
+        position_time: ArrayLike,
+        position: ArrayLike | None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
+    ) -> "_EncodingInputs":
+        """Coerce and check the arguments of ``fit``-like methods.
+
+        Raises
+        ------
+        ValidationError
+            If ``position`` is missing, an array has the wrong number of
+            dimensions or samples, ``is_training`` is not boolean, a label
+            array has the wrong dtype, or ``weights`` are not finite and
+            non-negative.
+        """
+        if position is None:
+            msg = "Missing required parameter: position"
+            raise ValidationError(
+                msg,
+                expected="position array with shape (n_time, n_dims)",
+                got="None",
+                hint="Provide the animal's position data during training",
+                example="    detector.fit(position_time, position, spike_times)",
+            )
+        times = _sample_times(position_time)
+        n_time = len(times)
+        return cls(
+            position_time=times,
+            position=_sample_positions(position, n_time),
+            is_training=None
+            if is_training is None
+            else _sample_mask(is_training, n_time, "is_training"),
+            encoding_group_labels=None
+            if encoding_group_labels is None
+            else _sample_labels(
+                encoding_group_labels,
+                n_time,
+                "encoding_group_labels",
+                kinds="iuUSO",
+                contents="integer or string encoding groups",
+                compared_with="each observation model's encoding_group",
+            ),
+            environment_labels=None
+            if environment_labels is None
+            else _sample_labels(
+                environment_labels,
+                n_time,
+                "environment_labels",
+                kinds="USO",
+                contents="environment names (strings)",
+                compared_with="each environment's environment_name",
+            ),
+            weights=None if weights is None else val.validate_weights(weights, n_time),
+        )
+
+
+@dataclass(frozen=True)
+class _DecodeInputs:
+    """Position of a public decoding method, coerced and checked once.
+
+    Attributes
+    ----------
+    position_time : np.ndarray, shape (n_time_position,), or None
+    position : np.ndarray, shape (n_time_position, n_position_dims), or None
+    """
+
+    position_time: np.ndarray | None
+    position: np.ndarray | None
+
+    @classmethod
+    def from_arguments(
+        cls,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
+        *,
+        example: str | None = None,
+    ) -> "_DecodeInputs":
+        """Coerce and check the position arguments of a decoding method.
+
+        Raises
+        ------
+        ValidationError
+            If ``position`` is given without ``position_time``, or either
+            array has the wrong number of dimensions or samples.
+        """
+        if position is not None and position_time is None:
+            msg = "position_time is required when position is provided"
+            raise ValidationError(
+                msg,
+                expected="position_time array with shape (n_time_position,)",
+                got="None",
+                hint="Provide position_time corresponding to the position samples",
+                example=example,
+            )
+        times = None if position_time is None else _sample_times(position_time)
+        if position is None or times is None:
+            return cls(times, None)
+        position = _sample_positions(position, len(times))
+        return cls(times, position[:, np.newaxis] if position.ndim == 1 else position)
+
+
 def _decode_time_edges(
     time_edges: ArrayLike,
     transition_time_bin_width: float | None,
@@ -1911,6 +2130,38 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     f"    detector.{context}(..., position=position_2d)"
                 ),
             )
+
+    def _validate_decode_position(self, position: np.ndarray | None) -> None:
+        """Check that decoding has the position its likelihood reads.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time_position, n_position_dims), or None
+
+        Raises
+        ------
+        ValidationError
+            If position is None but Local states or a non-local position
+            penalty read it, or its shape does not match the environments.
+        """
+        if position is not None:
+            self._validate_position_dimensionality(position, context="predict")
+            return
+        if not self._decode_reads_position():
+            return
+        reason = []
+        if any(obs.is_local for obs in self.observation_models):
+            reason.append("local observation models")
+        if self._non_local_position_penalty() > 0:
+            reason.append("non_local_position_penalty > 0")
+        msg = f"Missing required parameter: position (needed for {', '.join(reason)})"
+        raise ValidationError(
+            msg,
+            expected="position array with shape (n_time, n_dims)",
+            got="None",
+            hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
+            example="    results = detector.predict(..., time_edges=time_edges, position=position, position_time=position_time)",
+        )
 
     def _non_local_position_penalty(self) -> float:
         """Non-local position penalty, in nats; 0.0 for models without one.
@@ -3187,7 +3438,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def _fit(
         self,
-        position: np.ndarray | None = None,
+        position: np.ndarray,
         is_training: np.ndarray | None = None,
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
@@ -3198,6 +3449,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
     ) -> "_DetectorBase":
         """
         Fit the model to the data.
+
+        The public ``fit`` methods coerce and check the arrays first (see
+        ``_EncodingInputs``).
 
         Parameters
         ----------
@@ -3220,19 +3474,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         _validate_transition_arguments(
             transition_representation, max_dense_transition_bytes
         )
-        # Validate required parameters
-        if position is None:
-            msg = "Missing required parameter: position"
-            raise ValidationError(
-                msg,
-                expected="position array with shape (n_time, n_dims)",
-                got="None",
-                hint="Provide the animal's position data during training",
-                example="    detector.fit(position_time, position, spike_times)",
-            )
-
-        # Validate data types and properties
-        val.ensure_ndarray(position, "position")
         val.ensure_all_finite(position[~np.isnan(position)], "position")
         if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
             msg = "At least one finite position sample is required for fitting"
@@ -3433,9 +3674,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """Body of the detectors' ``compute_log_likelihood``.
 
         ``spike_data`` holds the spike arrays named by ``_SPIKE_DATA_NAMES``,
-        and the other arguments are those of ``compute_log_likelihood``.
+        and the other arguments are those of ``compute_log_likelihood``. The
+        decoding methods check the model and position once per call, then
+        reach this through ``_prepare_likelihood_callback`` with a prepared
+        ``_position_context``; a direct call has none and is checked here.
         """
-        self._validate_time_contract()
+        is_direct_call = _position_context is None
+        if is_direct_call:
+            self._validate_time_contract()
+            decode = _DecodeInputs.from_arguments(position_time, position)
+            if decode.position_time is not None:
+                position_time = decode.position_time
+            position = decode.position
         time_edges, row_time = _decode_time_edges(
             time_edges,
             *self._learned_transition_time_bin_width(),
@@ -3443,9 +3693,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             row_slice=row_slice,
         )
         _time_grid = _uniform_time_grid(time_edges, _time_grid)
-        if position is not None and position_time is None:
-            msg = "position_time is required when position is provided"  # type: ignore[unreachable]  # runtime check of caller input
-            raise ValidationError(msg)
+        if is_direct_call:
+            self._validate_decode_position(position)
         needs_position = self._decode_reads_position()
         if not isinstance(
             _position_context, _LikelihoodPositionContext
@@ -3459,7 +3708,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 position_time,
                 position,
                 reads_position=needs_position,
-                warn_outside_tracking=_position_context is None,
+                warn_outside_tracking=is_direct_call,
             )
         self._validate_decode_population(*spike_data)
         position_missing = _position_context.is_missing
@@ -3467,24 +3716,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
         non_local_penalty = self._non_local_position_penalty()
-        if position is None and needs_position:
-            reason = []
-            if np.any([obs.is_local for obs in self.observation_models]):
-                reason.append("local observation models")
-            if non_local_penalty > 0:
-                reason.append("non_local_position_penalty > 0")
-            msg = (
-                f"Missing required parameter: position (needed for {', '.join(reason)})"
-            )
-            raise ValidationError(
-                msg,
-                expected="position array with shape (n_time, n_dims)",
-                got="None",
-                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
-                example="    results = detector.predict(..., time_edges=time_edges, position=position, position_time=position_time)",
-            )
-        if position is not None:
-            self._validate_position_dimensionality(position, context="predict")
 
         row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
         n_rows = row_stop - row_start
@@ -3616,8 +3847,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         spike_data: tuple[Any, ...],
         *,
         time_edges: ArrayLike,
-        position: np.ndarray | None,
-        position_time: np.ndarray | None,
+        position: ArrayLike | None,
+        position_time: ArrayLike | None,
         is_missing: np.ndarray | None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         cache_likelihood: bool,
@@ -3635,22 +3866,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         save_causal_posterior_to_results: bool | None,
     ) -> xr.Dataset:
         """Body of the detectors' ``predict``; see ``_compute_spike_log_likelihood``."""
-        if position is not None and position_time is None:
-            msg = "position_time is required when position is provided"
-            raise ValidationError(
-                msg,
-                expected="position_time array with shape (n_time_position,)",
-                got="None",
-                hint="Provide position_time corresponding to the position samples",
-                example=self._PREDICT_EXAMPLE,
-            )
-
+        decode = _DecodeInputs.from_arguments(
+            position_time, position, example=self._PREDICT_EXAMPLE
+        )
+        position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
+        self._validate_decode_position(position)
         is_missing = _missing_bins(
             time_edges,
             is_missing,
@@ -3801,15 +4025,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def _estimate_spike_parameters(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_data: tuple[Any, ...],
         *,
         time_edges: ArrayLike,
         is_missing: np.ndarray | None,
-        is_training: np.ndarray | None,
-        encoding_group_labels: np.ndarray | None,
-        environment_labels: np.ndarray | None,
+        is_training: ArrayLike | None,
+        encoding_group_labels: ArrayLike | None,
+        environment_labels: ArrayLike | None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         estimate_initial_conditions: bool,
         estimate_discrete_transition: bool,
@@ -3851,8 +4075,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             min_encoding_local_mass,
             min_encoding_local_ess,
         )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
+        inputs = _EncodingInputs.from_arguments(
+            position_time,
+            position,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+        )
+        position_time, position = inputs.position_time, inputs.position
+        position = position[:, np.newaxis] if position.ndim == 1 else position
         # Mirror predict(): bins without tracked position are missing
         # observations in the E-step.
         is_missing = _missing_bins(
@@ -3879,9 +4110,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     position_time,
                     position,
                     *spike_data,
-                    is_training=is_training,
-                    encoding_group_labels=encoding_group_labels,
-                    environment_labels=environment_labels,
+                    is_training=inputs.is_training,
+                    encoding_group_labels=inputs.encoding_group_labels,
+                    environment_labels=inputs.environment_labels,
                     discrete_transition_covariate_data=discrete_transition_covariate_data,
                     encoding_time_range=encoding_time_range,
                     valid_position_intervals=valid_position_intervals,
@@ -3898,9 +4129,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 "position_time": position_time,
                 "position": position,
                 **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
-                "is_training": is_training,
-                "encoding_group_labels": encoding_group_labels,
-                "environment_labels": environment_labels,
+                "is_training": inputs.is_training,
+                "encoding_group_labels": inputs.encoding_group_labels,
+                "environment_labels": inputs.environment_labels,
                 "encoding_time_range": encoding_time_range,
                 "valid_position_intervals": valid_position_intervals,
             }
@@ -3938,18 +4169,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         spike_data: tuple[Any, ...],
         *,
         time_edges: ArrayLike,
-        position: np.ndarray | None,
-        position_time: np.ndarray | None,
+        position: ArrayLike | None,
+        position_time: ArrayLike | None,
         is_missing: np.ndarray | None,
         n_chunks: int,
     ) -> pd.DataFrame:
         """Body of the detectors' ``most_likely_sequence``; see ``_compute_spike_log_likelihood``."""
+        decode = _DecodeInputs.from_arguments(position_time, position)
+        position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
+        self._validate_decode_position(position)
         is_missing = _missing_bins(
             time_edges,
             is_missing,
@@ -4516,6 +4748,33 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         with suppress(AttributeError):
             del self.log_likelihood_
+
+    def _encoding_masks(
+        self, inputs: _EncodingInputs
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Training mask and labels of an encoding fit, with their defaults.
+
+        Without them every sample trains encoding group 0 of the first
+        environment.
+
+        Returns
+        -------
+        is_training : np.ndarray of bool, shape (n_time_position,)
+        encoding_group_labels : np.ndarray, shape (n_time_position,)
+        environment_labels : np.ndarray, shape (n_time_position,)
+        """
+        n_time = len(inputs.position_time)
+        return (
+            np.ones((n_time,), dtype=bool)
+            if inputs.is_training is None
+            else inputs.is_training,
+            np.zeros((n_time,), dtype=np.int32)
+            if inputs.encoding_group_labels is None
+            else inputs.encoding_group_labels,
+            np.asarray([self.environments[0].environment_name] * n_time)
+            if inputs.environment_labels is None
+            else inputs.environment_labels,
+        )
 
     @abc.abstractmethod
     def fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:
@@ -6174,14 +6433,14 @@ class ClusterlessDetector(_DetectorBase):
 
     def fit_encoding_model(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        weights: np.ndarray | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
@@ -6192,20 +6451,22 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array or weights indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,) optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, optional
-            Environment labels, by default None.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True for the position samples to train the encoding model on, one
+            entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         weights : np.ndarray, optional, shape (n_time_position,)
             Weights for training data, by default None.
 
@@ -6245,21 +6506,23 @@ class ClusterlessDetector(_DetectorBase):
         # paired electrode by electrode (``fit`` also checks first, before
         # ``_fit`` rebuilds its own state).
         validate_spike_feature_population(spike_times, spike_waveform_features)
-        n_time = position.shape[0]
-        position = position if position.ndim > 1 else position[:, np.newaxis]
-
-        if is_training is None:
-            is_training = np.ones((n_time,), dtype=bool)
-
-        if encoding_group_labels is None:
-            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
-
-        if environment_labels is None:
-            environment_labels = np.asarray(
-                [self.environments[0].environment_name] * n_time
-            )
-
-        is_training = np.asarray(is_training).squeeze()
+        inputs = _EncodingInputs.from_arguments(
+            position_time,
+            position,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+            weights,
+        )
+        position_time, weights = inputs.position_time, inputs.weights
+        position = (
+            inputs.position[:, np.newaxis]
+            if inputs.position.ndim == 1
+            else inputs.position
+        )
+        is_training, encoding_group_labels, environment_labels = self._encoding_masks(
+            inputs
+        )
 
         support = EncodingSupport(
             position_time,
@@ -6344,13 +6607,13 @@ class ClusterlessDetector(_DetectorBase):
 
     def fit(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         *,
         encoding_time_range: np.ndarray | None = None,
@@ -6363,20 +6626,22 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Environment labels, by default None.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True for the position samples to train the encoding model on, one
+            entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
 
@@ -6407,24 +6672,31 @@ class ClusterlessDetector(_DetectorBase):
             Fitted detector instance.
         """
         validate_spike_feature_population(spike_times, spike_waveform_features)
+        inputs = _EncodingInputs.from_arguments(
+            position_time,
+            position,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+        )
         with self._restore_state_on_error():
             self._fit(
-                position,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                inputs.position,
+                inputs.is_training,
+                inputs.encoding_group_labels,
+                inputs.environment_labels,
                 discrete_transition_covariate_data,
                 transition_representation=transition_representation,
                 max_dense_transition_bytes=max_dense_transition_bytes,
             )
             self.fit_encoding_model(
-                position_time,
-                position,
+                inputs.position_time,
+                inputs.position,
                 spike_times,
                 spike_waveform_features,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                inputs.is_training,
+                inputs.encoding_group_labels,
+                inputs.environment_labels,
                 encoding_time_range=encoding_time_range,
                 valid_position_intervals=valid_position_intervals,
             )
@@ -6586,8 +6858,8 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features: list[np.ndarray],
         *,
         time_edges: ArrayLike,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
@@ -6616,9 +6888,9 @@ class ClusterlessDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : array_like, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
-        position_time : np.ndarray, shape (n_time_position,), optional
+        position_time : array_like, shape (n_time_position,), optional
             Time points for position data, by default None.
         is_missing : np.ndarray, shape (n_bins,), optional
             Boolean array indicating missing data, by default None.
@@ -6786,16 +7058,16 @@ class ClusterlessDetector(_DetectorBase):
     @requires_time_edges
     def estimate_parameters(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
         time_edges: ArrayLike,
         is_missing: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
@@ -6823,9 +7095,9 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
@@ -6836,12 +7108,14 @@ class ClusterlessDetector(_DetectorBase):
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
             Boolean array indicating missing data, by default None.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Environment labels, by default None.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True for the position samples to train the encoding model on, one
+            entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
         estimate_initial_conditions : bool, optional
@@ -7004,8 +7278,8 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features: list[np.ndarray],
         *,
         time_edges: ArrayLike,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -7013,9 +7287,9 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,), optional
+        position_time : array_like, shape (n_time_position,), optional
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : array_like, shape (n_time_position, n_position_dims), optional
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
@@ -7171,13 +7445,13 @@ class SortedSpikesDetector(_DetectorBase):
 
     def fit_encoding_model(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        weights: np.ndarray | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
@@ -7187,18 +7461,20 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
-        is_training : np.ndarray, optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, optional
-            Environment labels, by default None.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True for the position samples to train the encoding model on, one
+            entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         weights : np.ndarray, optional, shape (n_time_position,)
             Weights for training data, by default None.
 
@@ -7220,20 +7496,23 @@ class SortedSpikesDetector(_DetectorBase):
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
         logger.info("Fitting place fields...")
-        n_time = position.shape[0]
-        position = position if position.ndim > 1 else position[:, np.newaxis]
-        if is_training is None:
-            is_training = np.ones((n_time,), dtype=bool)
-
-        if encoding_group_labels is None:
-            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
-
-        if environment_labels is None:
-            environment_labels = np.asarray(
-                [self.environments[0].environment_name] * n_time
-            )
-
-        is_training = np.asarray(is_training).squeeze()
+        inputs = _EncodingInputs.from_arguments(
+            position_time,
+            position,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+            weights,
+        )
+        position_time, weights = inputs.position_time, inputs.weights
+        position = (
+            inputs.position[:, np.newaxis]
+            if inputs.position.ndim == 1
+            else inputs.position
+        )
+        is_training, encoding_group_labels, environment_labels = self._encoding_masks(
+            inputs
+        )
         support = EncodingSupport(
             position_time,
             position,
@@ -7301,12 +7580,12 @@ class SortedSpikesDetector(_DetectorBase):
 
     def fit(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         *,
         encoding_time_range: np.ndarray | None = None,
@@ -7319,18 +7598,20 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Environment labels, by default None.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True for the position samples to train the encoding model on, one
+            entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
 
@@ -7360,23 +7641,30 @@ class SortedSpikesDetector(_DetectorBase):
         SortedSpikesDetector
             Fitted detector instance.
         """
+        inputs = _EncodingInputs.from_arguments(
+            position_time,
+            position,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+        )
         with self._restore_state_on_error():
             self._fit(
-                position,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                inputs.position,
+                inputs.is_training,
+                inputs.encoding_group_labels,
+                inputs.environment_labels,
                 discrete_transition_covariate_data,
                 transition_representation=transition_representation,
                 max_dense_transition_bytes=max_dense_transition_bytes,
             )
             self.fit_encoding_model(
-                position_time,
-                position,
+                inputs.position_time,
+                inputs.position,
                 spike_times,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                inputs.is_training,
+                inputs.encoding_group_labels,
+                inputs.environment_labels,
                 encoding_time_range=encoding_time_range,
                 valid_position_intervals=valid_position_intervals,
             )
@@ -7502,8 +7790,8 @@ class SortedSpikesDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         *,
         time_edges: ArrayLike,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
@@ -7530,9 +7818,9 @@ class SortedSpikesDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : array_like, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
-        position_time : np.ndarray, shape (n_time_position,), optional
+        position_time : array_like, shape (n_time_position,), optional
             Time points for position data, by default None.
         is_missing : np.ndarray, shape (n_bins,), optional
             Boolean array indicating missing data, by default None.
@@ -7621,15 +7909,15 @@ class SortedSpikesDetector(_DetectorBase):
     @requires_time_edges
     def estimate_parameters(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         *,
         time_edges: ArrayLike,
         is_missing: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
@@ -7669,14 +7957,14 @@ class SortedSpikesDetector(_DetectorBase):
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
             Denote missing samples, None includes all samples, by default None.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array where True values include the sample in estimating the firing rate by
-            position, None includes all samples, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            If place fields should correspond to each state, label each time point with the group name
-            For example, some points could correspond to inbound trajectories and some outbound, by default None.
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Labels denoting which environment the sample corresponds to, by default None.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True for the position samples to train the encoding model on, one
+            entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict, optional
             Covariate data for a covariate dependent discrete transition.
             A dict-like object that can be used to look up variables, by default None.
@@ -7839,8 +8127,8 @@ class SortedSpikesDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         *,
         time_edges: ArrayLike,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -7848,9 +8136,9 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,), optional
+        position_time : array_like, shape (n_time_position,), optional
             Time of each position sample.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : array_like, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
             Each element of the list is an array of spike times for a neuron.
