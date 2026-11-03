@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed:** `Environment.get_bin_ind` on an unfitted environment raises `ConfigurationError` asking for `fit_place_grid`, instead of `TypeError` (it passed an argument `ConfigurationError` does not take).
 - **Fixed:** `Environment.fit_place_grid()` without position or a track graph raises `ValidationError` saying position is required, instead of `AttributeError: 'NoneType' object has no attribute 'ndim'`.
 - **Fixed:** `Environment.plot_grid` on an unfitted track-graph environment draws the graph without bin edges, instead of raising `TypeError`.
+- **Fixed:** `simulate.sorted_spikes_simulation.get_firing_rate` with its default `weights=None` weights every time point equally, instead of raising `TypeError`.
 
 ### Each likelihood algorithm has its own default parameters
 

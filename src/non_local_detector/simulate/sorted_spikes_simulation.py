@@ -236,9 +236,13 @@ def get_firing_rate(
             ),
             position_std,
             block_size=block_size,
-            sample_weights=np.asarray(
-                weights[is_spike.astype(bool) & not_nan_position],  # type: ignore[index]  # BUG: weights=None (default) raises TypeError here
-                dtype=np.float32,
+            sample_weights=(
+                None
+                if weights is None
+                else np.asarray(
+                    weights[is_spike.astype(bool) & not_nan_position],
+                    dtype=np.float32,
+                )
             ),
         )
         return cast(
