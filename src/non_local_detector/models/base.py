@@ -1,3 +1,17 @@
+"""Detector base class and the sorted-spikes and clusterless detectors.
+
+This module defines the shared HMM machinery of the package: initializing the
+environments, state space, initial conditions and state transitions; fitting
+encoding models; computing log likelihoods; decoding with the forward-backward
+algorithm (``predict``); estimating parameters with EM
+(``estimate_parameters``); finding the most likely state sequence; and
+saving and loading models and results. ``SortedSpikesDetector`` and
+``ClusterlessDetector`` specialize it for sorted spike trains and for
+unsorted spike waveform features. The model classes in the other modules of
+``non_local_detector.models`` configure these two with specific states and
+transitions.
+"""
+
 import abc
 import copy
 import inspect
@@ -2292,14 +2306,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> None:
         """
-        Fits the Environment class on the position data to get information about the spatial environment.
+        Fit the environments on the position data to get information about the spatial environment.
 
         Parameters
         ----------
         position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
+            Position data.
         environment_labels : np.ndarray, optional, shape (n_time,)
-            Labels for each time points about which environment it corresponds to, by default None
+            Labels for each time points about which environment it corresponds to, by default None.
         compute_all_pairs_distances : bool, optional
             By default True, which builds each environment's all-pairs graph
             distances. False keeps an exact sparse query view for Cartesian
@@ -2358,7 +2372,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         is_track_interior_state_bins_ : np.ndarray, shape (n_total_bins,)
              Boolean array indicating if a combined state bin corresponds to the
              track interior. For non-spatial states, this is typically True.
-
         """
         self.n_discrete_states_ = len(self.state_names)
         bin_sizes = []
@@ -2385,7 +2398,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
 
     def initialize_initial_conditions(self) -> None:
-        """Constructs the initial probability for the state and each spatial bin.
+        """Construct the initial probability for the state and each spatial bin.
 
         Attributes
         ----------
@@ -2428,14 +2441,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> None:
         """
-        Constructs the transition matrices for the continuous states.
+        Construct the transition matrices for the continuous states.
 
         Parameters
         ----------
         continuous_transition_types : ContinuousTransitions
             Types of transition models.
         position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
+            Position data.
         is_training : np.ndarray, optional, shape (n_time,)
             Boolean array that determines what data to train the place fields on, by default None.
         encoding_group_labels : np.ndarray, shape (n_time,), optional
@@ -2645,7 +2658,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self, covariate_data: pd.DataFrame | dict[str, Any] | None = None
     ) -> None:
         """
-        Constructs the transition matrix for the discrete states.
+        Construct the transition matrix for the discrete states.
 
         Parameters
         ----------
@@ -2802,7 +2815,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             Convert the probabilities of state to expected duration of state, by default False.
         sampling_frequency : int, optional
             Number of samples per second, by default 1.
-        covariate_data: dict or pd.DataFrame, optional
+        covariate_data : dict or pd.DataFrame, optional
             Dictionary or DataFrame of covariate data, by default None.
             Keys are covariate names and values are 1D arrays.
         """
@@ -4327,7 +4340,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     @abc.abstractmethod
     def fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:
-        """Fit the encoding model. To be implemented by inheriting class."""
+        """Fit the encoding model. To be implemented by inheriting class.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments of the subclass implementation; see
+            ``SortedSpikesDetector.fit_encoding_model`` and
+            ``ClusterlessDetector.fit_encoding_model``.
+        **kwargs
+            Keyword arguments of the subclass implementation.
+        """
 
     def _fit_em_model(
         self,
@@ -5311,7 +5334,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         pd.DataFrame, shape (n_bins, n_columns)
             DataFrame containing the most likely sequence of states
             and corresponding positions/metadata at each time step.
-
         """
         if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
             self, "encoding_model_"
@@ -5430,7 +5452,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Parameters
         ----------
         filename : str, optional
-            Filename to load the model from, by default "model.pkl"
+            Filename to load the model from, by default "model.pkl".
 
         Returns
         -------
@@ -5452,9 +5474,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Parameters
         ----------
         results : xr.Dataset
-            Decoding results
+            Decoding results.
         filename : str, optional
-            Name to save, by default "results.nc"
+            Name to save, by default "results.nc".
         """
         export = (
             results.reset_index("state_bins")
@@ -5483,8 +5505,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Parameters
         ----------
         filename : str or Path, optional
-            netCDF file or checkpointed result directory, by default
-            "results.nc"
+            A netCDF file or checkpointed result directory, by default
+            "results.nc".
         max_read_bytes : int, optional
             Maximum bytes in one explicit read of a result directory's lazy
             arrays, by default 512 MiB. Ignored for netCDF files.
@@ -5517,7 +5539,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def copy(self) -> "_DetectorBase":
         """
-        Makes a copy of the detector.
+        Make a copy of the detector.
 
         Returns
         -------
@@ -5833,6 +5855,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 class ClusterlessDetector(_DetectorBase):
     """
     Detector class for clusterless spikes.
+
+    Decodes from spike waveform features (marks) without spike sorting. The
+    constructor parameters are documented on ``__init__``.
     """
 
     mark_reference_: list[MarkReference | None]
@@ -6077,6 +6102,10 @@ class ClusterlessDetector(_DetectorBase):
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
+        _refit_mark_reference : bool, optional
+            Internal. If False, keep the existing ``mark_reference_`` instead
+            of refitting it, as for posterior-weighted encoding updates. By
+            default True.
 
         Attributes
         ----------
@@ -6397,6 +6426,12 @@ class ClusterlessDetector(_DetectorBase):
         _no_spike_time_bin_sizes : np.ndarray | None, optional
             Internal full-timeline array of bin durations, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
+        _time_grid : _DecodeTimeGrid | None, optional
+            Internal validated time edges shared within one prediction. None
+            validates ``time_edges`` for this likelihood call.
+        _position_context : _LikelihoodPositionContext | None, optional
+            Internal tracking preparation shared within one prediction. None
+            prepares it for this likelihood call.
         _spike_time_order : _SpikeTimeOrder | None, optional
             Internal ordering preparation shared across states and chunks. None
             creates fresh preparation for this likelihood call.
@@ -6473,7 +6508,7 @@ class ClusterlessDetector(_DetectorBase):
             likelihood allocation; when the log likelihood is not requested, no
             chunk array is retained.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+            Splits data into chunks for processing, by default 1.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned.
 
@@ -6663,7 +6698,7 @@ class ClusterlessDetector(_DetectorBase):
         position_time : np.ndarray, shape (n_time_position,)
             Time points for position data.
         position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
+            Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
@@ -6839,7 +6874,7 @@ class ClusterlessDetector(_DetectorBase):
         position_time : np.ndarray, shape (n_time_position,), optional
             Time points for position data.
         position : np.ndarray, shape (n_time_position, n_position_dims), optional
-            Position data
+            Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
@@ -6850,11 +6885,13 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : np.ndarray, shape (n_bins,), optional
             Boolean array indicating missing data, by default None.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+            Splits data into chunks for processing, by default 1.
 
         Returns
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
+            Most likely state and position at each decode bin, indexed by
+            the bin center time.
         """
         return self._most_likely_spike_sequence(
             (spike_times, spike_waveform_features),
@@ -6869,6 +6906,9 @@ class ClusterlessDetector(_DetectorBase):
 class SortedSpikesDetector(_DetectorBase):
     """
     Detector class for sorted spikes.
+
+    Decodes from the spike times of sorted units. The constructor parameters
+    are documented on ``__init__``.
     """
 
     def __init__(
@@ -7008,7 +7048,7 @@ class SortedSpikesDetector(_DetectorBase):
         position_time : np.ndarray
             Time points for position data.
         position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
+            Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
         is_training : np.ndarray, optional
@@ -7298,6 +7338,12 @@ class SortedSpikesDetector(_DetectorBase):
         _no_spike_time_bin_sizes : np.ndarray | None, optional
             Internal full-timeline array of bin durations, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
+        _time_grid : _DecodeTimeGrid | None, optional
+            Internal validated time edges shared within one prediction. None
+            validates ``time_edges`` for this likelihood call.
+        _position_context : _LikelihoodPositionContext | None, optional
+            Internal tracking preparation shared within one prediction. None
+            prepares it for this likelihood call.
         _spike_time_order : _SpikeTimeOrder | None, optional
             Internal ordering preparation shared across states and chunks. None
             creates fresh preparation for this likelihood call.
@@ -7371,7 +7417,7 @@ class SortedSpikesDetector(_DetectorBase):
             likelihood allocation; when the log likelihood is not requested, no
             chunk array is retained.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+            Splits data into chunks for processing, by default 1.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned. See ClusterlessDetector.predict
             for full documentation. By default None.
@@ -7483,31 +7529,31 @@ class SortedSpikesDetector(_DetectorBase):
         Parameters
         ----------
         position_time : np.ndarray, shape (n_time_position,)
-            Time of each position sample
+            Time of each position sample.
         position : np.ndarray, shape (n_time_position, n_position_dims)
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
-            Each element of the list is an array of spike times for a neuron
+            Each element of the list is an array of spike times for a neuron.
         time_edges : np.ndarray, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
-            Denote missing samples, None includes all samples, by default None
+            Denote missing samples, None includes all samples, by default None.
         is_training : np.ndarray, shape (n_time_position,), optional
             Boolean array where True values include the sample in estimating the firing rate by
-            position, None includes all samples, by default None
+            position, None includes all samples, by default None.
         encoding_group_labels : np.ndarray, shape (n_time_position,), optional
             If place fields should correspond to each state, label each time point with the group name
-            For example, some points could correspond to inbound trajectories and some outbound, by default None
+            For example, some points could correspond to inbound trajectories and some outbound, by default None.
         environment_labels : np.ndarray, shape (n_time_position,), optional
-            Labels denoting which environment the sample corresponds to, by default None
+            Labels denoting which environment the sample corresponds to, by default None.
         discrete_transition_covariate_data : dict, optional
             Covariate data for a covariate dependent discrete transition.
-            A dict-like object that can be used to look up variables, by default None
+            A dict-like object that can be used to look up variables, by default None.
         estimate_initial_conditions : bool, optional
-            Estimate the initial conditions, by default True
+            Estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
-            Estimate the discrete transition matrix, by default True
+            Estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
             Re-fit the place fields in each M-step, weighted by the Local
             state's posterior, by default False. Every state shares the
@@ -7516,7 +7562,7 @@ class SortedSpikesDetector(_DetectorBase):
             EM reports as a monotonicity violation and never counts as
             convergence. Off by default for that reason.
         max_iter : int, optional
-            Maximum number of EM iterations, by default 20
+            Maximum number of EM iterations, by default 20.
         tolerance : float, optional
             Convergence tolerance for EM, in nats per time bin, by default
             1e-5. EM stops when the penalized log-likelihood (marginal
@@ -7659,22 +7705,24 @@ class SortedSpikesDetector(_DetectorBase):
         Parameters
         ----------
         position_time : np.ndarray, shape (n_time_position,), optional
-            Time of each position sample
+            Time of each position sample.
         position : np.ndarray, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
-            Each element of the list is an array of spike times for a neuron
+            Each element of the list is an array of spike times for a neuron.
         time_edges : np.ndarray, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
-            Denote missing samples, None includes all samples, by default None
+            Denote missing samples, None includes all samples, by default None.
         n_chunks : int, optional
-            Number of chunks for processing, by default 1
+            Number of chunks for processing, by default 1.
 
         Returns
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
+            Most likely state and position at each decode bin, indexed by
+            the bin center time.
         """
         return self._most_likely_spike_sequence(
             (spike_times,),
