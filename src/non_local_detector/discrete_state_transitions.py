@@ -22,14 +22,14 @@ import numpy as np
 import pandas as pd
 from jax.nn import log_softmax
 from jax.typing import ArrayLike
-from patsy import (  # type: ignore[import-untyped]
+from patsy import (
     DesignInfo,
     DesignMatrix,
     build_design_matrices,
     dmatrix,
     stateful_transform,
 )
-from patsy.splines import BS  # type: ignore[import-untyped]
+from patsy.splines import BS
 from scipy.interpolate import BSpline
 from scipy.linalg import cho_factor, cho_solve
 from scipy.optimize import minimize, minimize_scalar

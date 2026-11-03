@@ -47,10 +47,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
+from patsy.design_info import DesignInfo
 from scipy.special import logsumexp
 from sklearn.mixture import BayesianGaussianMixture  # type: ignore[import-untyped]
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (

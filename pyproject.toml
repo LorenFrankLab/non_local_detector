@@ -155,10 +155,12 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 module = [
     "networkx.*",
     "pandas.*",
+    "patsy.*",
     "psutil.*",
     "scipy.*",
     "sortingview.*",
     "threadpoolctl.*",
+    "tqdm.*",
 ]
 ignore_missing_imports = true
 
