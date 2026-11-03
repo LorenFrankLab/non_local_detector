@@ -116,3 +116,9 @@ the details.
   causal (past-only) estimates or `"log_likelihood"`. Every dimension,
   coordinate, variable and attribute of the result is listed in
   [Result layout](../result_layout.md).
+
+States without a position (Local and No-Spike) have no position bins, so
+unstacking `acausal_posterior` yourself misplaces their probability. For
+models that have them, use
+[`get_spatial_posterior`](../api/non_local_detector/analysis/posterior.md) to get
+per-position probabilities.

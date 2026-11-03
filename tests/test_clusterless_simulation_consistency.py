@@ -58,20 +58,32 @@ def test_default_replay_marks_land_on_run_data_mark_clusters(default_run) -> Non
             assert n_near > 100, (tet, mark, n_near)
 
 
-def test_hover_replay_mark_matches_run_data_cell(default_run) -> None:
-    """The default hover replay mark belongs to the cell at the hover position."""
-    place_means = cs.PLACE_FIELD_MEANS.reshape((len(default_run.spike_times), -1))
-    _, replay = make_hover_replay()
-    tet, cell = np.unravel_index(place_means.size // 2, place_means.shape)
+def _assert_hover_matches_cell(run, replay, cell_ind) -> None:
+    """The hover replay spikes with the run-data mark cluster of ``cell_ind``.
+
+    That cluster's run spikes must fire around the cell's place field, which
+    lies on the track.
+    """
+    place_means = cs.PLACE_FIELD_MEANS.reshape((len(run.spike_times), -1))
+    tet, cell = np.unravel_index(cell_ind, place_means.shape)
+    assert 0.0 <= place_means[tet, cell] <= cs.TRACK_HEIGHT
+    for other in set(range(len(run.spike_times))) - {tet}:
+        assert _replay_marks(replay, other).size == 0
     mark = _replay_marks(replay, tet)
     assert mark.size == 1
-    pos = default_run.position[:, 0]
-    run_feats = default_run.spike_waveform_features[tet][:, 0]
+    run_feats = run.spike_waveform_features[tet][:, 0]
     spike_ind = np.nonzero(np.abs(run_feats - mark[0]) < 3.0)[0]
+    assert spike_ind.size > 100
     spike_pos = np.interp(
-        default_run.spike_times[tet][spike_ind], default_run.position_time, pos
+        run.spike_times[tet][spike_ind], run.position_time, run.position[:, 0]
     )
     assert abs(np.median(spike_pos) - place_means[tet, cell]) < 5.0
+
+
+def test_hover_replay_mark_matches_run_data_cell(default_run) -> None:
+    """The default hover replay mark belongs to the cell at the hover position."""
+    _, replay = make_hover_replay()
+    _assert_hover_matches_cell(default_run, replay, cs.PLACE_FIELD_MEANS.size // 2)
 
 
 def test_default_place_fields_are_on_the_track() -> None:
@@ -82,11 +94,27 @@ def test_default_place_fields_are_on_the_track() -> None:
     assert means.size % cs.N_TETRODES == 0
 
 
-def test_default_hover_helpers_hover_on_track() -> None:
-    """Default hover replays use cells whose place field is on the track."""
+def test_default_hover_helpers_hover_on_track(default_run) -> None:
+    """Each default hover segment is an on-track cell's hover replay."""
     n_cells = cs.PLACE_FIELD_MEANS.size
-    for hover_ind in (n_cells // 2, 0, n_cells - 1):
-        assert 0.0 <= cs.PLACE_FIELD_MEANS[hover_ind] <= cs.TRACK_HEIGHT
+    _, hover_continuous_hover = make_hover_continuous_hover_replay()
+    _, fragmented_hover_fragmented = make_fragmented_hover_fragmented_replay()
+    n_hover = make_hover_replay()[1].shape[0]
+    n_fragmented = make_fragmented_replay()[1].shape[0]
+    segments = {
+        0: hover_continuous_hover[:n_hover],
+        n_cells - 1: hover_continuous_hover[-n_hover:],
+        6: fragmented_hover_fragmented[n_fragmented : n_fragmented + n_hover],
+    }
+    for cell_ind, segment in segments.items():
+        _, replay = make_hover_replay(hover_neuron_ind=cell_ind)
+        np.testing.assert_array_equal(segment, replay)
+        _assert_hover_matches_cell(default_run, replay, cell_ind)
+
+
+def test_cells_must_divide_evenly_among_tetrodes() -> None:
+    with pytest.raises(ValueError, match=r"10 cells.*3 tetrodes"):
+        make_continuous_replay(place_field_means=np.linspace(0, 100, 10), n_tetrodes=3)
 
 
 def test_mixture_helpers_accept_matching_parameters() -> None:
