@@ -651,7 +651,6 @@ def checkpointed_forward_backward(
                 jnp.asarray(matrix, dtype=dtype),
                 jnp.asarray(state_ind),
                 n_states,
-                precision=jax.lax.Precision.HIGHEST,
             )
         )
     else:

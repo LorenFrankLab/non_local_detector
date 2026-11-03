@@ -7,6 +7,8 @@ The tables of ``docs/result_layout.md`` are checked against real results.
 """
 
 import re
+import warnings
+from contextlib import suppress
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +21,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
 )
 from non_local_detector.analysis import get_spatial_posterior
+from non_local_detector.models._results import has_place_bins, state_bin_positions
 
 pytestmark = pytest.mark.integration
 
@@ -66,6 +69,16 @@ def checkpointed(fitted, tmp_path_factory):
     )
 
 
+@pytest.fixture(scope="module")
+def em(fitted):
+    """A dense EM result (one iteration, so EM does not converge)."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "EM did not converge")
+        return type(fitted)(**fitted.get_params()).estimate_parameters(
+            **_PREDICT, max_iter=1, return_outputs="all"
+        )
+
+
 @pytest.fixture(scope="module", params=["dense", "checkpointed"])
 def result(request, dense, checkpointed):
     """The dense or the checkpointed result."""
@@ -94,6 +107,19 @@ def test_state_ind_is_a_state_bins_coordinate(fitted, result):
     np.testing.assert_array_equal(
         np.atleast_1d(result.coords["states"].values)[result.state_ind],
         result.coords["state"].values,
+    )
+
+
+def test_state_bin_positions_follow_the_state_index(fitted, result):
+    """One block per state, NaN for states without place bins, as in results."""
+    positions = state_bin_positions(fitted)
+    np.testing.assert_array_equal([len(p) for p in positions], fitted.bin_sizes_)
+    for observation, block in zip(fitted.observation_models, positions, strict=True):
+        assert bool(np.isnan(block).all()) is not has_place_bins(fitted, observation)
+    position_names = result.indexes["state_bins"].names[1:]
+    np.testing.assert_array_equal(
+        np.concatenate(positions),
+        np.column_stack([result[name].values for name in position_names]),
     )
 
 
@@ -146,6 +172,100 @@ def test_netcdf_round_trip_keeps_state_ind(fitted, result, tmp_path):
     assert restored.state_ind.dtype == result.state_ind.dtype
     for name in result.data_vars:
         np.testing.assert_array_equal(restored[name].values, result[name].values)
+
+
+@pytest.mark.parametrize("kind", ["dense", "checkpointed", "em"])
+def test_netcdf_round_trip_keeps_every_dtype(fitted, kind, request, tmp_path):
+    """Integer variables and coordinates keep their dtypes through netCDF3.
+
+    Without netCDF4 or h5netcdf, xarray writes netCDF3, which stores int64 as
+    int32. Strings come back as object arrays, as xarray reads them from any
+    netCDF file.
+    """
+    result = request.getfixturevalue(kind)
+    filename = tmp_path / "results.nc"
+    fitted.save_results(result, filename)
+    with fitted.load_results(filename) as restored:
+        restored = restored.load()
+    assert set(restored.variables) == set(result.variables)
+    assert any(v.dtype.kind in "iu" for v in result.variables.values())
+    for name, variable in result.variables.items():
+        if variable.dtype.kind == "U":
+            np.testing.assert_array_equal(restored[name].values, variable.values)
+        else:
+            assert restored[name].dtype == variable.dtype, name
+    assert restored.attrs.keys() == {
+        name for name in result.attrs if name != "_native_metadata"
+    }
+
+
+def test_a_recorded_dtype_is_not_forced_on_a_non_integer_variable(
+    fitted, dense, tmp_path
+):
+    """A file edited after saving keeps its non-integer values.
+
+    Making an integer coordinate float (here with a NaN) and rewriting the
+    file keeps the recorded dtype; casting back would turn NaN into garbage.
+    """
+    filename = tmp_path / "results.nc"
+    fitted.save_results(dense, filename)
+    with xr.open_dataset(filename) as saved:
+        edited = saved.load()
+    groups = edited["encoding_groups"].values.astype(float)
+    groups.flat[0] = np.nan
+    edited = edited.assign_coords(
+        encoding_groups=(edited["encoding_groups"].dims, groups)
+    )
+    edited.to_netcdf(tmp_path / "edited.nc")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with fitted.load_results(tmp_path / "edited.nc") as restored:
+            np.testing.assert_array_equal(restored["encoding_groups"].values, groups)
+    np.testing.assert_array_equal(restored.state_ind, fitted.state_ind_)
+
+
+@pytest.mark.parametrize("has_state_bins", [True, False])
+def test_load_results_releases_the_file(fitted, dense, tmp_path, has_state_bins):
+    """Closing the loaded results closes the netCDF file."""
+    results = dense if has_state_bins else dense.drop_dims("state_bins")
+    filename = tmp_path / "results.nc"
+    fitted.save_results(results, filename)
+    with fitted.load_results(filename) as restored:
+        assert restored._close is not None
+        restored.load()
+        assert _open_paths() is None or filename.resolve() in _open_paths()
+    assert _open_paths() is None or filename.resolve() not in _open_paths()
+    # Rewriting the file fails on Windows while it is still open.
+    fitted.save_results(results, filename)
+    filename.unlink()
+
+
+def _open_paths():
+    """Files this process has open (Linux), or None where that is unknown."""
+    fd_dir = Path("/proc/self/fd")
+    if not fd_dir.is_dir():
+        return None
+    paths = set()
+    for fd in fd_dir.iterdir():
+        with suppress(OSError):
+            paths.add(fd.resolve())
+    return paths
+
+
+def test_files_saved_without_recorded_dtypes_restore_state_ind(fitted, dense, tmp_path):
+    """Files written before ``save_results`` recorded integer dtypes load."""
+    filename = tmp_path / "results.nc"
+    fitted.save_results(dense, filename)
+    with xr.open_dataset(filename) as saved:
+        legacy = saved.load()
+    del legacy.attrs["non_local_detector_integer_dtypes"]
+    legacy.to_netcdf(tmp_path / "legacy.nc")
+    with fitted.load_results(tmp_path / "legacy.nc") as restored:
+        restored = restored.load()
+    assert restored.state_ind.dtype == dense.state_ind.dtype
+    assert restored.indexes["state_bins"].equals(dense.indexes["state_bins"])
+    for name in dense.data_vars:
+        np.testing.assert_array_equal(restored[name].values, dense[name].values)
 
 
 def test_files_with_a_state_ind_dimension_load_with_the_current_layout(

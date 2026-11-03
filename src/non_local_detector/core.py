@@ -650,9 +650,12 @@ class _StationaryTransition:
         Discrete state of each bin; only ``pair_products`` needs it.
     n_states : int, optional
         Number of discrete states; only ``pair_products`` needs it.
-    precision : jax.lax.Precision, optional
-        Precision of the matrix products. None (the backend default) uses
-        TF32 on CUDA; checkpointed inference uses HIGHEST.
+
+    Notes
+    -----
+    The products use ``Precision.HIGHEST``, as the covariate and structured
+    operators do: the default CUDA precision (TF32) would round them, so the
+    paths would disagree on GPU. On CPU the precision has no effect.
     """
 
     def __init__(
@@ -660,20 +663,20 @@ class _StationaryTransition:
         matrix: ArrayLike,
         state_ind: jax.Array | None = None,
         n_states: int | None = None,
-        precision: jax.lax.Precision | None = None,
     ) -> None:
-        self.matrix, self.state_ind = matrix, state_ind
-        self.n_states, self.precision = n_states, precision
+        self.matrix, self.state_ind, self.n_states = matrix, state_ind, n_states
 
     def forward(self, probabilities: jax.Array, weight: None = None) -> jax.Array:
         """``probabilities @ T``, shape (n_state_bins,)."""
         _reject_weight(weight)
-        return jnp.matmul(probabilities, self.matrix, precision=self.precision)
+        return jnp.matmul(
+            probabilities, self.matrix, precision=jax.lax.Precision.HIGHEST
+        )
 
     def backward(self, values: jax.Array, weight: None = None) -> jax.Array:
         """``T @ values``, shape (n_state_bins,)."""
         _reject_weight(weight)
-        return jnp.matmul(self.matrix, values, precision=self.precision)
+        return jnp.matmul(self.matrix, values, precision=jax.lax.Precision.HIGHEST)
 
     def pair_products(
         self, filtered: jax.Array, ratio: jax.Array, weight: None = None
@@ -684,12 +687,11 @@ class _StationaryTransition:
             msg = "pair_products needs state_ind and n_states"
             raise ValueError(msg)
         states = jax.nn.one_hot(self.state_ind, self.n_states, dtype=filtered.dtype)
+        precision = jax.lax.Precision.HIGHEST
         source_rows = jnp.matmul(
-            (states * filtered[:, None]).T, self.matrix, precision=self.precision
+            (states * filtered[:, None]).T, self.matrix, precision=precision
         )
-        return jnp.matmul(
-            source_rows, states * ratio[:, None], precision=self.precision
-        )
+        return jnp.matmul(source_rows, states * ratio[:, None], precision=precision)
 
     def log(self) -> _LogStationaryTransition:
         """Log-domain twin for Viterbi."""
@@ -697,19 +699,16 @@ class _StationaryTransition:
 
     def tree_flatten(
         self,
-    ) -> tuple[
-        tuple[ArrayLike, jax.Array | None],
-        tuple[int | None, jax.lax.Precision | None],
-    ]:
-        return (self.matrix, self.state_ind), (self.n_states, self.precision)
+    ) -> tuple[tuple[ArrayLike, jax.Array | None], int | None]:
+        return (self.matrix, self.state_ind), self.n_states
 
     @classmethod
     def tree_unflatten(
         cls,
-        aux: tuple[int | None, jax.lax.Precision | None],
+        aux: int | None,
         children: tuple[ArrayLike, jax.Array | None],
     ) -> "_StationaryTransition":
-        return cls(*children, *aux)
+        return cls(*children, aux)
 
 
 def _reject_weight(weight: object) -> None:

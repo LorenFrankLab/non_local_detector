@@ -30,12 +30,74 @@ except ImportError:
 
 if TYPE_CHECKING:
     from non_local_detector.models.base import _DetectorBase
+    from non_local_detector.observation_models import ObservationModel
 
 # Rows of the full posterior are filled and scattered in blocks of about this
 # many bytes. On a 2 cm 2-D grid (20,178 state bins, 3,298 interior; 177,330
 # rows, 14.3 GB) filling with NaN and then scattering the whole array took
 # 8.9 s; 1 MiB blocks took 3.8 s, 4-16 MiB 4.4 s and 64 MiB 5.7 s.
 _MASKED_POSTERIOR_BLOCK_BYTES = 2**20
+
+
+def has_place_bins(detector: "_DetectorBase", observation: "ObservationModel") -> bool:
+    """Whether a state's bins are its environment's place bins.
+
+    No-Spike, and Local without a position kernel (``local_position_std`` is
+    None), have a single state bin with no position instead.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Detector whose ``local_position_std`` decides whether a Local state
+        has a position kernel over place bins.
+    observation : ObservationModel
+        The state's observation model, one of
+        ``detector.observation_models``.
+
+    Returns
+    -------
+    bool
+        True if the state has one bin per place bin of its environment,
+        False if it has a single bin without a position.
+    """
+    return not (
+        observation.is_no_spike
+        or (observation.is_local and detector.local_position_std is None)
+    )
+
+
+def state_bin_positions(detector: "_DetectorBase") -> list[np.ndarray]:
+    """Position of each state's bins, state by state as in ``state_ind_``.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Fitted detector.
+
+    Returns
+    -------
+    positions : list of np.ndarray, each shape (n_bins, n_position_dims)
+        One NaN row for a state without place bins (see
+        :func:`has_place_bins`), otherwise its environment's place bin
+        centers.
+
+    Raises
+    ------
+    ValueError
+        If a state's environment has no place bin centers.
+    """
+    n_position_dims = detector.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
+    positions: list[np.ndarray] = []
+    for obs in detector.observation_models:
+        if not has_place_bins(detector, obs):
+            positions.append(np.full((1, n_position_dims), np.nan))
+            continue
+        environment = detector._get_environment_by_name(obs.environment_name)
+        if environment.place_bin_centers_ is None:
+            msg = f"place_bin_centers_ is None for environment {obs.environment_name}"
+            raise ValueError(msg)
+        positions.append(environment.place_bin_centers_)
+    return positions
 
 
 def label_checkpointed_result(
@@ -188,22 +250,8 @@ def convert_results_to_xarray(
             msg,
             hint="Environments are set up during fit(). Either fit the model first, or check that position data was provided",
         )
-    n_position_dims = detector.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
-
-    # Build position array
-    position_blocks: list[np.ndarray] = []
-    for obs in detector.observation_models:
-        if obs.is_no_spike or (obs.is_local and detector.local_position_std is None):
-            position_blocks.append(np.full((1, n_position_dims), np.nan))
-        else:
-            environment = detector._get_environment_by_name(obs.environment_name)
-            if environment.place_bin_centers_ is None:
-                msg = (
-                    f"place_bin_centers_ is None for environment {obs.environment_name}"
-                )
-                raise ValueError(msg)
-            position_blocks.append(environment.place_bin_centers_)
-    position = np.concatenate(position_blocks, axis=0)
+    position = np.concatenate(state_bin_positions(detector), axis=0)
+    n_position_dims = position.shape[1]
 
     states = np.asarray(detector.state_names)
 
@@ -325,36 +373,24 @@ def convert_seq_to_df(
     -------
     results : pd.DataFrame, shape (n_time, n_cols)
     """
-    position_blocks: list[np.ndarray] = []
-    n_position_dims = detector.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
+    position_blocks = state_bin_positions(detector)
     environment_names_blocks: list[Any] = []
     encoding_group_names_blocks: list[Any] = []
-    for obs in detector.observation_models:
-        if obs.is_no_spike or (obs.is_local and detector.local_position_std is None):
-            position_blocks.append(np.full((1, n_position_dims), np.nan))
-            environment_names_blocks.append([None])
-            encoding_group_names_blocks.append([None])
-        else:
-            environment = detector._get_environment_by_name(obs.environment_name)
-            if environment.place_bin_centers_ is None:
-                msg = (
-                    f"place_bin_centers_ is None for environment {obs.environment_name}"
-                )
-                raise ValueError(msg)
-            position_blocks.append(environment.place_bin_centers_)
-            environment_names_blocks.append(
-                [obs.environment_name] * environment.place_bin_centers_.shape[0]
-            )
-            encoding_group_names_blocks.append(
-                [obs.encoding_group] * environment.place_bin_centers_.shape[0]
-            )
+    for obs, block in zip(detector.observation_models, position_blocks, strict=True):
+        placed = has_place_bins(detector, obs)
+        environment_names_blocks.append(
+            [obs.environment_name if placed else None] * len(block)
+        )
+        encoding_group_names_blocks.append(
+            [obs.encoding_group if placed else None] * len(block)
+        )
 
     position = np.concatenate(position_blocks, axis=0)
     environment_names = np.concatenate(environment_names_blocks, axis=0)
     encoding_group_names = np.concatenate(encoding_group_names_blocks, axis=0)
 
     states = np.asarray(detector.state_names)
-    position_names = get_position_dim_names(n_position_dims)
+    position_names = get_position_dim_names(position.shape[1])
     state_bins = pd.DataFrame(
         {
             "state": states[detector.state_ind_],

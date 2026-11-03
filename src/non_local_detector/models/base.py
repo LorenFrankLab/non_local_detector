@@ -15,6 +15,7 @@ transitions.
 import abc
 import copy
 import inspect
+import json
 import pickle
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -107,7 +108,9 @@ from non_local_detector.likelihoods.no_spike import (
 from non_local_detector.models._results import (
     convert_results_to_xarray,
     convert_seq_to_df,
+    has_place_bins,
     label_checkpointed_result,
+    state_bin_positions,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -422,6 +425,9 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
             ),
         )
 
+
+# Dataset attribute in which ``save_results`` records integer dtypes.
+_INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
 
 # EM with transition_representation="auto" runs dense EM up to this many bytes
 # of float32 interior transition. A dense step reads the whole matrix, so its
@@ -2579,7 +2585,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         state_ind = []
         is_track_interior = []
         for ind, obs in enumerate(self.observation_models):
-            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
+            if not has_place_bins(self, obs):
                 bin_sizes.append(1)
                 state_ind.append(np.full(1, ind, dtype=int))
                 is_track_interior.append(np.ones(1, dtype=bool))
@@ -4390,24 +4396,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             outputs.add("predictive_posterior")
         if "log_likelihood" in requested_outputs:
             outputs.add("log_likelihood")
-        positions: list[np.ndarray] = []
-        first_centers = self.environments[0].place_bin_centers_
-        assert first_centers is not None  # set by fit_place_grid
-        n_dimensions = first_centers.shape[1]
-        for observation in self.observation_models:
-            if observation.is_no_spike or (
-                observation.is_local and self.local_position_std is None
-            ):
-                positions.append(np.full((1, n_dimensions), np.nan))
-            else:
-                positions.append(
-                    cast(
-                        "np.ndarray",
-                        self._get_environment_by_name(
-                            observation.environment_name
-                        ).place_bin_centers_,
-                    )
-                )
+        position = np.concatenate(state_bin_positions(self))
         metadata: dict[str, Any] = {
             "state_names": list(self.state_names),
             "environment_names": [
@@ -4419,8 +4408,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 else obs.encoding_group
                 for obs in self.observation_models
             ],
-            "position": np.concatenate(positions).tolist(),
-            "position_names": get_position_dim_names(n_dimensions),
+            "position": position.tolist(),
+            "position_names": get_position_dim_names(position.shape[1]),
             "state_ind": self.state_ind_.tolist(),
             "interior_mask": interior.tolist(),
             "max_read_bytes": int(max_read_bytes),
@@ -5849,7 +5838,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         ``state_bins`` is a MultiIndex, which netCDF does not support, so it
         is converted before saving. Boolean attributes are stored as integers
-        and the internal ``_native_metadata`` attribute is dropped.
+        and the internal ``_native_metadata`` attribute is dropped. The dtype
+        of each integer variable and coordinate is recorded so that
+        ``load_results`` restores it: netCDF3, written when neither netCDF4
+        nor h5netcdf is installed, stores int64 as int32.
 
         Parameters
         ----------
@@ -5868,6 +5860,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             for name, value in export.attrs.items()
             if name != "_native_metadata"
         }
+        export.attrs[_INTEGER_DTYPES_ATTR] = json.dumps(
+            {
+                str(name): variable.dtype.name
+                for name, variable in export.variables.items()
+                if variable.dtype.kind in "iu"
+            }
+        )
         export.to_netcdf(filename)
 
     @staticmethod
@@ -5879,8 +5878,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         Load results saved by ``save_results`` or a checkpointed result_path.
 
-        A netCDF file gets its ``state_bins`` MultiIndex back. A directory is
-        opened as a checkpointed result store with lazy arrays.
+        A netCDF file is read lazily and gets its ``state_bins`` MultiIndex
+        back and its integer variables and coordinates the dtypes they were
+        saved with; closing the returned dataset closes the file. A directory
+        is opened as a checkpointed result store with lazy arrays.
 
         Parameters
         ----------
@@ -5905,25 +5906,51 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 metadata = {**metadata, "max_read_bytes": max_read_bytes}
                 return label_checkpointed_result(results, metadata)
             return results
-        results = xr.open_dataset(filename)
-        if "state_bins" not in results.dims:
-            return results
-        if "state_ind" in results.coords:
-            # netCDF3 stores int64 as int32, and earlier versions saved
-            # state_ind on a dimension of its own; restore the in-memory form.
-            results = results.drop_vars("state_ind").assign_coords(
-                state_ind=("state_bins", results["state_ind"].values.astype(int))
-            )
-        # Scalar state/environment coordinates are also attached to this array,
-        # but only the original one-dimensional levels form its spatial index;
-        # state_ind is a plain coordinate along it.
-        coord_names = [
-            name
-            for name, coordinate in results.coords.items()
-            if name not in {"state_bins", "state_ind"}
-            and coordinate.dims == ("state_bins",)
-        ]
-        return results.set_index(state_bins=coord_names)
+        opened = xr.open_dataset(filename)
+        results = opened
+        if _INTEGER_DTYPES_ATTR in results.attrs:
+            integer_dtypes = json.loads(results.attrs.pop(_INTEGER_DTYPES_ATTR))
+        else:
+            # Files saved before the dtypes were recorded: restore state_ind.
+            integer_dtypes = {"state_ind": np.dtype(int).name}
+        # Only a still-integer variable is restored: one edited to another
+        # dtype after saving (say, float with NaN) keeps its values.
+        restored = {
+            name: results.variables[name].astype(dtype)
+            for name, dtype in integer_dtypes.items()
+            if name in results.variables
+            and results.variables[name].dtype.kind in "iu"
+            and results.variables[name].dtype != dtype
+        }
+        results = results.assign_coords(
+            {name: value for name, value in restored.items() if name in results.coords}
+        ).assign(
+            {
+                name: value
+                for name, value in restored.items()
+                if name in results.data_vars
+            }
+        )
+        if "state_bins" in results.dims:
+            if "state_ind" in results.dims:
+                # Earlier versions saved state_ind on a dimension of its own.
+                results = results.drop_vars("state_ind").assign_coords(
+                    state_ind=("state_bins", results["state_ind"].values)
+                )
+            # Scalar state/environment coordinates are also attached to this
+            # array, but only the original one-dimensional levels form its
+            # spatial index; state_ind is a plain coordinate along it.
+            coord_names = [
+                name
+                for name, coordinate in results.coords.items()
+                if name not in {"state_bins", "state_ind"}
+                and coordinate.dims == ("state_bins",)
+            ]
+            results = results.set_index(state_bins=coord_names)
+        # The transformations above drop the file's close handle; closing the
+        # returned results (or leaving a ``with`` block) must close the file.
+        results.set_close(opened.close)
+        return results
 
     def copy(self) -> "_DetectorBase":
         """
