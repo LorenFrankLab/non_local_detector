@@ -212,7 +212,7 @@ filterwarnings = [
     # no pyparsing.warnings module to import.
     "ignore:'\\w+' deprecated - use '\\w+':DeprecationWarning",
 ]
-# Per-test limit from pytest-timeout (in the test extra), locally and in CI.
+# Per-test limit from pytest-timeout (in the test dependency group), locally and in CI.
 timeout = 900
 
 # Test markers for selective running
