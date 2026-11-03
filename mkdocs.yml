@@ -131,6 +131,7 @@ nav:
   - Tutorials:
       - tutorials/index.md
       - Data format and environments: tutorials/01_data_and_environments.py
+      - Decoding with clusterless spikes: tutorials/03_decoding_clusterless.py
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md
