@@ -148,6 +148,45 @@ def test_netcdf_round_trip_keeps_state_ind(fitted, result, tmp_path):
         np.testing.assert_array_equal(restored[name].values, result[name].values)
 
 
+def test_netcdf_round_trip_keeps_every_dtype(fitted, result, tmp_path):
+    """Integer variables and coordinates keep their dtypes through netCDF3.
+
+    Without netCDF4 or h5netcdf, xarray writes netCDF3, which stores int64 as
+    int32. Strings come back as object arrays, as xarray reads them from any
+    netCDF file.
+    """
+    filename = tmp_path / "results.nc"
+    fitted.save_results(result, filename)
+    with fitted.load_results(filename) as restored:
+        restored = restored.load()
+    assert set(restored.variables) == set(result.variables)
+    assert any(v.dtype.kind in "iu" for v in result.variables.values())
+    for name, variable in result.variables.items():
+        if variable.dtype.kind == "U":
+            np.testing.assert_array_equal(restored[name].values, variable.values)
+        else:
+            assert restored[name].dtype == variable.dtype, name
+    assert restored.attrs.keys() == {
+        name for name in result.attrs if name != "_native_metadata"
+    }
+
+
+def test_files_saved_without_recorded_dtypes_restore_state_ind(fitted, dense, tmp_path):
+    """Files written before ``save_results`` recorded integer dtypes load."""
+    filename = tmp_path / "results.nc"
+    fitted.save_results(dense, filename)
+    with xr.open_dataset(filename) as saved:
+        legacy = saved.load()
+    del legacy.attrs["non_local_detector_integer_dtypes"]
+    legacy.to_netcdf(tmp_path / "legacy.nc")
+    with fitted.load_results(tmp_path / "legacy.nc") as restored:
+        restored = restored.load()
+    assert restored.state_ind.dtype == dense.state_ind.dtype
+    assert restored.indexes["state_bins"].equals(dense.indexes["state_bins"])
+    for name in dense.data_vars:
+        np.testing.assert_array_equal(restored[name].values, dense[name].values)
+
+
 def test_files_with_a_state_ind_dimension_load_with_the_current_layout(
     fitted, dense, tmp_path
 ):

@@ -110,10 +110,16 @@ both the EM and the checkpointed attributes.
 
 `save_results(results, "results.nc")` writes netCDF, which cannot hold a
 MultiIndex: it stores the `state_bins` levels as plain coordinates, booleans
-in attributes as integers, and drops `_native_metadata`.
+in attributes as integers, and drops `_native_metadata`. It records the dtype
+of every integer variable and coordinate in the file's
+`non_local_detector_integer_dtypes` attribute, because netCDF3 (written when
+neither netCDF4 nor h5netcdf is installed) stores int64 as int32.
 `load_results("results.nc")` rebuilds the `state_bins` MultiIndex, keeping
-`state_ind` as an integer coordinate along it. `load_results(result_path)`
-reopens a checkpointed store with lazy arrays.
+`state_ind` as an integer coordinate along it, and gives the integer
+variables and coordinates (`state_ind`, `encoding_groups`, checkpointed
+`source_row`) their recorded dtypes; strings come back as object arrays, as
+xarray reads them. `load_results(result_path)` reopens a checkpointed store
+with lazy arrays.
 
 ## Most likely sequence
 
