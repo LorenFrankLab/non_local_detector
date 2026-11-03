@@ -1,5 +1,6 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+# 1.27 added PEP 639 license metadata (license expression, license-files).
+requires = ["hatchling>=1.27", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +8,8 @@ name = "non_local_detector"
 description = "A python package to decode non-local activity from neural data"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["neuroscience", "bayesian-inference", "hmm", "neural-decoding", "replay-detection"]
 authors = [{ name = "Eric Denovellis", email = "eric.denovellis@ucsf.edu" }]
 maintainers = [{ name = "Eric Denovellis", email = "eric.denovellis@ucsf.edu" }]
@@ -20,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -38,7 +40,6 @@ dependencies = [
     "tqdm >=4.60",
     "track_linearization >=2.4.0",
     "matplotlib >=3.10",
-    "seaborn >=0.12",
 ]
 dynamic = ["version"]
 
@@ -49,21 +50,6 @@ dynamic = ["version"]
 "Changelog" = "https://github.com/LorenFrankLab/non_local_detector/releases"
 
 [project.optional-dependencies]
-test = [
-    "pytest",
-    "pytest-cov",
-    "pytest-timeout",
-    "hypothesis",
-    # Benchmark scripts record memory with psutil; their smoke test runs in CI.
-    "psutil",
-]
-dev = [
-    "non_local_detector[test]",
-    "ruff",
-    "mypy",
-    "ipython",
-    "pre-commit",
-]
 gpu = ["jax[cuda]"]
 viz = ["sortingview"]
 
@@ -74,10 +60,15 @@ source = "vcs"
 version-file = "src/non_local_detector/_version.py"
 
 [tool.hatch.build.targets.sdist]
-exclude = [
-    ".git_archival.txt",
-    "/docs/performance_artifacts/**",
-    "/.claude/docs/gmm-background-diagnosis/**",
+# Explicit list: hatch otherwise ships every file .gitignore does not exclude,
+# so untracked local directories and the 9.5 MB notebooks/ would leak in.
+only-include = [
+    "src",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -238,7 +229,22 @@ skip = "uv.lock,*.ipynb,*.pkl,*.npz,*.png,*.svg"
 # and the "*afe*" glob in a plan's shell example.
 ignore-words-list = "afe,nd,shat,te"
 
+# PEP 735 groups: development tools that are not part of the published
+# package. `uv sync` installs `dev` (and so `test`) by default.
 [dependency-groups]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-timeout",
+    "hypothesis",
+    # Benchmark scripts record memory with psutil; their smoke test runs in CI.
+    "psutil",
+]
 dev = [
+    { include-group = "test" },
+    "ruff",
+    "mypy",
+    "ipython",
+    "pre-commit",
     "ipykernel>=7.2.0",
 ]
