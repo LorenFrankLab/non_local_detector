@@ -95,7 +95,7 @@ def peak_rss() -> int:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
 
-def shard(array: np.ndarray, mesh) -> jnp.ndarray:
+def shard(array: np.ndarray, mesh) -> jax.Array:
     spec = P("d") if array.ndim == 1 else P("d", None)
     return jax.device_put(jnp.asarray(array), NamedSharding(mesh, spec))
 

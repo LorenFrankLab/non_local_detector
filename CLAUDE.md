@@ -102,3 +102,7 @@ After changing JAX code, verify:
 - ✓ Shapes match expectations
 - ✓ Both CPU and GPU code paths work (if applicable)
 - ✓ Performance is acceptable (profile if critical)
+
+### Array annotations
+
+Follow the convention in `CONTRIBUTING.md` ("Array annotations"): ArrayLike inputs, `jax.Array` / `NDArray` outputs, never `jnp.ndarray`.

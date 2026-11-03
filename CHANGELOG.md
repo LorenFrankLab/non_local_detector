@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed:** constructing a `SortedSpikesDetector` or `ClusterlessDetector` with `observation_models=None` and a single `Environment` (not wrapped in a list) raised `TypeError: 'Environment' object is not subscriptable`; the default observation models are now built from the normalized environments.
 - **Breaking:** every constructor parameter of `SortedSpikesDetector`, `ClusterlessDetector` and the ten ready-made models (`NonLocal*Detector`, `ContFrag*Classifier`, `NoSpikeContFrag*Classifier`, `MultiEnvironment*Classifier`, `SortedSpikesDecoder`, `ClusterlessDecoder`) is keyword-only. With 20-25 parameters, a positional call silently bound values to the wrong parameter whenever the order changed. `NonLocalSortedSpikesDetector(0.1)` now raises `TypeError`; write `NonLocalSortedSpikesDetector(discrete_initial_conditions=...)`. `get_params`, `clone` and `Cls(**params)` are unaffected.
 
+### Type annotations
+
+- Array annotations follow JAX's guidance: `jnp.ndarray` is now `jax.Array`, and the `time_edges` argument of the public detector methods (`estimate_parameters`, `most_likely_sequence`, `compute_log_likelihood`, `predict`) is typed `ArrayLike`. No runtime change. The convention is in CONTRIBUTING.md.
+
 ### Dependencies
 
 - Floors raised (final values): `numpy >=2.2`, `scipy >=1.15`, `pandas >=2.3`, `xarray >=2024.11`, `scikit-learn >=1.6`, `matplotlib >=3.10`, `networkx >=3.4`, `patsy >=0.5.6`, `threadpoolctl >=3.0`, `track_linearization >=2.4.0`. NumPy 1.x is no longer supported. The reasons for each floor are under "Test suite and CI".

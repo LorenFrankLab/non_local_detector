@@ -83,7 +83,7 @@ DEFAULT_GMM_REG_COVAR = 1.0
 # ---------------------------------------------------------------------
 
 
-def _as_jnp(x: Any) -> jnp.ndarray:
+def _as_jnp(x: Any) -> jax.Array:
     """Input as a JAX array, with integer or boolean features as floats.
 
     Parameters
@@ -93,43 +93,43 @@ def _as_jnp(x: Any) -> jnp.ndarray:
 
     Returns
     -------
-    jnp.ndarray
+    jax.Array
         JAX array version of input, in a floating dtype for integer input.
     """
     return _as_floating(x)
 
 
-def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray | np.ndarray) -> jnp.ndarray:
+def _gmm_logp(gmm: GaussianMixtureModel, X: jax.Array | np.ndarray) -> jax.Array:
     """Log density under a fitted GMM.
 
     Parameters
     ----------
     gmm : GaussianMixtureModel
         Fitted Gaussian mixture model.
-    X : jnp.ndarray, shape (n_samples, n_features)
+    X : jax.Array, shape (n_samples, n_features)
         Input samples to evaluate.
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_samples,)
+    log_density : jax.Array, shape (n_samples,)
         Log probability density for each sample.
     """
-    return gmm.score_samples(cast(jnp.ndarray, X))
+    return gmm.score_samples(cast(jax.Array, X))
 
 
-def _gmm_density(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
+def _gmm_density(gmm: GaussianMixtureModel, X: jax.Array) -> jax.Array:
     """Density under a fitted GMM.
 
     Parameters
     ----------
     gmm : GaussianMixtureModel
         Fitted Gaussian mixture model.
-    X : jnp.ndarray, shape (n_samples, n_features)
+    X : jax.Array, shape (n_samples, n_features)
         Input samples to evaluate.
 
     Returns
     -------
-    density : jnp.ndarray, shape (n_samples,)
+    density : jax.Array, shape (n_samples,)
         Probability density for each sample.
     """
     return jnp.exp(gmm.score_samples(X))
@@ -137,14 +137,14 @@ def _gmm_density(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
 
 @partial(jax.jit, donate_argnums=(0,))
 def _accumulate_log_likelihood_block(
-    log_likelihood: jnp.ndarray,
-    joint_logp: jnp.ndarray,
-    segment_ids: jnp.ndarray,
-    bin_ids: jnp.ndarray,
-    log_rate: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
-    log_background: jnp.ndarray,
-) -> jnp.ndarray:
+    log_likelihood: jax.Array,
+    joint_logp: jax.Array,
+    segment_ids: jax.Array,
+    bin_ids: jax.Array,
+    log_rate: jax.Array,
+    log_occupancy: jax.Array,
+    log_background: jax.Array,
+) -> jax.Array:
     """Scatter one spike block into its observed time rows and spatial columns.
 
     The density difference is formed first: adding ``log_rate`` to a huge log
@@ -168,21 +168,19 @@ def _accumulate_log_likelihood_block(
 _LOCAL_SPIKE_BLOCK = 1000
 
 
-def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jnp.ndarray, ...]:
+def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jax.Array, ...]:
     """Fitted means, Cholesky precisions and weights, for compiled scoring."""
     gmm._check_fitted()
-    return cast(
-        tuple[jnp.ndarray, ...], (gmm.means_, gmm.precisions_chol_, gmm.weights_)
-    )
+    return cast(tuple[jax.Array, ...], (gmm.means_, gmm.precisions_chol_, gmm.weights_))
 
 
 def _gmm_score(
-    points: jnp.ndarray, parameters: tuple[jnp.ndarray, ...], covariance_type: str
-) -> jnp.ndarray:
+    points: jax.Array, parameters: tuple[jax.Array, ...], covariance_type: str
+) -> jax.Array:
     """Traceable ``GaussianMixtureModel.score_samples`` on fitted parameters."""
     means, precisions_chol, weights = parameters
     return cast(
-        jnp.ndarray,
+        jax.Array,
         _estimate_log_prob_resp(
             points, means, precisions_chol, covariance_type, weights
         )[0],
@@ -195,40 +193,40 @@ def _gmm_score(
     donate_argnums=0,
 )
 def _add_electrode_gmm_intensities(
-    log_likelihood: jnp.ndarray,
-    features: jnp.ndarray,
-    row_ids: jnp.ndarray,
-    bin_centers: jnp.ndarray,
-    parameters: tuple[jnp.ndarray, ...],
-    log_rate: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
-    log_background: jnp.ndarray,
+    log_likelihood: jax.Array,
+    features: jax.Array,
+    row_ids: jax.Array,
+    bin_centers: jax.Array,
+    parameters: tuple[jax.Array, ...],
+    log_rate: jax.Array,
+    log_occupancy: jax.Array,
+    log_background: jax.Array,
     *,
     covariance_type: str,
     block_size: int,
     indices_are_sorted: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add one electrode's non-local log intensities to their rows.
 
     Parameters
     ----------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    log_likelihood : jax.Array, shape (n_rows, n_bins)
         Running sum over electrodes; donated.
-    features : jnp.ndarray, shape (n_padded_spikes, n_features)
+    features : jax.Array, shape (n_padded_spikes, n_features)
         A multiple of ``block_size`` rows; padding rows are zero.
-    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+    row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    bin_centers : jnp.ndarray, shape (n_bins, n_position_dims)
-    parameters : tuple of jnp.ndarray
+    bin_centers : jax.Array, shape (n_bins, n_position_dims)
+    parameters : tuple of jax.Array
         The joint GMM's fitted means, Cholesky precisions and weights.
-    log_rate : jnp.ndarray, scalar
-    log_occupancy : jnp.ndarray, shape (n_bins,)
-    log_background : jnp.ndarray, shape (n_padded_spikes,)
+    log_rate : jax.Array, scalar
+    log_occupancy : jax.Array, shape (n_bins,)
+    log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    log_likelihood : jax.Array, shape (n_rows, n_bins)
     """
     n_bins = bin_centers.shape[0]
     tiled_bins = jnp.tile(bin_centers, (block_size, 1))
@@ -255,7 +253,7 @@ def _add_electrode_gmm_intensities(
         )
 
     return cast(
-        jnp.ndarray,
+        jax.Array,
         jax.lax.fori_loop(
             0, features.shape[0] // block_size, add_block, log_likelihood
         ),
@@ -268,39 +266,39 @@ def _add_electrode_gmm_intensities(
     donate_argnums=0,
 )
 def _add_electrode_gmm_spike_terms(
-    log_likelihood: jnp.ndarray,
-    spike_positions: jnp.ndarray,
-    features: jnp.ndarray,
-    row_ids: jnp.ndarray,
-    joint: tuple[jnp.ndarray, ...],
-    occupancy: tuple[jnp.ndarray, ...],
-    mean_rate: jnp.ndarray,
-    log_background: jnp.ndarray,
+    log_likelihood: jax.Array,
+    spike_positions: jax.Array,
+    features: jax.Array,
+    row_ids: jax.Array,
+    joint: tuple[jax.Array, ...],
+    occupancy: tuple[jax.Array, ...],
+    mean_rate: jax.Array,
+    log_background: jax.Array,
     *,
     joint_type: str,
     occupancy_type: str,
     indices_are_sorted: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add one electrode's local spike terms to their rows.
 
     Parameters
     ----------
-    log_likelihood : jnp.ndarray, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
         Running sum over electrodes; donated.
-    spike_positions : jnp.ndarray, shape (n_padded_spikes, n_position_dims)
+    spike_positions : jax.Array, shape (n_padded_spikes, n_position_dims)
         Position at each decoding spike; padding rows are zero.
-    features : jnp.ndarray, shape (n_padded_spikes, n_features)
-    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+    features : jax.Array, shape (n_padded_spikes, n_features)
+    row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    joint, occupancy : tuple of jnp.ndarray
+    joint, occupancy : tuple of jax.Array
         Fitted means, Cholesky precisions and weights of each GMM.
-    mean_rate : jnp.ndarray, scalar
-    log_background : jnp.ndarray, shape (n_padded_spikes,)
+    mean_rate : jax.Array, scalar
+    log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
     """
     joint_logp = _gmm_score(
         jnp.concatenate([spike_positions, features], axis=1), joint, joint_type
@@ -321,14 +319,14 @@ def _add_electrode_gmm_spike_terms(
 
 @partial(jax.jit, static_argnames=("gpi_type",), donate_argnums=0)
 def _add_gmm_expected_counts(
-    expected_counts: jnp.ndarray,
-    gpi: tuple[jnp.ndarray, ...],
-    positions: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
-    mean_rate: jnp.ndarray,
+    expected_counts: jax.Array,
+    gpi: tuple[jax.Array, ...],
+    positions: jax.Array,
+    log_occupancy: jax.Array,
+    mean_rate: jax.Array,
     *,
     gpi_type: str,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add one electrode's expected count rate at the animal's position.
 
     Electrodes with and without spikes in a chunk use this same compiled
@@ -336,19 +334,19 @@ def _add_gmm_expected_counts(
 
     Parameters
     ----------
-    expected_counts : jnp.ndarray, shape (n_rows,)
+    expected_counts : jax.Array, shape (n_rows,)
         Running sum over electrodes; donated.
-    gpi : tuple of jnp.ndarray
+    gpi : tuple of jax.Array
         Fitted means, Cholesky precisions and weights of the electrode's GPI GMM.
-    positions : jnp.ndarray, shape (n_rows, n_position_dims)
+    positions : jax.Array, shape (n_rows, n_position_dims)
         Animal position at each row.
-    log_occupancy : jnp.ndarray, shape (n_rows,)
+    log_occupancy : jax.Array, shape (n_rows,)
         Log occupancy density at ``positions``.
-    mean_rate : jnp.ndarray, scalar
+    mean_rate : jax.Array, scalar
 
     Returns
     -------
-    expected_counts : jnp.ndarray, shape (n_rows,)
+    expected_counts : jax.Array, shape (n_rows,)
     """
     return expected_counts + _ground_process_intensity(
         mean_rate, _gmm_score(positions, gpi, gpi_type), log_occupancy
@@ -356,22 +354,22 @@ def _add_gmm_expected_counts(
 
 
 def _ground_process_intensity(
-    mean_rate: jnp.ndarray, gpi_logp: jnp.ndarray, log_occupancy: jnp.ndarray
-) -> jnp.ndarray:
+    mean_rate: jax.Array, gpi_logp: jax.Array, log_occupancy: jax.Array
+) -> jax.Array:
     """Expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
 
     Parameters
     ----------
-    mean_rate : jnp.ndarray, scalar
+    mean_rate : jax.Array, scalar
         Fitted mean firing rate of the electrode (positive).
-    gpi_logp : jnp.ndarray, shape (n_points,)
+    gpi_logp : jax.Array, shape (n_points,)
         Log density of the electrode's spike positions at the evaluation points.
-    log_occupancy : jnp.ndarray, shape (n_points,)
+    log_occupancy : jax.Array, shape (n_points,)
         Log occupancy density at the same points.
 
     Returns
     -------
-    intensity : jnp.ndarray, shape (n_points,)
+    intensity : jax.Array, shape (n_points,)
         ``exp(log(rate) + gpi_logp - log_occupancy)``. Keeping every factor in
         the exponent preserves a finite ratio of two densities that each
         underflow (``exp(-800) / exp(-790)`` is ``0 / 0`` in float32; the
@@ -388,8 +386,8 @@ def _ground_process_intensity(
 
 
 def _fit_gmm_density(
-    X: jnp.ndarray,
-    weights: jnp.ndarray | np.ndarray | None,
+    X: jax.Array,
+    weights: jax.Array | np.ndarray | None,
     n_components: int,
     random_state: int | None,
     covariance_type: str = "full",
@@ -401,9 +399,9 @@ def _fit_gmm_density(
 
     Parameters
     ----------
-    X : jnp.ndarray, shape (n_samples, n_features)
+    X : jax.Array, shape (n_samples, n_features)
         Input samples for fitting.
-    weights : jnp.ndarray, shape (n_samples,), optional
+    weights : jax.Array, shape (n_samples,), optional
         Sample weights, by default None (uniform weights). ``fit`` validates
         them and drops the zero-weight samples itself, so they influence
         neither the KMeans initialization nor EM and the fit equals a hard
@@ -536,12 +534,12 @@ def mark_reference_scale(
 
 
 def fit_clusterless_gmm_encoding_model(
-    position_time: jnp.ndarray | np.ndarray,
-    position: jnp.ndarray | np.ndarray,
-    spike_times: list[jnp.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    position_time: jax.Array | np.ndarray,
+    position: jax.Array | np.ndarray,
+    spike_times: list[jax.Array],
+    spike_waveform_features: list[jax.Array],
     environment: Environment,
-    weights: jnp.ndarray | np.ndarray | None = None,
+    weights: jax.Array | np.ndarray | None = None,
     *,
     gmm_components_occupancy: int = 32,
     gmm_components_joint: int = 64,
@@ -563,17 +561,17 @@ def fit_clusterless_gmm_encoding_model(
 
     Parameters
     ----------
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : jax.Array, shape (n_time_position,)
         Time of each position sample, in seconds.
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : jax.Array, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jnp.ndarray]
+    spike_times : list[jax.Array]
         Encoding spike times per electrode.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : list[jax.Array]
         Encoding spike waveform features per electrode.
     environment : Environment
         The spatial environment (must be fitted).
-    weights : jnp.ndarray | None, shape (n_time_position,), default=None
+    weights : jax.Array | None, shape (n_time_position,), default=None
         Per-sample weights (e.g. posterior state probabilities during EM). None means
         uniform. Weights the occupancy and joint (position+mark) GMMs (via
         ``sample_weight``), and the mean firing rate. GPI is the joint marginal.
@@ -854,18 +852,18 @@ def fit_clusterless_gmm_encoding_model(
 
 @requires_time_edges
 def predict_clusterless_gmm_log_likelihood(
-    position_time: jnp.ndarray | np.ndarray,
-    position: jnp.ndarray | np.ndarray,
+    position_time: jax.Array | np.ndarray,
+    position: jax.Array | np.ndarray,
     spike_times: list[np.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    spike_waveform_features: list[jax.Array],
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
-    interior_place_bin_centers: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
+    interior_place_bin_centers: jax.Array,
+    log_occupancy: jax.Array,
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
-    mean_rates: jnp.ndarray,
-    summed_ground_process_intensity: jnp.ndarray,
+    mean_rates: jax.Array,
+    summed_ground_process_intensity: jax.Array,
     is_local: bool = False,
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
@@ -881,21 +879,21 @@ def predict_clusterless_gmm_log_likelihood(
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **kwargs: Any,  # noqa: ARG001 -- shared likelihood-algorithm signature
-) -> jnp.ndarray:
+) -> jax.Array:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.
 
     Parameters
     ----------
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : jax.Array, shape (n_time_position,)
         Time of each position sample for the decoding period (used only by the
         local path; accepted for signature parity when ``is_local`` is False).
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : jax.Array, shape (n_time_position, n_position_dims)
         Position samples during the decoding period (used only by the local
         path; accepted for signature parity when ``is_local`` is False).
-    spike_times : list[jnp.ndarray]
+    spike_times : list[jax.Array]
         Decoding spike times per electrode.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : list[jax.Array]
         Decoding spike waveform features per electrode.
     environment : Environment
         Fitted environment. Its grid must be the one the model was fit on
@@ -905,18 +903,18 @@ def predict_clusterless_gmm_log_likelihood(
     occupancy_model : GaussianMixtureModel
         Occupancy density over position (1-D linearized position when the
         environment has a track graph and position is multi-dimensional).
-    interior_place_bin_centers : jnp.ndarray, shape (n_interior_bins, n_position_dims)
+    interior_place_bin_centers : jax.Array, shape (n_interior_bins, n_position_dims)
         Centers of the environment's interior place bins.
-    log_occupancy : jnp.ndarray, shape (n_interior_bins,)
+    log_occupancy : jax.Array, shape (n_interior_bins,)
         Log occupancy density at ``interior_place_bin_centers``.
     gpi_models : list of GaussianMixtureModel or None, length n_electrodes
         Position marginal of each electrode's joint GMM; None for a zero-rate
         electrode.
     joint_models : list of GaussianMixtureModel or None, length n_electrodes
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
-    mean_rates : jnp.ndarray, shape (n_electrodes,)
+    mean_rates : jax.Array, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
-    summed_ground_process_intensity : jnp.ndarray, shape (n_interior_bins,)
+    summed_ground_process_intensity : jax.Array, shape (n_interior_bins,)
         Sum over electrodes of ``rate * p_gpi(x) / p_occ(x)`` at the interior
         bins, in Hz (without the background rate).
     is_local : bool, default=False
@@ -977,8 +975,8 @@ def predict_clusterless_gmm_log_likelihood(
     Returns
     -------
     log_likelihood :
-        If non-local: jnp.ndarray, shape (n_rows, n_interior_bins)
-        If local    : jnp.ndarray, shape (n_rows, 1)
+        If non-local: jax.Array, shape (n_rows, n_interior_bins)
+        If local    : jax.Array, shape (n_rows, 1)
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
@@ -1175,22 +1173,22 @@ def predict_clusterless_gmm_log_likelihood(
 
 def compute_local_log_likelihood(
     time_edges: np.ndarray,
-    position_time: jnp.ndarray | np.ndarray,
-    position: jnp.ndarray | np.ndarray,
+    position_time: jax.Array | np.ndarray,
+    position: jax.Array | np.ndarray,
     spike_times: list[np.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    spike_waveform_features: list[jax.Array],
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
-    mean_rates: jnp.ndarray,
+    mean_rates: jax.Array,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
     *,
     mark_reference: list[MarkReference | None],
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Local log-likelihood at the animal's interpolated position.
 
     Computes the likelihood of observing spikes at the animal's true position
@@ -1200,13 +1198,13 @@ def compute_local_log_likelihood(
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : jax.Array, shape (n_time_position,)
         Timestamps for position samples.
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : jax.Array, shape (n_time_position, n_position_dims)
         Position samples during decoding period.
-    spike_times : list[jnp.ndarray]
+    spike_times : list[jax.Array]
         Spike times per electrode during decoding.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : list[jax.Array]
         Spike waveform features per electrode during decoding.
     environment : Environment
         Fitted environment; its track graph, if any, linearizes the position.
@@ -1217,7 +1215,7 @@ def compute_local_log_likelihood(
         electrode.
     joint_models : list of GaussianMixtureModel or None, length n_electrodes
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
-    mean_rates : jnp.ndarray, shape (n_electrodes,)
+    mean_rates : jax.Array, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
     disable_progress_bar : bool, optional
         Turn off progress bar display, by default False.
@@ -1238,7 +1236,7 @@ def compute_local_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, 1)
         Log likelihood at the animal's position for each requested time bin.
     """
     # NOTE: Keep position_time and position as numpy to avoid float64→float32

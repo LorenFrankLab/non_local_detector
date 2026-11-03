@@ -717,8 +717,8 @@ def _aggregate_by_position_cell(
 
 def make_spline_predict_matrix(
     design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
-    position: jnp.ndarray | np.ndarray,
-) -> jnp.ndarray:
+    position: jax.Array | np.ndarray,
+) -> jax.Array:
     """Create a prediction matrix for a spline basis.
 
     Parameters
@@ -726,13 +726,13 @@ def make_spline_predict_matrix(
     design_info : patsy.design_info.DesignInfo, TrackGraphBasis or SelectedColumnsDesign
         Description of the fitted basis, as stored in the encoding model's
         ``emission_design_info``.
-    position : jnp.ndarray, shape (n_position_bins, n_position_dims)
+    position : jax.Array, shape (n_position_bins, n_position_dims)
         Positions; linear positions, shape ``(n_position_bins, 1)``, for a
         ``TrackGraphBasis``.
 
     Returns
     -------
-    predict_matrix : jnp.ndarray, shape (n_position_bins, n_spline_basis)
+    predict_matrix : jax.Array, shape (n_position_bins, n_spline_basis)
         Basis evaluated at ``position``; rows with a NaN position are NaN.
     """
     if isinstance(design_info, SelectedColumnsDesign):
@@ -846,12 +846,12 @@ def _poisson_regression_sums(
 
     Parameters
     ----------
-    design_matrix : jnp.ndarray, shape (n_rows, n_coefficients)
+    design_matrix : jax.Array, shape (n_rows, n_coefficients)
         ``n_rows`` is a multiple of ``block_rows``; padding rows have zero
         weight and spikes.
-    spikes : jnp.ndarray, shape (n_cells, n_rows)
-    weights : jnp.ndarray, shape (n_rows,)
-    coefficients : jnp.ndarray, shape (n_cells, n_coefficients)
+    spikes : jax.Array, shape (n_cells, n_rows)
+    weights : jax.Array, shape (n_rows,)
+    coefficients : jax.Array, shape (n_cells, n_coefficients)
     rate_floor : float
     block_rows : int
     derivatives : bool
@@ -859,12 +859,12 @@ def _poisson_regression_sums(
 
     Returns
     -------
-    data : jnp.ndarray, shape (n_cells,)
+    data : jax.Array, shape (n_cells,)
         ``sum_i [spikes_i * log(rate_i) - weights_i * rate_i]`` with
         ``rate = max(exp(design_matrix @ coefficients), rate_floor)``.
-    gradient : jnp.ndarray, shape (n_cells, n_coefficients)
+    gradient : jax.Array, shape (n_cells, n_coefficients)
         Only if ``derivatives``.
-    hessian : jnp.ndarray, shape (n_cells, n_coefficients, n_coefficients)
+    hessian : jax.Array, shape (n_cells, n_coefficients, n_coefficients)
         Only if ``derivatives``: ``sum_i weights_i * rate_i * x_i x_i^T`` over
         unfloored rows, the negated Hessian of the data term.
     """
@@ -906,13 +906,13 @@ def _poisson_regression_sums(
 
 
 def fit_poisson_regressions(
-    design_matrix: np.ndarray | jnp.ndarray,
+    design_matrix: np.ndarray | jax.Array,
     spikes: np.ndarray,
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
     *,
     rate_floor: float = EPS,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Fit weighted Poisson regressions for many cells sharing one design.
 
     Each cell maximizes its total log likelihood ``sum_i [spikes_i *
@@ -952,7 +952,7 @@ def fit_poisson_regressions(
 
     Returns
     -------
-    coefficients : jnp.ndarray, shape (n_cells, n_coefficients)
+    coefficients : jax.Array, shape (n_cells, n_coefficients)
         Fitted coefficients of each cell.
     """
     design_matrix = np.asarray(design_matrix, dtype=np.float32)
@@ -1126,7 +1126,7 @@ def fit_poisson_regression(
     l2_penalty: float = 1e-7,
     *,
     rate_floor: float = EPS,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Fit a weighted Poisson regression model for one cell.
 
     See :func:`fit_poisson_regressions`, which this calls with one cell.
@@ -1148,7 +1148,7 @@ def fit_poisson_regression(
 
     Returns
     -------
-    coefficients : jnp.ndarray, shape (n_coefficients,)
+    coefficients : jax.Array, shape (n_coefficients,)
         Fitted coefficients.
     """
     return fit_poisson_regressions(
@@ -1163,7 +1163,7 @@ def fit_poisson_regression(
 def _fit_rate_maps(
     environment: Environment,
     place_bin_edges: np.ndarray,
-    interior_place_bin_centers: jnp.ndarray,
+    interior_place_bin_centers: jax.Array,
     encoding_positions: np.ndarray,
     event_counts: np.ndarray | Callable[[np.ndarray, int], np.ndarray],
     exposure: np.ndarray,
@@ -1173,7 +1173,7 @@ def _fit_rate_maps(
     l2_penalty: float | None = None,
     n_maps: int | None = None,
 ) -> tuple[
-    "DesignInfo | TrackGraphBasis | SelectedColumnsDesign", jnp.ndarray, jnp.ndarray
+    "DesignInfo | TrackGraphBasis | SelectedColumnsDesign", jax.Array, jax.Array
 ]:
     """Penalized Poisson GLM rate maps on the environment's spline basis.
 
@@ -1187,7 +1187,7 @@ def _fit_rate_maps(
     environment : Environment
     place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
         Place-bin edge coordinates (``environment.place_bin_edges_``).
-    interior_place_bin_centers : jnp.ndarray, shape (n_interior_bins, n_position_dims)
+    interior_place_bin_centers : jax.Array, shape (n_interior_bins, n_position_dims)
     encoding_positions : np.ndarray, shape (n_samples, n_position_dims)
         Position of each encoding sample; linear position on a track graph.
     event_counts : np.ndarray, shape (n_maps, n_samples), or callable
@@ -1210,8 +1210,8 @@ def _fit_rate_maps(
     Returns
     -------
     emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
-    coefficients : jnp.ndarray, shape (n_maps, n_coefficients)
-    interior_rates : jnp.ndarray, shape (n_interior_bins, n_maps)
+    coefficients : jax.Array, shape (n_maps, n_coefficients)
+    interior_rates : jax.Array, shape (n_interior_bins, n_maps)
         Floored rates in Hz at the interior bin centers.
     """
     # Define the spline on the environment, not on the tracking: interior bin
@@ -1327,9 +1327,9 @@ def _fit_rate_maps(
 
 
 def fit_sorted_spikes_glm_encoding_model(
-    position_time: jnp.ndarray | np.ndarray,
-    position: jnp.ndarray | np.ndarray,
-    spike_times: list[jnp.ndarray],
+    position_time: jax.Array | np.ndarray,
+    position: jax.Array | np.ndarray,
+    spike_times: list[jax.Array],
     environment: Environment,
     weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
@@ -1353,11 +1353,11 @@ def fit_sorted_spikes_glm_encoding_model(
 
     Parameters
     ----------
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : jax.Array, shape (n_time_position,)
         Time of each position sample, in seconds.
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : jax.Array, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jnp.ndarray]
+    spike_times : list[jax.Array]
         Spike times for each neuron.
     environment : Environment
         The fitted spatial environment. The extent of its place-bin edges
@@ -1406,15 +1406,15 @@ def fit_sorted_spikes_glm_encoding_model(
         Keyword arguments for ``predict_sorted_spikes_glm_log_likelihood``,
         with the entries below.
 
-        coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
+        coefficients : jax.Array, shape (n_neurons, n_coefficients)
             Fitted coefficients for each neuron.
         emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
             The spline basis, or on a track graph the basis along the track.
-        place_fields : jnp.ndarray, shape (n_neurons, n_bins)
+        place_fields : jax.Array, shape (n_neurons, n_bins)
             Spatial firing rates in Hz for each neuron.
-        no_spike_part_log_likelihood : jnp.ndarray, shape (n_bins,)
+        no_spike_part_log_likelihood : jax.Array, shape (n_bins,)
             Sum of Hz rates across neurons; multiply by duration before scoring.
-        is_track_interior : jnp.ndarray, shape (n_bins,)
+        is_track_interior : jax.Array, shape (n_bins,)
             Boolean array indicating track interior.
         disable_progress_bar : bool
             If True, suppresses the progress bar display.
@@ -1492,15 +1492,15 @@ def fit_sorted_spikes_glm_encoding_model(
 
 @requires_time_edges
 def predict_sorted_spikes_glm_log_likelihood(
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
+    position_time: jax.Array,
+    position: jax.Array,
     spike_times: list[np.ndarray],
     environment: Environment,
-    coefficients: jnp.ndarray,
+    coefficients: jax.Array,
     emission_design_info: DesignInfo,
-    place_fields: jnp.ndarray,
-    no_spike_part_log_likelihood: jnp.ndarray,
-    is_track_interior: jnp.ndarray,
+    place_fields: jax.Array,
+    no_spike_part_log_likelihood: jax.Array,
+    is_track_interior: jax.Array,
     disable_progress_bar: bool = False,
     is_local: bool = False,
     row_slice: slice | None = None,
@@ -1511,7 +1511,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
 
     Calculates the log likelihood of observing the given spike times under
@@ -1520,27 +1520,27 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     Parameters
     ----------
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : jax.Array, shape (n_time_position,)
         Timestamps corresponding to the position data.
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : jax.Array, shape (n_time_position, n_position_dims)
         Position data of the animal.
     spike_times : list[np.ndarray]
         List where each element is an array of spike times for a single neuron.
     environment : Environment
         The spatial environment object containing track geometry information.
-    coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
+    coefficients : jax.Array, shape (n_neurons, n_coefficients)
         Fitted GLM coefficients for each neuron.
     emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
         The encoding fit's basis (a patsy DesignInfo, or a ``TrackGraphBasis``
         on a track graph), needed for prediction.
-    place_fields : jnp.ndarray, shape (n_neurons, n_position_bins)
+    place_fields : jax.Array, shape (n_neurons, n_position_bins)
         Expected firing rate in Hz for each neuron in each position bin, derived
         from the fitted GLM (`exp(predict_matrix @ coefficients)`).
-    no_spike_part_log_likelihood : jnp.ndarray, shape (n_position_bins,)
+    no_spike_part_log_likelihood : jax.Array, shape (n_position_bins,)
         Sum of Hz rates across neurons (`sum(place_fields)`), despite the
         historical key name. Multiply by bin duration and subtract to score
         no spikes.
-    is_track_interior : jnp.ndarray, shape (n_position_bins,)
+    is_track_interior : jax.Array, shape (n_position_bins,)
         Boolean array indicating which position bins are part of the valid
         track area.
     disable_progress_bar : bool, optional
@@ -1579,7 +1579,7 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) or (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, n_interior_bins) or (n_rows, 1)
         Non-local or local (``is_local``) log likelihood, respectively; the
         non-local columns are the interior bins only. ``n_rows`` is ``n_bins``
         unless ``row_slice`` is given.

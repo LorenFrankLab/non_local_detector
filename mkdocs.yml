@@ -149,4 +149,5 @@ nav:
       - Clusterless mark evidence: likelihood_mark_background.md
       - Clusterless GMM process normalization: likelihood_process_normalization.md
   - API Reference: api/
+  - Contributing: contributing.md
   - Changelog: changelog.md

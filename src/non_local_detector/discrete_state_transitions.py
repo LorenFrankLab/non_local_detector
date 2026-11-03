@@ -39,7 +39,7 @@ from scipy.stats import norm
 logger = logging.getLogger(__name__)
 
 # ``(design, response)`` blocks of one transition row; see ``_row_problem``.
-_Blocks: TypeAlias = list[tuple[jnp.ndarray, jnp.ndarray]]
+_Blocks: TypeAlias = list[tuple[jax.Array, jax.Array]]
 
 
 def _float64_jax() -> AbstractContextManager[Any]:
@@ -264,8 +264,8 @@ def _validate_factorized_discrete_transition_shape(
 
 
 def _aggregate_xi_by_state_jax(
-    xi: jnp.ndarray, state_ind: jnp.ndarray, n_states: int
-) -> jnp.ndarray:
+    xi: jax.Array, state_ind: jax.Array, n_states: int
+) -> jax.Array:
     """Aggregate expanded-bin pair probabilities to discrete-state pairs."""
     # Equivalent to A.T @ xi @ A without materializing the bin-to-state matrix A.
     target_sum = jax.ops.segment_sum(
@@ -281,14 +281,14 @@ def _aggregate_xi_by_state_jax(
 
 
 def _aggregate_factorized_xi_by_state_jax(
-    causal_t: jnp.ndarray,
-    ratio: jnp.ndarray,
-    continuous_transition_matrix: jnp.ndarray,
-    discrete_transition_matrix: jnp.ndarray,
-    target_masks: jnp.ndarray,
-    source_state_ind: jnp.ndarray,
+    causal_t: jax.Array,
+    ratio: jax.Array,
+    continuous_transition_matrix: jax.Array,
+    discrete_transition_matrix: jax.Array,
+    target_masks: jax.Array,
+    source_state_ind: jax.Array,
     n_states: int,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Aggregate factorized expanded-bin pair probabilities by state."""
     # For each target state q, compute C @ (ratio * 1[state == q]).
     # This follows the filter/smoother pattern of applying the transition as a
@@ -303,7 +303,7 @@ def _aggregate_factorized_xi_by_state_jax(
     return source_sum * discrete_transition_matrix
 
 
-def _safe_ratio_jax(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarray:
+def _safe_ratio_jax(numerator: jax.Array, denominator: jax.Array) -> jax.Array:
     """Return numerator / denominator with zero output at exactly zero denominators."""
     # Match core._divide_safe: only exact zeros are treated as unreachable bins.
     # An `isclose` threshold would zero legitimately small predictive
@@ -339,16 +339,16 @@ _CONTRACTION_SUB_ROWS = 256
 _COVARIATE_BLOCK_ROWS = 65_536
 
 
-def _blocked_contraction(left: jnp.ndarray, right: jnp.ndarray) -> jnp.ndarray:
+def _blocked_contraction(left: jax.Array, right: jax.Array) -> jax.Array:
     """``left.T @ right`` summed over the rows in short partial products.
 
     Parameters
     ----------
-    left, right : jnp.ndarray, shape (n_rows, n_bins)
+    left, right : jax.Array, shape (n_rows, n_bins)
 
     Returns
     -------
-    product : jnp.ndarray, shape (n_bins, n_bins)
+    product : jax.Array, shape (n_bins, n_bins)
     """
     n_rows, n_bins = left.shape
     padding = -n_rows % _CONTRACTION_SUB_ROWS
@@ -376,13 +376,13 @@ def _blocked_contraction(left: jnp.ndarray, right: jnp.ndarray) -> jnp.ndarray:
 
 @partial(jax.jit, static_argnames=("n_states",))
 def _stationary_counts_block(
-    causal_posterior: jnp.ndarray,
-    predictive_next: jnp.ndarray,
-    acausal_next: jnp.ndarray,
-    transition_matrix: jnp.ndarray,
-    state_ind: jnp.ndarray,
+    causal_posterior: jax.Array,
+    predictive_next: jax.Array,
+    acausal_next: jax.Array,
+    transition_matrix: jax.Array,
+    state_ind: jax.Array,
     n_states: int,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Expected discrete transition counts over a block of consecutive rows.
 
     A stationary transition factors out of the sum over rows:
@@ -399,18 +399,18 @@ def _stationary_counts_block(
 
     Parameters
     ----------
-    causal_posterior : jnp.ndarray, shape (n_rows, n_state_bins)
+    causal_posterior : jax.Array, shape (n_rows, n_state_bins)
         Filtered posterior at times ``t``.
-    predictive_next, acausal_next : jnp.ndarray, shape (n_rows, n_state_bins)
+    predictive_next, acausal_next : jax.Array, shape (n_rows, n_state_bins)
         Predictive and smoothed posteriors at times ``t + 1``.
-    transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         The expanded stationary transition.
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    state_ind : jax.Array, shape (n_state_bins,)
     n_states : int
 
     Returns
     -------
-    counts : jnp.ndarray, shape (n_states, n_states)
+    counts : jax.Array, shape (n_states, n_states)
     """
     ratio = _safe_ratio_jax(acausal_next, predictive_next)
     maximum = jnp.max(ratio, axis=0, initial=0.0)
@@ -433,24 +433,24 @@ def _stationary_counts(
     causal_posterior: np.ndarray | jax.Array,
     predictive_posterior: np.ndarray | jax.Array,
     acausal_posterior: np.ndarray | jax.Array | jax.Array,
-    transition_matrix: jnp.ndarray,
+    transition_matrix: jax.Array,
     state_ind: np.ndarray | jax.Array,
     n_states: int,
-) -> jnp.ndarray:
+) -> jax.Array:
     """``_stationary_counts_block`` over all consecutive rows, in byte-bounded blocks.
 
     Parameters
     ----------
     causal_posterior, predictive_posterior, acausal_posterior : np.ndarray or jax.Array
         Shape (n_time, n_state_bins). Host arrays are uploaded block by block.
-    transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         The expanded stationary transition.
     state_ind : np.ndarray, shape (n_state_bins,)
     n_states : int
 
     Returns
     -------
-    counts : jnp.ndarray, shape (n_states, n_states)
+    counts : jax.Array, shape (n_states, n_states)
     """
     n_time, n_state_bins = causal_posterior.shape
     itemsize = np.result_type(causal_posterior.dtype, acausal_posterior.dtype).itemsize
@@ -483,18 +483,18 @@ def _stationary_counts(
     ),
 )
 def _transition_pair_stats_jax(
-    causal_posterior: jnp.ndarray,
-    predictive_posterior: jnp.ndarray,
-    acausal_posterior: jnp.ndarray,
-    transition_matrix: jnp.ndarray,
-    continuous_transition_matrix: jnp.ndarray,
-    state_ind: jnp.ndarray,
+    causal_posterior: jax.Array,
+    predictive_posterior: jax.Array,
+    acausal_posterior: jax.Array,
+    transition_matrix: jax.Array,
+    continuous_transition_matrix: jax.Array,
+    state_ind: jax.Array,
     n_states: int,
     *,
     is_factorized: bool,
     is_stationary: bool,
     return_time_series: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """JAX scan kernel for per-row responses or non-stationary counts.
 
     Stationary counts use :func:`_stationary_counts` instead.
@@ -904,7 +904,7 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
 
 
 @jax.jit
-def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
+def jax_centered_log_softmax_forward(y: jax.Array) -> jax.Array:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
 
     The 1D and 2D input branches compile as separate JAX specializations.
@@ -912,12 +912,12 @@ def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
 
     Parameters
     ----------
-    y : jnp.ndarray, shape (n_states,) or (n_samples, n_states)
+    y : jax.Array, shape (n_states,) or (n_samples, n_states)
         The input values.
 
     Returns
     -------
-    log_softmax : jnp.ndarray, shape (n_states + 1,) or (n_samples, n_states + 1)
+    log_softmax : jax.Array, shape (n_states + 1,) or (n_samples, n_states + 1)
         The log softmax of the input values.
 
     Example
@@ -1318,7 +1318,7 @@ def _fit_covariate_transition(
                     start: np.ndarray,
                     strengths: np.ndarray,
                     blocks: _Blocks = blocks,
-                    prior_per_bin: jnp.ndarray = prior_per_bin,
+                    prior_per_bin: jax.Array = prior_per_bin,
                     from_state: int = from_state,
                     warn: bool = True,
                 ) -> np.ndarray:
@@ -1590,7 +1590,7 @@ def _reml_row(
     coefficients: np.ndarray,
     fit_row: Callable[..., np.ndarray],
     blocks: _Blocks,
-    prior_per_bin: jnp.ndarray,
+    prior_per_bin: jax.Array,
     penalty: Callable[[np.ndarray], np.ndarray],
     penalties: np.ndarray,
     l2_penalty: float,
@@ -1737,7 +1737,7 @@ def _reml_row(
 def _fit_covariate_row(
     initial_coefficients: np.ndarray,
     blocks: _Blocks,
-    prior_per_bin: jnp.ndarray,
+    prior_per_bin: jax.Array,
     penalty: np.ndarray,
     optimization_method: str,
     options: dict[str, Any],
@@ -1997,25 +1997,25 @@ def estimate_stationary_state_transition_from_counts(
 
 
 def _block_loss(
-    coefficients: jnp.ndarray,
-    design_matrix: jnp.ndarray,
-    response: jnp.ndarray,
-    prior_per_bin: jnp.ndarray,
-) -> jnp.ndarray:
+    coefficients: jax.Array,
+    design_matrix: jax.Array,
+    response: jax.Array,
+    prior_per_bin: jax.Array,
+) -> jax.Array:
     """``-sum_t (r_t + prior_per_bin) . log p_t`` over one block of time bins.
 
     Parameters
     ----------
-    coefficients : jnp.ndarray, shape (n_coefficients * (n_states - 1),)
-    design_matrix : jnp.ndarray, shape (n_block, n_coefficients)
-    response : jnp.ndarray, shape (n_block, n_states)
-    prior_per_bin : jnp.ndarray, shape (n_states,)
+    coefficients : jax.Array, shape (n_coefficients * (n_states - 1),)
+    design_matrix : jax.Array, shape (n_block, n_coefficients)
+    response : jax.Array, shape (n_block, n_states)
+    prior_per_bin : jax.Array, shape (n_states,)
         The row's Dirichlet pseudo-counts ``alpha - 1`` divided by the number
         of time bins of the whole row, so that the prior counts once.
 
     Returns
     -------
-    loss : jnp.ndarray, shape ()
+    loss : jax.Array, shape ()
     """
     log_probabilities = jax_centered_log_softmax_forward(
         design_matrix @ coefficients.reshape((design_matrix.shape[1], -1))
@@ -2025,11 +2025,11 @@ def _block_loss(
 
 @jax.jit
 def _block_hessian(
-    coefficients: jnp.ndarray,
-    design_matrix: jnp.ndarray,
-    response: jnp.ndarray,
-    prior_per_bin: jnp.ndarray,
-) -> jnp.ndarray:
+    coefficients: jax.Array,
+    design_matrix: jax.Array,
+    response: jax.Array,
+    prior_per_bin: jax.Array,
+) -> jax.Array:
     """Hessian of :func:`_block_loss` in closed form.
 
     With weights ``w_t = r_t + prior_per_bin`` summing to ``W_t`` and free
@@ -2041,15 +2041,15 @@ def _block_hessian(
 
     Parameters
     ----------
-    coefficients : jnp.ndarray, shape (n_coefficients * (n_states - 1),)
+    coefficients : jax.Array, shape (n_coefficients * (n_states - 1),)
         Ordered (coefficient, logit).
-    design_matrix : jnp.ndarray, shape (n_block, n_coefficients)
-    response : jnp.ndarray, shape (n_block, n_states)
-    prior_per_bin : jnp.ndarray, shape (n_states,)
+    design_matrix : jax.Array, shape (n_block, n_coefficients)
+    response : jax.Array, shape (n_block, n_states)
+    prior_per_bin : jax.Array, shape (n_states,)
 
     Returns
     -------
-    hessian : jnp.ndarray, shape (n_coefficients * (n_states - 1),) * 2
+    hessian : jax.Array, shape (n_coefficients * (n_states - 1),) * 2
     """
     n_coefficients = design_matrix.shape[1]
     free = jnp.exp(
@@ -2072,7 +2072,7 @@ _block_loss_and_gradient = jax.jit(jax.value_and_grad(_block_loss))
 
 def _transition_blocks(
     values: np.ndarray, dtype: type | None = np.float64
-) -> list[jnp.ndarray]:
+) -> list[jax.Array]:
     """Device blocks of ``_COVARIATE_BLOCK_ROWS`` rows of ``values``.
 
     Call with JAX in float64; ``dtype=None`` keeps the values' own type.
@@ -2084,26 +2084,26 @@ def _transition_blocks(
 
 
 def _row_problem(
-    design_blocks: list[jnp.ndarray],
+    design_blocks: list[jax.Array],
     response: np.ndarray,
     alpha: float | np.ndarray,
-) -> tuple[_Blocks, jnp.ndarray]:
+) -> tuple[_Blocks, jax.Array]:
     """One row's blocks of transitions and its prior pseudo-counts per bin.
 
     Call with JAX in float64.
 
     Parameters
     ----------
-    design_blocks : list of jnp.ndarray
+    design_blocks : list of jax.Array
         :func:`_transition_blocks` of the design matrix's transition rows.
     response : np.ndarray, shape (n_samples, n_states)
     alpha : float or np.ndarray, shape (n_states,)
 
     Returns
     -------
-    blocks : list of (jnp.ndarray, jnp.ndarray)
+    blocks : list of (jax.Array, jax.Array)
         ``(design, response)`` blocks; empty without transitions.
-    prior_per_bin : jnp.ndarray, shape (n_states,)
+    prior_per_bin : jax.Array, shape (n_states,)
         ``(alpha - 1) / n_samples``, zero without transitions.
     """
     n_samples, n_states = np.shape(response)
@@ -2162,7 +2162,7 @@ def _penalty_value(coefficients: np.ndarray, penalty: np.ndarray) -> float:
 def _blocked_loss(
     coefficients: np.ndarray,
     blocks: _Blocks,
-    prior_per_bin: jnp.ndarray,
+    prior_per_bin: jax.Array,
     penalty: np.ndarray,
 ) -> float:
     """:func:`dirichlet_neg_log_likelihood` over blocks of transitions.
@@ -2182,7 +2182,7 @@ def _blocked_loss(
 def _blocked_loss_and_gradient(
     coefficients: np.ndarray,
     blocks: _Blocks,
-    prior_per_bin: jnp.ndarray,
+    prior_per_bin: jax.Array,
     penalty: np.ndarray,
 ) -> tuple[float, np.ndarray]:
     """:func:`dirichlet_neg_log_likelihood` and its gradient over blocks of
@@ -2207,7 +2207,7 @@ def _blocked_loss_and_gradient(
 def _blocked_hessian(
     coefficients: np.ndarray,
     blocks: _Blocks,
-    prior_per_bin: jnp.ndarray,
+    prior_per_bin: jax.Array,
     penalty: np.ndarray,
 ) -> np.ndarray:
     """:func:`dirichlet_neg_log_likelihood`'s Hessian over blocks of

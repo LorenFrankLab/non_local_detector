@@ -24,6 +24,7 @@ with ``fit_mark_references``.
 from dataclasses import dataclass
 from typing import cast
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.special import gammaln
@@ -314,7 +315,7 @@ def mark_reference_log_likelihood(
     time_edges: np.ndarray,
     row_slice: slice | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Sum each decode bin's reference log densities over its spikes.
 
     Electrodes without a reference contribute nothing.
@@ -337,7 +338,7 @@ def mark_reference_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, 1)
         Sum of the reference log densities of the spikes in each requested bin.
     """
     validate_population_lengths(

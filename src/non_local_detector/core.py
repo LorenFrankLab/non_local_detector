@@ -26,7 +26,7 @@ ArrayLike: TypeAlias = jax.Array | np.ndarray
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
-def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jnp.ndarray, jnp.ndarray]:
+def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jax.Array, jax.Array]:
     """Normalizes the values within the axis in a way that they sum up to 1.
 
     Divides by the exact sum so any positive total mass — down to the smallest
@@ -36,16 +36,16 @@ def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jnp.ndarray, jnp.ndarray]:
 
     Parameters
     ----------
-    u : jnp.ndarray
+    u : jax.Array
         Array to normalize
     axis : int, optional
         Axis to normalize, by default 0
 
     Returns
     -------
-    normalized_u : jnp.ndarray
+    normalized_u : jax.Array
         Normalized array
-    c : jnp.ndarray
+    c : jax.Array
         Normalization constant (squeezed along normalized axis)
     """
     c = u.sum(axis=axis, keepdims=True)
@@ -56,9 +56,7 @@ def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jnp.ndarray, jnp.ndarray]:
 # Helper functions for the two key filtering steps
 def _condition_on_primal(
     probs: ArrayLike, ll: ArrayLike
-) -> tuple[
-    tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
-]:
+) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
     """Stable Bayes update plus the shifts its derivative rule reuses.
 
     This is the forward pass of :func:`_condition_on`. Do not differentiate it
@@ -69,16 +67,16 @@ def _condition_on_primal(
 
     Parameters
     ----------
-    probs : jnp.ndarray, shape (n_states,)
+    probs : jax.Array, shape (n_states,)
         Predicted state probabilities (sum to 1).
-    ll : jnp.ndarray, shape (n_states,)
+    ll : jax.Array, shape (n_states,)
         Log-likelihood at this time step.
 
     Returns
     -------
-    result : tuple[jnp.ndarray, jnp.ndarray]
+    result : tuple[jax.Array, jax.Array]
         ``(new_probs, log_norm)`` exactly as :func:`_condition_on` returns them.
-    auxiliaries : tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
+    auxiliaries : tuple[jax.Array, jax.Array, jax.Array]
         ``(ll_shift, centered_log_norm, is_zero_norm)``: the reachable-state
         log-likelihood shift, ``log_norm - ll_shift`` (kept separate so the
         derivative rule can form ``ll - log Z`` without cancellation at large
@@ -115,20 +113,20 @@ def _condition_on_primal(
 
 
 @jax.custom_jvp
-def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, jnp.ndarray]:
+def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jax.Array, jax.Array]:
     """Condition on new emissions, given in the form of log likelihoods
     for each discrete state, while avoiding numerical underflow.
 
     Parameters
     ----------
-    probs : jnp.ndarray
+    probs : jax.Array
         Predicted state probabilities (sum to 1).
-    ll : jnp.ndarray
+    ll : jax.Array
         Log-likelihood at this time step. Same shape as ``probs``.
 
     Returns
     -------
-    new_probs : jnp.ndarray
+    new_probs : jax.Array
         Updated state probabilities. When the Bayes normalizer is exactly zero
         — either every entry of ``ll`` is ``-inf`` (all states impossible) or
         the predicted ``probs`` place zero mass on every state with finite
@@ -159,9 +157,9 @@ def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, jnp.nda
 
 @_condition_on.defjvp
 def _condition_on_jvp(
-    primals: tuple[jnp.ndarray, jnp.ndarray],
-    tangents: tuple[jnp.ndarray, jnp.ndarray],
-) -> tuple[tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+    primals: tuple[jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array],
+) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array]]:
     """Derivative rule for :func:`_condition_on`.
 
     With ``r = exp(ll) / Z`` and posterior ``q``, the tangent of the normalized
@@ -172,17 +170,17 @@ def _condition_on_jvp(
 
     Parameters
     ----------
-    primals : tuple[jnp.ndarray, jnp.ndarray]
+    primals : tuple[jax.Array, jax.Array]
         ``(probs, ll)``, each of shape ``(n_states,)``.
-    tangents : tuple[jnp.ndarray, jnp.ndarray]
+    tangents : tuple[jax.Array, jax.Array]
         ``(d(probs), d(ll))``; ``d(ll)`` may be a ``float0`` zero for integer
         likelihoods.
 
     Returns
     -------
-    primal_out : tuple[jnp.ndarray, jnp.ndarray]
+    primal_out : tuple[jax.Array, jax.Array]
         ``(new_probs, log_norm)``.
-    tangent_out : tuple[jnp.ndarray, jnp.ndarray]
+    tangent_out : tuple[jax.Array, jax.Array]
         ``(d(new_probs), d(log_norm))``. At the zero-normalizer fallback the
         forward output is ``(probs, -inf)``, so the tangent is ``(d(probs),
         0)``; as with any selected branch, a NaN in the unselected ``d(ll)``
@@ -272,8 +270,8 @@ def _degenerate_and_nan_masks(
 
 @jax.jit
 def _degenerate_and_nan_masks_device(
-    log_likelihoods: jnp.ndarray,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+    log_likelihoods: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
     """Device-side masks of ``_degenerate_and_nan_masks`` in one fused pass."""
     return (
         log_likelihoods.max(axis=-1) == -jnp.inf,
@@ -430,19 +428,19 @@ def _warn_if_degenerate_timesteps(
     )
 
 
-def _safe_log(p: ArrayLike) -> jnp.ndarray:
+def _safe_log(p: ArrayLike) -> jax.Array:
     """Compute log of probabilities safely, handling zeros.
 
     Returns -inf for zero probabilities (valid in log space) instead of NaN.
 
     Parameters
     ----------
-    p : jnp.ndarray
+    p : jax.Array
         Probability array (may contain zeros)
 
     Returns
     -------
-    log_p : jnp.ndarray
+    log_p : jax.Array
         Log probabilities with -inf for zeros
     """
     # Double-where: substitute safe value into operand first
@@ -450,20 +448,20 @@ def _safe_log(p: ArrayLike) -> jnp.ndarray:
     return jnp.where(p > 0, jnp.log(safe_p), -jnp.inf)
 
 
-def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
+def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jax.Array:
     """Divides two arrays, while setting the result to 0.0
     if the denominator is 0.0.
 
     Parameters
     ----------
-    numerator : jnp.ndarray
+    numerator : jax.Array
         Numerator array.
-    denominator : jnp.ndarray
+    denominator : jax.Array
         Denominator array.
 
     Returns
     -------
-    result : jnp.ndarray
+    result : jax.Array
         Element-wise division result with safe handling of zero denominators.
     """
     # Double-where: substitute safe denominator first, then select result.
@@ -492,19 +490,19 @@ _HMM_SCAN_UNROLL = 8
 # same ``forward``/``backward``/``pair_products`` methods.
 
 
-def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jnp.ndarray:
+def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jax.Array:
     """One-hot discrete-state membership of each state bin.
 
     Parameters
     ----------
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
     n_states : int
     dtype : dtype
 
     Returns
     -------
-    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+    one_hot : jax.Array, shape (n_states, n_state_bins)
     """
     return (state_ind[None, :] == jnp.arange(n_states)[:, None]).astype(dtype)
 
@@ -515,7 +513,7 @@ def _covariate_forward_product(
     continuous_transition_matrix: ArrayLike,
     state_ind: ArrayLike,
     one_hot: ArrayLike,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Propagate probabilities forward through one covariate-dependent step.
 
     Computes ``probs @ T`` for the joint transition
@@ -526,17 +524,17 @@ def _covariate_forward_product(
 
     Parameters
     ----------
-    probs : jnp.ndarray, shape (n_state_bins,)
-    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
-    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    probs : jax.Array, shape (n_state_bins,)
+    discrete_transition_matrix_t : jax.Array, shape (n_states, n_states)
+    continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+    state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
-    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+    one_hot : jax.Array, shape (n_states, n_state_bins)
         ``_state_one_hot(state_ind, n_states, dtype)``.
 
     Returns
     -------
-    propagated : jnp.ndarray, shape (n_state_bins,)
+    propagated : jax.Array, shape (n_state_bins,)
     """
     # HIGHEST: the default CUDA precision (TF32) would round these products.
     per_state = jnp.matmul(
@@ -553,7 +551,7 @@ def _covariate_backward_product(
     continuous_transition_matrix: ArrayLike,
     state_ind: ArrayLike,
     one_hot: ArrayLike,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Pull values backward through one covariate-dependent step.
 
     Computes ``T @ values`` for ``T[i, j] = C[i, j] * D[s_i, s_j]`` without
@@ -561,17 +559,17 @@ def _covariate_backward_product(
 
     Parameters
     ----------
-    values : jnp.ndarray, shape (n_state_bins,)
-    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
-    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    values : jax.Array, shape (n_state_bins,)
+    discrete_transition_matrix_t : jax.Array, shape (n_states, n_states)
+    continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+    state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
-    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+    one_hot : jax.Array, shape (n_states, n_state_bins)
         ``_state_one_hot(state_ind, n_states, dtype)``.
 
     Returns
     -------
-    pulled : jnp.ndarray, shape (n_state_bins,)
+    pulled : jax.Array, shape (n_state_bins,)
     """
     per_state = jnp.matmul(
         continuous_transition_matrix,
@@ -932,7 +930,7 @@ def _viterbi_scan(
     log_likelihoods: ArrayLike,
     log_weights: ArrayLike | None,
     log_operator: Any,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Most likely state-bin sequence: the one Viterbi scan body.
 
     Parameters
@@ -947,7 +945,7 @@ def _viterbi_scan(
 
     Returns
     -------
-    most_likely_state_sequence : jnp.ndarray, shape (n_time,)
+    most_likely_state_sequence : jax.Array, shape (n_time,)
 
     Notes
     -----
@@ -995,9 +993,7 @@ def _filter_impl(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> tuple[
-    tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
-]:
+) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
     """JIT-compiled forward pass of the forward-backward algorithm.
 
     See :func:`filter` for the user-facing wrapper that adds host-side
@@ -1060,7 +1056,7 @@ def filter(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+) -> tuple[tuple[float, jax.Array], tuple[jax.Array, jax.Array]]:
     """Perform the forward pass of the forward-backward algorithm (filtering).
 
     Computes the filtered state probabilities P(z_t | x_{1:t}) and the
@@ -1068,27 +1064,27 @@ def filter(
 
     Parameters
     ----------
-    initial_distribution : jnp.ndarray, shape (n_states,)
+    initial_distribution : jax.Array, shape (n_states,)
         Probability distribution of the initial state, P(z_1).
-    transition_matrix : jnp.ndarray, shape (n_states, n_states)
+    transition_matrix : jax.Array, shape (n_states, n_states)
         State transition probability matrix, P(z_t | z_{t-1}).
-    log_likelihoods : jnp.ndarray, shape (n_time, n_states)
+    log_likelihoods : jax.Array, shape (n_time, n_states)
         Log likelihood of the observations for each state at each time step,
         log P(x_t | z_t).
 
     Returns
     -------
-    carry : tuple[float, jnp.ndarray]
+    carry : tuple[float, jax.Array]
         A tuple containing:
             - marginal_likelihood : float
                 Log probability of the observations log P(x_{1:T}).
-            - predicted_probs_next : jnp.ndarray, shape (n_states,)
+            - predicted_probs_next : jax.Array, shape (n_states,)
                 The final one-step-ahead prediction P(z_{T+1} | x_{1:T}).
-    outputs : tuple[jnp.ndarray, jnp.ndarray]
+    outputs : tuple[jax.Array, jax.Array]
          A tuple containing:
-            - causal_posterior : jnp.ndarray, shape (n_time, n_states)
+            - causal_posterior : jax.Array, shape (n_time, n_states)
                 Filtered state probabilities P(z_t | x_{1:t}) for t=1...T.
-            - predicted_probs : jnp.ndarray, shape (n_time, n_states)
+            - predicted_probs : jax.Array, shape (n_time, n_states)
                 One-step-ahead predicted state probabilities P(z_t | x_{1:t-1})
                 for t=1...T. Note that `predicted_probs[0]` is equivalent
                 to `initial_distribution`.
@@ -1126,25 +1122,25 @@ def _smoother_impl(
     initial: ArrayLike | None = None,
     ind: ArrayLike | None = None,
     n_time: int | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Smoother step.
 
     Parameters
     ----------
-    transition_matrix : jnp.ndarray, shape (n_states, n_states)
+    transition_matrix : jax.Array, shape (n_states, n_states)
         Transition matrix
-    filtered_probs : jnp.ndarray, shape (n_time, n_states)
+    filtered_probs : jax.Array, shape (n_time, n_states)
         Filtered state probabilities.
-    initial : jnp.ndarray, optional
+    initial : jax.Array, optional
         Initial state distribution, by default None
-    ind : jnp.ndarray, optional
+    ind : jax.Array, optional
         Time indices, by default None
     n_time : int, optional
         Number of time points, by default None
 
     Returns
     -------
-    smoothed_probs : jnp.ndarray, shape (n_time, n_states)
+    smoothed_probs : jax.Array, shape (n_time, n_states)
         Smoothed state probabilities
     """
     if n_time is None:
@@ -1355,7 +1351,7 @@ def _check_driver_inputs(
 
 def _store_chunk_rows(
     buffer: np.ndarray | None,
-    chunk: jnp.ndarray,
+    chunk: jax.Array,
     time_inds: np.ndarray,
     n_time: int,
 ) -> np.ndarray:
@@ -1397,18 +1393,18 @@ def _call_log_likelihood_chunk(
     )
 
 
-def _state_marginals(posterior: jnp.ndarray, aggregation: jnp.ndarray) -> jnp.ndarray:
+def _state_marginals(posterior: jax.Array, aggregation: jax.Array) -> jax.Array:
     """Sum state-bin probabilities into discrete states at full float32 precision.
 
     Parameters
     ----------
-    posterior : jnp.ndarray, shape (n_time, n_state_bins)
-    aggregation : jnp.ndarray, shape (n_state_bins, n_states)
+    posterior : jax.Array, shape (n_time, n_state_bins)
+    aggregation : jax.Array, shape (n_state_bins, n_states)
         One-hot state membership.
 
     Returns
     -------
-    state_probabilities : jnp.ndarray, shape (n_time, n_states)
+    state_probabilities : jax.Array, shape (n_time, n_states)
     """
     # The default CUDA precision (TF32) visibly changes these sums.
     return jnp.matmul(posterior, aggregation, precision=jax.lax.Precision.HIGHEST)
@@ -1455,7 +1451,7 @@ class FilterSmootherResult(NamedTuple):
 
 def _chunked_filter_smoother(
     filter_chunk: Callable[..., tuple[Any, ...]],
-    smoother_chunk: Callable[..., jnp.ndarray],
+    smoother_chunk: Callable[..., jax.Array],
     *,
     time: np.ndarray,
     state_ind: np.ndarray,
@@ -1791,9 +1787,9 @@ def chunked_filter_smoother(
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
 
     def filter_chunk(
-        initial_distribution: jnp.ndarray,
-        log_likelihoods: jnp.ndarray,
-        time_inds: jnp.ndarray,  # noqa: ARG001 -- chunked-filter callback signature
+        initial_distribution: jax.Array,
+        log_likelihoods: jax.Array,
+        time_inds: jax.Array,  # noqa: ARG001 -- chunked-filter callback signature
     ) -> tuple[Any, ...]:
         return cast(
             tuple[Any, ...],
@@ -1805,11 +1801,11 @@ def chunked_filter_smoother(
         )
 
     def smoother_chunk(
-        filtered_probs: jnp.ndarray,
-        initial: jnp.ndarray,
-        time_inds: jnp.ndarray,
+        filtered_probs: jax.Array,
+        initial: jax.Array,
+        time_inds: jax.Array,
         n_time: int,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         return cast(
             jax.Array,
             _smoother_internal(
@@ -1844,21 +1840,21 @@ def _viterbi_impl(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> jnp.ndarray:
+) -> jax.Array:
     r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
 
     Parameters
     ----------
-    initial_distribution : jnp.ndarray, shape (n_states,)
+    initial_distribution : jax.Array, shape (n_states,)
         Initial state distribution
-    transition_matrix : jnp.ndarray, shape (n_states, n_states)
+    transition_matrix : jax.Array, shape (n_states, n_states)
         Transition matrix
-    log_likelihoods : jnp.ndarray, shape (n_time, n_states)
+    log_likelihoods : jax.Array, shape (n_time, n_states)
         Log likelihoods for each state at each time point.
 
     Returns
     -------
-    most_likely_state_sequence : jnp.ndarray, shape (n_time,)
+    most_likely_state_sequence : jax.Array, shape (n_time,)
 
     Notes
     -----
@@ -1979,9 +1975,7 @@ def _filter_covariate_dependent_impl(
     continuous_transition_matrix: ArrayLike,
     state_ind: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> tuple[
-    tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
-]:
+) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
     """JIT-compiled covariate-dependent forward pass.
 
     See :func:`filter_covariate_dependent` for the user-facing wrapper that
@@ -2024,32 +2018,32 @@ def filter_covariate_dependent(
     continuous_transition_matrix: ArrayLike,
     state_ind: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+) -> tuple[tuple[float, jax.Array], tuple[jax.Array, jax.Array]]:
     """Filtering step with covariate dependent transitions.
 
     Parameters
     ----------
-    initial_distribution : jnp.ndarray, shape (n_state_bins,)
+    initial_distribution : jax.Array, shape (n_state_bins,)
         Initial probability of each state bin.
-    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
+    discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
         Discrete state transition probabilities at each time bin.
-    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         Transition probability between state bins within the continuous
         state space.
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    state_ind : jax.Array, shape (n_state_bins,)
         Connects the discrete states to the state space.
-    log_likelihoods : jnp.ndarray, shape (n_time, n_state_bins)
+    log_likelihoods : jax.Array, shape (n_time, n_state_bins)
         Log likelihood of the observations for each state bin at each time.
 
     Returns
     -------
     marginal_likelihood : float
         Log marginal likelihood of the observations.
-    predicted_probs_next : jnp.ndarray, shape (n_state_bins,)
+    predicted_probs_next : jax.Array, shape (n_state_bins,)
         Next one-step-ahead predicted state probabilities
-    causal_posterior : jnp.ndarray, shape (n_time, n_state_bins)
+    causal_posterior : jax.Array, shape (n_time, n_state_bins)
         Filtered state probabilities
-    predicted_probs : jnp.ndarray, shape (n_time, n_state_bins)
+    predicted_probs : jax.Array, shape (n_time, n_state_bins)
         One-step-ahead predicted state probabilities
 
     Notes
@@ -2092,23 +2086,23 @@ def _smoother_covariate_dependent_impl(
     initial: ArrayLike | None = None,
     ind: ArrayLike | None = None,
     n_time: int | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Smoother step with covariate dependent transitions.
 
     Parameters
     ----------
-    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
-    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
+    continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+    state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
-    filtered_probs : jnp.ndarray, shape (n_time, n_state_bins)
-    initial : jnp.ndarray, shape (n_state_bins,), optional
-    ind : jnp.ndarray, shape (n_time,), optional
+    filtered_probs : jax.Array, shape (n_time, n_state_bins)
+    initial : jax.Array, shape (n_state_bins,), optional
+    ind : jax.Array, shape (n_time,), optional
     n_time : int, optional
 
     Returns
     -------
-    smoothed_probs : jnp.ndarray, shape (n_time, n_state_bins)
+    smoothed_probs : jax.Array, shape (n_time, n_state_bins)
     """
     if n_time is None:
         n_time = filtered_probs.shape[0]
@@ -2270,9 +2264,9 @@ def chunked_filter_smoother_covariate_dependent(
     )
 
     def filter_chunk(
-        initial_distribution: jnp.ndarray,
-        log_likelihoods: jnp.ndarray,
-        time_inds: jnp.ndarray,
+        initial_distribution: jax.Array,
+        log_likelihoods: jax.Array,
+        time_inds: jax.Array,
     ) -> tuple[Any, ...]:
         # The time slice is not donated: no output has its shape to reuse.
         return cast(
@@ -2287,11 +2281,11 @@ def chunked_filter_smoother_covariate_dependent(
         )
 
     def smoother_chunk(
-        filtered_probs: jnp.ndarray,
-        initial: jnp.ndarray,
-        time_inds: jnp.ndarray,
+        filtered_probs: jax.Array,
+        initial: jax.Array,
+        time_inds: jax.Array,
         n_time: int,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         # The time slice is not donated: no output has its shape to reuse.
         return cast(
             jax.Array,
@@ -2331,27 +2325,27 @@ def _viterbi_covariate_dependent_impl(
     continuous_transition_matrix: ArrayLike,
     state_ind: ArrayLike,
     log_likelihoods: ArrayLike,
-) -> jnp.ndarray:
+) -> jax.Array:
     r"""Compute the most likely state sequence with covariate dependent transitions.
 
     Uses the Viterbi algorithm with time-varying transition matrices.
 
     Parameters
     ----------
-    initial_distribution : jnp.ndarray, shape (n_state_bins,)
+    initial_distribution : jax.Array, shape (n_state_bins,)
         Initial state distribution.
-    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
+    discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
         Time-varying discrete transition matrices.
-    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         Continuous transition matrix.
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    state_ind : jax.Array, shape (n_state_bins,)
         State indices connecting discrete states to state space bins.
-    log_likelihoods : jnp.ndarray, shape (n_time, n_state_bins)
+    log_likelihoods : jax.Array, shape (n_time, n_state_bins)
         Log likelihoods for each state bin at each time point.
 
     Returns
     -------
-    most_likely_state_sequence : jnp.ndarray, shape (n_time,)
+    most_likely_state_sequence : jax.Array, shape (n_time,)
         Most likely state sequence.
 
     Notes

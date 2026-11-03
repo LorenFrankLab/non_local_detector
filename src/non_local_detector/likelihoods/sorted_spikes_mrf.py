@@ -257,7 +257,7 @@ _matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
 
 
 def _penalized_hessian(
-    basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.ndarray
+    basis: jax.Array, mu: jax.Array, penalty_diag: jax.Array
 ) -> jax.Array:
     """Batched penalized Hessian ``Bᵀ diag(mu_k) B + diag(penalty_diag)`` per neuron.
 
@@ -277,12 +277,12 @@ _NewtonState: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
 
 @partial(jax.jit, static_argnames=("max_iter",))
 def _newton_fit_jax(
-    counts: jnp.ndarray,
-    occupancy: jnp.ndarray,
-    basis: jnp.ndarray,
-    penalty_diag: jnp.ndarray,
+    counts: jax.Array,
+    occupancy: jax.Array,
+    basis: jax.Array,
+    penalty_diag: jax.Array,
     max_iter: int,
-    tol: jnp.ndarray,
+    tol: jax.Array,
     rate_scale: float = 1.0,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Batched penalized-Poisson Newton/IRLS with per-neuron step-halving (jit).
@@ -514,16 +514,16 @@ def _penalty_rank(penalty_weights: np.ndarray) -> int:
 
 @partial(jax.jit, static_argnames=("max_iter",))
 def _reml_score_jax(
-    log_penalty: jnp.ndarray,
-    counts: jnp.ndarray,
-    occupancy: jnp.ndarray,
-    basis: jnp.ndarray,
-    penalty_weights: jnp.ndarray,
-    penalty_rank: jnp.ndarray,
+    log_penalty: jax.Array,
+    counts: jax.Array,
+    occupancy: jax.Array,
+    basis: jax.Array,
+    penalty_weights: jax.Array,
+    penalty_rank: jax.Array,
     max_iter: int,
-    tol: jnp.ndarray,
+    tol: jax.Array,
     rate_scale: float = 1.0,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Negative Laplace REML for ``lambda = exp(log_penalty)``, summed over neurons.
 
     On-device scalar (the fit stays on device across REML candidates). Returns +inf
