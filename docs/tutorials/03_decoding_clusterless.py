@@ -108,11 +108,12 @@ axes[-1].set_xlim(position_time[0], position_time[-1])
 # Take one tetrode and plot each spike's mark against the animal's position at
 # the time of the spike (left). Each cell is a blob: a narrow range of
 # amplitudes at a particular place. This tetrode's cells cover only the first
-# 40 cm of the track; the other tetrodes cover the rest. Plotting two channels against each other
-# (right) shows the clusters that spike sorting would cut out; the color, the
-# position at the spike, shows that each cluster corresponds to one place on the
-# track. The clusterless decoder uses this joint structure directly, without
-# ever drawing cluster boundaries.
+# 30 cm of the track (fields at 0, 9, 18 and 28 cm); the other tetrodes cover
+# the rest. Plotting two channels against each other (right) shows the
+# clusters that spike sorting would cut out; the color, the position at the
+# spike, shows that each cluster corresponds to one place on the track. The
+# clusterless decoder uses this joint structure directly, without ever drawing
+# cluster boundaries.
 
 # %%
 electrode = 0
