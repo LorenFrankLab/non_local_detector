@@ -49,9 +49,9 @@ from non_local_detector.checkpointed_inference import (
 )
 from non_local_detector.continuous_state_transitions import (
     TransitionContext,
+    _check_continuous_transition,
     _make_transition_block,
     _multi_bin_local_transition,
-    _scalar_to_spatial_destination,
 )
 from non_local_detector.core import (
     accepts_row_slice,
@@ -63,11 +63,11 @@ from non_local_detector.core import (
     row_slice_aware,
 )
 from non_local_detector.discrete_state_transitions import (
-    DiscreteStationaryCustom,
+    DiscreteTransition,
+    _check_initial_discrete_transition,
     _covariate_transition_covariance,
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
-    _is_nonstationary,
     _max_transition_change,
     _row_smoothness,
     _smoothness_matrix,
@@ -125,7 +125,10 @@ from non_local_detector.time_edges import (
     requires_time_edges,
     uniform_time_edges,
 )
-from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
+from non_local_detector.transition_operators import (
+    DEFAULT_MAX_DENSE_BYTES,
+    _one_bin_block,
+)
 
 try:
     from non_local_detector._version import __version__ as _PACKAGE_VERSION
@@ -2576,11 +2579,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
     def _validate_discrete_transition_type(
         self, discrete_transition_type: Any, n_states: int
     ) -> None:
-        """Validate discrete transition type configuration.
+        """Validate the discrete transition against the model.
+
+        The transition validates its own values when it is constructed; this
+        checks that it is a ``DiscreteTransition`` for this many states.
 
         Parameters
         ----------
-        discrete_transition_type : DiscreteTransitions
+        discrete_transition_type : DiscreteTransition
             Discrete transition type object
         n_states : int
             Number of states in the model
@@ -2588,41 +2594,35 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Raises
         ------
         ValidationError
-            If transition matrix is invalid (wrong shape, doesn't sum to 1, etc.)
-        DataError
-            If transition matrix contains NaN or Inf
+            If the object is not a ``DiscreteTransition`` or is sized for a
+            different number of states.
         """
-        # If it's a custom transition matrix, validate it
-        if isinstance(discrete_transition_type, DiscreteStationaryCustom):
-            matrix = discrete_transition_type.values
-
-            # Check it's a numpy array
-            val.ensure_ndarray(matrix, "discrete_transition_type.values")
-
-            # Check for NaN/Inf
-            val.ensure_all_finite(matrix, "discrete_transition_type.values")
-
-            # Check square
-            val.ensure_square_matrix(matrix, "discrete_transition_type.values")
-
-            # Check correct size
-            if matrix.shape[0] != n_states:
-                msg = "Discrete transition matrix size must match number of states"
-                raise ValidationError(
-                    msg,
-                    expected=f"matrix with shape ({n_states}, {n_states})",
-                    got=f"matrix with shape {matrix.shape}",
-                    hint=f"Your model has {n_states} states, so transition matrix needs {n_states}x{n_states} shape",
-                )
-
-            # Check non-negative
-            val.ensure_all_non_negative(matrix, "discrete_transition_type.values")
-
-            # Check values in [0, 1]
-            val.ensure_in_range(matrix, "discrete_transition_type.values", 0.0, 1.0)
-
-            # Check row-stochastic (rows sum to 1)
-            val.ensure_stochastic_matrix(matrix, "discrete_transition_type.values")
+        if not isinstance(discrete_transition_type, DiscreteTransition):
+            msg = "discrete_transition_type must be a DiscreteTransition"
+            raise ValidationError(
+                msg,
+                expected=(
+                    "an object with is_stationary, n_states, smoothness and "
+                    "make_state_transition(covariate_data)"
+                ),
+                got=type(discrete_transition_type).__name__,
+                hint=(
+                    "Use DiscreteStationaryDiagonal, DiscreteStationaryCustom, "
+                    "DiscreteNonStationaryDiagonal or DiscreteNonStationaryCustom."
+                ),
+            )
+        if discrete_transition_type.n_states != n_states:
+            msg = "Discrete transition matrix size must match number of states"
+            raise ValidationError(
+                msg,
+                expected=f"a transition for {n_states} states",
+                got=f"a transition for {discrete_transition_type.n_states} states",
+                hint=(
+                    f"Your model has {n_states} states, so the transition "
+                    f"needs a {n_states}x{n_states} matrix (or {n_states} "
+                    "diagonal values)."
+                ),
+            )
 
     def _initialize_environments(
         self, environments: Environments
@@ -2999,6 +2999,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         for from_state, row in enumerate(self.continuous_transition_types):
             for to_state, transition in enumerate(row):
+                _check_continuous_transition(transition)
                 inds = np.ix_(
                     self.state_ind_ == from_state, self.state_ind_ == to_state
                 )
@@ -3010,23 +3011,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     self.local_position_std,
                 )
 
-                n_row_bins = np.max(inds[0].shape)
-                n_col_bins = np.max(inds[1].shape)
+                n_row_bins = int(np.max(inds[0].shape))
+                n_col_bins = int(np.max(inds[1].shape))
 
-                if np.logical_and(n_row_bins == 1, n_col_bins > 1):
-                    destination = _scalar_to_spatial_destination(
-                        transition, self.environments
+                # Blocks between a one-bin and a spatial state follow the
+                # structured operator's rule, so both representations agree.
+                one_bin_block = _one_bin_block(
+                    transition, self.environments, n_row_bins, n_col_bins
+                )
+                if one_bin_block is not None:
+                    self.continuous_state_transitions_[inds] = one_bin_block.entries(
+                        np.arange(n_row_bins)[:, np.newaxis],
+                        np.arange(n_col_bins)[np.newaxis],
                     )
-                    self.continuous_state_transitions_[inds] = (
-                        destination / destination.sum()
-                    )
-                elif n_row_bins > 1 and n_col_bins == 1:
-                    # Spatial to non-spatial: each source bin transitions
-                    # to the single target bin with probability 1.
-                    self.continuous_state_transitions_[inds] = np.ones((n_row_bins, 1))
                 else:
                     self.continuous_state_transitions_[inds] = _make_transition_block(
-                        transition, self.environments, context
+                        transition,
+                        self.environments,
+                        context,
+                        (n_row_bins, n_col_bins),
                     )
 
     def __getstate__(self) -> dict[str, Any]:
@@ -3107,7 +3110,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             of a covariate-dependent transition; None before one.
         """
         logger.info("Fitting discrete state transition")
-        initial = self.discrete_transition_type.make_state_transition(covariate_data)
+        transition_type = self.discrete_transition_type
+        initial = transition_type.make_state_transition(covariate_data)
+        _check_initial_discrete_transition(initial, transition_type)
         self.discrete_state_transitions_ = initial.transition_matrix
         self.discrete_transition_coefficients_ = initial.coefficients
         self.discrete_transition_design_matrix_ = initial.design_matrix
@@ -3115,26 +3120,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # of the covariates so ``__setstate__`` can rebuild the design matrix
         # with the fitted knots even if the caller later changes them.
         self._discrete_transition_covariate_data_ = (
-            None
-            if self.discrete_transition_design_matrix_ is None
-            else copy.deepcopy(covariate_data)
+            None if transition_type.is_stationary else copy.deepcopy(covariate_data)
         )
         # Curvature penalty of each of the formula's spline terms, the
         # strengths of each row's penalties (fixed, or REML's starting value until an
         # M-step chooses it) and, once an M-step has fit them, the Laplace
         # covariance of each row's coefficients.
         self.discrete_transition_coefficient_covariance_ = None
-        if self.discrete_transition_design_matrix_ is None:
+        if transition_type.is_stationary:
             self.discrete_transition_smoothness_matrix_ = None
             self.discrete_transition_smoothness_ = None
         else:
+            # A covariate-dependent transition has a design matrix and
+            # coefficients (checked above).
+            assert self.discrete_transition_design_matrix_ is not None
+            assert self.discrete_transition_coefficients_ is not None
             self.discrete_transition_smoothness_matrix_ = _smoothness_matrix(
                 self.discrete_transition_design_matrix_.design_info
             )
-            # The design matrix is only set together with the coefficients.
-            assert self.discrete_transition_coefficients_ is not None
             self.discrete_transition_smoothness_ = _row_smoothness(
-                getattr(self.discrete_transition_type, "smoothness", 0.0),
+                transition_type.smoothness,
                 None,
                 self.discrete_transition_smoothness_matrix_,
                 self.discrete_transition_coefficients_.shape[1],
@@ -3145,7 +3150,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # instead keep their coefficients: the M-step skips them.
         if (
             self._frozen_discrete_transition_rows_mask_ is not None
-            and self.discrete_state_transitions_.ndim == 2
+            and transition_type.is_stationary
         ):
             self._frozen_discrete_transition_rows_baseline_ = (
                 self.discrete_state_transitions_[
@@ -5270,10 +5275,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ):
             cache_likelihood = True
 
-        covariate_transitions = _is_nonstationary(
-            self.discrete_transition_coefficients_,
-            self.discrete_transition_design_matrix_,
-        )
+        covariate_transitions = not self.discrete_transition_type.is_stationary
         # Structured EM accumulates the discrete M-step's statistics in its
         # replay: per-row responses for covariate transitions, else counts.
         transition_statistics = None
@@ -5291,11 +5293,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # REML chooses each covariate row's smoothness in its M-step, so that
         # M-step's prior is known only after it, and EM checks the M-step's
         # input against its output under it.
-        smoothness_setting = getattr(self.discrete_transition_type, "smoothness", 0.0)
         prior_set_in_m_step = (
             estimate_discrete_transition
             and covariate_transitions
-            and isinstance(smoothness_setting, str)
+            and isinstance(self.discrete_transition_type.smoothness, str)
         )
         prior_changes = prior_tracks_counts or prior_set_in_m_step
         interior_state_ind: np.ndarray | None = None
@@ -5345,7 +5346,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             prior_tracks_counts=prior_tracks_counts,
             prior_set_in_m_step=prior_set_in_m_step,
             prior_changes=prior_changes,
-            smoothness_setting=smoothness_setting,
+            smoothness_setting=self.discrete_transition_type.smoothness,
             prior=prior,
             frozen_rows=frozen_rows,
             free_rows=free_rows,

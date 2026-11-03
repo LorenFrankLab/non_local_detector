@@ -153,6 +153,8 @@ def test_invalid_scalar_gaussian_shape_is_rejected_before_dense_allocation(monke
 @pytest.mark.unit
 def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
     class Custom:
+        environment_name = ""
+
         def make_state_transition(self, environments, context=None):
             msg = "opaque constructor cannot reinterpret sparse distances"
             raise AssertionError(msg)
@@ -172,6 +174,7 @@ def test_opaque_custom_fallback_with_deferred_distances_has_explicit_limit():
 def test_slotted_custom_transition_preserves_explicit_eager_dense_fallback():
     class Custom:
         __slots__ = ()
+        environment_name = ""
 
         def make_state_transition(self, environments, context=None):
             return np.eye(len(environments[0].place_bin_centers_))
@@ -187,6 +190,7 @@ def test_slotted_custom_transition_preserves_explicit_eager_dense_fallback():
 def test_slotted_custom_never_receives_a_temporary_dense_environment():
     class Custom:
         __slots__ = ("environment",)
+        environment_name = ""
 
         def make_state_transition(self, environments, context=None):
             self.environment = environments[0]
@@ -1109,3 +1113,301 @@ def test_backward_and_pairs_matches_separate_products(max_dense_bytes):
     backward, pairs = jax.jit(fused.backward_and_pairs)(ratio, filtered)
     np.testing.assert_allclose(backward, fused.backward(ratio), rtol=1e-6)
     np.testing.assert_allclose(pairs, fused.pair_products(filtered, ratio), rtol=1e-6)
+
+
+@pytest.mark.unit
+def test_unsupported_transition_error_names_the_representation_setting():
+    """A transition without a structured operator points at the user setting
+    that permits its dense block."""
+    with pytest.raises(
+        UnsupportedTransitionError, match='transition_representation="auto"'
+    ):
+        build_transition_operator([[EmpiricalMovement()]], [environment((4, 5))], (20,))
+
+
+@pytest.mark.unit
+def test_dense_budget_error_names_the_budget_setting():
+    """Exceeding the dense fallback budget names max_dense_transition_bytes."""
+    transition = RandomWalk(movement_var=np.array([[1.0, 0.2], [0.2, 1.0]]))
+    with pytest.raises(DenseTransitionBudgetError, match="max_dense_transition_bytes"):
+        build_transition_operator(
+            [[transition]],
+            [environment((4, 5))],
+            (20,),
+            allow_dense_fallback=True,
+            max_dense_bytes=8,
+        )
+
+
+@pytest.mark.unit
+def test_opaque_custom_error_names_the_dense_representation():
+    """An opaque custom transition on deferred distances points at
+    transition_representation="dense"."""
+
+    class Custom:
+        environment_name = ""
+
+        def make_state_transition(self, environments, context=None):
+            raise AssertionError
+
+    position = np.array([[0.0, 0.0], [3.0, 4.0]])
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=False, compute_all_pairs_distances=False
+    )
+    with pytest.raises(
+        UnsupportedTransitionError, match='transition_representation="dense"'
+    ):
+        build_transition_operator(
+            [[Custom()]],
+            [env],
+            (len(env.place_bin_centers_),),
+            allow_dense_fallback=True,
+        )
+
+
+def _custom_returning(matrix):
+    """A custom transition whose dense block is ``matrix``."""
+
+    class Custom:
+        environment_name = ""
+
+        def make_state_transition(self, environments, context=None):
+            return matrix
+
+    return Custom()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("matrix", "match"),
+    [
+        (np.ones((1, 1)), "shape"),
+        (np.ones((12,)), "shape"),
+        (np.full((12, 12), 2.0 / 12), "at most 1"),
+        (np.eye(12) * 2.0 - np.roll(np.eye(12), 1, axis=1), "non-negative"),
+        (np.full((12, 12), np.nan), "non-finite"),
+    ],
+    ids=["broadcast-scalar", "one-dimensional", "rows-sum-to-two", "negative", "nan"],
+)
+def test_invalid_custom_block_is_rejected_in_dense_and_operator_paths(matrix, match):
+    """A custom transition's block must be its states' shape, non-negative,
+    and have rows summing to at most 1; otherwise both constructions fail
+    instead of broadcasting it into the transition."""
+    env = environment((3, 4))
+    with pytest.raises(ValueError, match=match):
+        dense_reference([[_custom_returning(matrix)]], [env], (12,))
+    with pytest.raises(ValueError, match=match):
+        build_transition_operator(
+            [[_custom_returning(matrix)]], [env], (12,), allow_dense_fallback=True
+        )
+
+
+@pytest.mark.unit
+def test_custom_block_with_empty_rows_is_accepted():
+    """Rows summing to 0 (bins nothing can leave) are valid."""
+    matrix = np.eye(12)
+    matrix[[0, 3]] = 0.0
+    env = environment((3, 4))
+    dense, _ = dense_reference([[_custom_returning(matrix)]], [env], (12,))
+    np.testing.assert_array_equal(dense, matrix)
+    operator = build_transition_operator(
+        [[_custom_returning(matrix)]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), matrix)
+
+
+@pytest.mark.unit
+def test_spatial_discrete_block_is_rejected_instead_of_broadcast():
+    """A one-bin Discrete block between two spatial states is not broadcast
+    into a matrix of ones."""
+    env = environment((3, 4))
+    match = r"Discrete gives a block with the wrong shape"
+    with pytest.raises(ValidationError, match=match):
+        dense_reference([[Discrete()]], [env], (12,))
+    for allow_dense_fallback in (False, True):
+        with pytest.raises(ValidationError, match=match):
+            build_transition_operator(
+                [[Discrete()]], [env], (12,), allow_dense_fallback=allow_dense_fallback
+            )
+
+
+@pytest.mark.unit
+def test_transition_without_environment_name_is_rejected():
+    """A continuous transition must declare environment_name."""
+
+    class Nameless:
+        def make_state_transition(self, environments, context=None):
+            return np.eye(12)
+
+    env = environment((3, 4))
+    with pytest.raises(ValidationError, match="environment_name"):
+        dense_reference([[Nameless()]], [env], (12,))
+    with pytest.raises(ValidationError, match="environment_name"):
+        build_transition_operator(
+            [[Nameless()]], [env], (12,), allow_dense_fallback=True
+        )
+
+
+@pytest.mark.unit
+def test_custom_transition_opts_into_a_structured_block():
+    """A custom class implementing SupportsStructuredBlock gets its block
+    without a dense constructor, even with no dense fallback allowed."""
+    from non_local_detector.transition_operators import (
+        IdentityBlock,
+        SupportsStructuredBlock,
+    )
+
+    class Stay:
+        environment_name = ""
+
+        def make_state_transition(self, environments, context=None):
+            msg = "the structured block must be used"
+            raise AssertionError(msg)
+
+        def structured_block(self, environments):
+            return IdentityBlock(environments[0].is_track_interior_flat_)
+
+        def dense_block_shape(self, environments):
+            n_bins = len(environments[0].place_bin_centers_)
+            return (n_bins, n_bins)
+
+        def graph_distance_environment(self, environments):
+            return None
+
+    env = environment((3, 4))
+    assert isinstance(Stay(), SupportsStructuredBlock)
+    operator = build_transition_operator([[Stay()]], [env], (12,))
+    np.testing.assert_array_equal(
+        np.asarray(LazyDenseTransition(operator)),
+        np.diag(env.is_track_interior_flat_.astype(float)),
+    )
+
+
+@pytest.mark.unit
+def test_subclass_overriding_make_state_transition_falls_back_to_dense():
+    """A RandomWalk subclass with its own make_state_transition does not
+    inherit the Gaussian structured block."""
+
+    class Stay(RandomWalk):
+        def make_state_transition(self, environments, context=None):
+            return np.eye(len(environments[0].place_bin_centers_))
+
+    env = environment((3, 4), holes=False)
+    with pytest.raises(UnsupportedTransitionError):
+        build_transition_operator([[Stay()]], [env], (12,))
+    operator = build_transition_operator(
+        [[Stay()]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), np.eye(12))
+
+
+@pytest.mark.unit
+def test_empirical_movement_with_speedup_leaking_mass_is_accepted():
+    """``EmpiricalMovement(speedup=2)`` squares a matrix with an empty row
+    (the last sample's bin, never left), so a row that reaches that bin sums
+    to less than 1. Both constructors keep such a sub-stochastic block."""
+    position = np.concatenate([np.tile(np.arange(2.5, 50, 5.0), 4), [92.5]])[
+        :, np.newaxis
+    ]
+    env = Environment(place_bin_size=5.0, position_range=[(0.0, 100.0)])
+    env = env.fit_place_grid(position)
+    transition = EmpiricalMovement(speedup=2)
+    expected = transition.make_state_transition(
+        [env], TransitionContext(position=position)
+    )
+    row_sums = expected.sum(axis=1)
+    assert np.any((row_sums > 0.0) & (row_sums < 1.0 - 1e-2))
+    count = len(env.place_bin_centers_)
+
+    dense, _ = dense_reference([[transition]], [env], (count,), position=position)
+    np.testing.assert_array_equal(dense, expected)
+    operator = build_transition_operator(
+        [[transition]],
+        [env],
+        (count,),
+        allow_dense_fallback=True,
+        context=TransitionContext(position=position),
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), expected)
+
+
+@pytest.mark.unit
+def test_block_with_rows_above_one_is_rejected():
+    """Row sums above 1 beyond the probability tolerance are rejected; the
+    hint does not tell the user to renormalize a package transition."""
+    from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
+
+    env = environment((3, 4))
+    within = np.eye(12) * (1.0 + PROBABILITY_SUM_TOLERANCE / 2)
+    dense, _ = dense_reference([[_custom_returning(within)]], [env], (12,))
+    np.testing.assert_array_equal(dense, within)
+    above = np.eye(12) * (1.0 + 2 * PROBABILITY_SUM_TOLERANCE)
+    with pytest.raises(ValidationError, match="at most 1") as error:
+        dense_reference([[_custom_returning(above)]], [env], (12,))
+    assert "Normalize" not in str(error.value)
+
+
+@pytest.mark.unit
+def test_subclass_overriding_a_helper_falls_back_to_dense():
+    """A RandomWalk subclass that changes a helper of make_state_transition
+    is planned as a custom transition, not given RandomWalk's Gaussian
+    block."""
+    from dataclasses import dataclass
+
+    from non_local_detector.continuous_state_transitions import (
+        _euclidean_random_walk,
+    )
+
+    @dataclass
+    class WideRandomWalk(RandomWalk):
+        def _handle_no_track_graph(self, environment):
+            return _euclidean_random_walk(
+                environment, self.movement_mean, 10 * self.movement_var
+            )
+
+    env = environment((3, 4), holes=False)
+    transition = WideRandomWalk()
+    with pytest.raises(UnsupportedTransitionError):
+        build_transition_operator([[transition]], [env], (12,))
+    operator = build_transition_operator(
+        [[transition]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(
+        np.asarray(LazyDenseTransition(operator)),
+        transition.make_state_transition([env]),
+    )
+
+
+@pytest.mark.unit
+def test_subclass_defining_structured_block_uses_it():
+    """A subclass opts in again by defining structured_block itself."""
+    from dataclasses import dataclass
+
+    from non_local_detector.transition_operators import IdentityBlock
+
+    @dataclass
+    class StayingRandomWalk(RandomWalk):
+        def make_state_transition(self, environments, context=None):
+            return np.diag(environments[0].is_track_interior_flat_.astype(float))
+
+        def structured_block(self, environments):
+            return IdentityBlock(environments[0].is_track_interior_flat_)
+
+    env = environment((3, 4))
+    operator = build_transition_operator([[StayingRandomWalk()]], [env], (12,))
+    assert isinstance(operator.blocks[0][0], IdentityBlock)
+
+
+@pytest.mark.unit
+def test_instance_assigned_make_state_transition_is_custom():
+    """A make_state_transition assigned on the instance replaces the class's
+    matrix, so the class's structured block no longer describes it."""
+    env = environment((3, 4), holes=False)
+    transition = RandomWalk()
+    transition.make_state_transition = lambda environments, context=None: np.eye(12)
+    with pytest.raises(UnsupportedTransitionError):
+        build_transition_operator([[transition]], [env], (12,))
+    operator = build_transition_operator(
+        [[transition]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), np.eye(12))

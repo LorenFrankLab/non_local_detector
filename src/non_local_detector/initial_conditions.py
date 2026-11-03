@@ -11,6 +11,7 @@ from typing import cast
 import numpy as np
 
 from non_local_detector.environment import Environment, find_environment_by_name
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.observation_models import ObservationModel
 
 
@@ -25,9 +26,11 @@ class UniformInitialConditions:
 
     Examples
     --------
+    >>> import numpy as np
     >>> initial_conditions = UniformInitialConditions()
     >>> obs_model = ObservationModel(environment_name="track1")
-    >>> envs = (Environment(environment_name="track1"),)
+    >>> environment = Environment(environment_name="track1", place_bin_size=10.0)
+    >>> envs = (environment.fit_place_grid(np.linspace(0, 100, 50)[:, None]),)
     >>> ic_array = initial_conditions.make_initial_conditions(obs_model, envs)
     """
 
@@ -52,31 +55,44 @@ class UniformInitialConditions:
         -------
         initial_conditions : np.ndarray, shape (n_place_bins,)
             Normalized initial probability distribution. For local/no-spike models,
-            returns shape (1,). For spatial models, shape matches the number of
-            interior track position bins.
+            returns shape (1,). For spatial models, one value per place bin of
+            the environment: uniform over its interior bins, 0 elsewhere.
+
+        Raises
+        ------
+        ValidationError
+            If the observation model's environment is not fitted or has no
+            interior bins.
         """
 
         if observation_model.is_local or observation_model.is_no_spike:
-            initial_conditions = np.ones((1,), dtype=np.float32)
-        else:
-            environment = find_environment_by_name(
-                environments, observation_model.environment_name
+            return np.ones((1,), dtype=np.float32)
+        environment = find_environment_by_name(
+            environments, observation_model.environment_name
+        )
+        name = environment.environment_name
+        if environment.is_track_interior_ is None:
+            msg = f"Environment {name!r} is not fitted, so it has no place bins"
+            raise ValidationError(
+                msg,
+                hint=(
+                    "Fit the detector (or call environment.fit_place_grid) "
+                    "before making initial conditions."
+                ),
             )
-            if environment.is_track_interior_ is not None:
-                initial_conditions = environment.is_track_interior_.ravel().astype(
-                    np.float32
-                )
-            else:
-                initial_conditions = np.ones((1,), dtype=np.float32)
-
+        initial_conditions = environment.is_track_interior_.ravel().astype(np.float32)
         total = initial_conditions.sum()
-        if total > 0:
-            initial_conditions /= total
-        else:
-            initial_conditions = np.full_like(
-                initial_conditions, 1.0 / len(initial_conditions)
+        if total == 0:
+            msg = f"Environment {name!r} has no interior bins"
+            raise ValidationError(
+                msg,
+                got=f"{initial_conditions.size} place bins, none on the track",
+                hint=(
+                    "Check is_track_interior, or the position data the "
+                    "environment's track interior is inferred from."
+                ),
             )
-
+        initial_conditions /= total
         return initial_conditions
 
 

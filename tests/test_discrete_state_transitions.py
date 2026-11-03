@@ -15,6 +15,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
+    DiscreteTransition,
     InitialDiscreteTransition,
     centered_softmax_forward,
     centered_softmax_inverse,
@@ -24,6 +25,7 @@ from non_local_detector.discrete_state_transitions import (
     make_transition_from_diag,
     predict_discrete_state_transitions,
 )
+from non_local_detector.exceptions import DataError, ValidationError
 from tests.conftest import assert_stochastic_matrix
 
 pytestmark = pytest.mark.unit
@@ -513,3 +515,108 @@ class TestDefaultCovariateSpline:
             formula="1 + bs(speed, knots=[10.0, 20.0])",
         ).make_state_transition({"speed": np.linspace(0.0, 50.0, 100)})
         assert design_matrix.shape == (100, 6)
+
+
+class TestDiscreteTransitionValidation:
+    """Discrete transitions reject invalid configurations when constructed."""
+
+    @pytest.mark.parametrize(
+        "cls", [DiscreteStationaryDiagonal, DiscreteNonStationaryDiagonal]
+    )
+    @pytest.mark.parametrize(
+        ("diagonal_values", "exc"),
+        [
+            ([1.5, 0.9], ValidationError),
+            ([-0.1, 0.9], ValidationError),
+            ([np.nan, 0.9], DataError),
+            ([[0.9, 0.9]], ValidationError),
+        ],
+        ids=["above-one", "negative", "nan", "two-dimensional"],
+    )
+    def test_invalid_diagonal_values_raise(self, cls, diagonal_values, exc):
+        """Diagonal values are probabilities, one per state."""
+        with pytest.raises(exc, match="diagonal_values"):
+            cls(np.asarray(diagonal_values))
+
+    @pytest.mark.parametrize(
+        "cls", [DiscreteStationaryCustom, DiscreteNonStationaryCustom]
+    )
+    @pytest.mark.parametrize(
+        ("values", "exc", "match"),
+        [
+            (np.full((4, 4), 0.5), ValidationError, "row-stochastic"),
+            (np.array([[1.5, -0.5], [0.1, 0.9]]), ValidationError, "non-negative"),
+            (np.array([[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]), ValidationError, "square"),
+            (np.array([[np.inf, 0.0], [0.1, 0.9]]), DataError, "non-finite"),
+        ],
+        ids=["rows-sum-to-two", "negative", "non-square", "inf"],
+    )
+    def test_invalid_custom_values_raise(self, cls, values, exc, match):
+        """Custom matrices must be finite, square, non-negative and
+        row-stochastic."""
+        with pytest.raises(exc, match=match):
+            cls(values)
+
+    def test_valid_list_diagonal_is_accepted(self):
+        """Array-like diagonals keep working and build the same matrix."""
+        transition = DiscreteStationaryDiagonal([0.9, 0.8])
+        np.testing.assert_array_equal(
+            transition.make_state_transition().transition_matrix,
+            make_transition_from_diag(np.array([0.9, 0.8])),
+        )
+
+
+@pytest.mark.parametrize(
+    ("transition", "is_stationary", "smoothness"),
+    [
+        (DiscreteStationaryDiagonal(np.array([0.9, 0.8])), True, 0.0),
+        (DiscreteStationaryCustom(np.array([[0.7, 0.3], [0.2, 0.8]])), True, 0.0),
+        (
+            DiscreteNonStationaryDiagonal(np.array([0.9, 0.8]), smoothness="reml"),
+            False,
+            "reml",
+        ),
+        (
+            DiscreteNonStationaryCustom(
+                np.array([[0.7, 0.3], [0.2, 0.8]]), smoothness=2.0
+            ),
+            False,
+            2.0,
+        ),
+    ],
+    ids=[
+        "stationary-diagonal",
+        "stationary-custom",
+        "covariate-diagonal",
+        "covariate-custom",
+    ],
+)
+def test_transitions_declare_the_discrete_transition_contract(
+    transition, is_stationary, smoothness
+):
+    """Each package transition satisfies the DiscreteTransition protocol and
+    declares its stationarity, number of states and smoothness."""
+    assert isinstance(transition, DiscreteTransition)
+    assert transition.is_stationary is is_stationary
+    assert transition.n_states == 2
+    assert transition.smoothness == smoothness
+    # Declared properties are not instance attributes, so
+    # ``type(obj)(**vars(obj))`` still rebuilds the object.
+    rebuilt = type(transition)(**vars(transition))
+    assert set(vars(rebuilt)) == set(vars(transition))
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        DiscreteStationaryDiagonal(np.array([0.9, 0.8])),
+        DiscreteStationaryCustom(np.array([[0.7, 0.3], [0.2, 0.8]])),
+        DiscreteNonStationaryDiagonal(np.array([0.9, 0.8])),
+        DiscreteNonStationaryCustom(np.array([[0.7, 0.3], [0.2, 0.8]])),
+    ],
+)
+def test_array_configurations_compare_by_identity(transition):
+    """Equality of a configuration holding arrays is a bool, not an array."""
+    copy = type(transition)(**vars(transition))
+    assert (transition == copy) is False
+    assert (transition == transition) is True

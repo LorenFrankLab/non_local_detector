@@ -13,12 +13,7 @@ from typing import Literal
 import numpy as np
 
 from non_local_detector.continuous_state_transitions import ContinuousTransition
-from non_local_detector.discrete_state_transitions import (
-    DiscreteNonStationaryCustom,
-    DiscreteNonStationaryDiagonal,
-    DiscreteStationaryCustom,
-    DiscreteStationaryDiagonal,
-)
+from non_local_detector.discrete_state_transitions import DiscreteTransition
 from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.observation_models import ObservationModel
@@ -62,17 +57,12 @@ per-state stickiness values controlling the tendency to remain in
 the current state.
 """
 
-DiscreteTransitions = (
-    DiscreteStationaryDiagonal
-    | DiscreteNonStationaryCustom
-    | DiscreteNonStationaryDiagonal
-    | DiscreteStationaryCustom
-)
-"""Type alias for discrete state transition model types.
+DiscreteTransitions = DiscreteTransition
+"""Type alias for discrete state transition specifications.
 
-Union of all available discrete transition matrix types, including
-stationary and non-stationary variants with diagonal or custom
-transition patterns.
+Any object satisfying the ``DiscreteTransition`` protocol: the package's
+stationary and covariate-dependent diagonal and custom transitions, or a
+user-defined class with the same members.
 """
 
 StateNames = list[str] | None

@@ -9,13 +9,15 @@ be used for particular data segments.
 from dataclasses import dataclass
 
 
-@dataclass(order=True, unsafe_hash=True)
+@dataclass(frozen=True, order=True)
 class ObservationModel:
     """Determines which environment and data points data correspond to.
 
     This class encapsulates the metadata needed to associate neural data
     with specific experimental environments, encoding groups, and decoding
-    contexts (local vs. non-local, spike vs. no-spike conditions).
+    contexts (local vs. non-local, spike vs. no-spike conditions). It is
+    immutable, so it can be hashed and sorted; use ``dataclasses.replace``
+    for a changed copy.
 
     Attributes
     ----------

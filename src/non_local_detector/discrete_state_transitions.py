@@ -14,11 +14,12 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, NamedTuple, TypeAlias, cast
+from typing import Any, NamedTuple, Protocol, TypeAlias, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from jax.nn import log_softmax
 from jax.typing import ArrayLike
@@ -35,6 +36,9 @@ from scipy.linalg import cho_factor, cho_solve
 from scipy.optimize import minimize, minimize_scalar
 from scipy.special import expit, logit, softmax, xlogy
 from scipy.stats import norm
+
+from non_local_detector import _validation as val
+from non_local_detector.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -2976,7 +2980,159 @@ class InitialDiscreteTransition(NamedTuple):
     design_matrix: DesignMatrix | None
 
 
-@dataclass
+@runtime_checkable
+class DiscreteTransition(Protocol):
+    """A model of the transitions between discrete states.
+
+    The detectors read ``is_stationary``, ``n_states`` and ``smoothness``
+    and call ``make_state_transition(covariate_data)`` at fit. A
+    user-defined class with these members can be used in place of the
+    package's ``DiscreteStationaryDiagonal``, ``DiscreteStationaryCustom``,
+    ``DiscreteNonStationaryDiagonal`` and ``DiscreteNonStationaryCustom``.
+    Spyglass stores a transition as ``vars(obj)`` and rebuilds it with
+    ``type(obj)(**vars(obj))``, so every instance attribute should be an
+    ``__init__`` argument.
+    """
+
+    @property
+    def is_stationary(self) -> bool:
+        """Whether the transition is the same at every time step.
+
+        A stationary transition returns a ``(n_states, n_states)`` matrix and
+        no coefficients or design matrix; a covariate-dependent one returns
+        one matrix per time step, its coefficients and its design matrix.
+        """
+        ...
+
+    @property
+    def n_states(self) -> int:
+        """Number of discrete states."""
+        ...
+
+    @property
+    def smoothness(self) -> float | str:
+        """Curvature-penalty strength of covariate-dependent rows (or
+        ``"reml"``); 0.0 for a stationary transition."""
+        ...
+
+    def make_state_transition(
+        self, covariate_data: pd.DataFrame | dict[str, Any] | None
+    ) -> InitialDiscreteTransition:
+        """The transition EM starts from.
+
+        Parameters
+        ----------
+        covariate_data : pd.DataFrame or dict or None
+            Covariates, one row per time step, for a covariate-dependent
+            transition; ignored by a stationary one.
+
+        Returns
+        -------
+        initial : InitialDiscreteTransition
+        """
+        ...
+
+
+def _check_initial_discrete_transition(
+    initial: InitialDiscreteTransition, transition: DiscreteTransition
+) -> None:
+    """Check that ``make_state_transition``'s result matches the transition.
+
+    Parameters
+    ----------
+    initial : InitialDiscreteTransition
+        Result of ``transition.make_state_transition``.
+    transition : DiscreteTransition
+
+    Raises
+    ------
+    ValidationError
+        If the result's shape does not match ``n_states``, or its
+        coefficients, design matrix or number of dimensions do not match
+        ``is_stationary``.
+    """
+    name = type(transition).__name__
+    n_states = transition.n_states
+    matrix = np.asarray(initial.transition_matrix)
+    has_covariates = (
+        initial.coefficients is not None or initial.design_matrix is not None
+    )
+    if transition.is_stationary:
+        consistent = matrix.ndim == 2 and not has_covariates
+        expected = (
+            "a (n_states, n_states) transition_matrix and None coefficients "
+            "and design_matrix"
+        )
+    else:
+        consistent = (
+            matrix.ndim == 3
+            and initial.coefficients is not None
+            and initial.design_matrix is not None
+        )
+        expected = (
+            "a (n_time, n_states, n_states) transition_matrix with its "
+            "coefficients and design_matrix"
+        )
+    if not consistent:
+        msg = (
+            f"{name}.make_state_transition does not match "
+            f"{name}.is_stationary={transition.is_stationary}"
+        )
+        raise ValidationError(
+            msg,
+            expected=expected,
+            got=(
+                f"transition_matrix with shape {matrix.shape}, coefficients "
+                f"{'set' if initial.coefficients is not None else 'None'}, "
+                "design_matrix "
+                f"{'set' if initial.design_matrix is not None else 'None'}"
+            ),
+        )
+    if matrix.shape[-2:] != (n_states, n_states):
+        msg = f"{name}.make_state_transition returned the wrong number of states"
+        raise ValidationError(
+            msg,
+            expected=f"{n_states} x {n_states} transition matrices",
+            got=f"transition_matrix with shape {matrix.shape}",
+        )
+
+
+def _validate_diagonal_values(diagonal_values: npt.ArrayLike, name: str) -> None:
+    """Check that diagonal values are one probability per state.
+
+    Raises
+    ------
+    ValidationError
+        If the values are not one-dimensional or not in [0, 1].
+    DataError
+        If any value is NaN or infinite.
+    """
+    values = np.asarray(diagonal_values, dtype=float)
+    val.ensure_array_1d(values, name)
+    val.ensure_all_finite(values, name)
+    val.ensure_in_range(values, name, 0.0, 1.0)
+
+
+def _validate_transition_values(values: npt.ArrayLike, name: str) -> None:
+    """Check that a custom matrix is a square row-stochastic matrix.
+
+    Raises
+    ------
+    ValidationError
+        If the matrix is not square, has negative values or values above 1,
+        or a row that does not sum to 1.
+    DataError
+        If any value is NaN or infinite.
+    """
+    matrix = np.asarray(values, dtype=float)
+    val.ensure_all_finite(matrix, name)
+    val.ensure_square_matrix(matrix, name)
+    val.ensure_all_non_negative(matrix, name)
+    val.ensure_in_range(matrix, name, 0.0, 1.0)
+    val.ensure_stochastic_matrix(matrix, name)
+
+
+@dataclass(eq=False)
 class DiscreteStationaryDiagonal:
     """Diagonal values are placed on the diagonal.
 
@@ -2985,10 +3141,30 @@ class DiscreteStationaryDiagonal:
     Attributes
     ----------
     diagonal_values : np.ndarray, shape (n_states,)
-        The diagonal of the transition matrix.
+        The diagonal of the transition matrix, each in [0, 1].
     """
 
     diagonal_values: np.ndarray
+
+    def __post_init__(self) -> None:
+        _validate_diagonal_values(
+            self.diagonal_values, "DiscreteStationaryDiagonal.diagonal_values"
+        )
+
+    @property
+    def is_stationary(self) -> bool:
+        """True: the transition does not depend on covariates."""
+        return True
+
+    @property
+    def n_states(self) -> int:
+        """Number of discrete states, the length of ``diagonal_values``."""
+        return len(np.asarray(self.diagonal_values))
+
+    @property
+    def smoothness(self) -> float:
+        """0.0: a stationary transition has no curvature penalty."""
+        return 0.0
 
     def make_state_transition(
         self,
@@ -3012,17 +3188,35 @@ class DiscreteStationaryDiagonal:
         return InitialDiscreteTransition(make_transition_from_diag(diag), None, None)
 
 
-@dataclass
+@dataclass(eq=False)
 class DiscreteStationaryCustom:
     """Create a custom discrete transition matrix.
 
     Attributes
     ----------
     values : np.ndarray, shape (n_states, n_states)
-        The transition matrix values. Rows must sum to 1.
+        The transition matrix values: non-negative, and each row sums to 1.
     """
 
     values: np.ndarray
+
+    def __post_init__(self) -> None:
+        _validate_transition_values(self.values, "DiscreteStationaryCustom.values")
+
+    @property
+    def is_stationary(self) -> bool:
+        """True: the transition does not depend on covariates."""
+        return True
+
+    @property
+    def n_states(self) -> int:
+        """Number of discrete states, the rows of ``values``."""
+        return len(np.asarray(self.values))
+
+    @property
+    def smoothness(self) -> float:
+        """0.0: a stationary transition has no curvature penalty."""
+        return 0.0
 
     def make_state_transition(
         self,
@@ -3102,7 +3296,7 @@ def _initial_nonstationary_transition(
     )
 
 
-@dataclass
+@dataclass(eq=False)
 class DiscreteNonStationaryDiagonal:
     """Non-stationary transition matrix driven by covariates.
 
@@ -3112,7 +3306,8 @@ class DiscreteNonStationaryDiagonal:
     Attributes
     ----------
     diagonal_values : np.ndarray, shape (n_states,)
-        Initial diagonal probabilities used to set intercept coefficients.
+        Initial diagonal probabilities, each in [0, 1], used to set intercept
+        coefficients.
     formula : str, optional
         Patsy formula defining the relationship between covariates and
         transitions. Defaults to a cubic B-spline of ``speed`` with five
@@ -3137,10 +3332,23 @@ class DiscreteNonStationaryDiagonal:
     smoothness: float | str = 0.0
 
     def __post_init__(self) -> None:
+        _validate_diagonal_values(
+            self.diagonal_values, "DiscreteNonStationaryDiagonal.diagonal_values"
+        )
         _validate_smoothness(self.smoothness)
 
+    @property
+    def is_stationary(self) -> bool:
+        """False: the transition depends on covariates."""
+        return False
+
+    @property
+    def n_states(self) -> int:
+        """Number of discrete states, the length of ``diagonal_values``."""
+        return len(np.asarray(self.diagonal_values))
+
     def make_state_transition(
-        self, covariate_data: pd.DataFrame | dict[str, Any]
+        self, covariate_data: pd.DataFrame | dict[str, Any] | None
     ) -> InitialDiscreteTransition:
         """Construct the initial non-stationary discrete transition structures.
 
@@ -3168,7 +3376,7 @@ class DiscreteNonStationaryDiagonal:
         )
 
 
-@dataclass
+@dataclass(eq=False)
 class DiscreteNonStationaryCustom:
     """Non-stationary transition matrix driven by covariates, with custom initial values.
 
@@ -3177,8 +3385,8 @@ class DiscreteNonStationaryCustom:
     Attributes
     ----------
     values : np.ndarray, shape (n_states, n_states)
-        Initial stationary transition matrix used to set intercept coefficients.
-        Rows must sum to 1.
+        Initial stationary transition matrix used to set intercept coefficients:
+        non-negative, and each row sums to 1.
     formula : str, optional
         Patsy formula defining the relationship between covariates and
         transitions. Defaults to a cubic B-spline of ``speed`` with five
@@ -3203,7 +3411,18 @@ class DiscreteNonStationaryCustom:
     smoothness: float | str = 0.0
 
     def __post_init__(self) -> None:
+        _validate_transition_values(self.values, "DiscreteNonStationaryCustom.values")
         _validate_smoothness(self.smoothness)
+
+    @property
+    def is_stationary(self) -> bool:
+        """False: the transition depends on covariates."""
+        return False
+
+    @property
+    def n_states(self) -> int:
+        """Number of discrete states, the rows of ``values``."""
+        return len(np.asarray(self.values))
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None

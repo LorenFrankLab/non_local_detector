@@ -15,6 +15,7 @@ import pytest
 from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
+    InitialDiscreteTransition,
 )
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.models import SortedSpikesDecoder
@@ -36,6 +37,7 @@ def _two_state_decoder(environments, **overrides):
             "uniform_on_track",
         ],
         "continuous_transition_types": ["random_walk", "random_walk"],
+        "discrete_transition_type": DiscreteStationaryDiagonal(np.array([0.9, 0.9])),
         # Float is always valid, so stickiness validation never fires
         "discrete_transition_stickiness": 0.0,
         "state_names": ["state1", "state2"],
@@ -272,7 +274,7 @@ class TestValidateDiscreteTransitionType:
             # non-negativity check) rejects it
             (
                 np.array([[1.2, 0.0], [0.2, 0.8]]),
-                r"discrete_transition_type\.values values must be in range",
+                r"DiscreteStationaryCustom\.values values must be in range",
             ),
             # First row sums to 0.8
             (np.array([[0.5, 0.3], [0.2, 0.8]]), "stochastic"),
@@ -317,6 +319,66 @@ class TestValidateDiscreteTransitionType:
         # Assert: Model created successfully
         assert decoder is not None
         assert isinstance(decoder.discrete_transition_type, DiscreteStationaryDiagonal)
+
+    def test_diagonal_size_must_match_number_of_states(self, two_state_environment):
+        """A diagonal transition sized for another model is rejected."""
+        with pytest.raises(ValidationError, match="size must match"):
+            _two_state_decoder(
+                two_state_environment,
+                discrete_transition_type=DiscreteStationaryDiagonal(
+                    diagonal_values=np.array([0.9, 0.9, 0.9])
+                ),
+            )
+
+    def test_object_without_the_protocol_is_rejected(self, two_state_environment):
+        """An object that is not a DiscreteTransition is rejected when the
+        model is constructed."""
+        with pytest.raises(ValidationError, match="DiscreteTransition"):
+            _two_state_decoder(
+                two_state_environment,
+                discrete_transition_type=np.array([[0.9, 0.1], [0.1, 0.9]]),
+            )
+
+    def test_custom_class_satisfying_the_protocol_fits(self, two_state_environment):
+        """A user-defined stationary transition works without subclassing."""
+
+        class Sticky:
+            is_stationary = True
+            n_states = 2
+            smoothness = 0.0
+
+            def make_state_transition(self, covariate_data=None):
+                matrix = np.array([[0.95, 0.05], [0.05, 0.95]])
+                return InitialDiscreteTransition(matrix, None, None)
+
+        decoder = _two_state_decoder(
+            two_state_environment, discrete_transition_type=Sticky()
+        )
+        decoder.initialize_discrete_state_transition()
+        np.testing.assert_array_equal(
+            decoder.discrete_state_transitions_, [[0.95, 0.05], [0.05, 0.95]]
+        )
+
+    def test_declared_stationarity_must_match_the_transition(
+        self, two_state_environment
+    ):
+        """A transition declaring itself covariate-dependent but returning a
+        stationary matrix fails before the HMM sees it."""
+
+        class Mislabeled:
+            is_stationary = False
+            n_states = 2
+            smoothness = 0.0
+
+            def make_state_transition(self, covariate_data=None):
+                matrix = np.array([[0.95, 0.05], [0.05, 0.95]])
+                return InitialDiscreteTransition(matrix, None, None)
+
+        decoder = _two_state_decoder(
+            two_state_environment, discrete_transition_type=Mislabeled()
+        )
+        with pytest.raises(ValidationError, match="is_stationary"):
+            decoder.initialize_discrete_state_transition()
 
 
 @pytest.mark.unit
