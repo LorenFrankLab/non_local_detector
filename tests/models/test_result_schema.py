@@ -19,6 +19,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
 )
 from non_local_detector.analysis import get_spatial_posterior
+from non_local_detector.models._results import has_place_bins, state_bin_positions
 
 pytestmark = pytest.mark.integration
 
@@ -94,6 +95,19 @@ def test_state_ind_is_a_state_bins_coordinate(fitted, result):
     np.testing.assert_array_equal(
         np.atleast_1d(result.coords["states"].values)[result.state_ind],
         result.coords["state"].values,
+    )
+
+
+def test_state_bin_positions_follow_the_state_index(fitted, result):
+    """One block per state, NaN for states without place bins, as in results."""
+    positions = state_bin_positions(fitted)
+    np.testing.assert_array_equal([len(p) for p in positions], fitted.bin_sizes_)
+    for observation, block in zip(fitted.observation_models, positions, strict=True):
+        assert bool(np.isnan(block).all()) is not has_place_bins(fitted, observation)
+    position_names = result.indexes["state_bins"].names[1:]
+    np.testing.assert_array_equal(
+        np.concatenate(positions),
+        np.column_stack([result[name].values for name in position_names]),
     )
 
 

@@ -108,7 +108,9 @@ from non_local_detector.likelihoods.no_spike import (
 from non_local_detector.models._results import (
     convert_results_to_xarray,
     convert_seq_to_df,
+    has_place_bins,
     label_checkpointed_result,
+    state_bin_positions,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -2583,7 +2585,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         state_ind = []
         is_track_interior = []
         for ind, obs in enumerate(self.observation_models):
-            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
+            if not has_place_bins(self, obs):
                 bin_sizes.append(1)
                 state_ind.append(np.full(1, ind, dtype=int))
                 is_track_interior.append(np.ones(1, dtype=bool))
@@ -4394,24 +4396,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             outputs.add("predictive_posterior")
         if "log_likelihood" in requested_outputs:
             outputs.add("log_likelihood")
-        positions: list[np.ndarray] = []
-        first_centers = self.environments[0].place_bin_centers_
-        assert first_centers is not None  # set by fit_place_grid
-        n_dimensions = first_centers.shape[1]
-        for observation in self.observation_models:
-            if observation.is_no_spike or (
-                observation.is_local and self.local_position_std is None
-            ):
-                positions.append(np.full((1, n_dimensions), np.nan))
-            else:
-                positions.append(
-                    cast(
-                        "np.ndarray",
-                        self._get_environment_by_name(
-                            observation.environment_name
-                        ).place_bin_centers_,
-                    )
-                )
+        position = np.concatenate(state_bin_positions(self))
         metadata: dict[str, Any] = {
             "state_names": list(self.state_names),
             "environment_names": [
@@ -4423,8 +4408,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 else obs.encoding_group
                 for obs in self.observation_models
             ],
-            "position": np.concatenate(positions).tolist(),
-            "position_names": get_position_dim_names(n_dimensions),
+            "position": position.tolist(),
+            "position_names": get_position_dim_names(position.shape[1]),
             "state_ind": self.state_ind_.tolist(),
             "interior_mask": interior.tolist(),
             "max_read_bytes": int(max_read_bytes),
