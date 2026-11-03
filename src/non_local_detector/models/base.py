@@ -3915,10 +3915,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         )
         # Before the internal fit, so a refused estimate leaves the model as is.
         _require_observed_bins(is_missing)
+        # Every run drops the stored likelihood of the previous fit. Drop it
+        # before the snapshot, which would otherwise keep that
+        # (n_time, n_state_bins) array alive through EM; a failed run leaves
+        # it dropped too.
+        self._invalidate_stored_log_likelihood()
         # EM is atomic: if the internal fit or any EM step raises, the detector
-        # and its environments are left as they were before this call. The
-        # M-steps rebind or edit only attributes the internal fit rebuilt, so
-        # restoring the attribute snapshot undoes them.
+        # and its environments are left as they were before this call (see
+        # _restore_state_on_error for the invariant the EM steps keep).
         with self._restore_state_on_error():
             self._fit_em_model(
                 lambda representation: self.fit(
@@ -4525,6 +4529,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         leave the previously fitted detector paired with a refit grid. Both the
         detector and ``Environment.fit_place_grid`` rebind attributes rather than
         edit arrays in place, so shallow attribute snapshots are enough.
+
+        ``estimate_parameters`` runs its internal fit and EM in one block. The
+        EM steps rebind attributes, and edit in place only arrays the internal
+        fit has just rebuilt (``initial_conditions_``, the frozen rows of the
+        M-step's new ``discrete_state_transitions_``), so the snapshot still
+        holds the previous values. An EM step must keep to this: an in-place
+        edit of an array the internal fit does not rebuild could not be undone.
+
+        The snapshot keeps every attribute it holds alive until the block
+        exits; drop attributes the block always discards before entering it.
         """
         detector_state = dict(self.__dict__)
         environment_states = [(env, dict(env.__dict__)) for env in self.environments]
@@ -7249,6 +7263,20 @@ class ClusterlessDetector(_DetectorBase):
         -------
         results : xr.Dataset
             Results of the decoding.
+
+        Notes
+        -----
+        If the call raises after its arguments are validated, the detector and
+        its environments are restored to their state before the call, except
+        that a stored ``log_likelihood_`` is dropped. This includes a warning
+        promoted to an error (``-W error`` or
+        ``warnings.simplefilter("error")``), such as EM's convergence or
+        monotonicity warnings. A ``result_path`` store that the final E-step
+        has written is not removed. Until the call returns, the detector keeps
+        the previous fit (continuous and discrete transitions, initial
+        conditions, encoding model and environment grids) for that restore,
+        so EM holds this second copy; a dense continuous transition has
+        ``n_state_bins ** 2`` float64 values.
         """
         return self._estimate_spike_parameters(
             position_time,
@@ -8083,6 +8111,20 @@ class SortedSpikesDetector(_DetectorBase):
         -------
         xr.Dataset
             Results of the decoding
+
+        Notes
+        -----
+        If the call raises after its arguments are validated, the detector and
+        its environments are restored to their state before the call, except
+        that a stored ``log_likelihood_`` is dropped. This includes a warning
+        promoted to an error (``-W error`` or
+        ``warnings.simplefilter("error")``), such as EM's convergence or
+        monotonicity warnings. A ``result_path`` store that the final E-step
+        has written is not removed. Until the call returns, the detector keeps
+        the previous fit (continuous and discrete transitions, initial
+        conditions, encoding model and environment grids) for that restore,
+        so EM holds this second copy; a dense continuous transition has
+        ``n_state_bins ** 2`` float64 values.
         """
         return self._estimate_spike_parameters(
             position_time,
