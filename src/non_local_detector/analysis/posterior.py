@@ -131,7 +131,7 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
     total = np.nansum(probability, axis=1)
     has_mass = np.isfinite(total) & (total > 0)
     map_index = np.argmax(np.where(np.isnan(probability), -np.inf, probability), axis=1)
-    map_estimate = bin_coordinates[map_index]
+    map_estimate: np.ndarray = bin_coordinates[map_index]
     map_estimate[~has_mass] = np.nan
     return map_estimate
 
