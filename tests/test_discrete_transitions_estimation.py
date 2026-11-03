@@ -52,6 +52,8 @@ from tests.conftest import assert_stochastic_matrix
 class _FixedTransition:
     """Continuous transition object with deterministic test matrix."""
 
+    environment_name = ""
+
     def __init__(self, transition_matrix: np.ndarray):
         self.transition_matrix = np.asarray(transition_matrix, dtype=float)
 
