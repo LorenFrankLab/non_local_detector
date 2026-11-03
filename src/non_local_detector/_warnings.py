@@ -6,7 +6,6 @@ import sys
 # Not resolved: frame filenames carry the same, possibly symlinked, path the
 # package was imported from.
 _LIBRARY_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIBRARY_TESTS_DIR = os.path.join(_LIBRARY_DIR, "tests")
 
 
 def _inside(path: str, directory: str) -> bool:
@@ -17,7 +16,7 @@ def user_stacklevel() -> int:
     """``warnings.warn`` stacklevel of the first caller outside the library.
 
     Call it in the function that calls ``warnings.warn``. Frames in this
-    package, apart from its tests, are skipped, so the warning points at the
+    package are skipped, so the warning points at the
     user's code however deep inside the library it was raised and whichever
     public method led there.
 
@@ -29,7 +28,7 @@ def user_stacklevel() -> int:
     level = 1
     while frame is not None:
         path = os.path.abspath(frame.f_code.co_filename)
-        if not _inside(path, _LIBRARY_DIR) or _inside(path, _LIBRARY_TESTS_DIR):
+        if not _inside(path, _LIBRARY_DIR):
             break
         frame = frame.f_back
         level += 1

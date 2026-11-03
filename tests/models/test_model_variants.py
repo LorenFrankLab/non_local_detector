@@ -1,0 +1,218 @@
+"""Tests for model variant classes (MultiEnvironment, NoSpikeContFrag).
+
+These are thin wrappers around base detector classes. Tests focus on
+correct default parameter initialization since the fitting/predicting
+logic is tested via the base class tests.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+
+from non_local_detector.models.cont_frag_model import (
+    ContFragClusterlessClassifier,
+    ContFragSortedSpikesClassifier,
+)
+from non_local_detector.models.multienvironment_model import (
+    MultiEnvironmentClusterlessClassifier,
+    MultiEnvironmentSortedSpikesClassifier,
+)
+from non_local_detector.models.nospike_cont_frag_model import (
+    NoSpikeContFragClusterlessClassifier,
+    NoSpikeContFragSortedSpikesClassifier,
+)
+from tests.conftest import make_state_bins_results
+
+
+def _make_cont_frag_results(
+    *,
+    n_time: int,
+    state_names: tuple[str, ...],
+    position_grid: dict[str, np.ndarray],
+    seed: int = 0,
+) -> xr.Dataset:
+    """Build a synthetic ContFrag results dataset over a full position grid.
+
+    Unlike the paired-column ``make_state_bins_results`` factory, this takes a
+    per-axis ``position_grid`` and forms the full Cartesian product (one bin per
+    grid cell), matching the layout ``_convert_results_to_xarray`` produces.
+
+    Parameters
+    ----------
+    n_time : int
+        Number of time steps.
+    state_names : tuple of str
+        Discrete state labels, one per state.
+    position_grid : dict[str, np.ndarray]
+        Mapping from position-dim name (e.g., ``"position"`` for 1D or
+        ``"x_position"``/``"y_position"`` for 2D) to that axis's coordinate
+        values. The full meshgrid of these axes becomes the position bins.
+    seed : int, optional
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with ``acausal_posterior`` (time, state_bins).
+    """
+    mesh = np.meshgrid(*position_grid.values(), indexing="ij")
+    position_columns = {
+        name: grid.ravel() for name, grid in zip(position_grid, mesh, strict=False)
+    }
+    return make_state_bins_results(
+        state_names, position_columns, n_time=n_time, seed=seed
+    )
+
+
+@pytest.mark.unit
+class TestMultiEnvironmentDefaults:
+    """Test default parameter construction for multi-environment models."""
+
+    def test_sorted_spikes_default_state_names(self):
+        """Should have 2 environment states by default."""
+        model = MultiEnvironmentSortedSpikesClassifier()
+        assert len(model.state_names) == 2
+
+    def test_sorted_spikes_observation_models_have_environment_names(self):
+        """Each observation model should reference an environment."""
+        model = MultiEnvironmentSortedSpikesClassifier()
+        env_names = {obs.environment_name for obs in model.observation_models}
+        assert env_names == {"env1", "env2"}
+
+    def test_custom_initial_conditions_override(self):
+        """Custom initial conditions should override defaults."""
+        ic = np.array([0.5, 0.5])
+        model = MultiEnvironmentSortedSpikesClassifier(
+            discrete_initial_conditions=ic,
+        )
+        np.testing.assert_array_equal(model.discrete_initial_conditions, ic)
+
+
+@pytest.mark.unit
+class TestNoSpikeContFragDefaults:
+    """Test default parameter construction for no-spike cont-frag models."""
+
+    def test_sorted_spikes_three_states(self):
+        """Should have 3 states: No-Spike, Continuous, Fragmented."""
+        model = NoSpikeContFragSortedSpikesClassifier()
+        assert len(model.state_names) == 3
+
+    def test_sorted_spikes_has_no_spike_observation(self):
+        """Should have at least one no-spike observation model."""
+        model = NoSpikeContFragSortedSpikesClassifier()
+        assert any(obs.is_no_spike for obs in model.observation_models)
+
+    def test_clusterless_has_no_spike_observation(self):
+        """Clusterless variant should also have a no-spike observation."""
+        model = NoSpikeContFragClusterlessClassifier()
+        assert any(obs.is_no_spike for obs in model.observation_models)
+
+
+@pytest.mark.unit
+class TestVariantSharedDefaults:
+    """Default checks shared by the multi-environment and no-spike variants."""
+
+    @pytest.mark.parametrize(
+        "model_cls",
+        [MultiEnvironmentSortedSpikesClassifier, NoSpikeContFragSortedSpikesClassifier],
+        ids=lambda cls: cls.__name__,
+    )
+    def test_sorted_spikes_initial_conditions_valid(self, model_cls):
+        """Initial conditions must be a valid probability distribution."""
+        model = model_cls()
+        ic = model.discrete_initial_conditions
+        assert np.all(ic >= 0)
+        assert np.isclose(ic.sum(), 1.0)
+
+    @pytest.mark.parametrize(
+        ("model_cls", "n_states"),
+        [
+            (MultiEnvironmentClusterlessClassifier, 2),
+            (NoSpikeContFragClusterlessClassifier, 3),
+        ],
+        ids=lambda v: v.__name__ if isinstance(v, type) else str(v),
+    )
+    def test_clusterless_default_construction(self, model_cls, n_states):
+        """Clusterless variant should construct with correct defaults."""
+        model = model_cls()
+        assert len(model.state_names) == n_states
+        assert np.isclose(model.discrete_initial_conditions.sum(), 1.0)
+
+
+@pytest.mark.unit
+class TestContFragGetPosterior:
+    """``get_posterior`` must marginalize all position dims across env shapes."""
+
+    @pytest.mark.parametrize(
+        "position_grid",
+        [
+            pytest.param({"position": np.linspace(0.0, 100.0, 20)}, id="1d"),
+            pytest.param(
+                {
+                    "x_position": np.linspace(0.0, 50.0, 10),
+                    "y_position": np.linspace(0.0, 50.0, 10),
+                },
+                id="2d",
+            ),
+            pytest.param(
+                {f"dim{i}_position": np.linspace(0.0, 10.0, 4) for i in range(3)},
+                id="nd",
+            ),
+        ],
+    )
+    def test_cont_frag_get_posterior_collapses_all_position_dims(self, position_grid):
+        """``get_posterior`` marginalizes every position dim regardless of name.
+
+        Covers 1D (``position``), 2D (``x_position``/``y_position``), and the
+        >6D fallback (``dim{i}_position``), returning ``(time, state)`` with the
+        state dim named ``state`` so the documented ``sel(state=...)`` keeps
+        working.
+        """
+        n_time = 7
+        state_names = ("Continuous", "Fragmented")
+        results = _make_cont_frag_results(
+            n_time=n_time, state_names=state_names, position_grid=position_grid
+        )
+
+        for cls in (ContFragSortedSpikesClassifier, ContFragClusterlessClassifier):
+            state_probs = cls.get_posterior(results)
+            assert state_probs.shape == (n_time, len(state_names)), (
+                f"{cls.__name__}.get_posterior returned shape {state_probs.shape}, "
+                f"expected (n_time, n_states) = ({n_time}, {len(state_names)})"
+            )
+            assert "state" in state_probs.dims
+            # Every position dim must be collapsed (none left in the output).
+            assert not any(
+                d == "position" or d.endswith("_position") for d in state_probs.dims
+            )
+            # Each time row sums to ~1 (probability marginalized over space).
+            np.testing.assert_allclose(state_probs.sum("state").values, 1.0, atol=1e-10)
+            # The documented selection API keeps working.
+            assert state_probs.sel(state="Continuous").shape == (n_time,)
+
+    def test_cont_frag_get_posterior_raises_without_position_dim(self):
+        """If no dim names a position, the marginalization target is empty;
+        ``unstacked.sum([])`` would silently return the full per-bin array, so
+        the method must instead raise rather than produce a wrong-shaped result.
+        """
+        n_time = 4
+        # A MultiIndex over ("state", "foo") — "foo" is not a position dim.
+        mindex = pd.MultiIndex.from_arrays(
+            [
+                np.array(["Continuous", "Continuous", "Fragmented", "Fragmented"]),
+                np.array([0.0, 1.0, 0.0, 1.0]),
+            ],
+            names=("state", "foo"),
+        )
+        raw = np.random.default_rng(0).random((n_time, len(mindex)))
+        posterior = raw / raw.sum(axis=1, keepdims=True)
+        mindex_coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
+        results = xr.Dataset(
+            data_vars={"acausal_posterior": (("time", "state_bins"), posterior)},
+            coords={"time": np.arange(n_time), **mindex_coords},
+        )
+
+        for cls in (ContFragSortedSpikesClassifier, ContFragClusterlessClassifier):
+            with pytest.raises(ValueError, match="no position dimension"):
+                cls.get_posterior(results)
