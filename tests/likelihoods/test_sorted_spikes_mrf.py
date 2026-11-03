@@ -1001,7 +1001,8 @@ def test_reported_rank_is_actual_basis_rank_when_capped(env_2d):
 def test_registered_and_predict_shared_with_diffusion():
     """sorted_spikes_mrf is registered and reuses the diffusion Poisson prediction."""
     assert "sorted_spikes_mrf" in _SORTED_SPIKES_ALGORITHMS
-    fit_fn, predict_fn = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_mrf"]
+    record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_mrf"]
+    fit_fn, predict_fn = record.fit, record.predict
     assert fit_fn is fit_sorted_spikes_mrf_encoding_model
     assert predict_fn is predict_sorted_spikes_mrf_log_likelihood
     # The prediction is literally the diffusion predict (shared place-field contract).

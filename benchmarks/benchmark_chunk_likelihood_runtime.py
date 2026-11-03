@@ -33,7 +33,6 @@ import numpy as np
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
     common,
 )
@@ -152,7 +151,7 @@ def main():
             registry = (
                 _CLUSTERLESS_ALGORITHMS if clusterless else _SORTED_SPIKES_ALGORITHMS
             )
-            fit, predict = registry[name]
+            fit, predict = registry[name].fit, registry[name].predict
             fit_kwargs = {
                 "position_time": position_time,
                 "position": position,
@@ -172,7 +171,7 @@ def main():
             if clusterless:
                 mark_reference = fit_mark_references(
                     encoding_features,
-                    _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_kwargs),
+                    registry[name].mark_reference_scale(**fit_kwargs),
                 )
         parameters = inspect.signature(predict).parameters
         for duration, (timeline, spikes, features, pt, pos) in recordings.items():

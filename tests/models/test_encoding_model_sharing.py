@@ -15,6 +15,8 @@ same key would still leave one entry per key; the tests therefore count the
 calls to the registered fit function.
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -37,13 +39,13 @@ def _distinct_encoding_keys(observation_models):
 def _count_fits(monkeypatch, registry, name):
     """Wrap a registered encoding fit; return a list that grows per call."""
     calls: list[str] = []
-    fit, predict = registry[name]
+    fit = registry[name].fit
 
     def record(**kwargs):
         calls.append(kwargs["environment"].environment_name)
         return fit(**kwargs)
 
-    monkeypatch.setitem(registry, name, (record, predict))
+    monkeypatch.setitem(registry, name, replace(registry[name], fit=record))
     return calls
 
 

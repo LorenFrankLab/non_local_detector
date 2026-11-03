@@ -25,6 +25,7 @@ import scipy
 from numpy.typing import ArrayLike
 from scipy.special import logsumexp
 
+from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.common import get_position_at_time
 from non_local_detector.model_checking._clusterless_models import (
     SUPPORTED_ALGORITHMS,
@@ -236,9 +237,17 @@ def _prepare_inputs(
 
 
 def _check_algorithm(algorithm: str) -> None:
-    if algorithm not in SUPPORTED_ALGORITHMS:
+    if algorithm in SUPPORTED_ALGORITHMS:
+        return
+    if algorithm in _CLUSTERLESS_ALGORITHMS:
+        msg = (
+            f"model checking does not support {algorithm!r}: its mark intensity "
+            f"is not implemented for the transforms. Supported algorithms: "
+            f"{SUPPORTED_ALGORITHMS}"
+        )
+    else:
         msg = f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
-        raise ValueError(msg)
+    raise ValueError(msg)
 
 
 def ircm_transform(
@@ -278,6 +287,7 @@ def ircm_transform(
     algorithm : str
         The algorithm that fitted it: ``"clusterless_kde"``,
         ``"clusterless_gmm"`` or ``"clusterless_diffusion"``.
+        ``"clusterless_mark_glm"`` is not supported.
     electrode : int
         Index of the electrode in the encoding model.
     position_time : np.ndarray, shape (n_time,)
@@ -409,6 +419,7 @@ def mdci_transform(
     algorithm : str
         The algorithm that fitted it: ``"clusterless_kde"``,
         ``"clusterless_gmm"`` or ``"clusterless_diffusion"``.
+        ``"clusterless_mark_glm"`` is not supported.
     electrode : int
         Index of the electrode in the encoding model.
     position_time : np.ndarray, shape (n_time,)

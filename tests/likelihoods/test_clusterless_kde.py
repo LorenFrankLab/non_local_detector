@@ -7,7 +7,7 @@ from scipy.integrate import trapezoid
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import _CLUSTERLESS_DEFAULT_PARAMS, clusterless_kde
+from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS, clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
@@ -30,7 +30,7 @@ from non_local_detector.likelihoods.mark_reference import fit_mark_references
 )
 def test_block_size_default_is_the_detectors(function):
     """Direct calls block spikes as a detector does: the old 100 was 3-4x slower."""
-    detector_default = _CLUSTERLESS_DEFAULT_PARAMS["clusterless_kde"].get(
+    detector_default = _CLUSTERLESS_ALGORITHMS["clusterless_kde"].default_params.get(
         "block_size",
         inspect.signature(clusterless_kde.fit_clusterless_kde_encoding_model)
         .parameters["block_size"]

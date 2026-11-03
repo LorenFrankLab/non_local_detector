@@ -82,10 +82,8 @@ from non_local_detector.exceptions import (
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_DEFAULT_PARAMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
-    _SORTED_SPIKES_DEFAULT_PARAMS,
+    LikelihoodAlgorithm,
     _resolve_fit_params,
 )
 from non_local_detector.likelihoods.common import (
@@ -5681,8 +5679,8 @@ class ClusterlessDetector(_DetectorBase):
         clusterless_algorithm_params : dict or None, optional
             Parameters for the clusterless algorithm. Stored as-is (``None``
             stays ``None``) to keep sklearn's ``clone()`` contract intact. If
-            ``None`` (the default), the algorithm's entry of
-            ``_CLUSTERLESS_DEFAULT_PARAMS`` is copied into a fresh dict **at
+            ``None`` (the default), the algorithm's registered
+            ``default_params`` are copied into a fresh dict **at
             fit time**; a user-supplied dict replaces those defaults, is
             **stored by reference** and copied on use. At fit time a key the
             algorithm's fit does not accept raises ``ValidationError``.
@@ -5751,22 +5749,21 @@ class ClusterlessDetector(_DetectorBase):
     def _resolve_clusterless_algorithm_params(self) -> dict[str, Any]:
         """Return a fresh, validated copy of the clusterless algorithm params.
 
-        Resolves a ``None`` user spec to the algorithm's entry of
-        ``_CLUSTERLESS_DEFAULT_PARAMS``; otherwise copies the user's dict.
+        Resolves a ``None`` user spec to the algorithm's registered
+        ``default_params``; otherwise copies the user's dict.
         Raises ``ValidationError`` for a key the registered fit does not
         accept.
         """
-        self._clusterless_algorithm_functions()  # validates the algorithm name
+        self._clusterless_algorithm()  # validates the algorithm name
         return _resolve_fit_params(
             _CLUSTERLESS_ALGORITHMS,
-            _CLUSTERLESS_DEFAULT_PARAMS,
             self.clusterless_algorithm,
             self.clusterless_algorithm_params,
             "clusterless_algorithm_params",
         )
 
-    def _clusterless_algorithm_functions(self) -> tuple[Any, ...]:
-        """The registered (fit, predict) pair of ``clusterless_algorithm``."""
+    def _clusterless_algorithm(self) -> LikelihoodAlgorithm:
+        """The registered record of ``clusterless_algorithm``."""
         try:
             return _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
         except KeyError:
@@ -5812,11 +5809,20 @@ class ClusterlessDetector(_DetectorBase):
 
         # The reference adds the mark bandwidth, in waveform units, to each
         # feature's training spread.
+        mark_reference_scale = self._clusterless_algorithm().mark_reference_scale
+        if mark_reference_scale is None:
+            msg = (
+                f"clusterless_algorithm {self.clusterless_algorithm!r} is "
+                "registered without a mark_reference_scale"
+            )
+            raise ValidationError(
+                msg,
+                hint="Register it as LikelihoodAlgorithm(fit, predict, "
+                "mark_reference_scale=...): the mark reference that scores "
+                "No-Spike marks needs the algorithm's mark-kernel width.",
+            )
         kernel_scale = cast(
-            "float | np.ndarray",
-            _CLUSTERLESS_MARK_REFERENCE_SCALES[self.clusterless_algorithm](
-                **algorithm_params
-            ),
+            "float | np.ndarray", mark_reference_scale(**algorithm_params)
         )
         spike_weights = [
             interpolate_weights_at_spike_times(
@@ -5945,7 +5951,7 @@ class ClusterlessDetector(_DetectorBase):
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
 
-            encoding_algorithm, _ = self._clusterless_algorithm_functions()
+            encoding_algorithm = self._clusterless_algorithm().fit
             is_group = is_training & is_encoding & is_environment
             # The mask is this model's exposure on the full timeline, as for
             # sorted spikes: a subset timeline would let spike-weight
@@ -6098,7 +6104,7 @@ class ClusterlessDetector(_DetectorBase):
     )
 
     def _likelihood_predict_function(self) -> Callable[..., Any]:
-        return cast("Callable[..., Any]", self._clusterless_algorithm_functions()[1])
+        return self._clusterless_algorithm().predict
 
     def _likelihood_predict_kwargs(self) -> dict[str, Any]:
         # One reference for every state and No-Spike, so their
@@ -6731,8 +6737,8 @@ class SortedSpikesDetector(_DetectorBase):
         sorted_spikes_algorithm_params : dict or None, optional
             Parameters for the sorted spikes algorithm. Stored as-is (``None``
             stays ``None``) to keep sklearn's ``clone()`` contract intact. If
-            ``None`` (the default), the algorithm's entry of
-            ``_SORTED_SPIKES_DEFAULT_PARAMS`` is copied into a fresh dict **at
+            ``None`` (the default), the algorithm's registered
+            ``default_params`` are copied into a fresh dict **at
             fit time**; a user-supplied dict replaces those defaults, is
             **stored by reference** and copied on use. At fit time a key the
             algorithm's fit does not accept raises ``ValidationError``.
@@ -6785,14 +6791,13 @@ class SortedSpikesDetector(_DetectorBase):
     def _resolve_sorted_spikes_algorithm_params(self) -> dict[str, Any]:
         """Return a fresh, validated copy of the sorted-spikes algorithm params.
 
-        Resolves a ``None`` user spec to the algorithm's entry of
-        ``_SORTED_SPIKES_DEFAULT_PARAMS``; otherwise copies the user's dict.
+        Resolves a ``None`` user spec to the algorithm's registered
+        ``default_params``; otherwise copies the user's dict.
         Raises ``ValidationError`` for a key the registered fit does not
         accept.
         """
         return _resolve_fit_params(
             _SORTED_SPIKES_ALGORITHMS,
-            _SORTED_SPIKES_DEFAULT_PARAMS,
             self.sorted_spikes_algorithm,
             self.sorted_spikes_algorithm_params,
             "sorted_spikes_algorithm_params",
@@ -6892,9 +6897,9 @@ class SortedSpikesDetector(_DetectorBase):
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
+            encoding_algorithm = _SORTED_SPIKES_ALGORITHMS[
                 self.sorted_spikes_algorithm
-            ]
+            ].fit
             is_group = is_training & is_encoding & is_environment
             # The mask is this model's exposure: a sample outside the selection
             # must contribute no occupancy, because only in-group spikes are
@@ -6906,16 +6911,6 @@ class SortedSpikesDetector(_DetectorBase):
             # stays full-length so it remains aligned with the weights and with
             # the grid used to interpolate per-spike weights.
             group_weights = _group_weights(is_group, weights, likelihood_name, support)
-
-            # GLM requires environment geometry that KDE derives internally
-            glm_kwargs = {}
-            if self.sorted_spikes_algorithm == "sorted_spikes_glm":
-                glm_kwargs = {
-                    "place_bin_edges": environment.place_bin_edges_,
-                    "edges": environment.edges_,
-                    "is_track_interior": environment.is_track_interior_,
-                    "is_track_boundary": environment.is_track_boundary_,
-                }
 
             encoding_model[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
@@ -6931,7 +6926,6 @@ class SortedSpikesDetector(_DetectorBase):
                 environment=environment,
                 _encoding_support=support,
                 weights=group_weights,
-                **glm_kwargs,
                 **kwargs,
             )
 
@@ -7035,7 +7029,7 @@ class SortedSpikesDetector(_DetectorBase):
     )
 
     def _likelihood_predict_function(self) -> Callable[..., Any]:
-        return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm][1]
+        return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm].predict
 
     @row_slice_aware
     @requires_time_edges
