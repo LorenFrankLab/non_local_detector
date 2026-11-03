@@ -91,10 +91,38 @@ jobs:
       # resolves JAX 0.6.2, the minimum supported release.
       - name: Install locked dependencies
         run: uv sync --locked --extra test
+      # Persistent JAX compilation cache (tests/conftest.py): cuts a heavy
+      # test file from ~3 min to ~1 min. Restored on every run except a tag
+      # push, which publishes to PyPI and so never restores a cache; saved only
+      # by runs on main, so a pull request cannot write an entry that main or a
+      # release would read. Keyed on OS, architecture, Python and the installed
+      # packages, so no job reads another's compiled programs; rotates weekly
+      # so entries for changed tests do not accumulate.
+      - name: Compute the JAX cache key
+        id: jax-cache-key
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: >-
+          echo "key=jax-test-${PYTHON_VERSION}-${RUNNER_OS}-${RUNNER_ARCH}-$(date -u +%G-W%V)-$(
+          (uv run --no-sync python -VV; uv pip freeze) | sha256sum | cut -c1-16)"
+          >> "$GITHUB_OUTPUT"
+      - name: Restore the JAX compilation cache
+        if: github.ref_type != 'tag'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/jax-compilation
+          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
+          restore-keys: ${{ steps.jax-cache-key.outputs.key }}-
       - name: Run tests
         run: >-
           uv run --no-sync pytest
           ${{ matrix.coverage && '--cov=non_local_detector --cov-report=xml' || '' }}
+      - name: Save the JAX compilation cache
+        if: success() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/jax-compilation
+          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
       - name: Upload coverage to Codecov
         if: matrix.coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -122,8 +150,28 @@ jobs:
           uv pip install --resolution lowest-direct -e .
           uv pip install -e ".[test]"
           uv pip list
+      # JAX compilation cache; see the test job for how it is keyed and saved.
+      - name: Compute the JAX cache key
+        id: jax-cache-key
+        run: >-
+          echo "key=jax-lowest-${RUNNER_OS}-${RUNNER_ARCH}-$(date -u +%G-W%V)-$(
+          (uv run --no-sync python -VV; uv pip freeze) | sha256sum | cut -c1-16)"
+          >> "$GITHUB_OUTPUT"
+      - name: Restore the JAX compilation cache
+        if: github.ref_type != 'tag'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/jax-compilation
+          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
+          restore-keys: ${{ steps.jax-cache-key.outputs.key }}-
       - name: Run tests
         run: pytest
+      - name: Save the JAX compilation cache
+        if: success() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/jax-compilation
+          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
 
   test-latest:
     name: Test latest dependencies
@@ -143,8 +191,28 @@ jobs:
         run: |
           uv sync --upgrade --extra test
           uv pip list
+      # JAX compilation cache; see the test job for how it is keyed and saved.
+      - name: Compute the JAX cache key
+        id: jax-cache-key
+        run: >-
+          echo "key=jax-latest-${RUNNER_OS}-${RUNNER_ARCH}-$(date -u +%G-W%V)-$(
+          (uv run --no-sync python -VV; uv pip freeze) | sha256sum | cut -c1-16)"
+          >> "$GITHUB_OUTPUT"
+      - name: Restore the JAX compilation cache
+        if: github.ref_type != 'tag'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/jax-compilation
+          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
+          restore-keys: ${{ steps.jax-cache-key.outputs.key }}-
       - name: Run tests
         run: uv run --no-sync pytest
+      - name: Save the JAX compilation cache
+        if: success() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/jax-compilation
+          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
 
   build:
     runs-on: ubuntu-latest

@@ -782,96 +782,125 @@ def test_singleton_row_requests_tile_the_full_result(
     np.testing.assert_allclose(tiled, full, **parity_kwargs(algorithm))
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize("algorithm", ALGORITHMS)
-@pytest.mark.parametrize("is_local", [False, True])
-@pytest.mark.parametrize("prepared", [False, True])
-def test_shuffled_spike_order_row_slice_parity(
-    fitted_backends, edge_case_data, algorithm, is_local, prepared, monkeypatch, request
-):
-    """Unsorted decoding input at the backend, features still paired.
+def _assert_sorted_segment_ids(ids):
+    ids = np.asarray(ids)
+    assert np.all(ids[1:] >= ids[:-1]), (
+        "JAX was promised sorted segment IDs for unsorted spikes"
+    )
 
-    The spikes are permuted together with their waveform features, so the set of
-    (time, feature) pairs is unchanged: a correct backend must return the same
-    full-time likelihood as the sorted input *and* the same row ranges.
 
-    CPU scatter implementations may ignore an incorrect sorted-indices hint.
-    Check the JAX contract at the call boundary as well as the numerical result,
-    so this catches invalid optimization promises without requiring a GPU.
-    Both the fitted and zero-rate electrodes pass through this check.
+@pytest.fixture(scope="class")
+def checked_sorted_segment_ids():
+    """Check every sorted-indices promise made to ``jax.ops.segment_sum``.
+
+    Installed once for the class rather than per test: the check is the same
+    for every case, so the kernels traced with it are shared by all of them.
+    The caches are cleared on entry, because kernels traced before the patch
+    would bypass the check, and on exit, so no checked kernel outlives it.
     """
     original_segment_sum = jax.ops.segment_sum
-
-    def assert_sorted(ids):
-        ids = np.asarray(ids)
-        assert np.all(ids[1:] >= ids[:-1]), (
-            "JAX was promised sorted segment IDs for unsorted spikes"
-        )
 
     def checked_segment_sum(values, segment_ids, **kwargs):
         if kwargs.get("indices_are_sorted", False):
             if isinstance(segment_ids, jax.core.Tracer):
                 # Inside compiled kernels, check the ids when they execute.
-                jax.debug.callback(assert_sorted, segment_ids)
+                jax.debug.callback(_assert_sorted_segment_ids, segment_ids)
             else:
-                assert_sorted(segment_ids)
+                _assert_sorted_segment_ids(segment_ids)
         return original_segment_sum(values, segment_ids, **kwargs)
 
-    monkeypatch.setattr(jax.ops, "segment_sum", checked_segment_sum)
-    # Compiled kernels traced before the patch would bypass the check.
-    jax.clear_caches()
-    request.addfinalizer(jax.clear_caches)
-    order_cache = _SpikeTimeOrder() if prepared else None
-    check_order = common._spikes_are_ascending
-    order_checks = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(jax.ops, "segment_sum", checked_segment_sum)
+        jax.clear_caches()
+        try:
+            yield
+        finally:
+            jax.clear_caches()
 
-    def tracked_order_check(spikes):
-        order_checks.append(id(spikes))
-        return check_order(spikes)
 
-    monkeypatch.setattr(common, "_spikes_are_ascending", tracked_order_check)
-    predict_func, encoding_model, is_clusterless = fitted_backends[algorithm]
-    time = edge_case_data["time"]
-    spike_times, features = edge_case_data["spike_cases"]["mixed"]
+@pytest.mark.integration
+@pytest.mark.usefixtures("checked_sorted_segment_ids")
+class TestShuffledSpikeOrder:
+    @pytest.mark.parametrize("algorithm", ALGORITHMS)
+    @pytest.mark.parametrize("is_local", [False, True])
+    @pytest.mark.parametrize("prepared", [False, True])
+    def test_shuffled_spike_order_row_slice_parity(
+        self,
+        fitted_backends,
+        edge_case_data,
+        algorithm,
+        is_local,
+        prepared,
+        monkeypatch,
+    ):
+        """Unsorted decoding input at the backend, features still paired.
 
-    rng = np.random.default_rng(23)
-    shuffled_times = []
-    shuffled_features = []
-    for unit_times, unit_features in zip(spike_times, features, strict=True):
-        order = rng.permutation(len(unit_times))
-        shuffled_times.append(unit_times[order])
-        shuffled_features.append(unit_features[order])
-        assert not np.all(np.diff(shuffled_times[-1]) >= 0)
+        The spikes are permuted together with their waveform features, so the
+        set of (time, feature) pairs is unchanged: a correct backend must return
+        the same full-time likelihood as the sorted input *and* the same row
+        ranges.
 
-    def predict(spikes, feats, **kwargs):
-        args = [edge_case_data["position_time"], edge_case_data["position"], spikes]
-        if is_clusterless:
-            args.append(feats)
-        return np.asarray(
-            predict_func(
-                *args,
-                **encoding_model,
-                is_local=is_local,
-                _spike_time_order=order_cache,
-                **kwargs,
-                time_edges=time,
+        CPU scatter implementations may ignore an incorrect sorted-indices hint.
+        ``checked_sorted_segment_ids`` checks the JAX contract at the call
+        boundary as well as the numerical result, so this catches invalid
+        optimization promises without requiring a GPU. Both the fitted and
+        zero-rate electrodes pass through this check.
+        """
+        order_cache = _SpikeTimeOrder() if prepared else None
+        check_order = common._spikes_are_ascending
+        order_checks = []
+
+        def tracked_order_check(spikes):
+            order_checks.append(id(spikes))
+            return check_order(spikes)
+
+        monkeypatch.setattr(common, "_spikes_are_ascending", tracked_order_check)
+        predict_func, encoding_model, is_clusterless = fitted_backends[algorithm]
+        time = edge_case_data["time"]
+        spike_times, features = edge_case_data["spike_cases"]["mixed"]
+
+        rng = np.random.default_rng(23)
+        shuffled_times = []
+        shuffled_features = []
+        for unit_times, unit_features in zip(spike_times, features, strict=True):
+            order = rng.permutation(len(unit_times))
+            shuffled_times.append(unit_times[order])
+            shuffled_features.append(unit_features[order])
+            assert not np.all(np.diff(shuffled_times[-1]) >= 0)
+
+        def predict(spikes, feats, **kwargs):
+            args = [edge_case_data["position_time"], edge_case_data["position"], spikes]
+            if is_clusterless:
+                args.append(feats)
+            return np.asarray(
+                predict_func(
+                    *args,
+                    **encoding_model,
+                    is_local=is_local,
+                    _spike_time_order=order_cache,
+                    **kwargs,
+                    time_edges=time,
+                )
             )
+
+        sorted_full = predict(spike_times, features)
+        assert_fixture_scale(sorted_full, algorithm)
+        shuffled_full = predict(shuffled_times, shuffled_features)
+        np.testing.assert_allclose(
+            shuffled_full, sorted_full, **parity_kwargs(algorithm)
         )
+        checks_after_full = len(order_checks)
 
-    sorted_full = predict(spike_times, features)
-    assert_fixture_scale(sorted_full, algorithm)
-    shuffled_full = predict(shuffled_times, shuffled_features)
-    np.testing.assert_allclose(shuffled_full, sorted_full, **parity_kwargs(algorithm))
-    checks_after_full = len(order_checks)
-
-    row_slice = slice(3, 10)
-    rows = predict(shuffled_times, shuffled_features, row_slice=row_slice)
-    np.testing.assert_allclose(
-        rows, shuffled_full[row_slice], **parity_kwargs(algorithm, is_local=is_local)
-    )
-    if prepared:
-        assert checks_after_full > 0
-        assert len(order_checks) == checks_after_full
+        row_slice = slice(3, 10)
+        rows = predict(shuffled_times, shuffled_features, row_slice=row_slice)
+        np.testing.assert_allclose(
+            rows,
+            shuffled_full[row_slice],
+            **parity_kwargs(algorithm, is_local=is_local),
+        )
+        if prepared:
+            assert checks_after_full > 0
+            assert len(order_checks) == checks_after_full
 
 
 @pytest.mark.unit
