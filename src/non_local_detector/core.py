@@ -11,7 +11,7 @@ Adapted from dynamax (https://github.com/probml/dynamax) with modifications.
 import functools
 import logging
 from collections.abc import Callable
-from typing import Any, TypeAlias, cast
+from typing import Any, NamedTuple, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
@@ -480,6 +480,517 @@ def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
 _HMM_SCAN_UNROLL = 8
 
 
+## Transition operators and the shared passes ##
+# Every HMM pass (filter, smoother, Viterbi) has one scan body below. The
+# transition model enters only through an operator: a registered JAX pytree
+# with ``forward(p, weight)`` (``p @ T``), ``backward(v, weight)``
+# (``T @ v``) and ``pair_products(filtered, ratio, weight)`` (the per
+# discrete-state-pair terms of ``filtered @ T * ratio``), where ``weight`` is
+# None or the row's (n_states, n_states) discrete transition matrix. Viterbi
+# uses the operator's ``log()`` twin, whose ``scores`` gives the max-plus
+# terms. The structured operators in ``transition_operators`` implement the
+# same ``forward``/``backward``/``pair_products`` methods.
+
+
+def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jnp.ndarray:
+    """One-hot discrete-state membership of each state bin.
+
+    Parameters
+    ----------
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
+    n_states : int
+    dtype : dtype
+
+    Returns
+    -------
+    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+    """
+    return (state_ind[None, :] == jnp.arange(n_states)[:, None]).astype(dtype)
+
+
+def _covariate_forward_product(
+    probs: ArrayLike,
+    discrete_transition_matrix_t: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    one_hot: ArrayLike,
+) -> jnp.ndarray:
+    """Propagate probabilities forward through one covariate-dependent step.
+
+    Computes ``probs @ T`` for the joint transition
+    ``T[i, j] = C[i, j] * D[s_i, s_j]`` without building ``T``: grouping the
+    source bins by discrete state ``k`` gives
+    ``out[j] = sum_k D[k, s_j] * (probs * (s == k)) @ C[:, j]``, so each step
+    reads ``C`` once in a single (n_states, n_state_bins) matrix product.
+
+    Parameters
+    ----------
+    probs : jnp.ndarray, shape (n_state_bins,)
+    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
+    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+        ``_state_one_hot(state_ind, n_states, dtype)``.
+
+    Returns
+    -------
+    propagated : jnp.ndarray, shape (n_state_bins,)
+    """
+    # HIGHEST: the default CUDA precision (TF32) would round these products.
+    per_state = jnp.matmul(
+        one_hot * probs,
+        continuous_transition_matrix,
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    return jnp.sum(discrete_transition_matrix_t[:, state_ind] * per_state, axis=0)
+
+
+def _covariate_backward_product(
+    values: ArrayLike,
+    discrete_transition_matrix_t: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    one_hot: ArrayLike,
+) -> jnp.ndarray:
+    """Pull values backward through one covariate-dependent step.
+
+    Computes ``T @ values`` for ``T[i, j] = C[i, j] * D[s_i, s_j]`` without
+    building ``T``: ``out[i] = sum_k D[s_i, k] * C[i, :] @ (values * (s == k))``.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n_state_bins,)
+    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
+    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
+        ``_state_one_hot(state_ind, n_states, dtype)``.
+
+    Returns
+    -------
+    pulled : jnp.ndarray, shape (n_state_bins,)
+    """
+    per_state = jnp.matmul(
+        continuous_transition_matrix,
+        (one_hot * values).T,
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    return jnp.sum(discrete_transition_matrix_t[state_ind, :] * per_state, axis=1)
+
+
+class _LogStationaryTransition(NamedTuple):
+    """Log-domain twin of :class:`_StationaryTransition` for Viterbi.
+
+    Attributes
+    ----------
+    log_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+    """
+
+    log_matrix: jax.Array
+
+    def scores(
+        self,
+        best_next_score: jax.Array,
+        next_log_likelihood: jax.Array,
+        log_weight: None,  # noqa: ARG002 -- operator interface
+    ) -> jax.Array:
+        """Max-plus terms ``log T[i, j] + best_next[j] + ll_next[j]``.
+
+        Returns
+        -------
+        scores : jax.Array, shape (n_state_bins, n_state_bins)
+        """
+        return self.log_matrix + best_next_score + next_log_likelihood
+
+
+class _LogCovariateTransition(NamedTuple):
+    """Log-domain twin of :class:`_CovariateTransition` for Viterbi.
+
+    Attributes
+    ----------
+    log_continuous : jax.Array, shape (n_state_bins, n_state_bins)
+    state_ind : jax.Array, shape (n_state_bins,)
+    """
+
+    log_continuous: jax.Array
+    state_ind: jax.Array
+
+    def scores(
+        self,
+        best_next_score: jax.Array,
+        next_log_likelihood: jax.Array,
+        log_weight: jax.Array,
+    ) -> jax.Array:
+        """Max-plus terms ``log C[i, j] + log D[s_i, s_j] + next[j]``.
+
+        ``log D[s_i, s_j] + next[j]`` depends on ``i`` only through ``s_i``,
+        so it is built per source state, (n_states, n_state_bins), and whole
+        rows are gathered: a row gather is ~2x faster on CPU than the
+        elementwise ``D[s_i, s_j]`` gather.
+
+        Returns
+        -------
+        scores : jax.Array, shape (n_state_bins, n_state_bins)
+        """
+        next_score_by_source_state = (
+            log_weight[:, self.state_ind] + best_next_score + next_log_likelihood
+        )
+        return self.log_continuous + next_score_by_source_state[self.state_ind]
+
+
+@jax.tree_util.register_pytree_node_class
+class _StationaryTransition:
+    """Time-invariant joint transition between state bins, ``T[i, j]``.
+
+    Parameters
+    ----------
+    matrix : jax.Array, shape (n_state_bins, n_state_bins)
+    state_ind : jax.Array, shape (n_state_bins,), optional
+        Discrete state of each bin; only ``pair_products`` needs it.
+    n_states : int, optional
+        Number of discrete states; only ``pair_products`` needs it.
+    precision : jax.lax.Precision, optional
+        Precision of the matrix products. None (the backend default) uses
+        TF32 on CUDA; checkpointed inference uses HIGHEST.
+    """
+
+    def __init__(
+        self,
+        matrix: ArrayLike,
+        state_ind: jax.Array | None = None,
+        n_states: int | None = None,
+        precision: jax.lax.Precision | None = None,
+    ) -> None:
+        self.matrix, self.state_ind = matrix, state_ind
+        self.n_states, self.precision = n_states, precision
+
+    def forward(self, probabilities: jax.Array, weight: None = None) -> jax.Array:
+        """``probabilities @ T``, shape (n_state_bins,)."""
+        _reject_weight(weight)
+        return jnp.matmul(probabilities, self.matrix, precision=self.precision)
+
+    def backward(self, values: jax.Array, weight: None = None) -> jax.Array:
+        """``T @ values``, shape (n_state_bins,)."""
+        _reject_weight(weight)
+        return jnp.matmul(self.matrix, values, precision=self.precision)
+
+    def pair_products(
+        self, filtered: jax.Array, ratio: jax.Array, weight: None = None
+    ) -> jax.Array:
+        """Per-state-pair terms of ``filtered @ T * ratio``, (n_states, n_states)."""
+        _reject_weight(weight)
+        if self.state_ind is None or self.n_states is None:
+            msg = "pair_products needs state_ind and n_states"
+            raise ValueError(msg)
+        states = jax.nn.one_hot(self.state_ind, self.n_states, dtype=filtered.dtype)
+        source_rows = jnp.matmul(
+            (states * filtered[:, None]).T, self.matrix, precision=self.precision
+        )
+        return jnp.matmul(
+            source_rows, states * ratio[:, None], precision=self.precision
+        )
+
+    def log(self) -> _LogStationaryTransition:
+        """Log-domain twin for Viterbi."""
+        return _LogStationaryTransition(_safe_log(self.matrix))
+
+    def tree_flatten(
+        self,
+    ) -> tuple[
+        tuple[ArrayLike, jax.Array | None],
+        tuple[int | None, jax.lax.Precision | None],
+    ]:
+        return (self.matrix, self.state_ind), (self.n_states, self.precision)
+
+    @classmethod
+    def tree_unflatten(
+        cls,
+        aux: tuple[int | None, jax.lax.Precision | None],
+        children: tuple[ArrayLike, jax.Array | None],
+    ) -> "_StationaryTransition":
+        return cls(*children, *aux)
+
+
+def _reject_weight(weight: object) -> None:
+    """Trace-time guard: a stationary operator has no per-row weights."""
+    if weight is not None:
+        msg = "A stationary transition takes no per-row discrete weights"
+        raise TypeError(msg)
+
+
+@jax.tree_util.register_pytree_node_class
+class _CovariateTransition:
+    """Joint transition ``T[i, j] = C[i, j] * D_t[s_i, s_j]``, never built.
+
+    Each product applies the row's discrete matrix ``D_t`` (the ``weight``)
+    per discrete state on top of the continuous transition ``C``, so neither
+    the per-step (n_state_bins, n_state_bins) joint transition nor the
+    (n_time, n_state_bins, n_state_bins) series exists. Build it with
+    :meth:`create`.
+
+    Parameters
+    ----------
+    continuous : jax.Array, shape (n_state_bins, n_state_bins)
+    state_ind : jax.Array, shape (n_state_bins,)
+    one_hot : jax.Array, shape (n_states, n_state_bins)
+        ``_state_one_hot(state_ind, n_states, continuous.dtype)``.
+    """
+
+    def __init__(
+        self, continuous: jax.Array, state_ind: jax.Array, one_hot: jax.Array
+    ) -> None:
+        self.continuous, self.state_ind, self.one_hot = continuous, state_ind, one_hot
+
+    @classmethod
+    def create(
+        cls, continuous: ArrayLike, state_ind: ArrayLike, n_states: int
+    ) -> "_CovariateTransition":
+        """Operator for ``continuous`` with ``n_states`` discrete states."""
+        continuous, state_ind = jnp.asarray(continuous), jnp.asarray(state_ind)
+        return cls(
+            continuous,
+            state_ind,
+            _state_one_hot(state_ind, n_states, continuous.dtype),
+        )
+
+    def forward(self, probabilities: jax.Array, weight: jax.Array) -> jax.Array:
+        """``probabilities @ T``, shape (n_state_bins,)."""
+        return _covariate_forward_product(
+            probabilities, weight, self.continuous, self.state_ind, self.one_hot
+        )
+
+    def backward(self, values: jax.Array, weight: jax.Array) -> jax.Array:
+        """``T @ values``, shape (n_state_bins,)."""
+        return _covariate_backward_product(
+            values, weight, self.continuous, self.state_ind, self.one_hot
+        )
+
+    def pair_products(
+        self, filtered: jax.Array, ratio: jax.Array, weight: jax.Array
+    ) -> jax.Array:
+        """Per-state-pair terms of ``filtered @ T * ratio``, (n_states, n_states).
+
+        ``sum_{i in k, j in l} f_i C[i, j] D[k, l] r_j = D[k, l] *
+        ((f * (s == k)) @ C @ (r * (s == l)))``.
+        """
+        precision = jax.lax.Precision.HIGHEST
+        per_source = jnp.matmul(
+            self.one_hot * filtered, self.continuous, precision=precision
+        )
+        return weight * jnp.matmul(
+            per_source, (self.one_hot * ratio).T, precision=precision
+        )
+
+    def log(self) -> _LogCovariateTransition:
+        """Log-domain twin for Viterbi."""
+        return _LogCovariateTransition(_safe_log(self.continuous), self.state_ind)
+
+    def tree_flatten(self) -> tuple[tuple[jax.Array, jax.Array, jax.Array], None]:
+        return (self.continuous, self.state_ind, self.one_hot), None
+
+    @classmethod
+    def tree_unflatten(
+        cls,
+        aux: None,  # noqa: ARG003 -- pytree protocol
+        children: tuple[jax.Array, jax.Array, jax.Array],
+    ) -> "_CovariateTransition":
+        return cls(*children)
+
+
+def _filter_scan(
+    initial: ArrayLike,
+    evidence: ArrayLike | float,
+    log_likelihoods: ArrayLike,
+    weights: ArrayLike | None,
+    operator: Any,
+    *,
+    keep_rows: bool,
+    keep_predictive: bool,
+    keep_increments: bool = False,
+) -> tuple[tuple[jax.Array, jax.Array], Any]:
+    """Forward pass (filter) over consecutive rows: the one filter scan body.
+
+    Parameters
+    ----------
+    initial : array, shape (n_state_bins,)
+        Predicted distribution of the first row.
+    evidence : scalar
+        Evidence accumulated before the first row (the carried total starts here).
+    log_likelihoods : array, shape (n_rows, n_state_bins)
+    weights : array, shape (n_rows, n_states, n_states), or None
+        Per-row discrete transitions handed to ``operator`` (None for a
+        stationary operator).
+    operator : transition operator
+        See the section comment above.
+    keep_rows, keep_predictive, keep_increments : bool
+        Which per-row outputs to emit (static under jit).
+
+    Returns
+    -------
+    carry : tuple
+        ``(evidence, predicted)``: the running evidence total in the working
+        dtype and the predicted distribution of the row after the last.
+    outputs : tuple, array or None
+        With ``keep_rows``: ``(filtered, predicted or None, increments or
+        None)``, each with a leading (n_rows,) axis. Otherwise the increments
+        (each row's log normalizer) or None.
+    """
+
+    def step(carry: tuple[jax.Array, jax.Array], args: tuple[Any, Any]) -> Any:
+        total, predicted = carry
+        ll, weight = args
+        filtered, increment = _condition_on(predicted, ll)
+        out: Any
+        if keep_rows:
+            out = (
+                filtered,
+                predicted if keep_predictive else None,
+                increment if keep_increments else None,
+            )
+        else:
+            out = increment if keep_increments else None
+        return (total + increment, operator.forward(filtered, weight)), out
+
+    return jax.lax.scan(
+        step,
+        (evidence, initial),  # type: ignore[arg-type]  # carry may start as a Python float
+        (log_likelihoods, weights),
+        unroll=_HMM_SCAN_UNROLL,
+    )
+
+
+def _smoother_scan(
+    filtered: ArrayLike,
+    weights: ArrayLike | None,
+    operator: Any,
+    next_smoothed: ArrayLike,
+    rows: ArrayLike,
+    n_time: int,
+    *,
+    pair_statistics: bool = False,
+) -> tuple[jax.Array, Any]:
+    """Backward pass (smoother) over consecutive rows: the one smoother scan body.
+
+    Parameters
+    ----------
+    filtered : array, shape (n_rows, n_state_bins)
+    weights : array, shape (n_rows, n_states, n_states), or None
+    operator : transition operator
+    next_smoothed : array, shape (n_state_bins,)
+        Smoothed row after the last row (any row of the right shape for the
+        recording's final row, which is its own smoothed row).
+    rows : array of int, shape (n_rows,)
+        Recording row indices; the row ``n_time - 1`` is terminal.
+    n_time : int
+        Rows in the whole recording.
+    pair_statistics : bool
+        Also return each row's expected discrete transition counts to the
+        next row, ``operator.pair_products`` of the filtered row and
+        ``smoothed_{t+1} / predicted_{t+1}`` (zero on the terminal row).
+
+    Returns
+    -------
+    first_smoothed : array, shape (n_state_bins,)
+    smoothed : array, shape (n_rows, n_state_bins)
+        Or ``(smoothed, pairs)`` with ``pair_statistics``, pairs of shape
+        (n_rows, n_states, n_states).
+    """
+
+    def step(following: jax.Array, args: tuple[Any, Any, Any]) -> Any:
+        current, weight, row = args
+        predicted = operator.forward(current, weight)
+        ratio = _divide_safe(following, predicted)
+        if pair_statistics and hasattr(operator, "backward_and_pairs"):
+            backward, pairs = operator.backward_and_pairs(ratio, current, weight)
+        else:
+            backward = operator.backward(ratio, weight)
+            if pair_statistics:
+                pairs = operator.pair_products(current, ratio, weight)
+        smoothed = current * backward * (row < n_time - 1) + current * (
+            row == n_time - 1
+        )
+        smoothed, _ = _normalize(smoothed, axis=-1)
+        if not pair_statistics:
+            return smoothed, smoothed
+        pairs = jnp.where(row < n_time - 1, pairs, 0)
+        return smoothed, (smoothed, pairs)
+
+    return jax.lax.scan(
+        step,
+        next_smoothed,  # type: ignore[arg-type]  # NumPy input is converted
+        (filtered, weights, rows),
+        reverse=True,
+        unroll=_HMM_SCAN_UNROLL,
+    )
+
+
+def _viterbi_scan(
+    initial_distribution: ArrayLike,
+    log_likelihoods: ArrayLike,
+    log_weights: ArrayLike | None,
+    log_operator: Any,
+) -> jnp.ndarray:
+    """Most likely state-bin sequence: the one Viterbi scan body.
+
+    Parameters
+    ----------
+    initial_distribution : array, shape (n_state_bins,)
+    log_likelihoods : array, shape (n_time, n_state_bins)
+    log_weights : array, shape (n_time, n_states, n_states), or None
+        Log per-row discrete transitions (None for a stationary operator).
+    log_operator : log-domain operator
+        ``operator.log()``: its ``scores(best_next, ll_next, log_weight)``
+        returns the (n_state_bins, n_state_bins) max-plus terms.
+
+    Returns
+    -------
+    most_likely_state_sequence : jnp.ndarray, shape (n_time,)
+
+    Notes
+    -----
+    Base case at t=T: terminal cost is 0, we accumulate from t=T-1 down.
+    """
+    log_initial_distribution = _safe_log(initial_distribution)
+
+    def _backward_step(
+        best_next_score: jax.Array, args: tuple[jax.Array, Any]
+    ) -> tuple[jax.Array, jax.Array]:
+        t, log_weight = args
+        scores = log_operator.scores(
+            best_next_score, log_likelihoods[t + 1], log_weight
+        )
+        best_next_state = jnp.argmax(scores, axis=1)
+        best_next_score = jnp.max(scores, axis=1)
+        return best_next_score, best_next_state
+
+    num_timesteps, num_states = log_likelihoods.shape
+    best_second_score, best_next_states = jax.lax.scan(
+        _backward_step,
+        jnp.zeros(num_states),
+        (
+            jnp.arange(num_timesteps - 1),
+            None if log_weights is None else log_weights[:-1],
+        ),
+        reverse=True,
+    )
+
+    def _forward_step(
+        state: jax.Array, best_next_state: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+        next_state = best_next_state[state]
+        return next_state, next_state
+
+    first_state = jnp.argmax(
+        log_initial_distribution + log_likelihoods[0] + best_second_score
+    )
+    _, states = jax.lax.scan(_forward_step, first_state, best_next_states)
+
+    return jnp.concatenate([first_state[None], states])
+
+
 def _filter_impl(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
@@ -490,36 +1001,25 @@ def _filter_impl(
     """JIT-compiled forward pass of the forward-backward algorithm.
 
     See :func:`filter` for the user-facing wrapper that adds host-side
-    diagnostics. This raw implementation runs ``jax.lax.scan`` and is wrapped
-    by both the non-donating ``_filter_jit`` (used by the public ``filter``)
-    and the donating ``_filter_internal`` (used by the chunked drivers).
+    diagnostics. This raw implementation runs :func:`_filter_scan` and is
+    wrapped by both the non-donating ``_filter_jit`` (used by the public
+    ``filter``) and the donating ``_filter_internal`` (used by the chunked
+    drivers).
 
     The outputs are the filtered and predicted rows and each row's log
     normalizer (evidence increment). The carried total is a running sum in
     the working dtype, which the jit-composable :func:`filter` returns; the
     chunked drivers report :func:`_float64_evidence` of the increments.
     """
-
-    def _step(
-        carry: tuple[jax.Array, jax.Array], ll: Any
-    ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
-        log_normalizer, predicted_probs = carry
-
-        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
-        log_normalizer += log_norm
-        predicted_probs_next = filtered_probs @ transition_matrix
-
-        return (log_normalizer, predicted_probs_next), (
-            filtered_probs,
-            predicted_probs,
-            log_norm,
-        )
-
-    return jax.lax.scan(
-        _step,
-        (0.0, initial_distribution),  # type: ignore[arg-type]  # carry starts as a Python float, becomes an Array
+    return _filter_scan(
+        initial_distribution,
+        0.0,
         log_likelihoods,
-        unroll=_HMM_SCAN_UNROLL,
+        None,
+        _StationaryTransition(transition_matrix),
+        keep_rows=True,
+        keep_predictive=True,
+        keep_increments=True,
     )
 
 
@@ -653,29 +1153,17 @@ def _smoother_impl(
         ind = jnp.arange(n_time)
     if initial is None:
         initial = filtered_probs[-1]
-
-    def _step(
-        smoothed_probs_next: Any, args: tuple[ArrayLike, ArrayLike]
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        filtered_probs_t, t = args
-
-        # Compute predicted probs once and reuse (avoids redundant matmul)
-        predicted_probs = filtered_probs_t @ transition_matrix
-
-        smoothed_probs = filtered_probs_t * (
-            transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
-        ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
-        smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
-
-        return smoothed_probs, smoothed_probs
-
-    return jax.lax.scan(
-        _step,
-        initial,
-        (filtered_probs, ind),
-        reverse=True,
-        unroll=_HMM_SCAN_UNROLL,
-    )[1]
+    return cast(
+        jax.Array,
+        _smoother_scan(
+            filtered_probs,
+            None,
+            _StationaryTransition(transition_matrix),
+            initial,
+            ind,
+            n_time,
+        )[1],
+    )
 
 
 # Apply JIT without donation - tests reuse inputs
@@ -1263,41 +1751,14 @@ def _viterbi_impl(
     -----
     Base case at t=T: terminal cost is 0, we accumulate from t=T-1 down.
     """
-    # Precompute logs once outside the scan loop using safe log
-    # Handles zero probabilities correctly (returns -inf, not NaN)
-    log_transition_matrix = _safe_log(transition_matrix)
-    log_initial_distribution = _safe_log(initial_distribution)
-
-    # Run the backward pass
-    def _backward_pass(
-        best_next_score: jax.Array, t: jax.Array
-    ) -> tuple[jax.Array, jax.Array]:
-        scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
-        best_next_state = jnp.argmax(scores, axis=1)
-        best_next_score = jnp.max(scores, axis=1)
-        return best_next_score, best_next_state
-
-    num_timesteps, num_states = log_likelihoods.shape
-    best_second_score, best_next_states = jax.lax.scan(
-        _backward_pass,
-        jnp.zeros(num_states),
-        jnp.arange(num_timesteps - 1),
-        reverse=True,
+    # The log transition is computed once, outside the scan; _safe_log maps
+    # zero probabilities to -inf, not NaN.
+    return _viterbi_scan(
+        initial_distribution,
+        log_likelihoods,
+        None,
+        _StationaryTransition(transition_matrix).log(),
     )
-
-    # Run the forward pass
-    def _forward_pass(
-        state: jax.Array, best_next_state: jax.Array
-    ) -> tuple[jax.Array, jax.Array]:
-        next_state = best_next_state[state]
-        return next_state, next_state
-
-    first_state = jnp.argmax(
-        log_initial_distribution + log_likelihoods[0] + best_second_score
-    )
-    _, states = jax.lax.scan(_forward_pass, first_state, best_next_states)
-
-    return jnp.concatenate([first_state[None], states])
 
 
 # Apply JIT without donation - tests reuse inputs
@@ -1379,95 +1840,6 @@ def most_likely_sequence(
 
 
 ## Covariate dependent filtering and smoothing ##
-def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jnp.ndarray:
-    """One-hot discrete-state membership of each state bin.
-
-    Parameters
-    ----------
-    state_ind : jnp.ndarray, shape (n_state_bins,)
-        Maps each state bin to its discrete state.
-    n_states : int
-    dtype : dtype
-
-    Returns
-    -------
-    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
-    """
-    return (state_ind[None, :] == jnp.arange(n_states)[:, None]).astype(dtype)
-
-
-def _covariate_forward_product(
-    probs: ArrayLike,
-    discrete_transition_matrix_t: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    one_hot: ArrayLike,
-) -> jnp.ndarray:
-    """Propagate probabilities forward through one covariate-dependent step.
-
-    Computes ``probs @ T`` for the joint transition
-    ``T[i, j] = C[i, j] * D[s_i, s_j]`` without building ``T``: grouping the
-    source bins by discrete state ``k`` gives
-    ``out[j] = sum_k D[k, s_j] * (probs * (s == k)) @ C[:, j]``, so each step
-    reads ``C`` once in a single (n_states, n_state_bins) matrix product.
-
-    Parameters
-    ----------
-    probs : jnp.ndarray, shape (n_state_bins,)
-    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
-    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,)
-        Maps each state bin to its discrete state.
-    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
-        ``_state_one_hot(state_ind, n_states, dtype)``.
-
-    Returns
-    -------
-    propagated : jnp.ndarray, shape (n_state_bins,)
-    """
-    # HIGHEST: the default CUDA precision (TF32) would round these products.
-    per_state = jnp.matmul(
-        one_hot * probs,
-        continuous_transition_matrix,
-        precision=jax.lax.Precision.HIGHEST,
-    )
-    return jnp.sum(discrete_transition_matrix_t[:, state_ind] * per_state, axis=0)
-
-
-def _covariate_backward_product(
-    values: ArrayLike,
-    discrete_transition_matrix_t: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    one_hot: ArrayLike,
-) -> jnp.ndarray:
-    """Pull values backward through one covariate-dependent step.
-
-    Computes ``T @ values`` for ``T[i, j] = C[i, j] * D[s_i, s_j]`` without
-    building ``T``: ``out[i] = sum_k D[s_i, k] * C[i, :] @ (values * (s == k))``.
-
-    Parameters
-    ----------
-    values : jnp.ndarray, shape (n_state_bins,)
-    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
-    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,)
-        Maps each state bin to its discrete state.
-    one_hot : jnp.ndarray, shape (n_states, n_state_bins)
-        ``_state_one_hot(state_ind, n_states, dtype)``.
-
-    Returns
-    -------
-    pulled : jnp.ndarray, shape (n_state_bins,)
-    """
-    per_state = jnp.matmul(
-        continuous_transition_matrix,
-        (one_hot * values).T,
-        precision=jax.lax.Precision.HIGHEST,
-    )
-    return jnp.sum(discrete_transition_matrix_t[state_ind, :] * per_state, axis=1)
-
-
 def _filter_covariate_dependent_impl(
     initial_distribution: ArrayLike,
     discrete_transition_matrix: ArrayLike,
@@ -1482,41 +1854,19 @@ def _filter_covariate_dependent_impl(
     See :func:`filter_covariate_dependent` for the user-facing wrapper that
     adds host-side diagnostics. Outputs as in :func:`_filter_impl`.
     """
-    one_hot = _state_one_hot(
-        state_ind,
-        discrete_transition_matrix.shape[-1],
-        continuous_transition_matrix.dtype,
-    )
-
-    def _step(
-        carry: tuple[jnp.ndarray, jnp.ndarray], args: tuple[ArrayLike, ArrayLike]
-    ) -> tuple[
-        tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
-    ]:
-        log_normalizer, predicted_probs = carry
-        ll, discrete_transition_matrix_t = args
-
-        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
-        log_normalizer += log_norm
-        predicted_probs_next = _covariate_forward_product(
-            filtered_probs,
-            discrete_transition_matrix_t,
+    return _filter_scan(
+        initial_distribution,
+        0.0,
+        log_likelihoods,
+        discrete_transition_matrix,
+        _CovariateTransition.create(
             continuous_transition_matrix,
             state_ind,
-            one_hot,
-        )
-
-        return (log_normalizer, predicted_probs_next), (
-            filtered_probs,
-            predicted_probs,
-            log_norm,
-        )
-
-    return jax.lax.scan(
-        _step,
-        (0.0, initial_distribution),  # type: ignore[arg-type]  # carry starts as a Python float, becomes an Array
-        (log_likelihoods, discrete_transition_matrix),
-        unroll=_HMM_SCAN_UNROLL,
+            discrete_transition_matrix.shape[-1],
+        ),
+        keep_rows=True,
+        keep_predictive=True,
+        keep_increments=True,
     )
 
 
@@ -1633,42 +1983,21 @@ def _smoother_covariate_dependent_impl(
         ind = jnp.arange(n_time)
     if initial is None:
         initial = filtered_probs[-1]
-    one_hot = _state_one_hot(
-        state_ind,
-        discrete_transition_matrix.shape[-1],
-        continuous_transition_matrix.dtype,
+    return cast(
+        jax.Array,
+        _smoother_scan(
+            filtered_probs,
+            discrete_transition_matrix,
+            _CovariateTransition.create(
+                continuous_transition_matrix,
+                state_ind,
+                discrete_transition_matrix.shape[-1],
+            ),
+            initial,
+            ind,
+            n_time,
+        )[1],
     )
-
-    def _step(
-        smoothed_probs_next: Any, args: tuple[ArrayLike, ArrayLike, ArrayLike]
-    ) -> tuple[jax.Array, jax.Array]:
-        filtered_probs_t, discrete_transition_matrix_t, t = args
-
-        predicted_probs = _covariate_forward_product(
-            filtered_probs_t,
-            discrete_transition_matrix_t,
-            continuous_transition_matrix,
-            state_ind,
-            one_hot,
-        )
-        smoothed_probs = filtered_probs_t * _covariate_backward_product(
-            _divide_safe(smoothed_probs_next, predicted_probs),
-            discrete_transition_matrix_t,
-            continuous_transition_matrix,
-            state_ind,
-            one_hot,
-        ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
-        smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
-
-        return smoothed_probs, smoothed_probs
-
-    return jax.lax.scan(
-        _step,
-        initial,
-        (filtered_probs, discrete_transition_matrix, ind),
-        reverse=True,
-        unroll=_HMM_SCAN_UNROLL,
-    )[1]
 
 
 # Apply JIT without donation - tests reuse inputs
@@ -1899,57 +2228,22 @@ def _viterbi_covariate_dependent_impl(
     -----
     Base case at t=T: terminal cost is 0, we accumulate from t=T-1 down.
     """
-    # Precompute logs once outside the scan loop using safe log
-    # Handles zero probabilities correctly (returns -inf, not NaN)
-    log_continuous_transition_matrix = _safe_log(continuous_transition_matrix)
-    log_initial_distribution = _safe_log(initial_distribution)
-    # Log the (n_time, n_states, n_states) discrete matrices, not the expanded
-    # (n_state_bins, n_state_bins) ones: same values, n_states² logs per step
-    log_discrete_transition_matrix = _safe_log(discrete_transition_matrix)
-
-    # Run the backward pass
-    # Index discrete transitions per-step to avoid materializing T×N_bins×N_bins array
-    def _backward_pass(
-        best_next_score: jax.Array, args: tuple[jax.Array, jax.Array]
-    ) -> tuple[jax.Array, jax.Array]:
-        t, log_discrete_transition_matrix_t = args
-        # log T[i, j] + next[j] = log C[i, j] + (log D[s_i, s_j] + next[j]).
-        # The bracket depends on i only through s_i, so build it per source
-        # state (n_states, n_state_bins) and gather whole rows: a row gather
-        # is ~2x faster on CPU than the elementwise D[s_i, s_j] gather.
-        next_score_by_source_state = (
-            log_discrete_transition_matrix_t[:, state_ind]
-            + best_next_score
-            + log_likelihoods[t + 1]
-        )
-        scores = (
-            log_continuous_transition_matrix + next_score_by_source_state[state_ind]
-        )
-        best_next_state = jnp.argmax(scores, axis=1)
-        best_next_score = jnp.max(scores, axis=1)
-        return best_next_score, best_next_state
-
-    num_timesteps, num_states = log_likelihoods.shape
-    best_second_score, best_next_states = jax.lax.scan(
-        _backward_pass,
-        jnp.zeros(num_states),
-        (jnp.arange(num_timesteps - 1), log_discrete_transition_matrix[:-1]),
-        reverse=True,
+    # The logs are computed once, outside the scan; _safe_log maps zero
+    # probabilities to -inf, not NaN. The (n_time, n_states, n_states)
+    # discrete matrices are logged, not the expanded (n_state_bins,
+    # n_state_bins) ones: same values, n_states**2 logs per step, and the
+    # discrete transitions are indexed per step, so no (n_time, n_state_bins,
+    # n_state_bins) array is materialized.
+    return _viterbi_scan(
+        initial_distribution,
+        log_likelihoods,
+        _safe_log(discrete_transition_matrix),
+        _CovariateTransition.create(
+            continuous_transition_matrix,
+            state_ind,
+            discrete_transition_matrix.shape[-1],
+        ).log(),
     )
-
-    # Run the forward pass
-    def _forward_pass(
-        state: jax.Array, best_next_state: jax.Array
-    ) -> tuple[jax.Array, jax.Array]:
-        next_state = best_next_state[state]
-        return next_state, next_state
-
-    first_state = jnp.argmax(
-        log_initial_distribution + log_likelihoods[0] + best_second_score
-    )
-    _, states = jax.lax.scan(_forward_pass, first_state, best_next_states)
-
-    return jnp.concatenate([first_state[None], states])
 
 
 # Apply JIT without donation - tests reuse inputs
