@@ -4,4 +4,4 @@ See [CONTRIBUTING.md](https://github.com/LorenFrankLab/non_local_detector/blob/m
 
 ## Code style
 
---8<-- "CONTRIBUTING.md:50:58"
+--8<-- "CONTRIBUTING.md:array-annotations"
