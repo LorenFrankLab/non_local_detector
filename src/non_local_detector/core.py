@@ -1815,7 +1815,7 @@ def chunked_filter_smoother_covariate_dependent(
         log_likelihoods: jnp.ndarray,
         time_inds: jnp.ndarray,
     ) -> tuple[Any, ...]:
-        # Donated: the time slice is fresh and single-use.
+        # The time slice is not donated: no output has its shape to reuse.
         return cast(
             tuple[Any, ...],
             _filter_covariate_dependent_internal(
@@ -1833,7 +1833,7 @@ def chunked_filter_smoother_covariate_dependent(
         time_inds: jnp.ndarray,
         n_time: int,
     ) -> jnp.ndarray:
-        # Donated: the time slice is fresh and single-use.
+        # The time slice is not donated: no output has its shape to reuse.
         return cast(
             jax.Array,
             _smoother_covariate_dependent_internal(

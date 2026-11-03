@@ -70,7 +70,7 @@ def test_decoder_predicts_without_position(fitted_decoder, clusterless_sim):
 def test_direct_non_local_predict_without_position(fitted_decoder, clusterless_sim):
     """The registered predictor accepts ``position=None`` when not local."""
     sim = clusterless_sim
-    _, predict = _CLUSTERLESS_ALGORITHMS[fitted_decoder.clusterless_algorithm]
+    predict = _CLUSTERLESS_ALGORITHMS[fitted_decoder.clusterless_algorithm].predict
     (encoding_model,) = fitted_decoder.encoding_model_.values()
     time_edges = jnp.asarray(time_edges_from_centers(sim.position_time[:N_DECODE]))
 

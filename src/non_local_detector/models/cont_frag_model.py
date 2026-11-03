@@ -37,7 +37,7 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
     dimension, leaving ``(time, state)``. Position dims are those named
     ``position`` (1D) or ending in ``_position`` (``x_position``/``y_position``
     for 2D, ``z_position`` and beyond, or ``dim{i}_position`` past six
-    dimensions), matching the names ``_convert_results_to_xarray`` assigns.
+    dimensions), matching the names ``convert_results_to_xarray`` assigns.
 
     Raises
     ------
@@ -139,7 +139,7 @@ class ContFragSortedSpikesClassifier(_ContFragResultsMixin, SortedSpikesDetector
         ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
     sorted_spikes_algorithm_params : dict or None, optional
         Parameters for the sorted-spikes algorithm's fit. If ``None`` (the
-        default), the algorithm's entry of ``_SORTED_SPIKES_DEFAULT_PARAMS`` is
+        default), the algorithm's registered ``default_params`` are
         copied into a fresh dict at fit time; a user dict replaces those
         defaults. A key the fit does not accept raises ``ValidationError``.
         User-supplied dicts are stored as-is for sklearn ``clone()``
@@ -288,7 +288,7 @@ class ContFragClusterlessClassifier(_ContFragResultsMixin, ClusterlessDetector):
         by default "clusterless_kde".
     clusterless_algorithm_params : dict or None, optional
         Parameters for the clusterless algorithm's fit. If ``None`` (the
-        default), the algorithm's entry of ``_CLUSTERLESS_DEFAULT_PARAMS`` is
+        default), the algorithm's registered ``default_params`` are
         copied into a fresh dict at fit time; a user dict replaces those
         defaults. A key the fit does not accept raises ``ValidationError``.
         User-supplied dicts are stored as-is for sklearn ``clone()``

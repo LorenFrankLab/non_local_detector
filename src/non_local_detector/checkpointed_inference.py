@@ -36,14 +36,13 @@ from non_local_detector.core import (
     _normalize,
     _warn_degenerate_and_nan_timesteps,
 )
-from non_local_detector.likelihoods.common import decode_bin_centers
 from non_local_detector.result_store import (
     DEFAULT_MAX_READ_BYTES,
     IncrementalResultWriter,
     _validate_read_budget,
     open_result_store,
 )
-from non_local_detector.time_edges import uniform_time_edges
+from non_local_detector.time_edges import decode_bin_centers, uniform_time_edges
 
 _SPATIAL = {
     "causal_posterior",

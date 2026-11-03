@@ -337,13 +337,8 @@ def ks_statistic(empirical_cdf: np.ndarray, model_cdf: np.ndarray) -> float:
     Returns
     -------
     ks_statistic : float
-        Maximum absolute difference between the two; NaN if the shapes
-        are incompatible.
-
-    Raises
-    ------
-    ValueError
-        If the arrays are not the same size.
+        Maximum absolute difference between the two; NaN if the arrays
+        cannot be broadcast together.
     """
     try:
         return cast(float, np.max(np.abs(empirical_cdf - model_cdf)))
