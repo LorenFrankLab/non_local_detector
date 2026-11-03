@@ -81,6 +81,15 @@ plugins:
             inherited_members: false
             filters:
               - "!^_"
+  # Tutorials are jupytext percent-format scripts in docs/tutorials/, run on
+  # every build (the docs CI job is their test). NLD_DOCS_EXECUTE=false skips
+  # running them for a quick local preview.
+  - mkdocs-jupyter:
+      include: ["tutorials/*.py"]
+      execute: !ENV [NLD_DOCS_EXECUTE, true]
+      allow_errors: false
+      include_source: true
+      ignore_h1_titles: true
 
 markdown_extensions:
   - abbr
@@ -117,6 +126,8 @@ nav:
       - Installation: getting-started/installation.md
       - Quickstart: getting-started/quickstart.md
       - Core Concepts: getting-started/core-concepts.md
+  - Tutorials:
+      - tutorials/index.md
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md

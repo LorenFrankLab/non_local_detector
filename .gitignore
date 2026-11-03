@@ -171,3 +171,6 @@ _version.py
 
 # MkDocs build output
 site/
+
+# mkdocs-jupyter execution cache
+.cache/
