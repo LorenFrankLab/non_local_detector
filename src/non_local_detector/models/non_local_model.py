@@ -1,3 +1,6 @@
+from collections.abc import Sequence
+from typing import Any, cast
+
 import numpy as np
 import xarray as xr
 
@@ -27,7 +30,7 @@ from non_local_detector.types import (
 def _get_conditional_non_local_posterior(
     results: xr.Dataset,
     state_names: list[str],
-    observation_models: list[ObservationModel],
+    observation_models: Sequence[ObservationModel],
 ) -> xr.DataArray:
     """Posterior over position given that activity is non-local.
 
@@ -96,14 +99,16 @@ def _get_conditional_non_local_posterior(
     # elsewhere -- do not substitute _position_dims.get_position_dims here; it
     # would return [] for the stacked "state_bins" case and break normalization.
     position_dims = [d for d in acausal_posterior.dims if d != "time"]
-    return acausal_posterior / acausal_posterior.sum(position_dims)
+    return cast(
+        "xr.DataArray", acausal_posterior / acausal_posterior.sum(position_dims)
+    )
 
 
 class _NonLocalMixin:
     """Behaviour shared by the sorted-spikes and clusterless non-local detectors."""
 
     state_names: list[str]
-    observation_models: list[ObservationModel]
+    observation_models: tuple[ObservationModel, ...]
     non_local_position_penalty: float
     non_local_penalty_std: float
 
@@ -276,7 +281,7 @@ class NonLocalSortedSpikesDetector(_NonLocalMixin, SortedSpikesDetector):
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
-        sorted_spikes_algorithm_params: dict | None = None,
+        sorted_spikes_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
@@ -461,7 +466,7 @@ class NonLocalClusterlessDetector(_NonLocalMixin, ClusterlessDetector):
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         clusterless_algorithm: str = "clusterless_kde",
-        clusterless_algorithm_params: dict | None = None,
+        clusterless_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,

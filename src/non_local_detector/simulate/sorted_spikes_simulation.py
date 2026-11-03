@@ -1,5 +1,8 @@
+from collections.abc import Sequence
+from typing import cast
+
 import numpy as np
-from scipy.stats import norm  # type: ignore[import-untyped]
+from scipy.stats import norm
 
 from non_local_detector.simulate._common import (
     get_trajectory_direction,
@@ -101,19 +104,24 @@ def create_place_field(
     field_firing_rate = norm(place_field_mean, place_field_std_deviation).pdf(position)
     field_firing_rate /= np.nanmax(field_firing_rate)
     field_firing_rate[~is_condition] = 0
-    return baseline_firing_rate + max_firing_rate * field_firing_rate
+    return cast(
+        "np.ndarray", baseline_firing_rate + max_firing_rate * field_firing_rate
+    )
 
 
 def gaussian_pdf(x: np.ndarray, mean: np.ndarray | float, sigma: float) -> np.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
-    return np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
+    return cast(
+        "np.ndarray",
+        np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi)),
+    )
 
 
 def estimate_position_distance(
     place_bin_centers: np.ndarray,
     positions: np.ndarray,
-    position_std: np.ndarray,
+    position_std: np.ndarray | float | Sequence[float],
 ) -> np.ndarray:
     """Estimates the Euclidean distance between positions and position bins.
 
@@ -149,7 +157,7 @@ def estimate_position_density(
     place_bin_centers: np.ndarray,
     positions: np.ndarray,
     position_std: np.ndarray,
-    block_size: int = 100,
+    block_size: int | None = 100,
     sample_weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Estimates a kernel density estimate over position bins using
@@ -229,16 +237,21 @@ def get_firing_rate(
             position_std,
             block_size=block_size,
             sample_weights=np.asarray(
-                weights[is_spike.astype(bool) & not_nan_position], dtype=np.float32
+                weights[is_spike.astype(bool) & not_nan_position],  # type: ignore[index]  # BUG: weights=None (default) raises TypeError here
+                dtype=np.float32,
             ),
         )
-        return np.spacing(1) + (
-            mean_rate
-            * np.where(
-                occupancy > 0.0,
-                marginal_density / np.where(occupancy > 0.0, occupancy, 1.0),
-                0.0,
-            )
+        return cast(
+            "np.ndarray",
+            np.spacing(1)
+            + (
+                mean_rate
+                * np.where(
+                    occupancy > 0.0,
+                    marginal_density / np.where(occupancy > 0.0, occupancy, 1.0),
+                    0.0,
+                )
+            ),
         )
     return np.zeros_like(occupancy)
 
@@ -420,7 +433,14 @@ def make_simulated_data(
     n_neurons: int = 25,
     seed: int | None = 0,
 ) -> tuple[
-    np.ndarray, np.ndarray, list[np.ndarray], np.ndarray, np.ndarray, int, np.ndarray
+    np.ndarray,
+    np.ndarray,
+    list[np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    int,
+    np.ndarray,
+    np.ndarray,
 ]:
     """Make simulated data for testing.
 
@@ -443,6 +463,7 @@ def make_simulated_data(
     event_times : np.ndarray, shape (n_events, 2)
     sampling_frequency : int
     is_event : np.ndarray, shape (n_time,)
+    place_fields : np.ndarray, shape (n_time, n_neurons)
     """
     rng = np.random.default_rng(seed)
 

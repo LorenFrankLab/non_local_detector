@@ -14,6 +14,7 @@ creating an import cycle.
 from __future__ import annotations
 
 import re
+from typing import cast
 
 import xarray as xr
 
@@ -96,4 +97,4 @@ def get_position_dims(data: xr.DataArray) -> list[str]:
     list of str
         The matching dimension names, in the order they appear on ``data``.
     """
-    return [d for d in data.dims if _is_position_dim(d)]
+    return cast("list[str]", [d for d in data.dims if _is_position_dim(d)])

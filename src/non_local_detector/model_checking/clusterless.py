@@ -18,12 +18,12 @@ References
 """
 
 from collections.abc import Callable, Sequence
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
-import scipy  # type: ignore[import-untyped]
+import scipy
 from numpy.typing import ArrayLike
-from scipy.special import logsumexp  # type: ignore[import-untyped]
+from scipy.special import logsumexp
 
 from non_local_detector.likelihoods.common import get_position_at_time
 from non_local_detector.model_checking._clusterless_models import (
@@ -186,8 +186,12 @@ def _compute_rescaled_isi(
 
 
 def _prepare_inputs(
-    encoding_model, position_time, position, spike_times, spike_waveform_features
-):
+    encoding_model: dict[str, Any],
+    position_time: ArrayLike,
+    position: np.ndarray,
+    spike_times: ArrayLike,
+    spike_waveform_features: ArrayLike,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Validated sample times, positions, spike times and marks."""
     time = np.asarray(position_time, dtype=float)
     if time.ndim != 1 or time.size < 2 or not np.all(np.diff(time) > 0):
@@ -231,14 +235,14 @@ def _prepare_inputs(
     return time, positions, spike_times, spike_positions, marks
 
 
-def _check_algorithm(algorithm):
+def _check_algorithm(algorithm: str) -> None:
     if algorithm not in SUPPORTED_ALGORITHMS:
         msg = f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
         raise ValueError(msg)
 
 
 def ircm_transform(
-    encoding_model: dict,
+    encoding_model: dict[str, Any],
     algorithm: str,
     electrode: int,
     position_time: np.ndarray,
@@ -322,7 +326,12 @@ def ircm_transform(
     return u, v
 
 
-def _time_in_bins(sample_times, sample_bins, n_bins, query_times):
+def _time_in_bins(
+    sample_times: np.ndarray,
+    sample_bins: np.ndarray,
+    n_bins: int,
+    query_times: np.ndarray,
+) -> np.ndarray:
     """Seconds the trajectory spends in each bin before each query time.
 
     As for the ground intensity, the integrand is interpolated linearly
@@ -365,7 +374,7 @@ def _time_in_bins(sample_times, sample_bins, n_bins, query_times):
 
 
 def mdci_transform(
-    encoding_model: dict,
+    encoding_model: dict[str, Any],
     algorithm: str,
     electrode: int,
     position_time: np.ndarray,
@@ -446,7 +455,7 @@ def mdci_transform(
     return np.clip(u, 0.0, 1.0), v
 
 
-def _unit_cube_samples(samples):
+def _unit_cube_samples(samples: ArrayLike) -> np.ndarray:
     samples = np.asarray(samples, dtype=float)
     if (
         samples.ndim != 2
@@ -554,7 +563,7 @@ class MultivariateKSResult(NamedTuple):
     n_simulations: int
 
 
-def _multivariate_ks_statistic(samples, block_size=256):
+def _multivariate_ks_statistic(samples: np.ndarray, block_size: int = 256) -> float:
     """Largest gap between the empirical and the uniform CDF at the samples.
 
     Evaluated at every sample point and just below it, where the empirical

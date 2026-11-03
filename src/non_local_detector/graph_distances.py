@@ -8,10 +8,14 @@ infinite distance, including isolated exterior nodes (whose self-distance is
 zero), exactly as in the legacy NetworkX shortest-path matrix.
 """
 
+from __future__ import annotations
+
 from collections import OrderedDict
+from typing import Any, cast
 
 import networkx as nx
 import numpy as np
+from numpy.typing import ArrayLike, DTypeLike, NDArray
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
@@ -24,7 +28,7 @@ class GraphDistanceBudgetError(MemoryError):
     """A requested exact graph-distance allocation exceeds its byte budget."""
 
 
-def _budget(nbytes, maximum, description):
+def _budget(nbytes: int, maximum: Any, description: str) -> None:
     if (
         not isinstance(maximum, (int, np.integer))
         or isinstance(maximum, bool)
@@ -59,13 +63,13 @@ class LazyGraphDistances:
 
     def __init__(
         self,
-        graph,
+        graph: Any,
         *,
-        directed=False,
-        max_dense_bytes=DEFAULT_MAX_DENSE_DISTANCE_BYTES,
-        max_workspace_bytes=DEFAULT_DISTANCE_WORKSPACE_BYTES,
-        max_cache_bytes=DEFAULT_DISTANCE_CACHE_BYTES,
-    ):
+        directed: bool = False,
+        max_dense_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
+        max_workspace_bytes: int = DEFAULT_DISTANCE_WORKSPACE_BYTES,
+        max_cache_bytes: int = DEFAULT_DISTANCE_CACHE_BYTES,
+    ) -> None:
         _budget(0, max_dense_bytes, "Dense graph distances")
         _budget(0, max_workspace_bytes, "Graph distance workspace")
         _budget(0, max_cache_bytes, "Graph distance row cache")
@@ -81,20 +85,20 @@ class LazyGraphDistances:
         self.max_dense_bytes = int(max_dense_bytes)
         self.max_workspace_bytes = int(max_workspace_bytes)
         self.max_cache_bytes = int(max_cache_bytes)
-        self._row_cache = OrderedDict()
+        self._row_cache: OrderedDict[int, NDArray[np.float64]] = OrderedDict()
 
-    def __getstate__(self):
+    def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state["_row_cache"] = OrderedDict()
         return state
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: dict[str, Any]) -> None:
         state.setdefault("max_cache_bytes", DEFAULT_DISTANCE_CACHE_BYTES)
         state.setdefault("_row_cache", OrderedDict())
         self.__dict__.update(state)
 
     @classmethod
-    def from_graph(cls, graph, **kwargs):
+    def from_graph(cls, graph: nx.Graph, **kwargs: Any) -> LazyGraphDistances:
         if set(graph.nodes) != set(range(len(graph))):
             msg = "Graph distance nodes must be indexed from zero through N-1"
             raise ValueError(msg)
@@ -113,26 +117,33 @@ class LazyGraphDistances:
         return cls(sparse, directed=graph.is_directed(), **kwargs)
 
     @property
-    def shape(self):
-        return self.graph.shape
+    def shape(self) -> tuple[int, int]:
+        return cast("tuple[int, int]", self.graph.shape)
 
     @property
-    def dtype(self):
+    def dtype(self) -> np.dtype[np.float64]:
         return np.dtype(np.float64)
 
     @property
-    def ndim(self):
+    def ndim(self) -> int:
         return 2
 
     @property
-    def storage_nbytes(self):
-        return (
+    def storage_nbytes(self) -> int:
+        return cast(
+            "int",
             self.graph.data.nbytes
             + self.graph.indices.nbytes
-            + self.graph.indptr.nbytes
+            + self.graph.indptr.nbytes,
         )
 
-    def _entries(self, rows, columns, *, max_bytes=None):
+    def _entries(
+        self,
+        rows: ArrayLike,
+        columns: ArrayLike,
+        *,
+        max_bytes: int | None = None,
+    ) -> NDArray[np.float64]:
         rows, columns = np.broadcast_arrays(rows, columns)
         _budget(
             rows.size * 8,
@@ -162,7 +173,7 @@ class LazyGraphDistances:
             del distances
         return result
 
-    def _rows_for(self, sources):
+    def _rows_for(self, sources: NDArray[np.integer]) -> NDArray[np.float64]:
         """Full float64 rows for unique ``sources``, computing only uncached rows.
 
         Callers bound ``len(sources)`` by the workspace budget.
@@ -188,7 +199,9 @@ class LazyGraphDistances:
                     self._row_cache.popitem(last=False)
         return result
 
-    def cross_distances(self, rows, columns):
+    def cross_distances(
+        self, rows: ArrayLike, columns: ArrayLike
+    ) -> NDArray[np.float64]:
         """Exact ``(len(rows), len(columns))`` distances; the output is caller-owned.
 
         Parameters
@@ -231,7 +244,7 @@ class LazyGraphDistances:
             out[select] = block[inverse[select] - start]
         return out
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
         if not isinstance(key, tuple):
             if np.ndim(key) > 1 and np.asarray(key).dtype == bool:
                 # A full-shape mask selects elements, not rows.
@@ -253,10 +266,14 @@ class LazyGraphDistances:
         result = self._entries(rows, columns)
         return result[()] if result.ndim == 0 else result
 
-    def __array__(self, dtype=None, copy=None):
+    def __array__(
+        self, dtype: DTypeLike | None = None, copy: bool | None = None
+    ) -> NDArray[Any]:
         return self.to_dense(dtype=dtype)
 
-    def to_dense(self, *, max_bytes=None, dtype=None):
+    def to_dense(
+        self, *, max_bytes: int | None = None, dtype: DTypeLike | None = None
+    ) -> NDArray[Any]:
         """Explicit budgeted dense conversion, with optional caller budget."""
         target = np.dtype(float if dtype is None else dtype)
         maximum = self.max_dense_bytes if max_bytes is None else max_bytes
@@ -286,9 +303,9 @@ class LazyGraphDistances:
             del distances
         return result
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: Any, value: Any) -> None:
         msg = "Lazy graph distances are read-only"
         raise TypeError(msg)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.shape[0]

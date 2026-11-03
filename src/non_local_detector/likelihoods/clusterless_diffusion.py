@@ -63,15 +63,19 @@ half of ``memory_budget`` and otherwise in tiles of columns.
 
 import logging
 import warnings
+from collections.abc import Callable
 from functools import partial
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
@@ -148,7 +152,7 @@ _WORKING_ITEMSIZE = np.dtype(np.float32).itemsize
 
 def _validate_diffusion_params(
     position_std: float,
-    waveform_std,
+    waveform_std: float | np.ndarray | jax.Array,
     heat_kernel_rank: int | None,
     memory_budget: int,
     block_size: int,
@@ -222,7 +226,7 @@ def _validate_diffusion_params(
 
     if (
         isinstance(block_size, bool)
-        or not isinstance(block_size, int)
+        or not isinstance(block_size, int)  # type: ignore[redundant-expr]  # runtime check of user input
         or block_size < 1
     ):
         msg = "block_size must be a positive integer"
@@ -235,7 +239,9 @@ def _validate_diffusion_params(
     return position_std
 
 
-def _validate_waveform_std_shape(waveform_std, n_features: int, electrode: int) -> None:
+def _validate_waveform_std_shape(
+    waveform_std: float | np.ndarray | jax.Array, n_features: int, electrode: int
+) -> None:
     """Reject a ``waveform_std`` that cannot broadcast to this electrode's marks.
 
     ``waveform_std`` must be a scalar (broadcast to every feature) or a 1-D array
@@ -289,16 +295,16 @@ def fit_clusterless_diffusion_encoding_model(
     environment: Environment,
     *,
     position_std: float = float(np.sqrt(12.5)),
-    waveform_std: float = DEFAULT_WAVEFORM_STD,
+    waveform_std: float | np.ndarray | jax.Array = DEFAULT_WAVEFORM_STD,
     weights: np.ndarray | None = None,
     heat_kernel_rank: int | None = None,
     block_size: int = 10000,
     memory_budget: int = 536870912,
     disable_progress_bar: bool = False,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> dict[str, Any]:
     """Fit the clusterless graph-diffusion encoding model.
 
     Parameters
@@ -389,7 +395,7 @@ def fit_clusterless_diffusion_encoding_model(
     check_smoothing_bandwidth(position_std, graph)
     bin_sizes = np.asarray(bin_sizes)
     n_interior = node_order.shape[0]
-    n_total_bins = environment.is_track_interior_.ravel().shape[0]
+    n_total_bins = cast(np.ndarray, environment.is_track_interior_).ravel().shape[0]
     full_to_local = _full_to_local(node_order, n_total_bins)
 
     # Resolve the eigenbasis ONCE and record its rank; predict retrieves the device
@@ -533,7 +539,7 @@ def fit_clusterless_diffusion_encoding_model(
     }
 
 
-def _pad_sources(sources, n_padded: int) -> np.ndarray:
+def _pad_sources(sources: ArrayLike, n_padded: int) -> NDArray[np.int32]:
     """Source bins padded to ``n_padded`` with repeats of the last (bin 0 if none)."""
     sources = np.asarray(sources, dtype=np.int32)
     if sources.size == 0:
@@ -547,7 +553,15 @@ _LOG_TINY = float(np.log(np.finfo(np.float32).tiny))
 
 
 @partial(jax.jit, static_argnames=("position_std", "n_components"))
-def _kernel_columns(eigvals, eigvecs, labels, sources, *, position_std, n_components):
+def _kernel_columns(
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
+    labels: jax.Array,
+    sources: jax.Array,
+    *,
+    position_std: float,
+    n_components: int,
+) -> jax.Array:
     """Diffusion of a unit mass from each source bin, shape (n_bins, n_sources).
 
     Column ``k`` is the heat kernel applied to bin ``sources[k]``: clipped to be
@@ -590,7 +604,12 @@ def _kernel_columns(eigvals, eigvecs, labels, sources, *, position_std, n_compon
     return columns / jnp.sum(columns, axis=0, keepdims=True)
 
 
-def spatial_kernel_columns(environment, resolved_rank, position_std, sources):
+def spatial_kernel_columns(
+    environment: Environment,
+    resolved_rank: int,
+    position_std: float,
+    sources: ArrayLike,
+) -> jax.Array:
     """The model's spatial kernel ``H[:, sources]``, for a fitted environment.
 
     Parameters
@@ -616,14 +635,17 @@ def spatial_kernel_columns(environment, resolved_rank, position_std, sources):
     sources = np.asarray(sources, dtype=np.int32)
     # Pad to few sizes so callers with nearby source counts share one executable.
     padded = _pad_sources(sources, _padded_sample_count(max(sources.size, 1)))
-    return _kernel_columns(
-        eigvals,
-        eigvecs,
-        labels,
-        jnp.asarray(padded),
-        position_std=float(position_std),
-        n_components=n_components,
-    )[:, : sources.size]
+    return cast(
+        jax.Array,
+        _kernel_columns(
+            eigvals,
+            eigvecs,
+            labels,
+            jnp.asarray(padded),
+            position_std=float(position_std),
+            n_components=n_components,
+        )[:, : sources.size],
+    )
 
 
 def _dense_kernel_fits(n_bins: int, memory_budget: int) -> bool:
@@ -631,7 +653,7 @@ def _dense_kernel_fits(n_bins: int, memory_budget: int) -> bool:
     return 2 * _WORKING_ITEMSIZE * n_bins * n_bins <= memory_budget
 
 
-def _dense_sources(n_bins: int, tile_budget: int):
+def _dense_sources(n_bins: int, tile_budget: int) -> tuple[NDArray[np.int32], int]:
     """Every bin as a source, padded to whole tiles with repeats of the last.
 
     Returns
@@ -645,8 +667,15 @@ def _dense_sources(n_bins: int, tile_budget: int):
 
 @partial(jax.jit, static_argnames=("tile", "position_std", "n_components"))
 def _dense_kernel(
-    eigvals, eigvecs, labels, sources, *, tile, position_std, n_components
-):
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
+    labels: jax.Array,
+    sources: jax.Array,
+    *,
+    tile: int,
+    position_std: float,
+    n_components: int,
+) -> jax.Array:
     """Kernel columns of every (padded) dense source, shape (n_bins, n_sources).
 
     Built once per prediction in tiles; see :func:`_dense_sources`.
@@ -674,7 +703,7 @@ def _source_tile_size(memory_budget: int, n_bins: int, rank: int) -> int:
 
 def _diffuse_fields(
     fields: np.ndarray,
-    environment,
+    environment: Environment,
     resolved_rank: int,
     position_std: float,
     memory_budget: int,
@@ -709,7 +738,12 @@ def _diffuse_fields(
     return out
 
 
-def _log_intensity_scale(occupancy, bin_sizes, mean_rate, weight_total):
+def _log_intensity_scale(
+    occupancy: jax.Array | np.ndarray,
+    bin_sizes: jax.Array | np.ndarray,
+    mean_rate: jax.Array | float,
+    weight_total: jax.Array | float,
+) -> jax.Array:
     """Per-bin log of ``mean_rate / (sum_i w_i * dV(x) * occupancy(x))``.
 
     Multiplying a diffused source field by this gives the intensity. Bins
@@ -740,7 +774,9 @@ def _log_intensity_scale(occupancy, bin_sizes, mean_rate, weight_total):
     )
 
 
-def _source_layout(bins: np.ndarray, n_bins: int, tile_budget: int):
+def _source_layout(
+    bins: np.ndarray, n_bins: int, tile_budget: int
+) -> tuple[NDArray[np.int32], NDArray[np.int32], int]:
     """Source bins of padded, bin-sorted encoding samples, padded to few sizes.
 
     Parameters
@@ -773,8 +809,13 @@ def _source_layout(bins: np.ndarray, n_bins: int, tile_budget: int):
 
 
 def _electrode_layout(
-    bins, marks, weights, n_bins: int, tile_budget: int, dense: bool = False
-):
+    bins: ArrayLike,
+    marks: ArrayLike,
+    weights: ArrayLike,
+    n_bins: int,
+    tile_budget: int,
+    dense: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, int]:
     """Padded, bin-sorted encoding samples with their source layout, for one electrode.
 
     Models fitted before encoding spikes were stored bin-sorted are sorted here
@@ -820,13 +861,13 @@ def _electrode_layout(
 
 
 def _log_source_marks(
-    decode_features,
-    encoding_marks,
-    encoding_weights,
-    source_index,
-    waveform_std,
-    n_sources,
-):
+    decode_features: jax.Array,
+    encoding_marks: jax.Array,
+    encoding_weights: jax.Array,
+    source_index: jax.Array,
+    waveform_std: jax.Array,
+    n_sources: int,
+) -> jax.Array:
     """Log of ``sum_i w_i K_mark(m_j, m_i)`` over each source bin's samples.
 
     Reduced in log space within each source, so no source is lost however far
@@ -854,7 +895,16 @@ def _log_source_marks(
     return jnp.where(jnp.isneginf(peak), -jnp.inf, log_nonnegative(total) + peak)
 
 
-def _tile_columns(basis, sources, cached, start, *, position_std, n_components, tile):
+def _tile_columns(
+    basis: tuple[jax.Array, jax.Array, jax.Array],
+    sources: jax.Array,
+    cached: jax.Array | None,
+    start: jax.Array | int,
+    *,
+    position_std: float,
+    n_components: int,
+    tile: int,
+) -> jax.Array:
     """Kernel columns of ``sources[start:start + tile]``, shape (n_bins, tile).
 
     Sliced from ``cached`` (columns aligned with ``sources``) when given, else
@@ -863,29 +913,32 @@ def _tile_columns(basis, sources, cached, start, *, position_std, n_components, 
     if cached is not None:
         return jax.lax.dynamic_slice_in_dim(cached, start, tile, axis=1)
     eigvals, eigvecs, labels = basis
-    return _kernel_columns(
-        eigvals,
-        eigvecs,
-        labels,
-        jax.lax.dynamic_slice_in_dim(sources, start, tile),
-        position_std=position_std,
-        n_components=n_components,
+    return cast(
+        jax.Array,
+        _kernel_columns(
+            eigvals,
+            eigvecs,
+            labels,
+            jax.lax.dynamic_slice_in_dim(sources, start, tile),
+            position_std=position_std,
+            n_components=n_components,
+        ),
     )
 
 
 @partial(jax.jit, static_argnames=("tile", "position_std", "n_components"))
 def _kernel_bounds(
-    eigvals,
-    eigvecs,
-    labels,
-    kernel,
-    sources,
-    log_scale,
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
+    labels: jax.Array,
+    kernel: jax.Array | None,
+    sources: jax.Array,
+    log_scale: jax.Array,
     *,
-    tile,
-    position_std,
-    n_components,
-):
+    tile: int,
+    position_std: float,
+    n_components: int,
+) -> tuple[jax.Array, jax.Array]:
     """Per-source bounds for the exact-repair gate, one tile of columns at a time.
 
     Computed once per prediction for every bin, with the scale of a unit rate
@@ -924,7 +977,7 @@ def _kernel_bounds(
         tile=tile,
     )
 
-    def tile_bounds(start):
+    def tile_bounds(start: jax.Array) -> tuple[jax.Array, jax.Array]:
         columns = columns_of(start)
         log_columns = log_nonnegative(columns)
         return (
@@ -934,12 +987,18 @@ def _kernel_bounds(
 
     starts = jnp.arange(sources.shape[0] // tile) * tile
     gain, floor = jax.lax.map(tile_bounds, starts)
-    return gain.reshape(-1), floor.reshape(-1)
+    return cast(jax.Array, gain.reshape(-1)), cast(jax.Array, floor.reshape(-1))
 
 
 def _log_marked_field(
-    log_source, rows, columns_of, n_tiles, tile, bounds, log_background
-):
+    log_source: jax.Array,
+    rows: jax.Array | None,
+    columns_of: Callable[[jax.Array | int], jax.Array],
+    n_tiles: int,
+    tile: int,
+    bounds: tuple[jax.Array, jax.Array],
+    log_background: jax.Array,
+) -> jax.Array:
     """``log(H D)`` for one block of spikes, at every bin or at each spike's own.
 
     The scaled product ``H exp(log_source - peak)`` is applied in tiles of
@@ -971,10 +1030,10 @@ def _log_marked_field(
     scaled = jnp.exp(log_source - safe_peak[None, :])
     n_bins = jax.eval_shape(columns_of, 0).shape[0]
 
-    def read(columns, at):
+    def read(columns: jax.Array, at: jax.Array | None) -> jax.Array:
         return columns if at is None else columns[at]
 
-    def add_tile(index, field):
+    def add_tile(index: jax.Array, field: jax.Array) -> jax.Array:
         start = index * tile
         columns = read(columns_of(start), rows)  # (n_bins or n_block, tile)
         part = jax.lax.dynamic_slice_in_dim(scaled, start, tile, axis=0)
@@ -994,9 +1053,9 @@ def _log_marked_field(
     )
     needs_exact = lost_bound > log_background + np.log(np.finfo(np.float32).eps)
 
-    def exact(j, at):
+    def exact(j: jax.Array, at: jax.Array | None) -> jax.Array:
         # log sum_s H[at, s] exp(log_source[s, j]), reduced in log space.
-        def add_exact_tile(index, value):
+        def add_exact_tile(index: jax.Array, value: jax.Array) -> jax.Array:
             start = index * tile
             log_columns = log_nonnegative(read(columns_of(start), at))
             part = jax.lax.dynamic_slice_in_dim(log_source[:, j], start, tile)
@@ -1006,14 +1065,19 @@ def _log_marked_field(
             return _masked_logaddexp(value, _masked_logsumexp(terms.T))
 
         n_read = n_bins if at is None else at.shape[0]
-        return jax.lax.fori_loop(
-            0, n_tiles, add_exact_tile, jnp.full((n_read,), -jnp.inf)
+        return cast(
+            jax.Array,
+            jax.lax.fori_loop(
+                0, n_tiles, add_exact_tile, jnp.full((n_read,), -jnp.inf)
+            ),
         )
 
-    def repaired(values, j, flag):
+    def repaired(values: jax.Array, j: jax.Array, flag: jax.Array) -> jax.Array:
         if local:
             fixed = jax.lax.cond(
-                flag, lambda: exact(j, rows[j][None])[0], lambda: values[j]
+                flag,
+                lambda: exact(j, cast(jax.Array, rows)[j][None])[0],
+                lambda: values[j],
             )
             return values.at[j].set(fixed)
         fixed = jax.lax.cond(flag, lambda: exact(j, None), lambda: values[:, j])
@@ -1037,29 +1101,29 @@ def _log_marked_field(
     donate_argnums=0,
 )
 def _add_electrode_diffusion_terms(
-    total,
-    decode_features,
-    row_ids,
-    spike_bins,
-    encoding_marks,
-    encoding_weights,
-    source_index,
-    sources,
-    waveform_std,
-    eigvals,
-    eigvecs,
-    labels,
-    kernel,
-    log_scale,
-    bounds,
-    log_background,
+    total: jax.Array,
+    decode_features: jax.Array,
+    row_ids: jax.Array,
+    spike_bins: jax.Array | None,
+    encoding_marks: jax.Array,
+    encoding_weights: jax.Array,
+    source_index: jax.Array,
+    sources: jax.Array,
+    waveform_std: jax.Array,
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
+    labels: jax.Array,
+    kernel: jax.Array | None,
+    log_scale: jax.Array,
+    bounds: tuple[jax.Array, jax.Array],
+    log_background: jax.Array,
     *,
-    position_std,
-    n_components,
-    tile,
-    block_size,
-    indices_are_sorted,
-):
+    position_std: float,
+    n_components: int,
+    tile: int,
+    block_size: int,
+    indices_are_sorted: bool,
+) -> jax.Array:
     """Add one electrode's log mark intensities to their rows.
 
     Non-local intensities cover every bin; local ones read the same kernel
@@ -1115,7 +1179,7 @@ def _add_electrode_diffusion_terms(
     )
     n_tiles = sources.shape[0] // tile
 
-    def add_block(block, total):
+    def add_block(block: jax.Array, total: jax.Array) -> jax.Array:
         start = block * block_size
         background = jax.lax.dynamic_slice_in_dim(log_background, start, block_size)
         rows = (
@@ -1153,7 +1217,7 @@ def _add_electrode_diffusion_terms(
         )
 
     n_blocks = decode_features.shape[0] // block_size
-    return jax.lax.fori_loop(0, n_blocks, add_block, total)
+    return cast(jax.Array, jax.lax.fori_loop(0, n_blocks, add_block, total))
 
 
 @requires_time_edges
@@ -1169,7 +1233,7 @@ def predict_clusterless_diffusion_log_likelihood(
     is_local: bool = False,
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],
-    environment_grid: dict | None = None,
+    environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **encoding_model: object,
@@ -1237,16 +1301,18 @@ def predict_clusterless_diffusion_log_likelihood(
     summed_ground_process_intensity = jnp.asarray(
         encoding_model["summed_ground_process_intensity"]
     ) + background_rate(len(spike_times))
-    encoding_bin_indices = encoding_model["encoding_bin_indices"]
-    encoding_marks = encoding_model["encoding_marks"]
-    encoding_weights = encoding_model["encoding_weights"]
-    weight_total = encoding_model["weight_total"]
-    mean_rates = encoding_model["mean_rates"]
+    encoding_bin_indices = cast(
+        list[np.ndarray], encoding_model["encoding_bin_indices"]
+    )
+    encoding_marks = cast(list[jax.Array], encoding_model["encoding_marks"])
+    encoding_weights = cast(list[jax.Array], encoding_model["encoding_weights"])
+    weight_total = cast(list[float], encoding_model["weight_total"])
+    mean_rates = cast(list[float], encoding_model["mean_rates"])
     resolved_rank = int(encoding_model["resolved_rank"])  # type: ignore[call-overload]
     node_order = np.asarray(encoding_model["node_order"])
     bin_sizes = jnp.asarray(encoding_model["bin_sizes"])
     position_std = float(encoding_model["position_std"])  # type: ignore[arg-type]
-    waveform_std = encoding_model["waveform_std"]
+    waveform_std = cast(float | np.ndarray | jax.Array, encoding_model["waveform_std"])
     block_size = int(encoding_model["block_size"])  # type: ignore[call-overload]
     memory_budget = int(encoding_model["memory_budget"])  # type: ignore[call-overload]
     disable_progress_bar = bool(encoding_model.get("disable_progress_bar", False))
@@ -1255,12 +1321,12 @@ def predict_clusterless_diffusion_log_likelihood(
         "electrode",
         spike_times=spike_times,
         spike_waveform_features=spike_waveform_features,
-        encoding_bin_indices=encoding_bin_indices,  # type: ignore[arg-type]
-        encoding_marks=encoding_marks,  # type: ignore[arg-type]
-        encoding_weights=encoding_weights,  # type: ignore[arg-type]
-        weight_total=weight_total,  # type: ignore[arg-type]
-        mean_rates=mean_rates,  # type: ignore[arg-type]
-        mark_reference=mark_reference,  # type: ignore[arg-type]
+        encoding_bin_indices=encoding_bin_indices,
+        encoding_marks=encoding_marks,
+        encoding_weights=encoding_weights,
+        weight_total=weight_total,
+        mean_rates=mean_rates,
+        mark_reference=mark_reference,
     )
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
@@ -1274,9 +1340,12 @@ def predict_clusterless_diffusion_log_likelihood(
     )
     tile_budget = _source_tile_size(memory_budget, n_bins, resolved_rank)
     dense = _dense_kernel_fits(n_bins, memory_budget)
-    every_bin, every_bin_tile = _dense_sources(n_bins, tile_budget)
-    every_bin = jnp.asarray(every_bin)
-    basis_static = {"position_std": position_std, "n_components": n_components}
+    every_bin_host, every_bin_tile = _dense_sources(n_bins, tile_budget)
+    every_bin = jnp.asarray(every_bin_host)
+    basis_static: dict[str, Any] = {
+        "position_std": position_std,
+        "n_components": n_components,
+    }
     # One kernel per prediction, shared by every electrode, state and chunk.
     kernel = (
         _spike_time_order.memo(
@@ -1320,7 +1389,7 @@ def predict_clusterless_diffusion_log_likelihood(
         # Reconstruct the interior-bin mapping from node_order (derived here at
         # predict, not stored) and evaluate the diffused column at the animal's nearest
         # interior bin instead of returning the whole column.
-        n_total_bins = environment.is_track_interior_.ravel().shape[0]
+        n_total_bins = cast(np.ndarray, environment.is_track_interior_).ravel().shape[0]
         full_to_local = _full_to_local(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(
@@ -1341,7 +1410,7 @@ def predict_clusterless_diffusion_log_likelihood(
         log_likelihood = -durations[:, None] * summed_ground_process_intensity[None, :]
     # Kernel outputs are committed to the basis's device; committing the
     # starting sum too lets every electrode reuse one executable.
-    log_likelihood = jax.device_put(log_likelihood, eigvecs.sharding)
+    log_likelihood = cast(jax.Array, jax.device_put(log_likelihood, eigvecs.sharding))
 
     for electrode, (
         electrode_bins,

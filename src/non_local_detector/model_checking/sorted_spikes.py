@@ -11,11 +11,14 @@ References
 
 """
 
+from typing import Any, cast
+
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy import integrate  # type: ignore[import-untyped]
-from scipy.signal import correlate  # type: ignore[import-untyped]
-from scipy.stats import expon, norm  # type: ignore[import-untyped]
+from matplotlib.axes import Axes
+from scipy import integrate
+from scipy.signal import correlate
+from scipy.stats import expon, norm
 
 
 class TimeRescaling:
@@ -98,7 +101,7 @@ class TimeRescaling:
         # Validate physical inputs before splitting into trials. Existing
         # index-based construction does not need to allocate an integral.
         if (
-            not isinstance(rate_units, str)
+            not isinstance(rate_units, str)  # type: ignore[redundant-expr]  # defensive runtime check of a typed argument
             or rate_units != "expected_counts"
             or self.time is not None
             or self.time_edges is not None
@@ -193,14 +196,14 @@ class TimeRescaling:
         normal_rescaled_ISIs = norm.ppf(u)
 
         c = correlate(normal_rescaled_ISIs, normal_rescaled_ISIs)
-        return c / c.max()
+        return cast(np.ndarray, c / c.max())
 
     def plot_ks(
         self,
-        ax: plt.Axes | None = None,
-        scatter_kwargs: dict | None = None,
+        ax: Axes | None = None,
+        scatter_kwargs: dict[str, Any] | None = None,
         ci_color: str = "red",
-    ) -> plt.Axes:
+    ) -> Axes:
         """Plots the empirical CDF versus the expected CDF to examine how
         close the rescaled ISIs are to the unit rate Poisson.
 
@@ -227,10 +230,10 @@ class TimeRescaling:
 
     def plot_qq(
         self,
-        ax: plt.Axes | None = None,
-        scatter_kwargs: dict | None = None,
+        ax: Axes | None = None,
+        scatter_kwargs: dict[str, Any] | None = None,
         ci_color: str = "red",
-    ) -> plt.Axes:
+    ) -> Axes:
         """Plots the rescaled ISIs versus a uniform distribution to examine
         how close the rescaled ISIs are to the unit rate Poisson.
 
@@ -257,12 +260,12 @@ class TimeRescaling:
 
     def plot_rescaled_ISI_autocorrelation(
         self,
-        ax: plt.Axes | None = None,
-        scatter_kwargs: dict | None = None,
+        ax: Axes | None = None,
+        scatter_kwargs: dict[str, Any] | None = None,
         ci_color: str = "red",
         sampling_frequency: float = 1.0,
         lag_max: float | None = None,
-    ) -> plt.Axes:
+    ) -> Axes:
         """Plot the rescaled ISI dependence.
 
         Should be independent if the transformation to unit rate Poisson
@@ -330,7 +333,7 @@ def ks_statistic(empirical_cdf: np.ndarray, model_cdf: np.ndarray) -> float:
         If the arrays are not the same size.
     """
     try:
-        return np.max(np.abs(empirical_cdf - model_cdf))
+        return cast(float, np.max(np.abs(empirical_cdf - model_cdf)))
     except ValueError:
         return np.nan
 
@@ -376,7 +379,10 @@ def _max_transformed_interval(
     max_transformed_interval : ndarray, shape (n_spikes,)
     """
     ici_at_spike = integrated_conditional_intensity[is_spike.nonzero()]
-    return integrated_conditional_intensity[-1] - ici_at_spike + rescaled_ISIs
+    return cast(
+        np.ndarray,
+        integrated_conditional_intensity[-1] - ici_at_spike + rescaled_ISIs,
+    )
 
 
 def _integrated_conditional_intensity(
@@ -388,7 +394,7 @@ def _integrated_conditional_intensity(
     legacy_residuals: bool = False,
 ) -> np.ndarray:
     """Integrate explicitly selected rate units without guessing a clock."""
-    if not isinstance(rate_units, str) or rate_units not in ("expected_counts", "Hz"):
+    if not isinstance(rate_units, str) or rate_units not in ("expected_counts", "Hz"):  # type: ignore[redundant-expr]  # defensive runtime check of a typed argument
         msg = "rate_units must be 'expected_counts' or 'Hz'"
         raise ValueError(msg)
     # Integrate Hz rates in float64 before any addition or multiplication.
@@ -434,7 +440,9 @@ def _integrated_conditional_intensity(
         raise ValueError(msg)
     if time_edges is not None:
         return np.cumsum(intensity * durations)
-    return integrate.cumulative_trapezoid(intensity, x=grid, initial=0.0)
+    return cast(
+        np.ndarray, integrate.cumulative_trapezoid(intensity, x=grid, initial=0.0)
+    )
 
 
 def uniform_rescaled_ISIs(
@@ -506,7 +514,7 @@ def uniform_rescaled_ISIs(
         max_transformed_interval = 1
 
     # Transform the ISIs to a uniform distribution (1 - exp(-ISI))
-    return expon.cdf(rescaled_ISIs) / max_transformed_interval
+    return cast(np.ndarray, expon.cdf(rescaled_ISIs) / max_transformed_interval)
 
 
 def point_process_residuals(
@@ -555,28 +563,28 @@ def point_process_residuals(
     if rate_units == "expected_counts":
         # Retain the original accumulation order for existing callers.
         return np.cumsum(is_spike - conditional_intensity)
-    return np.cumsum(is_spike) - integrated
+    return cast(np.ndarray, np.cumsum(is_spike) - integrated)
 
 
 def plot_ks(
     uniform_rescaled_ISIs: np.ndarray,
-    ax: plt.Axes | None = None,
-    scatter_kwargs: dict | None = None,
+    ax: Axes | None = None,
+    scatter_kwargs: dict[str, Any] | None = None,
     ci_color: str = "red",
-) -> plt.Axes:
+) -> Axes:
     """Plots the rescaled ISIs versus a uniform distribution to examine
     how close the rescaled ISIs are to the unit rate Poisson.
 
     Parameters
     ----------
     uniform_rescaled_ISIs : np.ndarray, shape (n_spikes,)
-    ax : plt.Axes | None, optional
+    ax : Axes | None, optional
     scatter_kwargs : dict | None, optional
     ci_color : str, optional
 
     Returns
     -------
-    ax : plt.Axes
+    ax : Axes
     """
     n_spikes = uniform_rescaled_ISIs.size
     uniform_cdf_values = (np.arange(1, n_spikes + 1) - 0.5) / n_spikes
@@ -602,10 +610,10 @@ def plot_ks(
 
 def plot_qq(
     uniform_rescaled_ISIs: np.ndarray,
-    ax: plt.Axes | None = None,
-    scatter_kwargs: dict | None = None,
+    ax: Axes | None = None,
+    scatter_kwargs: dict[str, Any] | None = None,
     ci_color: str = "red",
-) -> plt.Axes:
+) -> Axes:
     """Create a Q-Q plot of rescaled ISIs against uniform distribution.
 
     Plots the quantiles of the rescaled interspike intervals against the
@@ -617,7 +625,7 @@ def plot_qq(
     uniform_rescaled_ISIs : np.ndarray, shape (n_spikes,)
         Rescaled interspike intervals that should be uniformly distributed
         if the model fits well.
-    ax : plt.Axes, optional
+    ax : Axes, optional
         Matplotlib axes object to plot on. If None, uses current axes.
     scatter_kwargs : dict, optional
         Additional keyword arguments passed to scatter plot.
@@ -626,7 +634,7 @@ def plot_qq(
 
     Returns
     -------
-    ax : plt.Axes
+    ax : Axes
         Matplotlib axes object containing the plot.
 
     Notes
@@ -658,12 +666,12 @@ def plot_qq(
 
 def plot_rescaled_ISI_autocorrelation(
     rescaled_ISI_autocorrelation: np.ndarray,
-    ax: plt.Axes | None = None,
-    scatter_kwargs: dict | None = None,
+    ax: Axes | None = None,
+    scatter_kwargs: dict[str, Any] | None = None,
     ci_color: str = "red",
     sampling_frequency: float = 1.0,
     lag_max: float | None = None,
-) -> plt.Axes:
+) -> Axes:
     """Plot autocorrelation function of rescaled interspike intervals.
 
     Visualizes the temporal dependence in rescaled ISIs. For a well-fitting
@@ -674,7 +682,7 @@ def plot_rescaled_ISI_autocorrelation(
     ----------
     rescaled_ISI_autocorrelation : np.ndarray, shape (2*n_spikes-1,)
         Autocorrelation function of rescaled ISIs computed using correlation.
-    ax : plt.Axes, optional
+    ax : Axes, optional
         Matplotlib axes object to plot on. If None, uses current axes.
     scatter_kwargs : dict, optional
         Additional keyword arguments passed to scatter plot.
@@ -688,7 +696,7 @@ def plot_rescaled_ISI_autocorrelation(
 
     Returns
     -------
-    ax : plt.Axes
+    ax : Axes
         Matplotlib axes object containing the plot.
 
     Notes

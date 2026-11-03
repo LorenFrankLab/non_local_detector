@@ -15,3 +15,16 @@ from non_local_detector.models.nospike_cont_frag_model import (
     NoSpikeContFragClusterlessClassifier,
     NoSpikeContFragSortedSpikesClassifier,
 )
+
+__all__ = [
+    "ClusterlessDecoder",
+    "ContFragClusterlessClassifier",
+    "ContFragSortedSpikesClassifier",
+    "MultiEnvironmentClusterlessClassifier",
+    "MultiEnvironmentSortedSpikesClassifier",
+    "NoSpikeContFragClusterlessClassifier",
+    "NoSpikeContFragSortedSpikesClassifier",
+    "NonLocalClusterlessDetector",
+    "NonLocalSortedSpikesDetector",
+    "SortedSpikesDecoder",
+]

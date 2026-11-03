@@ -6,6 +6,7 @@ from posterior distributions.
 """
 
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 
@@ -111,4 +112,4 @@ def estimate_initial_conditions(acausal_posterior: np.ndarray) -> np.ndarray:
     >>> initial_conds.shape
     (50,)
     """
-    return acausal_posterior[0]
+    return cast(np.ndarray, acausal_posterior[0])

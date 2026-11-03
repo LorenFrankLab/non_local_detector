@@ -22,6 +22,7 @@ with ``fit_mark_references``.
 """
 
 from dataclasses import dataclass
+from typing import cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -126,10 +127,11 @@ class MarkReference:
         log_normalizer = (
             gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(nu * np.pi)
         )
-        return (
+        return cast(
+            np.ndarray,
             z.shape[1] * log_normalizer
             - np.sum(np.log(self.scale))
-            - 0.5 * (nu + 1.0) * np.sum(np.log1p(z * z / nu), axis=1)
+            - 0.5 * (nu + 1.0) * np.sum(np.log1p(z * z / nu), axis=1),
         )
 
 

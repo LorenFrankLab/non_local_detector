@@ -1,7 +1,8 @@
 import itertools
 from collections.abc import Hashable
+from typing import Any, cast
 
-import networkx as nx  # type: ignore[import-untyped]
+import networkx as nx
 import numpy as np
 import xarray as xr
 
@@ -57,7 +58,7 @@ def _get_MAP_estimate_2d_position_edges(
         posterior.where(env.is_track_interior_).argmax("position", skipna=True).values
     )
     try:
-        place_bin_center_2D_position = env.place_bin_center_2D_position_
+        place_bin_center_2D_position = env.place_bin_center_2D_position_  # type: ignore[attr-defined]  # legacy attribute; AttributeError fallback below
     except AttributeError:
         place_bin_center_2D_position = np.asarray(
             env.place_bin_centers_nodes_df_.loc[:, ["x_position", "y_position"]]  # type: ignore[union-attr]
@@ -67,7 +68,7 @@ def _get_MAP_estimate_2d_position_edges(
 
     # Figure out which track segment it belongs to
     try:
-        edge_id = env.place_bin_center_ind_to_edge_id_
+        edge_id = env.place_bin_center_ind_to_edge_id_  # type: ignore[attr-defined]  # legacy attribute; AttributeError fallback below
     except AttributeError:
         edge_id = np.asarray(env.place_bin_centers_nodes_df_.edge_id)  # type: ignore[union-attr]
 
@@ -78,8 +79,8 @@ def _get_MAP_estimate_2d_position_edges(
 
 
 def _points_toward_node(
-    track_graph: nx.Graph, edge: np.ndarray, head_direction: np.ndarray
-) -> object:
+    track_graph: nx.Graph, edge: np.ndarray, head_direction: float | np.ndarray
+) -> Any:
     """Determine which node of an edge the head direction vector points toward.
 
     Given an edge defined by two nodes and a head direction angle, computes
@@ -135,7 +136,7 @@ def _get_distance_between_nodes(
     """
     node1_pos = np.asarray(track_graph.nodes[node1]["pos"])
     node2_pos = np.asarray(track_graph.nodes[node2]["pos"])
-    return np.sqrt(np.sum((node1_pos - node2_pos) ** 2))
+    return cast("float", np.sqrt(np.sum((node1_pos - node2_pos) ** 2)))
 
 
 def _setup_track_graph(
@@ -290,8 +291,11 @@ def _calculate_distance(
         Total distance along the shortest path from source to target.
 
     """
-    return nx.shortest_path_length(
-        track_graph, source=source, target=target, weight="distance"
+    return cast(
+        "float",
+        nx.shortest_path_length(
+            track_graph, source=source, target=target, weight="distance"
+        ),
     )
 
 
@@ -446,7 +450,7 @@ def get_ahead_behind_distance(
 
 
 def get_map_speed(
-    posterior: xr.DataArray,
+    posterior: xr.DataArray | np.ndarray,
     track_graph_with_bin_centers_edges: nx.Graph,
     place_bin_center_ind_to_node: np.ndarray,
     sampling_frequency: float = 500.0,

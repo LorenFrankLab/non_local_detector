@@ -17,7 +17,8 @@ Conventions
 """
 
 import numpy as np
-from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
+from numpy.typing import ArrayLike
+from scipy.stats import multivariate_normal
 
 
 def simulate_time(n_samples: int, sampling_frequency: float) -> np.ndarray:
@@ -69,7 +70,7 @@ def simulate_poisson_spikes(
 
 
 def simulate_place_field_firing_rate(
-    means: np.ndarray,
+    means: ArrayLike,
     position: np.ndarray,
     max_rate: float = 15.0,
     variance: float = 12.5,
@@ -107,7 +108,7 @@ def simulate_place_field_firing_rate(
 
 
 def simulate_neuron_with_place_field(
-    means: np.ndarray,
+    means: ArrayLike,
     position: np.ndarray,
     max_rate: float = 15.0,
     variance: float = 12.5,

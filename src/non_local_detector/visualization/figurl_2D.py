@@ -47,6 +47,7 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
 
 try:
     from collections.abc import Callable
+    from typing import Any, cast
 
     import numpy as np
     import sortingview.views as vv
@@ -65,7 +66,7 @@ try:
         positions: np.ndarray,
         compute_real_time_rate: bool = False,
         head_dir: np.ndarray | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Create a static track animation object.
 
         Parameters
@@ -115,7 +116,9 @@ try:
 
         return data
 
-    def get_base_track_information(base_probabilities: xr.Dataset):
+    def get_base_track_information(
+        base_probabilities: xr.DataArray,
+    ) -> tuple[int, float, float, int, float, float]:
         x_count = len(base_probabilities.x_position)
         y_count = len(base_probabilities.y_position)
         x_min = np.min(base_probabilities.x_position).item()
@@ -170,7 +173,7 @@ try:
         x_width: float,
         y_min: float,
         y_width: float,
-    ) -> Callable[[tuple[float, float]], int]:
+    ) -> Callable[[tuple[float, float, float]], int]:
         """Generate a linearization function.
 
         Parameters
@@ -184,9 +187,9 @@ try:
 
         Returns
         -------
-        linearization_fn : Callable[[tuple[float, float]], int]
+        linearization_fn : Callable[[tuple[float, float, float]], int]
         """
-        args = {
+        args: dict[str, Any] = {
             "location_lookup": location_lookup,
             "x_count": x_count,
             "x_min": x_min,
@@ -195,7 +198,7 @@ try:
             "y_width": y_width,
         }
 
-        def inner(t: tuple[float, float, float]):
+        def inner(t: tuple[float, float, float]) -> int:
             return memo_linearize(t, **args)
 
         return inner
@@ -214,17 +217,20 @@ try:
         i = np.multiply(base_slice, 255).astype(np.uint8)
         i_stack = i.stack(unified_index=["time", "y_position", "x_position"])  # type: ignore[union-attr]
 
-        return i_stack.where(i_stack > 0, drop=True).astype(np.uint8)
+        return cast(
+            "xr.DataArray", i_stack.where(i_stack > 0, drop=True).astype(np.uint8)
+        )
 
     def get_positions(
-        i_trim: xr.Dataset, linearization_fn: Callable[[tuple[float, float]], int]
+        i_trim: xr.DataArray,
+        linearization_fn: Callable[[tuple[float, float, float]], int],
     ) -> np.ndarray:
         """Get the positions.
 
         Parameters
         ----------
         i_trim : xr.Dataset
-        linearization_fn : Callable[[tuple[float, float]], int]
+        linearization_fn : Callable[[tuple[float, float, float]], int]
 
         Returns
         -------
@@ -254,14 +260,15 @@ try:
         return good_counts.values.astype(np.uint8)
 
     def extract_slice_data(
-        base_slice: xr.DataArray, location_fn: Callable[[tuple[float, float]], int]
+        base_slice: xr.DataArray,
+        location_fn: Callable[[tuple[float, float, float]], int],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract slice data.
 
         Parameters
         ----------
         base_slice : xr.DataArray
-        location_fn : Callable[[tuple[float, float]], int]
+        location_fn : Callable[[tuple[float, float, float]], int]
 
         Returns
         -------
@@ -275,7 +282,7 @@ try:
         observations_per_frame = get_observations_per_frame(i_trim, base_slice)
         return i_trim.values, positions, observations_per_frame
 
-    def process_decoded_data(posterior: xr.DataArray) -> dict[str, np.ndarray]:
+    def process_decoded_data(posterior: xr.DataArray) -> dict[str, Any]:
         """Process decoded data.
 
         Parameters
@@ -284,10 +291,10 @@ try:
 
         Returns
         -------
-        vis_data : dict[str, np.ndarray]
+        vis_data : dict[str, Any]
         """
         frame_step_size = 100_000
-        location_lookup = {}
+        location_lookup: dict[tuple[float, float], int] = {}
 
         (
             x_count,
@@ -351,7 +358,7 @@ try:
         }
 
     def create_track_animation_object(
-        *, static_track_animation: any
+        *, static_track_animation: Any
     ) -> vvf.TrackPositionAnimationV1:
         if "decodedData" in static_track_animation:
             decoded_data = static_track_animation["decodedData"]
@@ -406,7 +413,7 @@ try:
         ul = np.subtract(centers, (width / 2, -height / 2))
 
         # Reshape so we have an x array and a y array
-        return ul.T
+        return cast("np.ndarray", ul.T)
 
     def make_track(
         position: np.ndarray, bin_size: float = 1.0
@@ -443,7 +450,7 @@ try:
         position_time: np.ndarray,
         position: np.ndarray,
         interior_place_bin_centers: np.ndarray,
-        place_bin_size: np.ndarray,
+        place_bin_size: np.ndarray | tuple[float, float],
         posterior: xr.DataArray,
         head_dir: np.ndarray | None = None,
     ) -> vvf.TrackPositionAnimationV1:
@@ -528,7 +535,7 @@ try:
         url : str
         """
         if env.is_track_interior_ is not None:
-            interior_place_bin_centers = env.place_bin_centers_[
+            interior_place_bin_centers = env.place_bin_centers_[  # type: ignore[index]  # set by fit
                 env.is_track_interior_.ravel()
             ]
         else:
@@ -628,7 +635,7 @@ try:
             ],
         )
 
-        return view.url(label="2D Decoding")
+        return cast("str", view.url(label="2D Decoding"))
 
 except ImportError:
     pass
