@@ -1,0 +1,23 @@
+/* Custom CSS for the non_local_detector documentation */
+
+.highlight {
+    border-radius: 0.2rem;
+}
+
+.admonition {
+    margin: 1.5625em 0;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+table th,
+table td {
+    padding: 0.625em;
+}
+
+.md-typeset h1 {
+    font-weight: 600;
+}
