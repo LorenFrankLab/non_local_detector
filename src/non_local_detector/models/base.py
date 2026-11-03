@@ -48,6 +48,7 @@ from non_local_detector.checkpointed_inference import (
 )
 from non_local_detector.continuous_state_transitions import (
     TransitionContext,
+    _make_transition_block,
     _multi_bin_local_transition,
     _scalar_to_spatial_destination,
 )
@@ -2549,8 +2550,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     # to the single target bin with probability 1.
                     self.continuous_state_transitions_[inds] = np.ones((n_row_bins, 1))
                 else:
-                    self.continuous_state_transitions_[inds] = (
-                        transition.make_state_transition(self.environments, context)
+                    self.continuous_state_transitions_[inds] = _make_transition_block(
+                        transition, self.environments, context
                     )
 
     def __getstate__(self) -> dict[str, Any]:

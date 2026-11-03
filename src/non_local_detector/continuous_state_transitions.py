@@ -7,6 +7,7 @@ block of transition probabilities between the place bins of two states.
 data-driven transitions such as :class:`EmpiricalMovement` read.
 """
 
+import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast, runtime_checkable
@@ -16,7 +17,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 
 from non_local_detector.environment import Environment, find_environment_by_name
-from non_local_detector.exceptions import ConfigurationError
+from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
 
@@ -812,3 +813,45 @@ def _scalar_to_spatial_destination(
     return find_environment_by_name(
         environments, transition.environment_name
     ).is_track_interior_flat_
+
+
+def _make_transition_block(
+    transition: ContinuousTransition,
+    environments: Sequence[Environment],
+    context: TransitionContext | None,
+) -> np.ndarray:
+    """Call ``transition.make_state_transition(environments, context)``.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+    environments : sequence of Environment
+    context : TransitionContext or None
+
+    Returns
+    -------
+    state_transition_matrix : np.ndarray, shape (n_source_bins, n_destination_bins)
+
+    Raises
+    ------
+    ValidationError
+        If ``make_state_transition`` cannot take ``(environments, context)``,
+        as a custom transition written before ``context`` existed.
+    """
+    try:
+        inspect.signature(transition.make_state_transition).bind(environments, context)
+    except TypeError:
+        msg = (
+            f"{type(transition).__name__}.make_state_transition cannot be "
+            "called as make_state_transition(environments, context)"
+        )
+        raise ValidationError(
+            msg,
+            hint=(
+                "Continuous transitions receive the fit data as a second "
+                "argument; add `context=None` to the method's parameters, "
+                "e.g. `def make_state_transition(self, environments, "
+                "context=None)`."
+            ),
+        ) from None
+    return transition.make_state_transition(environments, context)

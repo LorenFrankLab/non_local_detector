@@ -344,6 +344,26 @@ def test_unknown_environment_name_lists_available_names(transitions):
 
 
 @pytest.mark.unit
+def test_custom_transition_without_context_gets_a_migration_hint():
+    """A transition written before ``context`` existed fails with a hint."""
+
+    class OldStyle:
+        environment_name = ""
+
+        def make_state_transition(self, environments):
+            return np.eye(len(environments[0].place_bin_centers_))
+
+    env = environment((3, 4))
+    match = r"OldStyle\.make_state_transition[\s\S]*context=None"
+    with pytest.raises(ValidationError, match=match):
+        dense_reference([[OldStyle()]], [env], (12,))
+    with pytest.raises(ValidationError, match=match):
+        build_transition_operator(
+            [[OldStyle()]], [env], (12,), allow_dense_fallback=True
+        )
+
+
+@pytest.mark.unit
 def test_cross_environment_discrete_with_multibin_local_is_rejected():
     """Dense and structured construction share the multi-bin Local rule."""
     env1, env2 = environment((5,), "one"), environment((5,), "two")

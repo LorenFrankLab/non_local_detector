@@ -29,6 +29,7 @@ from non_local_detector.continuous_state_transitions import (
     RandomWalkDirection2,
     TransitionContext,
     Uniform,
+    _make_transition_block,
     _multi_bin_local_transition,
     _scalar_to_spatial_destination,
 )
@@ -1783,7 +1784,7 @@ def build_transition_operator(
             if isinstance(block, _STRUCTURED_BLOCKS):
                 result.append(block)
                 continue
-            matrix = block.make_state_transition(fallback_environments, context)
+            matrix = _make_transition_block(block, fallback_environments, context)
             matrix = np.array(
                 np.broadcast_to(matrix, (sizes[source], sizes[target])),
                 dtype=float,
