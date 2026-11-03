@@ -1,3 +1,5 @@
+"""Point estimates and samples from decoded posterior distributions."""
+
 from typing import cast
 
 import numpy as np
@@ -24,7 +26,6 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
     map_estimate : np.ndarray, shape (n_time, n_spatial_dims)
         Most likely position coordinates at each time point. For 1D tracks,
         shape is (n_time, 1). For 2D environments, shape is (n_time, 2).
-
     """
     try:
         stacked_posterior = posterior.stack(z=["x_position", "y_position"])
@@ -67,7 +68,6 @@ def sample_posterior(
     posterior_samples : np.ndarray, shape (n_time, n_samples)
         Random samples drawn from the posterior distribution at each time point.
         Each row contains samples for one time point.
-
     """
     # Stack 2D positions into one dimension
     try:
