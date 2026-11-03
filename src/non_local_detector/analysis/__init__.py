@@ -13,6 +13,7 @@ from non_local_detector.analysis.distance2D import (
     make_2D_track_graph_from_environment,
 )
 from non_local_detector.analysis.posterior import (
+    get_spatial_posterior,
     maximum_a_posteriori_estimate,
     sample_posterior,
 )
