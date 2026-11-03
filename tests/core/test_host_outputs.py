@@ -88,7 +88,7 @@ def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
     assert FilterSmootherResult._fields == (
         "acausal_posterior",
         "acausal_state_probabilities",
-        "marginal_likelihood",
+        "marginal_log_likelihood",
         "causal_state_probabilities",
         "predictive_state_probabilities",
         "log_likelihoods",
@@ -98,7 +98,7 @@ def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
     (acausal, _, marginal, _, _, log_likelihoods, causal, _) = result
     assert acausal is result.acausal_posterior
     assert causal is result.causal_posterior
-    assert marginal == result.marginal_likelihood
+    assert marginal == result.marginal_log_likelihood
     assert isinstance(marginal, float)
     np.testing.assert_array_equal(log_likelihoods, model["log_likelihoods"])
 

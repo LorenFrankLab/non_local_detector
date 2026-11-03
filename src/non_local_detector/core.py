@@ -1427,7 +1427,7 @@ class FilterSmootherResult(NamedTuple):
         Smoothed state probabilities. A JAX array with ``host_outputs=False``.
     acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
         Smoothed state probabilities for each state index.
-    marginal_likelihood : float
+    marginal_log_likelihood : float
         Log marginal likelihood of the observations, summed in float64.
     causal_state_probabilities : np.ndarray, shape (n_time, n_states)
         Filtered state probabilities for each state index.
@@ -1445,7 +1445,7 @@ class FilterSmootherResult(NamedTuple):
 
     acausal_posterior: np.ndarray | jax.Array
     acausal_state_probabilities: np.ndarray
-    marginal_likelihood: float
+    marginal_log_likelihood: float
     causal_state_probabilities: np.ndarray
     predictive_state_probabilities: np.ndarray
     log_likelihoods: np.ndarray | None
@@ -1678,7 +1678,7 @@ def _chunked_filter_smoother(
     return FilterSmootherResult(
         acausal_posterior=spatial(acausal_posterior_jax),
         acausal_state_probabilities=np.asarray(acausal_state_probabilities_jax),
-        marginal_likelihood=float(marginal_likelihood),
+        marginal_log_likelihood=float(marginal_likelihood),
         causal_state_probabilities=np.asarray(causal_state_probabilities_jax),
         predictive_state_probabilities=np.asarray(predictive_state_probabilities_jax),
         # Keep as original (may be None or NumPy)
@@ -1767,7 +1767,7 @@ def chunked_filter_smoother(
     -------
     result : FilterSmootherResult
         Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
-        ``marginal_likelihood``, ``causal_state_probabilities``,
+        ``marginal_log_likelihood``, ``causal_state_probabilities``,
         ``predictive_state_probabilities``, ``log_likelihoods``,
         ``causal_posterior`` and ``predictive_posterior``; see
         :class:`FilterSmootherResult` for shapes.
@@ -2235,7 +2235,7 @@ def chunked_filter_smoother_covariate_dependent(
     -------
     result : FilterSmootherResult
         Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
-        ``marginal_likelihood``, ``causal_state_probabilities``,
+        ``marginal_log_likelihood``, ``causal_state_probabilities``,
         ``predictive_state_probabilities``, ``log_likelihoods``,
         ``causal_posterior`` and ``predictive_posterior``; see
         :class:`FilterSmootherResult` for shapes.
