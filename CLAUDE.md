@@ -23,7 +23,7 @@ Task-specific combinations:
 - **Modify an algorithm**: `scientific-tdd` to implement with tests, then `numerical-validation` to verify invariants.
 - **Optimize or debug JAX**: `jax` skill for the approach, then `numerical-validation` to confirm numerical equivalence.
 - **Upgrade dependencies**: run the full test suite and numerical validation, and check for deprecation warnings and behavioral changes.
-- **Add tests**: follow the patterns in `src/non_local_detector/tests/`, use `conftest.py` fixtures, and tag with the `unit` / `integration` / `property` / `snapshot` markers.
+- **Add tests**: follow the patterns in `tests/`, use `conftest.py` fixtures, and tag with the `unit` / `integration` / `property` / `snapshot` markers.
 
 ### Environment Rules
 

@@ -8,7 +8,7 @@ for its options.
 uv run python benchmarks/<script>.py --help
 ```
 
-`src/non_local_detector/tests/test_benchmark_scripts.py` runs every script's
+`tests/test_benchmark_scripts.py` runs every script's
 `--help` in the test suite. A script that stops importing against the current
 package fails CI instead of silently going stale.
 

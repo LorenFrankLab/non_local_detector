@@ -59,7 +59,7 @@ Before making any changes:
 ```bash
 # Run tests and capture output
 uv run pytest \
-  src/non_local_detector/tests/test_golden_regression.py \
+  tests/test_golden_regression.py \
   -v > /tmp/baseline_output.txt 2>&1
 
 # Run property tests
@@ -84,7 +84,7 @@ After making changes:
 ```bash
 # Run same tests
 uv run pytest \
-  src/non_local_detector/tests/test_golden_regression.py \
+  tests/test_golden_regression.py \
   -v > /tmp/new_output.txt 2>&1
 
 uv run pytest \
@@ -174,7 +174,7 @@ uv run pytest -m property -v
 
 ```bash
 uv run pytest \
-  src/non_local_detector/tests/test_golden_regression.py -v
+  tests/test_golden_regression.py -v
 ```
 
 **Golden regression tests:**

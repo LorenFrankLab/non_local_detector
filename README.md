@@ -218,7 +218,7 @@ This project maintains high code quality standards:
    pytest --cov=non_local_detector --cov-report=html
 
    # Single test file
-   pytest src/non_local_detector/tests/test_version_import.py
+   pytest tests/test_version_import.py
    ```
 
 4. **Building**
