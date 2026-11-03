@@ -1189,9 +1189,10 @@ def row_slice_aware(
 
     A marked callback bins the spikes against the FULL decoding ``time`` it is
     handed and returns only the rows named by ``row_slice``, so chunked
-    prediction owns every spike exactly once. The chunked drivers call an
-    unmarked (legacy) callback the old way -- with ``time[chunk]`` -- and never
-    inject the keyword into it, so arbitrary user callables keep working.
+    prediction owns every spike exactly once. The chunked drivers require the
+    mark whenever they evaluate the likelihood chunk by chunk; an unmarked
+    callback is only ever called once, with the full ``time`` and no
+    ``row_slice``.
 
     Parameters
     ----------
@@ -1218,9 +1219,8 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
     Bound methods forward the lookup to their underlying function, so marking
     the method in the class body is enough. ``functools.partial`` objects and
     decorators that only record their wrappee in ``__wrapped__`` do not forward
-    attribute lookups, so both are unwrapped here: silently demoting a marked
-    callback to the legacy branch would drop the boundary spikes again while
-    still returning plausible numbers.
+    attribute lookups, so both are unwrapped here: a marked callback hidden
+    behind one would otherwise be rejected for chunked evaluation.
 
     Parameters
     ----------
@@ -1249,29 +1249,31 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
     return False
 
 
-def _warn_if_legacy_chunking(
+def _require_row_slice_aware(
     log_likelihood_func: Callable[..., ArrayLike], n_chunks: int
 ) -> None:
-    """Warn once per driver call when chunking will use the legacy branch.
+    """Reject chunk-by-chunk evaluation of an unmarked likelihood callback.
 
-    The legacy call hands each chunk only ``time[chunk]``. A callback that bins
-    spikes against the timeline it is given then clips them to the chunk and
-    loses every spike between two chunks while still returning plausible
-    numbers; a callback whose per-timestamp values do not depend on the
-    surrounding timeline is unaffected. The driver cannot tell the two apart,
-    so it warns. A ``logger.warning`` (not ``warnings.warn``) matches the
-    drivers' other host-side diagnostics.
+    Handing a chunk only ``time[chunk]`` clips a callback that bins spikes
+    against the timeline it is given to that chunk, dropping every spike
+    between two chunks while still returning plausible numbers. Only a
+    ``row_slice_aware`` callback can be evaluated per chunk.
+
+    Raises
+    ------
+    ValueError
+        If ``n_chunks > 1`` and the callback is not ``row_slice_aware``.
     """
     if n_chunks > 1 and not accepts_row_slice(log_likelihood_func):
-        logger.warning(
-            "n_chunks=%d with a likelihood callback that is not marked "
-            "row_slice_aware: each chunk receives only its own timestamps. If "
-            "the callback bins spikes against the timeline it is given, spikes "
-            "between chunks are dropped from the likelihood. Mark the callback "
-            "with non_local_detector.core.row_slice_aware and honour "
-            "row_slice, or use n_chunks=1.",
-            n_chunks,
+        msg = (
+            f"n_chunks={n_chunks} without cached log likelihoods evaluates the "
+            "likelihood callback chunk by chunk, which needs a callback marked "
+            "with non_local_detector.core.row_slice_aware that bins against the "
+            "full time and returns the rows of row_slice. Mark the callback, "
+            "pass log_likelihoods or cache_log_likelihoods=True, or use "
+            "n_chunks=1."
         )
+        raise ValueError(msg)
 
 
 def _store_chunk_rows(
@@ -1299,25 +1301,22 @@ def _call_log_likelihood_chunk(
     time_inds: np.ndarray,
     is_missing_chunk: np.ndarray | None,
 ) -> ArrayLike:
-    """Evaluate one chunk's log likelihood, preferring global spike binning.
+    """Evaluate one chunk's log likelihood with global spike binning.
 
     A ``row_slice_aware`` callback receives the FULL ``time`` plus the chunk's
     global row range, so a spike lands in the row that owns it on the full
-    timeline. A legacy callback receives ``time[time_inds]`` and therefore
-    clips the spikes to the chunk -- dropping any spike between two chunks. It
-    is NOT a global-binning implementation.
+    timeline. An unmarked callback reaches here only as the single chunk (see
+    :func:`_require_row_slice_aware`) and is called on the full timeline.
     """
-    if accepts_row_slice(log_likelihood_func):
+    if not accepts_row_slice(log_likelihood_func):
         return log_likelihood_func(
-            time,
-            *log_likelihood_args,
-            is_missing=is_missing_chunk,
-            row_slice=slice(int(time_inds[0]), int(time_inds[-1]) + 1),
+            time, *log_likelihood_args, is_missing=is_missing_chunk
         )
     return log_likelihood_func(
-        time[time_inds],
+        time,
         *log_likelihood_args,
         is_missing=is_missing_chunk,
+        row_slice=slice(int(time_inds[0]), int(time_inds[-1]) + 1),
     )
 
 
@@ -1439,7 +1438,7 @@ def _chunked_filter_smoother(
     )
     accumulated_log_likelihoods: np.ndarray | None = None
     if log_likelihoods_jax is None:
-        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
+        _require_row_slice_aware(log_likelihood_func, n_chunks)
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -1612,14 +1611,13 @@ def chunked_filter_smoother(
         Stationary transition probability between state bins.
     log_likelihood_func : callable
         Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)``. When the callable is marked by
-        :func:`row_slice_aware` it additionally receives
-        ``row_slice=slice(start, stop)`` and is handed the FULL ``time``, so
-        each decoding spike is binned once against the whole timeline and lands
-        in the row that owns it. An unmarked (legacy) callable is called the
-        historical way, with ``time[chunk]`` only: it therefore clips spikes to
-        the chunk and DROPS any spike falling between two chunks, so it is not a
-        global-binning implementation. No new keyword is injected into it.
+        is_missing=...)`` with the FULL ``time``. Without cached or given log
+        likelihoods, a callable marked by :func:`row_slice_aware` is called
+        per chunk and also receives ``row_slice=slice(start, stop)`` and the
+        chunk's ``is_missing`` rows, so each decoding spike is binned once
+        against the whole timeline and lands in the row that owns it. An
+        unmarked callable is called once for the whole timeline; with
+        ``n_chunks > 1`` and no cached likelihoods it raises ``ValueError``.
     log_likelihood_args : tuple
         Extra positional arguments passed to ``log_likelihood_func`` after
         ``time``.
@@ -2058,14 +2056,13 @@ def chunked_filter_smoother_covariate_dependent(
         state space.
     log_likelihood_func : callable
         Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)``. When the callable is marked by
-        :func:`row_slice_aware` it additionally receives
-        ``row_slice=slice(start, stop)`` and is handed the FULL ``time``, so
-        each decoding spike is binned once against the whole timeline and lands
-        in the row that owns it. An unmarked (legacy) callable is called the
-        historical way, with ``time[chunk]`` only: it therefore clips spikes to
-        the chunk and DROPS any spike falling between two chunks, so it is not a
-        global-binning implementation. No new keyword is injected into it.
+        is_missing=...)`` with the FULL ``time``. Without cached or given log
+        likelihoods, a callable marked by :func:`row_slice_aware` is called
+        per chunk and also receives ``row_slice=slice(start, stop)`` and the
+        chunk's ``is_missing`` rows, so each decoding spike is binned once
+        against the whole timeline and lands in the row that owns it. An
+        unmarked callable is called once for the whole timeline; with
+        ``n_chunks > 1`` and no cached likelihoods it raises ``ValueError``.
     log_likelihood_args : tuple
         Extra positional arguments passed to ``log_likelihood_func`` after
         ``time``.
