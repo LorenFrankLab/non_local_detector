@@ -75,5 +75,6 @@ Add an entry under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for every user
 1. Create a branch from `main`.
 2. Make small, self-contained commits, one logical change each.
 3. Add or update tests and docstrings, and update documentation and the changelog.
+   Preview the documentation site with `uv sync --group docs && uv run mkdocs serve`.
 4. Run `uv run pre-commit run --all-files` and the relevant tests.
 5. Open a pull request and fill in the template. Link the issue it fixes. CI runs the lint, type, test (several Python versions and dependency ranges) and packaging jobs, and all must pass before merging.
