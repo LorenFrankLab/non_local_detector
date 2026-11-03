@@ -4004,6 +4004,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             log_likelihood,
             causal_posterior,
             predictive_posterior,
+            _degenerate_indices,
         ) = self._predict(
             time_edges=time_edges,
             log_likelihood_args=(
@@ -4255,6 +4256,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         np.ndarray | None,
         jax.Array | np.ndarray,
         jax.Array | np.ndarray,
+        np.ndarray,
     ]:
         """
         Compute the posterior probabilities.
@@ -4296,6 +4298,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         causal_posterior : jax.Array, shape (n_time, n_state_bins)
         predictive_posterior : jax.Array, shape (n_time, n_state_bins)
+        degenerate_indices : np.ndarray of int, shape (n_degenerate,)
 
         The three posteriors stay on the device: callers copy to the host only
         the ones they return or need there.
@@ -4346,12 +4349,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 _time_grid=time_grid,
             )
 
-        # Collect degenerate (all-impossible) timestep indices during the
-        # forward pass. This is reliable regardless of n_chunks/caching,
-        # unlike the returned log-likelihoods (which are None when uncached,
-        # e.g. for n_chunks > 1). Stored transiently for estimate_parameters
-        # to copy into the public degenerate_timesteps_ attribute.
-        degenerate_out: list[int] = []
         if discrete_transitions.ndim == 2:
             result = chunked_filter_smoother(
                 time=time_centers,
@@ -4368,7 +4365,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
-                degenerate_indices_out=degenerate_out,
                 host_outputs=False,
             )
         else:
@@ -4387,10 +4383,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
-                degenerate_indices_out=degenerate_out,
                 host_outputs=False,
             )
-        self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
+        # Degenerate (all-impossible) time indices are found during the
+        # forward pass, so they are reliable regardless of n_chunks/caching,
+        # unlike the returned log-likelihoods (which are None when uncached,
+        # e.g. for n_chunks > 1). Stored transiently for estimate_parameters
+        # to copy into the public degenerate_timesteps_ attribute.
+        self._degenerate_timesteps_ = np.asarray(result.degenerate_indices, dtype=int)
         return result
 
     def _checkpointed_likelihood(
@@ -5407,6 +5407,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 log_likelihood,
                 causal_posterior,
                 predictive_posterior,
+                _degenerate_indices,
             ) = self._predict(
                 time_edges=settings.time_edges,
                 log_likelihood_args=settings.log_likelihood_args,
@@ -5842,6 +5843,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             log_likelihood,
             causal_posterior,
             predictive_posterior,
+            _degenerate_indices,
         ) = self._predict(
             time_edges=settings.time_edges,
             log_likelihood_args=settings.log_likelihood_args,

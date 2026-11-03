@@ -33,6 +33,7 @@ from non_local_detector.continuous_state_transitions import (
     _multi_bin_local_transition,
     _scalar_to_spatial_destination,
 )
+from non_local_detector.core import TransitionOperator
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
@@ -582,7 +583,7 @@ class RestrictedBlock:
 
 @_register_operator
 @dataclass(frozen=True)
-class BlockTransitionOperator:
+class BlockTransitionOperator(TransitionOperator):
     """Conditional spatial blocks with separate stationary or per-step weights.
 
     ``bind_discrete`` sets stationary defaults. A driver supplies a single S-by-S
@@ -1025,7 +1026,7 @@ def _rank_one_factors(block: Block) -> tuple[np.ndarray, np.ndarray] | None:
 
 @_register_operator
 @dataclass(frozen=True)
-class FusedBlockTransition:
+class FusedBlockTransition(TransitionOperator):
     """Block-operator products with every rank-one block in two matrices.
 
     Uniform and scalar identity blocks are rank one. Their source vectors,

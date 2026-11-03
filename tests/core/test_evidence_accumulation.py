@@ -36,8 +36,10 @@ def _arguments():
     uniform = np.full((2, 2), 0.5, np.float32)
     state_ind = np.array([0, 1])
     # Expanded transition = continuous * discrete[state_ind][:, state_ind]:
-    # all-ones discrete weights keep it uniform.
-    discrete = np.ones((N_TIME, 2, 2), np.float32)
+    # with one bin per state, the uniform discrete rows times a continuous
+    # transition of ones (each bin's only destination in a state) keep it
+    # uniform.
+    discrete = np.full((N_TIME, 2, 2), 0.5, np.float32)
     return initial, uniform, state_ind, discrete
 
 
@@ -58,7 +60,7 @@ def test_chunked_evidence_is_the_float64_sum(exact_evidence_model, n_chunks, cov
     if covariate:
         result = chunked_filter_smoother_covariate_dependent(
             discrete_transition_matrix=discrete,
-            continuous_transition_matrix=uniform,
+            continuous_transition_matrix=np.ones((2, 2), np.float32),
             **common,
         )
     else:
