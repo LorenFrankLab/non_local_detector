@@ -14,21 +14,26 @@ from non_local_detector.likelihoods import (
     clusterless_mark_glm,
 )
 from non_local_detector.likelihoods.clusterless_diffusion import (
+    ClusterlessDiffusionEncodingModel,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_gmm import (
+    ClusterlessGMMEncodingModel,
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
+    ClusterlessKDEEncodingModel,
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_mark_glm import (
+    ClusterlessMarkGLMEncodingModel,
     fit_clusterless_mark_glm_encoding_model,
     predict_clusterless_mark_glm_log_likelihood,
 )
+from non_local_detector.likelihoods.encoding_model import EncodingModel
 from non_local_detector.likelihoods.mark_reference import (
     fit_mark_references,
 )
@@ -36,18 +41,22 @@ from non_local_detector.likelihoods.no_spike import (
     predict_no_spike_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    SortedSpikesDiffusionEncodingModel,
     fit_sorted_spikes_diffusion_encoding_model,
     predict_sorted_spikes_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_glm import (
+    SortedSpikesGLMEncodingModel,
     fit_sorted_spikes_glm_encoding_model,
     predict_sorted_spikes_glm_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
+    SortedSpikesKDEEncodingModel,
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_mrf import (
+    SortedSpikesMRFEncodingModel,
     fit_sorted_spikes_mrf_encoding_model,
     predict_sorted_spikes_mrf_log_likelihood,
 )
@@ -59,21 +68,20 @@ class LikelihoodAlgorithm:
 
     Attributes
     ----------
-    fit : Callable[..., dict[str, Any]]
+    fit : Callable[..., EncodingModel]
         Fits the encoding model and returns it as a dict of keyword arguments
         for ``predict``.
     predict : Callable[..., jax.Array]
         Returns the log likelihood, float32 with shape
         ``(n_rows, n_interior_bins)``, or ``(n_rows, 1)`` when ``is_local``.
+    encoding_model_type : type
+        The ``TypedDict`` that annotates ``fit``'s return and describes the
+        dict it returns. It derives from ``SortedSpikesEncodingModel`` or
+        ``ClusterlessEncodingModel``.
     default_params : Mapping[str, Any]
         The parameters ``fit`` receives when a detector's
         ``*_algorithm_params`` is None, beyond the fit's own defaults; a user
         dict replaces them. Stored as a read-only copy. By default empty.
-    mark_reference_scale : Callable[..., object] or None
-        Clusterless algorithms only: the mark-kernel width, from the fit
-        parameters, which the mark reference adds in quadrature to each
-        feature's training spread (see ``fit_mark_references``). By default
-        None.
 
     Notes
     -----
@@ -81,19 +89,20 @@ class LikelihoodAlgorithm:
     ``predict(position_time, position, *spike_data, **encoding_model,
     **detector_keywords)``, where ``spike_data`` is ``spike_times`` (and
     ``spike_waveform_features`` for clusterless data) and the keywords are
-    ``_PREDICT_KEYWORDS`` (``_CLUSTERLESS_PREDICT_KEYWORDS``). So the encoding
-    model must hold ``_ENCODING_MODEL_KEYS``, must not hold a data or keyword
-    name, and must provide every named ``predict`` parameter the detector does
-    not, so none is left at its default; unless ``predict`` takes
-    ``**kwargs``, each of its keys must be a ``predict`` parameter. Records
-    pickle and deep-copy. ``tests/likelihoods/test_algorithm_contract.py``
-    checks every registered algorithm.
+    ``_PREDICT_KEYWORDS`` (``_CLUSTERLESS_PREDICT_KEYWORDS``). So the
+    encoding model must hold exactly the keys of ``encoding_model_type``,
+    with ``algorithm`` set to the registered name; must not hold a data or
+    keyword name; must provide every named ``predict`` parameter the detector
+    does not, so none is left at its default; and each of its keys must be a
+    ``predict`` parameter (predict takes no ``**kwargs``). Records pickle and
+    deep-copy. ``tests/likelihoods/test_algorithm_contract.py`` checks every
+    registered algorithm.
     """
 
-    fit: Callable[..., dict[str, Any]]
+    fit: Callable[..., EncodingModel]
     predict: Callable[..., Any]
+    encoding_model_type: type
     default_params: Mapping[str, Any] = field(default_factory=dict)
-    mark_reference_scale: Callable[..., object] | None = None
 
     def __post_init__(self) -> None:
         # A read-only copy, so a caller can mutate neither the registered
@@ -102,18 +111,29 @@ class LikelihoodAlgorithm:
             self, "default_params", MappingProxyType(dict(self.default_params))
         )
 
-    def __reduce__(self) -> tuple[Any, ...]:
-        # A mapping proxy cannot be pickled, so rebuild from a plain dict;
+    def __getstate__(self) -> dict[str, Any]:
+        # A mapping proxy cannot be pickled, so store a plain dict;
         # ``copy.deepcopy`` uses this too.
-        return (
-            type(self),
-            (
-                self.fit,
-                self.predict,
-                dict(self.default_params),
-                self.mark_reference_scale,
-            ),
-        )
+        return {**vars(self), "default_params": dict(self.default_params)}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        vars(self).update(state)
+        self.__post_init__()
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClusterlessLikelihoodAlgorithm(LikelihoodAlgorithm):
+    """A registered clusterless likelihood algorithm.
+
+    Attributes
+    ----------
+    mark_reference_scale : Callable[..., object]
+        The mark-kernel width, from the fit parameters, which the mark
+        reference adds in quadrature to each feature's training spread (see
+        ``fit_mark_references``).
+    """
+
+    mark_reference_scale: Callable[..., object]
 
 
 # The keyword arguments a detector passes to every predict besides the fit's
@@ -123,20 +143,12 @@ _PREDICT_KEYWORDS: frozenset[str] = frozenset(
     {"time_edges", "is_local", "row_slice", "_spike_time_order", "_time_grid"}
 )
 _CLUSTERLESS_PREDICT_KEYWORDS: frozenset[str] = _PREDICT_KEYWORDS | {"mark_reference"}
-# The keys every fit returns. Each predict checks ``rate_units`` and
-# ``environment_grid`` against ``environment`` (``validate_encoding_contract``);
-# the detectors read ``rate_units`` and ``disable_progress_bar``, and model
-# checking ``environment``. ``encoding_exposure_seconds`` is the fit's weighted
-# occupancy time, for diagnostics.
-_ENCODING_MODEL_KEYS: frozenset[str] = frozenset(
-    {
-        "environment",
-        "environment_grid",
-        "rate_units",
-        "encoding_exposure_seconds",
-        "disable_progress_bar",
-    }
-)
+# The keys every fit returns (see ``EncodingModel``). Each predict checks
+# ``rate_units`` and ``environment_grid`` against ``environment``
+# (``validate_encoding_contract``); the detectors read ``rate_units`` and
+# ``disable_progress_bar``, and model checking ``environment``. ``encoding_exposure_seconds`` is the
+# fit's weighted occupancy time, for diagnostics.
+_ENCODING_MODEL_KEYS: frozenset[str] = frozenset(EncodingModel.__required_keys__)
 
 # The algorithms a detector's ``*_algorithm`` names. Only sorted KDE has default
 # params; bandwidths come from the fits (position_std sqrt(12.5)).
@@ -144,47 +156,55 @@ _SORTED_SPIKES_ALGORITHMS: dict[str, LikelihoodAlgorithm] = {
     "sorted_spikes_glm": LikelihoodAlgorithm(
         fit_sorted_spikes_glm_encoding_model,
         predict_sorted_spikes_glm_log_likelihood,
+        SortedSpikesGLMEncodingModel,
     ),
     "sorted_spikes_kde": LikelihoodAlgorithm(
         fit_sorted_spikes_kde_encoding_model,
         predict_sorted_spikes_kde_log_likelihood,
+        SortedSpikesKDEEncodingModel,
         default_params={"block_size": 10_000},
     ),
     "sorted_spikes_diffusion": LikelihoodAlgorithm(
         fit_sorted_spikes_diffusion_encoding_model,
         predict_sorted_spikes_diffusion_log_likelihood,
+        SortedSpikesDiffusionEncodingModel,
     ),
     "sorted_spikes_mrf": LikelihoodAlgorithm(
         fit_sorted_spikes_mrf_encoding_model,
         predict_sorted_spikes_mrf_log_likelihood,
+        SortedSpikesMRFEncodingModel,
     ),
 }
-_CLUSTERLESS_ALGORITHMS: dict[str, LikelihoodAlgorithm] = {
-    "clusterless_kde": LikelihoodAlgorithm(
+_CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
+    "clusterless_kde": ClusterlessLikelihoodAlgorithm(
         fit_clusterless_kde_encoding_model,
         predict_clusterless_kde_log_likelihood,
+        ClusterlessKDEEncodingModel,
         mark_reference_scale=clusterless_kde.mark_reference_scale,
     ),
-    "clusterless_gmm": LikelihoodAlgorithm(
+    "clusterless_gmm": ClusterlessLikelihoodAlgorithm(
         fit_clusterless_gmm_encoding_model,
         predict_clusterless_gmm_log_likelihood,
+        ClusterlessGMMEncodingModel,
         mark_reference_scale=clusterless_gmm.mark_reference_scale,
     ),
-    "clusterless_diffusion": LikelihoodAlgorithm(
+    "clusterless_diffusion": ClusterlessLikelihoodAlgorithm(
         fit_clusterless_diffusion_encoding_model,
         predict_clusterless_diffusion_log_likelihood,
+        ClusterlessDiffusionEncodingModel,
         mark_reference_scale=clusterless_diffusion.mark_reference_scale,
     ),
-    "clusterless_mark_glm": LikelihoodAlgorithm(
+    "clusterless_mark_glm": ClusterlessLikelihoodAlgorithm(
         fit_clusterless_mark_glm_encoding_model,
         predict_clusterless_mark_glm_log_likelihood,
+        ClusterlessMarkGLMEncodingModel,
         mark_reference_scale=clusterless_mark_glm.mark_reference_scale,
     ),
 }
 
 
 def _resolve_fit_params(
-    algorithms: dict[str, LikelihoodAlgorithm],
+    algorithms: Mapping[str, LikelihoodAlgorithm],
     algorithm: str,
     params: dict[str, Any] | None,
     params_name: str,
@@ -193,7 +213,7 @@ def _resolve_fit_params(
 
     Parameters
     ----------
-    algorithms : dict[str, LikelihoodAlgorithm]
+    algorithms : Mapping[str, LikelihoodAlgorithm]
         The registry holding ``algorithm``.
     algorithm : str
         A key of ``algorithms``.

@@ -85,7 +85,7 @@ from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
-    LikelihoodAlgorithm,
+    ClusterlessLikelihoodAlgorithm,
     _resolve_fit_params,
 )
 from non_local_detector.likelihoods.common import (
@@ -3348,6 +3348,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                         expected="one array with shape (n_spikes,) per neuron",
                         got=f"shape {np.shape(times)}",
                     )
+        # The per-unit rates every fit of the family stores (see
+        # ``SortedSpikesEncodingModel`` and ``ClusterlessEncodingModel``).
         field = "mean_rates" if is_clusterless else "place_fields"
         for key in {
             (obs.environment_name, obs.encoding_group)
@@ -3358,16 +3360,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             validate_population_lengths(
                 "electrode" if is_clusterless else "neuron",
                 spike_times=spike_times,
-                **{field: model.get(field)},
+                **{field: model[field]},
             )
             if is_clusterless:
-                if "mark_dimensions" in model:
-                    dimensions = model["mark_dimensions"]
-                else:
-                    encoded_marks = model.get(
-                        "encoding_spike_waveform_features", model.get("encoding_marks")
-                    )
-                    dimensions = [np.shape(marks)[1] for marks in encoded_marks]
+                dimensions = model["mark_dimensions"]
                 validate_population_lengths(
                     "electrode", spike_times=spike_times, mark_dimensions=dimensions
                 )
@@ -6103,7 +6099,7 @@ class ClusterlessDetector(_DetectorBase):
             "clusterless_algorithm_params",
         )
 
-    def _clusterless_algorithm(self) -> LikelihoodAlgorithm:
+    def _clusterless_algorithm(self) -> ClusterlessLikelihoodAlgorithm:
         """The registered record of ``clusterless_algorithm``."""
         try:
             return _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
@@ -6151,17 +6147,6 @@ class ClusterlessDetector(_DetectorBase):
         # The reference adds the mark bandwidth, in waveform units, to each
         # feature's training spread.
         mark_reference_scale = self._clusterless_algorithm().mark_reference_scale
-        if mark_reference_scale is None:
-            msg = (
-                f"clusterless_algorithm {self.clusterless_algorithm!r} is "
-                "registered without a mark_reference_scale"
-            )
-            raise ValidationError(
-                msg,
-                hint="Register it as LikelihoodAlgorithm(fit, predict, "
-                "mark_reference_scale=...): the mark reference that scores "
-                "No-Spike marks needs the algorithm's mark-kernel width.",
-            )
         kernel_scale = cast(
             "float | np.ndarray", mark_reference_scale(**algorithm_params)
         )

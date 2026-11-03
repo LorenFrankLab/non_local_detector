@@ -39,7 +39,7 @@ this corresponds to a user-supplied ``xt$penalty``.
 
 Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`` /
 ``sorted_spikes_diffusion``, so the Poisson prediction is shared with the diffusion
-likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
+likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` calls it).
 """
 
 import warnings
@@ -63,6 +63,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
+    _SpikeTimeOrder,
     environment_grid_fingerprint,
 )
 from non_local_detector.likelihoods.diffusion import (
@@ -72,17 +73,13 @@ from non_local_detector.likelihoods.diffusion import (
     n_connected_components,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    SortedSpikesDiffusionEncodingModel,
     _assemble_place_fields,
     _validate_local_interpolation,
     pixellate_interior_fields,
     predict_sorted_spikes_diffusion_log_likelihood,
 )
-
-# The MRF place-field / Poisson-prediction contract is identical to the diffusion
-# smoother's (both store FULL-GRID rate maps), so the prediction is shared.
-predict_sorted_spikes_mrf_log_likelihood = (
-    predict_sorted_spikes_diffusion_log_likelihood
-)
+from non_local_detector.time_edges import _DecodeTimeGrid, requires_time_edges
 
 # The Newton/IRLS fit and REML score run in JAX (jit + GPU-ready), batched over
 # neurons. float32 is the package regime (core.py is float32-explicit, so no global
@@ -794,12 +791,34 @@ def _floor_unoccupied_components(
     return rate_interior, coeffs
 
 
+class SortedSpikesMRFEncodingModel(SortedSpikesDiffusionEncodingModel):
+    """The encoding model ``fit_sorted_spikes_mrf_encoding_model`` returns.
+
+    The diffusion model's keys, which the prediction reads, plus the fit's
+    diagnostics (``mrf_*``, documented in the fit's Returns), which it does
+    not. The diagnostics stay in the encoding model so a fitted detector
+    reports how its penalty was chosen.
+    """
+
+    mrf_penalty: float
+    mrf_rank: int
+    mrf_coefficients: np.ndarray
+    mrf_penalty_weights: np.ndarray
+    mrf_reml_objective: float
+    mrf_n_iter: int
+    mrf_converged: bool
+    mrf_max_step: float
+    mrf_log_penalty_bounds: tuple[float, float]
+    mrf_penalty_selected_by_reml: bool
+
+
 def fit_sorted_spikes_mrf_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[np.ndarray],
     environment: Environment,
     weights: np.ndarray | None = None,
+    *,
     rank: int | None = None,
     penalty: float | None = None,
     max_iter: int = 100,
@@ -808,11 +827,10 @@ def fit_sorted_spikes_mrf_encoding_model(
     reml_xatol: float = 0.001,
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
-    *,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> SortedSpikesMRFEncodingModel:
     """Fit a population MRF-GAM encoding model for sorted spikes.
 
     Pixellates spike counts and occupancy onto interior bins, uses the ``rank``
@@ -882,12 +900,13 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : SortedSpikesMRFEncodingModel
         The same keys as ``sorted_spikes_diffusion`` -- ``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` (FULL-GRID), ``no_spike_part_log_likelihood``,
         ``interior_log_place_fields``, ``is_track_interior``, ``node_order``,
         ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar``,
-        ``rate_units``, ``encoding_exposure_seconds`` -- plus MRF diagnostics:
+        ``rate_units``, ``encoding_exposure_seconds``, with ``algorithm``
+        ``"sorted_spikes_mrf"`` -- plus MRF diagnostics:
 
         - ``mrf_penalty``: the selected (or supplied) smoothing parameter ``lambda``
         - ``mrf_rank``: number of eigenmodes used as the basis
@@ -1066,6 +1085,7 @@ def fit_sorted_spikes_mrf_encoding_model(
     )
 
     return {
+        "algorithm": "sorted_spikes_mrf",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy_field,
@@ -1083,11 +1103,147 @@ def fit_sorted_spikes_mrf_encoding_model(
         "mrf_coefficients": coeffs,
         "mrf_penalty_weights": penalty_weights,
         "mrf_reml_objective": reml_objective,
-        "mrf_n_iter": diagnostics["n_iter"],
-        "mrf_converged": diagnostics["converged"],
-        "mrf_max_step": diagnostics["max_step"],
+        "mrf_n_iter": int(diagnostics["n_iter"]),
+        "mrf_converged": bool(diagnostics["converged"]),
+        "mrf_max_step": float(diagnostics["max_step"]),
         "mrf_log_penalty_bounds": log_penalty_bounds,
         "mrf_penalty_selected_by_reml": penalty_selected_by_reml,
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
+
+
+@requires_time_edges
+def predict_sorted_spikes_mrf_log_likelihood(
+    position_time: np.ndarray,
+    position: np.ndarray,
+    spike_times: list[np.ndarray],
+    *,
+    environment: Environment,
+    occupancy: np.ndarray,
+    mean_rates: list[float],
+    place_fields: jax.Array,
+    no_spike_part_log_likelihood: jax.Array,
+    is_track_interior: np.ndarray,
+    node_order: np.ndarray | None = None,
+    bin_sizes: np.ndarray | None = None,
+    local_interpolation: str = "linear",
+    disable_progress_bar: bool = False,
+    is_local: bool = False,
+    interior_log_place_fields: jax.Array | None = None,
+    row_slice: slice | None = None,
+    time_edges: np.ndarray,
+    algorithm: str | None = None,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
+    environment_grid: dict[str, Any] | None = None,
+    mrf_penalty: float | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_rank: int | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_coefficients: np.ndarray | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_penalty_weights: np.ndarray | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_reml_objective: float | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_n_iter: int | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_converged: bool | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_max_step: float | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_log_penalty_bounds: tuple[float, float] | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_penalty_selected_by_reml: bool | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
+) -> jax.Array:
+    """Predict the Poisson log likelihood of sorted spikes under the MRF-GAM.
+
+    The MRF fit stores full-grid rate maps like the diffusion fit, so this is
+    ``predict_sorted_spikes_diffusion_log_likelihood`` applied to the
+    diffusion keys of the encoding model; the fit's ``mrf_*`` diagnostics are
+    accepted and unused.
+
+    Parameters
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+        Sampling times for the position.
+    position : np.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : list[np.ndarray]
+        Spike times for each neuron.
+    environment : Environment
+        The spatial environment (must be fitted).
+    occupancy : np.ndarray, shape (n_interior_bins,)
+        The fit's exposure field; unused.
+    mean_rates : list[float]
+        Mean firing rate in Hz per neuron.
+    place_fields : jax.Array, shape (n_neurons, n_total_bins)
+        Full-grid spatial firing rates in Hz.
+    no_spike_part_log_likelihood : jax.Array, shape (n_total_bins,)
+        Sum of full-grid Hz rates across neurons.
+    is_track_interior : np.ndarray, shape (n_total_bins,)
+        Interior-bin mask.
+    node_order : np.ndarray, shape (n_interior,), optional
+        Interior flat-bin indices in graph order, by default None.
+    bin_sizes : np.ndarray, shape (n_interior,), optional
+        Per-interior-bin volume, by default None; unused.
+    local_interpolation : {"linear", "nearest"}, optional
+        How local likelihood evaluates ``place_fields`` at the animal's
+        position, by default "linear".
+    disable_progress_bar : bool, optional
+        Turn off the progress bar, by default False.
+    is_local : bool, optional
+        Compute the likelihood at the animal's position, by default False.
+    interior_log_place_fields : jax.Array, shape (n_neurons, n_interior), optional
+        Log of the interior place fields, by default None.
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded; unused.
+    rate_units : str, default="Hz"
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError``.
+    encoding_exposure_seconds : float, optional
+        Weighted encoding occupancy time in seconds; unused.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid, by default None.
+    mrf_penalty, mrf_rank, mrf_coefficients, mrf_penalty_weights : optional
+        Fit diagnostics (see ``fit_sorted_spikes_mrf_encoding_model``); unused.
+    mrf_reml_objective, mrf_n_iter, mrf_converged, mrf_max_step : optional
+        Fit diagnostics; unused.
+    mrf_log_penalty_bounds, mrf_penalty_selected_by_reml : optional
+        Fit diagnostics; unused.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation shared across a detector's states and
+        chunks; direct callers omit it.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
+
+    Returns
+    -------
+    log_likelihood : jax.Array
+        Shape (n_rows, n_interior_bins) when ``is_local`` is False, else
+        (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
+    """
+    return predict_sorted_spikes_diffusion_log_likelihood(
+        position_time,
+        position,
+        spike_times,
+        environment=environment,
+        occupancy=occupancy,
+        mean_rates=mean_rates,
+        place_fields=place_fields,
+        no_spike_part_log_likelihood=no_spike_part_log_likelihood,
+        is_track_interior=is_track_interior,
+        node_order=node_order,
+        bin_sizes=bin_sizes,
+        local_interpolation=local_interpolation,
+        disable_progress_bar=disable_progress_bar,
+        is_local=is_local,
+        interior_log_place_fields=interior_log_place_fields,
+        row_slice=row_slice,
+        time_edges=time_edges,
+        algorithm=algorithm,
+        rate_units=rate_units,
+        encoding_exposure_seconds=encoding_exposure_seconds,
+        environment_grid=environment_grid,
+        _spike_time_order=_spike_time_order,
+        _time_grid=_time_grid,
+    )

@@ -127,6 +127,7 @@ from non_local_detector.likelihoods.diffusion import (
     get_device_basis,
     heat_kernel_apply,
 )
+from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
@@ -287,16 +288,38 @@ def _effective_block(
     return min(1 << (raw.bit_length() - 1), block_size)
 
 
+class ClusterlessDiffusionEncodingModel(ClusterlessEncodingModel):
+    """The encoding model ``fit_clusterless_diffusion_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_clusterless_diffusion_log_likelihood``, documented there.
+    """
+
+    occupancy: np.ndarray
+    summed_ground_process_intensity: np.ndarray
+    encoding_bin_indices: list[np.ndarray]
+    encoding_marks: list[jax.Array]
+    encoding_weights: list[jax.Array]
+    weight_total: list[float]
+    resolved_rank: int
+    node_order: np.ndarray
+    bin_sizes: np.ndarray
+    position_std: float
+    waveform_std: float | np.ndarray | jax.Array
+    block_size: int
+    memory_budget: int
+
+
 def fit_clusterless_diffusion_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[jax.Array],
     spike_waveform_features: list[jax.Array],
     environment: Environment,
+    weights: np.ndarray | None = None,
     *,
     position_std: float = float(np.sqrt(12.5)),
     waveform_std: float | np.ndarray | jax.Array = DEFAULT_WAVEFORM_STD,
-    weights: np.ndarray | None = None,
     heat_kernel_rank: int | None = None,
     block_size: int = 10000,
     memory_budget: int = 536870912,
@@ -304,7 +327,7 @@ def fit_clusterless_diffusion_encoding_model(
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> ClusterlessDiffusionEncodingModel:
     """Fit the clusterless graph-diffusion encoding model.
 
     Parameters
@@ -319,15 +342,15 @@ def fit_clusterless_diffusion_encoding_model(
         Spike waveform features (marks) for each electrode.
     environment : Environment
         The spatial environment (must be fitted).
+    weights : np.ndarray, shape (n_time_position,), optional
+        Per-sample EM weights, by default None (uniform). Weight the occupancy,
+        per-electrode ground-process, mean rate, and the per-spike joint estimator.
     position_std : float, optional
         Heat-kernel smoothing standard deviation (the physical bandwidth) in
         coordinate units, by default ``sqrt(12.5)``. Scalar only: the heat kernel is
         isotropic in graph distance.
     waveform_std : float, optional
         Gaussian smoothing standard deviation for the mark kernel, by default 24.0.
-    weights : np.ndarray, shape (n_time_position,), optional
-        Per-sample EM weights, by default None (uniform). Weight the occupancy,
-        per-electrode ground-process, mean rate, and the per-spike joint estimator.
     heat_kernel_rank : int or None, optional
         Eigenbasis truncation rank, by default None (bandwidth-aware auto-selection).
     block_size : int, optional
@@ -356,9 +379,10 @@ def fit_clusterless_diffusion_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : ClusterlessDiffusionEncodingModel
         Keys consumed by :func:`predict_clusterless_diffusion_log_likelihood`:
-        ``environment``, ``occupancy`` (pi, ``(n_interior,)``),
+        ``algorithm`` (``"clusterless_diffusion"``), ``environment``,
+        ``occupancy`` (pi, ``(n_interior,)``),
         ``summed_ground_process_intensity`` (``(n_interior,)``),
         ``encoding_bin_indices`` (list per electrode), ``encoding_marks`` (list),
         ``encoding_weights`` (list): one bin-sorted entry per encoding spike, or
@@ -368,7 +392,8 @@ def fit_clusterless_diffusion_encoding_model(
         ``bin_sizes`` (dV per interior bin), ``position_std``, ``waveform_std``,
         ``block_size``, ``memory_budget``, ``disable_progress_bar``,
         ``rate_units`` (``"Hz"``), ``encoding_exposure_seconds`` (weighted
-        encoding occupancy time in seconds).
+        encoding occupancy time in seconds), ``mark_dimensions`` (each
+        electrode's waveform-feature count).
     """
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -520,12 +545,14 @@ def fit_clusterless_diffusion_encoding_model(
         )
 
     return {
+        "algorithm": "clusterless_diffusion",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy,
         "summed_ground_process_intensity": summed_ground_process_intensity,
         "encoding_bin_indices": encoding_bin_indices,
         "encoding_marks": encoding_marks,
+        "mark_dimensions": [int(np.shape(marks)[1]) for marks in encoding_marks],
         "encoding_weights": encoding_weights,
         "weight_total": weight_total,
         "mean_rates": mean_rates,
@@ -1233,7 +1260,25 @@ def predict_clusterless_diffusion_log_likelihood(
     spike_times: list[jax.Array],
     spike_waveform_features: list[jax.Array],
     *,
+    environment: Environment,
+    occupancy: np.ndarray | jax.Array,
+    summed_ground_process_intensity: np.ndarray | jax.Array,
+    encoding_bin_indices: list[np.ndarray],
+    encoding_marks: list[jax.Array],
+    encoding_weights: list[jax.Array],
+    weight_total: list[float],
+    mean_rates: list[float],
+    resolved_rank: int,
+    node_order: np.ndarray,
+    bin_sizes: np.ndarray | jax.Array,
+    position_std: float,
+    waveform_std: float | np.ndarray | jax.Array,
+    block_size: int,
+    memory_budget: int,
+    disable_progress_bar: bool = False,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
+    mark_dimensions: list[int] | None = None,  # noqa: ARG001 -- read by the detector
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     is_local: bool = False,
@@ -1242,7 +1287,6 @@ def predict_clusterless_diffusion_log_likelihood(
     environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-    **encoding_model: object,
 ) -> jax.Array:
     """Predict the clusterless graph-diffusion log likelihood.
 
@@ -1258,8 +1302,47 @@ def predict_clusterless_diffusion_log_likelihood(
         Decode spike times for each electrode.
     spike_waveform_features : list[jax.Array]
         Decode spike waveform features (marks) for each electrode.
+    environment : Environment
+        The fitted environment.
+    occupancy : np.ndarray, shape (n_interior_bins,)
+        Diffused occupancy density at the interior bins.
+    summed_ground_process_intensity : np.ndarray, shape (n_interior_bins,)
+        Sum of the electrodes' ground intensities in Hz, without the
+        background rate.
+    encoding_bin_indices : list of np.ndarray, length n_electrodes
+        Interior bin of each encoding entry, sorted by bin.
+    encoding_marks : list of jax.Array, length n_electrodes
+        Marks of each encoding entry, shape (n_entries, n_features).
+    encoding_weights : list of jax.Array, length n_electrodes
+        Weight of each encoding entry.
+    weight_total : list of float, length n_electrodes
+        Total encoding weight of each electrode.
+    mean_rates : list of float, length n_electrodes
+        Mean rate of each electrode in Hz.
+    resolved_rank : int
+        Eigenbasis rank of the heat kernel.
+    node_order : np.ndarray, shape (n_interior_bins,)
+        Interior flat-bin indices in graph order.
+    bin_sizes : np.ndarray, shape (n_interior_bins,)
+        Volume of each interior bin.
+    position_std : float
+        Heat-kernel bandwidth in position units.
+    waveform_std : float or array
+        Mark-kernel bandwidth, scalar or per feature.
+    block_size : int
+        Requested cap on the decode-spike block size.
+    memory_budget : int
+        Byte budget for the spike blocks and kernel tiles.
+    disable_progress_bar : bool, optional
+        Turn off the progress bar, by default False.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
+    mark_dimensions : list of int, optional
+        Each electrode's fitted waveform-feature count, which the detector
+        checks the decoded features against; unused here.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).
@@ -1295,8 +1378,6 @@ def predict_clusterless_diffusion_log_likelihood(
     _time_grid : _DecodeTimeGrid, optional
         Internal prepared decode grid shared across a detector's states and
         chunks; direct callers omit it.
-    **encoding_model
-        The dict returned by :func:`fit_clusterless_diffusion_encoding_model`.
 
     Returns
     -------
@@ -1304,27 +1385,19 @@ def predict_clusterless_diffusion_log_likelihood(
         False, else (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice``
         is given.
     """
-    environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
     validate_encoding_contract(rate_units, environment, environment_grid)
-    occupancy = jnp.asarray(encoding_model["occupancy"])
+    fitted_occupancy = occupancy
+    occupancy = jnp.asarray(occupancy)
     summed_ground_process_intensity = jnp.asarray(
-        encoding_model["summed_ground_process_intensity"]
+        summed_ground_process_intensity
     ) + background_rate(len(spike_times))
-    encoding_bin_indices = cast(
-        list[np.ndarray], encoding_model["encoding_bin_indices"]
-    )
-    encoding_marks = cast(list[jax.Array], encoding_model["encoding_marks"])
-    encoding_weights = cast(list[jax.Array], encoding_model["encoding_weights"])
-    weight_total = cast(list[float], encoding_model["weight_total"])
-    mean_rates = cast(list[float], encoding_model["mean_rates"])
-    resolved_rank = int(encoding_model["resolved_rank"])  # type: ignore[call-overload]
-    node_order = np.asarray(encoding_model["node_order"])
-    bin_sizes = jnp.asarray(encoding_model["bin_sizes"])
-    position_std = float(encoding_model["position_std"])  # type: ignore[arg-type]
-    waveform_std = cast(float | np.ndarray | jax.Array, encoding_model["waveform_std"])
-    block_size = int(encoding_model["block_size"])  # type: ignore[call-overload]
-    memory_budget = int(encoding_model["memory_budget"])  # type: ignore[call-overload]
-    disable_progress_bar = bool(encoding_model.get("disable_progress_bar", False))
+    resolved_rank = int(resolved_rank)
+    node_order = np.asarray(node_order)
+    bin_sizes = jnp.asarray(bin_sizes)
+    position_std = float(position_std)
+    block_size = int(block_size)
+    memory_budget = int(memory_budget)
+    disable_progress_bar = bool(disable_progress_bar)
 
     validate_population_lengths(
         "electrode",
@@ -1376,7 +1449,7 @@ def predict_clusterless_diffusion_log_likelihood(
     # Every bin's repair-gate bounds for a unit rate and weight, once per model.
     kernel_gain, kernel_floor = _spike_time_order.memo(
         f"diffusion_kernel_bounds:{position_std!r}:{every_bin_tile}:{dense}",
-        (eigvecs, labels, encoding_model["occupancy"]),
+        (eigvecs, labels, fitted_occupancy),
         lambda: _kernel_bounds(
             eigvals,
             eigvecs,

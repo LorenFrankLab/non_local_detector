@@ -289,7 +289,7 @@ def test_glm_predict_and_pickle_with_track_graph_basis(y_track):
             time,
             position,
             spikes,
-            y_track,
+            environment=y_track,
             **kwargs,
             is_local=is_local,
             time_edges=edges,
@@ -305,7 +305,7 @@ def test_glm_predict_and_pickle_with_track_graph_basis(y_track):
             time,
             position,
             spikes,
-            y_track,
+            environment=y_track,
             **restored_kwargs,
             is_local=is_local,
             time_edges=edges,
@@ -397,7 +397,7 @@ def test_local_rate_at_an_arm_end_that_float32_rounds_onto_the_next_arm():
         decode_time,
         np.tile(nodes[2], (decode_time.size, 1)),
         [np.array([])],
-        env,
+        environment=env,
         **{
             k: v
             for k, v in enc.items()

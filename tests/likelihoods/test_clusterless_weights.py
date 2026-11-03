@@ -303,44 +303,6 @@ def test_gmm_nonfinite_features_are_ignored_only_at_zero_weight(
             )
 
 
-def test_predict_preserves_old_positional_api(simple_1d_environment):
-    """Old positional predict calls must still bind is_local/block_size correctly.
-
-    Guards against re-introducing the API break where ``encoding_weights`` was
-    inserted mid-signature: a positional ``is_local=True`` (16th positional arg)
-    must bind to ``is_local``, not to ``encoding_weights`` (which would raise
-    ``TypeError: 'bool' object is not iterable``).
-    """
-    env = simple_1d_environment
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    spikes = [jnp.array([2.0, 5.0, 7.5])]
-    feats = [jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)]
-    enc = _fit(env, t_pos, pos, spikes, feats)
-    t_edges = jnp.linspace(0.0, 10.0, 6)
-    # Positional call through is_local (16th positional arg), as pre-change callers did.
-    ll = predict_clusterless_kde_log_likelihood(
-        t_pos,
-        pos,
-        [jnp.array([4.2, 5.6])],
-        [jnp.array([[0.1, 0.05], [0.9, -0.8]], dtype=float)],
-        enc["occupancy"],
-        enc["occupancy_model"],
-        enc["gpi_models"],
-        enc["encoding_spike_waveform_features"],
-        enc["encoding_positions"],
-        env,
-        jnp.asarray(enc["mean_rates"]),
-        enc["summed_ground_process_intensity"],
-        jnp.asarray(enc["position_std"]),
-        jnp.asarray(enc["waveform_std"]),
-        True,
-        time_edges=t_edges,
-        mark_reference=_mark_reference(enc, t_pos, spikes, feats),
-    )
-    assert np.asarray(ll).shape == (t_edges.shape[0] - 1, 1)  # local -> (n_bins, 1)
-
-
 def _fit_gmm(env, t_pos, pos, spikes, feats, weights):
     return fit_clusterless_gmm_encoding_model(
         position_time=t_pos,
