@@ -1,4 +1,4 @@
-"""Native checkpointed predictions keep exact global diagnostic row ownership."""
+"""Dense and checkpointed predictions keep exact global diagnostic row ownership."""
 
 from functools import wraps
 
@@ -69,3 +69,37 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
         np.testing.assert_array_equal(actual, indices)
     if output_mode == "spatial":
         assert not loaded.acausal_posterior.variable._in_memory
+
+
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_dense_chunked_prediction_records_degenerate_rows_of_every_chunk(
+    checkpoint_recording, monkeypatch, family
+):
+    """Dense prediction collects all-``-inf`` rows from each of several chunks.
+
+    With ``n_chunks=3`` the likelihood is evaluated per chunk and not cached,
+    so the indices come only from the driver's ``degenerate_indices``.
+    """
+    model, fit, predict = checkpoint_recording(family)
+    model.fit(**fit)
+    original = model.compute_log_likelihood
+    degenerate_rows = [7, 45, 80]  # chunks [0, 34), [34, 67), [67, 100)
+
+    @wraps(original)
+    def damaged(*args, **kwargs):
+        values = np.asarray(original(*args, **kwargs)).copy()
+        rows = kwargs.get("row_slice")
+        start = 0 if rows is None else rows.start
+        stop = 100 if rows is None else rows.stop
+        for row in degenerate_rows:
+            if start <= row < stop:
+                values[row - start, :] = -np.inf
+        requested.append((start, stop))
+        return values
+
+    requested = []
+    monkeypatch.setattr(model, "compute_log_likelihood", damaged)
+    model.predict(**predict, n_chunks=3, cache_likelihood=False)
+    assert requested == [(0, 34), (34, 67), (67, 100)]
+    np.testing.assert_array_equal(model._degenerate_timesteps_, degenerate_rows)
+    assert model._degenerate_timesteps_.dtype.kind == "i"
