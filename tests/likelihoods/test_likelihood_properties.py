@@ -268,6 +268,11 @@ class TestLocalNonlocalFiniteness:
         seed=st.integers(min_value=0, max_value=1000),
     )
     @settings(max_examples=10, derandomize=True)
+    # A few spikes per cell can leave the GLM short of its gradient tolerance;
+    # the test checks only that the likelihoods are finite.
+    @pytest.mark.filterwarnings(
+        "ignore:GLM Poisson regression may not have converged:UserWarning"
+    )
     def test_sorted_likelihoods_finite(
         self, fit, predict, n_neurons, n_time, spikes_per_neuron, seed
     ):
