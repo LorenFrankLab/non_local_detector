@@ -3758,8 +3758,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             "valid_position_intervals": valid_position_intervals,
         }
 
-        return _DetectorBase.estimate_parameters(
-            self,
+        return self._run_em(
             time_edges=time_edges,
             log_likelihood_args=(
                 position_time,
@@ -3809,8 +3808,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
-        return _DetectorBase.most_likely_sequence(
-            self,
+        return self._run_viterbi(
             time_edges=time_edges,
             log_likelihood_args=(
                 position_time,
@@ -4483,7 +4481,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             self.__dict__.pop("_continuous_transition_operator_", None)
             self._transition_representation_ = "dense"
 
-    def estimate_parameters(
+    def _run_em(
         self,
         time_edges: np.ndarray,
         log_likelihood_args: tuple[Any, ...] | None = None,
@@ -4504,8 +4502,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         result_path: str | Path | None = None,
         replay_cache_bytes: int | None = None,
     ) -> xr.Dataset:
-        """
-        Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
+        """EM engine: estimate the parameters from a likelihood's arguments.
+
+        The detectors' ``estimate_parameters`` validate and fit the data, then
+        call this with the ``compute_log_likelihood`` arguments. It estimates
+        the initial conditions, the discrete transitions and, optionally, the
+        encoding model with the Expectation-Maximization algorithm.
 
         Parameters
         ----------
@@ -5338,17 +5340,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         results.attrs.update(em_attrs)
         return results
 
-    def most_likely_sequence(
+    def _run_viterbi(
         self,
         time_edges: np.ndarray,
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
-        """Find the most likely sequence of states.
+        """Viterbi engine: the most likely sequence of states.
 
-        The likelihood is always recomputed from the data passed here; a
-        stored ``log_likelihood_`` belongs to the run that produced it.
+        The detectors' ``most_likely_sequence`` validate the data, then call
+        this with the ``compute_log_likelihood`` arguments. The likelihood is
+        always recomputed from the data passed here; a stored
+        ``log_likelihood_`` belongs to the run that produced it.
 
         Parameters
         ----------
@@ -6688,7 +6692,7 @@ class ClusterlessDetector(_DetectorBase):
         )
 
     @requires_time_edges
-    def estimate_parameters(  # type: ignore[override]  # subclasses take the data arrays before time_edges
+    def estimate_parameters(
         self,
         position_time: np.ndarray,
         position: np.ndarray,
@@ -6888,7 +6892,7 @@ class ClusterlessDetector(_DetectorBase):
         )
 
     @requires_time_edges
-    def most_likely_sequence(  # type: ignore[override]  # subclasses take the data arrays before time_edges
+    def most_likely_sequence(
         self,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
@@ -7521,7 +7525,7 @@ class SortedSpikesDetector(_DetectorBase):
         )
 
     @requires_time_edges
-    def estimate_parameters(  # type: ignore[override]  # subclasses take the data arrays before time_edges
+    def estimate_parameters(
         self,
         position_time: np.ndarray,
         position: np.ndarray,
@@ -7722,7 +7726,7 @@ class SortedSpikesDetector(_DetectorBase):
         )
 
     @requires_time_edges
-    def most_likely_sequence(  # type: ignore[override]  # subclasses take the data arrays before time_edges
+    def most_likely_sequence(
         self,
         spike_times: list[np.ndarray],
         *,

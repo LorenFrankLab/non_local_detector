@@ -315,7 +315,7 @@ def _estimate_simulated_discrete_transition(
         continuous_transition_blocks=continuous_transition_blocks,
     )
     detector._fit(position=np.array([[0.25], [1.25]]))
-    results = detector.estimate_parameters(
+    results = detector._run_em(
         time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
         estimate_initial_conditions=False,
         estimate_discrete_transition=True,
@@ -391,7 +391,7 @@ def _estimate_simulated_nonstationary_discrete_transition(
         position=np.array([[0.25], [1.25]]),
         discrete_transition_covariate_data=covariate_data,
     )
-    results = detector.estimate_parameters(
+    results = detector._run_em(
         time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
         estimate_initial_conditions=False,
         estimate_discrete_transition=True,
@@ -1045,7 +1045,7 @@ class TestExpandedTransitionMstepEndToEnd:
 
         detector = _FixedLikelihoodDetector(log_likelihoods)
         detector._fit(position=np.array([[0.25], [1.25]]))
-        detector.estimate_parameters(
+        detector._run_em(
             time_edges=time_edges_from_centers(np.array([0.0, 1.0])),
             estimate_initial_conditions=False,
             estimate_discrete_transition=True,
@@ -1323,7 +1323,7 @@ def _estimate_transitions(detector, **kwargs):
     """EM on the discrete transitions alone."""
     n_time = detector._fixed_log_likelihoods.shape[0]
     kwargs = {"max_iter": 4, "tolerance": 0.0, **kwargs}
-    return detector.estimate_parameters(
+    return detector._run_em(
         time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
         estimate_initial_conditions=False,
         estimate_discrete_transition=True,
@@ -1565,7 +1565,7 @@ def _em_estimate(
     for name, value in attributes.items():
         setattr(detector, name, value)
     detector._fit(position=np.array([[0.25], [1.25]]))
-    results = detector.estimate_parameters(
+    results = detector._run_em(
         time_edges=time_edges_from_centers(
             np.arange(len(log_likelihoods), dtype=float)
         ),

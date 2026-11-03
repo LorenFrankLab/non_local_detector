@@ -96,6 +96,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - With `transition_representation="auto"` (the default), EM now warns when it runs structured EM only because dense EM's estimated arrays exceed half the device (or available host) memory. Choosing structured EM for a large transition matrix, the intended speed trade-off, stays silent. Structured EM bounds memory by recomputing the likelihood on every E-step. On a 567k-bin clusterless track decode on an A100 with JAX limited to 22% of device memory, this took about 137 s per E-step instead of 15 s. Dense EM, estimated at 13.3 GB against an 18.7 GB limit, would have fit (measured peak 10.0 GB). The warning gives the estimate and the limit. If dense EM fits, pass `transition_representation="dense"`. The choice itself is unchanged.
 
+### EM engine
+
+- The EM and Viterbi engines that the detectors' `estimate_parameters` and `most_likely_sequence` call are the protected `_DetectorBase._run_em` and `_DetectorBase._run_viterbi`. `_DetectorBase` no longer has an `estimate_parameters(time_edges, log_likelihood_args, ...)` or `most_likely_sequence(time_edges, log_likelihood_args, ...)` whose signature the detectors' methods silently replaced; code that called `_DetectorBase.estimate_parameters(detector, ...)` directly calls `detector._run_em(...)`. Detector methods and results are unchanged.
+
 ### Smoother covariate-dependent discrete transitions
 
 - `quantile_bs` takes `lower_quantile` and `upper_quantile` (default 0 and 1, the previous behaviour) to place the spline's boundary knots at quantiles of the fitted covariate. Values beyond a boundary take the boundary's value. With REML smoothness, an upper boundary at the 99th percentile scored 223 nats in total on the held-out halves described below, against 256 for the default range, and doubled the curve error on simulated laps, so the default range is recommended.
