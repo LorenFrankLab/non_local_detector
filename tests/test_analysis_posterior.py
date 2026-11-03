@@ -242,7 +242,9 @@ class TestGetSpatialPosterior:
 
         assert result.dims == ("time", "state", "position")
         assert list(result.state.values) == ["NL"]
-        np.testing.assert_array_equal(result.sel(state="NL").values, posterior.values[:, 1:])
+        np.testing.assert_array_equal(
+            result.sel(state="NL").values, posterior.values[:, 1:]
+        )
         summed = result.sum("state")
         np.testing.assert_array_equal(summed.values, posterior.values[:, 1:])
         # Local's mass is excluded, so total < 1 per time bin
@@ -289,7 +291,10 @@ class TestMapFromRawAcausalPosterior:
         result = maximum_a_posteriori_estimate(posterior)
 
         grid = np.stack(
-            [posterior.indexes["state_bins"].get_level_values(n)[1:] for n in position_dims],
+            [
+                posterior.indexes["state_bins"].get_level_values(n)[1:]
+                for n in position_dims
+            ],
             axis=1,
         )
         np.testing.assert_array_equal(result[0], grid[1])

@@ -130,9 +130,7 @@ def _position_less_results():
     import xarray as xr
 
     xs, ys = np.arange(3.0), np.arange(2.0)
-    rows = [("Local", np.nan, np.nan)] + [
-        ("NL", x, y) for x in xs for y in ys
-    ]
+    rows = [("Local", np.nan, np.nan)] + [("NL", x, y) for x in xs for y in ys]
     index = pd.MultiIndex.from_tuples(rows, names=["state", "x_position", "y_position"])
     values = np.full((2, len(rows)), 0.02)
     values[:, 0] = 0.9
@@ -141,7 +139,7 @@ def _position_less_results():
         dims=["time", "state_bins"],
         coords={"time": [0.0, 0.1], "state_bins": index},
     )
-    return xr.Dataset({"acausal_posterior": posterior}), xs, ys
+    return xr.Dataset({"acausal_posterior": posterior})
 
 
 def test_default_posterior_has_no_false_peak_at_last_bin(monkeypatch):
@@ -149,12 +147,13 @@ def test_default_posterior_has_no_false_peak_at_last_bin(monkeypatch):
     import types as _types
 
     figurl_2D = _load_figurl_2d_with_stub_sortingview(monkeypatch)
-    results, xs, ys = _position_less_results()
+    results = _position_less_results()
     captured = {}
 
     def fake_decode_view(**kwargs):
         captured.update(kwargs)
-        raise RuntimeError("stop after posterior is prepared")
+        msg = "stop after posterior is prepared"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(figurl_2D, "create_2D_decode_view", fake_decode_view)
     env = _types.SimpleNamespace(is_track_interior_=None, place_bin_centers_=None)

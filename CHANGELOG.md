@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Posterior helpers
+
+- `non_local_detector.analysis.get_spatial_posterior(posterior, states=None)` unstacks `results.acausal_posterior` into `(time, state, position...)` for 1D, 2D and higher-dimensional positions, keeping only the state bins that have a position. Summing it over `state` gives the posterior over position jointly with being in a spatial state, which does not sum to 1 when Local or No-Spike carry mass (their probability is in `acausal_state_probabilities`).
+- **Fixed:** the 2D FigURL view and the movie showed a false peak at the last x/y position bin for models with Local or No-Spike states. These states have NaN position in `state_bins`, and xarray's `unstack` assigns NaN index levels to the last position bin. Both views now use `get_spatial_posterior` and show the posterior over position summed over the states that have a position. Calling `results.acausal_posterior.unstack("state_bins")` yourself has the same problem with position-less states; use `get_spatial_posterior` instead.
+- **Fixed:** `maximum_a_posteriori_estimate` accepts the raw `results.acausal_posterior` (`state_bins` dimension) and ignores position-less states; previously it required an already unstacked posterior, which for these models carried the misplaced mass.
+
 ### Environment grid helpers
 
 - `Environment.is_track_interior_flat_` is the interior mask over the flattened place bins, shape `(n_bins,)`, with every bin interior when `is_track_interior_` is unset. The likelihood fits, continuous transitions, structured transition operators, state indexing, off-track snapping and clusterless model checking use it instead of their own copies. Outputs are unchanged.

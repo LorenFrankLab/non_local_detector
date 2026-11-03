@@ -101,8 +101,12 @@ results = detector.predict(
 
 # Analyze results
 state_probability = results.acausal_state_probabilities
-# Spatial posterior coordinates are available by unstacking state_bins.
-spatial_posterior = results.acausal_posterior.unstack("state_bins")
+# Spatial posterior coordinates, one grid per state that has a position.
+# Do not call results.acausal_posterior.unstack("state_bins") directly: it puts
+# the probability of position-less states (Local, No-Spike) on the last bin.
+from non_local_detector.analysis import get_spatial_posterior
+
+spatial_posterior = get_spatial_posterior(results.acausal_posterior)
 ```
 
 ### Working with Sorted Spikes
