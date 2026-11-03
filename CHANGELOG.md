@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation site
 
 - A documentation site at <https://lorenfranklab.github.io/non_local_detector/>, built with MkDocs from `docs/`: installation, a quickstart that detects simulated replay, core concepts, the existing guides and technical notes, an API reference generated from the docstrings, and this changelog. Pull requests build it with `--strict` and check its internal links; pushes to `main` publish it. Build it locally with `uv sync --group docs && uv run mkdocs serve`.
-- Six executed tutorials (data and environments, sorted-spikes decoding, clusterless decoding, classifying replay dynamics, detecting non-local events, model checking) run when the site is built.
+- Six executed tutorials (data and environments, sorted-spikes decoding, clusterless decoding, classifying replay dynamics, detecting non-local events, choosing and checking models) run when the site is built.
 - The README and CONTRIBUTING are rewritten, and the repository gains `CITATION.cff`, issue and pull request templates and `CODE_OF_CONDUCT.md`.
 - Code blocks in the docs marked `<!-- docs-test: run -->` run in the test suite (`tests/test_executable_docs.py`), so the quickstart cannot go stale.
 - `non_local_detector.__all__` lists the public names the package re-exports.
