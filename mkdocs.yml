@@ -128,6 +128,7 @@ nav:
       - Core Concepts: getting-started/core-concepts.md
   - Tutorials:
       - tutorials/index.md
+      - Detecting non-local events: tutorials/05_detecting_non_local_events.py
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md
