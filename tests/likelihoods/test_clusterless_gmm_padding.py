@@ -18,7 +18,6 @@ from non_local_detector.likelihoods.common import (
     _padded_spike_count,
     decode_bin_centers,
     get_position_at_time,
-    log_bin_duration_evidence,
     select_spike_rows,
     select_spikes_in_rows,
     sum_spikes_into_rows,
@@ -28,6 +27,7 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import (
+    log_duration_per_spike,
     tolerance,
     training_mark_references,
 )
@@ -222,19 +222,40 @@ def reference(recording, is_local, row_slice):
             )
         n_electrodes = len(encoding["mean_rates"])
         total = (total - durations * (expected + n_electrodes * RATE_EPS_HZ))[:, None]
-    return total + log_bin_duration_evidence(times, edges, row_slice, None)[:, None]
+    return total + log_duration_per_spike(times, edges, row_slice)[:, None]
+
+
+@pytest.fixture(scope="module")
+def full_range_references(recording):
+    """``reference`` over every decoding row, per path; read-only.
+
+    The formulation scores each row on its own, so its rows ``start:stop``
+    are what ``reference`` computes for that range (bitwise, on these
+    recordings). Slicing one full-range result computes it once per precision
+    and path instead of once per row range, and keeps the expected rows
+    independent of the row-range selection that ``predict`` is tested on.
+    """
+    x64, recording = recording
+    edges = recording[-1]
+    with precision_mode(x64):
+        return {
+            is_local: reference(recording, is_local, slice(0, len(edges) - 1))
+            for is_local in (False, True)
+        }
 
 
 # zero-rate electrode: observed spikes are scored by the background by design.
 @pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning")
 @pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("rows", [(0, 2000), (300, 333), (5, 6)])
-def test_padded_kernels_match_the_per_electrode_formulation(recording, is_local, rows):
+def test_padded_kernels_match_the_per_electrode_formulation(
+    recording, full_range_references, is_local, rows
+):
     x64, recording = recording
     with precision_mode(x64):
         row_slice = slice(*rows)
         actual = predict(recording, is_local, row_slice)
-        expected = reference(recording, is_local, row_slice)
+        expected = full_range_references[is_local][row_slice]
         assert actual.shape == expected.shape
         assert actual.dtype == (jnp.float64 if x64 else jnp.float32)
         assert np.all(np.isfinite(actual))

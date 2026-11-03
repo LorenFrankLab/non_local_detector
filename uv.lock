@@ -1964,8 +1964,18 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+gpu = [
+    { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda"], marker = "python_full_version < '3.11'" },
+    { name = "jax", version = "0.9.0", source = { registry = "https://pypi.org/simple" }, extra = ["cuda"], marker = "python_full_version >= '3.11'" },
+]
+viz = [
+    { name = "sortingview" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
+    { name = "ipykernel" },
     { name = "ipython", version = "8.39.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "ipython", version = "9.10.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "ipython", version = "9.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -1977,10 +1987,6 @@ dev = [
     { name = "pytest-timeout" },
     { name = "ruff" },
 ]
-gpu = [
-    { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda"], marker = "python_full_version < '3.11'" },
-    { name = "jax", version = "0.9.0", source = { registry = "https://pypi.org/simple" }, extra = ["cuda"], marker = "python_full_version >= '3.11'" },
-]
 test = [
     { name = "hypothesis" },
     { name = "psutil" },
@@ -1988,38 +1994,16 @@ test = [
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
 ]
-viz = [
-    { name = "sortingview" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "ipykernel" },
-]
 
 [package.metadata]
 requires-dist = [
-    { name = "hypothesis", marker = "extra == 'dev'" },
-    { name = "hypothesis", marker = "extra == 'test'" },
-    { name = "ipython", marker = "extra == 'dev'" },
     { name = "jax", specifier = ">=0.6.2" },
     { name = "jax", extras = ["cuda"], marker = "extra == 'gpu'" },
     { name = "matplotlib", specifier = ">=3.10" },
-    { name = "mypy", marker = "extra == 'dev'" },
     { name = "networkx", specifier = ">=3.4" },
     { name = "numpy", specifier = ">=2.2" },
     { name = "pandas", specifier = ">=2.3" },
     { name = "patsy", specifier = ">=0.5.6" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "psutil", marker = "extra == 'dev'" },
-    { name = "psutil", marker = "extra == 'test'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "pytest-cov", marker = "extra == 'test'" },
-    { name = "pytest-timeout", marker = "extra == 'dev'" },
-    { name = "pytest-timeout", marker = "extra == 'test'" },
-    { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-learn", specifier = ">=1.6" },
     { name = "scipy", specifier = ">=1.15" },
     { name = "sortingview", marker = "extra == 'viz'" },
@@ -2028,10 +2012,28 @@ requires-dist = [
     { name = "track-linearization", specifier = ">=2.4.0" },
     { name = "xarray", specifier = ">=2024.11" },
 ]
-provides-extras = ["dev", "gpu", "test", "viz"]
+provides-extras = ["gpu", "viz"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ipykernel", specifier = ">=7.2.0" }]
+dev = [
+    { name = "hypothesis" },
+    { name = "ipykernel", specifier = ">=7.2.0" },
+    { name = "ipython" },
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "psutil" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-timeout" },
+    { name = "ruff" },
+]
+test = [
+    { name = "hypothesis" },
+    { name = "psutil" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-timeout" },
+]
 
 [[package]]
 name = "numcodecs"

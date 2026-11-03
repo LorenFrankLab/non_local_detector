@@ -1,6 +1,7 @@
 # Non-Local Detector
 
 [![Tests](https://github.com/LorenFrankLab/non_local_detector/actions/workflows/test_package_build.yml/badge.svg)](https://github.com/LorenFrankLab/non_local_detector/actions/workflows/test_package_build.yml)
+[![codecov](https://codecov.io/gh/LorenFrankLab/non_local_detector/branch/main/graph/badge.svg)](https://codecov.io/gh/LorenFrankLab/non_local_detector)
 [![PyPI version](https://badge.fury.io/py/non-local-detector.svg)](https://badge.fury.io/py/non-local-detector)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -50,15 +51,16 @@ mamba install non_local_detector -c edeno
 
 ### Development Installation
 
-For development and contributing:
+For development and contributing (see [CONTRIBUTING.md](CONTRIBUTING.md)):
 
 ```bash
 git clone https://github.com/LorenFrankLab/non_local_detector.git
 cd non_local_detector
-mamba env create -f environment.yml  # or environment_gpu.yml for GPU
-conda activate non_local_detector
-pip install -e .[dev]
+uv sync
+uv run pytest tests/test_version_import.py
 ```
+
+A conda environment is also available (`environment.yml`, or `environment_gpu.yml` for GPU).
 
 ## 📖 Quick Start
 
@@ -178,76 +180,31 @@ covariates, independent intervals, and downstream pipeline changes.
 
 ## 🛠️ Development
 
-### Quality Standards
+Setup, tests, code style and the pull request process are described in [CONTRIBUTING.md](CONTRIBUTING.md). In short:
 
-This project maintains high code quality standards:
-
-- **Linting**: `ruff check src/` (zero issues required)
-- **Formatting**: `ruff format src/` and `black src/`
-- **Type Checking**: `mypy src/non_local_detector/` (gradual adoption)
-- **Testing**: `pytest` with coverage reporting
-
-### Development Workflow
-
-1. **Setup Development Environment**
-
-   ```bash
-   mamba env create -f environment.yml
-   conda activate non_local_detector
-   pip install -e .[dev]
-   ```
-
-2. **Run Quality Checks**
-
-   ```bash
-   # Full quality check (required before committing)
-   ruff check src/ && ruff format --check src/ && pytest
-
-   # Auto-fix linting issues
-   ruff check --fix src/
-   ruff format src/
-   ```
-
-3. **Testing**
-
-   ```bash
-   # Run all tests
-   pytest
-
-   # With coverage
-   pytest --cov=non_local_detector --cov-report=html
-
-   # Single test file
-   pytest tests/test_version_import.py
-   ```
-
-4. **Building**
-
-   ```bash
-   # Build package
-   python -m build
-
-   # Check distribution
-   twine check dist/*
-   ```
+```bash
+uv sync
+uv run pre-commit install
+uv run pre-commit run --all-files  # ruff, strict mypy, codespell, and other checks
+uv run pytest                      # or a targeted selection, see CONTRIBUTING.md
+```
 
 ### CI/CD Pipeline
 
 GitHub Actions (`.github/workflows/test_package_build.yml`) runs on every pull request, every push to `main`, and weekly:
 
 - **Quality gate**: `ruff check` and `ruff format --check` with the ruff version pinned in `uv.lock` (the same version as the pre-commit hook).
-- **Locked tests**: the full suite on Python 3.10–3.13 (Linux), installed from `uv.lock`. On Python 3.10 the lock resolves JAX 0.6.2, the minimum supported release.
+- **Locked tests**: the full suite on Python 3.10–3.14 (Linux) and 3.13 (macOS), installed from `uv.lock`. On Python 3.10 the lock resolves JAX 0.6.2, the minimum supported release.
 - **Dependency range**: the full suite again at the lowest versions `pyproject.toml` allows (`uv pip install --resolution lowest-direct`) and at the newest releases, ignoring the lock.
 - **Packaging**: the wheel, sdist and git archive are built, installed without the source tree, and smoke-tested with the golden regression tests, which need the packaged data files.
 - **Coverage**: uploaded to Codecov from the Python 3.12 Linux job.
 
-To reproduce the locked test job locally: `uv sync --locked --extra test && uv run pytest`.
+To reproduce the locked test job locally: `uv sync --locked && uv run pytest`.
 
 ## 📚 Documentation
 
-- **API Reference**: [Coming Soon]
-- **Tutorials**: See `notebooks/` directory for example analyses
-- **Contributing Guide**: See development section above
+- **Documentation site**: <https://lorenfranklab.github.io/non_local_detector/>
+- **Contributing Guide**: [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Issue Tracker**: [GitHub Issues](https://github.com/LorenFrankLab/non_local_detector/issues)
 
 ## 🤝 Contributing
@@ -256,7 +213,7 @@ We welcome contributions! Please:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Run quality checks locally (see Development Workflow)
+3. Run quality checks locally (see [CONTRIBUTING.md](CONTRIBUTING.md))
 4. Commit your changes (`git commit -m 'Add amazing feature'`)
 5. Push to the branch (`git push origin feature/amazing-feature`)
 6. Open a Pull Request
@@ -265,10 +222,21 @@ We welcome contributions! Please:
 
 All contributions must:
 
-- Pass all quality checks (`ruff`, `black`, `mypy`)
+- Pass all quality checks (`uv run pre-commit run --all-files`: ruff lint and format, strict mypy)
 - Include tests for new functionality
 - Follow the existing code style and patterns
 - Update documentation as needed
+
+## 📝 Citation
+
+If you use `non_local_detector` in your research, please cite it. Citation
+metadata is in [CITATION.cff](CITATION.cff); on GitHub, use "Cite this
+repository" in the sidebar to get APA or BibTeX. The method is described in:
+
+> Denovellis, E. L., Gillespie, A. K., Coulter, M. E., Sosa, M., Chung, J. E.,
+> Eden, U. T., & Frank, L. M. (2021). Hippocampal replay of experience at
+> real-world speeds. *eLife*, 10, e64505.
+> [doi:10.7554/eLife.64505](https://doi.org/10.7554/eLife.64505)
 
 ## 📄 License
 
@@ -278,12 +246,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Author**: Eric Denovellis
 - **Institution**: Loren Frank Lab, UCSF
-- **Funding**: [Add funding sources if applicable]
 
 ## 📞 Support
 
 - **Issues**: [GitHub Issues](https://github.com/LorenFrankLab/non_local_detector/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/LorenFrankLab/non_local_detector/discussions)
 
 ## 🔗 Related Projects
 
