@@ -6,7 +6,7 @@ model and parameter estimation (EM). How the decoding modes work is described in
 [performance_prediction.md](performance_prediction.md).
 
 Decoding numbers come from the benchmark workloads in
-[performance_validation.md](performance_validation.md): a simulated 180 × 180 cm
+[performance_validation.md](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_validation.md): a simulated 180 × 180 cm
 arena, 2 ms bins, 10 s of encoding, 64 sorted units at 5 Hz or 8 clusterless
 electrodes at 20 Hz with four waveform features, using the default likelihoods
 (sorted and clusterless KDE), float32 and JAX 0.9.0; memory for the other
@@ -174,7 +174,7 @@ that cost, both set before starting Python:
   instead of 5.0 GB, with the same time per later call on this workload. It
   also makes repeated GPU runs bitwise reproducible (see GPU setup).
 
-Source: [real-track EM records](performance_artifacts/em/real-track/README.md).
+Source: [real-track EM records](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_artifacts/em/real-track/README.md).
 
 ### Simulated open field (before the EM speedups)
 
@@ -210,7 +210,7 @@ slower than float32.
 
 ## Where the numbers come from
 
-- Decoding and scaling: [performance_validation.md](performance_validation.md)
+- Decoding and scaling: [performance_validation.md](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_validation.md)
   and `docs/performance_artifacts/` (the `bottlenecks/` and `scaling/` records,
   including `scaling/cpu-chunk-size-runs.json` for CPU chunk sizes).
 - EM, allocator pools and graph-distance timing: `docs/performance_artifacts/em/`.

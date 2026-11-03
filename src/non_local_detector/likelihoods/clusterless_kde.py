@@ -2149,7 +2149,7 @@ def predict_clusterless_kde_log_likelihood(
                 tqdm(
                     encoding_spike_waveform_features,
                     unit="electrode",
-                    desc="Non-Local Likelihood",
+                    desc="Position-Bin Likelihood",
                     disable=disable_progress_bar,
                 ),
                 encoding_positions,

@@ -57,7 +57,9 @@ def simulate_position_with_pauses(
     pause: float = 0.5,
     sampling_frequency: float = 1,
 ) -> np.ndarray:
-    """Simulate an animal moving with pauses at track endpoints.
+    """Simulate an animal moving with pauses at the far end of the track.
+
+    The animal pauses for ``pause`` seconds once per arrival at ``track_height``.
 
     Parameters
     ----------
@@ -78,22 +80,20 @@ def simulate_position_with_pauses(
         Position trajectory including pauses at endpoints.
     """
     position = simulate_position(time, track_height, running_speed)
-    peaks = np.nonzero(np.isclose(position, track_height))[0]
+    # Samples within tolerance of the track end form one run per arrival; pause
+    # once at the first sample of each run, not at every sample of it.
+    at_end = np.isclose(position, track_height)
+    arrivals = np.nonzero(at_end & ~np.concatenate(([False], at_end[:-1])))[0]
     n_pause_samples = int(pause * sampling_frequency)
-    pause_position = np.zeros((time.size + n_pause_samples * peaks.size,))
-    pause_ind = peaks[:, np.newaxis] + np.arange(n_pause_samples)
-    pause_ind += np.arange(peaks.size)[:, np.newaxis] * n_pause_samples
+    paused = np.insert(position, np.repeat(arrivals, n_pause_samples), track_height)
 
-    pause_position[pause_ind.ravel()] = track_height
-    pause_position[pause_position == 0] = position
-
-    return pause_position[: time.size]
+    return paused[: time.size]
 
 
 def simulate_multiunit_with_place_fields(
     place_means: np.ndarray,
     position: np.ndarray,
-    mark_spacing: int = 5,
+    mark_spacing: float = 5,
     n_mark_dims: int = 4,
     place_variance: float = 12.5,
     mark_variance: float = 1.0,
@@ -111,7 +111,7 @@ def simulate_multiunit_with_place_fields(
         Place-field centers, one row per neuron.
     position : np.ndarray, shape (n_time, n_position_dims)
         Position trajectory.
-    mark_spacing : int, optional
+    mark_spacing : float, optional
         Spacing between the mark centers of successive neurons, by default 5.
         Neuron ``i`` emits marks centered at ``i * mark_spacing`` in every
         mark dimension.

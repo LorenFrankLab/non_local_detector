@@ -4,7 +4,7 @@ These opt-in APIs build on the 0.7 time/Hz contracts. Existing `fit()` and
 `predict()` calls keep their dense behavior. The modes apply to prediction with
 fitted parameters. Viterbi keeps its dense algorithm; EM runs on the same
 checkpointed driver when its default `"auto"` (or `"structured"`) chooses it (see
-[hardware_settings.md](hardware_settings.md#bounded-memory-em)). For
+[hardware_settings.md](hardware_settings.md#parameter-estimation-em)). For
 suggested settings on 24 GB GPUs, A100s and CPUs, see
 [hardware_settings.md](hardware_settings.md).
 
@@ -234,7 +234,7 @@ separate accounting.
 
 Repeated CUDA predictions in separate processes are not bitwise identical by
 default, because XLA autotuning chooses kernels in each process. For the
-benchmark workload in the [validation record](performance_validation.md), state
+benchmark workload in the [validation record](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_validation.md), state
 probabilities from separate runs of unchanged code differed by up to 3.1e-4
 (sorted KDE) and 6.3e-4 (clusterless GMM). Setting
 `XLA_FLAGS=--xla_gpu_autotune_level=0` before starting Python made three A100
@@ -250,5 +250,5 @@ unavailable. Shortened recordings and synthetic populations establish only the
 configurations recorded in their reports; CPU measurements do not qualify CUDA
 or smaller GPU hardware. Full-hour production claims require measured runs at
 1 cm and 2 cm and declared host/device/disk budgets. See the
-[validation record](performance_validation.md) for measured configurations,
+[validation record](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_validation.md) for measured configurations,
 source provenance and limits.

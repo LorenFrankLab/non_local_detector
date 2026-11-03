@@ -791,7 +791,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
             _spike_counts_matrix(
                 spike_times,
                 time_edges,
-                "Non-Local Likelihood",
+                "Position-Bin Likelihood",
                 True,
                 slice(start, stop),
                 _spike_time_order=_spike_time_order,
@@ -817,6 +817,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         row_stop,
         len(spike_times),
         evaluate,
-        "Non-Local Likelihood",
+        "Position-Bin Likelihood",
         disable_progress_bar,
     )

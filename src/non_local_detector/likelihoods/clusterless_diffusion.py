@@ -1435,7 +1435,7 @@ def predict_clusterless_diffusion_log_likelihood(
             tqdm(
                 encoding_bin_indices,
                 unit="electrode",
-                desc="Local Likelihood" if is_local else "Non-Local Likelihood",
+                desc="Local Likelihood" if is_local else "Position-Bin Likelihood",
                 disable=disable_progress_bar,
             ),
             encoding_marks,

@@ -12,6 +12,7 @@ import pandas as pd
 import xarray as xr
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar  # type: ignore[import-untyped]  # mpl_toolkits ships no stubs
 
+from non_local_detector.analysis.posterior import get_spatial_posterior
 from non_local_detector.visualization._parallel_video_writer import (
     VideoConfig,
     create_parallel_video,
@@ -89,12 +90,7 @@ def make_single_environment_movie(
 
     # Prepare data
     is_track_interior = classifier.environments[0].is_track_interior_
-    posterior = (
-        results.acausal_posterior.isel(time=time_slice)
-        .unstack("state_bins")
-        .sum("state")
-        .where(is_track_interior)
-    )
+    posterior = _spatial_posterior_for_movie(results, time_slice, is_track_interior)
     map_position_ind = posterior.argmax(["x_position", "y_position"])
     map_position = np.stack(
         (
@@ -157,6 +153,25 @@ def make_single_environment_movie(
 
 
 # Define these at MODULE LEVEL (required for pickle-ability)
+def _spatial_posterior_for_movie(
+    results: xr.Dataset, time_slice: slice, is_track_interior: np.ndarray | None
+) -> xr.DataArray:
+    """Posterior over position, summed over the states that have a position.
+
+    Position-less states (Local, No-Spike) are excluded, so the frames show the
+    spatial states' probability only.
+
+    Returns
+    -------
+    xr.DataArray, shape (n_time, n_x_bins, n_y_bins)
+    """
+    return (
+        get_spatial_posterior(results.acausal_posterior.isel(time=time_slice))
+        .sum("state")
+        .where(is_track_interior)
+    )
+
+
 def _setup_single_env_figure() -> tuple[Figure, dict[str, Any]]:
     """Setup figure for single environment movie."""
     with plt.style.context("dark_background"):
