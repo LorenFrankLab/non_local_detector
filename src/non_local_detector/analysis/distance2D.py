@@ -133,10 +133,11 @@ def get_map_estimate_direction_from_track_graph(
         # >= 3.5 (the package supports networkx >= 3.4). Iterate the generator
         # lazily when available — processing one source at a time avoids holding
         # all O(n_nodes^2) paths at once — and fall back to .items() for the dict.
-        # networkx 3.4 warns of that change; both shapes are handled below.
+        # networkx 3.4 warns of that change; both shapes are handled below. The
+        # warning text starts with blank lines, hence the leading \s*.
         with warnings.catch_warnings():
             warnings.filterwarnings(
-                "ignore", "shortest_path will return an iterator", FutureWarning
+                "ignore", r"\s*shortest_path will return an iterator", FutureWarning
             )
             all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
         if isinstance(all_pairs_paths, dict):
