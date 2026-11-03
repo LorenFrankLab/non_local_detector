@@ -51,12 +51,10 @@ def test_auto_manifold_fallback_preserves_deferred_topology(direction):
     eager = Environment(**kwargs).fit_place_grid(position, infer_track_interior=False)
     mask = np.ones(eager.centers_shape_, dtype=bool)
     mask[2, 1:-1] = False
-    eager = Environment(
-        **kwargs, is_track_interior=mask, is_track_interior_=mask
-    ).fit_place_grid(position, infer_track_interior=False)
-    lazy = Environment(
-        **kwargs, is_track_interior=mask, is_track_interior_=mask
-    ).fit_place_grid(
+    eager = Environment(**kwargs, is_track_interior=mask).fit_place_grid(
+        position, infer_track_interior=False
+    )
+    lazy = Environment(**kwargs, is_track_interior=mask).fit_place_grid(
         position, infer_track_interior=False, compute_all_pairs_distances=False
     )
     count = len(eager.place_bin_centers_)
@@ -88,9 +86,7 @@ def test_dense_manifold_random_walk_uses_deferred_graph_distances(direction):
     mask = np.ones(shape, dtype=bool)
     mask[2, 1:-1] = False
     environments = [
-        Environment(
-            **kwargs, is_track_interior=mask, is_track_interior_=mask
-        ).fit_place_grid(
+        Environment(**kwargs, is_track_interior=mask).fit_place_grid(
             position,
             infer_track_interior=False,
             compute_all_pairs_distances=compute,

@@ -45,8 +45,9 @@ parameters and optional position data.
 Helper functions are provided for tasks like grid generation (`get_grid`),
 track interior inference (`get_track_interior`), graph construction
 (`make_nD_track_graph_from_environment`, `get_track_grid`), distance calculation,
-and visualization (`plot_grid`). The class also supports saving and loading
-environment definitions using `pickle`.
+and visualization (`plot_grid`). `Environment.get_params` returns an
+environment's configuration, from which `Environment(**params)` rebuilds it
+unfitted; `save_environment` and `load_environment` pickle a fitted one.
 """
 
 import contextlib
@@ -55,7 +56,7 @@ import pickle
 import warnings
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
@@ -134,13 +135,27 @@ def find_environment_by_name(
     raise KeyError(msg)
 
 
+def _is_unfitted_value(value: Any, default: Any) -> bool:
+    """Whether a fitted attribute passed to the constructor holds no fitted value.
+
+    Saved parameter dictionaries may hold ``_is_fitted`` as a NumPy boolean.
+    """
+    if value is None or value is default:
+        return True
+    return isinstance(value, (bool, np.bool_)) and bool(value) == default
+
+
 # Bytes of cached track linearizations kept per environment. EM linearizes the
 # same position samples and spike positions in every E-step and encoding
 # M-step; a 23.6 min recording needs about 30 MB.
 _LINEAR_POSITION_CACHE_BYTES = 256 * 1024**2
 
 
-@dataclass(eq=False)
+# Field metadata marking the attributes ``fit_place_grid`` sets.
+_FITTED = {"fitted": True}
+
+
+@dataclass(eq=False, kw_only=True)
 class Environment:
     """Represent the spatial environment with a discrete grid.
 
@@ -208,6 +223,15 @@ class Environment:
         :meth:`get_cached` and :meth:`set_cached`; cleared by
         :meth:`fit_place_grid`. Entries stored with ``transient=True`` are not
         pickled.
+
+    Notes
+    -----
+    All arguments are keyword-only. The fitted attributes are set by
+    :meth:`fit_place_grid`; the constructor accepts them only as None (as in
+    parameter dictionaries saved by earlier releases) and raises
+    ``ValidationError`` otherwise. :meth:`get_params` returns the configuration
+    alone, so ``Environment(**environment.get_params())`` rebuilds an unfitted
+    environment with the same configuration.
     """
 
     environment_name: str = ""
@@ -222,24 +246,34 @@ class Environment:
     dilate: bool = False
     bin_count_threshold: int = 0
 
-    # Attributes to be fitted
-    edges_: Sequence[np.ndarray] | None = None
-    place_bin_edges_: np.ndarray | None = None
-    place_bin_centers_: np.ndarray | None = None
-    centers_shape_: tuple[int, ...] | None = None
-    is_track_interior_: np.ndarray | None = None
-    is_track_boundary_: np.ndarray | None = None
-    track_graphDD: nx.Graph | None = None  # For N-D case
+    # Attributes set by fit_place_grid. They are keyword arguments only so that
+    # parameter dictionaries saved by earlier releases as ``vars(environment)``
+    # of an unfitted environment, which hold them as None, still construct;
+    # __post_init__ rejects any other value. ``get_params`` leaves them out.
+    edges_: Sequence[np.ndarray] | None = field(default=None, metadata=_FITTED)
+    place_bin_edges_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    place_bin_centers_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    centers_shape_: tuple[int, ...] | None = field(default=None, metadata=_FITTED)
+    is_track_interior_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    is_track_boundary_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    track_graphDD: nx.Graph | None = field(  # For N-D case
+        default=None, metadata=_FITTED
+    )
     distance_between_nodes_: (
         dict[int, dict[int, float]] | np.ndarray | LazyGraphDistances | None
-    ) = None
-    track_graph_with_bin_centers_edges_: nx.Graph | None = None  # For 1D case
-    original_nodes_df_: pd.DataFrame | None = None
-    place_bin_edges_nodes_df_: pd.DataFrame | None = None
-    place_bin_centers_nodes_df_: pd.DataFrame | None = None
-    nodes_df_: pd.DataFrame | None = None
-    # Internal flag
-    _is_fitted: bool = False
+    ) = field(default=None, metadata=_FITTED)
+    track_graph_with_bin_centers_edges_: nx.Graph | None = field(  # For 1D case
+        default=None, metadata=_FITTED
+    )
+    original_nodes_df_: pd.DataFrame | None = field(default=None, metadata=_FITTED)
+    place_bin_edges_nodes_df_: pd.DataFrame | None = field(
+        default=None, metadata=_FITTED
+    )
+    place_bin_centers_nodes_df_: pd.DataFrame | None = field(
+        default=None, metadata=_FITTED
+    )
+    nodes_df_: pd.DataFrame | None = field(default=None, metadata=_FITTED)
+    _is_fitted: bool = field(default=False, metadata=_FITTED)
     # Derived-data cache; see ``get_cached``.
     _cache: dict[str, tuple[Any, bool]] = field(
         default_factory=dict, init=False, repr=False, compare=False
@@ -264,6 +298,26 @@ class Environment:
         """Validate Environment parameters after initialization."""
         # Import locally to avoid circular dependency
         from non_local_detector import _validation as val
+
+        passed_fitted = [
+            item.name
+            for item in fields(self)
+            if item.metadata.get("fitted")
+            and not _is_unfitted_value(getattr(self, item.name), item.default)
+        ]
+        if passed_fitted:
+            msg = "Environment does not accept fitted attributes as arguments"
+            raise ValidationError(
+                msg,
+                expected="None for every fitted attribute (fit_place_grid sets them)",
+                got=f"values for {passed_fitted}",
+                hint=(
+                    "Construct from configuration only, for example "
+                    "Environment(**environment.get_params()), then call "
+                    "fit_place_grid. To keep a fitted environment, copy it with "
+                    "copy.deepcopy or pickle it."
+                ),
+            )
 
         # Validate place_bin_size
         if isinstance(self.place_bin_size, tuple):
@@ -302,6 +356,33 @@ class Environment:
         if self.is_track_interior is not None:
             val.ensure_ndarray(self.is_track_interior, "is_track_interior")
             # Note: We can't validate shape until we know the grid dimensions
+
+    def get_params(self, deep: bool = True) -> dict[str, Any]:  # noqa: ARG002 -- scikit-learn signature
+        """Return the constructor configuration of this environment.
+
+        Only the configuration fields are returned, never the fitted
+        attributes or the cache, so ``Environment(**environment.get_params())``
+        builds an equivalent unfitted environment from a fitted or unfitted one.
+        The values are the environment's own objects, not copies (as in
+        scikit-learn); ``track_graph`` stays a ``networkx.Graph``.
+
+        Parameters
+        ----------
+        deep : bool, optional
+            Ignored: an environment holds no nested estimators. Accepted so
+            ``sklearn.base.clone`` can rebuild an environment from its
+            configuration. By default True.
+
+        Returns
+        -------
+        params : dict[str, Any]
+            Constructor keyword arguments, keyed by field name.
+        """
+        return {
+            item.name: getattr(self, item.name)
+            for item in fields(self)
+            if item.init and not item.metadata.get("fitted")
+        }
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle the environment without its transient cache entries.
