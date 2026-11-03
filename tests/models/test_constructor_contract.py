@@ -163,6 +163,27 @@ def _stable_repr(value):
     return re.sub(r"0x[0-9a-f]+", "0x", repr(value))
 
 
+def _config_repr(value):
+    """``_stable_repr``, with each ``Environment`` shown by its ``get_params()``.
+
+    Spyglass stores an environment's configuration, so fitted attributes,
+    which are None on a default-constructed model, stay out of the reference.
+    """
+    if isinstance(value, Environment):
+        config = ", ".join(
+            f"{name}={param!r}" for name, param in value.get_params().items()
+        )
+        return re.sub(r"0x[0-9a-f]+", "0x", f"{type(value).__name__}({config})")
+    if isinstance(value, (list, tuple)) and any(
+        isinstance(item, Environment) for item in value
+    ):
+        items = [_config_repr(item) for item in value]
+        if isinstance(value, list):
+            return f"[{', '.join(items)}]"
+        return f"({', '.join(items)}{',' if len(items) == 1 else ''})"
+    return _stable_repr(value)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("model_cls", ALL_MODELS, ids=lambda cls: cls.__name__)
 def test_default_get_params_matches_reference(model_cls):
@@ -170,9 +191,10 @@ def test_default_get_params_matches_reference(model_cls):
 
     The reference was generated from the default-constructed models before
     constructor arguments became keyword-only and ``set_params`` was validated.
+    Environments are compared by their configuration (``get_params()``).
     """
     reference = json.loads(REFERENCE.read_text())[model_cls.__name__]
     params = model_cls().get_params(deep=False)
     assert set(params) == set(reference)
     for name, value in params.items():
-        assert _stable_repr(value) == reference[name], name
+        assert _config_repr(value) == reference[name], name
