@@ -109,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The unit and physical-rate checks of each backend's direct predictor now run on every registered backend, which adds `clusterless_mark_glm`.
 - Likelihood tests pass the fit's whole encoding dictionary to `predict_*`, as the detectors do. Hand-copied keys had left out `environment_grid` and `rate_units`, so the grid and unit checks never ran in those tests, and the clusterless KDE recomputed `log_occupancy` instead of using the fitted one.
 - Duplicate test helpers and copy-paste tests are consolidated into shared fixtures and parametrized tests, and the slowest EM, covariate-pickling and goodness-of-fit tests fit smaller recordings or cache repeated simulations (`test_em_monotonicity.py` 119 s → 12 s locally).
+- **Changed:** the sdist lists what it ships (`only-include`: `src`, `tests`, `README.md`, `LICENSE`, `CHANGELOG.md`, `pyproject.toml`) instead of excluding a few paths. Built from a clean checkout it is 2.9 MB instead of 9.9 MB, because it no longer carries `notebooks/`, `.claude/` or `docs/`, and a local build no longer picks up untracked directories (42.7 MB before).
 
 ### Reproducible posterior samples
 
