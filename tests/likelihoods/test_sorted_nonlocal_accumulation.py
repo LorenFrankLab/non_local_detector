@@ -1,6 +1,7 @@
 """Batched sorted likelihoods retain an independent per-neuron reference."""
 
 import math
+from dataclasses import replace
 from itertools import pairwise
 
 import jax
@@ -561,7 +562,8 @@ def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkey
         "is_missing": missing,
         "return_outputs": "all",
     }
-    fitter, optimized = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"]
+    registered = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"]
+    optimized = registered.predict
     emissions = []
 
     def recording(position_time, position, spike_times, **kwargs):
@@ -578,10 +580,12 @@ def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkey
     ]:
         with monkeypatch.context() as context:
             context.setitem(
-                _SORTED_SPIKES_ALGORITHMS, "sorted_spikes_kde", (fitter, likelihood)
+                _SORTED_SPIKES_ALGORITHMS,
+                "sorted_spikes_kde",
+                replace(registered, predict=likelihood),
             )
             results[name] = model.predict(spikes, **arguments)
-    assert _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"][1] is optimized
+    assert _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"].predict is optimized
 
     # The float32 emission stays within a few ulp of the exact float64 sum.
     assert emissions

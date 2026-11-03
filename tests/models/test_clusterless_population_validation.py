@@ -95,7 +95,7 @@ def test_fit_rejects_per_electrode_row_mismatch(sim, algorithm):
 def test_predict_rejects_electrode_count_mismatch(fitted_decoder, sim):
     """Public prediction and a direct predictor call both raise the package error."""
     time_edges = time_edges_from_centers(sim.position_time[:N_DECODE])
-    _, predict = _CLUSTERLESS_ALGORITHMS[fitted_decoder.clusterless_algorithm]
+    predict = _CLUSTERLESS_ALGORITHMS[fitted_decoder.clusterless_algorithm].predict
     (encoding_model,) = fitted_decoder.encoding_model_.values()
     for spike_times, features in _mismatched_populations(sim):
         with pytest.raises(ValidationError, match="electrode population lengths"):
@@ -156,7 +156,7 @@ def _with_nonfinite_mark(sim, before_time, value=np.nan):
 
 
 def _direct_predict(decoder, sim, features, time_edges, is_local):
-    _, predict = _CLUSTERLESS_ALGORITHMS[decoder.clusterless_algorithm]
+    predict = _CLUSTERLESS_ALGORITHMS[decoder.clusterless_algorithm].predict
     (encoding_model,) = decoder.encoding_model_.values()
     return predict(
         sim.position_time,

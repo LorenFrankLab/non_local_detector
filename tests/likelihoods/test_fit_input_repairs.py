@@ -127,15 +127,7 @@ def test_empty_sorted_population_has_empty_fields_and_zero_total_rate(fit):
     env = Environment(place_bin_size=5.0).fit_place_grid(
         position, infer_track_interior=False
     )
-    kwargs = {}
-    if fit is fit_sorted_spikes_glm_encoding_model:
-        kwargs = {
-            "place_bin_edges": env.place_bin_edges_,
-            "edges": env.edges_,
-            "is_track_interior": env.is_track_interior_,
-            "is_track_boundary": env.is_track_boundary_,
-        }
-    model = fit(time, position, [], env, disable_progress_bar=True, **kwargs)
+    model = fit(time, position, [], env, disable_progress_bar=True)
     assert model["place_fields"].shape == (0, len(env.place_bin_centers_))
     np.testing.assert_array_equal(model["no_spike_part_log_likelihood"], 0.0)
 
