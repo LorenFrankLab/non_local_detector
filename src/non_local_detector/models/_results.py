@@ -48,12 +48,17 @@ def has_place_bins(detector: "_DetectorBase", observation: "ObservationModel") -
     Parameters
     ----------
     detector : _DetectorBase
+        Detector whose ``local_position_std`` decides whether a Local state
+        has a position kernel over place bins.
     observation : ObservationModel
-        One of ``detector.observation_models``.
+        The state's observation model, one of
+        ``detector.observation_models``.
 
     Returns
     -------
     bool
+        True if the state has one bin per place bin of its environment,
+        False if it has a single bin without a position.
     """
     return not (
         observation.is_no_spike
