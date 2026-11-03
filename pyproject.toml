@@ -74,10 +74,15 @@ source = "vcs"
 version-file = "src/non_local_detector/_version.py"
 
 [tool.hatch.build.targets.sdist]
-exclude = [
-    ".git_archival.txt",
-    "/docs/performance_artifacts/**",
-    "/.claude/docs/gmm-background-diagnosis/**",
+# Explicit list: hatch otherwise ships every file .gitignore does not exclude,
+# so untracked local directories and the 9.5 MB notebooks/ would leak in.
+only-include = [
+    "src",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
 ]
 
 [tool.hatch.build.targets.wheel]
