@@ -5,6 +5,7 @@ built on), so ``type(obj)(**vars(obj))`` rebuilds each one after a fit, as
 Spyglass does with stored parameters.
 """
 
+import pickle
 from dataclasses import fields, is_dataclass
 
 import numpy as np
@@ -106,14 +107,13 @@ def test_detector_fit_leaves_transitions_and_initial_conditions_rebuildable(
         _assert_configuration_only(obj)
 
 
-def test_spatial_transitions_gain_no_attributes_in_a_fit(data):
-    time, position, spike_times, _ = data
+def _spatial_decoder():
     transitions = [
         [RandomWalk(use_manifold_distance=True), Identity(), Uniform()],
         [EmpiricalMovement(), RandomWalkDirection1(), Uniform(environment2_name="")],
         [Uniform(), RandomWalkDirection2(), RandomWalk()],
     ]
-    decoder = SortedSpikesDecoder(
+    return SortedSpikesDecoder(
         environments=Environment(place_bin_size=5.0),
         discrete_initial_conditions=np.full(3, 1 / 3),
         continuous_initial_conditions_types=[UniformInitialConditions()] * 3,
@@ -123,6 +123,47 @@ def test_spatial_transitions_gain_no_attributes_in_a_fit(data):
         discrete_transition_stickiness=0.0,
         state_names=["a", "b", "c"],
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
-    ).fit(time, position, spike_times)
+    )
+
+
+def test_spatial_transitions_gain_no_attributes_in_a_fit(data):
+    time, position, spike_times, _ = data
+    decoder = _spatial_decoder().fit(time, position, spike_times)
     for obj in _fitted_objects(decoder):
         _assert_configuration_only(obj)
+
+
+def test_pickles_from_earlier_releases_drop_stored_environments(data):
+    """Unpickling drops the environments earlier releases stored on transitions."""
+    time, position, spike_times, _ = data
+    decoder = _spatial_decoder().fit(time, position, spike_times)
+    time_edges = np.linspace(time[0], time[-1], 101)
+    expected = decoder.predict(spike_times, time_edges=time_edges).acausal_posterior
+
+    # The state earlier releases pickled: make_state_transition stored the
+    # environment it was built on.
+    environment = decoder.environments[0]
+    for row in decoder.continuous_transition_types:
+        for transition in row:
+            if isinstance(transition, Uniform):
+                vars(transition).update(
+                    environment1=environment, environment2=environment
+                )
+            else:
+                vars(transition)["environment"] = environment
+
+    loaded = pickle.loads(pickle.dumps(decoder))
+    for obj in _fitted_objects(loaded):
+        _assert_configuration_only(obj)
+    np.testing.assert_array_equal(
+        loaded.predict(spike_times, time_edges=time_edges).acausal_posterior,
+        expected,
+    )
+
+    loaded.fit(time, position, spike_times)
+    for obj in _fitted_objects(loaded):
+        _assert_configuration_only(obj)
+    np.testing.assert_array_equal(
+        loaded.predict(spike_times, time_edges=time_edges).acausal_posterior,
+        expected,
+    )
