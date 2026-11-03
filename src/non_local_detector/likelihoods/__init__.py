@@ -57,7 +57,7 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
 class LikelihoodAlgorithm:
     """A registered likelihood algorithm: its fit, predict and defaults.
 
-    Parameters
+    Attributes
     ----------
     fit : Callable[..., dict[str, Any]]
         Fits the encoding model and returns it as a dict of keyword arguments
@@ -65,15 +65,28 @@ class LikelihoodAlgorithm:
     predict : Callable[..., jax.Array]
         Returns the log likelihood, float32 with shape
         ``(n_rows, n_interior_bins)``, or ``(n_rows, 1)`` when ``is_local``.
-    default_params : Mapping[str, Any], optional
+    default_params : Mapping[str, Any]
         The parameters ``fit`` receives when a detector's
         ``*_algorithm_params`` is None, beyond the fit's own defaults; a user
         dict replaces them. Stored as a read-only copy. By default empty.
-    mark_reference_scale : Callable[..., object] or None, optional
+    mark_reference_scale : Callable[..., object] or None
         Clusterless algorithms only: the mark-kernel width, from the fit
         parameters, which the mark reference adds in quadrature to each
         feature's training spread (see ``fit_mark_references``). By default
         None.
+
+    Notes
+    -----
+    A detector stores the dict ``fit`` returns as its encoding model and calls
+    ``predict(position_time, position, *spike_data, **encoding_model,
+    **detector_keywords)``, where ``spike_data`` is ``spike_times`` (and
+    ``spike_waveform_features`` for clusterless data) and the keywords are
+    ``_PREDICT_KEYWORDS`` (``_CLUSTERLESS_PREDICT_KEYWORDS``). So the encoding
+    model must hold ``_ENCODING_MODEL_KEYS``, must not hold a data or keyword
+    name, and must provide every required ``predict`` parameter; unless
+    ``predict`` takes ``**kwargs``, each of its keys must be a ``predict``
+    parameter. ``tests/likelihoods/test_algorithm_contract.py`` checks every
+    registered algorithm.
     """
 
     fit: Callable[..., dict[str, Any]]
@@ -88,6 +101,28 @@ class LikelihoodAlgorithm:
             self, "default_params", MappingProxyType(dict(self.default_params))
         )
 
+
+# The keyword arguments a detector passes to every predict besides the fit's
+# encoding model (see ``LikelihoodAlgorithm``), and those of a clusterless
+# predict, which also scores marks against the detector's mark reference.
+_PREDICT_KEYWORDS: frozenset[str] = frozenset(
+    {"time_edges", "is_local", "row_slice", "_spike_time_order", "_time_grid"}
+)
+_CLUSTERLESS_PREDICT_KEYWORDS: frozenset[str] = _PREDICT_KEYWORDS | {"mark_reference"}
+# The keys every fit returns. Each predict checks ``rate_units`` and
+# ``environment_grid`` against ``environment`` (``validate_encoding_contract``);
+# the detectors read ``rate_units`` and ``disable_progress_bar``, and model
+# checking ``environment``. ``encoding_exposure_seconds`` is the fit's weighted
+# occupancy time, for diagnostics.
+_ENCODING_MODEL_KEYS: frozenset[str] = frozenset(
+    {
+        "environment",
+        "environment_grid",
+        "rate_units",
+        "encoding_exposure_seconds",
+        "disable_progress_bar",
+    }
+)
 
 # The algorithms a detector's ``*_algorithm`` names. Only sorted KDE has default
 # params; bandwidths come from the fits (position_std sqrt(12.5)).
