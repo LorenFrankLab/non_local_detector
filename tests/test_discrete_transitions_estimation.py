@@ -129,6 +129,9 @@ class _FixedLikelihoodDetector(_DetectorBase):
     def fit_encoding_model(self, *args, **kwargs):
         return None
 
+    def _fit_encoding_model(self, *args, **kwargs):
+        return None
+
 
 def _sample_categorical(rng: np.random.Generator, probabilities: np.ndarray) -> int:
     """Sample one index from a probability vector."""

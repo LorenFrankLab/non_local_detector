@@ -98,14 +98,13 @@ def test_encoding_update_skips_models_without_local_observations(monkeypatch):
         infer_track_interior=False,
     )
     weights = []
-    original_fit_encoding = model.fit_encoding_model
+    original_refit_encoding = model._refit_encoding_model
 
-    def record_encoding(*args, **kwargs):
-        if kwargs.get("weights") is not None:
-            weights.append(kwargs["weights"])
-        return original_fit_encoding(*args, **kwargs)
+    def record_encoding(local_weights):
+        weights.append(local_weights)
+        return original_refit_encoding(local_weights)
 
-    monkeypatch.setattr(model, "fit_encoding_model", record_encoding)
+    monkeypatch.setattr(model, "_refit_encoding_model", record_encoding)
     model.estimate_parameters(
         position_time=time,
         position=np.linspace(1, 9, len(time)),

@@ -141,3 +141,48 @@ def test_encoding_model_without_a_recorded_algorithm_raises(sorted_sim):
     with pytest.raises(ValidationError, match="refit") as error:
         _predict_sorted(detector, sorted_sim)
     assert "=None" not in str(error.value)
+
+
+@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_em_refit_does_not_go_through_the_public_fit_encoding_model(
+    family, sorted_sim, clusterless_sim, monkeypatch
+):
+    """Both families' EM refits call the private fit body, so an override of
+    the public ``fit_encoding_model`` changes EM refits in neither."""
+    if family == "sorted":
+        time, position, spike_times = sorted_sim
+        detector = SortedSpikesDecoder(
+            sorted_spikes_algorithm_params={"disable_progress_bar": True}
+        )
+        data = {"spike_times": spike_times}
+    else:
+        time = clusterless_sim.position_time
+        position = clusterless_sim.position
+        detector = ClusterlessDecoder(
+            clusterless_algorithm_params={"disable_progress_bar": True}
+        )
+        data = {
+            "spike_times": clusterless_sim.spike_times,
+            "spike_waveform_features": clusterless_sim.spike_waveform_features,
+        }
+    public_calls = []
+    original = detector.fit_encoding_model
+
+    def spy(*args, **kwargs):
+        public_calls.append(kwargs.get("weights"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(detector, "fit_encoding_model", spy)
+    detector.estimate_parameters(
+        position_time=time,
+        position=position,
+        **data,
+        time_edges=time_edges_from_centers(time),
+        max_iter=1,
+        estimate_encoding_model=True,
+        min_encoding_local_mass=0.0,
+        min_encoding_local_ess=0.0,
+    )
+    # The initial fit is public; the posterior-weighted refit is not.
+    assert public_calls == [None]

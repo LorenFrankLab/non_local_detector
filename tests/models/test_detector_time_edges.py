@@ -529,14 +529,13 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
     edges = _coarse_edges(position_time, factor=4, n_bins=300)
     detector = detector_cls()
     weights = []
-    original = detector.fit_encoding_model
+    original = detector._refit_encoding_model
 
-    def spy(*args, **kwargs):
-        if kwargs.get("weights") is not None:
-            weights.append(np.asarray(kwargs["weights"]))
-        return original(*args, **kwargs)
+    def spy(local_weights):
+        weights.append(np.asarray(local_weights))
+        return original(local_weights)
 
-    monkeypatch.setattr(detector, "fit_encoding_model", spy)
+    monkeypatch.setattr(detector, "_refit_encoding_model", spy)
     detector.estimate_parameters(
         **fit_args,
         time_edges=edges,
