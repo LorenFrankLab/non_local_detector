@@ -272,6 +272,61 @@ class TestGetSpatialPosterior:
                 xr.DataArray(np.ones((2, 3)), dims=["time", "position"])
             )
 
+    def test_requires_state_level_in_a_multiindex(self):
+        index = pd.MultiIndex.from_tuples(
+            [(0.0, 0.0), (1.0, 0.0)], names=["x_position", "y_position"]
+        )
+        posterior = xr.DataArray(
+            np.ones((2, 2)), dims=["time", "state_bins"], coords={"state_bins": index}
+        )
+        with pytest.raises(ValueError, match="'state' level"):
+            get_spatial_posterior(posterior)
+
+    def test_unknown_states_are_named(self):
+        posterior = _make_acausal_posterior(["position"])
+        with pytest.raises(ValueError, match=r"Continuous.*Local.*NL"):
+            get_spatial_posterior(posterior, states=["NL", "Continuous"])
+
+    def test_requires_a_position_level(self):
+        index = pd.MultiIndex.from_tuples(
+            [("Local", 0), ("NL", 0), ("NL", 1)], names=["state", "bin"]
+        )
+        posterior = xr.DataArray(
+            np.full((2, 3), 1 / 3),
+            dims=["time", "state_bins"],
+            coords={"state_bins": index},
+        )
+        with pytest.raises(ValueError, match="position level"):
+            get_spatial_posterior(posterior)
+
+    def test_without_position_less_states_equals_unstack(self):
+        posterior = _make_acausal_posterior(["x_position", "y_position"])
+        posterior = posterior.isel(state_bins=slice(1, None))
+
+        xr.testing.assert_identical(
+            get_spatial_posterior(posterior), posterior.unstack("state_bins")
+        )
+
+    def test_states_with_different_grids_are_nan_at_missing_bins(self):
+        tuples = [("Local", np.nan)]
+        tuples += [("Continuous", p) for p in (0.0, 1.0, 2.0)]
+        tuples += [("Fragmented", p) for p in (1.0, 2.0, 3.0)]
+        index = pd.MultiIndex.from_tuples(tuples, names=["state", "position"])
+        values = np.arange(1.0, 8.0)[np.newaxis] / 28.0
+        posterior = xr.DataArray(
+            values, dims=["time", "state_bins"], coords={"state_bins": index}
+        )
+
+        result = get_spatial_posterior(posterior)
+
+        np.testing.assert_array_equal(result.position, [0.0, 1.0, 2.0, 3.0])
+        np.testing.assert_array_equal(
+            result.sel(state="Continuous").values[0], [2 / 28, 3 / 28, 4 / 28, np.nan]
+        )
+        np.testing.assert_array_equal(
+            result.sel(state="Fragmented").values[0], [np.nan, 5 / 28, 6 / 28, 7 / 28]
+        )
+
 
 @pytest.mark.unit
 class TestMapFromRawAcausalPosterior:
@@ -298,3 +353,56 @@ class TestMapFromRawAcausalPosterior:
             axis=1,
         )
         np.testing.assert_array_equal(result[0], grid[1])
+
+    @pytest.mark.parametrize(
+        "position_dims", [["position"], ["x_position", "y_position"]]
+    )
+    def test_no_spatial_mass_gives_nan_position(self, position_dims):
+        posterior = _make_acausal_posterior(position_dims, n_time=2)
+        values = posterior.values.copy()
+        values[1] = 0.0
+        values[1, 0] = 1.0  # all mass in Local, none on a position
+        posterior = posterior.copy(data=values)
+
+        result = maximum_a_posteriori_estimate(posterior)
+
+        assert result.shape == (2, len(position_dims))
+        assert np.all(np.isfinite(result[0]))
+        assert np.all(np.isnan(result[1]))
+
+
+@pytest.mark.unit
+class TestMapWithoutSpatialMass:
+    """Rows with zero or non-finite spatial mass have no MAP position."""
+
+    def test_zero_and_all_nan_rows_1d(self):
+        positions = np.arange(4.0)
+        probs = np.array(
+            [
+                [0.1, 0.2, 0.6, 0.1],
+                [0.0, 0.0, 0.0, 0.0],
+                [np.nan, np.nan, np.nan, np.nan],
+                [np.nan, 0.3, np.nan, 0.1],
+            ]
+        )
+        posterior = xr.DataArray(
+            probs, dims=["time", "position"], coords={"position": positions}
+        )
+
+        result = maximum_a_posteriori_estimate(posterior)
+
+        np.testing.assert_array_equal(result[:, 0], [2.0, np.nan, np.nan, 1.0])
+
+    def test_zero_row_2d_with_off_track_nan(self):
+        probs = np.zeros((2, 3, 2))
+        probs[0, 2, 1] = 1.0
+        probs[:, 0, 0] = np.nan  # off-track bin
+        posterior = xr.DataArray(
+            probs,
+            dims=["time", "x_position", "y_position"],
+            coords={"x_position": np.arange(3.0), "y_position": np.arange(2.0)},
+        )
+
+        result = maximum_a_posteriori_estimate(posterior)
+
+        np.testing.assert_array_equal(result, [[2.0, 1.0], [np.nan, np.nan]])

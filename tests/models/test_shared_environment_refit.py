@@ -1,16 +1,14 @@
-"""A detector rejects decoding after its shared Environment is refit elsewhere.
+"""Detectors fit their own copies of the ``Environment`` objects they are given.
 
-Detectors keep the ``Environment`` objects they are given, and ``fit`` refits
-their grids in place. Fitting a second detector that shares the object on other
-positions therefore changes the first detector's grid under its fitted encoding
-model.
+Fitting never changes the caller's environment, so detectors that share one
+keep their own grids: fitting a second detector on other positions leaves the
+first detector's grid, and its decodes, unchanged.
 """
 
 import numpy as np
 import pytest
 
 from non_local_detector import Environment, SortedSpikesDecoder, Uniform
-from non_local_detector.exceptions import ValidationError
 
 
 def _decoder(environment):
@@ -24,7 +22,7 @@ def _decoder(environment):
 
 
 @pytest.mark.integration
-def test_refitting_a_shared_environment_invalidates_the_other_detector():
+def test_detectors_sharing_an_environment_keep_their_own_grids():
     time = np.arange(100) * 0.002
     position = (50 + 8 * np.sin(time * 40))[:, None]
     spikes = [np.array([0.021, 0.067, 0.121, 0.167])]
@@ -33,15 +31,29 @@ def test_refitting_a_shared_environment_invalidates_the_other_detector():
 
     first = _decoder(environment).fit(time, position, spikes)
     expected = first.predict(spikes, time_edges=edges, return_outputs="log_likelihood")
-    n_interior = int(environment.is_track_interior_.sum())
+    first_centers = first.environments[0].place_bin_centers_.copy()
 
-    # Same number of bins, 37 cm further along the track.
-    _decoder(environment).fit(time, position + 37.0, spikes)
-    assert int(environment.is_track_interior_.sum()) == n_interior
-    with pytest.raises(ValidationError, match="different environment grid"):
-        first.predict(spikes, time_edges=edges)
+    # 37 cm further along the track: a different grid.
+    second = _decoder(environment).fit(time, position + 37.0, spikes)
+    second_result = second.predict(
+        spikes, time_edges=edges, return_outputs="log_likelihood"
+    )
+    assert np.isfinite(second_result.log_likelihood.values).all()
+    np.testing.assert_allclose(
+        second.environments[0].place_bin_centers_, first_centers + 37.0
+    )
 
-    # Refitting the first detector restores a consistent model.
-    first.fit(time, position, spikes)
+    # The first detector's grid and decodes are unchanged.
+    np.testing.assert_array_equal(
+        first.environments[0].place_bin_centers_, first_centers
+    )
     actual = first.predict(spikes, time_edges=edges, return_outputs="log_likelihood")
     np.testing.assert_array_equal(actual.log_likelihood, expected.log_likelihood)
+
+    # Each detector holds its own fitted copy; the caller's object stays unfitted.
+    assert first.environments[0] is not environment
+    assert second.environments[0] is not first.environments[0]
+    assert not environment._is_fitted
+    assert environment.place_bin_centers_ is None
+    assert environment.get_cached("linear_position") is None
+    assert environment.get_params() == Environment(place_bin_size=5).get_params()

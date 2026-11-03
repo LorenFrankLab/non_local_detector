@@ -14,10 +14,15 @@ on:
     - cron: "23 7 * * 1"
   workflow_dispatch:
 
-# Cancel superseded runs of a pull request; let every push to main or a tag
-# finish so each merged commit gets a complete result.
+# A newer push to a pull request cancels its superseded run. Every other run
+# (a push to main, maint/* or a tag, the weekly schedule, a manual dispatch)
+# gets a group of its own: GitHub keeps only one pending run per group and
+# cancels the older one when another queues, so a shared group would drop
+# CI for some merged commits even without cancel-in-progress.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request'
+    && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -99,34 +104,45 @@ jobs:
       # test file from ~3 min to ~1 min. Restored on every run except a tag
       # push, which publishes to PyPI and so never restores a cache; saved only
       # by runs on main, so a pull request cannot write an entry that main or a
-      # release would read. Keyed on OS, architecture, Python and the installed
-      # packages, so no job reads another's compiled programs; rotates weekly
-      # so entries for changed tests do not accumulate.
+      # release would read. One entry per job per ISO week, keyed on OS,
+      # architecture, Python and the installed packages, so no job reads
+      # another's compiled programs: the first main run of the week (or after
+      # a dependency change) saves it, later runs restore it and save nothing,
+      # and the weekly rotation drops entries for changed tests.
       - name: Compute the JAX cache key
         id: jax-cache-key
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
-        run: >-
-          echo "key=jax-test-${PYTHON_VERSION}-${RUNNER_OS}-${RUNNER_ARCH}-$(date -u +%G-W%V)-$(
-          (uv run --no-sync python -VV; uv pip freeze) | shasum -a 256 | cut -c1-16)"
-          >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          python_version="$(uv run --no-sync python -VV)"
+          packages="$(uv pip freeze)"
+          if [ -z "$packages" ]; then
+            echo "::error::uv pip freeze listed no packages"
+            exit 1
+          fi
+          hash="$(printf '%s\n%s\n' "$python_version" "$packages" | shasum -a 256 | cut -c1-16)"
+          week="$(date -u +%G-W%V)"
+          echo "key=jax-test-${PYTHON_VERSION}-${RUNNER_OS}-${RUNNER_ARCH}-${week}-${hash}" >> "$GITHUB_OUTPUT"
       - name: Restore the JAX compilation cache
+        id: jax-cache-restore
         if: github.ref_type != 'tag'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/jax-compilation
-          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
-          restore-keys: ${{ steps.jax-cache-key.outputs.key }}-
+          key: ${{ steps.jax-cache-key.outputs.key }}
       - name: Run tests
         run: >-
           uv run --no-sync pytest
           ${{ matrix.coverage && '--cov=non_local_detector --cov-report=xml' || '' }}
       - name: Save the JAX compilation cache
-        if: success() && github.ref == 'refs/heads/main'
+        if: >-
+          success() && github.ref == 'refs/heads/main'
+          && steps.jax-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/jax-compilation
-          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
+          key: ${{ steps.jax-cache-key.outputs.key }}
       - name: Upload coverage to Codecov
         if: matrix.coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -157,25 +173,34 @@ jobs:
       # JAX compilation cache; see the test job for how it is keyed and saved.
       - name: Compute the JAX cache key
         id: jax-cache-key
-        run: >-
-          echo "key=jax-lowest-${RUNNER_OS}-${RUNNER_ARCH}-$(date -u +%G-W%V)-$(
-          (uv run --no-sync python -VV; uv pip freeze) | shasum -a 256 | cut -c1-16)"
-          >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          python_version="$(uv run --no-sync python -VV)"
+          packages="$(uv pip freeze)"
+          if [ -z "$packages" ]; then
+            echo "::error::uv pip freeze listed no packages"
+            exit 1
+          fi
+          hash="$(printf '%s\n%s\n' "$python_version" "$packages" | shasum -a 256 | cut -c1-16)"
+          week="$(date -u +%G-W%V)"
+          echo "key=jax-lowest-${RUNNER_OS}-${RUNNER_ARCH}-${week}-${hash}" >> "$GITHUB_OUTPUT"
       - name: Restore the JAX compilation cache
+        id: jax-cache-restore
         if: github.ref_type != 'tag'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/jax-compilation
-          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
-          restore-keys: ${{ steps.jax-cache-key.outputs.key }}-
+          key: ${{ steps.jax-cache-key.outputs.key }}
       - name: Run tests
         run: pytest
       - name: Save the JAX compilation cache
-        if: success() && github.ref == 'refs/heads/main'
+        if: >-
+          success() && github.ref == 'refs/heads/main'
+          && steps.jax-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/jax-compilation
-          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
+          key: ${{ steps.jax-cache-key.outputs.key }}
 
   test-latest:
     name: Test latest dependencies
@@ -198,25 +223,34 @@ jobs:
       # JAX compilation cache; see the test job for how it is keyed and saved.
       - name: Compute the JAX cache key
         id: jax-cache-key
-        run: >-
-          echo "key=jax-latest-${RUNNER_OS}-${RUNNER_ARCH}-$(date -u +%G-W%V)-$(
-          (uv run --no-sync python -VV; uv pip freeze) | shasum -a 256 | cut -c1-16)"
-          >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          python_version="$(uv run --no-sync python -VV)"
+          packages="$(uv pip freeze)"
+          if [ -z "$packages" ]; then
+            echo "::error::uv pip freeze listed no packages"
+            exit 1
+          fi
+          hash="$(printf '%s\n%s\n' "$python_version" "$packages" | shasum -a 256 | cut -c1-16)"
+          week="$(date -u +%G-W%V)"
+          echo "key=jax-latest-${RUNNER_OS}-${RUNNER_ARCH}-${week}-${hash}" >> "$GITHUB_OUTPUT"
       - name: Restore the JAX compilation cache
+        id: jax-cache-restore
         if: github.ref_type != 'tag'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/jax-compilation
-          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
-          restore-keys: ${{ steps.jax-cache-key.outputs.key }}-
+          key: ${{ steps.jax-cache-key.outputs.key }}
       - name: Run tests
         run: uv run --no-sync pytest
       - name: Save the JAX compilation cache
-        if: success() && github.ref == 'refs/heads/main'
+        if: >-
+          success() && github.ref == 'refs/heads/main'
+          && steps.jax-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/jax-compilation
-          key: ${{ steps.jax-cache-key.outputs.key }}-${{ github.run_id }}
+          key: ${{ steps.jax-cache-key.outputs.key }}
 
   build:
     runs-on: ubuntu-latest

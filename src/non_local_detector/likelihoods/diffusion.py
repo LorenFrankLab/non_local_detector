@@ -60,6 +60,14 @@ _HEAT_KERNEL_RANK_START = 32
 # (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
 _FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
+# Keys of this module's entries in the Environment cache (``Environment.get_cached``),
+# all cleared together by ``Environment.fit_place_grid``.
+_GRAPH_KEY = "diffusion_graph"
+_LAPLACIAN_KEY = "diffusion_laplacian"
+_EIGENBASIS_KEY = "diffusion_eigenbasis"
+_HEAT_KERNEL_RANK_KEY = "diffusion_heat_kernel_rank"
+_DEVICE_BASIS_KEY = "diffusion_device_basis"
+
 
 def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     """Finite-difference symmetric graph Laplacian ``L = D - W``.
@@ -437,7 +445,7 @@ def n_connected_components(environment: "Environment") -> int:
     environment_graph(environment)
     return int(
         scipy.sparse.csgraph.connected_components(
-            environment._diffusion_laplacian_,  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+            environment.get_cached(_LAPLACIAN_KEY),
             directed=False,
             return_labels=False,
         )
@@ -715,12 +723,12 @@ def environment_graph(
 
     Notes
     -----
-    The result is cached on ``environment._diffusion_graph_`` (invalidated by
-    ``fit_place_grid``) so the graph is built once and shared by
+    The result is cached on the environment (see ``Environment.get_cached``;
+    cleared by ``fit_place_grid``) so the graph is built once and shared by
     :func:`cached_eigenbasis` and the likelihood fit. Callers must treat the
     returned graph and arrays as read-only.
     """
-    cached = getattr(environment, "_diffusion_graph_", None)
+    cached = environment.get_cached(_GRAPH_KEY)
     if cached is not None:
         return cast(tuple[nx.Graph, np.ndarray, np.ndarray], cached)
 
@@ -762,9 +770,11 @@ def environment_graph(
     nx.freeze(graph)
     node_order.setflags(write=False)
     bin_sizes.setflags(write=False)
-    environment._diffusion_laplacian_ = build_laplacian(graph)  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
-    environment._diffusion_graph_ = result  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
-    return result
+    environment.set_cached(_LAPLACIAN_KEY, build_laplacian(graph))
+    return cast(
+        tuple[nx.Graph, np.ndarray, np.ndarray],
+        environment.set_cached(_GRAPH_KEY, result),
+    )
 
 
 def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
@@ -841,12 +851,11 @@ def cached_eigenbasis(
     """Return the Laplacian eigenbasis for ``environment``, building it on a miss.
 
     The eigenbasis depends only on the environment's graph (not ``sigma`` and not
-    the fields), so it is computed once and cached on
-    ``environment._diffusion_eigenbasis_`` — a dict keyed by ``rank`` — and reused
-    across all neurons and every EM refit. A cached full-rank (``rank=None``) entry
-    serves any smaller-rank request by slicing its leading columns (valid because
-    the modes are returned ascending). The cache is invalidated by
-    ``fit_place_grid``.
+    the fields), so it is computed once, cached on the environment as a dict keyed
+    by ``rank``, and reused across all neurons and every EM refit. A cached
+    full-rank (``rank=None``) entry serves any smaller-rank request by slicing its
+    leading columns (valid because the modes are returned ascending). The cache is
+    invalidated by ``fit_place_grid``.
 
     Parameters
     ----------
@@ -864,10 +873,9 @@ def cached_eigenbasis(
         Corresponding eigenvectors as columns (read-only, cached). ``node_order`` /
         ``bin_sizes`` come from :func:`environment_graph` (also cached), not from here.
     """
-    cache = getattr(environment, "_diffusion_eigenbasis_", None)
+    cache = environment.get_cached(_EIGENBASIS_KEY)
     if cache is None:
-        cache = {}
-        environment._diffusion_eigenbasis_ = cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+        cache = environment.set_cached(_EIGENBASIS_KEY, {})
 
     if rank in cache:
         return cast(tuple[np.ndarray, np.ndarray], cache[rank])
@@ -875,7 +883,7 @@ def cached_eigenbasis(
     # Build (and cache) the Laplacian snapshot; environment_graph runs first so a
     # later mutation of the returned graph cannot reach this L.
     environment_graph(environment)
-    laplacian = environment._diffusion_laplacian_  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+    laplacian = environment.get_cached(_LAPLACIAN_KEY)
 
     if rank is not None and None in cache:
         eigvals, eigvecs = cache[None]
@@ -908,12 +916,12 @@ def cached_heat_kernel_eigenbasis(
     eigenbasis at that rank in a **single** eigendecomposition — the adaptive probe's
     final eigensolve is reused as the basis, rather than resolving the rank and then
     recomputing it. The result is stored in the same rank-keyed cache as
-    :func:`cached_eigenbasis` (on ``environment._diffusion_eigenbasis_``), and the
-    resolved rank is memoized per ``(sigma, tol, dense_fraction)`` on
-    ``environment._diffusion_heat_kernel_rank_``, so EM refits at the same bandwidth
-    reuse the basis **without re-running the adaptive probe** (zero eigensolves). When
-    the bandwidth needs many modes the resolver falls back to the full dense basis. All
-    diffusion caches are invalidated together by ``Environment.fit_place_grid``.
+    :func:`cached_eigenbasis` (on the environment), and the resolved rank is
+    memoized per ``(sigma, tol, dense_fraction)`` on the environment too, so EM
+    refits at the same bandwidth reuse the basis **without re-running the adaptive
+    probe** (zero eigensolves). When the bandwidth needs many modes the resolver
+    falls back to the full dense basis. All diffusion caches are invalidated
+    together by ``Environment.fit_place_grid``.
 
     Parameters
     ----------
@@ -931,10 +939,9 @@ def cached_heat_kernel_eigenbasis(
     eigvecs : np.ndarray, shape (n_interior, m)
         Corresponding eigenvectors as columns (read-only, cached).
     """
-    rank_cache = getattr(environment, "_diffusion_heat_kernel_rank_", None)
+    rank_cache = environment.get_cached(_HEAT_KERNEL_RANK_KEY)
     if rank_cache is None:
-        rank_cache = {}
-        environment._diffusion_heat_kernel_rank_ = rank_cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+        rank_cache = environment.set_cached(_HEAT_KERNEL_RANK_KEY, {})
 
     key = (sigma, tol, dense_fraction)
     if key in rank_cache:
@@ -944,7 +951,7 @@ def cached_heat_kernel_eigenbasis(
 
     environment_graph(environment)  # ensures the cached Laplacian snapshot
     rank, eigvals, eigvecs = _adaptive_heat_kernel_basis(
-        environment._diffusion_laplacian_,  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+        environment.get_cached(_LAPLACIAN_KEY),
         sigma,
         tol,
         dense_fraction,
@@ -955,10 +962,9 @@ def cached_heat_kernel_eigenbasis(
             environment, None
         )  # light bandwidth -> dense full basis
 
-    cache = getattr(environment, "_diffusion_eigenbasis_", None)
+    cache = environment.get_cached(_EIGENBASIS_KEY)
     if cache is None:
-        cache = {}
-        environment._diffusion_eigenbasis_ = cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+        cache = environment.set_cached(_EIGENBASIS_KEY, {})
     if rank in cache:
         return cast(tuple[np.ndarray, np.ndarray], cache[rank])
     # Independent copies of the probe's final basis (sliced to the resolved rank) so the
@@ -973,13 +979,13 @@ def get_device_basis(
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
     """Device (jnp) eigenbasis for the clusterless_diffusion predict matmul.
 
-    Transient cache on ``environment._diffusion_device_basis_`` keyed by
-    ``(resolved_rank, device, dtype)``. On a miss, the host basis is retrieved via
-    :func:`cached_eigenbasis` and converted to device arrays once; a cache hit
+    Transient environment cache entry keyed by ``(resolved_rank, device, dtype)``.
+    On a miss, the host basis is retrieved via :func:`cached_eigenbasis` and
+    converted to device arrays once; a cache hit
     returns the exact same device array objects, so a repeated predict-time call at
     the same rank reuses the device-resident basis rather than re-transferring it.
-    Excluded from pickling by ``Environment.__getstate__`` and invalidated on grid
-    refit by ``Environment.fit_place_grid`` (both in ``environment.py``).
+    Stored with ``transient=True`` so it is not pickled, and cleared on grid refit
+    by ``Environment.fit_place_grid``.
 
     Parameters
     ----------
@@ -1012,10 +1018,10 @@ def get_device_basis(
     )
     dtype = jnp.float32
     key = (int(resolved_rank), device, dtype)
-    cache = getattr(environment, "_diffusion_device_basis_", None)
+    cache = environment.get_cached(_DEVICE_BASIS_KEY)
     if cache is None:
-        cache = {}
-        environment._diffusion_device_basis_ = cache  # type: ignore[attr-defined]  # dynamic cache attribute, not declared on Environment
+        # Keyed by a JAX ``Device``, which cannot be restored after unpickling.
+        cache = environment.set_cached(_DEVICE_BASIS_KEY, {}, transient=True)
     if key not in cache:
         eigvals, eigvecs = cached_eigenbasis(environment, resolved_rank)
         # Component labels from the existing helper (indexed by interior-bin/node

@@ -176,3 +176,61 @@ def test_movie_posterior_has_no_false_peak_at_last_bin():
     posterior = _spatial_posterior_for_movie(results, slice(0, 2), interior)
 
     np.testing.assert_allclose(posterior.values, 0.02)
+
+
+def test_movie_map_position_is_nan_without_spatial_mass(monkeypatch):
+    """A frame whose mass is all in position-less states has no MAP dot.
+
+    The argmax of an all-zero frame would otherwise place a confident MAP at
+    the first grid bin.
+    """
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from non_local_detector.visualization import movie
+
+    rows = [("Local", np.nan, np.nan)] + [
+        ("NL", x, y) for x in np.arange(3.0) for y in np.arange(2.0)
+    ]
+    index = pd.MultiIndex.from_tuples(rows, names=["state", "x_position", "y_position"])
+    values = np.zeros((2, len(rows)))
+    values[0, 0] = 0.5
+    values[0, 6] = 0.5  # NL peak at (x=2, y=1)
+    values[1, 0] = 1.0  # all mass in Local
+    time = np.array([0.0, 0.002])
+    results = xr.Dataset(
+        {
+            "acausal_posterior": xr.DataArray(
+                values,
+                dims=["time", "state_bins"],
+                coords={"time": time, "state_bins": index},
+            )
+        }
+    )
+    classifier = SimpleNamespace(
+        environments=[SimpleNamespace(is_track_interior_=np.ones((3, 2), dtype=bool))]
+    )
+    position_info = pd.DataFrame(
+        {
+            "head_position_x": [0.0, 1.0],
+            "head_position_y": [0.0, 1.0],
+            "head_orientation": [0.0, 0.0],
+        },
+        index=pd.Index(time, name="time"),
+    )
+    captured = {}
+
+    def capture(**kwargs):
+        captured.update(kwargs["frame_data"])
+        return kwargs["output_path"]
+
+    monkeypatch.setattr(movie, "create_parallel_video", capture)
+
+    movie.make_single_environment_movie(
+        slice(0, 2), classifier, results, position_info, [np.array([0.001])]
+    )
+
+    np.testing.assert_array_equal(
+        captured["map_position"], [[2.0, 1.0], [np.nan, np.nan]]
+    )

@@ -37,7 +37,11 @@ An `Environment` discretizes space into position bins.
 Pass environments to a model with `environments=[Environment(...)]`. Models
 with more than one environment, such as
 `MultiEnvironmentSortedSpikesClassifier`, decode which environment the
-activity represents.
+activity represents. A model fits its own copies of the environments it is
+given, so after `fit` the fitted grids are in `model.environments`, and the
+environments you passed are unchanged and can be shared between models.
+`Environment.get_params()` returns an environment's configuration, from which
+`Environment(**params)` rebuilds it.
 
 ## Models and their states
 
@@ -83,7 +87,20 @@ Fitted firing rates are in Hz.
   states: `RandomWalk` (Gaussian steps, `movement_var` per time bin),
   `Uniform` (jump anywhere), `Identity` (stay put), `Discrete` (the state has
   no position, as in Local and No-Spike) and `EmpiricalMovement` (learned
-  from the animal's own movement).
+  from the animal's own movement). Each is a `ContinuousTransition`: its
+  `make_state_transition(environments, context=None)` returns the block of
+  probabilities from each source bin to each destination bin, and `context`
+  (a `TransitionContext`) holds the fit's position and labels. A custom
+  transition with this method can be used in the same place, with three
+  caveats. The method is not called for a block between a one-bin state
+  (No-Spike, or Local without `local_position_std`) and a spatial state: from the one-bin state the block
+  is uniform over the interior of the environment named by the
+  transition's `environment_name`, which it must have, and into it every
+  bin moves there with probability 1. A custom transition has no structured
+  operator, so `transition_representation="structured"` rejects it.
+  `"auto"` builds its dense block, except when an environment's graph
+  distances are deferred, as for an open-field grid fit with a non-dense
+  representation; use `"dense"` there.
 - **Discrete transitions** set how the states follow one another:
   `DiscreteStationaryDiagonal` and `DiscreteStationaryCustom` for fixed
   probabilities, and `DiscreteNonStationaryDiagonal` and
@@ -111,5 +128,14 @@ the details.
   [xarray](https://docs.xarray.dev) `Dataset` with
   `acausal_posterior` (`(n_time, n_state_bins)`: the probability of each state
   and position given all the spikes) and `acausal_state_probabilities`
-  (`(n_time, n_states)`). Ask for more with `return_outputs`, e.g.
-  `"filter"` for the causal (past-only) estimates or `"log_likelihood"`.
+  (`(n_time, n_states)`; `(n_time,)` for single-state models such as
+  decoders). Ask for more with `return_outputs`, e.g. `"filter"` for the
+  causal (past-only) estimates or `"log_likelihood"`. Every dimension,
+  coordinate, variable and attribute of the result is listed in
+  [Result layout](../result_layout.md).
+
+States without a position (Local and No-Spike) have no position bins, so
+unstacking `acausal_posterior` yourself misplaces their probability. For
+models that have them, use
+[`get_spatial_posterior`](../api/non_local_detector/analysis/posterior.md) to get
+per-position probabilities.

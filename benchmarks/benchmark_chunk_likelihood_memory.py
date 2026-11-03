@@ -105,7 +105,6 @@ import psutil  # noqa: E402
 from non_local_detector.environment import Environment  # noqa: E402
 from non_local_detector.likelihoods import (  # noqa: E402
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.likelihoods.common import (  # noqa: E402
@@ -522,27 +521,20 @@ def fit_backend(name: str, encoding) -> FittedBackend:
     position_time, position, environment, spike_times, features = encoding
 
     if name in _SORTED_SPIKES_ALGORITHMS:
-        fit_func, predict_func = _SORTED_SPIKES_ALGORITHMS[name]
-        geometry = {}
-        if name == "sorted_spikes_glm":
-            geometry = {
-                "place_bin_edges": environment.place_bin_edges_,
-                "edges": environment.edges_,
-                "is_track_interior": environment.is_track_interior_,
-                "is_track_boundary": environment.is_track_boundary_,
-            }
+        record = _SORTED_SPIKES_ALGORITHMS[name]
+        fit_func, predict_func = record.fit, record.predict
         encoding_model = fit_func(
             position_time=position_time,
             position=position,
             spike_times=spike_times,
             environment=environment,
-            **geometry,
             **BACKEND_FIT_PARAMS.get(name, {}),
         )
         is_clusterless = False
         mark_reference = None
     elif name in _CLUSTERLESS_ALGORITHMS:
-        fit_func, predict_func = _CLUSTERLESS_ALGORITHMS[name]
+        record = _CLUSTERLESS_ALGORITHMS[name]
+        fit_func, predict_func = record.fit, record.predict
         fit_params = BACKEND_FIT_PARAMS.get(name, {})
         encoding_model = fit_func(
             position_time=position_time,
@@ -553,7 +545,7 @@ def fit_backend(name: str, encoding) -> FittedBackend:
             **fit_params,
         )
         mark_reference = fit_mark_references(
-            features, _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_params)
+            features, record.mark_reference_scale(**fit_params)
         )
         is_clusterless = True
     else:

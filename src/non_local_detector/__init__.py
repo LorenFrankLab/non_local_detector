@@ -26,9 +26,7 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
     ConfigurationError,
-    ConvergenceError,
     DataError,
-    FittingError,
     NonLocalDetectorError,
     ValidationError,
 )
@@ -58,7 +56,6 @@ __all__ = [
     "ConfigurationError",
     "ContFragClusterlessClassifier",
     "ContFragSortedSpikesClassifier",
-    "ConvergenceError",
     "DataError",
     "Discrete",
     "DiscreteNonStationaryCustom",
@@ -67,7 +64,6 @@ __all__ = [
     "DiscreteStationaryDiagonal",
     "EmpiricalMovement",
     "Environment",
-    "FittingError",
     "Identity",
     "MultiEnvironmentClusterlessClassifier",
     "MultiEnvironmentSortedSpikesClassifier",

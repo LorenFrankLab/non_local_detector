@@ -11,6 +11,7 @@ during EM. Successful calls still store and replace their outputs.
 import copy
 import itertools
 import pickle
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -200,7 +201,7 @@ def test_fit_failing_after_rebuilding_state_restores_detector(
         msg = "encoding backend failed"
         raise RuntimeError(msg)
 
-    monkeypatch.setitem(registry, name, (failing_fit, registry[name][1]))
+    monkeypatch.setitem(registry, name, replace(registry[name], fit=failing_fit))
     refit_args, is_training = _refit_changes_state(fit_args)
 
     with pytest.raises(RuntimeError, match="encoding backend failed"):

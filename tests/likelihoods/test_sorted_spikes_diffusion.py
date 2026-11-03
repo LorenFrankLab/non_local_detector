@@ -296,10 +296,10 @@ def test_fit_auto_truncation_is_near_lossless_and_reduces_rank():
     full = fit_sorted_spikes_diffusion_encoding_model(**common, rank=n_interior)
 
     # The default fit truncated, and used exactly the resolved rank.
-    resolved = heat_kernel_rank(env._diffusion_laplacian_, std)
+    resolved = heat_kernel_rank(env.get_cached("diffusion_laplacian"), std)
     assert resolved is not None
     assert resolved < n_interior
-    assert resolved in env._diffusion_eigenbasis_
+    assert resolved in env.get_cached("diffusion_eigenbasis")
 
     # Compare where the field is substantial: at EPS-floor bins the rate is ~0 and the
     # relative error is meaningless (dividing by ~EPS), so restrict to bins above
@@ -629,7 +629,8 @@ def test_uniform_rate_is_recovered_under_sparse_tracking():
 def test_registered_in_sorted_spikes_algorithms():
     """The algorithm is selectable via sorted_spikes_algorithm='sorted_spikes_diffusion'."""
     assert "sorted_spikes_diffusion" in _SORTED_SPIKES_ALGORITHMS
-    fit_fn, predict_fn = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_diffusion"]
+    record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_diffusion"]
+    fit_fn, predict_fn = record.fit, record.predict
     assert fit_fn is fit_sorted_spikes_diffusion_encoding_model
     assert predict_fn is predict_sorted_spikes_diffusion_log_likelihood
     # Existing algorithms are untouched.
@@ -1090,7 +1091,8 @@ def _fit_population(env, algorithm, n_neurons):
     Returns ``(predict, encoding, time, position, spike_times)``.
     """
     time, position, spike_times = simulate_place_data(env, n_neurons=n_neurons)
-    fit, predict = _SORTED_SPIKES_ALGORITHMS[algorithm]
+    fit = _SORTED_SPIKES_ALGORITHMS[algorithm].fit
+    predict = _SORTED_SPIKES_ALGORITHMS[algorithm].predict
     fit_params = {"position_std": 6.0} if algorithm == "sorted_spikes_diffusion" else {}
     encoding = fit(
         position_time=time,
