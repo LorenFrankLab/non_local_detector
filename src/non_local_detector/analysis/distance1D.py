@@ -1,3 +1,5 @@
+"""Distances between decoded and actual positions along a 1D track graph."""
+
 import itertools
 from collections.abc import Hashable
 from typing import Any, cast
@@ -308,21 +310,26 @@ def get_trajectory_data(
     actual_orientation: np.ndarray,
     environment_name: str = "",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Convenience function for getting the most likely position of the
-    posterior position and actual position/direction of the animal.
+    """Get the MAP decoded position and the animal's actual position.
+
+    Convenience function returning the most likely decoded position and the
+    actual position, edge and orientation of the animal.
 
     Parameters
     ----------
-    posterior: xarray.DataArray, shape (n_time, n_position_bins)
-        Decoded probability of position
+    posterior : xarray.DataArray, shape (n_time, n_position_bins)
+        Decoded probability of position.
     track_graph : networkx.Graph
-        Graph representation of the environment
-    decoder : SortedSpikesDecoder, ClusterlessDecoder, SortedSpikesClassifier,
-              ClusterlessClassifier
-        Model used to decode the data
+        Graph representation of the environment.
+    decoder : SortedSpikesDecoder, ClusterlessDecoder, SortedSpikesClassifier, or ClusterlessClassifier
+        Model used to decode the data.
     actual_projected_position : numpy.ndarray, shape (n_time, 2)
+        2D position of the animal projected onto the `track_graph`.
     track_segment_id : numpy.ndarray, shape (n_time,)
+        Index of the `track_graph` edge (in `track_graph.edges` order) that the
+        animal is on at each time point.
     actual_orientation : numpy.ndarray, shape (n_time,)
+        Orientation of the animal in radians.
     environment_name : str, optional
         Name of the environment, by default "".
 
@@ -330,16 +337,16 @@ def get_trajectory_data(
     -------
     actual_projected_position : numpy.ndarray, shape (n_time, 2)
         2D position of the animal projected onto the `track_graph`.
-    actual_edges : numpy.ndarray, shape (n_time,)
-        Edge of the `track_graph` that the animal is currently on.
+    actual_edges : numpy.ndarray, shape (n_time, 2)
+        Edge of the `track_graph` (pair of node IDs) that the animal is
+        currently on.
     actual_orientation : numpy.ndarray, shape (n_time,)
         Orientation of the animal in radians.
     mental_position_2d : numpy.ndarray, shape (n_time, 2)
-        Most likely decoded position
-    mental_position_edges : numpy.ndarray, shape (n_time,)
+        Most likely decoded position.
+    mental_position_edges : numpy.ndarray, shape (n_time, 2)
         Edge of the `track_graph` that most likely decoded position corresponds
         to.
-
     """
     (mental_position_2d, mental_position_edges) = _get_MAP_estimate_2d_position_edges(
         posterior, track_graph, decoder, environment_name
@@ -460,15 +467,17 @@ def get_map_speed(
 
     Parameters
     ----------
-    posterior : xr.DataArray
+    posterior : xr.DataArray or np.ndarray, shape (n_time, n_position_bins)
+        Decoded posterior probability of position.
     track_graph_with_bin_centers_edges : nx.Graph
-        Track graph with bin centers as nodes and edges
-    place_bin_center_ind_to_node : np.ndarray
-        Mapping of place bin center index to node ID
+        Track graph with bin centers as nodes and edges.
+    place_bin_center_ind_to_node : np.ndarray, shape (n_position_bins,)
+        Mapping of place bin center index to node ID.
     sampling_frequency : float, optional
-        Samples per second, by default 500.0
+        Samples per second, by default 500.0.
     smooth_sigma : float, optional
-        Gaussian smoothing parameter, by default 0.0025
+        Standard deviation of the Gaussian smoothing kernel applied to the
+        speed, in seconds, by default 0.0025.
 
     Returns
     -------

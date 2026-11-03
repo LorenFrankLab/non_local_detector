@@ -176,7 +176,27 @@ class GaussianMixtureConditionalCDF:
         position_at_time: Callable[[np.ndarray], ArrayLike] | None = None,
         batch_size: int = 128,
     ) -> "GaussianMixtureConditionalCDF":
-        """Capture a fitted GMM's parameters, supporting every covariance type."""
+        """Capture a fitted GMM's parameters, supporting every covariance type.
+
+        Parameters
+        ----------
+        model : sklearn.mixture.GaussianMixture
+            Fitted Gaussian mixture; must expose ``weights_``, ``means_``,
+            ``covariances_`` and ``covariance_type``.
+        n_position_dims : int, optional
+            Number of leading position coordinates of the mixture to condition
+            on, by default 0.
+        position_at_time : callable or None, optional
+            Maps a query time vector to its ``(n_queries, n_position_dims)``
+            observed positions, by default None.
+        batch_size : int, optional
+            Maximum query rows evaluated together, by default 128.
+
+        Returns
+        -------
+        cdf : GaussianMixtureConditionalCDF
+            Conditional CDF built from the model's parameters.
+        """
         model._check_fitted()
         return cls(
             model.weights_,
@@ -205,6 +225,32 @@ class GaussianMixtureConditionalCDF:
         The component means are encoding samples and component weights are
         encoding spike weights. With positions, the conditional weights include
         their position-kernel densities. No query sample fits a component.
+
+        Parameters
+        ----------
+        encoding_marks : array_like, shape (n_encoding_spikes, n_features)
+            Marks of the encoding spikes; they are the component means.
+        waveform_std : array_like, shape (n_features,) or scalar
+            Gaussian kernel standard deviation of each mark feature.
+        weights : array_like, shape (n_encoding_spikes,), optional
+            Encoding spike weights; equal weights by default.
+        encoding_positions : array_like, shape (n_encoding_spikes, n_position_dims), optional
+            Positions of the encoding spikes. If given, the mixture also models
+            position and `position_std` is required, by default None.
+        position_std : array_like, shape (n_position_dims,) or scalar, optional
+            Gaussian kernel standard deviation of each position dimension.
+            Required with `encoding_positions`.
+        position_at_time : callable or None, optional
+            Maps a query time vector to its ``(n_queries, n_position_dims)``
+            observed positions, by default None.
+        batch_size : int, optional
+            Maximum query rows evaluated together, by default 128.
+
+        Returns
+        -------
+        cdf : GaussianMixtureConditionalCDF
+            Conditional CDF of the KDE as a diagonal-covariance Gaussian
+            mixture.
         """
         marks = np.asarray(encoding_marks, dtype=float)
         if marks.ndim != 2:
@@ -342,6 +388,7 @@ class GaussianMixtureConditionalCDF:
         Parameters
         ----------
         observed_marks : array_like, shape (n_queries, n_features)
+            Marks to transform; must be finite.
         feature_order : sequence of int, optional
             Conditioning order of the mark features; identity by default.
         given_positions : array_like, shape (n_queries, n_position_dims), optional
@@ -456,6 +503,33 @@ def gaussian_mixture_rosenblatt_transform(
     ``means`` contain leading position columns when ``given_positions`` is
     supplied. Reuse ``GaussianMixtureConditionalCDF`` for repeated evaluations
     rather than copying/revalidating component parameters on every call.
+
+    Parameters
+    ----------
+    samples : array_like, shape (n_queries, n_features)
+        Mark vectors to transform.
+    weights : array_like, shape (n_components,)
+        Nonnegative mixture component weights with positive total mass.
+    means : array_like, shape (n_components, n_position_dims + n_features)
+        Component means. Position coordinates precede mark coordinates.
+    covariances : array_like
+        Full ``(K, D, D)``, tied ``(D, D)``, diagonal ``(K, D)``, or spherical
+        ``(K,)`` covariances, according to `covariance_type`.
+    covariance_type : {"full", "tied", "diag", "spherical"}, optional
+        Covariance parameterization, by default "full".
+    feature_order : sequence of int, optional
+        Conditioning order of the mark features; identity by default.
+    given_positions : array_like, shape (n_queries, n_position_dims), optional
+        Positions conditioning the mixture. When given, the leading
+        ``n_position_dims`` coordinates of `means` are position.
+    batch_size : int, optional
+        Maximum query rows evaluated together, by default 128.
+
+    Returns
+    -------
+    cdf : np.ndarray, shape (n_queries, n_features)
+        Column ``l`` is the CDF of feature ``feature_order[l]`` given the
+        position and the features before it in that order.
     """
     if given_positions is not None and np.ndim(given_positions) != 2:
         msg = "given_positions must be a two-dimensional matrix"
