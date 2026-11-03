@@ -130,6 +130,7 @@ nav:
       - Core Concepts: getting-started/core-concepts.md
   - Tutorials:
       - tutorials/index.md
+      - Detecting non-local events: tutorials/05_detecting_non_local_events.py
       - Classifying replay dynamics: tutorials/04_classifying_replay_dynamics.py
       - Decoding with clusterless spikes: tutorials/03_decoding_clusterless.py
       - Data format and environments: tutorials/01_data_and_environments.py
