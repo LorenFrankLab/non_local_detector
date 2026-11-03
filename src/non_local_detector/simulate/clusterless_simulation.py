@@ -107,6 +107,13 @@ def _cells_by_tetrode(place_field_means: np.ndarray, n_tetrodes: int) -> np.ndar
 def _mark_centers(n_cells_per_tetrode: int, mark_spacing: float) -> np.ndarray:
     """Mark-space center of each cell on a tetrode.
 
+    Parameters
+    ----------
+    n_cells_per_tetrode : int
+        Number of cells on each tetrode.
+    mark_spacing : float
+        Spacing between the mark centers of successive cells.
+
     Returns
     -------
     np.ndarray, shape (n_cells_per_tetrode,)
@@ -186,7 +193,6 @@ def make_simulated_run_data(
     - Spike times are strictly increasing per electrode
     - Empty electrodes have shape (0,) for times and (0, n_features) for features
     - No NaN values in spike waveform features
-
     """
     rng = np.random.default_rng(seed)
 
@@ -281,35 +287,37 @@ def make_continuous_replay(
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Creates a simulated continuous replay.
+    """Create a simulated continuous replay.
 
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     track_height : float, optional
-        Height of the simulated track
+        Height (length) of the simulated track, in the same spatial units as
+        ``place_field_means``. Default is 175.
     running_speed : float, optional
-        Simulated speed of the animal
+        Simulated speed of the animal, in spatial units per second.
     place_field_means : np.ndarray, shape (n_tetrodes * n_cells_per_tetrode,), optional
         Location of the center of the Gaussian place fields. Match
         ``make_simulated_run_data``.
-    replay_speedup : int, optional
-        Number of times faster the replay event is faster than the running speed
+    replay_speedup : float, optional
+        Factor by which the replay speed exceeds ``running_speed``.
     n_tetrodes : int, optional
-        Number of simulated tetrodes
+        Number of simulated tetrodes.
     n_features : int, optional
-        Number of simulated features
+        Number of simulated features (waveform feature dimensions per tetrode).
     mark_spacing : float, optional
-        Spacing between Gaussian mark features. Match
-        ``make_simulated_run_data`` (default 10).
+        Spacing between the mark values of successive cells on a tetrode.
+        Match ``make_simulated_run_data`` (default 10).
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
 
     replay_speed = running_speed * replay_speedup
@@ -345,31 +353,34 @@ def make_hover_replay(
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Creates a simulated stationary replay.
+    """Create a simulated stationary replay.
 
     Parameters
     ----------
     hover_neuron_ind : int, optional
-        Index of which neuron is the stationary neuron.
+        Flat index (into ``place_field_means`` reshaped to
+        ``(n_tetrodes, n_cells_per_tetrode)``) of the stationary neuron. By
+        default the middle neuron.
     place_field_means : np.ndarray, shape (n_tetrodes * n_cells_per_tetrode,), optional
         Location of the center of the Gaussian place fields. Match
         ``make_simulated_run_data``.
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     n_tetrodes : int, optional
-        Number of simulated tetrodes
+        Number of simulated tetrodes.
     n_features : int, optional
-        Number of simulated features
+        Number of simulated features (waveform feature dimensions per tetrode).
     mark_spacing : float, optional
-        Spacing between Gaussian mark features. Match
-        ``make_simulated_run_data`` (default 10).
+        Spacing between the mark values of successive cells on a tetrode.
+        Match ``make_simulated_run_data`` (default 10).
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
 
     place_field_means = _cells_by_tetrode(place_field_means, n_tetrodes)
@@ -399,7 +410,7 @@ def make_fragmented_replay(
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Creates a simulated fragmented replay.
+    """Create a simulated fragmented replay.
 
     Parameters
     ----------
@@ -407,21 +418,22 @@ def make_fragmented_replay(
         Location of the center of the Gaussian place fields. Match
         ``make_simulated_run_data``.
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     n_tetrodes : int, optional
-        Number of simulated tetrodes
+        Number of simulated tetrodes.
     n_features : int, optional
-        Number of simulated features
+        Number of simulated features (waveform feature dimensions per tetrode).
     mark_spacing : float, optional
-        Spacing between Gaussian mark features. Match
-        ``make_simulated_run_data`` (default 10).
+        Spacing between the mark values of successive cells on a tetrode.
+        Match ``make_simulated_run_data`` (default 10).
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
 
     N_TIME = 10
@@ -460,7 +472,7 @@ def make_hover_continuous_hover_replay(
     mark_spacing: float = MARK_SPACING,
     track_height: float = TRACK_HEIGHT,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Make a simulated replay that first is stationary, then is continuous, then is stationary again.
+    """Make a simulated replay that is stationary, then continuous, then stationary.
 
     The stationary segments hover on the first and last cell, which lie on
     the track for the default ``place_field_means``.
@@ -468,7 +480,7 @@ def make_hover_continuous_hover_replay(
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     place_field_means : np.ndarray, shape (n_tetrodes * n_cells_per_tetrode,), optional
         Location of the center of the Gaussian place fields. Pass the same
         value used for ``make_simulated_run_data``.
@@ -477,17 +489,19 @@ def make_hover_continuous_hover_replay(
     n_features : int, optional
         Number of simulated features. Match ``make_simulated_run_data``.
     mark_spacing : float, optional
-        Spacing between Gaussian mark features. Match
-        ``make_simulated_run_data``.
+        Spacing between the mark values of successive cells on a tetrode.
+        Match ``make_simulated_run_data`` (default 10).
     track_height : float, optional
-        Height of the simulated track traversed by the continuous segment.
+        Height (length) of the simulated track traversed by the continuous
+        segment. Default is 175.
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
     layout: dict[str, Any] = {
         "place_field_means": place_field_means,
@@ -517,12 +531,12 @@ def make_fragmented_hover_fragmented_replay(
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Makes a simulated replay that first is fragmented, then is stationary, then is fragmented again.
+    """Make a simulated replay that is fragmented, then stationary, then fragmented.
 
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     place_field_means : np.ndarray, shape (n_tetrodes * n_cells_per_tetrode,), optional
         Location of the center of the Gaussian place fields. Pass the same
         value used for ``make_simulated_run_data``.
@@ -531,15 +545,16 @@ def make_fragmented_hover_fragmented_replay(
     n_features : int, optional
         Number of simulated features. Match ``make_simulated_run_data``.
     mark_spacing : float, optional
-        Spacing between Gaussian mark features. Match
-        ``make_simulated_run_data``.
+        Spacing between the mark values of successive cells on a tetrode.
+        Match ``make_simulated_run_data`` (default 10).
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
     layout: dict[str, Any] = {
         "place_field_means": place_field_means,
@@ -569,12 +584,12 @@ def make_fragmented_continuous_fragmented_replay(
     mark_spacing: float = MARK_SPACING,
     track_height: float = TRACK_HEIGHT,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Makes a simulated replay that first is fragmented, then is continuous, then is fragmented again.
+    """Make a simulated replay that is fragmented, then continuous, then fragmented.
 
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     place_field_means : np.ndarray, shape (n_tetrodes * n_cells_per_tetrode,), optional
         Location of the center of the Gaussian place fields. Pass the same
         value used for ``make_simulated_run_data``.
@@ -583,18 +598,19 @@ def make_fragmented_continuous_fragmented_replay(
     n_features : int, optional
         Number of simulated features. Match ``make_simulated_run_data``.
     mark_spacing : float, optional
-        Spacing between Gaussian mark features. Match
-        ``make_simulated_run_data``.
+        Spacing between the mark values of successive cells on a tetrode.
+        Match ``make_simulated_run_data`` (default 10).
     track_height : float, optional
-        Height of the simulated track traversed by the continuous segment.
+        Height (length) of the simulated track traversed by the continuous
+        segment. Default is 175.
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
-
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
     layout: dict[str, Any] = {
         "place_field_means": place_field_means,
