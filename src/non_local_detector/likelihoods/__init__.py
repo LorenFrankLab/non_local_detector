@@ -101,6 +101,19 @@ class LikelihoodAlgorithm:
             self, "default_params", MappingProxyType(dict(self.default_params))
         )
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        # A mapping proxy cannot be pickled, so rebuild from a plain dict;
+        # ``copy.deepcopy`` uses this too.
+        return (
+            type(self),
+            (
+                self.fit,
+                self.predict,
+                dict(self.default_params),
+                self.mark_reference_scale,
+            ),
+        )
+
 
 # The keyword arguments a detector passes to every predict besides the fit's
 # encoding model (see ``LikelihoodAlgorithm``), and those of a clusterless

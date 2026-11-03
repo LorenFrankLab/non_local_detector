@@ -8,7 +8,9 @@ decode time. These tests fit each registered algorithm through a detector, so
 the keyword arguments checked are the ones the detector actually passes.
 """
 
+import copy
 import inspect
+import pickle
 from dataclasses import replace
 
 import jax
@@ -16,6 +18,7 @@ import numpy as np
 import pytest
 
 from non_local_detector import time_edges_from_centers
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_PREDICT_KEYWORDS,
@@ -179,3 +182,25 @@ def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
         "keys predict does not accept: ['unread']",
         "common keys missing: ['rate_units']",
     ]
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_records_pickle_and_copy(algorithm):
+    """Records survive pickling and deep copies, defaults still read-only."""
+    record = _registry(algorithm)[0][algorithm]
+    for restored in (pickle.loads(pickle.dumps(record)), copy.deepcopy(record)):
+        assert restored == record
+        with pytest.raises(TypeError):
+            restored.default_params["block_size"] = 5  # type: ignore[index]
+
+
+def test_clusterless_record_without_a_mark_scale_raises(monkeypatch, recording):
+    """The detector names the algorithm instead of calling None."""
+    record = _CLUSTERLESS_ALGORITHMS["clusterless_kde"]
+    monkeypatch.setitem(
+        _CLUSTERLESS_ALGORITHMS,
+        "clusterless_kde",
+        replace(record, mark_reference_scale=None),
+    )
+    with pytest.raises(ValidationError, match="without a mark_reference_scale"):
+        _fit("clusterless_kde", recording)

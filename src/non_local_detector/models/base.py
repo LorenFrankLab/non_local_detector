@@ -6072,7 +6072,17 @@ class ClusterlessDetector(_DetectorBase):
         # The reference adds the mark bandwidth, in waveform units, to each
         # feature's training spread.
         mark_reference_scale = self._clusterless_algorithm().mark_reference_scale
-        assert mark_reference_scale is not None  # every clusterless record has one
+        if mark_reference_scale is None:
+            msg = (
+                f"clusterless_algorithm {self.clusterless_algorithm!r} is "
+                "registered without a mark_reference_scale"
+            )
+            raise ValidationError(
+                msg,
+                hint="Register it as LikelihoodAlgorithm(fit, predict, "
+                "mark_reference_scale=...): the mark reference that scores "
+                "No-Spike marks needs the algorithm's mark-kernel width.",
+            )
         kernel_scale = cast(
             "float | np.ndarray", mark_reference_scale(**algorithm_params)
         )
