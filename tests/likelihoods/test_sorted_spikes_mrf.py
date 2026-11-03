@@ -19,7 +19,7 @@ import pytest
 import scipy.linalg
 
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
+from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS, sorted_spikes_mrf
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
@@ -997,6 +997,41 @@ def test_reported_rank_is_actual_basis_rank_when_capped(env_2d):
     coefficients = np.asarray(encoding["mrf_coefficients"])
     assert coefficients.shape[0] == n_interior  # basis capped at the available modes
     assert encoding["mrf_rank"] == n_interior  # reported rank matches, not the request
+
+
+def test_mrf_predict_forwards_every_diffusion_key(env_2d, monkeypatch):
+    """Every non-diagnostic key reaches the diffusion predict unchanged.
+
+    A dropped forward would not show in the output: the diffusion predict
+    ignores ``bin_sizes`` and ``occupancy``, and a missing ``node_order``
+    falls back to the environment's graph order, which is the fit's. So the
+    forwarded arguments are compared directly.
+    """
+    time, position, spike_times = simulate_place_data(env_2d, n_neurons=2)
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        time, position, spike_times, env_2d, rank=20, penalty=1.0
+    )
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return predict_sorted_spikes_diffusion_log_likelihood(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sorted_spikes_mrf, "predict_sorted_spikes_diffusion_log_likelihood", spy
+    )
+    decode = {"time_edges": time_edges_from_centers(time[:20]), "is_local": True}
+    predict_sorted_spikes_mrf_log_likelihood(
+        time, position, spike_times, **encoding, **decode
+    )
+    (forwarded,) = calls
+    expected = {
+        key: value for key, value in encoding.items() if not key.startswith("mrf_")
+    }
+    defaults = {"row_slice": None, "_spike_time_order": None, "_time_grid": None}
+    assert forwarded.keys() == {**expected, **decode, **defaults}.keys()
+    for key, value in {**expected, **decode}.items():
+        assert forwarded[key] is value, key
 
 
 @pytest.mark.parametrize("is_local", [False, True])

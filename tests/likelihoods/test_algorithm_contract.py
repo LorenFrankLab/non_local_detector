@@ -12,6 +12,8 @@ passes, and check the fit's keys against the ``TypedDict`` its record names.
 import copy
 import inspect
 import pickle
+import subprocess
+import sys
 import typing
 from dataclasses import replace
 
@@ -325,3 +327,22 @@ def test_clusterless_record_requires_a_mark_scale():
             predict_clusterless_kde_log_likelihood,
             ClusterlessKDEEncodingModel,
         )
+
+
+@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+def test_model_checking_intensity_names_a_class(algorithm):
+    """A record's model-checking intensity names a class model checking has."""
+    from non_local_detector.model_checking import _clusterless_models
+
+    name = _CLUSTERLESS_ALGORITHMS[algorithm].electrode_intensity
+    if name is not None:
+        assert isinstance(getattr(_clusterless_models, name), type)
+
+
+def test_likelihoods_do_not_import_model_checking():
+    """Model checking imports the registry; the registry must not import it."""
+    code = (
+        "import sys, non_local_detector.likelihoods; "
+        "assert not [m for m in sys.modules if 'model_checking' in m]"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

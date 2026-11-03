@@ -3628,6 +3628,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     "fitted it; refit before decoding."
                 )
                 hint = "Call fit(...) with the original recording."
+                expected = "an encoding entry that records its algorithm"
+                got = "no recorded algorithm"
             else:
                 msg = (
                     f"Encoding entry {key!r} was fitted by {fitted!r}, but "
@@ -3637,12 +3639,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     f"Call fit(...) again to fit {current!r}, or set "
                     f"{parameter}={fitted!r} to decode with the fitted model."
                 )
-            raise ValidationError(
-                msg,
-                expected=f"{parameter}={fitted!r}",
-                got=f"{parameter}={current!r}",
-                hint=hint,
-            )
+                expected = f"{parameter}={fitted!r}"
+                got = f"{parameter}={current!r}"
+            raise ValidationError(msg, expected=expected, got=got, hint=hint)
         if is_clusterless:
             validate_spike_feature_population(spike_times, spike_waveform_features)
         else:
@@ -4776,7 +4775,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ----------
         weights : np.ndarray, shape (n_time_position,)
         """
-        self.fit_encoding_model(**self._encoding_model_data, weights=weights)
+        self._fit_encoding_model(**self._encoding_model_data, weights=weights)
 
     def _invalidate_stored_log_likelihood(self) -> None:
         """Drop ``log_likelihood_``, which no longer describes this model.
@@ -4828,6 +4827,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             Positional arguments of the subclass implementation; see
             ``SortedSpikesDetector.fit_encoding_model`` and
             ``ClusterlessDetector.fit_encoding_model``.
+        **kwargs
+            Keyword arguments of the subclass implementation.
+        """
+
+    @abc.abstractmethod
+    def _fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:
+        """Body of ``fit_encoding_model``, which EM encoding updates call.
+
+        The public method is a thin wrapper, so overriding it does not change
+        EM refits in either family.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments of the subclass implementation.
         **kwargs
             Keyword arguments of the subclass implementation.
         """
@@ -7605,6 +7619,32 @@ class SortedSpikesDetector(_DetectorBase):
             observation model configuration (environment, encoding group).
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
+        self._fit_encoding_model(
+            position_time,
+            position,
+            spike_times,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+            weights,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+        )
+
+    def _fit_encoding_model(
+        self,
+        position_time: np.ndarray,
+        position: np.ndarray,
+        spike_times: list[np.ndarray],
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        *,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
+    ) -> None:
+        """Body of ``fit_encoding_model``, which EM encoding updates call."""
         logger.info("Fitting place fields...")
         inputs = _EncodingInputs.from_arguments(
             position_time,

@@ -60,11 +60,6 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
     fit_sorted_spikes_mrf_encoding_model,
     predict_sorted_spikes_mrf_log_likelihood,
 )
-from non_local_detector.model_checking._clusterless_models import (
-    DiffusionElectrode,
-    GMMElectrode,
-    KDEElectrode,
-)
 
 
 @dataclass(frozen=True)
@@ -136,15 +131,17 @@ class ClusterlessLikelihoodAlgorithm(LikelihoodAlgorithm):
         The mark-kernel width, from the fit parameters, which the mark
         reference adds in quadrature to each feature's training spread (see
         ``fit_mark_references``).
-    electrode_intensity : Callable[[dict, int], object] or None
-        Model checking only: builds one electrode's fitted mark intensity
-        from the encoding model and the electrode index (see
-        ``model_checking.clusterless``). None, the default, if model checking
-        does not support the algorithm.
+    electrode_intensity : str or None
+        Model checking only: the name of the class in
+        ``non_local_detector.model_checking._clusterless_models`` that builds
+        one electrode's fitted mark intensity from the encoding model and the
+        electrode index. None, the default, if model checking does not
+        support the algorithm. A name rather than the class, so the
+        likelihoods do not import model checking, which imports them.
     """
 
     mark_reference_scale: Callable[..., object]
-    electrode_intensity: Callable[[dict[str, Any], int], object] | None = None
+    electrode_intensity: str | None = None
 
 
 # The keyword arguments a detector passes to every predict besides the fit's
@@ -193,21 +190,21 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         predict_clusterless_kde_log_likelihood,
         ClusterlessKDEEncodingModel,
         mark_reference_scale=clusterless_kde.mark_reference_scale,
-        electrode_intensity=KDEElectrode,
+        electrode_intensity="KDEElectrode",
     ),
     "clusterless_gmm": ClusterlessLikelihoodAlgorithm(
         fit_clusterless_gmm_encoding_model,
         predict_clusterless_gmm_log_likelihood,
         ClusterlessGMMEncodingModel,
         mark_reference_scale=clusterless_gmm.mark_reference_scale,
-        electrode_intensity=GMMElectrode,
+        electrode_intensity="GMMElectrode",
     ),
     "clusterless_diffusion": ClusterlessLikelihoodAlgorithm(
         fit_clusterless_diffusion_encoding_model,
         predict_clusterless_diffusion_log_likelihood,
         ClusterlessDiffusionEncodingModel,
         mark_reference_scale=clusterless_diffusion.mark_reference_scale,
-        electrode_intensity=DiffusionElectrode,
+        electrode_intensity="DiffusionElectrode",
     ),
     # Model checking does not implement the mark GLM's intensity.
     "clusterless_mark_glm": ClusterlessLikelihoodAlgorithm(
