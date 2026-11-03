@@ -68,7 +68,10 @@ def test_auto_manifold_fallback_preserves_deferred_topology(direction):
     np.testing.assert_allclose(
         np.asarray(LazyDenseTransition(operator)), reference, rtol=1e-12, atol=1e-14
     )
-    assert descriptor.environment is lazy
+    # The descriptor keeps only its configuration, not the dense view.
+    assert vars(descriptor) == vars(
+        RandomWalk(use_manifold_distance=True, direction=direction)
+    )
     assert isinstance(lazy.distance_between_nodes_, LazyGraphDistances)
 
 
