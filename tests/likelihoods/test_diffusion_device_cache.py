@@ -106,11 +106,11 @@ def test_get_device_basis_hit_and_device_arrays():
 def test_device_cache_invalidated_on_refit():
     env = _fitted_env()
     get_device_basis(env, cached_eigenbasis(env, None)[1].shape[1])
-    assert hasattr(env, "_diffusion_device_basis_")
+    assert env.get_cached("diffusion_device_basis") is not None
     env.fit_place_grid(
         position=np.linspace(0, 20, 80)[:, None], infer_track_interior=True
     )
-    assert not hasattr(env, "_diffusion_device_basis_")
+    assert env.get_cached("diffusion_device_basis") is None
 
 
 def test_device_cache_excluded_from_pickle():
@@ -118,4 +118,4 @@ def test_device_cache_excluded_from_pickle():
     get_device_basis(env, cached_eigenbasis(env, None)[1].shape[1])
     blob = pickle.dumps(env)  # must not raise on the JAX Device key
     env2 = pickle.loads(blob)
-    assert not hasattr(env2, "_diffusion_device_basis_")
+    assert env2.get_cached("diffusion_device_basis") is None

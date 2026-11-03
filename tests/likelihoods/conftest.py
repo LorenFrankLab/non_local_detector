@@ -16,7 +16,6 @@ import non_local_detector.likelihoods.common as common
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
     fit_mark_references,
 )
@@ -271,27 +270,18 @@ def fit_registered_backends(
     fit_params = fit_params or {}
     environment = data["environment"]
 
-    for name, (fit_func, predict_func) in _SORTED_SPIKES_ALGORITHMS.items():
-        geometry = {}
-        if name == "sorted_spikes_glm":
-            geometry = {
-                "place_bin_edges": environment.place_bin_edges_,
-                "edges": environment.edges_,
-                "is_track_interior": environment.is_track_interior_,
-                "is_track_boundary": environment.is_track_boundary_,
-            }
-        encoding_model = fit_func(
+    for name, record in _SORTED_SPIKES_ALGORITHMS.items():
+        encoding_model = record.fit(
             position_time=data["position_time"],
             position=data["position"],
             spike_times=data["encoding_spike_times"],
             environment=environment,
-            **geometry,
             **fit_params.get(name, {}),
         )
-        yield name, predict_func, encoding_model, False
+        yield name, record.predict, encoding_model, False
 
-    for name, (fit_func, predict_func) in _CLUSTERLESS_ALGORITHMS.items():
-        encoding_model = fit_func(
+    for name, record in _CLUSTERLESS_ALGORITHMS.items():
+        encoding_model = record.fit(
             position_time=data["position_time"],
             position=data["position"],
             spike_times=data["encoding_spike_times"],
@@ -303,7 +293,7 @@ def fit_registered_backends(
             data["position_time"],
             data["encoding_spike_times"],
             data["encoding_features"],
-            _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_params.get(name, {})),
+            record.mark_reference_scale(**fit_params.get(name, {})),
             fit_params.get(name, {}).get("weights"),
             data["position"],
             encoding_time_range=fit_params.get(name, {}).get("encoding_time_range"),
@@ -311,7 +301,7 @@ def fit_registered_backends(
                 "valid_position_intervals"
             ),
         )
-        yield name, predict_func, encoding_model, True
+        yield name, record.predict, encoding_model, True
 
 
 def realistic_log_background(

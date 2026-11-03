@@ -61,6 +61,9 @@ at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
   `mean_rate * p_joint(x, m) / p_occupancy(x)`. The transforms test that process.
   Refit models trained before this correction to use a consistent process.
 
+`clusterless_mark_glm` is not supported: the transforms raise `ValueError` for
+it before reading the encoding model.
+
 All intensities and CDFs come from the stored encoding model, in float64
 NumPy and log space. Mixture weights stay in log space while the mixture is
 conditioned on each mark, so a component that is unlikely at a position

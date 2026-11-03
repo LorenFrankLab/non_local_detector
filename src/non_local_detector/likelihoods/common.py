@@ -21,11 +21,13 @@ from jax.nn import logsumexp
 from numpy.typing import ArrayLike, NDArray
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector._validation import validate_weights
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
+    decode_bin_centers,
     requires_time_edges,
     validate_time_edges,
 )
@@ -193,47 +195,6 @@ def validate_bandwidth(std: Any, n_dims: int, name: str) -> jax.Array:
             hint="Rescale the data or enable JAX float64 (jax_enable_x64).",
         )
     return jnp.asarray(values)
-
-
-def validate_weights(weights: np.ndarray | jax.Array, n_time: int) -> np.ndarray:
-    """Validate per-sample weights shared by the sorted-spikes and clusterless fits.
-
-    Weights feed both the occupancy field and the spike counts, so an invalid
-    array corrupts the whole encoding silently; validate once at the fit entry.
-
-    Parameters
-    ----------
-    weights : np.ndarray, shape (n_time,)
-        Per-sample weights (e.g. posterior state probabilities during EM).
-    n_time : int
-        Expected number of samples (``position.shape[0]``).
-
-    Returns
-    -------
-    weights : np.ndarray, shape (n_time,)
-        The weights as a float array.
-
-    Raises
-    ------
-    ValidationError
-        If ``weights`` is not 1-D of length ``n_time``, or contains non-finite or
-        negative values.
-    """
-    weights = np.asarray(weights, dtype=float)
-
-    if weights.shape != (n_time,):
-        msg = f"weights must have shape ({n_time},), got {weights.shape}"
-        raise ValidationError(msg)
-
-    if not np.all(np.isfinite(weights)):
-        msg = "weights must contain only finite values"
-        raise ValidationError(msg)
-
-    if np.any(weights < 0):
-        msg = "weights must be non-negative"
-        raise ValidationError(msg)
-
-    return weights
 
 
 def validate_finite(array: np.ndarray | jax.Array, name: str) -> None:
@@ -3372,32 +3333,6 @@ def _spike_counts_matrix(
     return np.bincount(
         np.concatenate(flat_index), minlength=n_rows * n_neurons
     ).reshape(n_rows, n_neurons)
-
-
-def decode_bin_centers(
-    time_edges: np.ndarray, row_start: int, row_stop: int
-) -> np.ndarray:
-    """Compute the centers of the decode bins ``[row_start, row_stop)``.
-
-    Local-position kernels, the non-local penalty, and local likelihoods
-    evaluate the animal's position at these observation coordinates.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        FULL decoding bin edges, in seconds.
-    row_start : int
-        First requested bin (inclusive).
-    row_stop : int
-        End of the requested bins (exclusive).
-
-    Returns
-    -------
-    centers : np.ndarray, shape (row_stop - row_start,)
-        Center time of each requested decode bin, in seconds.
-    """
-    edges = np.asarray(time_edges)[row_start : row_stop + 1]
-    return edges[:-1] + 0.5 * np.diff(edges)
 
 
 def log_nonnegative(x: jax.Array) -> jax.Array:

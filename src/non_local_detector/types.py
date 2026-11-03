@@ -12,14 +12,7 @@ from typing import Literal
 
 import numpy as np
 
-from non_local_detector.continuous_state_transitions import (
-    Discrete,
-    EmpiricalMovement,
-    RandomWalk,
-    RandomWalkDirection1,
-    RandomWalkDirection2,
-    Uniform,
-)
+from non_local_detector.continuous_state_transitions import ContinuousTransition
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
@@ -37,22 +30,14 @@ Can be a single Environment instance, list of environments for multi-environment
 models, or None for cases where no specific environment is needed.
 """
 
-ContinuousTransitions = list[
-    list[
-        Discrete
-        | EmpiricalMovement
-        | RandomWalk
-        | RandomWalkDirection1
-        | RandomWalkDirection2
-        | Uniform
-    ]
-]
+ContinuousTransitions = list[list[ContinuousTransition]]
 """Type alias for continuous state transition specifications.
 
 Nested list structure representing transition models between continuous
-states. The outer list represents different discrete states, while the
-inner list contains transition models for each state (e.g., RandomWalk,
-Uniform, EmpiricalMovement, etc.).
+states. The outer list represents the source discrete states and the inner
+list the destination states. Each entry is any object satisfying the
+``ContinuousTransition`` protocol (e.g., RandomWalk, Uniform,
+EmpiricalMovement or a user-defined transition).
 """
 
 Observations = list[ObservationModel] | ObservationModel | None

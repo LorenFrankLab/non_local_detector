@@ -101,10 +101,6 @@ def test_glm_fits_stationary_tracking_with_known_exposure(sample_kind, one_bin):
         position,
         [np.array([0.1 if sample_kind == "singleton" else 1.0])],
         environment,
-        environment.place_bin_edges_,
-        environment.edges_,
-        environment.is_track_interior_,
-        environment.is_track_boundary_,
         encoding_time_range=[time[0] - 0.5, time[-1] + 0.5],
         disable_progress_bar=True,
     )

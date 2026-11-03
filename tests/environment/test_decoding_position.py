@@ -5,7 +5,10 @@ import numpy as np
 import pytest
 from track_linearization import get_linearized_position
 
-from non_local_detector.continuous_state_transitions import EmpiricalMovement
+from non_local_detector.continuous_state_transitions import (
+    EmpiricalMovement,
+    TransitionContext,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import get_position_at_time
 
@@ -91,9 +94,12 @@ def test_position_at_time_keeps_prelinearized_track_position(track_environment, 
 def test_empirical_movement_prelinearized_matches_raw_track_position(
     track_environment, points
 ):
-    raw = EmpiricalMovement().make_state_transition((track_environment,), points)
+    raw = EmpiricalMovement().make_state_transition(
+        (track_environment,), TransitionContext(position=points)
+    )
     prelinearized = EmpiricalMovement().make_state_transition(
-        (track_environment,), track_environment.decoding_position(points)
+        (track_environment,),
+        TransitionContext(position=track_environment.decoding_position(points)),
     )
 
     np.testing.assert_array_equal(prelinearized, raw)
@@ -104,13 +110,15 @@ def test_empirical_movement_without_samples_matches_open_field(
 ):
     """No samples in the selection leaves every row empty, as on an open field."""
     open_field = Environment(place_bin_size=2.0).fit_place_grid(points)
-    labels = np.zeros(len(points))
+    context = TransitionContext(
+        position=points, encoding_group_labels=np.zeros(len(points))
+    )
 
     track = EmpiricalMovement(encoding_group=1).make_state_transition(
-        (track_environment,), points, encoding_group_labels=labels
+        (track_environment,), context
     )
     grid = EmpiricalMovement(encoding_group=1).make_state_transition(
-        (open_field,), points, encoding_group_labels=labels
+        (open_field,), context
     )
 
     n_track_bins = len(track_environment.place_bin_centers_)

@@ -100,7 +100,6 @@ from non_local_detector.likelihoods.common import (
     _padded_spike_count,
     _SpikeTimeOrder,
     as_std_array,
-    decode_bin_centers,
     deterministic_row_sum,
     environment_grid_fingerprint,
     get_position_at_time,
@@ -140,6 +139,7 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
+    decode_bin_centers,
     requires_time_edges,
 )
 

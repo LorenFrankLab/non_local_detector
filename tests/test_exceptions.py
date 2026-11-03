@@ -5,9 +5,7 @@ import pytest
 
 from non_local_detector.exceptions import (
     ConfigurationError,
-    ConvergenceError,
     DataError,
-    FittingError,
     NonLocalDetectorError,
     ValidationError,
 )
@@ -20,15 +18,20 @@ class TestExceptionHierarchy:
     def test_all_exceptions_inherit_from_base(self):
         """All custom exceptions should inherit from NonLocalDetectorError."""
         assert issubclass(ValidationError, NonLocalDetectorError)
-        assert issubclass(FittingError, NonLocalDetectorError)
         assert issubclass(ConfigurationError, NonLocalDetectorError)
-        assert issubclass(ConvergenceError, NonLocalDetectorError)
         assert issubclass(DataError, NonLocalDetectorError)
 
-    def test_convergence_error_inherits_from_fitting_error(self):
-        """ConvergenceError should inherit from FittingError."""
-        assert issubclass(ConvergenceError, FittingError)
-        assert issubclass(ConvergenceError, NonLocalDetectorError)
+    @pytest.mark.parametrize(
+        "exc_cls", [ValidationError, ConfigurationError, DataError]
+    )
+    def test_input_errors_are_value_errors(self, exc_cls):
+        """Input errors are catchable as ValueError and as the package base."""
+        assert issubclass(exc_cls, ValueError)
+        error = exc_cls("boom")
+        with pytest.raises(ValueError, match="boom"):
+            raise error
+        with pytest.raises(NonLocalDetectorError, match="boom"):
+            raise error
 
 
 @pytest.mark.unit
@@ -39,16 +42,12 @@ class TestCommonMessageFormatting:
         ("exc_cls", "message"),
         [
             (ValidationError, "Something went wrong"),
-            (FittingError, "Model fitting failed"),
             (ConfigurationError, "Invalid configuration"),
-            (ConvergenceError, "Failed to converge"),
             (DataError, "Found NaN values"),
         ],
         ids=[
             "ValidationError",
-            "FittingError",
             "ConfigurationError",
-            "ConvergenceError",
             "DataError",
         ],
     )
@@ -67,25 +66,10 @@ class TestCommonMessageFormatting:
                 ["Hint: Use positive values"],
             ),
             (
-                FittingError,
-                "Model fitting failed",
-                {"hint": "Try increasing max_iterations"},
-                ["Hint: Try increasing max_iterations"],
-            ),
-            (
                 ConfigurationError,
                 "Incompatible parameters",
                 {"hint": "Use either A or B, not both"},
                 ["Hint: Use either A or B, not both"],
-            ),
-            (
-                ConvergenceError,
-                "Failed to converge",
-                {
-                    "iterations": 1000,
-                    "hint": "Try increasing max_iterations or relaxing tolerance",
-                },
-                ["Hint: Try increasing max_iterations or relaxing tolerance"],
             ),
             (
                 DataError,
@@ -102,9 +86,7 @@ class TestCommonMessageFormatting:
         ],
         ids=[
             "ValidationError",
-            "FittingError",
             "ConfigurationError",
-            "ConvergenceError",
             "DataError",
         ],
     )
@@ -175,33 +157,6 @@ class TestValidationError:
 
 
 @pytest.mark.unit
-class TestConvergenceError:
-    """Test ConvergenceError message formatting."""
-
-    def test_message_with_iterations(self):
-        """Test ConvergenceError with iterations parameter."""
-        error = ConvergenceError("Failed to converge", iterations=1000)
-        msg = str(error)
-        assert "Failed to converge" in msg
-        assert "iterations: 1000" in msg
-
-    def test_message_with_tolerance(self):
-        """Test ConvergenceError with tolerance parameter."""
-        error = ConvergenceError("Failed to converge", tolerance=1e-4)
-        msg = str(error)
-        assert "Failed to converge" in msg
-        assert "tolerance: 0.0001" in msg
-
-    def test_message_with_iterations_and_tolerance(self):
-        """Test ConvergenceError with both iterations and tolerance."""
-        error = ConvergenceError("Failed to converge", iterations=1000, tolerance=1e-4)
-        msg = str(error)
-        assert "Failed to converge" in msg
-        assert "iterations: 1000" in msg
-        assert "tolerance: 0.0001" in msg
-
-
-@pytest.mark.unit
 class TestDataError:
     """Test DataError message formatting."""
 
@@ -246,6 +201,13 @@ class TestExceptionIntegration:
         assert "GMM" in error_msg or "components" in error_msg
         assert "Expected:" in error_msg
         assert "Got:" in error_msg
+
+    def test_package_validation_error_is_catchable_as_value_error(self):
+        """Errors raised by package code can be caught with ``except ValueError``."""
+        from non_local_detector.likelihoods.gmm import GaussianMixtureModel
+
+        with pytest.raises(ValueError, match="components"):
+            GaussianMixtureModel(n_components=0, covariance_type="full")
 
     def test_validation_error_in_gmm_covariance_type(self):
         """Test ValidationError for invalid GMM covariance type."""

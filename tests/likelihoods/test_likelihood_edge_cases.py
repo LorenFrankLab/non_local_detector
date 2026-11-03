@@ -98,10 +98,6 @@ def _fit_sorted_glm(env, spike_times, n_time=101):
         position=pos,
         spike_times=spike_times,
         environment=env,
-        place_bin_edges=env.place_bin_edges_,
-        edges=env.edges_,
-        is_track_interior=env.is_track_interior_,
-        is_track_boundary=env.is_track_boundary_,
         disable_progress_bar=True,
     )
     return enc, t, pos
@@ -506,10 +502,6 @@ def test_sorted_glm_high_l2_penalty():
         position=jnp.asarray(pos),
         spike_times=spike_times,
         environment=env,
-        place_bin_edges=env.place_bin_edges_,
-        edges=env.edges_,
-        is_track_interior=env.is_track_interior_,
-        is_track_boundary=env.is_track_boundary_,
         l2_penalty=1e6,
         disable_progress_bar=True,
     )
@@ -534,10 +526,6 @@ def test_sorted_glm_low_l2_penalty():
         position=jnp.asarray(pos),
         spike_times=spike_times,
         environment=env,
-        place_bin_edges=env.place_bin_edges_,
-        edges=env.edges_,
-        is_track_interior=env.is_track_interior_,
-        is_track_boundary=env.is_track_boundary_,
         l2_penalty=1e-10,
         disable_progress_bar=True,
     )

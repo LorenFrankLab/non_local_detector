@@ -26,6 +26,7 @@ from non_local_detector.core import (
     filter,
     filter_covariate_dependent,
     most_likely_sequence,
+    row_slice_aware,
     smoother,
     viterbi,
 )
@@ -616,8 +617,9 @@ class TestChunkedFilterDegenerateWarning:
 
         # Compute likelihoods per chunk (uncached) so the driver returns None
         # for log_likelihoods -- the indices then survive only via the collector.
-        def ll_func(time_chunk, *args, is_missing=None):
-            return all_ll[np.asarray(time_chunk).astype(int)]
+        @row_slice_aware
+        def ll_func(time, *args, is_missing=None, row_slice=None):
+            return all_ll[np.asarray(time).astype(int)][row_slice]
 
         collected: list[int] = []
 

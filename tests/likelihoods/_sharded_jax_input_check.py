@@ -58,7 +58,6 @@ warnings.simplefilter("ignore")
 from non_local_detector.environment import Environment  # noqa: E402
 from non_local_detector.likelihoods import (  # noqa: E402
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     fit_mark_references,
 )
 
@@ -168,8 +167,9 @@ def run(meshes) -> int:
 
     failures = 0
     for name in sorted(_CLUSTERLESS_ALGORITHMS):
-        fit_func, predict_func = _CLUSTERLESS_ALGORITHMS[name]
-        encoding_model = fit_func(
+        record = _CLUSTERLESS_ALGORITHMS[name]
+        predict_func = record.predict
+        encoding_model = record.fit(
             position_time=position_time,
             position=position,
             spike_times=encoding_spike_times,
@@ -179,7 +179,7 @@ def run(meshes) -> int:
         )
         encoding_model["mark_reference"] = fit_mark_references(
             encoding_features,
-            _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**FIT_PARAMS.get(name, {})),
+            record.mark_reference_scale(**FIT_PARAMS.get(name, {})),
         )
         for (axis_type, mesh), is_local in itertools.product(
             meshes.items(), (False, True)

@@ -20,7 +20,6 @@ from non_local_detector import (
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
 )
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
@@ -455,8 +454,11 @@ def test_fit_mark_references_weighs_spikes_uniformly_by_default():
 
 @pytest.mark.unit
 def test_every_clusterless_algorithm_has_a_mark_reference_scale():
-    assert set(_CLUSTERLESS_MARK_REFERENCE_SCALES) == set(_CLUSTERLESS_ALGORITHMS)
-    scales = _CLUSTERLESS_MARK_REFERENCE_SCALES
+    scales = {
+        name: record.mark_reference_scale
+        for name, record in _CLUSTERLESS_ALGORITHMS.items()
+    }
+    assert None not in scales.values()
     assert scales["clusterless_kde"](waveform_std=7.0, position_std=3.0) == 7.0
     assert scales["clusterless_diffusion"](waveform_std=7.0) == 7.0
     assert scales["clusterless_gmm"](gmm_reg_covar=4.0, waveform_std=7.0) == 2.0

@@ -20,15 +20,20 @@ from scipy.spatial import cKDTree
 from scipy.stats import multivariate_normal, norm
 
 from non_local_detector.continuous_state_transitions import (
+    ContinuousTransition,
     Discrete,
     EmpiricalMovement,
     Identity,
     RandomWalk,
     RandomWalkDirection1,
     RandomWalkDirection2,
+    TransitionContext,
     Uniform,
+    _make_transition_block,
+    _multi_bin_local_transition,
+    _scalar_to_spatial_destination,
 )
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
 
@@ -1424,14 +1429,6 @@ class LazyDenseTransition:
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 
 
-def _find_environment(environments: Sequence[Environment], name: str) -> Environment:
-    for environment in environments:
-        if environment.environment_name == name:
-            return environment
-    msg = f"Environment {name!r} not found"
-    raise ValueError(msg)
-
-
 def _mask(environment: Environment) -> np.ndarray:
     return environment.is_track_interior_flat_
 
@@ -1563,21 +1560,8 @@ def _structured_block(
     source_size: int,
     target_size: int,
 ) -> UniformBlock | IdentityBlock | GaussianGridBlock:
-    if isinstance(transition, EmpiricalMovement):
-        msg = "EmpiricalMovement requires its original fit-context dense fallback"
-        raise UnsupportedTransitionError(msg)
     if source_size == 1 and target_size > 1:
-        if not hasattr(transition, "environment_name"):
-            # A configuration error, as in the dense constructor: no fallback
-            # may broadcast a scalar block across the destination bins.
-            msg = (
-                "Transition must have an environment_name attribute for discrete "
-                "to continuous transitions"
-            )
-            raise ValueError(msg)
-        destination = _mask(
-            _find_environment(environments, transition.environment_name)
-        )
+        destination = _scalar_to_spatial_destination(transition, environments)
         normalization = np.array(
             1.0 / destination.sum() if destination.any() else np.nan
         )
@@ -1586,14 +1570,21 @@ def _structured_block(
         return UniformBlock(
             np.ones(source_size, dtype=bool), np.ones(1, dtype=bool), np.array(1.0)
         )
+    if isinstance(transition, EmpiricalMovement):
+        msg = "EmpiricalMovement requires its original fit-context dense fallback"
+        raise UnsupportedTransitionError(msg)
     if type(transition) is Discrete and source_size == target_size == 1:
         return IdentityBlock(np.ones(1, dtype=bool))
     if type(transition) is Uniform:
-        source = _mask(_find_environment(environments, transition.environment_name))
+        source = _mask(
+            find_environment_by_name(environments, transition.environment_name)
+        )
         destination = (
             source.copy()
             if transition.environment2_name is None
-            else _mask(_find_environment(environments, transition.environment2_name))
+            else _mask(
+                find_environment_by_name(environments, transition.environment2_name)
+            )
         )
         return UniformBlock(
             source,
@@ -1602,11 +1593,12 @@ def _structured_block(
         )
     if type(transition) is Identity:
         return IdentityBlock(
-            _mask(_find_environment(environments, transition.environment_name))
+            _mask(find_environment_by_name(environments, transition.environment_name))
         )
     if type(transition) is RandomWalk:
         return _gaussian_block(
-            transition, _find_environment(environments, transition.environment_name)
+            transition,
+            find_environment_by_name(environments, transition.environment_name),
         )
     msg = f"No proven exact structured operator for {type(transition).__name__}"
     raise UnsupportedTransitionError(msg)
@@ -1633,14 +1625,14 @@ def _check_known_fallback_shape(
     if type(transition) is Discrete:
         shape = (1, 1)
     elif type(transition) in _KNOWN_TRANSITIONS:
-        env = _find_environment(environments, transition.environment_name)
+        env = find_environment_by_name(environments, transition.environment_name)
         count = len(cast(np.ndarray, env.place_bin_centers_))
         other = count
         if type(transition) is Uniform and transition.environment2_name is not None:
             other = len(
                 cast(
                     np.ndarray,
-                    _find_environment(
+                    find_environment_by_name(
                         environments, transition.environment2_name
                     ).place_bin_centers_,
                 )
@@ -1656,7 +1648,7 @@ def _check_known_fallback_shape(
 
 
 def build_transition_operator(
-    transition_types: Sequence[Sequence[Any]],
+    transition_types: Sequence[Sequence[ContinuousTransition]],
     environments: Sequence[Environment],
     state_sizes: Sequence[int],
     observation_models: Sequence[ObservationModel] | None = None,
@@ -1664,10 +1656,7 @@ def build_transition_operator(
     *,
     allow_dense_fallback: bool = False,
     max_dense_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    position: np.ndarray | None = None,
-    is_training: np.ndarray | None = None,
-    encoding_group_labels: np.ndarray | None = None,
-    environment_labels: np.ndarray | None = None,
+    context: TransitionContext | None = None,
 ) -> BlockTransitionOperator:
     """Build exact padded conditional blocks and preflight dense fallback.
 
@@ -1683,7 +1672,7 @@ def build_transition_operator(
 
     Parameters
     ----------
-    transition_types : sequence of sequence
+    transition_types : sequence of sequence of ContinuousTransition
         ``(n_states, n_states)`` grid of continuous transition models.
     environments : list of Environment
         Fitted environments.
@@ -1698,8 +1687,9 @@ def build_transition_operator(
         Build unsupported blocks with their dense constructor.
     max_dense_bytes : int, optional
         Dense fallback budget, by default 256 MiB.
-    position, is_training, encoding_group_labels, environment_labels : optional
-        Fit context for ``EmpiricalMovement`` fallback blocks.
+    context : TransitionContext, optional
+        Fit data passed to every dense fallback constructor; required by
+        ``EmpiricalMovement`` fallback blocks.
 
     Returns
     -------
@@ -1720,26 +1710,15 @@ def build_transition_operator(
     plan: list[list[Any]] = []
     fallback_bytes = 0
     for source, row in enumerate(transition_types):
-        planned_row = []
+        planned_row: list[Any] = []
         for target, transition in enumerate(row):
-            if (
-                isinstance(transition, Discrete)
-                and local_position_std is not None
-                and observation_models is not None
-            ):
-                from_obs, to_obs = (
+            if observation_models is not None:
+                transition = _multi_bin_local_transition(
+                    transition,
                     observation_models[source],
                     observation_models[target],
+                    local_position_std,
                 )
-                if from_obs.is_local or to_obs.is_local:
-                    if from_obs.environment_name != to_obs.environment_name:
-                        msg = "Cross-environment Discrete with multi-bin Local is unsupported; use explicit Uniform"
-                        raise ValueError(msg)
-                    transition = Uniform(
-                        environment_name=(
-                            from_obs if from_obs.is_local else to_obs
-                        ).environment_name
-                    )
             try:
                 block = _structured_block(
                     transition, environments, sizes[source], sizes[target]
@@ -1776,7 +1755,7 @@ def build_transition_operator(
                 msg = "Opaque custom dense fallback with deferred graph distances has no verified exact distance contract; use the legacy dense representation"
                 raise UnsupportedTransitionError(msg)
             if type(block) is RandomWalk and block.use_manifold_distance:
-                env = _find_environment(environments, block.environment_name)
+                env = find_environment_by_name(environments, block.environment_name)
                 if isinstance(env.distance_between_nodes_, LazyGraphDistances):
                     distance_environments[id(env)] = env
     distance_bytes = sum(
@@ -1789,7 +1768,6 @@ def build_transition_operator(
         "Retained dense fallback blocks plus temporary graph distances",
     )
     fallback_environments = []
-    originals_by_view = {}
     for env in environments:
         if id(env) in distance_environments:
             view = copy(env)
@@ -1797,7 +1775,6 @@ def build_transition_operator(
                 LazyGraphDistances, env.distance_between_nodes_
             ).to_dense(max_bytes=max_dense_bytes - fallback_bytes)
             fallback_environments.append(view)
-            originals_by_view[id(view)] = env
         else:
             fallback_environments.append(env)
     blocks: list[tuple[Block, ...]] = []
@@ -1807,37 +1784,7 @@ def build_transition_operator(
             if isinstance(block, _STRUCTURED_BLOCKS):
                 result.append(block)
                 continue
-            if isinstance(block, EmpiricalMovement):
-                if position is None:
-                    msg = (
-                        "EmpiricalMovement dense fallback requires position fit context"
-                    )
-                    raise UnsupportedTransitionError(msg)
-                training = (
-                    np.ones(len(position), dtype=bool)
-                    if is_training is None
-                    else np.asarray(is_training).squeeze()
-                )
-                labels = (
-                    np.zeros(len(position), dtype=np.int32)
-                    if encoding_group_labels is None
-                    else encoding_group_labels
-                )
-                matrix = block.make_state_transition(
-                    cast(tuple[Environment, ...], fallback_environments),
-                    position,
-                    training,
-                    labels,
-                    environment_labels,
-                )
-            else:
-                matrix = block.make_state_transition(fallback_environments)
-            # Primitive descriptors retain their environment. Restore the
-            # original sparse views so pickling never retains temporary N²
-            # distance matrices after the fitted dense block is constructed.
-            for name, value in getattr(block, "__dict__", {}).items():
-                if id(value) in originals_by_view:
-                    setattr(block, name, originals_by_view[id(value)])
+            matrix = _make_transition_block(block, fallback_environments, context)
             matrix = np.array(
                 np.broadcast_to(matrix, (sizes[source], sizes[target])),
                 dtype=float,

@@ -36,7 +36,6 @@ from non_local_detector.likelihoods.common import (
     _pad_rows,
     _padded_spike_count,
     _SpikeTimeOrder,
-    decode_bin_centers,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
@@ -72,6 +71,7 @@ from non_local_detector.likelihoods.mark_reference import (
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
+    decode_bin_centers,
     requires_time_edges,
 )
 
