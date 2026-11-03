@@ -82,15 +82,15 @@ class ValidationError(NonLocalDetectorError):
     Parameters
     ----------
     message : str
-        Description of what went wrong
+        Description of what went wrong.
     expected : str, optional
-        What was expected (for structured error messages)
+        What was expected (for structured error messages).
     got : str, optional
-        What was actually received
+        What was actually received.
     hint : str, optional
-        Actionable suggestion for fixing the error
+        Actionable suggestion for fixing the error.
     example : str, optional
-        Code snippet showing correct usage
+        Code snippet showing correct usage.
 
     Examples
     --------
@@ -138,9 +138,9 @@ class FittingError(NonLocalDetectorError):
     Parameters
     ----------
     message : str
-        Description of what went wrong during fitting
+        Description of what went wrong during fitting.
     hint : str, optional
-        Actionable suggestion for fixing the error
+        Actionable suggestion for fixing the error.
 
     Examples
     --------
@@ -174,9 +174,9 @@ class ConfigurationError(NonLocalDetectorError):
     Parameters
     ----------
     message : str
-        Description of the configuration problem
+        Description of the configuration problem.
     hint : str, optional
-        Actionable suggestion for fixing the configuration
+        Actionable suggestion for fixing the configuration.
 
     Examples
     --------
@@ -210,13 +210,13 @@ class ConvergenceError(FittingError):
     Parameters
     ----------
     message : str
-        Description of the convergence failure
+        Description of the convergence failure.
     iterations : int, optional
-        Number of iterations attempted
+        Number of iterations attempted.
     tolerance : float, optional
-        Convergence tolerance that wasn't met
+        Convergence tolerance that wasn't met.
     hint : str, optional
-        Actionable suggestion for fixing convergence issues
+        Actionable suggestion for fixing convergence issues.
 
     Examples
     --------
@@ -265,11 +265,11 @@ class DataError(NonLocalDetectorError):
     Parameters
     ----------
     message : str
-        Description of the data problem
+        Description of the data problem.
     data_name : str, optional
-        Name of the problematic data variable
+        Name of the problematic data variable.
     hint : str, optional
-        Actionable suggestion for fixing the data issue
+        Actionable suggestion for fixing the data issue.
 
     Examples
     --------

@@ -59,6 +59,35 @@ class LazyGraphDistances:
     Pickling retains the sparse graph, ``directed`` and budgets, never the
     cache. The cache makes queries stateful: share an
     instance across threads only with external locking.
+
+    Parameters
+    ----------
+    graph : scipy.sparse matrix or array_like, shape (n_nodes, n_nodes)
+        Weighted adjacency matrix with finite, nonnegative edge distances.
+    directed : bool, optional
+        Whether to follow edge directions when finding shortest paths, by
+        default False.
+    max_dense_bytes : int, optional
+        Byte limit for converting to a dense matrix, by default 256 MiB.
+    max_workspace_bytes : int, optional
+        Byte limit for each temporary batch of Dijkstra rows, by default 8 MiB.
+    max_cache_bytes : int, optional
+        Byte limit for the cache of full source rows, by default 64 MiB.
+
+    Attributes
+    ----------
+    graph : scipy.sparse.csr_matrix
+        Float64 CSR adjacency matrix of edge distances.
+    directed : bool
+        Whether shortest paths follow edge directions.
+    max_dense_bytes, max_workspace_bytes, max_cache_bytes : int
+        The byte budgets above.
+
+    Raises
+    ------
+    ValueError
+        If the adjacency is not square, has negative or non-finite edge
+        distances, or a budget is not a nonnegative integer.
     """
 
     def __init__(
@@ -99,6 +128,27 @@ class LazyGraphDistances:
 
     @classmethod
     def from_graph(cls, graph: nx.Graph, **kwargs: Any) -> LazyGraphDistances:
+        """Build lazy distances from a NetworkX graph.
+
+        Parameters
+        ----------
+        graph : networkx.Graph
+            Graph whose nodes are the integers ``0`` through ``N - 1`` and
+            whose edges have a ``distance`` attribute.
+        **kwargs
+            Byte budgets passed to the constructor (``max_dense_bytes``,
+            ``max_workspace_bytes``, ``max_cache_bytes``).
+
+        Returns
+        -------
+        distances : LazyGraphDistances
+            Lazy shortest-path distances between the graph's nodes.
+
+        Raises
+        ------
+        ValueError
+            If the nodes are not indexed from zero through ``N - 1``.
+        """
         if set(graph.nodes) != set(range(len(graph))):
             msg = "Graph distance nodes must be indexed from zero through N-1"
             raise ValueError(msg)
@@ -118,18 +168,22 @@ class LazyGraphDistances:
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Shape ``(n_nodes, n_nodes)`` of the distance matrix."""
         return cast("tuple[int, int]", self.graph.shape)
 
     @property
     def dtype(self) -> np.dtype[np.float64]:
+        """Data type of the distances, always float64."""
         return np.dtype(np.float64)
 
     @property
     def ndim(self) -> int:
+        """Number of dimensions, always 2."""
         return 2
 
     @property
     def storage_nbytes(self) -> int:
+        """Memory used by the stored sparse graph in bytes, excluding the row cache."""
         return cast(
             "int",
             self.graph.data.nbytes
@@ -274,7 +328,26 @@ class LazyGraphDistances:
     def to_dense(
         self, *, max_bytes: int | None = None, dtype: DTypeLike | None = None
     ) -> NDArray[Any]:
-        """Explicit budgeted dense conversion, with optional caller budget."""
+        """Convert to a dense matrix within a byte budget.
+
+        Parameters
+        ----------
+        max_bytes : int, optional
+            Byte limit for the dense result, by default ``max_dense_bytes``.
+        dtype : dtype, optional
+            Data type of the result, by default float64.
+
+        Returns
+        -------
+        distances : np.ndarray, shape (n_nodes, n_nodes)
+            Shortest-path distances between every pair of nodes.
+
+        Raises
+        ------
+        GraphDistanceBudgetError
+            If the dense matrix exceeds ``max_bytes`` or one source row
+            exceeds ``max_workspace_bytes``.
+        """
         target = np.dtype(float if dtype is None else dtype)
         maximum = self.max_dense_bytes if max_bytes is None else max_bytes
         _budget(
