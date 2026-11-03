@@ -2919,6 +2919,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         GOLDEN_RATIO = 1.618
 
+        if self.n_discrete_states_ == 1:
+            # A single state has one panel, which needs room for its tick labels.
+            _, ax = plt.subplots(
+                constrained_layout=True,
+                figsize=(4.0 * figsize_scaling, 3.5 * figsize_scaling),
+            )
+            ax.pcolormesh(self.continuous_state_transitions_, vmin=0.0, vmax=vmax)
+            ax.set_xlabel("To position bin")
+            ax.set_ylabel("From position bin")
+            ax.set_title(self.state_names[0])
+            return
+
         fig, axes = plt.subplots(
             self.n_discrete_states_,
             self.n_discrete_states_,
@@ -2933,40 +2945,33 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             ),
         )
 
-        try:
-            for from_state, ax_row in enumerate(axes):
-                for to_state, ax in enumerate(ax_row):
-                    ind = np.ix_(
-                        self.state_ind_ == from_state, self.state_ind_ == to_state
-                    )
-                    ax.pcolormesh(
-                        self.continuous_state_transitions_[ind], vmin=0.0, vmax=vmax
-                    )
-                    ax.set_xticks([])
-                    ax.set_yticks([])
+        for from_state, ax_row in enumerate(axes):
+            for to_state, ax in enumerate(ax_row):
+                ind = np.ix_(self.state_ind_ == from_state, self.state_ind_ == to_state)
+                ax.pcolormesh(
+                    self.continuous_state_transitions_[ind], vmin=0.0, vmax=vmax
+                )
+                ax.set_xticks([])
+                ax.set_yticks([])
 
-                    if to_state == 0:
-                        ax.set_ylabel(
-                            self.state_names[from_state],
-                            rotation=0,
-                            ha="right",
-                            va="center",
-                        )
+                if to_state == 0:
+                    ax.set_ylabel(
+                        self.state_names[from_state],
+                        rotation=0,
+                        ha="right",
+                        va="center",
+                    )
 
-                    if from_state == self.n_discrete_states_ - 1:
-                        ax.set_xlabel(
-                            self.state_names[to_state],
-                            rotation=45,
-                            ha="right",
-                            va="top",
-                            labelpad=1.0,
-                        )
-            fig.supylabel("From State")
-            fig.supxlabel("To State")
-        except TypeError:
-            axes.pcolormesh(self.continuous_state_transitions_, vmin=0.0, vmax=vmax)
-            axes.set_xticks([])
-            axes.set_yticks([])
+                if from_state == self.n_discrete_states_ - 1:
+                    ax.set_xlabel(
+                        self.state_names[to_state],
+                        rotation=45,
+                        ha="right",
+                        va="top",
+                        labelpad=1.0,
+                    )
+        fig.supylabel("From State")
+        fig.supxlabel("To State")
 
     def plot_initial_conditions(
         self, figsize_scaling: float = 1.5, vmax: float = 0.3
