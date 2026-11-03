@@ -1761,7 +1761,7 @@ def build_transition_operator(
     retained dense blocks plus the temporary dense graph distances that
     ``graph_distance_environment`` names must then fit ``max_dense_bytes``.
     Dense blocks are checked like the dense constructor's (shape, finite,
-    non-negative, rows summing to 1 or 0).
+    non-negative, rows summing to at most 1).
 
     Parameters
     ----------

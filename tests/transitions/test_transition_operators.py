@@ -1183,7 +1183,7 @@ def _custom_returning(matrix):
     [
         (np.ones((1, 1)), "shape"),
         (np.ones((12,)), "shape"),
-        (np.full((12, 12), 2.0 / 12), "row-stochastic"),
+        (np.full((12, 12), 2.0 / 12), "at most 1"),
         (np.eye(12) * 2.0 - np.roll(np.eye(12), 1, axis=1), "non-negative"),
         (np.full((12, 12), np.nan), "non-finite"),
     ],
@@ -1191,7 +1191,7 @@ def _custom_returning(matrix):
 )
 def test_invalid_custom_block_is_rejected_in_dense_and_operator_paths(matrix, match):
     """A custom transition's block must be its states' shape, non-negative,
-    and have rows summing to 1 or 0; otherwise both constructions fail
+    and have rows summing to at most 1; otherwise both constructions fail
     instead of broadcasting it into the transition."""
     env = environment((3, 4))
     with pytest.raises(ValueError, match=match):
@@ -1297,3 +1297,49 @@ def test_subclass_overriding_make_state_transition_falls_back_to_dense():
         [[Stay()]], [env], (12,), allow_dense_fallback=True
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), np.eye(12))
+
+
+@pytest.mark.unit
+def test_empirical_movement_with_speedup_leaking_mass_is_accepted():
+    """``EmpiricalMovement(speedup=2)`` squares a matrix with an empty row
+    (the last sample's bin, never left), so a row that reaches that bin sums
+    to less than 1. Both constructors keep such a sub-stochastic block."""
+    position = np.concatenate([np.tile(np.arange(2.5, 50, 5.0), 4), [92.5]])[
+        :, np.newaxis
+    ]
+    env = Environment(place_bin_size=5.0, position_range=[(0.0, 100.0)])
+    env = env.fit_place_grid(position)
+    transition = EmpiricalMovement(speedup=2)
+    expected = transition.make_state_transition(
+        [env], TransitionContext(position=position)
+    )
+    row_sums = expected.sum(axis=1)
+    assert np.any((row_sums > 0.0) & (row_sums < 1.0 - 1e-2))
+    count = len(env.place_bin_centers_)
+
+    dense, _ = dense_reference([[transition]], [env], (count,), position=position)
+    np.testing.assert_array_equal(dense, expected)
+    operator = build_transition_operator(
+        [[transition]],
+        [env],
+        (count,),
+        allow_dense_fallback=True,
+        context=TransitionContext(position=position),
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), expected)
+
+
+@pytest.mark.unit
+def test_block_with_rows_above_one_is_rejected():
+    """Row sums above 1 beyond the probability tolerance are rejected; the
+    hint does not tell the user to renormalize a package transition."""
+    from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
+
+    env = environment((3, 4))
+    within = np.eye(12) * (1.0 + PROBABILITY_SUM_TOLERANCE / 2)
+    dense, _ = dense_reference([[_custom_returning(within)]], [env], (12,))
+    np.testing.assert_array_equal(dense, within)
+    above = np.eye(12) * (1.0 + 2 * PROBABILITY_SUM_TOLERANCE)
+    with pytest.raises(ValidationError, match="at most 1") as error:
+        dense_reference([[_custom_returning(above)]], [env], (12,))
+    assert "Normalize" not in str(error.value)

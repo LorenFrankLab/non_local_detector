@@ -95,8 +95,8 @@ Fitted firing rates are in Hz.
   environment of its source bins, or `None` if it has no place bins) can be
   used in the same place. The block it returns must have one row per bin of
   the source state and one column per bin of the destination state, be
-  non-negative, and have rows that sum to 1 (or 0 for bins nothing can
-  leave); the detectors raise `ValidationError` otherwise. The method is not
+  non-negative, and have rows that sum to at most 1 (to 1, or 0 for bins
+  nothing can leave); the detectors raise `ValidationError` otherwise. The method is not
   called for a block between a one-bin state (No-Spike, or Local without
   `local_position_std`) and a spatial state: from the one-bin state the block
   is uniform over the interior of the environment named by the

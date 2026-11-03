@@ -76,7 +76,8 @@ class ContinuousTransition(Protocol):
     The detectors call ``make_state_transition`` only for blocks between two
     spatial states or two one-bin states, and check that the block it
     returns has the two states' shape, is finite and non-negative, and has
-    rows that sum to 1 (or 0, for bins nothing can leave). A block between a
+    rows that sum to at most 1 (1 when every bin the walk can reach is
+    modeled, 0 for bins nothing can leave). A block between a
     one-bin state (No-Spike, or Local without ``local_position_std``) and a
     spatial state is set without calling it: from the one-bin state it is
     uniform over the interior bins of the environment named by the
@@ -117,7 +118,8 @@ class ContinuousTransition(Protocol):
         Returns
         -------
         state_transition_matrix : np.ndarray, shape (n_source_bins, n_destination_bins)
-            Rows sum to 1, or to 0 for bins nothing can leave.
+            Rows sum to at most 1: to 1, or to 0 for bins nothing can
+            leave, or in between when probability leaves the modeled bins.
         """
         ...
 
@@ -1081,7 +1083,7 @@ def _make_transition_block(
         If ``make_state_transition`` cannot take ``(environments, context)``,
         as a custom transition written before ``context`` existed, or returns
         a block that is not ``shape``, has negative values, or has a row that
-        sums to neither 1 nor 0.
+        sums to more than 1 (beyond ``PROBABILITY_SUM_TOLERANCE``).
     DataError
         If the block has NaN or infinite values.
     """
@@ -1117,5 +1119,5 @@ def _make_transition_block(
         )
     val.ensure_all_finite(block, label)
     val.ensure_all_non_negative(block, label)
-    val.ensure_stochastic_matrix(block, label, allow_zero_rows=True)
+    val.ensure_substochastic_matrix(block, label)
     return block
