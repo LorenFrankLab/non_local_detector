@@ -3533,16 +3533,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """Compute the log likelihood. To be implemented by inheriting class."""
 
     def _validate_time_contract(self) -> None:
-        """Reject fitted state whose time units this version cannot decode.
+        """Reject an unfitted model, unknown encoding units or transition clocks.
 
-        The base detector keeps no encoding model, so there is nothing to
-        check; detectors that fit encoding models override this hook with
-        ``_validate_encoding_contract``. Public decoding methods call it once,
-        before any work.
+        Public decoding methods call this once, before any work. Subclasses
+        extend it with their own fitted state (the clusterless mark
+        reference); a detector without an encoding model must override it.
         """
-
-    def _validate_encoding_contract(self) -> None:
-        """Reject unknown encoding units and unknown learned transition clocks."""
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."
             raise ValidationError(msg)
@@ -4276,8 +4272,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         The three posteriors stay on the device: callers copy to the host only
         the ones they return or need there.
         """
-        # The engine's own guard: callers can reach it with a precomputed or
-        # custom likelihood that no public method has checked.
+        # The public methods have checked already; EM reaches here after its
+        # own fit. Kept as the engine's guard for direct calls.
         self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
@@ -5975,7 +5971,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             DataFrame containing the most likely sequence of states
             and corresponding positions/metadata at each time step.
         """
-        # As in _predict: callers can reach the engine with a custom likelihood.
+        # As in _predict, a guard for direct calls of the engine.
         self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
@@ -6736,7 +6732,7 @@ class ClusterlessDetector(_DetectorBase):
         )
 
     def _validate_time_contract(self) -> None:
-        self._validate_encoding_contract()
+        super()._validate_time_contract()
         if not hasattr(self, "mark_reference_"):
             msg = (
                 "Saved clusterless model has no mark reference; refit before decoding."
@@ -7669,9 +7665,6 @@ class SortedSpikesDetector(_DetectorBase):
                 valid_position_intervals=valid_position_intervals,
             )
         return self
-
-    def _validate_time_contract(self) -> None:
-        self._validate_encoding_contract()
 
     _SPIKE_DATA_NAMES = ("spike_times",)
     _PREDICT_EXAMPLE = (

@@ -234,3 +234,18 @@ def test_inference_argument_conflicts_raise_validation_error(arguments):
     } | arguments
     with pytest.raises(ValidationError):
         _validate_inference_arguments(**settings)
+
+
+@pytest.mark.unit
+def test_base_time_contract_check_fails_closed():
+    """A subclass that does not override the hook still gets the encoding check."""
+    from non_local_detector.models.base import _DetectorBase
+
+    with pytest.raises(ValidationError, match="not fitted"):
+        _DetectorBase._validate_time_contract(_decoder())
+    time, position, spike_times = _recording()
+    detector = _decoder().fit(time, position, spike_times)
+    _DetectorBase._validate_time_contract(detector)
+    detector.time_contract_ = {**detector.time_contract_, "rate_units": "per_bin"}
+    with pytest.raises(ValidationError, match="refit"):
+        _DetectorBase._validate_time_contract(detector)
