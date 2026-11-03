@@ -122,3 +122,50 @@ def test_process_decoded_data_invokes_guard(monkeypatch):
     )
     with pytest.raises(ValueError, match="sortingview"):
         figurl_2D.process_decoded_data(posterior)
+
+
+def _position_less_results():
+    """Results with a position-less Local state holding most of the mass."""
+    import pandas as pd
+    import xarray as xr
+
+    xs, ys = np.arange(3.0), np.arange(2.0)
+    rows = [("Local", np.nan, np.nan)] + [
+        ("NL", x, y) for x in xs for y in ys
+    ]
+    index = pd.MultiIndex.from_tuples(rows, names=["state", "x_position", "y_position"])
+    values = np.full((2, len(rows)), 0.02)
+    values[:, 0] = 0.9
+    posterior = xr.DataArray(
+        values,
+        dims=["time", "state_bins"],
+        coords={"time": [0.0, 0.1], "state_bins": index},
+    )
+    return xr.Dataset({"acausal_posterior": posterior}), xs, ys
+
+
+def test_default_posterior_has_no_false_peak_at_last_bin(monkeypatch):
+    """The default posterior must not place Local's mass on the last x/y bin."""
+    import types as _types
+
+    figurl_2D = _load_figurl_2d_with_stub_sortingview(monkeypatch)
+    results, xs, ys = _position_less_results()
+    captured = {}
+
+    def fake_decode_view(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after posterior is prepared")
+
+    monkeypatch.setattr(figurl_2D, "create_2D_decode_view", fake_decode_view)
+    env = _types.SimpleNamespace(is_track_interior_=None, place_bin_centers_=None)
+
+    with pytest.raises(RuntimeError, match="stop after"):
+        figurl_2D.create_interactive_2D_decoding_figurl(
+            position_time=np.array([0.0, 0.1]),
+            position=np.zeros((2, 2)),
+            env=env,
+            results=results,
+        )
+
+    posterior = captured["posterior"]
+    np.testing.assert_allclose(posterior.values, 0.02)
