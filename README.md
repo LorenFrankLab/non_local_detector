@@ -77,7 +77,7 @@ from non_local_detector import NonLocalClusterlessDetector
 # Initialize detector
 detector = NonLocalClusterlessDetector(
     environments=[environment],  # Your spatial environment
-    clusterless_algorithm="clusterless_kde"
+    clusterless_algorithm="clusterless_kde",
 )
 
 # Fit the model
@@ -90,9 +90,7 @@ detector.fit(
 
 # Detect replay events in uniform 2 ms bins (n_bins + 1 edges); trim=True
 # drops a partial final bin instead of requiring a whole number of bins
-time_edges = detector.calculate_time_edges(
-    np.array([test_start, test_stop]), trim=True
-)
+time_edges = detector.calculate_time_edges(np.array([test_start, test_stop]), trim=True)
 results = detector.predict(
     spike_times=test_spike_times,
     spike_waveform_features=test_waveform_features,
@@ -114,8 +112,7 @@ from non_local_detector import NonLocalSortedSpikesDetector
 
 # For traditional spike-sorted data
 detector = NonLocalSortedSpikesDetector(
-    environments=[environment],
-    sorted_spikes_algorithm="sorted_spikes_kde"
+    environments=[environment], sorted_spikes_algorithm="sorted_spikes_kde"
 )
 
 detector.fit(

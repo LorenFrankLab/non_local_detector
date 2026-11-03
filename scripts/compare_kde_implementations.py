@@ -14,10 +14,10 @@ import numpy as np
 sys.path.insert(0, "src")
 
 from non_local_detector.likelihoods.clusterless_kde import (
-    kde_distance as kde_distance_original,
+    kde_distance as kde_distance_optimized,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
-    kde_distance as kde_distance_optimized,
+    kde_distance as kde_distance_original,
 )
 
 
@@ -99,8 +99,12 @@ def main():
         )
 
         print(f"{n_dims}D features:")
-        print(f"  Original (clusterless_kde.py):     {time_orig*1000:.2f}ms ± {std_orig*1000:.2f}ms")
-        print(f"  Optimized (clusterless_kde.py): {time_opt*1000:.2f}ms ± {std_opt*1000:.2f}ms")
+        print(
+            f"  Original (clusterless_kde.py):     {time_orig * 1000:.2f}ms ± {std_orig * 1000:.2f}ms"
+        )
+        print(
+            f"  Optimized (clusterless_kde.py): {time_opt * 1000:.2f}ms ± {std_opt * 1000:.2f}ms"
+        )
         print(f"  Speedup: {speedup:.2f}x")
         print()
 
@@ -139,7 +143,9 @@ def main():
 
         max_diff = jnp.max(jnp.abs(result_orig - result_opt))
         mean_diff = jnp.mean(jnp.abs(result_orig - result_opt))
-        relative_diff = jnp.max(jnp.abs((result_orig - result_opt) / (result_orig + 1e-10)))
+        relative_diff = jnp.max(
+            jnp.abs((result_orig - result_opt) / (result_orig + 1e-10))
+        )
 
         print(f"{n_dims}D features:")
         print(f"  Max absolute difference: {max_diff:.2e}")
@@ -157,7 +163,9 @@ def main():
     print()
 
     if avg_speedup > 5:
-        print(f"✅ The optimized version (clusterless_kde.py) is **{avg_speedup:.1f}x faster**")
+        print(
+            f"✅ The optimized version (clusterless_kde.py) is **{avg_speedup:.1f}x faster**"
+        )
         print("   on average than the original (clusterless_kde.py).")
         print()
         print("   This demonstrates the benefit of:")
@@ -170,7 +178,9 @@ def main():
         print(f"✅ The optimized version is {avg_speedup:.1f}x faster on average.")
         print("   This is a significant improvement.")
     elif avg_speedup > 0.9:
-        print(f"⚠️  The versions have similar performance (speedup: {avg_speedup:.2f}x).")
+        print(
+            f"⚠️  The versions have similar performance (speedup: {avg_speedup:.2f}x)."
+        )
         print("   The optimization provides minimal benefit.")
     else:
         print(f"❌ The optimized version is slower (speedup: {avg_speedup:.2f}x).")

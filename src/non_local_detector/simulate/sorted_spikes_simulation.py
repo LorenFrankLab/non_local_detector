@@ -247,7 +247,7 @@ def get_firing_rate(
 def simulate_two_state_inhomogenous_poisson(
     seed: int | None = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate a two-state inhomogenous Poisson process.
+    """Simulate a two-state inhomogeneous Poisson process.
 
     Parameters
     ----------
@@ -354,7 +354,7 @@ def make_continuous_replay(
     Returns
     -------
     test_spikes : np.ndarray, shape (n_time, n_neurons)
-        Binned spike indicator. 1 means spike occured. 0 means no spike occured.
+        Binned spike indicator. 1 means spike occurred. 0 means no spike occurred.
 
     """
     neuron_order = (

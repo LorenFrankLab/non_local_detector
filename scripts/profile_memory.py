@@ -27,18 +27,18 @@ sys.path.insert(0, "src")
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
+    fit_clusterless_kde_encoding_model as fit_log,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model as fit_reference,
+)
+from non_local_detector.likelihoods.clusterless_kde import mark_reference_scale
+from non_local_detector.likelihoods.clusterless_kde import (
+    predict_clusterless_kde_log_likelihood as predict_log,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood as predict_reference,
 )
-from non_local_detector.likelihoods.clusterless_kde import (
-    fit_clusterless_kde_encoding_model as fit_log,
-)
-from non_local_detector.likelihoods.clusterless_kde import (
-    predict_clusterless_kde_log_likelihood as predict_log,
-)
-from non_local_detector.likelihoods.clusterless_kde import mark_reference_scale
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 try:

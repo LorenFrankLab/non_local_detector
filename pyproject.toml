@@ -83,8 +83,10 @@ packages = ["src/non_local_detector"]
 
 # Ruff configuration
 [tool.ruff]
-src = ["src"]
 line-length = 88
+# Exploratory notebooks are not run in CI and carry stale cells; .claude holds
+# planning notes and throwaway evidence scripts.
+extend-exclude = ["notebooks", ".claude"]
 
 [tool.ruff.lint]
 select = [
@@ -140,6 +142,7 @@ exclude_lines = [
 
 # Pytest configuration
 [tool.pytest.ini_options]
+minversion = "8.4"
 testpaths = ["src/non_local_detector/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
@@ -147,10 +150,13 @@ python_functions = ["test_*"]
 addopts = [
     "-v",
     "--tb=short",
+    "--strict-config",
     "--strict-markers",
     "--durations=10",
     "-ra",
 ]
+xfail_strict = true
+log_level = "INFO"
 # Per-test limit from pytest-timeout (in the test extra), locally and in CI.
 timeout = 900
 
@@ -163,6 +169,12 @@ markers = [
     "property: marks property-based tests",
     "snapshot: marks snapshot regression tests (update with --snapshot-update)",
 ]
+
+[tool.codespell]
+skip = "uv.lock,*.ipynb,*.pkl,*.npz,*.png,*.svg"
+# Patsy's te() tensor-product term, n-dimensional (einsum "nd"), S-hat (Shat),
+# and the "*afe*" glob in a plan's shell example.
+ignore-words-list = "afe,nd,shat,te"
 
 [dependency-groups]
 dev = [

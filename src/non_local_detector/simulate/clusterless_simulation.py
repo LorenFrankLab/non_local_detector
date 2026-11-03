@@ -249,7 +249,7 @@ def make_continuous_replay(
     track_height : float, optional
         Height of the simulated track
     running_speed : float, optional
-        Simualted speed of the animal
+        Simulated speed of the animal
     place_field_means : np.ndarray, optional
         Location of the center of the Gaussian place fields.
     replay_speedup : int, optional

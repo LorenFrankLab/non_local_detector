@@ -34,7 +34,7 @@ transition matrix before filtering in `_predict()`:
 
 ```python
 self.continuous_state_transitions_[cross_is_track_interior]
-* discrete_transitions[np.ix_(state_ind, state_ind)]
+*discrete_transitions[np.ix_(state_ind, state_ind)]
 ```
 
 The exact M-step for `A[i, j]` should therefore use expected transition counts
@@ -349,10 +349,7 @@ Prefer a new explicit function if that keeps the API clearer:
 
 ```python
 estimate_non_stationary_state_transition_from_responses(
-    transition_coefficients,
-    design_matrix,
-    response,
-    ...
+    transition_coefficients, design_matrix, response, ...
 )
 ```
 

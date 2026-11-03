@@ -1135,12 +1135,14 @@ Safe Refactoring Progress:
        # ... more code
        return final_result
 
+
    # After
    def complex_function():
        # ... code
        result = _calculate_intermediate(x, y)
        # ... code
        return final_result
+
 
    def _calculate_intermediate(x, y):
        return x * 2 + y
@@ -1151,6 +1153,7 @@ Safe Refactoring Progress:
    # Before
    def f(x):
        return x * 2
+
 
    # After
    def calculate_doubled_value(value):

@@ -345,7 +345,7 @@ def test_native_store_read_budget_can_be_set_when_reopening(
     "arguments",
     [
         {"transition_representation": "Dense"},
-        {"transition_representation": "structurd"},
+        {"transition_representation": "structurd"},  # codespell:ignore structurd
         {"transition_representation": ["dense"]},
         {"max_dense_transition_bytes": True},
         {"max_dense_transition_bytes": np.True_},

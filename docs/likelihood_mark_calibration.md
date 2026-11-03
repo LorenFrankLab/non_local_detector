@@ -30,7 +30,7 @@ u, v = ircm_transform(
     held_out_spike_waveform_features[electrode],
 )
 points = np.column_stack((u, v))
-ks_uniformity_test(points).p_value      # one p-value per coordinate
+ks_uniformity_test(points).p_value  # one p-value per coordinate
 pearson_chi_squared_test(points).p_value
 multivariate_ks_test(points, rng=0).p_value
 ```
@@ -219,7 +219,7 @@ for name, (ground_intensity, mark_cdf) in models.items():
     chi2 = pearson_chi_squared_test(points)
     print(
         f"{name}: KS p (u, v1, v2) {ks_uniformity_test(points).p_value}, "
-        f"chi-square p {chi2.p_value:.3g} ({chi2.n_bins_per_dim ** 3} cells), "
+        f"chi-square p {chi2.p_value:.3g} ({chi2.n_bins_per_dim**3} cells), "
         f"multivariate KS p {multivariate_ks_test(points, rng=0).p_value:.3f}"
     )
 ```

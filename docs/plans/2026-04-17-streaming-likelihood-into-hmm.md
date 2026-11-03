@@ -97,7 +97,8 @@ class TestStreamingCache:
         np.testing.assert_allclose(
             result_1["acausal_posterior"],
             result_5["acausal_posterior"],
-            atol=1e-4, rtol=1e-4,
+            atol=1e-4,
+            rtol=1e-4,
         )
 
     def test_sorted_spikes_chunked_matches_unchunked(self, fitted_sorted_detector):
@@ -107,7 +108,8 @@ class TestStreamingCache:
         np.testing.assert_allclose(
             result_1["acausal_posterior"],
             result_5["acausal_posterior"],
-            atol=1e-4, rtol=1e-4,
+            atol=1e-4,
+            rtol=1e-4,
         )
 ```
 

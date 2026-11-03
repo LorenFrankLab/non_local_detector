@@ -154,7 +154,9 @@ and return uniform initial conditions over all position bins.
 from dataclasses import replace
 
 # In initialize_initial_conditions():
-for obs, ic_type in zip(self.observation_models, self.continuous_initial_conditions_types):
+for obs, ic_type in zip(
+    self.observation_models, self.continuous_initial_conditions_types
+):
     effective_obs = obs
     if obs.is_local and self.local_position_std is not None:
         effective_obs = replace(obs, is_local=False)
@@ -282,8 +284,10 @@ def _compute_local_position_kernel(
     bin_centers = environment.place_bin_centers_[is_interior]
 
     # Compute squared distances using precomputed distance matrix
-    if (environment.track_graph is not None
-            and environment.distance_between_nodes_ is not None):
+    if (
+        environment.track_graph is not None
+        and environment.distance_between_nodes_ is not None
+    ):
         # Track graph case: use bin-index lookup into precomputed distance matrix
         animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
         # distance_between_nodes_ is dict-of-dicts for 1D track graph
@@ -305,12 +309,13 @@ def _compute_local_position_kernel(
                     continue
                 try:
                     d = environment.distance_between_nodes_[a_node][b_node]
-                    sq_dist[t, b] = d ** 2
+                    sq_dist[t, b] = d**2
                 except KeyError:
                     pass
         sq_dist = jnp.array(sq_dist)
-    elif (environment.distance_between_nodes_ is not None
-            and not isinstance(environment.distance_between_nodes_, dict)):
+    elif environment.distance_between_nodes_ is not None and not isinstance(
+        environment.distance_between_nodes_, dict
+    ):
         # 2D grid case: distance_between_nodes_ is an (n_bins, n_bins) array
         animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
         interior_bin_indices = np.where(is_interior)[0]
@@ -330,7 +335,7 @@ def _compute_local_position_kernel(
             axis=-1,
         )
 
-    log_kernel = -0.5 * sq_dist / (self.local_position_std ** 2)
+    log_kernel = -0.5 * sq_dist / (self.local_position_std**2)
     # Normalize per time step so kernel is a proper log-probability
     log_kernel -= jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
 
@@ -366,8 +371,7 @@ Both methods need identical changes. Four modifications in each:
 Current:
 ```python
 needs_position = (
-    np.any([obs.is_local for obs in self.observation_models])
-    or non_local_penalty > 0
+    np.any([obs.is_local for obs in self.observation_models]) or non_local_penalty > 0
 )
 ```
 

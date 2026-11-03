@@ -35,12 +35,21 @@ Several functions in `clusterless_kde_log.py` are decorated with `@jax.jit` or w
 ```python
 # Define the implementation as a private function
 def _estimate_log_joint_mark_intensity_impl(
-    decoding_spike_waveform_features, encoding_spike_waveform_features,
-    waveform_stds, occupancy, mean_rate, log_position_distance,
-    use_gemm, pos_tile_size, enc_tile_size, use_streaming,
-    encoding_positions, position_eval_points, position_std,
-):
-    ...  # existing body
+    decoding_spike_waveform_features,
+    encoding_spike_waveform_features,
+    waveform_stds,
+    occupancy,
+    mean_rate,
+    log_position_distance,
+    use_gemm,
+    pos_tile_size,
+    enc_tile_size,
+    use_streaming,
+    encoding_positions,
+    position_eval_points,
+    position_std,
+): ...  # existing body
+
 
 # Public API: JIT-wrapped for direct calls
 estimate_log_joint_mark_intensity = jax.jit(
@@ -77,7 +86,7 @@ class TestSearchsortedDigitizeEquivalence:
         reference = np.digitize(spike_times, time_edges[1:-1])
         # np.digitize(x, bins) with default args is equivalent to
         # searchsorted(bins, x, side='right')
-        result = jnp.searchsorted(time_edges[1:-1], spike_times, side='right')
+        result = jnp.searchsorted(time_edges[1:-1], spike_times, side="right")
 
         np.testing.assert_array_equal(np.asarray(result), reference)
 
@@ -87,7 +96,7 @@ class TestSearchsortedDigitizeEquivalence:
         spike_times = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 2.5])
 
         reference = np.digitize(spike_times, time_edges[1:-1])
-        result = jnp.searchsorted(time_edges[1:-1], spike_times, side='right')
+        result = jnp.searchsorted(time_edges[1:-1], spike_times, side="right")
 
         np.testing.assert_array_equal(np.asarray(result), reference)
 
@@ -97,7 +106,7 @@ class TestSearchsortedDigitizeEquivalence:
         spike_times = np.array([])
 
         reference = np.digitize(spike_times, time_edges[1:-1])
-        result = jnp.searchsorted(time_edges[1:-1], spike_times, side='right')
+        result = jnp.searchsorted(time_edges[1:-1], spike_times, side="right")
 
         np.testing.assert_array_equal(np.asarray(result), reference)
 ```
@@ -189,12 +198,24 @@ class TestJitBlockEstimateAccuracy:
             rng, n_enc=1000, n_dec=500, n_pos=100
         )
         result = block_estimate_log_joint_mark_intensity(
-            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos, block_size=block_size,
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            block_size=block_size,
         )
         reference = estimate_log_joint_mark_intensity(
-            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos,
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
         )
         from non_local_detector.likelihoods.common import LOG_EPS
+
         reference = jnp.clip(reference, a_min=LOG_EPS)
         # Structural refactor: should be near-exact
         assert jnp.allclose(result, reference, atol=1e-10, rtol=1e-10), (
@@ -209,7 +230,13 @@ class TestJitBlockEstimateAccuracy:
             rng, n_enc=10000, n_dec=5000, n_pos=200
         )
         result = block_estimate_log_joint_mark_intensity(
-            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos, block_size=500,
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            block_size=500,
         )
         assert result.shape == (5000, 200)
         assert jnp.all(jnp.isfinite(result))
@@ -227,9 +254,16 @@ class TestJitBlockEstimateAccuracy:
         )
         dec_wf_empty = jnp.zeros((0, 4))
         result = block_estimate_log_joint_mark_intensity(
-            dec_wf_empty, enc_wf, wf_std, occ, 5.0, log_pos, block_size=100,
+            dec_wf_empty,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            block_size=100,
         )
         from non_local_detector.likelihoods.common import LOG_EPS
+
         assert result.shape == (0, 50)
 
 
@@ -259,11 +293,19 @@ class TestJitBlockEstimateJaxpr:
         # Trace the PRIVATE _impl (not the JIT-wrapped public API)
         fn = functools.partial(
             _block_estimate_log_joint_mark_intensity_impl,
-            block_size=50, use_gemm=True, pos_tile_size=None,
-            enc_tile_size=None, use_streaming=False,
+            block_size=50,
+            use_gemm=True,
+            pos_tile_size=None,
+            enc_tile_size=None,
+            use_streaming=False,
         )
         jaxpr = jax.make_jaxpr(fn)(
-            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos,
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
         )
 
         primitives = [eqn.primitive.name for eqn in jaxpr.jaxpr.eqns]
@@ -395,6 +437,7 @@ class TestGemmPrecompute:
             _precompute_encoding_gemm_quantities,
             _compute_log_mark_kernel_from_precomputed,
         )
+
         rng = np.random.default_rng(42)
         n_enc, n_dec, n_wf = 1000, 200, 4
         enc_wf = jnp.array(rng.standard_normal((n_enc, n_wf)) * 50)
@@ -414,6 +457,7 @@ class TestGemmPrecompute:
             _precompute_encoding_gemm_quantities,
             _compute_log_mark_kernel_from_precomputed,
         )
+
         rng = np.random.default_rng(42)
         n_enc, n_wf = 500, 4
         enc_wf = jnp.array(rng.standard_normal((n_enc, n_wf)) * 50)
@@ -447,7 +491,7 @@ def _precompute_encoding_gemm_quantities(
         n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
     )
     Y = encoding_features * inv_sigma[None, :]
-    y2 = jnp.sum(Y ** 2, axis=1)
+    y2 = jnp.sum(Y**2, axis=1)
     return (inv_sigma, log_norm_const, Y, y2)
 
 
@@ -458,7 +502,7 @@ def _compute_log_mark_kernel_from_precomputed(
     """Compute log mark kernel using precomputed encoding quantities."""
     inv_sigma, log_norm_const, Y, y2 = precomp
     X = decoding_features * inv_sigma[None, :]
-    x2 = jnp.sum(X ** 2, axis=1)
+    x2 = jnp.sum(X**2, axis=1)
     cross_term = X @ Y.T
     sq_dist = jnp.maximum(y2[:, None] + x2[None, :] - 2.0 * cross_term.T, 0.0)
     return log_norm_const - 0.5 * sq_dist
@@ -539,9 +583,15 @@ def simulated_data():
         for st, wf in zip(sim.spike_times, sim.spike_waveform_features, strict=False)
     ]
     encoding_model = fit_clusterless_kde_encoding_model(
-        encode_time, encode_pos, encode_spikes, encode_wf,
-        sim.environment, position_std=6.0, waveform_std=24.0,
-        block_size=100, disable_progress_bar=True,
+        encode_time,
+        encode_pos,
+        encode_spikes,
+        encode_wf,
+        sim.environment,
+        position_std=6.0,
+        waveform_std=24.0,
+        block_size=100,
+        disable_progress_bar=True,
     )
     test_edges = sim.edges[sim.edges >= encode_time[-1]]
     test_spikes = [st[st >= encode_time[-1]] for st in sim.spike_times]
@@ -577,13 +627,19 @@ class TestJitElectrodeLoop:
         from pathlib import Path
 
         d = simulated_data
-        golden_path = Path(__file__).parent / "golden_data" / "task3_nonlocal_reference.pkl"
+        golden_path = (
+            Path(__file__).parent / "golden_data" / "task3_nonlocal_reference.pkl"
+        )
 
         result = predict_clusterless_kde_log_likelihood(
-            d["test_edges"], d["test_time"], d["test_position"],
-            d["test_spikes"], d["test_wf"],
+            d["test_edges"],
+            d["test_time"],
+            d["test_position"],
+            d["test_spikes"],
+            d["test_wf"],
             **d["encoding_model"],
-            is_local=False, disable_progress_bar=True,
+            is_local=False,
+            disable_progress_bar=True,
         )
 
         if not golden_path.exists():
@@ -658,16 +714,32 @@ class TestFusedSegmentSum:
 
         # Separate: block_estimate then segment_sum
         mark_intensity = block_estimate_log_joint_mark_intensity(
-            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos, block_size=100,
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            block_size=100,
         )
         reference = jax.ops.segment_sum(
-            mark_intensity, seg_ids, num_segments=n_time, indices_are_sorted=True,
+            mark_intensity,
+            seg_ids,
+            num_segments=n_time,
+            indices_are_sorted=True,
         )
 
         # Fused version
         result = _block_estimate_with_segment_sum(
-            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos,
-            seg_ids, n_time, block_size=100,
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            seg_ids,
+            n_time,
+            block_size=100,
         )
 
         assert jnp.allclose(result, reference, atol=1e-10, rtol=1e-10)
@@ -680,7 +752,9 @@ The fused fori_loop body computes each block's mark intensity and immediately ca
 ```python
 def process_block(i, time_likelihood):
     start = i * block_size
-    block_features = jax.lax.dynamic_slice(dec_wf_padded, (start, 0), (block_size, n_wf))
+    block_features = jax.lax.dynamic_slice(
+        dec_wf_padded, (start, 0), (block_size, n_wf)
+    )
     block_seg_ids = jax.lax.dynamic_slice(seg_ids_padded, (start,), (block_size,))
 
     block_mark = _estimate_log_joint_mark_intensity_impl(
@@ -690,7 +764,10 @@ def process_block(i, time_likelihood):
 
     # Padded spikes have seg_id = n_time (dummy bin, ignored by segment_sum)
     block_contribution = jax.ops.segment_sum(
-        block_mark, block_seg_ids, num_segments=n_time, indices_are_sorted=True,
+        block_mark,
+        block_seg_ids,
+        num_segments=n_time,
+        indices_are_sorted=True,
     )
     return time_likelihood + block_contribution
 ```
@@ -709,7 +786,10 @@ def process_block(i, time_likelihood):
 
 ```python
 def _auto_select_tile_sizes(
-    n_enc: int, n_dec: int, n_pos: int, n_wf: int,
+    n_enc: int,
+    n_dec: int,
+    n_pos: int,
+    n_wf: int,
     memory_budget_bytes: int | None = None,
 ) -> dict:
     """Auto-select tiling parameters based on memory budget."""
