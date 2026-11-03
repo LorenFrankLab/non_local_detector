@@ -5,6 +5,8 @@ tests pin the coordinates both share, including those downstream code
 (Spyglass) reads, and check they survive ``save_results``/``load_results``.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -14,6 +16,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     SortedSpikesDecoder,
 )
+from non_local_detector.models import _results
 
 pytestmark = pytest.mark.integration
 
@@ -165,3 +168,20 @@ def test_time_bin_width_is_each_bins_duration(result):
     np.testing.assert_array_equal(
         result.time_bin_width, np.diff(_PREDICT["time_edges"])
     )
+
+
+@pytest.mark.filterwarnings("ignore:EM did not converge")
+def test_layout_docs_name_every_field(fitted, dense, checkpointed):
+    """The user docs and the module docstring list every coordinate, data
+    variable and attribute of dense, checkpointed and EM results."""
+    em = type(fitted)(**fitted.get_params()).estimate_parameters(
+        **_PREDICT, max_iter=1, return_outputs="all"
+    )
+    names = {
+        name
+        for result in (dense, checkpointed, em)
+        for name in [*result.coords, *result.data_vars, *result.attrs]
+    }
+    docs = (Path(__file__).parents[2] / "docs" / "result_layout.md").read_text()
+    assert sorted(n for n in names if f"`{n}`" not in docs) == []
+    assert sorted(n for n in names if f"``{n}``" not in _results.__doc__) == []
