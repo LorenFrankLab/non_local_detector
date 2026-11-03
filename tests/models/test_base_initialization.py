@@ -5,7 +5,7 @@ These tests cover the initialization methods that set up model components:
 - _initialize_observation_models
 - _initialize_state_names
 - initialize_environments (environment fitting)
-- initialize_state_index
+- _initialize_state_index
 """
 
 import networkx as nx
@@ -457,26 +457,26 @@ def _n_state_decoder(environment, discrete_initial_conditions):
 
 @pytest.mark.unit
 class TestInitializeStateIndex:
-    """Test initialize_state_index method."""
+    """Test _initialize_state_index method."""
 
     def test_initialize_state_index_sets_n_discrete_states(self, simple_1d_environment):
-        """Test that initialize_state_index sets n_discrete_states_."""
+        """Test that _initialize_state_index sets n_discrete_states_."""
         # Arrange
         decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.3, 0.2]))
 
         # Act
-        decoder.initialize_state_index()
+        decoder._initialize_state_index()
 
         # Assert
         assert decoder.n_discrete_states_ == 3
 
     def test_initialize_state_index_sets_state_ind(self, simple_1d_environment):
-        """Test that initialize_state_index creates state_ind_ array."""
+        """Test that _initialize_state_index creates state_ind_ array."""
         # Arrange
         decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.5]))
 
         # Act
-        decoder.initialize_state_index()
+        decoder._initialize_state_index()
 
         # Assert
         assert hasattr(decoder, "state_ind_")
@@ -484,12 +484,12 @@ class TestInitializeStateIndex:
         assert len(decoder.state_ind_) == decoder.n_state_bins_
 
     def test_initialize_state_index_sets_bin_sizes(self, simple_1d_environment):
-        """Test that initialize_state_index creates bin_sizes_ array."""
+        """Test that _initialize_state_index creates bin_sizes_ array."""
         # Arrange
         decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.5]))
 
         # Act
-        decoder.initialize_state_index()
+        decoder._initialize_state_index()
 
         # Assert
         assert hasattr(decoder, "bin_sizes_")
@@ -504,18 +504,18 @@ class TestInitializeStateIndex:
         decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.3, 0.2]))
 
         # Act
-        decoder.initialize_state_index()
+        decoder._initialize_state_index()
 
         # Assert
         assert decoder.n_state_bins_ == sum(decoder.bin_sizes_)
 
     def test_initialize_state_index_sets_is_track_interior(self, simple_1d_environment):
-        """Test that initialize_state_index sets is_track_interior_state_bins_."""
+        """Test that _initialize_state_index sets is_track_interior_state_bins_."""
         # Arrange
         decoder = _n_state_decoder(simple_1d_environment, np.array([1.0]))
 
         # Act
-        decoder.initialize_state_index()
+        decoder._initialize_state_index()
 
         # Assert
         assert hasattr(decoder, "is_track_interior_state_bins_")

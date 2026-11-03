@@ -2548,7 +2548,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             fitted_environments.append(environment)
         self.environments = tuple(fitted_environments)
 
-    def initialize_state_index(self) -> None:
+    def _initialize_state_index(self) -> None:
         """Initialize indices and parameters related to the combined state space.
 
         Determines the total number of bins across all discrete states (spatial
@@ -2598,7 +2598,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self.bin_sizes_ = np.array(bin_sizes)
         self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
 
-    def initialize_initial_conditions(self) -> None:
+    def _initialize_initial_conditions(self) -> None:
         """Construct the initial probability for the state and each spatial bin.
 
         Attributes
@@ -2630,7 +2630,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             * self.discrete_initial_conditions[self.state_ind_]
         )
 
-    def initialize_continuous_state_transition(
+    def _initialize_continuous_state_transition(
         self,
         continuous_transition_types: ContinuousTransitions,
         position: np.ndarray | None = None,
@@ -2787,7 +2787,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     self.discrete_transition_coefficients_.shape[1],
                 )[0]
 
-    def initialize_discrete_state_transition(
+    def _initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None = None
     ) -> None:
         """
@@ -3252,15 +3252,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
-        self.initialize_state_index()
-        self.initialize_initial_conditions()
-        self.initialize_discrete_state_transition(
+        self._initialize_state_index()
+        self._initialize_initial_conditions()
+        self._initialize_discrete_state_transition(
             covariate_data=discrete_transition_covariate_data
         )
         # The transitions are rebuilt from their configuration, not learned.
         self.transition_time_bin_width_: float | None = None
         self._transition_time_bin_width_tolerance = 0.0
-        self.initialize_continuous_state_transition(
+        self._initialize_continuous_state_transition(
             continuous_transition_types=self.continuous_transition_types,
             transition_representation=transition_representation,
             max_dense_transition_bytes=max_dense_transition_bytes,

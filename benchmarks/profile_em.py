@@ -327,15 +327,15 @@ def instrumented(profiler, detector_class):
         (detector_class, "fit", "fit"),
         (detector_class, "initialize_environments", "environments"),
         (environment_module.Environment, "fit_place_grid", "fit_place_grid"),
-        (detector_class, "initialize_state_index", "state_index"),
+        (detector_class, "_initialize_state_index", "state_index"),
         (
             detector_class,
-            "initialize_discrete_state_transition",
+            "_initialize_discrete_state_transition",
             "discrete_transition",
         ),
         (
             detector_class,
-            "initialize_continuous_state_transition",
+            "_initialize_continuous_state_transition",
             "continuous_transition",
         ),
         (detector_class, "fit_encoding_model", "encoding_fit"),
