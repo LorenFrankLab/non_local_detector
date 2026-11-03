@@ -12,6 +12,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
+from non_local_detector.discrete_state_transitions import DiscreteStationaryDiagonal
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
@@ -76,6 +77,7 @@ class TestInitializeEnvironments:
         # Act
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.5]),
+            discrete_transition_type=DiscreteStationaryDiagonal(np.full(2, 0.9)),
             continuous_initial_conditions_types=[
                 "uniform_on_track",
                 "uniform_on_track",
@@ -101,6 +103,7 @@ class TestInitializeEnvironments:
         # Act
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.5]),
+            discrete_transition_type=DiscreteStationaryDiagonal(np.full(2, 0.9)),
             continuous_initial_conditions_types=[
                 "uniform_on_track",
                 "uniform_on_track",
@@ -158,6 +161,7 @@ class TestInitializeObservationModels:
         # Act
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.33, 0.33, 0.34]),
+            discrete_transition_type=DiscreteStationaryDiagonal(np.full(3, 0.9)),
             continuous_initial_conditions_types=[
                 "uniform_on_track",
                 "uniform_on_track",
@@ -188,6 +192,7 @@ class TestInitializeObservationModels:
         # Act
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.5]),
+            discrete_transition_type=DiscreteStationaryDiagonal(np.full(2, 0.9)),
             continuous_initial_conditions_types=[
                 "uniform_on_track",
                 "uniform_on_track",
@@ -260,6 +265,7 @@ class TestInitializeStateNames:
         # Act
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.3, 0.2]),
+            discrete_transition_type=DiscreteStationaryDiagonal(np.full(3, 0.9)),
             continuous_initial_conditions_types=[
                 "uniform_on_track",
                 "uniform_on_track",
@@ -284,6 +290,7 @@ class TestInitializeStateNames:
             # Act
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.3, 0.2]),  # 3 states
+                discrete_transition_type=DiscreteStationaryDiagonal(np.full(3, 0.9)),
                 continuous_initial_conditions_types=[
                     "uniform_on_track",
                     "uniform_on_track",
@@ -346,6 +353,7 @@ class TestInitializeEnvironmentsFitting:
         obs2 = ObservationModel(environment_name="env2", is_local=False)
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.5]),
+            discrete_transition_type=DiscreteStationaryDiagonal(np.full(2, 0.9)),
             continuous_initial_conditions_types=[
                 "uniform_on_track",
                 "uniform_on_track",
@@ -438,6 +446,9 @@ def _n_state_decoder(environment, discrete_initial_conditions):
     n_states = len(discrete_initial_conditions)
     decoder = SortedSpikesDecoder(
         discrete_initial_conditions=discrete_initial_conditions,
+        discrete_transition_type=DiscreteStationaryDiagonal(
+            np.full(len(discrete_initial_conditions), 0.9)
+        ),
         continuous_initial_conditions_types=["uniform_on_track"] * n_states,
         continuous_transition_types=["random_walk"] * n_states,
         discrete_transition_stickiness=0.0,
