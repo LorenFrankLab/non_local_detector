@@ -69,13 +69,13 @@ interior. State probabilities are float32 with JAX's default precision.
 | `causal_posterior` | `(time, state_bins)` | `"filter"` | No | Probability given the data up to each bin (filter) |
 | `causal_state_probabilities` | `(time, states)` | `"filter"` | Yes | State probability given the data up to each bin |
 | `predictive_state_probabilities` | `(time, states)` | `"predictive"` | Yes | State probability given the data before each bin (one-step-ahead prediction) |
-| `predictive_posterior` | `(time, state_bins)` | `"predictive"`, `"predictive_posterior"` | No | One-step-ahead predicted probability of each state and position |
+| `predictive_posterior` | `(time, state_bins)` | `"predictive_posterior"` | No | One-step-ahead predicted probability of each state and position |
 | `log_likelihood` | `(time, state_bins)` | `"log_likelihood"` | No | Log likelihood of each bin's spikes at each state bin |
 
-The column "Added by `return_outputs`" lists the string options that add each
-variable; `return_outputs="all"` adds every one. In a list, `"predictive"` adds
-only `predictive_state_probabilities`. Checkpointed compact results accept only
-`"filter"` and `"predictive"`, and hold only the variables marked "Yes".
+The column "Added by `return_outputs`" lists the option that adds each
+variable, alone or in a list or set; `return_outputs="all"` adds every one.
+Checkpointed compact results accept only `"filter"` and `"predictive"`, and
+hold only the variables marked "Yes".
 For a single-state model, the `(time, states)` variables are `(time,)`.
 
 Checkpointed spatial results read their `state_bins` variables lazily from the

@@ -24,7 +24,7 @@ from functools import partial
 from itertools import pairwise
 from logging import getLogger
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 import jax
 import jax.numpy as jnp
@@ -133,30 +133,23 @@ from non_local_detector.types import (
     DiscreteTransitions,
     Environments,
     FrozenTransitionRows,
+    InferenceMode,
     Observations,
+    OutputMode,
+    OutputName,
+    ReturnOutputs,
     StateNames,
     Stickiness,
+    TransitionRepresentation,
 )
 
 logger = getLogger(__name__)
 
-# Valid options for return_outputs parameter
-VALID_OUTPUTS: set[str] = {
-    "filter",
-    "predictive",
-    "predictive_posterior",
-    "log_likelihood",
-    "all",
-}
-
-# Mapping of single string options to sets of outputs
-OUTPUT_INCLUDES: dict[str, set[str]] = {
-    "filter": {"filter"},
-    "predictive": {"predictive", "predictive_posterior"},
-    "predictive_posterior": {"predictive_posterior"},
-    "log_likelihood": {"log_likelihood"},
-    "all": {"filter", "predictive", "predictive_posterior", "log_likelihood"},
-}
+# The optional outputs ``return_outputs`` can name; "all" names every one.
+_OPTIONAL_OUTPUTS: frozenset[str] = frozenset(
+    {"filter", "predictive", "predictive_posterior", "log_likelihood"}
+)
+VALID_OUTPUTS: frozenset[str] = _OPTIONAL_OUTPUTS | {"all"}
 
 
 @dataclass(frozen=True)
@@ -340,14 +333,16 @@ def _prepare_likelihood_callback(
 
 
 def _validate_transition_arguments(
-    transition_representation: str, max_dense_transition_bytes: int
+    transition_representation: TransitionRepresentation, max_dense_transition_bytes: int
 ) -> None:
     """Reject unsupported transition settings before any fitted state changes."""
-    if not isinstance(transition_representation, str) or (  # type: ignore[redundant-expr]  # runtime check of caller input
-        transition_representation not in {"dense", "structured", "auto"}
-    ):
+    if transition_representation not in get_args(TransitionRepresentation):
         msg = "transition_representation must be dense, structured, or auto"
-        raise ValidationError(msg)
+        raise ValidationError(
+            msg,
+            expected=f"one of {get_args(TransitionRepresentation)}",
+            got=repr(transition_representation),
+        )
     if (
         isinstance(max_dense_transition_bytes, (bool, np.bool_))
         or not isinstance(max_dense_transition_bytes, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
@@ -358,8 +353,8 @@ def _validate_transition_arguments(
 
 
 def _validate_inference_arguments(
-    inference_mode: str,
-    output_mode: str,
+    inference_mode: InferenceMode,
+    output_mode: OutputMode,
     cache_likelihood: bool,
     n_chunks: int,
     chunk_size: int | None,
@@ -368,26 +363,47 @@ def _validate_inference_arguments(
     selected_intervals: np.ndarray | None,
     replay_cache_bytes: int | None = None,
 ) -> None:
-    """Reject prediction-mode settings that the chosen inference mode ignores."""
-    if inference_mode not in {"dense", "checkpointed"}:
+    """Reject prediction-mode settings that the chosen inference mode ignores.
+
+    Raises
+    ------
+    ValidationError
+        If either mode is unknown or an option does not apply to the mode.
+    """
+    if inference_mode not in get_args(InferenceMode):
         msg = "inference_mode must be dense or checkpointed"
-        raise ValidationError(msg)
+        raise ValidationError(
+            msg, expected=f"one of {get_args(InferenceMode)}", got=repr(inference_mode)
+        )
+    if output_mode not in get_args(OutputMode):
+        msg = "output_mode must be compact or spatial"
+        raise ValidationError(
+            msg, expected=f"one of {get_args(OutputMode)}", got=repr(output_mode)
+        )
     if inference_mode == "checkpointed" and (cache_likelihood or n_chunks != 1):
         msg = "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
-        raise ValueError(msg)
-    if output_mode not in {"compact", "spatial"}:
-        msg = "output_mode must be compact or spatial"
-        raise ValidationError(msg)
-    if inference_mode == "dense" and (
-        output_mode != "spatial"
-        or chunk_size is not None
-        or result_path is not None
-        or checkpoint_dir is not None
-        or selected_intervals is not None
-        or replay_cache_bytes is not None
-    ):
+        raise ValidationError(
+            msg,
+            got=f"cache_likelihood={cache_likelihood}, n_chunks={n_chunks}",
+            hint="Checkpointed prediction never caches the likelihood and sets "
+            "its chunk rows with chunk_size.",
+        )
+    dense_ignored = {
+        "output_mode": output_mode != "spatial",
+        "chunk_size": chunk_size is not None,
+        "result_path": result_path is not None,
+        "checkpoint_dir": checkpoint_dir is not None,
+        "selected_intervals": selected_intervals is not None,
+        "replay_cache_bytes": replay_cache_bytes is not None,
+    }
+    if inference_mode == "dense" and any(dense_ignored.values()):
         msg = "output selection/storage options require inference_mode='checkpointed'"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            got=", ".join(name for name, given in dense_ignored.items() if given),
+            hint="Pass inference_mode='checkpointed', or drop these options for "
+            "dense prediction.",
+        )
 
 
 def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
@@ -609,13 +625,13 @@ def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
 
 
 def _resolve_em_options(
-    transition_representation: str,
+    transition_representation: TransitionRepresentation,
     n_chunks: int,
     chunk_size: int | None,
     result_path: str | Path | None,
     store_log_likelihood: bool,
     replay_cache_bytes: int | None,
-) -> str:
+) -> TransitionRepresentation:
     """Resolve "auto" with ``n_chunks`` to dense EM, then validate the options.
 
     ``n_chunks`` is a dense-EM option and ``chunk_size``, ``result_path`` and
@@ -658,7 +674,7 @@ def _resolve_em_options(
 def _validate_estimation_arguments(
     time_edges: ArrayLike,
     n_chunks: int,
-    return_outputs: str | list[str] | set[str] | None,
+    return_outputs: ReturnOutputs,
     save_log_likelihood_to_results: bool | None,
     min_encoding_local_mass: float,
     min_encoding_local_ess: float,
@@ -774,7 +790,6 @@ class _EMSettings:
     cache_likelihood: bool
     store_log_likelihood: bool
     result_path: str | Path | None
-    return_outputs: str | list[str] | set[str] | None
     requested_outputs: set[str]
     em_attrs: dict[str, Any]
     estimate_initial_conditions: bool
@@ -1456,15 +1471,16 @@ def _validate_covariate_time_length(
         raise ValueError(msg)
 
 
-def _normalize_return_outputs(
-    return_outputs: str | list[str] | set[str] | None,
-) -> set[str]:
-    """Convert return_outputs to canonical set of output names.
+def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
+    """Convert ``return_outputs`` to the set of optional outputs it names.
+
+    A string names the same outputs as a one-element list: each name adds
+    only its own output, and "all" adds every one.
 
     Parameters
     ----------
     return_outputs : str, list of str, set of str, or None
-        Controls which optional outputs are included.
+        Output names from ``VALID_OUTPUTS``.
 
     Returns
     -------
@@ -1474,42 +1490,32 @@ def _normalize_return_outputs(
 
     Raises
     ------
-    ValueError
+    ValidationError
         If return_outputs contains invalid option names.
     TypeError
         If return_outputs is not str, list, set, or None.
     """
     if return_outputs is None:
         return set()
-
     if isinstance(return_outputs, str):
-        if return_outputs not in VALID_OUTPUTS:
-            msg = (
-                f"Invalid return_outputs='{return_outputs}'. "
-                f"Must be one of: {sorted(VALID_OUTPUTS)}"
-            )
-            raise ValueError(msg)
-        return OUTPUT_INCLUDES.get(return_outputs, {return_outputs})
-
-    if isinstance(return_outputs, list | set):
-        outputs_set = set(return_outputs)
-        invalid = outputs_set - VALID_OUTPUTS
-        if invalid:
-            msg = (
-                f"Invalid outputs: {sorted(invalid)}. "
-                f"Valid options are: {sorted(VALID_OUTPUTS)}"
-            )
-            raise ValueError(msg)
-        # Expand 'all' if present
-        if "all" in outputs_set:
-            return OUTPUT_INCLUDES["all"]
-        return outputs_set
-
-    msg = (  # type: ignore[unreachable]  # runtime validation of an unsupported type
-        f"return_outputs must be str, list of str, set of str, or None. "
-        f"Got {type(return_outputs).__name__}"
-    )
-    raise TypeError(msg)
+        names: set[str] = {return_outputs}
+    elif isinstance(return_outputs, list | set):
+        names = set(return_outputs)
+    else:
+        msg = (  # type: ignore[unreachable]  # runtime validation of an unsupported type
+            f"return_outputs must be str, list of str, set of str, or None. "
+            f"Got {type(return_outputs).__name__}"
+        )
+        raise TypeError(msg)
+    invalid = names - VALID_OUTPUTS
+    if invalid:
+        msg = f"Invalid return_outputs: {sorted(invalid)}"
+        raise ValidationError(
+            msg,
+            expected=f"names from {sorted(VALID_OUTPUTS)}",
+            got=repr(return_outputs),
+        )
+    return set(_OPTIONAL_OUTPUTS) if "all" in names else names
 
 
 class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is untyped (BaseEstimator is Any)
@@ -2638,7 +2644,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         *,
-        transition_representation: str = "dense",
+        transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> None:
         """
@@ -3179,7 +3185,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         environment_labels: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         *,
-        transition_representation: str = "dense",
+        transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "_DetectorBase":
         """
@@ -3616,15 +3622,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         cache_likelihood: bool,
         n_chunks: int,
-        inference_mode: str,
-        output_mode: str,
+        inference_mode: InferenceMode,
+        output_mode: OutputMode,
         chunk_size: int | None,
         result_path: str | Path | None,
         checkpoint_dir: str | Path | None,
         selected_intervals: np.ndarray | None,
         max_read_bytes: int,
         replay_cache_bytes: int | None,
-        return_outputs: str | list[str] | set[str] | None,
+        return_outputs: ReturnOutputs,
         save_log_likelihood_to_results: bool | None,
         save_causal_posterior_to_results: bool | None,
     ) -> xr.Dataset:
@@ -3667,7 +3673,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             )
 
             # Convert old flags to new format
-            outputs_from_flags = set()
+            outputs_from_flags: set[OutputName] = set()
             if save_log_likelihood_to_results:
                 outputs_from_flags.add("log_likelihood")
             if save_causal_posterior_to_results:
@@ -3737,7 +3743,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 checkpoint_dir=checkpoint_dir,
                 selected_intervals=selected_intervals,
                 requested_outputs=requested_outputs,
-                return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
                 replay_cache_bytes=replay_cache_bytes,
             )
@@ -3814,14 +3819,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         cache_likelihood: bool,
         store_log_likelihood: bool,
         n_chunks: int,
-        return_outputs: str | list[str] | set[str] | None,
+        return_outputs: ReturnOutputs,
         save_log_likelihood_to_results: bool | None,
         min_encoding_local_mass: float,
         min_encoding_local_ess: float,
         encoding_update_damping: float,
         encoding_time_range: np.ndarray | None,
         valid_position_intervals: np.ndarray | None,
-        transition_representation: str,
+        transition_representation: TransitionRepresentation,
         max_dense_transition_bytes: int,
         chunk_size: int | None,
         result_path: str | Path | None,
@@ -4269,13 +4274,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         log_likelihood_args: tuple[Any, ...],
         is_missing: np.ndarray | None,
         discrete_transitions: np.ndarray | None,
-        output_mode: str,
+        output_mode: OutputMode,
         chunk_size: int | None,
         result_path: str | Path | None,
         checkpoint_dir: str | Path | None,
         selected_intervals: np.ndarray | None,
         requested_outputs: set[str],
-        return_outputs: str | list[str] | set[str] | None,
         max_read_bytes: int,
         replay_cache_bytes: int | None,
         em_attrs: Callable[[float], dict[str, Any]] | None = None,
@@ -4294,23 +4298,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if replay_cache_bytes is None:
             replay_cache_bytes = default_replay_cache_bytes()
 
-        if (
-            output_mode == "compact"
-            and isinstance(return_outputs, str)
-            and return_outputs == "predictive"
-        ):
-            # The string "predictive" also names the spatial predictive
-            # posterior, which compact output cannot hold.
-            requested_outputs = requested_outputs - {"predictive_posterior"}
         if output_mode == "spatial" and result_path is None:
             msg = "Checkpointed spatial prediction requires result_path"
-            raise ValueError(msg)
+            raise ValidationError(
+                msg,
+                hint="Pass a new directory as result_path, or use output_mode='compact'.",
+            )
         if output_mode == "compact" and requested_outputs & {
             "log_likelihood",
             "predictive_posterior",
         }:
             msg = "Spatial outputs (including return_outputs='all') require output_mode='spatial'"
-            raise ValueError(msg)
+            raise ValidationError(
+                msg,
+                got=f"return_outputs requesting {sorted(requested_outputs)}",
+                hint="Compact output holds state probabilities only; request "
+                "'filter' and 'predictive', or use output_mode='spatial' with a result_path.",
+            )
         self._validate_time_contract()
         edges, centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
@@ -4533,7 +4537,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
     def _fit_em_model(
         self,
         fit: Callable[[str], Any],
-        transition_representation: str,
+        transition_representation: TransitionRepresentation,
         n_time: int,
         structured_required: bool,
     ) -> None:
@@ -4642,7 +4646,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        return_outputs: str | list[str] | set[str] | None = None,
+        return_outputs: ReturnOutputs = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
@@ -4709,10 +4713,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
             Options:
             - 'filter' : causal (filtered) posterior and state probabilities
-            - 'predictive' : predictive state probabilities and posterior
-            - 'predictive_posterior' : predictive posterior only
+            - 'predictive' : predictive state probabilities
+            - 'predictive_posterior' : predictive posterior over state bins
             - 'log_likelihood' : log likelihoods
             - 'all' : all of the above
+
+            A name adds the same outputs alone or in a list or set.
 
             By default None (only smoother posterior and state probabilities).
         save_log_likelihood_to_results : bool, optional
@@ -4873,7 +4879,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         cache_likelihood: bool,
         store_log_likelihood: bool,
         n_chunks: int,
-        return_outputs: str | list[str] | set[str] | None,
+        return_outputs: ReturnOutputs,
         save_log_likelihood_to_results: bool | None,
         min_encoding_local_mass: float,
         min_encoding_local_ess: float,
@@ -5032,7 +5038,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             cache_likelihood=cache_likelihood,
             store_log_likelihood=store_log_likelihood,
             result_path=result_path,
-            return_outputs=return_outputs,
             requested_outputs=requested_outputs,
             em_attrs=em_attrs,
             estimate_initial_conditions=estimate_initial_conditions,
@@ -5523,7 +5528,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 checkpoint_dir=None,
                 selected_intervals=None,
                 requested_outputs=requested_outputs,
-                return_outputs=settings.return_outputs,
                 max_read_bytes=DEFAULT_MAX_READ_BYTES,
                 replay_cache_bytes=settings.replay_cache_bytes,
                 # The store is complete before its marginal log-likelihood
@@ -6360,7 +6364,7 @@ class ClusterlessDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "dense",
+        transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "ClusterlessDetector":
         """
@@ -6584,15 +6588,15 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
-        inference_mode: str = "dense",
-        output_mode: str = "spatial",
+        inference_mode: InferenceMode = "dense",
+        output_mode: OutputMode = "spatial",
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         replay_cache_bytes: int | None = None,
-        return_outputs: str | list[str] | set[str] | None = None,
+        return_outputs: ReturnOutputs = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
     ) -> xr.Dataset:
@@ -6632,12 +6636,14 @@ class ClusterlessDetector(_DetectorBase):
             Options:
             - None: smoother only (default, minimal memory)
             - 'filter': filtered (causal) posterior and state probabilities
-            - 'predictive': both aggregated and full predictive distributions
-            - 'predictive_posterior': only full predictive posterior (state bins)
+            - 'predictive': one-step-ahead (predictive) state probabilities
+            - 'predictive_posterior': one-step-ahead posterior over state bins
             - 'log_likelihood': per-timepoint log likelihoods
             - 'all': all outputs above
             - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
 
+            A name adds the same outputs alone or in a list or set; ask for
+            both predictive outputs with ['predictive', 'predictive_posterior'].
             acausal_state_probabilities and marginal_log_likelihood are always
             included; acausal_posterior is included except in checkpointed
             compact output. Compact output holds state probabilities only, so
@@ -6646,13 +6652,14 @@ class ClusterlessDetector(_DetectorBase):
 
             When to use each output:
             - 'filter': Online/causal decoding, debugging forward pass
-            - 'predictive': Model evaluation, predictive checks (includes both formats)
-            - 'predictive_posterior': When you only need full distribution, not aggregated
+            - 'predictive': Model evaluation, predictive checks of the states
+            - 'predictive_posterior': Predictive checks over position
             - 'log_likelihood': Diagnostics, per-timepoint metrics, model comparison
 
-            Memory warning: 'log_likelihood', 'filter', 'predictive', and
-            'predictive_posterior' can be very large (~400 GB for 1M timepoints × 100k
-            spatial bins). Use checkpointed compact mode to bound spatial memory.
+            Memory warning: 'log_likelihood', 'filter' and 'predictive_posterior'
+            hold (n_time, n_state_bins) arrays, which can be very large (~400 GB
+            for 1M timepoints × 100k spatial bins). Use checkpointed compact mode
+            to bound spatial memory.
         save_log_likelihood_to_results : bool, optional
             DEPRECATED. Use return_outputs='log_likelihood' instead.
             Whether to save the log likelihood to the results, by default None.
@@ -6794,14 +6801,14 @@ class ClusterlessDetector(_DetectorBase):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        return_outputs: str | list[str] | set[str] | None = None,
+        return_outputs: ReturnOutputs = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "auto",
+        transition_representation: TransitionRepresentation = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
@@ -7304,7 +7311,7 @@ class SortedSpikesDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "dense",
+        transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "SortedSpikesDetector":
         """
@@ -7498,15 +7505,15 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
-        inference_mode: str = "dense",
-        output_mode: str = "spatial",
+        inference_mode: InferenceMode = "dense",
+        output_mode: OutputMode = "spatial",
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         replay_cache_bytes: int | None = None,
-        return_outputs: str | list[str] | set[str] | None = None,
+        return_outputs: ReturnOutputs = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
     ) -> xr.Dataset:
@@ -7629,14 +7636,14 @@ class SortedSpikesDetector(_DetectorBase):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        return_outputs: str | list[str] | set[str] | None = None,
+        return_outputs: ReturnOutputs = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "auto",
+        transition_representation: TransitionRepresentation = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
