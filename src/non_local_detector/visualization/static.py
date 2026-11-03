@@ -208,4 +208,4 @@ def plot_non_local_model(
     )
     axes[3].set_ylabel("Speed\n[cm / s]")
     plt.xlim((time_slice.start, time_slice.stop))
-    plt.xlabel("Time [ms]")
+    plt.xlabel("Time [s]")
