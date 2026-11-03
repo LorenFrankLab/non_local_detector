@@ -1434,6 +1434,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray,
         continuous_initial_conditions_types: ContinuousInitialConditions,
         discrete_transition_type: DiscreteTransitions,
@@ -1558,7 +1559,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         # Observation model parameters
         self.observation_models = self._initialize_observation_models(
-            observation_models, continuous_transition_types, environments
+            observation_models, continuous_transition_types, self.environments
         )
         self._validate_observation_models(
             self.observation_models, len(discrete_initial_conditions)
@@ -1628,6 +1629,76 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     ),
                 )
         self.local_position_std = local_position_std
+
+    def set_params(self, **params: Any) -> "_DetectorBase":
+        """Set constructor parameters, applying the constructor's rules.
+
+        The merged parameters (current values updated with ``params``) are
+        passed through the model's own constructor, so defaults resolution,
+        normalization (``environments`` and ``observation_models`` become
+        tuples, ``state_names=None`` becomes generated names) and validation are
+        exactly those of ``__init__``. The new values are applied only if the
+        constructor accepts them; on error the detector is unchanged. Fitted
+        attributes are not touched. Changing ``environments``,
+        ``state_names``, ``observation_models`` or any other parameter a fit
+        depends on after fitting therefore requires refitting.
+
+        As with the constructor, parameters that must agree (for example
+        ``discrete_initial_conditions``, ``observation_models``,
+        ``continuous_transition_types`` and ``state_names``, which each have
+        one entry per discrete state) must be changed together.
+
+        Parameters
+        ----------
+        **params : Any
+            Constructor parameters to change. Nested ``component__parameter``
+            keys are validated first, then handled by scikit-learn after the
+            top-level ones.
+
+        Returns
+        -------
+        self : _DetectorBase
+            The detector with the updated parameters.
+
+        Raises
+        ------
+        ValidationError
+            If the resulting parameters are invalid, as in the constructor.
+        ValueError
+            If a parameter name is not a constructor parameter.
+        """
+        if not params:
+            return self
+        current = self.get_params(deep=False)
+        top_level = {k: v for k, v in params.items() if "__" not in k}
+        nested = {k: v for k, v in params.items() if "__" in k}
+        # Validate every name before applying anything, so any error leaves the
+        # detector unchanged.
+        invalid = sorted(
+            [k for k in top_level if k not in current]
+            + [
+                k
+                for k in nested
+                if not hasattr(current.get(k.split("__", 1)[0]), "set_params")
+            ]
+        )
+        if invalid:
+            msg = (
+                f"Invalid parameter(s) {invalid!r} for estimator "
+                f"{type(self).__name__}. Valid parameters are: "
+                f"{sorted(current)!r}."
+            )
+            raise ValueError(msg)
+        if top_level:
+            # Build a fresh detector first so a rejected value leaves ``self``
+            # untouched.
+            validated = type(self)(**{**current, **top_level})
+            resolved = validated.get_params(deep=False)
+            for name in current:
+                setattr(self, name, resolved[name])
+        if nested:
+            super().set_params(**nested)
+        return self
 
     @property
     def _frozen_discrete_transition_rows_mask_(self) -> np.ndarray | None:
@@ -2175,7 +2246,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self,
         observation_models: Observations,
         continuous_transition_types: ContinuousTransitions,
-        environments: Environments,
+        environments: tuple[Environment, ...],
     ) -> tuple[ObservationModel, ...]:
         """
         Initialize observation models.
@@ -2186,8 +2257,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             Observation models for the detector.
         continuous_transition_types : ContinuousTransitions
             Types of continuous state transitions.
-        environments : Environments
-            Environments in which the detector operates.
+        environments : tuple[Environment, ...]
+            Normalized environments in which the detector operates.
 
         Returns
         -------
@@ -2197,7 +2268,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         normalized: Any = observation_models
         if normalized is None:
             n_states = len(continuous_transition_types)
-            env_name = cast("Any", environments)[0].environment_name
+            env_name = environments[0].environment_name
             normalized = (ObservationModel(env_name),) * n_states
         elif isinstance(normalized, ObservationModel):
             normalized = (normalized,) * len(continuous_transition_types)
@@ -5900,6 +5971,7 @@ class ClusterlessDetector(_DetectorBase):
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray,
         continuous_initial_conditions_types: ContinuousInitialConditions,
         discrete_transition_type: DiscreteTransitions,
@@ -5977,19 +6049,19 @@ class ClusterlessDetector(_DetectorBase):
             local state. See ``_DetectorBase`` for details.
         """
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
-            discrete_transition_concentration,
-            discrete_transition_stickiness,
-            discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
-            infer_track_interior,
-            state_names,
-            sampling_frequency,
-            no_spike_rate,
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_concentration=discrete_transition_concentration,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            discrete_transition_regularization=discrete_transition_regularization,
+            continuous_transition_types=continuous_transition_types,
+            observation_models=observation_models,
+            environments=environments,
+            infer_track_interior=infer_track_interior,
+            state_names=state_names,
+            sampling_frequency=sampling_frequency,
+            no_spike_rate=no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
             local_position_std=local_position_std,
@@ -6949,6 +7021,7 @@ class SortedSpikesDetector(_DetectorBase):
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray,
         continuous_initial_conditions_types: ContinuousInitialConditions,
         discrete_transition_type: DiscreteTransitions,
@@ -7024,19 +7097,19 @@ class SortedSpikesDetector(_DetectorBase):
             local state. See ``_DetectorBase`` for details.
         """
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
-            discrete_transition_concentration,
-            discrete_transition_stickiness,
-            discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
-            infer_track_interior,
-            state_names,
-            sampling_frequency,
-            no_spike_rate,
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_concentration=discrete_transition_concentration,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            discrete_transition_regularization=discrete_transition_regularization,
+            continuous_transition_types=continuous_transition_types,
+            observation_models=observation_models,
+            environments=environments,
+            infer_track_interior=infer_track_interior,
+            state_names=state_names,
+            sampling_frequency=sampling_frequency,
+            no_spike_rate=no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
             local_position_std=local_position_std,

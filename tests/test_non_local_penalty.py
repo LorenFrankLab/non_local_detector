@@ -2,8 +2,8 @@
 
 Covers ``_validate_penalty_params`` directly and through the sorted-spikes and
 clusterless non-local detector constructors (negative penalty, non-positive
-sigma, valid values), and again when decoding, so values set later with
-``set_params`` are checked too. The penalty's effect on the posterior is tested in
+sigma, valid values), and again through ``set_params``, which applies the
+constructor's checks. The penalty's effect on the posterior is tested in
 test_non_local_penalty_effect.py.
 """
 
@@ -124,7 +124,7 @@ def _fitted_detector(detector_cls):
 
 @pytest.mark.integration
 class TestPenaltyValidatedWhenDecoding:
-    """Values set after construction (``set_params``) are validated at use."""
+    """``set_params`` rejects invalid values and leaves a fitted detector usable."""
 
     @pytest.mark.parametrize(
         ("params", "match"),
@@ -135,8 +135,14 @@ class TestPenaltyValidatedWhenDecoding:
         ids=["negative-penalty", "zero-sigma"],
     )
     @pytest.mark.parametrize("detector_cls", DETECTOR_CLASSES, ids=DETECTOR_IDS)
-    def test_set_params_invalid_raises_at_predict(self, detector_cls, params, match):
+    def test_set_params_invalid_raises_and_keeps_params(
+        self, detector_cls, params, match
+    ):
         detector, predict_kwargs = _fitted_detector(detector_cls)
-        detector.set_params(**params)
+        before = detector.get_params(deep=False)
         with pytest.raises(ValidationError, match=match):
-            detector.predict(**predict_kwargs)
+            detector.set_params(**params)
+        assert detector.get_params(deep=False).keys() == before.keys()
+        for name, value in before.items():
+            assert getattr(detector, name) is value
+        detector.predict(**predict_kwargs)

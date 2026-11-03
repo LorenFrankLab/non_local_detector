@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Detector constructors
+
+- **Fixed:** `set_params` on a detector applies the constructor's normalization and validation. It previously stored the values as given, so `set_params(environments=Environment(...))` made `fit` fail with `TypeError: 'Environment' object is not iterable`, `set_params(sampling_frequency=-1)` was accepted, and `set_params(state_names=None)` stored `None`. The merged parameters now go through the model's own constructor: a bare `Environment` becomes a tuple, `None` resolves to the model's default (the ready-made models' defaults included), an invalid value raises `ValidationError` and leaves the detector unchanged, and the cached environment lookup is dropped. Parameters that must agree in length (`discrete_initial_conditions`, `observation_models`, `continuous_transition_types`, `state_names`) must be changed together, as in the constructor. Fitted attributes are not touched. `get_params(deep=False)` of a default-constructed model is unchanged.
+- **Fixed:** constructing a `SortedSpikesDetector` or `ClusterlessDetector` with `observation_models=None` and a single `Environment` (not wrapped in a list) raised `TypeError: 'Environment' object is not subscriptable`; the default observation models are now built from the normalized environments.
+- **Breaking:** every constructor parameter of `SortedSpikesDetector`, `ClusterlessDetector` and the ten ready-made models (`NonLocal*Detector`, `ContFrag*Classifier`, `NoSpikeContFrag*Classifier`, `MultiEnvironment*Classifier`, `SortedSpikesDecoder`, `ClusterlessDecoder`) is keyword-only. With 20-25 parameters, a positional call silently bound values to the wrong parameter whenever the order changed. `NonLocalSortedSpikesDetector(0.1)` now raises `TypeError`; write `NonLocalSortedSpikesDetector(discrete_initial_conditions=...)`. `get_params`, `clone` and `Cls(**params)` are unaffected.
+
 ### Dependencies
 
 - seaborn is no longer a dependency: `plot_discrete_state_transition` draws its heatmap with matplotlib. The figure is the same (colormap, color limits, `0.000` annotations, tick labels, colorbar label); the heatmap's cells are drawn with `pcolormesh` and its overlapping x tick labels are rotated as before.

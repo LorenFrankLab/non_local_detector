@@ -128,6 +128,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray | None = None,
         continuous_initial_conditions_types: ContinuousInitialConditions | None = None,
         discrete_transition_type: DiscreteTransitions | None = None,
@@ -159,21 +160,23 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         )
 
         super().__init__(
-            params["discrete_initial_conditions"],
-            params["continuous_initial_conditions_types"],
-            params["discrete_transition_type"],
-            discrete_transition_concentration,
-            params["discrete_transition_stickiness"],
-            discrete_transition_regularization,
-            params["continuous_transition_types"],
-            params["observation_models"],
-            params["environments"],
-            sorted_spikes_algorithm,
-            sorted_spikes_algorithm_params,
-            infer_track_interior,
-            params["state_names"],
-            sampling_frequency,
-            no_spike_rate,
+            discrete_initial_conditions=params["discrete_initial_conditions"],
+            continuous_initial_conditions_types=params[
+                "continuous_initial_conditions_types"
+            ],
+            discrete_transition_type=params["discrete_transition_type"],
+            discrete_transition_concentration=discrete_transition_concentration,
+            discrete_transition_stickiness=params["discrete_transition_stickiness"],
+            discrete_transition_regularization=discrete_transition_regularization,
+            continuous_transition_types=params["continuous_transition_types"],
+            observation_models=params["observation_models"],
+            environments=params["environments"],
+            sorted_spikes_algorithm=sorted_spikes_algorithm,
+            sorted_spikes_algorithm_params=sorted_spikes_algorithm_params,
+            infer_track_interior=infer_track_interior,
+            state_names=params["state_names"],
+            sampling_frequency=sampling_frequency,
+            no_spike_rate=no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
@@ -280,6 +283,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray | None = None,
         continuous_initial_conditions_types: ContinuousInitialConditions | None = None,
         discrete_transition_type: DiscreteTransitions | None = None,
@@ -311,21 +315,23 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         )
 
         super().__init__(
-            params["discrete_initial_conditions"],
-            params["continuous_initial_conditions_types"],
-            params["discrete_transition_type"],
-            discrete_transition_concentration,
-            params["discrete_transition_stickiness"],
-            discrete_transition_regularization,
-            params["continuous_transition_types"],
-            params["observation_models"],
-            params["environments"],
-            clusterless_algorithm,
-            clusterless_algorithm_params,
-            infer_track_interior,
-            params["state_names"],
-            sampling_frequency,
-            no_spike_rate,
+            discrete_initial_conditions=params["discrete_initial_conditions"],
+            continuous_initial_conditions_types=params[
+                "continuous_initial_conditions_types"
+            ],
+            discrete_transition_type=params["discrete_transition_type"],
+            discrete_transition_concentration=discrete_transition_concentration,
+            discrete_transition_stickiness=params["discrete_transition_stickiness"],
+            discrete_transition_regularization=discrete_transition_regularization,
+            continuous_transition_types=params["continuous_transition_types"],
+            observation_models=params["observation_models"],
+            environments=params["environments"],
+            clusterless_algorithm=clusterless_algorithm,
+            clusterless_algorithm_params=clusterless_algorithm_params,
+            infer_track_interior=infer_track_interior,
+            state_names=params["state_names"],
+            sampling_frequency=sampling_frequency,
+            no_spike_rate=no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
