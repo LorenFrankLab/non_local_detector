@@ -57,7 +57,7 @@ git clone https://github.com/LorenFrankLab/non_local_detector.git
 cd non_local_detector
 mamba env create -f environment.yml  # or environment_gpu.yml for GPU
 conda activate non_local_detector
-pip install -e .[dev]
+pip install -e . --group dev
 ```
 
 ## 📖 Quick Start
@@ -194,7 +194,7 @@ This project maintains high code quality standards:
    ```bash
    mamba env create -f environment.yml
    conda activate non_local_detector
-   pip install -e .[dev]
+   pip install -e . --group dev
    ```
 
 2. **Run Quality Checks**
@@ -241,7 +241,7 @@ GitHub Actions (`.github/workflows/test_package_build.yml`) runs on every pull r
 - **Packaging**: the wheel, sdist and git archive are built, installed without the source tree, and smoke-tested with the golden regression tests, which need the packaged data files.
 - **Coverage**: uploaded to Codecov from the Python 3.12 Linux job.
 
-To reproduce the locked test job locally: `uv sync --locked --extra test && uv run pytest`.
+To reproduce the locked test job locally: `uv sync --locked --no-dev --group test && uv run pytest`.
 
 ## 📚 Documentation
 

@@ -47,9 +47,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
       # --locked fails if uv.lock is out of date with pyproject.toml, and pins
-      # ruff to the version pre-commit uses.
+      # ruff to the version pre-commit uses. The `dev` dependency group is
+      # synced by default.
       - name: Install locked dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --locked
       - name: Run ruff linting
         run: uv run --no-sync ruff check src/ --output-format=github
       - name: Run ruff formatting check
@@ -93,7 +94,7 @@ jobs:
       # The versions developers test against locally. On Python 3.10 the lock
       # resolves JAX 0.6.2, the minimum supported release.
       - name: Install locked dependencies
-        run: uv sync --locked --extra test
+        run: uv sync --locked --no-dev --group test
       - name: Run tests
         run: >-
           uv run --no-sync pytest
@@ -123,7 +124,7 @@ jobs:
       - name: Install lowest runtime dependencies
         run: |
           uv pip install --resolution lowest-direct -e .
-          uv pip install -e ".[test]"
+          uv pip install --group test
           uv pip list
       - name: Run tests
         run: pytest
@@ -144,7 +145,7 @@ jobs:
       # shows up here before the lock is updated.
       - name: Install latest dependencies
         run: |
-          uv sync --upgrade --extra test
+          uv sync --upgrade --no-dev --group test
           uv pip list
       - name: Run tests
         run: uv run --no-sync pytest
@@ -222,8 +223,6 @@ jobs:
       - name: Install archive
         if: matrix.package == 'archive'
         run: pip install archive/archive.tgz
-      - name: Install test extras
-        run: pip install "non_local_detector[test]"
       - name: Unpack the tests
         env:
           PACKAGE: ${{ matrix.package }}
@@ -234,6 +233,13 @@ jobs:
           else
             tar -xzf dist/*.tar.gz -C source --strip-components=1
           fi
+      # `pip install --group` reads pyproject.toml in the working directory,
+      # and needs pip 25.1 or newer.
+      - name: Install test dependencies
+        working-directory: source
+        run: |
+          python -m pip install --upgrade "pip>=25.1"
+          pip install --group test
       # The package lives in source/src, off sys.path, so the tests import
       # the installed copy; check that before trusting the result.
       - name: Check the tests import the installed package
