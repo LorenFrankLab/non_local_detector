@@ -266,23 +266,31 @@ def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
 
 
 def ensure_stochastic_matrix(
-    matrix: np.ndarray, name: str, tolerance: float = 1e-6
+    matrix: np.ndarray,
+    name: str,
+    tolerance: float = 1e-6,
+    *,
+    allow_zero_rows: bool = False,
 ) -> None:
     """Verify matrix is row-stochastic (each row sums to 1).
 
     Parameters
     ----------
-    matrix : np.ndarray
+    matrix : np.ndarray, shape (n_rows, n_columns)
         Matrix to check
     name : str
         Name of the matrix for error messages
     tolerance : float, optional
         Tolerance for row sum check, by default 1e-6
+    allow_zero_rows : bool, optional
+        Also accept rows that sum to 0 (bins nothing can leave), by default
+        False.
 
     Raises
     ------
     ValidationError
-        If any row does not sum to 1.0 within tolerance
+        If any row does not sum to 1.0 (or 0.0, with ``allow_zero_rows``)
+        within tolerance
 
     Examples
     --------
@@ -292,15 +300,24 @@ def ensure_stochastic_matrix(
     """
     row_sums = np.sum(matrix, axis=1)
     bad_rows = ~np.isclose(row_sums, 1.0, atol=tolerance)
+    if allow_zero_rows:
+        bad_rows &= ~np.isclose(row_sums, 0.0, atol=tolerance)
 
     if np.any(bad_rows):
         bad_indices = np.where(bad_rows)[0]
         bad_sums = row_sums[bad_rows]
-        msg = f"{name} must be row-stochastic (each row sums to 1)"
+        msg = (
+            f"{name} must be row-stochastic (each row sums to 1"
+            f"{' or 0' if allow_zero_rows else ''})"
+        )
         raise ValidationError(
             msg,
-            expected="all row sums = 1.0",
-            got=f"{len(bad_indices)} row(s) with invalid sums: rows {bad_indices.tolist()}, sums {bad_sums.tolist()}",
+            expected=f"all row sums = 1.0{' or 0.0' if allow_zero_rows else ''}",
+            got=(
+                f"{len(bad_indices)} row(s) with invalid sums: rows "
+                f"{bad_indices[:10].tolist()}, sums {bad_sums[:10].tolist()}"
+                f"{' (first 10)' if len(bad_indices) > 10 else ''}"
+            ),
             hint=f"Normalize each row: {name} = {name} / {name}.sum(axis=1, keepdims=True)",
             example=f"    # Row 0 sums to {row_sums[0]:.6f}{'  ✓' if not bad_rows[0] else '  ✗'}",
         )
