@@ -455,7 +455,7 @@ def test_cached_heat_kernel_eigenbasis_reuses_probe_eigensolve(monkeypatch):
     )
     sigma = 8.0
     environment_graph(env)  # populate the cached Laplacian (no eigensolve)
-    laplacian = env._diffusion_laplacian_
+    laplacian = env.get_cached("diffusion_laplacian")
 
     calls = {"n": 0}
     real = diffusion_mod.diffusion_eigenbasis
@@ -962,14 +962,14 @@ def test_cached_eigenbasis_reuse_and_rank_keying():
     full1 = cached_eigenbasis(env, rank=None)
     full2 = cached_eigenbasis(env, rank=None)
     assert full1[0] is full2[0]  # identical object -> no recompute
-    assert env._diffusion_eigenbasis_[None] is full1
+    assert env.get_cached("diffusion_eigenbasis")[None] is full1
 
     # A cached full-rank basis serves a smaller-rank request by slicing, and the
     # slice is stored under its own rank key.
     trunc_vals, trunc_vecs = cached_eigenbasis(env, rank=5)
     np.testing.assert_allclose(trunc_vals, full1[0][:5])
     np.testing.assert_allclose(trunc_vecs, full1[1][:, :5])
-    assert 5 in env._diffusion_eigenbasis_
+    assert 5 in env.get_cached("diffusion_eigenbasis")
 
 
 def test_cached_eigenbasis_rank_below_components_raises_even_when_full_cached():
@@ -1040,17 +1040,17 @@ def test_eig_cache_invalidated_on_refit():
     basis = cached_eigenbasis(env, rank=None)
     graph = environment_graph(env)
     cached_heat_kernel_eigenbasis(env, sigma=6.0)  # populates the resolved-rank memo
-    assert hasattr(env, "_diffusion_eigenbasis_")
-    assert hasattr(env, "_diffusion_graph_")
-    assert hasattr(env, "_diffusion_heat_kernel_rank_")
+    assert env.get_cached("diffusion_eigenbasis") is not None
+    assert env.get_cached("diffusion_graph") is not None
+    assert env.get_cached("diffusion_heat_kernel_rank") is not None
 
     rng = np.random.default_rng(0)
     env.fit_place_grid(
         rng.uniform(1.0, 49.0, size=(4000, 2)), infer_track_interior=True
     )
-    assert not hasattr(env, "_diffusion_eigenbasis_")
-    assert not hasattr(env, "_diffusion_graph_")
-    assert not hasattr(env, "_diffusion_heat_kernel_rank_")
+    assert env.get_cached("diffusion_eigenbasis") is None
+    assert env.get_cached("diffusion_graph") is None
+    assert env.get_cached("diffusion_heat_kernel_rank") is None
 
     rebuilt = cached_eigenbasis(env, rank=None)
     assert rebuilt[0] is not basis[0]  # recomputed after invalidation

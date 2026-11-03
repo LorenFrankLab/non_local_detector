@@ -45,8 +45,9 @@ parameters and optional position data.
 Helper functions are provided for tasks like grid generation (`get_grid`),
 track interior inference (`get_track_interior`), graph construction
 (`make_nD_track_graph_from_environment`, `get_track_grid`), distance calculation,
-and visualization (`plot_grid`). The class also supports saving and loading
-environment definitions using `pickle`.
+and visualization (`plot_grid`). `Environment.get_params` returns an
+environment's configuration, from which `Environment(**params)` rebuilds it
+unfitted; `save_environment` and `load_environment` pickle a fitted one.
 """
 
 import contextlib
@@ -55,7 +56,7 @@ import pickle
 import warnings
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
@@ -135,13 +136,27 @@ def find_environment_by_name(
     raise KeyError(msg)
 
 
+def _is_unfitted_value(value: Any, default: Any) -> bool:
+    """Whether a fitted attribute passed to the constructor holds no fitted value.
+
+    Saved parameter dictionaries may hold ``_is_fitted`` as a NumPy boolean.
+    """
+    if value is None or value is default:
+        return True
+    return isinstance(value, (bool, np.bool_)) and bool(value) == default
+
+
 # Bytes of cached track linearizations kept per environment. EM linearizes the
 # same position samples and spike positions in every E-step and encoding
 # M-step; a 23.6 min recording needs about 30 MB.
 _LINEAR_POSITION_CACHE_BYTES = 256 * 1024**2
 
 
-@dataclass(eq=False)
+# Field metadata marking the attributes ``fit_place_grid`` sets.
+_FITTED = {"fitted": True}
+
+
+@dataclass(eq=False, kw_only=True)
 class Environment:
     """Represent the spatial environment with a discrete grid.
 
@@ -165,7 +180,10 @@ class Environment:
         If None, range is determined from position data.
     infer_track_interior : bool, optional
         If True and `is_track_interior` is None, infer track geometry from position data.
-        Defaults to True. Ignored if `track_graph` is provided.
+        Defaults to True. Ignored if `track_graph` is provided. The
+        ``infer_track_interior`` argument of :meth:`fit_place_grid` (True by
+        default) takes precedence; the value a fit used is stored as
+        ``infer_track_interior_``.
     fill_holes : bool, optional
         Fill holes in the inferred track interior. Defaults to False. Ignored if `track_graph` is provided.
     dilate : bool, optional
@@ -186,6 +204,9 @@ class Environment:
         Shape of the grid in terms of bins per dimension.
     is_track_interior_ : np.ndarray, shape (n_bins,) or (n_bins_dim1, n_bins_dim2, ...)
         Boolean array indicating which bins are part of the track interior.
+    infer_track_interior_ : bool or None
+        The ``infer_track_interior`` argument the last :meth:`fit_place_grid`
+        used. None for track-graph environments.
     is_track_boundary_ : np.ndarray or None
         Boolean array indicating boundary bins (only for N-D environments).
     track_graphDD : networkx.Graph or None
@@ -202,35 +223,22 @@ class Environment:
         Info about nodes representing bin centers (only for 1D).
     nodes_df_ : pd.DataFrame or None
         Combined info about all nodes in the augmented graph (only for 1D).
-    _bin_distance_matrix_ : np.ndarray, optional
-        Lazily-built ``(n_total_bins, n_total_bins)`` dense distance
-        matrix indexed by bin (not node). Populated on first call to
-        :meth:`get_distances_to_interior_bins` when a 1D track graph is
-        used, and invalidated by :meth:`fit_place_grid`. Off-track bins
-        produce NaN rows/columns. Used to avoid the ``O(n_time * n_bins)``
-        Python dict-of-dicts lookup on every ``predict`` call.
-    _diffusion_graph_ : tuple, optional
-        Lazily-built ``(graph, node_order, bin_sizes)`` interior-bin graph for the
-        sorted-spikes diffusion likelihood, populated by
-        ``likelihoods.diffusion.environment_graph`` and invalidated by
-        :meth:`fit_place_grid`.
-    _diffusion_laplacian_ : scipy.sparse matrix, optional
-        Snapshot of the interior-bin graph Laplacian taken when ``_diffusion_graph_``
-        is built, so the cached eigenbasis is immune to later edge-attribute
-        mutations of the returned graph. Invalidated by :meth:`fit_place_grid`.
-    _diffusion_eigenbasis_ : dict, optional
-        Lazily-built cache of graph-Laplacian eigenbases keyed by ``rank`` for the
-        sorted-spikes diffusion likelihood, populated by
-        ``likelihoods.diffusion.cached_eigenbasis`` and invalidated by
-        :meth:`fit_place_grid`.
-    _diffusion_device_basis_ : dict, optional
-        Transient cache of the device-resident (JAX) eigenbasis for the
-        ``clusterless_diffusion`` predict matmul, keyed by
-        ``(resolved_rank, device, dtype)``, populated by
-        ``likelihoods.diffusion.get_device_basis``. Invalidated by
-        :meth:`fit_place_grid` and excluded from pickling via
-        :meth:`__getstate__` (its JAX ``Device`` key is unpicklable; it is
-        lazily rebuilt from the host basis after load).
+    _cache : dict
+        Derived data computed from the fitted grid on first use, such as the
+        dense bin-distance matrix, track linearizations and likelihood-specific
+        graphs and eigenbases. Read and written through
+        :meth:`get_cached` and :meth:`set_cached`; cleared by
+        :meth:`fit_place_grid`. Entries stored with ``transient=True`` are not
+        pickled.
+
+    Notes
+    -----
+    All arguments are keyword-only. The fitted attributes are set by
+    :meth:`fit_place_grid`; the constructor accepts them only as None (as in
+    parameter dictionaries saved by earlier releases) and raises
+    ``ValidationError`` otherwise. :meth:`get_params` returns the configuration
+    alone, so ``Environment(**environment.get_params())`` rebuilds an unfitted
+    environment with the same configuration.
     """
 
     environment_name: str = ""
@@ -245,24 +253,39 @@ class Environment:
     dilate: bool = False
     bin_count_threshold: int = 0
 
-    # Attributes to be fitted
-    edges_: Sequence[np.ndarray] | None = None
-    place_bin_edges_: np.ndarray | None = None
-    place_bin_centers_: np.ndarray | None = None
-    centers_shape_: tuple[int, ...] | None = None
-    is_track_interior_: np.ndarray | None = None
-    is_track_boundary_: np.ndarray | None = None
-    track_graphDD: nx.Graph | None = None  # For N-D case
+    # Attributes set by fit_place_grid. They are keyword arguments only so that
+    # parameter dictionaries saved by earlier releases as ``vars(environment)``
+    # of an unfitted environment, which hold them as None, still construct;
+    # __post_init__ rejects any other value. ``get_params`` leaves them out.
+    edges_: Sequence[np.ndarray] | None = field(default=None, metadata=_FITTED)
+    place_bin_edges_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    place_bin_centers_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    centers_shape_: tuple[int, ...] | None = field(default=None, metadata=_FITTED)
+    is_track_interior_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    infer_track_interior_: bool | None = field(default=None, metadata=_FITTED)
+    is_track_boundary_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    track_graphDD: nx.Graph | None = field(  # For N-D case
+        default=None, metadata=_FITTED
+    )
     distance_between_nodes_: (
         dict[int, dict[int, float]] | np.ndarray | LazyGraphDistances | None
-    ) = None
-    track_graph_with_bin_centers_edges_: nx.Graph | None = None  # For 1D case
-    original_nodes_df_: pd.DataFrame | None = None
-    place_bin_edges_nodes_df_: pd.DataFrame | None = None
-    place_bin_centers_nodes_df_: pd.DataFrame | None = None
-    nodes_df_: pd.DataFrame | None = None
-    # Internal flag
-    _is_fitted: bool = False
+    ) = field(default=None, metadata=_FITTED)
+    track_graph_with_bin_centers_edges_: nx.Graph | None = field(  # For 1D case
+        default=None, metadata=_FITTED
+    )
+    original_nodes_df_: pd.DataFrame | None = field(default=None, metadata=_FITTED)
+    place_bin_edges_nodes_df_: pd.DataFrame | None = field(
+        default=None, metadata=_FITTED
+    )
+    place_bin_centers_nodes_df_: pd.DataFrame | None = field(
+        default=None, metadata=_FITTED
+    )
+    nodes_df_: pd.DataFrame | None = field(default=None, metadata=_FITTED)
+    _is_fitted: bool = field(default=False, metadata=_FITTED)
+    # Derived-data cache; see ``get_cached``.
+    _cache: dict[str, tuple[Any, bool]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     # ``Environment`` uses identity-based equality and hashing: the dataclass is
     # declared ``eq=False`` (above), so both ``__eq__`` and ``__hash__`` stay
@@ -281,6 +304,26 @@ class Environment:
 
     def __post_init__(self) -> None:
         """Validate Environment parameters after initialization."""
+        passed_fitted = [
+            item.name
+            for item in fields(self)
+            if item.metadata.get("fitted")
+            and not _is_unfitted_value(getattr(self, item.name), item.default)
+        ]
+        if passed_fitted:
+            msg = "Environment does not accept fitted attributes as arguments"
+            raise ValidationError(
+                msg,
+                expected="None for every fitted attribute (fit_place_grid sets them)",
+                got=f"values for {passed_fitted}",
+                hint=(
+                    "Construct from configuration only, for example "
+                    "Environment(**environment.get_params()), then call "
+                    "fit_place_grid. To keep a fitted environment, copy it with "
+                    "copy.deepcopy or pickle it."
+                ),
+            )
+
         # Validate place_bin_size
         if isinstance(self.place_bin_size, tuple):
             for i, size in enumerate(self.place_bin_size):
@@ -319,20 +362,94 @@ class Environment:
             val.ensure_ndarray(self.is_track_interior, "is_track_interior")
             # Note: We can't validate shape until we know the grid dimensions
 
-    def __getstate__(self) -> dict[str, Any]:
-        """Exclude the transient device-basis cache from pickling.
+    def get_params(self, deep: bool = True) -> dict[str, Any]:  # noqa: ARG002 -- scikit-learn signature
+        """Return the constructor configuration of this environment.
 
-        ``_diffusion_device_basis_`` (populated by
-        :func:`non_local_detector.likelihoods.diffusion.get_device_basis`) is keyed
-        in part by a JAX ``Device`` object and holds device-resident ``jnp``
-        arrays; neither is meaningfully picklable/restorable across processes, so
-        it is dropped here and rebuilt lazily (on the next predict call) after
-        unpickling.
+        Only the configuration fields are returned, never the fitted
+        attributes or the cache, so ``Environment(**environment.get_params())``
+        builds an equivalent unfitted environment from a fitted or unfitted one.
+        The values are the environment's own objects, not copies (as in
+        scikit-learn); ``track_graph`` stays a ``networkx.Graph``.
+
+        Parameters
+        ----------
+        deep : bool, optional
+            Ignored: an environment holds no nested estimators. Accepted so
+            ``sklearn.base.clone`` can rebuild an environment from its
+            configuration. By default True.
+
+        Returns
+        -------
+        params : dict[str, Any]
+            Constructor keyword arguments, keyed by field name.
+        """
+        return {
+            item.name: getattr(self, item.name)
+            for item in fields(self)
+            if item.init and not item.metadata.get("fitted")
+        }
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Pickle the environment without its transient cache entries.
+
+        Entries cached with ``transient=True`` (for example device-resident JAX
+        arrays keyed by a ``Device``) cannot be restored in another process;
+        they are rebuilt on first use after unpickling.
         """
         state = self.__dict__.copy()
-        state.pop("_diffusion_device_basis_", None)  # transient JAX device cache
-        state.pop("_linear_position_cache_", None)  # rebuilt on demand
+        state["_cache"] = {
+            key: entry for key, entry in self._cache.items() if not entry[1]
+        }
         return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore a pickled environment, including pickles made without a cache."""
+        self.__dict__.update(state)
+        self.__dict__.setdefault("_cache", {})
+
+    def get_cached(self, key: str) -> Any:
+        """Return the derived data cached under ``key``, or None.
+
+        Parameters
+        ----------
+        key : str
+            Cache key chosen by the computation that stored the value.
+
+        Returns
+        -------
+        value : Any
+            The cached value, or None if nothing is cached under ``key``.
+        """
+        entry = self._cache.get(key)
+        return None if entry is None else entry[0]
+
+    def set_cached(self, key: str, value: Any, *, transient: bool = False) -> Any:
+        """Cache derived data under ``key`` until the grid is refit.
+
+        The value must be a function of this environment's fitted grid only:
+        :meth:`fit_place_grid` clears every entry.
+
+        Parameters
+        ----------
+        key : str
+            Cache key, unique to the computation that stores the value.
+        value : Any
+            The derived data.
+        transient : bool, optional
+            If True, the entry is not pickled (for values that cannot be
+            restored in another process). By default False.
+
+        Returns
+        -------
+        value : Any
+            ``value``, so a cache miss can store and use it in one expression.
+        """
+        self._cache[key] = (value, transient)
+        return value
+
+    def clear_cache(self) -> None:
+        """Drop all cached derived data."""
+        self._cache = {}
 
     def _linear_position(self, points: "np.ndarray | jax.Array") -> np.ndarray:
         """Linear position of points on the track graph, cached by value.
@@ -354,7 +471,9 @@ class Environment:
         key = hashlib.blake2b(
             np.asarray(points.shape).tobytes() + points.tobytes(), digest_size=16
         ).digest()
-        cache = self.__dict__.setdefault("_linear_position_cache_", OrderedDict())
+        cache = self.get_cached("linear_position")
+        if cache is None:
+            cache = self.set_cached("linear_position", OrderedDict(), transient=True)
         if key in cache:
             cache.move_to_end(key)
             return cast("np.ndarray", cache[key].copy())
@@ -612,8 +731,9 @@ class Environment:
             treated as ``(n_time, 1)``.
         infer_track_interior : bool, optional
             Whether to infer the interior of the track from ``position`` when
-            ``is_track_interior`` was not given, by default True. Stored on the
-            environment; ignored if ``track_graph`` is provided.
+            ``is_track_interior`` was not given, by default True. Stored as
+            ``infer_track_interior_``; the ``infer_track_interior`` field is
+            left unchanged. Ignored if ``track_graph`` is provided.
         compute_all_pairs_distances : bool, optional
             By default True, which builds the all-pairs graph-distance matrix.
             False keeps an exact sparse query view for Cartesian environments,
@@ -667,26 +787,8 @@ class Environment:
             if position.ndim == 1:
                 position = position[:, np.newaxis]
 
-        # Invalidate cached dense distance matrix if it exists (used by
-        # get_distances_to_interior_bins for 1D track graph kernels).
-        if hasattr(self, "_bin_distance_matrix_"):
-            del self._bin_distance_matrix_
-
-        # Invalidate the cached diffusion interior-bin graph, Laplacian, eigenbasis,
-        # and resolved heat-kernel ranks (used by the sorted-spikes diffusion
-        # likelihood); the grid is about to be rebuilt, so any cached basis is stale.
-        if hasattr(self, "_diffusion_graph_"):
-            del self._diffusion_graph_
-        if hasattr(self, "_diffusion_laplacian_"):
-            del self._diffusion_laplacian_
-        if hasattr(self, "_diffusion_eigenbasis_"):
-            del self._diffusion_eigenbasis_
-        if hasattr(self, "_diffusion_heat_kernel_rank_"):
-            del self._diffusion_heat_kernel_rank_
-        if hasattr(self, "_diffusion_device_basis_"):
-            del self._diffusion_device_basis_
-        if hasattr(self, "_linear_position_cache_"):
-            del self._linear_position_cache_
+        # Cached derived data describes the grid that is about to be rebuilt.
+        self.clear_cache()
 
         if self.track_graph is None:
             if position is None:
@@ -708,7 +810,7 @@ class Environment:
                 self.position_range,
             )
 
-            self.infer_track_interior = infer_track_interior
+            self.infer_track_interior_ = infer_track_interior
 
             if self.is_track_interior is not None:
                 val.ensure_ndarray(self.is_track_interior, "is_track_interior")
@@ -729,7 +831,7 @@ class Environment:
                         hint="Include the grid's boundary bins in the mask",
                     )
                 self.is_track_interior_ = self.is_track_interior.copy()
-            elif self.infer_track_interior:
+            elif self.infer_track_interior_:
                 self.is_track_interior_ = get_track_interior(
                     position,
                     self.edges_,
@@ -1136,8 +1238,8 @@ class Environment:
 
         Returns an ``(n_positions, n_interior_bins)`` matrix of distances
         along the track manifold when a track graph is available
-        (uses a lazily-built dense distance matrix cached as
-        ``_bin_distance_matrix_`` for efficient ``np.ix_`` lookup), or
+        (uses a lazily-built dense bin-distance matrix, cached on the
+        environment, for efficient ``np.ix_`` lookup), or
         Euclidean distances otherwise. Positions that would otherwise
         land in gap bins are snapped to the nearest interior bin by
         :meth:`get_bin_ind`, so no NaN rows are produced for envs with
@@ -1191,7 +1293,8 @@ class Environment:
 
             # Lazily build and cache dense (n_bins, n_bins) distance matrix
             # indexed by bin. Off-track bins (node_id == -1) get NaN.
-            if getattr(self, "_bin_distance_matrix_", None) is None:
+            bin_dist = self.get_cached("bin_distance_matrix")
+            if bin_dist is None:
                 bin_to_node = np.asarray(self.place_bin_centers_nodes_df_.node_id)
                 n_total_bins = len(bin_to_node)
                 bin_dist = np.full((n_total_bins, n_total_bins), np.nan)
@@ -1205,14 +1308,12 @@ class Environment:
                         if dst_node == -1:
                             continue
                         bin_dist[src_bin, dst_bin] = src_distances.get(dst_node, np.inf)
-                self._bin_distance_matrix_ = bin_dist
+                self.set_cached("bin_distance_matrix", bin_dist)
 
             position_bin_inds = self.get_bin_ind(np.asarray(positions))
             return cast(
                 "np.ndarray",
-                self._bin_distance_matrix_[
-                    np.ix_(position_bin_inds, interior_bin_indices)
-                ],
+                bin_dist[np.ix_(position_bin_inds, interior_bin_indices)],
             )
 
         if isinstance(self.distance_between_nodes_, LazyGraphDistances):

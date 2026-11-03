@@ -74,7 +74,7 @@ from non_local_detector.discrete_state_transitions import (
     predict_discrete_state_transitions,
 )
 from non_local_detector.encoding_time import EncodingSupport
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import (
     DataError,
     ValidationError,
@@ -1572,8 +1572,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         tuples, ``state_names=None`` becomes generated names) and validation are
         exactly those of ``__init__``. The new values are applied only if the
         constructor accepts them; on error the detector is unchanged. Fitted
-        attributes are not touched, and caches derived from the parameters
-        (the environment lookup) are dropped. Changing ``environments``,
+        attributes are not touched. Changing ``environments``,
         ``state_names``, ``observation_models`` or any other parameter a fit
         depends on after fitting therefore requires refitting.
 
@@ -1630,7 +1629,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             resolved = validated.get_params(deep=False)
             for name in current:
                 setattr(self, name, resolved[name])
-            self.__dict__.pop("_env_lookup_cache_", None)
         if nested:
             super().set_params(**nested)
         return self
@@ -2307,7 +2305,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> None:
         """
-        Fit the environments on the position data to get information about the spatial environment.
+        Fit copies of the environments on the position data.
+
+        Each environment is rebuilt from its configuration
+        (``Environment.get_params``) and the copy is fitted, so the
+        environments passed to the model, which other models may share, are
+        never changed. ``self.environments`` holds the fitted copies afterwards.
 
         Parameters
         ----------
@@ -2323,7 +2326,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             Byte limit for dense reads of the deferred distance view, by
             default 256 MiB. Used only when compute_all_pairs_distances=False.
         """
-        for environment in self.environments:
+        fitted_environments = []
+        for given_environment in self.environments:
+            environment = type(given_environment)(
+                **copy.deepcopy(given_environment.get_params())
+            )
             if environment_labels is None:
                 is_environment = np.ones((position.shape[0],), dtype=bool)
             else:
@@ -2347,6 +2354,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 infer_track_interior=self.infer_track_interior,
                 **distance_options,
             )
+            fitted_environments.append(environment)
+        self.environments = tuple(fitted_environments)
 
     def initialize_state_index(self) -> None:
         """Initialize indices and parameters related to the combined state space.
@@ -4326,22 +4335,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     @contextmanager
     def _restore_state_on_error(self) -> Iterator[None]:
-        """Restore this detector and its environments if the block raises.
+        """Restore this detector if the block raises.
 
-        ``fit`` rebuilds the environments (in place), transitions, and encoding
-        model in stages. If a later stage fails, the earlier stages must not
-        leave the previously fitted detector paired with a refit grid. Both the
-        detector and ``Environment.fit_place_grid`` rebind attributes rather than
-        edit arrays in place, so shallow attribute snapshots are enough.
+        ``fit`` rebuilds the environments, transitions, and encoding model in
+        stages. If a later stage fails, the earlier stages must not leave the
+        previously fitted detector paired with a refit grid. The detector
+        rebinds attributes rather than edit arrays in place, and fits new
+        environment copies rather than changing its environments, so a shallow
+        snapshot of the detector's attributes is enough.
         """
         detector_state = dict(self.__dict__)
-        environment_states = [(env, dict(env.__dict__)) for env in self.environments]
         try:
             yield
         except BaseException:
-            for env, env_state in environment_states:
-                env.__dict__.clear()
-                env.__dict__.update(env_state)
             self.__dict__.clear()
             self.__dict__.update(detector_state)
             raise
@@ -5589,7 +5595,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def _get_environment_by_name(self, environment_name: str) -> Environment:
         """
-        Get environment by name with O(1) lookup using cached dictionary.
+        Get one of this model's environments by name.
 
         Parameters
         ----------
@@ -5606,17 +5612,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ValueError
             If environment not found.
         """
-        # Create cached lookup dict if not exists
-        if not hasattr(self, "_env_lookup_cache_"):
-            self._env_lookup_cache_ = {
-                env.environment_name: env for env in self.environments
-            }
-
-        environment = self._env_lookup_cache_.get(environment_name)
-        if environment is None:
+        # Looked up in ``self.environments`` on every call: each fit replaces
+        # them with new fitted copies, so a stored lookup would go stale.
+        try:
+            return find_environment_by_name(self.environments, environment_name)
+        except KeyError:
             msg = f"Environment '{environment_name}' not found in environments list"
-            raise ValueError(msg)
-        return environment
+            raise ValueError(msg) from None
 
 
 class ClusterlessDetector(_DetectorBase):

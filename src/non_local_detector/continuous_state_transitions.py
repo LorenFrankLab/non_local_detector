@@ -133,8 +133,24 @@ def _euclidean_random_walk(
     )
 
 
+class _DropsLegacyEnvironment:
+    """Unpickle without the environment that earlier releases stored.
+
+    Before 0.7.0, ``make_state_transition`` stored the environment it was
+    built on as ``environment`` (``environment1`` and ``environment2`` for
+    ``Uniform``). Pickles made then carry those attributes, which would keep
+    the old grid alive and break ``type(t)(**vars(t))``.
+    """
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the fields, dropping legacy environment attributes."""
+        for name in ("environment", "environment1", "environment2"):
+            state.pop(name, None)
+        self.__dict__.update(state)
+
+
 @dataclass
-class RandomWalk:
+class RandomWalk(_DropsLegacyEnvironment):
     """A transition where the movement stays locally close in space.
 
     Attributes
@@ -180,17 +196,17 @@ class RandomWalk:
         ):
             msg = f"direction must be 'inward' or 'outward', got '{self.direction}'"
             raise ValueError(msg)
-        self.environment = find_environment_by_name(environments, self.environment_name)
+        environment = find_environment_by_name(environments, self.environment_name)
         # ``direction`` is only consulted on the N-D-grid manifold-distance path
         # (no track_graph + use_manifold_distance=True). On every other path it
         # would be silently ignored, so surface the misconfiguration loudly.
         if self.direction is not None and not (
-            self.environment.track_graph is None and self.use_manifold_distance
+            environment.track_graph is None and self.use_manifold_distance
         ):
             msg = (
                 "direction-aware RandomWalk is only applied on an N-D grid "
                 "environment with use_manifold_distance=True; got "
-                f"track_graph={'set' if self.environment.track_graph is not None else 'None'}"
+                f"track_graph={'set' if environment.track_graph is not None else 'None'}"
                 f", use_manifold_distance={self.use_manifold_distance}. The "
                 "direction= argument would otherwise be silently ignored."
             )
@@ -202,24 +218,24 @@ class RandomWalk:
                     "argument."
                 ),
             )
-        if self.environment.track_graph is None:
-            transition_matrix = self._handle_no_track_graph()
+        if environment.track_graph is None:
+            transition_matrix = self._handle_no_track_graph(environment)
         else:
             # Linearized position
-            transition_matrix = self._handle_with_track_graph()
-        is_track_interior = self.environment.is_track_interior_flat_
+            transition_matrix = self._handle_with_track_graph(environment)
+        is_track_interior = environment.is_track_interior_flat_
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
         return _normalize_row_probability(transition_matrix)
 
-    def _handle_no_track_graph(self) -> np.ndarray:
+    def _handle_no_track_graph(self, environment: Environment) -> np.ndarray:
         """Calculate transition for environments without a defined track graph."""
         if not self.use_manifold_distance:
             transition_matrix = _euclidean_random_walk(
-                self.environment, self.movement_mean, self.movement_var
+                environment, self.movement_mean, self.movement_var
             )
         else:
-            distance_data = self.environment.distance_between_nodes_
+            distance_data = environment.distance_between_nodes_
             if isinstance(distance_data, LazyGraphDistances):
                 # Deferred graph distances are densified within their own byte
                 # budget; falling back to Euclidean would change the model.
@@ -233,19 +249,19 @@ class RandomWalk:
             else:
                 # Fallback for dict or None case
                 transition_matrix = _euclidean_random_walk(
-                    self.environment, self.movement_mean, self.movement_var
+                    environment, self.movement_mean, self.movement_var
                 )
 
             if self.direction is not None:
-                if self.environment.track_graphDD is None or not isinstance(
+                if environment.track_graphDD is None or not isinstance(
                     distance_data, np.ndarray
                 ):
                     msg = (
                         "direction-aware RandomWalk requires an N-D track graph "
                         "and an array-valued distance_between_nodes_; got "
-                        f"track_graphDD={self.environment.track_graphDD!r}, "
+                        f"track_graphDD={environment.track_graphDD!r}, "
                         "distance_between_nodes_="
-                        f"{type(self.environment.distance_between_nodes_).__name__}."
+                        f"{type(environment.distance_between_nodes_).__name__}."
                     )
                     raise ConfigurationError(
                         (msg),
@@ -266,7 +282,7 @@ class RandomWalk:
                     raise ValueError(msg)
 
                 centrality = nx.closeness_centrality(
-                    self.environment.track_graphDD, distance="distance"
+                    environment.track_graphDD, distance="distance"
                 )
                 center_node_id = list(centrality.keys())[
                     np.argmax(list(centrality.values()))
@@ -278,10 +294,10 @@ class RandomWalk:
 
         return transition_matrix
 
-    def _handle_with_track_graph(self) -> np.ndarray:
+    def _handle_with_track_graph(self, environment: Environment) -> np.ndarray:
         """Calculate transition for environments with a defined track graph (typically 1D)."""
-        if self.environment.place_bin_centers_ is not None:
-            n_position_dims = self.environment.place_bin_centers_.shape[1]
+        if environment.place_bin_centers_ is not None:
+            n_position_dims = environment.place_bin_centers_.shape[1]
         else:
             msg = "Environment must have defined place bin centers"
             raise ValueError(msg)
@@ -289,34 +305,34 @@ class RandomWalk:
             msg = "Random walk with track graph is only implemented for 1D environments"
             raise NotImplementedError(msg)
 
-        if self.environment.place_bin_centers_nodes_df_ is not None:
+        if environment.place_bin_centers_nodes_df_ is not None:
             place_bin_center_ind_to_node = np.asarray(
-                self.environment.place_bin_centers_nodes_df_.node_id
+                environment.place_bin_centers_nodes_df_.node_id
             )
         else:
             msg = "Environment must have defined place_bin_centers_nodes_df_ for track graph"
             raise ValueError(msg)
 
-        if self.environment.distance_between_nodes_ is None:
+        if environment.distance_between_nodes_ is None:
             msg = (
                 "Environment must have defined distance_between_nodes_ for track graph"
             )
             raise ValueError(msg)
 
         return _random_walk_on_track_graph(
-            self.environment.place_bin_centers_,
+            environment.place_bin_centers_,
             self.movement_mean,
             self.movement_var,
             place_bin_center_ind_to_node,
             cast(
                 dict[int, dict[int, float]] | LazyGraphDistances,
-                self.environment.distance_between_nodes_,
+                environment.distance_between_nodes_,
             ),
         )
 
 
 @dataclass
-class Uniform:
+class Uniform(_DropsLegacyEnvironment):
     """Transition where all valid destination bins are equally likely.
 
     Attributes
@@ -346,31 +362,29 @@ class Uniform:
         state_transition_matrix : np.ndarray, shape (n_bins1, n_bins2)
             Row-normalized uniform transition probability matrix.
         """
-        self.environment1 = find_environment_by_name(
-            environments, self.environment_name
-        )
-        if self.environment1.place_bin_centers_ is not None:
-            n_bins1 = self.environment1.place_bin_centers_.shape[0]
+        environment1 = find_environment_by_name(environments, self.environment_name)
+        if environment1.place_bin_centers_ is not None:
+            n_bins1 = environment1.place_bin_centers_.shape[0]
         else:
             msg = "Environment must have defined place bin centers"
             raise ValueError(msg)
 
-        is_track_interior1 = self.environment1.is_track_interior_flat_
+        is_track_interior1 = environment1.is_track_interior_flat_
 
         if self.environment2_name is None:
             n_bins2 = n_bins1
             is_track_interior2 = is_track_interior1.copy()
         else:
-            self.environment2 = find_environment_by_name(
+            environment2 = find_environment_by_name(
                 environments, self.environment2_name
             )
-            if self.environment2.place_bin_centers_ is not None:
-                n_bins2 = self.environment2.place_bin_centers_.shape[0]
+            if environment2.place_bin_centers_ is not None:
+                n_bins2 = environment2.place_bin_centers_.shape[0]
             else:
                 msg = "Environment must have defined place bin centers"
                 raise ValueError(msg)
 
-            is_track_interior2 = self.environment2.is_track_interior_flat_
+            is_track_interior2 = environment2.is_track_interior_flat_
 
         transition_matrix = np.ones((n_bins1, n_bins2))
 
@@ -381,7 +395,7 @@ class Uniform:
 
 
 @dataclass
-class Identity:
+class Identity(_DropsLegacyEnvironment):
     """A transition where the movement must stay within the same place bin.
 
     Attributes
@@ -407,16 +421,16 @@ class Identity:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Identity matrix where invalid bins have zero probability.
         """
-        self.environment = find_environment_by_name(environments, self.environment_name)
-        if self.environment.place_bin_centers_ is not None:
-            n_bins = self.environment.place_bin_centers_.shape[0]
+        environment = find_environment_by_name(environments, self.environment_name)
+        if environment.place_bin_centers_ is not None:
+            n_bins = environment.place_bin_centers_.shape[0]
         else:
             msg = "Environment must have defined place bin centers"
             raise ValueError(msg)
 
         transition_matrix = np.identity(n_bins)
 
-        is_track_interior = self.environment.is_track_interior_flat_
+        is_track_interior = environment.is_track_interior_flat_
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
 
@@ -424,7 +438,7 @@ class Identity:
 
 
 @dataclass
-class EmpiricalMovement:
+class EmpiricalMovement(_DropsLegacyEnvironment):
     """A transition matrix estimated from the animal's actual movement patterns.
 
     Attributes
@@ -476,7 +490,7 @@ class EmpiricalMovement:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized transition probability matrix, potentially powered by `speedup`.
         """
-        self.environment = find_environment_by_name(environments, self.environment_name)
+        environment = find_environment_by_name(environments, self.environment_name)
 
         n_time = position.shape[0]
         if is_training is None:
@@ -493,7 +507,7 @@ class EmpiricalMovement:
             is_environment = environment_labels == self.environment_name
 
         position = position if position.ndim > 1 else position[:, np.newaxis]
-        position = self.environment.decoding_position(
+        position = environment.decoding_position(
             position[is_training & is_encoding & is_environment]
         )
 
@@ -505,7 +519,7 @@ class EmpiricalMovement:
         # environments whose ranges were inferred from their position data.
         state_transition, _ = np.histogramdd(
             samples,
-            bins=cast(tuple[np.ndarray, ...], self.environment.edges_) * 2,
+            bins=cast(tuple[np.ndarray, ...], environment.edges_) * 2,
         )
         original_shape = state_transition.shape
         n_position_dims = position.shape[1]
@@ -518,7 +532,7 @@ class EmpiricalMovement:
 
 
 @dataclass
-class RandomWalkDirection1:
+class RandomWalkDirection1(_DropsLegacyEnvironment):
     """A Gaussian random walk constrained to move in one direction (increasing index).
 
     Only valid for 1D environments.
@@ -549,7 +563,6 @@ class RandomWalkDirection1:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized upper triangular transition matrix.
         """
-        self.environment = find_environment_by_name(environments, self.environment_name)
         random = RandomWalk(
             self.environment_name, self.movement_var
         ).make_state_transition(environments)
@@ -558,7 +571,7 @@ class RandomWalkDirection1:
 
 
 @dataclass
-class RandomWalkDirection2:
+class RandomWalkDirection2(_DropsLegacyEnvironment):
     """A Gaussian random walk constrained to move in one direction (decreasing index).
 
     Only valid for 1D environments.
@@ -589,7 +602,6 @@ class RandomWalkDirection2:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized lower triangular transition matrix.
         """
-        self.environment = find_environment_by_name(environments, self.environment_name)
         random = RandomWalk(
             self.environment_name, self.movement_var
         ).make_state_transition(environments)

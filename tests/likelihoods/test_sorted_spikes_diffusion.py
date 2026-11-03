@@ -296,10 +296,10 @@ def test_fit_auto_truncation_is_near_lossless_and_reduces_rank():
     full = fit_sorted_spikes_diffusion_encoding_model(**common, rank=n_interior)
 
     # The default fit truncated, and used exactly the resolved rank.
-    resolved = heat_kernel_rank(env._diffusion_laplacian_, std)
+    resolved = heat_kernel_rank(env.get_cached("diffusion_laplacian"), std)
     assert resolved is not None
     assert resolved < n_interior
-    assert resolved in env._diffusion_eigenbasis_
+    assert resolved in env.get_cached("diffusion_eigenbasis")
 
     # Compare where the field is substantial: at EPS-floor bins the rate is ~0 and the
     # relative error is meaningless (dividing by ~EPS), so restrict to bins above
