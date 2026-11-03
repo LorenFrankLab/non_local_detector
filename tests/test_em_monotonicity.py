@@ -112,17 +112,21 @@ def _assert_monotonic(lls, label=""):
 
 @pytest.mark.unit
 def test_encoding_refit_is_opt_in():
-    """The encoding refit is not an exact M-step, so no ``estimate_parameters``
-    runs it by default."""
+    """The encoding refit is not an exact M-step, so neither the EM engine nor
+    any ``estimate_parameters`` runs it by default."""
     from non_local_detector.models.base import (
         ClusterlessDetector,
         SortedSpikesDetector,
         _DetectorBase,
     )
 
-    for cls in (_DetectorBase, ClusterlessDetector, SortedSpikesDetector):
-        parameters = inspect.signature(cls.estimate_parameters).parameters
-        assert parameters["estimate_encoding_model"].default is False, cls
+    for method in (
+        _DetectorBase._run_em,
+        ClusterlessDetector.estimate_parameters,
+        SortedSpikesDetector.estimate_parameters,
+    ):
+        parameters = inspect.signature(method).parameters
+        assert parameters["estimate_encoding_model"].default is False, method
 
 
 @pytest.mark.slow
@@ -315,7 +319,7 @@ class TestEMAttributeInitialization:
         """A fit that raises during input validation must not leave a partial
         set of EM-result attributes on the model.
 
-        Calls the base ``_DetectorBase.estimate_parameters`` directly with
+        Calls the EM engine ``_DetectorBase._run_em`` directly with
         ``time_edges=None`` so validation fails immediately (before any model state
         or data is needed), isolating the attribute-initialization order.
         """
@@ -324,7 +328,7 @@ class TestEMAttributeInitialization:
 
         decoder = ClusterlessDecoder()
         with pytest.raises(ValidationError):
-            _DetectorBase.estimate_parameters(
+            _DetectorBase._run_em(
                 decoder, time_edges=None, estimate_encoding_model=False
             )
 
