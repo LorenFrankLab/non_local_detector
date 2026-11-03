@@ -145,6 +145,14 @@ from non_local_detector.types import (
 
 logger = getLogger(__name__)
 
+# Units of a fitted encoding model. Every fit records a copy as
+# ``time_contract_``; decoding refuses a model recorded with any other.
+_TIME_CONTRACT: dict[str, object] = {
+    "version": 1,
+    "rate_units": "Hz",
+    "encoding_time_units": "seconds",
+}
+
 # The optional outputs ``return_outputs`` can name; "all" names every one.
 _OPTIONAL_OUTPUTS: frozenset[str] = frozenset(
     {"filter", "predictive", "predictive_posterior", "log_likelihood"}
@@ -3284,17 +3292,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """Compute the log likelihood. To be implemented by inheriting class."""
 
     def _validate_time_contract(self) -> None:
+        """Reject fitted state whose time units this version cannot decode.
+
+        The base detector keeps no encoding model, so there is nothing to
+        check; detectors that fit encoding models override this hook with
+        ``_validate_encoding_contract``. Public decoding methods call it once,
+        before any work.
+        """
+
+    def _validate_encoding_contract(self) -> None:
         """Reject unknown encoding units and unknown learned transition clocks."""
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."
             raise ValidationError(msg)
         if (
-            getattr(self, "time_contract_", None)
-            != {
-                "version": 1,
-                "rate_units": "Hz",
-                "encoding_time_units": "seconds",
-            }
+            getattr(self, "time_contract_", None) != _TIME_CONTRACT
             or not hasattr(self, "transition_time_bin_width_")
             or not isinstance(self.encoding_model_, Mapping)
         ):
@@ -3323,18 +3335,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     "Call fit(...) or estimate_parameters(..., time_edges=...) "
                     "with the original recording. No-Spike uses its constructor rate in Hz.",
                 )
-        if isinstance(self, ClusterlessDetector) and not hasattr(
-            self, "mark_reference_"
-        ):
-            msg = (
-                "Saved clusterless model has no mark reference; refit before decoding."
-            )
-            raise ValidationError(
-                msg,
-                hint="Clusterless states score waveform marks against a reference "
-                "density fitted from training spikes. Call fit(...) with the "
-                "original recording.",
-            )
 
     def _validate_decode_population(
         self,
@@ -4044,10 +4044,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         The three posteriors stay on the device: callers copy to the host only
         the ones they return or need there.
         """
-        if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
-            self, "encoding_model_"
-        ):
-            self._validate_time_contract()
+        # The engine's own guard: callers can reach it with a precomputed or
+        # custom likelihood that no public method has checked.
+        self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -4243,7 +4242,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             checkpointed_forward_backward,
         )
 
-        self._validate_time_contract()
         edges, centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -4315,7 +4313,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 hint="Compact output holds state probabilities only; request "
                 "'filter' and 'predictive', or use output_mode='spatial' with a result_path.",
             )
-        self._validate_time_contract()
         edges, centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -5719,10 +5716,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             DataFrame containing the most likely sequence of states
             and corresponding positions/metadata at each time step.
         """
-        if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
-            self, "encoding_model_"
-        ):
-            self._validate_time_contract()
+        # As in _predict: callers can reach the engine with a custom likelihood.
+        self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -6345,11 +6340,7 @@ class ClusterlessDetector(_DetectorBase):
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
         self.mark_reference_ = mark_reference
-        self.time_contract_ = {
-            "version": 1,
-            "rate_units": "Hz",
-            "encoding_time_units": "seconds",
-        }
+        self.time_contract_ = dict(_TIME_CONTRACT)
 
     def fit(
         self,
@@ -6471,6 +6462,19 @@ class ClusterlessDetector(_DetectorBase):
             row_slice=row_slice,
             _spike_time_order=spike_time_order,
         )
+
+    def _validate_time_contract(self) -> None:
+        self._validate_encoding_contract()
+        if not hasattr(self, "mark_reference_"):
+            msg = (
+                "Saved clusterless model has no mark reference; refit before decoding."
+            )
+            raise ValidationError(
+                msg,
+                hint="Clusterless states score waveform marks against a reference "
+                "density fitted from training spikes. Call fit(...) with the "
+                "original recording.",
+            )
 
     @row_slice_aware
     @requires_time_edges
@@ -7293,11 +7297,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
-        self.time_contract_ = {
-            "version": 1,
-            "rate_units": "Hz",
-            "encoding_time_units": "seconds",
-        }
+        self.time_contract_ = dict(_TIME_CONTRACT)
 
     def fit(
         self,
@@ -7381,6 +7381,9 @@ class SortedSpikesDetector(_DetectorBase):
                 valid_position_intervals=valid_position_intervals,
             )
         return self
+
+    def _validate_time_contract(self) -> None:
+        self._validate_encoding_contract()
 
     _SPIKE_DATA_NAMES = ("spike_times",)
     _PREDICT_EXAMPLE = (
