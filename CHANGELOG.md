@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Detector constructors
+
+- **Breaking:** every constructor parameter of `SortedSpikesDetector`, `ClusterlessDetector` and the ten ready-made models (`NonLocal*Detector`, `ContFrag*Classifier`, `NoSpikeContFrag*Classifier`, `MultiEnvironment*Classifier`, `SortedSpikesDecoder`, `ClusterlessDecoder`) is keyword-only. With 20-25 parameters, a positional call silently bound values to the wrong parameter whenever the order changed. `NonLocalSortedSpikesDetector(0.1)` now raises `TypeError`; write `NonLocalSortedSpikesDetector(discrete_initial_conditions=...)`. `get_params`, `clone` and `Cls(**params)` are unaffected.
+
 ### Dependencies
 
 - seaborn is no longer a dependency: `plot_discrete_state_transition` draws its heatmap with matplotlib. The figure is the same (colormap, color limits, `0.000` annotations, tick labels, colorbar label); the heatmap's cells are drawn with `pcolormesh` and its overlapping x tick labels are rotated as before.
