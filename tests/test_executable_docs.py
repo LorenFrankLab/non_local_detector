@@ -10,6 +10,9 @@ DOCS = Path(__file__).resolve().parents[1] / "docs"
 MARKED_BLOCK = re.compile(
     r"<!-- docs-test: run -->\s*\n```python\n(?P<code>.*?)\n```", re.DOTALL
 )
+pytestmark = pytest.mark.skipif(
+    not DOCS.is_dir(), reason="docs/ is not part of this installation"
+)
 PAGES = sorted(
     path.relative_to(DOCS).as_posix()
     for path in DOCS.rglob("*.md")

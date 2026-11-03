@@ -41,6 +41,7 @@ from non_local_detector import (
     Uniform,
     time_edges_from_centers,
 )
+from non_local_detector.analysis import get_spatial_posterior
 from non_local_detector.simulate.clusterless_simulation import (
     make_continuous_replay,
     make_fragmented_continuous_fragmented_replay,
@@ -461,14 +462,14 @@ for lower, upper in itertools.pairwise(gap_edges_ms):
 #    Continuous and Fragmented states.
 #
 # `acausal_posterior` is indexed by `state_bins`, a (state, position) index.
-# We drop the No-Spike bins, which have no position, before unstacking it
-# into a `(time, state, position)` array.
+# `get_spatial_posterior` drops the No-Spike bins, which have no position,
+# and unstacks it into a `(time, state, position)` array. Do not call
+# `unstack("state_bins")` yourself: it puts the No-Spike probability on the
+# last position bin.
 
 # %%
-spatial_posterior = (
-    results.acausal_posterior.where(results.state != "No-Spike", drop=True)
-    .unstack("state_bins")
-    .sum("state")
+spatial_posterior = get_spatial_posterior(results.acausal_posterior).sum(
+    "state"
 )  # (n_time, n_position_bins)
 place_bin_centers = spatial_posterior.position.to_numpy()
 bin_size = np.diff(place_bin_centers).mean()

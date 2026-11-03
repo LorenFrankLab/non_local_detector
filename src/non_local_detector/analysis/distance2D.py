@@ -20,9 +20,11 @@ logger = logging.getLogger(__name__)
 def make_2D_track_graph_from_environment(
     environment: Environment,
 ) -> nx.Graph:
-    """Create a graph of the environment's on-track position bins.
+    """Create a graph of the environment's place bins.
 
-    On-track bins are the nodes and neighboring bins are connected by edges.
+    Every place bin is a node (its id is the flat bin index), and the
+    ``is_track_interior`` node attribute marks the on-track bins. Edges connect
+    adjacent on-track bins, including diagonal neighbors.
 
     Parameters
     ----------
@@ -32,8 +34,10 @@ def make_2D_track_graph_from_environment(
     Returns
     -------
     track_graph : nx.Graph
-        Graph with place bins as nodes (position in the ``pos`` attribute) and
-        edges carrying a ``distance`` attribute.
+        Graph with all place bins as nodes (bin center in the ``pos``
+        attribute, on-track flag in ``is_track_interior``) and edges between
+        adjacent on-track bins carrying ``distance`` and ``edge_id``
+        attributes.
     """
 
     return make_nD_track_graph_from_environment(environment)
@@ -124,7 +128,9 @@ def get_map_estimate_direction_from_track_graph(
     -------
     map_estimate_direction : np.ndarray, shape (n_time,)
         Direction in radians of the first step along the shortest path from the
-        head position to the MAP estimate.
+        head position to the MAP estimate. 0 where the head position and the MAP
+        estimate are in the same bin. NaN where the track graph has no path
+        between their bins (a warning is logged).
     """
     node_positions = nx.get_node_attributes(track_graph, "pos")
 
@@ -448,7 +454,8 @@ def get_velocity(
         MAP decoded position.
     time : np.ndarray, shape (n_time,), optional
         Time of each sample used to take the gradient. If None, sample indices
-        are used, by default None.
+        are used and the velocity is in position units per sample; otherwise it
+        is in position units per unit of ``time``. By default None.
     sigma : float, optional
         Standard deviation of the Gaussian smoothing kernel in seconds,
         by default 0.0025.

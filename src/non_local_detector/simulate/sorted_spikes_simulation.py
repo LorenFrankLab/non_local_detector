@@ -376,14 +376,16 @@ def simulate_linear_distance_with_pauses(
         Period, in seconds, of one back-and-forth traversal (passed as the
         ``period`` of the underlying sinusoid), by default 10.0.
     pause : float, optional
-        Pause duration in seconds at each track end, by default 0.5.
+        Pause duration in seconds at the far end of the track
+        (``track_height``); there is no pause at 0. By default 0.5.
     sampling_frequency : float, optional
         Samples per second of ``time``, by default 1.0.
 
     Returns
     -------
     linear_distance : np.ndarray, shape (n_time,)
-        Linear distance along the track, ranging from 0 to ``track_height``.
+        Linear distance along the track, ranging from 0 to ``track_height``,
+        with a pause at ``track_height`` each time the track end is reached.
     """
     linear_distance = _simulate_sinusoidal_position_by_period(
         time, track_height, running_speed
