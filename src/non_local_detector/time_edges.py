@@ -18,10 +18,13 @@ width, and rejects deviations above that larger bound. The separate precision
 guard rejects grids whose ulp bound exceeds 1% of their smallest bin width.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import wraps
+from typing import Any, TypeVar, cast
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from non_local_detector.exceptions import DataError, ValidationError
 
@@ -35,7 +38,10 @@ _MAX_RELATIVE_SPACING_TOLERANCE = 1e-2
 _UNIFORMITY_RELATIVE_FLOOR = 1e-3
 
 
-def requires_time_edges(function):
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def requires_time_edges(function: _F) -> _F:
     """Keep the explicit-edge signature and explain obsolete time arguments.
 
     This is an error adapter, not a compatibility conversion: old inputs are
@@ -43,7 +49,7 @@ def requires_time_edges(function):
     """
 
     @wraps(function)
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         if "time" in kwargs or "time_edges" not in kwargs:
             msg = (
                 f"{function.__qualname__} requires keyword-only time_edges "
@@ -56,7 +62,7 @@ def requires_time_edges(function):
             raise TypeError(msg)
         return function(*args, **kwargs)
 
-    return wrapped
+    return cast(_F, wrapped)
 
 
 def _spacing_tolerance(time_edges: np.ndarray) -> float:
@@ -90,7 +96,7 @@ def _validate_time_precision(
         )
 
 
-def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
+def validate_time_edges(time_edges: ArrayLike, name: str = "time_edges") -> np.ndarray:
     """Validate decode bin edges and return them as a float array.
 
     Parameters
@@ -190,7 +196,7 @@ class _DecodeTimeGrid:
     uniform_width: float | None
     uniform_tolerance: float | None
 
-    def __init__(self, edges) -> None:
+    def __init__(self, edges: ArrayLike) -> None:
         object.__setattr__(self, "edges", validate_time_edges(edges))
         object.__setattr__(self, "uniform_width", None)
         object.__setattr__(self, "uniform_tolerance", None)
@@ -226,7 +232,7 @@ class _DecodeTimeGrid:
 
 
 def _resolve_time_grid(
-    time_edges, time_grid: _DecodeTimeGrid | None = None
+    time_edges: ArrayLike, time_grid: _DecodeTimeGrid | None = None
 ) -> _DecodeTimeGrid:
     """Reuse matching private preparation; validate fresh inputs otherwise."""
     if isinstance(time_grid, _DecodeTimeGrid) and time_grid.edges is time_edges:
@@ -235,7 +241,7 @@ def _resolve_time_grid(
 
 
 def _uniform_time_grid(
-    time_edges, time_grid: _DecodeTimeGrid | None = None
+    time_edges: np.ndarray, time_grid: _DecodeTimeGrid | None = None
 ) -> _DecodeTimeGrid:
     """Bind edges the detector already checked uniform; reuse a matching grid."""
     if isinstance(time_grid, _DecodeTimeGrid) and time_grid.edges is time_edges:
@@ -247,7 +253,7 @@ def _uniform_time_grid(
     )
 
 
-def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
+def uniform_time_bin_width(time_edges: ArrayLike, name: str = "time_edges") -> float:
     """Validate that decode bins are uniform and return their width.
 
     See :func:`uniform_time_edges`, which also returns the validated edges.
@@ -272,7 +278,7 @@ def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
 
 
 def uniform_time_edges(
-    time_edges, name: str = "time_edges"
+    time_edges: ArrayLike, name: str = "time_edges"
 ) -> tuple[np.ndarray, float]:
     """Validate uniform decode bins in one pass; return the edges and width.
 
@@ -320,7 +326,7 @@ def uniform_time_edges(
     return edges, float(width)
 
 
-def time_edges_from_centers(time) -> np.ndarray:
+def time_edges_from_centers(time: ArrayLike) -> np.ndarray:
     """Edges of uniform bins centered on uniformly spaced timestamps.
 
     This is the migration for code that decoded one row per position sample:
@@ -370,7 +376,7 @@ def time_edges_from_centers(time) -> np.ndarray:
 
 
 def calculate_time_edges(
-    time_range, sampling_frequency: float, trim: bool = False
+    time_range: ArrayLike, sampling_frequency: float, trim: bool = False
 ) -> np.ndarray:
     """Uniform edges at ``1 / sampling_frequency`` spanning ``time_range``.
 

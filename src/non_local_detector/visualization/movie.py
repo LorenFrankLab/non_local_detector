@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+import xarray as xr
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar  # type: ignore[import-untyped]  # mpl_toolkits ships no stubs
 
 from non_local_detector.visualization._parallel_video_writer import (
     VideoConfig,
@@ -12,22 +16,27 @@ from non_local_detector.visualization._parallel_video_writer import (
 )
 from non_local_detector.visualization.static import get_multiunit_firing_rate
 
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+
+    from non_local_detector.models.base import _DetectorBase
+
 logger = logging.getLogger(__name__)
 
 
 def make_single_environment_movie(
-    time_slice,
-    classifier,
-    results,
-    position_info,
-    spike_times,
-    movie_name="video_name.mp4",
-    sampling_frequency=500,
-    video_slowdown=8,
-    position_name=None,
-    direction_name="head_orientation",
-    vmax=0.07,
-):
+    time_slice: slice,
+    classifier: _DetectorBase,
+    results: xr.Dataset,
+    position_info: pd.DataFrame,
+    spike_times: list[np.ndarray],
+    movie_name: str = "video_name.mp4",
+    sampling_frequency: float = 500,
+    video_slowdown: float = 8,
+    position_name: list[str] | None = None,
+    direction_name: str = "head_orientation",
+    vmax: float = 0.07,
+) -> str:
     """Generate a movie of the decoding results for a single environment.
 
     Parameters
@@ -146,7 +155,7 @@ def make_single_environment_movie(
 
 
 # Define these at MODULE LEVEL (required for pickle-ability)
-def _setup_single_env_figure():
+def _setup_single_env_figure() -> tuple[Figure, dict[str, Any]]:
     """Setup figure for single environment movie."""
     with plt.style.context("dark_background"):
         fig, axes_array = plt.subplots(
@@ -211,7 +220,12 @@ def _setup_single_env_figure():
     return fig, axes
 
 
-def _render_single_env_frame(fig, axes, frame_idx, data):  # noqa: ARG001 -- frame-renderer signature
+def _render_single_env_frame(
+    fig: Figure,  # noqa: ARG001 -- frame-renderer signature
+    axes: dict[str, Any],
+    frame_idx: int,
+    data: dict[str, Any],
+) -> None:
     """Render a single frame for single environment movie."""
 
     # Update position

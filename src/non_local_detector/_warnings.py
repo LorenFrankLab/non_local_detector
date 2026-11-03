@@ -2,6 +2,7 @@
 
 import os
 import sys
+from types import FrameType
 
 # Not resolved: frame filenames carry the same, possibly symlinked, path the
 # package was imported from.
@@ -25,7 +26,7 @@ def user_stacklevel() -> int:
     -------
     stacklevel : int
     """
-    frame = sys._getframe(1)
+    frame: FrameType | None = sys._getframe(1)
     level = 1
     while frame is not None:
         path = os.path.abspath(frame.f_code.co_filename)

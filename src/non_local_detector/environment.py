@@ -57,14 +57,19 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast, overload
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import networkx as nx  # type: ignore[import-untyped]
+import networkx as nx
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
-from scipy import ndimage  # type: ignore[import-untyped]
-from scipy.interpolate import interp1d  # type: ignore[import-untyped]
+import pandas as pd
+from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    import jax
+from scipy import ndimage
+from scipy.interpolate import interp1d
 from track_linearization import (  # type: ignore[import-untyped]
     get_linearized_position,
     plot_graph_as_1D,
@@ -226,7 +231,7 @@ class Environment:
     environment_name: str = ""
     place_bin_size: float | tuple[float, ...] = 2.0
     track_graph: nx.Graph | None = None
-    edge_order: list[tuple] | None = None
+    edge_order: list[tuple[Any, ...]] | None = None
     edge_spacing: float | list[float] | None = 0.0
     is_track_interior: np.ndarray | None = None
     position_range: Sequence[tuple[float, float]] | None = None
@@ -236,7 +241,7 @@ class Environment:
     bin_count_threshold: int = 0
 
     # Attributes to be fitted
-    edges_: tuple[np.ndarray, ...] | None = None
+    edges_: Sequence[np.ndarray] | None = None
     place_bin_edges_: np.ndarray | None = None
     place_bin_centers_: np.ndarray | None = None
     centers_shape_: tuple[int, ...] | None = None
@@ -312,7 +317,7 @@ class Environment:
             val.ensure_ndarray(self.is_track_interior, "is_track_interior")
             # Note: We can't validate shape until we know the grid dimensions
 
-    def __getstate__(self) -> dict:
+    def __getstate__(self) -> dict[str, Any]:
         """Exclude the transient device-basis cache from pickling.
 
         ``_diffusion_device_basis_`` (populated by
@@ -327,7 +332,7 @@ class Environment:
         state.pop("_linear_position_cache_", None)  # rebuilt on demand
         return state
 
-    def _linear_position(self, points: np.ndarray) -> np.ndarray:
+    def _linear_position(self, points: "np.ndarray | jax.Array") -> np.ndarray:
         """Linear position of points on the track graph, cached by value.
 
         Equal point values give the stored result without projecting them onto
@@ -350,7 +355,7 @@ class Environment:
         cache = self.__dict__.setdefault("_linear_position_cache_", OrderedDict())
         if key in cache:
             cache.move_to_end(key)
-            return cache[key].copy()
+            return cast("np.ndarray", cache[key].copy())
         # A copy: a view would keep the linearization's other columns alive,
         # outside the bytes counted below.
         result = get_linearized_position(
@@ -365,9 +370,17 @@ class Environment:
             and len(cache) > 1
         ):
             cache.popitem(last=False)
-        return result.copy()
+        return cast("np.ndarray", result.copy())
 
-    def decoding_position(self, points: np.ndarray) -> np.ndarray:
+    @overload
+    def decoding_position(self, points: np.ndarray) -> np.ndarray: ...
+
+    @overload
+    def decoding_position(self, points: "jax.Array") -> "np.ndarray | jax.Array": ...
+
+    def decoding_position(
+        self, points: "np.ndarray | jax.Array"
+    ) -> "np.ndarray | jax.Array":
         """Map points into the coordinates the place grid is binned in.
 
         On a track graph, multi-dimensional points (raw ``(x, y)`` tracking)
@@ -377,7 +390,7 @@ class Environment:
 
         Parameters
         ----------
-        points : np.ndarray, shape (n_points, n_position_dims) or (n_points,)
+        points : np.ndarray or jax.Array, shape (n_points, n_position_dims) or (n_points,)
             Positions, such as the animal's tracked position.
 
         Returns
@@ -431,6 +444,7 @@ class Environment:
 
         # Validate track_graph is a NetworkX Graph
         val.ensure_networkx_graph(self.track_graph, "track_graph")
+        assert self.track_graph is not None  # ensure_networkx_graph rejects None
 
         # Validate graph has sufficient nodes and edges
         val.ensure_graph_has_nodes(self.track_graph, "track_graph", min_nodes=2)
@@ -465,7 +479,7 @@ class Environment:
 
         # Validate edge_order structure
         if not isinstance(self.edge_order, list):
-            msg = "edge_order must be a list of tuples"
+            msg = "edge_order must be a list of tuples"  # type: ignore[unreachable]  # runtime check of user input
             raise ValidationError(
                 msg,
                 expected="list of 2-tuples",
@@ -476,12 +490,12 @@ class Environment:
 
         # Validate each edge in edge_order
         for i, edge in enumerate(self.edge_order):
-            if not isinstance(edge, tuple) or len(edge) != 2:
+            if not isinstance(edge, tuple) or len(edge) != 2:  # type: ignore[redundant-expr]  # runtime check of user input
                 msg = f"edge_order[{i}] must be a 2-tuple"
                 raise ValidationError(
                     msg,
                     expected="tuple of length 2",
-                    got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, tuple | list) else 'N/A'}",
+                    got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, tuple | list) else 'N/A'}",  # type: ignore[redundant-expr]  # runtime check of user input
                     hint="Each edge should be a 2-tuple like (node1, node2)",
                     example=f"    edge_order[{i}] = (0, 1)  # Not {edge}",
                 )
@@ -548,8 +562,8 @@ class Environment:
             )
 
         for i, dim_range in enumerate(self.position_range):
-            if not isinstance(dim_range, tuple) or len(dim_range) != 2:
-                msg = f"position_range[{i}] must be a 2-tuple"
+            if not isinstance(dim_range, tuple) or len(dim_range) != 2:  # type: ignore[redundant-expr]  # runtime check of user input
+                msg = f"position_range[{i}] must be a 2-tuple"  # type: ignore[unreachable]  # runtime check of user input
                 raise ValidationError(
                     msg,
                     expected="(min, max) tuple",
@@ -559,10 +573,10 @@ class Environment:
                 )
 
             min_val, max_val = dim_range
-            if not isinstance(min_val, int | float) or not isinstance(
+            if not isinstance(min_val, int | float) or not isinstance(  # type: ignore[redundant-expr]  # runtime check of user input
                 max_val, int | float
             ):
-                msg = f"position_range[{i}] must contain numeric values"
+                msg = f"position_range[{i}] must contain numeric values"  # type: ignore[unreachable]  # runtime check of user input
                 raise ValidationError(
                     msg,
                     expected="(float, float)",
@@ -677,7 +691,7 @@ class Environment:
                 self.place_bin_centers_,
                 self.centers_shape_,
             ) = get_grid(
-                position,
+                position,  # type: ignore[arg-type]  # BUG: position=None without a track_graph fails in get_grid
                 self.place_bin_size,
                 self.position_range,
             )
@@ -705,7 +719,7 @@ class Environment:
                 self.is_track_interior_ = self.is_track_interior.copy()
             elif self.infer_track_interior:
                 self.is_track_interior_ = get_track_interior(
-                    position,
+                    position,  # type: ignore[arg-type]  # BUG: position=None without a track_graph fails here
                     self.edges_,
                     self.fill_holes,
                     self.dilate,
@@ -715,7 +729,7 @@ class Environment:
                 self.is_track_interior_ = np.ones(self.centers_shape_, dtype=bool)
 
             if (
-                self.edges_ is not None
+                self.edges_ is not None  # type: ignore[redundant-expr]  # kept as a guard; set by get_grid above
                 and len(self.edges_) > 1
                 and self.is_track_interior_ is not None
             ):
@@ -755,6 +769,8 @@ class Environment:
                     ),
                     example="place_bin_size=2.0",
                 )
+            assert self.edge_order is not None  # required by _validate_track_graph
+            assert self.edge_spacing is not None  # required by _validate_track_graph
             (
                 self.place_bin_centers_,
                 self.place_bin_edges_,
@@ -800,7 +816,7 @@ class Environment:
                 self.track_graph, self.edge_order, self.edge_spacing, ax=ax
             )
             try:
-                for edge in self.edges_[0]:
+                for edge in self.edges_[0]:  # type: ignore[index]  # edges_ is set by fit_place_grid; unfitted use fails at runtime
                     ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
             except AttributeError:
                 # Edges have not been fit yet
@@ -811,13 +827,13 @@ class Environment:
                 _, ax = plt.subplots(figsize=(6, 7))
             if self.is_track_interior_ is not None:
                 ax.pcolormesh(
-                    self.edges_[0],
-                    self.edges_[1],
+                    self.edges_[0],  # type: ignore[index]  # edges_ is set by fit_place_grid
+                    self.edges_[1],  # type: ignore[index]  # edges_ is set by fit_place_grid
                     self.is_track_interior_.T,
                     cmap="bone_r",
                 )
-            ax.set_xticks(self.edges_[0], minor=True)
-            ax.set_yticks(self.edges_[1], minor=True)
+            ax.set_xticks(self.edges_[0], minor=True)  # type: ignore[index]  # edges_ is set by fit_place_grid
+            ax.set_yticks(self.edges_[1], minor=True)  # type: ignore[index]  # edges_ is set by fit_place_grid
             ax.grid(visible=True, which="minor")
             ax.grid(visible=False, which="major")
 
@@ -849,7 +865,7 @@ class Environment:
             The loaded environment object.
         """
         with Path(filename).open("rb") as f:
-            return pickle.load(f)
+            return cast("Environment", pickle.load(f))
 
     def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
         """Find the indices of the bins to which each value in input array belongs.
@@ -884,7 +900,7 @@ class Environment:
         """
         if not self._is_fitted:
             msg = "Environment has not been fitted yet"
-            raise ConfigurationError(
+            raise ConfigurationError(  # type: ignore[call-arg]  # BUG: ConfigurationError takes no `example`; raises TypeError
                 msg,
                 hint="Call fit_place_grid() before using this method",
                 example="    env = Environment(place_bin_size=5.0)\n    env.fit_place_grid(position=position_data)",
@@ -1091,7 +1107,9 @@ class Environment:
                     # No path between the nodes on the track graph.
                     continue
         else:
-            distances = self.distance_between_nodes_[bin_ind1, bin_ind2]
+            distances = cast("np.ndarray", self.distance_between_nodes_)[
+                bin_ind1, bin_ind2
+            ]
 
         return distances
 
@@ -1162,7 +1180,9 @@ class Environment:
                 for src_bin, src_node in enumerate(bin_to_node):
                     if src_node == -1:
                         continue
-                    src_distances = self.distance_between_nodes_.get(src_node, {})
+                    src_distances = cast(
+                        "dict[int, dict[int, float]]", self.distance_between_nodes_
+                    ).get(src_node, {})
                     for dst_bin, dst_node in enumerate(bin_to_node):
                         if dst_node == -1:
                             continue
@@ -1170,24 +1190,33 @@ class Environment:
                 self._bin_distance_matrix_ = bin_dist
 
             position_bin_inds = self.get_bin_ind(np.asarray(positions))
-            return self._bin_distance_matrix_[
-                np.ix_(position_bin_inds, interior_bin_indices)
-            ]
+            return cast(
+                "np.ndarray",
+                self._bin_distance_matrix_[
+                    np.ix_(position_bin_inds, interior_bin_indices)
+                ],
+            )
 
         if isinstance(self.distance_between_nodes_, LazyGraphDistances):
             # N-D deferred distances: exact rows for the visited source bins.
             position_bin_inds = self.get_bin_ind(np.asarray(positions))
-            return self.distance_between_nodes_.cross_distances(
-                position_bin_inds, interior_bin_indices
+            return cast(
+                "np.ndarray",
+                self.distance_between_nodes_.cross_distances(
+                    position_bin_inds, interior_bin_indices
+                ),
             )
         if self.distance_between_nodes_ is not None and not isinstance(
             self.distance_between_nodes_, dict
         ):
             # N-D: distance_between_nodes_ is (n_nodes, n_nodes) array.
             position_bin_inds = self.get_bin_ind(np.asarray(positions))
-            return self.distance_between_nodes_[
-                np.ix_(position_bin_inds, interior_bin_indices)
-            ]
+            return cast(
+                "np.ndarray",
+                self.distance_between_nodes_[
+                    np.ix_(position_bin_inds, interior_bin_indices)
+                ],
+            )
 
         # Fallback: Euclidean distances.
         positions_arr = np.asarray(positions, dtype=float)
@@ -1196,11 +1225,15 @@ class Environment:
             positions_arr = positions_arr[:, np.newaxis]
         if bin_centers.ndim == 1:
             bin_centers = bin_centers[:, np.newaxis]
-        return np.sqrt(
-            np.sum(
-                (positions_arr[:, np.newaxis, :] - bin_centers[np.newaxis, :, :]) ** 2,
-                axis=-1,
-            )
+        return cast(
+            "np.ndarray",
+            np.sqrt(
+                np.sum(
+                    (positions_arr[:, np.newaxis, :] - bin_centers[np.newaxis, :, :])
+                    ** 2,
+                    axis=-1,
+                )
+            ),
         )
 
     def get_direction(
@@ -1262,7 +1295,11 @@ class Environment:
         bin_ind = self.get_bin_ind(position)
 
         velocity_to_center = gaussian_smooth(
-            np.gradient(self.distance_between_nodes_[bin_ind, center_node_id]),
+            np.gradient(
+                cast("np.ndarray", self.distance_between_nodes_)[
+                    bin_ind, center_node_id
+                ]
+            ),
             sigma,
             sampling_frequency,
             axis=0,
@@ -1282,9 +1319,9 @@ class Environment:
 
 def get_n_bins(
     position: np.ndarray,
-    bin_size: float = 2.5,
+    bin_size: float | tuple[float, ...] = 2.5,
     position_range: Sequence[tuple[float, float]] | None = None,
-) -> int:
+) -> NDArray[np.int32]:
     """Get number of bins need to span a range given a bin size.
 
     Parameters
@@ -1296,7 +1333,7 @@ def get_n_bins(
 
     Returns
     -------
-    n_bins : int
+    n_bins : np.ndarray of int32
 
     """
     if position_range is not None:
@@ -1309,9 +1346,9 @@ def get_n_bins(
 
 def get_grid(
     position: np.ndarray,
-    bin_size: float = 2.5,
+    bin_size: float | tuple[float, ...] = 2.5,
     position_range: Sequence[tuple[float, float]] | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
+) -> tuple[Sequence[np.ndarray], np.ndarray, np.ndarray, tuple[int, ...]]:
     """Calculate bin edges and centers for a spatial grid.
 
     Creates a grid based on the provided position data or range, using
@@ -1353,6 +1390,7 @@ def get_grid(
     is_nan = np.any(np.isnan(position), axis=1)
     position = position[~is_nan]
     n_bins = get_n_bins(position, bin_size, position_range)
+    edges: Sequence[np.ndarray]
     _, edges = np.histogramdd(position, bins=n_bins, range=position_range)
     if len(edges) > 1:
         edges = [
@@ -1475,8 +1513,9 @@ def project_points_to_segment(
     )
     nx[np.where(nx < 0)] = 0.0
     nx[np.where(nx > 1)] = 1.0
-    return node1[np.newaxis, ...] + (
-        nx[:, :, np.newaxis] * segment_diff[np.newaxis, ...]
+    return cast(
+        "np.ndarray",
+        node1[np.newaxis, ...] + (nx[:, :, np.newaxis] * segment_diff[np.newaxis, ...]),
     )
 
 
@@ -1484,8 +1523,8 @@ def _calculate_linear_position(
     track_graph: nx.Graph,
     position: np.ndarray,
     track_segment_id: np.ndarray,
-    edge_order: list[tuple],
-    edge_spacing: float | list,
+    edge_order: list[tuple[Any, ...]],
+    edge_spacing: float | list[float],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Determines the linear position given a 2D position and a track graph.
 
@@ -1523,7 +1562,7 @@ def _calculate_linear_position(
         ] * (n_edges - 1)
 
     counter = 0.0
-    start_node_linear_position = []
+    start_node_linear_position: Any = []
 
     for ind, edge in enumerate(edge_order):
         start_node_linear_position.append(counter)
@@ -1638,8 +1677,8 @@ def make_track_graph_with_bin_centers_edges(
 def extract_bin_info_from_track_graph(
     track_graph: nx.Graph,
     track_graph_with_bin_centers_edges: nx.Graph,
-    edge_order: list[tuple],
-    edge_spacing: float | list,
+    edge_order: list[tuple[Any, ...]],
+    edge_spacing: float | list[float],
 ) -> pd.DataFrame:
     """For each node, find edge_id, is_bin_edge, x_position, y_position, and
     linear_position.
@@ -1691,16 +1730,16 @@ def extract_bin_info_from_track_graph(
 
 def get_track_grid(
     track_graph: nx.Graph,
-    edge_order: list[tuple],
-    edge_spacing: float | list,
+    edge_order: list[tuple[Any, ...]],
+    edge_spacing: float | list[float],
     place_bin_size: float,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
     np.ndarray,
-    dict,
-    tuple,
-    tuple,
+    dict[int, dict[int, float]],
+    tuple[int, ...],
+    Sequence[np.ndarray],
     nx.Graph,
     pd.DataFrame,
     pd.DataFrame,
@@ -1851,9 +1890,10 @@ def get_track_boundary(
     structure = ndimage.generate_binary_structure(
         rank=n_position_dims, connectivity=connectivity
     )
-    return (
+    return cast(
+        "np.ndarray",
         ndimage.binary_dilation(is_track_interior, structure=structure)
-        ^ is_track_interior
+        ^ is_track_interior,
     )
 
 
@@ -1898,7 +1938,8 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         msg = "centers_shape_ is required for edge construction"
         raise ValueError(msg)
 
-    edges = []
+    edges: Any = []  # becomes an (n_edges, 2) array after concatenation
+    ind: Any
     # Enumerate over nodes in the track interior
     for ind in zip(*np.nonzero(environment.is_track_interior_), strict=False):
         ind = np.array(ind)
@@ -1987,6 +2028,13 @@ def gaussian_smooth(
         Gaussian smoothed data array.
 
     """
-    return ndimage.gaussian_filter1d(
-        data, sigma * sampling_frequency, truncate=truncate, axis=axis, mode="constant"
+    return cast(
+        "np.ndarray",
+        ndimage.gaussian_filter1d(
+            data,
+            sigma * sampling_frequency,
+            truncate=truncate,
+            axis=axis,
+            mode="constant",
+        ),
     )

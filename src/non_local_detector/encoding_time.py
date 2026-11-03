@@ -6,8 +6,13 @@ Event weights are dimensionless; integrated sample exposure is in seconds.
 """
 
 import warnings
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+if TYPE_CHECKING:
+    import jax
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import DataError, ValidationError
@@ -31,12 +36,12 @@ class EncodingSupport:
 
     def __init__(
         self,
-        position_time,
-        position,
+        position_time: ArrayLike,
+        position: ArrayLike,
         *,
-        encoding_time_range=None,
-        valid_position_intervals=None,
-    ):
+        encoding_time_range: ArrayLike | None = None,
+        valid_position_intervals: ArrayLike | None = None,
+    ) -> None:
         time = np.asarray(position_time, dtype=np.float64)
         position = np.asarray(position)
         if time.size == 0:
@@ -62,7 +67,7 @@ class EncodingSupport:
             raise DataError(msg, data_name="position")
         self.time = time
         self.exposure = np.zeros(time.size)
-        self.segments = []
+        self.segments: list[tuple[float, float, NDArray[np.intp]]] = []
         finite = np.all(np.isfinite(position), axis=1)
         self.indices = np.flatnonzero(finite)
         intervals = None
@@ -148,7 +153,7 @@ class EncodingSupport:
                 self.segments.append((lower, upper, run))
                 self._integrate(lower, upper, run)
 
-    def _integrate(self, start, stop, indices):
+    def _integrate(self, start: float, stop: float, indices: NDArray[np.intp]) -> None:
         time = self.time[indices]
         self.exposure[indices[0]] += max(min(stop, time[0]) - start, 0)
         self.exposure[indices[-1]] += max(stop - max(start, time[-1]), 0)
@@ -167,14 +172,16 @@ class EncodingSupport:
         np.add.at(self.exposure, indices[:-1], duration - right_mass)
         np.add.at(self.exposure, indices[1:], right_mass)
 
-    def contains(self, times):
+    def contains(self, times: ArrayLike) -> NDArray[np.bool_]:
         times = np.asarray(times)
         mask = np.zeros(times.shape, dtype=bool)
         for start, stop, _ in self.segments:
             mask |= (times >= start) & (times <= stop)
         return mask
 
-    def interpolate(self, values, times, *, fill_value=np.nan):
+    def interpolate(
+        self, values: ArrayLike, times: ArrayLike, *, fill_value: float = np.nan
+    ) -> NDArray[np.float64]:
         values, times = np.asarray(values), np.asarray(times)
         shape = (len(times), *values.shape[1:])
         result = np.full(shape, fill_value, dtype=float)
@@ -191,7 +198,14 @@ class EncodingSupport:
                     )
         return result
 
-    def _segment_events(self, segment_index, spike_times):
+    def _segment_events(
+        self, segment_index: int, spike_times: NDArray[np.float64]
+    ) -> tuple[
+        NDArray[np.bool_],
+        NDArray[np.intp],
+        NDArray[np.intp],
+        NDArray[np.float64],
+    ]:
         """Spikes one segment owns, with their bracketing samples and fraction.
 
         Parameters
@@ -236,7 +250,14 @@ class EncodingSupport:
         )
         return owned, indices[left], indices[right], fraction
 
-    def event_basis(self, spike_times):
+    def event_basis(
+        self, spike_times: ArrayLike
+    ) -> tuple[
+        NDArray[np.intp],
+        NDArray[np.intp],
+        NDArray[np.intp],
+        NDArray[np.float64],
+    ]:
         """Each supported spike's bracketing samples and interpolation fraction.
 
         A spike's unit event is split between its two bracketing samples: the
@@ -272,7 +293,9 @@ class EncodingSupport:
         )
         return spike_index[order], left, right, fraction
 
-    def event_counts(self, spike_times, weights):
+    def event_counts(
+        self, spike_times: ArrayLike, weights: ArrayLike
+    ) -> NDArray[np.float64]:
         """Dimensionless weighted events assigned to their interpolation basis."""
         spike_times, weights = np.asarray(spike_times, dtype=float), np.asarray(weights)
         counts = np.zeros(len(self.time))
@@ -288,14 +311,16 @@ class EncodingSupport:
 
 
 def prepare_encoding_support(
-    position_time,
-    position,
-    weights,
+    position_time: ArrayLike,
+    position: ArrayLike,
+    weights: "NDArray[Any] | jax.Array | None",
     *,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-):
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> tuple[
+    EncodingSupport, NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]
+]:
     """Prepare separate event weights and exposure weights for a backend."""
     from non_local_detector.likelihoods.common import validate_weights
 
@@ -318,7 +343,7 @@ def prepare_encoding_support(
 
 
 def warn_if_no_encoding_exposure(
-    exposure_weights, model: str, *, clusterless: bool
+    exposure_weights: ArrayLike, model: str, *, clusterless: bool
 ) -> None:
     """Warn when an encoding fit has zero training exposure.
 
@@ -358,7 +383,7 @@ def warn_if_no_encoding_exposure(
         )
 
 
-def largest_tracking_step(support: EncodingSupport, position) -> float:
+def largest_tracking_step(support: EncodingSupport, position: ArrayLike) -> float:
     """Largest distance between consecutive tracking samples within a segment.
 
     Only samples that share an interpolation segment of ``support`` count, so
@@ -385,7 +410,7 @@ def largest_tracking_step(support: EncodingSupport, position) -> float:
 
 
 def warn_if_tracking_is_sparse(
-    support: EncodingSupport, position, position_std
+    support: EncodingSupport, position: ArrayLike, position_std: ArrayLike
 ) -> None:
     """Warn when tracking moves farther per sample than ``position_std``.
 

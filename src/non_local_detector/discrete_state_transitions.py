@@ -1,13 +1,14 @@
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from functools import partial
-from typing import NamedTuple
+from typing import Any, NamedTuple, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 from jax.nn import log_softmax
 from jax.typing import ArrayLike
 from patsy import (  # type: ignore[import-untyped]
@@ -18,26 +19,29 @@ from patsy import (  # type: ignore[import-untyped]
     stateful_transform,
 )
 from patsy.splines import BS  # type: ignore[import-untyped]
-from scipy.interpolate import BSpline  # type: ignore[import-untyped]
-from scipy.linalg import cho_factor, cho_solve  # type: ignore[import-untyped]
-from scipy.optimize import minimize, minimize_scalar  # type: ignore[import-untyped]
-from scipy.special import expit, logit, softmax, xlogy  # type: ignore[import-untyped]
-from scipy.stats import norm  # type: ignore[import-untyped]
+from scipy.interpolate import BSpline
+from scipy.linalg import cho_factor, cho_solve
+from scipy.optimize import minimize, minimize_scalar
+from scipy.special import expit, logit, softmax, xlogy
+from scipy.stats import norm
 
 logger = logging.getLogger(__name__)
 
+# ``(design, response)`` blocks of one transition row; see ``_row_problem``.
+_Blocks: TypeAlias = list[tuple[jnp.ndarray, jnp.ndarray]]
 
-def _float64_jax():
+
+def _float64_jax() -> AbstractContextManager[Any]:
     """A context in which JAX computes in float64.
 
     The scoped switch is ``jax.enable_x64`` in current JAX and
     ``jax.experimental.enable_x64`` in older releases such as 0.6.
     """
     if hasattr(jax, "enable_x64"):
-        return jax.enable_x64(True)
+        return cast(AbstractContextManager[Any], jax.enable_x64(True))
     from jax.experimental import enable_x64
 
-    return enable_x64(True)
+    return cast(AbstractContextManager[Any], enable_x64(True))
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
@@ -65,7 +69,7 @@ def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
     else:
         y = np.column_stack((y, np.zeros((y.shape[0],))))
 
-    return softmax(y, axis=-1)
+    return cast(np.ndarray, softmax(y, axis=-1))
 
 
 def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
@@ -99,7 +103,7 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
         y = y.astype(float)
     EPS = np.finfo(y.dtype).tiny
     y_safe = np.clip(y, EPS, None)
-    return np.log(y_safe[..., :-1]) - np.log(y_safe[..., [-1]])
+    return cast(np.ndarray, np.log(y_safe[..., :-1]) - np.log(y_safe[..., [-1]]))
 
 
 def _state_aggregation_matrix(state_ind: np.ndarray) -> np.ndarray:
@@ -127,9 +131,9 @@ def _host_or_device(posterior: ArrayLike) -> np.ndarray | jax.Array:
 
 
 def _validate_expanded_posterior_shapes(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
+    causal_posterior: np.ndarray | jax.Array,
+    predictive_posterior: np.ndarray | jax.Array,
+    acausal_posterior: np.ndarray | jax.Array | jax.Array,
     state_ind: np.ndarray,
 ) -> tuple[int, int]:
     """Validate expanded posterior shapes and return ``(n_time, n_state_bins)``."""
@@ -168,6 +172,7 @@ def _validate_expanded_transition_shape(
     n_state_bins: int,
 ) -> bool:
     """Validate expanded transition shape and return whether it is stationary."""
+    expected_shape: tuple[int, ...]
     if transition_matrix.ndim == 2:
         expected_shape = (n_state_bins, n_state_bins)
     elif transition_matrix.ndim == 3:
@@ -224,6 +229,7 @@ def _validate_factorized_discrete_transition_shape(
             raise ValueError(msg)
         return True
 
+    expected_shape: tuple[int, ...]
     if discrete_transition_matrix.ndim == 2:
         expected_shape = stationary_shape
     elif discrete_transition_matrix.ndim == 3:
@@ -338,7 +344,7 @@ def _blocked_contraction(left: jnp.ndarray, right: jnp.ndarray) -> jnp.ndarray:
     left = jnp.pad(left, ((0, padding), (0, 0)))
     right = jnp.pad(right, ((0, padding), (0, 0)))
 
-    def add(block, total):
+    def add(block: jax.Array, total: jax.Array) -> jax.Array:
         start = block * _CONTRACTION_SUB_ROWS
         return total + jnp.matmul(
             jax.lax.dynamic_slice_in_dim(left, start, _CONTRACTION_SUB_ROWS).T,
@@ -346,11 +352,14 @@ def _blocked_contraction(left: jnp.ndarray, right: jnp.ndarray) -> jnp.ndarray:
             precision=jax.lax.Precision.HIGHEST,
         )
 
-    return jax.lax.fori_loop(
-        0,
-        (n_rows + padding) // _CONTRACTION_SUB_ROWS,
-        add,
-        jnp.zeros((n_bins, n_bins), jnp.result_type(left, right)),
+    return cast(
+        jax.Array,
+        jax.lax.fori_loop(
+            0,
+            (n_rows + padding) // _CONTRACTION_SUB_ROWS,
+            add,
+            jnp.zeros((n_bins, n_bins), jnp.result_type(left, right)),
+        ),
     )
 
 
@@ -396,7 +405,7 @@ def _stationary_counts_block(
     maximum = jnp.max(ratio, axis=0, initial=0.0)
     # The column sum is at most n_rows * maximum; keep it 256x below the
     # largest finite value.
-    headroom = jnp.finfo(ratio.dtype).max / 256
+    headroom = jnp.finfo(ratio.dtype).max / 256  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
     exponent = jnp.ceil(
         jnp.log2(jnp.maximum(maximum / headroom * causal_posterior.shape[0], 1.0))
     )
@@ -405,16 +414,16 @@ def _stationary_counts_block(
     scale = jnp.ldexp(jnp.ones((), ratio.dtype), exponent.astype(jnp.int32))
     contraction = _blocked_contraction(causal_posterior, ratio / scale)
     # Weight first: the weighted terms are bounded, the unweighted sums are not.
-    weighted = jax.lax.optimization_barrier(transition_matrix * contraction)
+    weighted = jax.lax.optimization_barrier(transition_matrix * contraction)  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
     return _aggregate_xi_by_state_jax(weighted * scale, state_ind, n_states)
 
 
 def _stationary_counts(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
+    causal_posterior: np.ndarray | jax.Array,
+    predictive_posterior: np.ndarray | jax.Array,
+    acausal_posterior: np.ndarray | jax.Array | jax.Array,
     transition_matrix: jnp.ndarray,
-    state_ind: np.ndarray,
+    state_ind: np.ndarray | jax.Array,
     n_states: int,
 ) -> jnp.ndarray:
     """``_stationary_counts_block`` over all consecutive rows, in byte-bounded blocks.
@@ -489,7 +498,12 @@ def _transition_pair_stats_jax(
             dtype=continuous_transition_matrix.dtype,
         ).T
 
-    def aggregate(causal_t, predictive_next, acausal_next, transition_t):
+    def aggregate(
+        causal_t: jax.Array,
+        predictive_next: jax.Array,
+        acausal_next: jax.Array,
+        transition_t: jax.Array,
+    ) -> jax.Array:
         ratio = _safe_ratio_jax(acausal_next, predictive_next)
         if is_factorized:
             return _aggregate_factorized_xi_by_state_jax(
@@ -508,7 +522,7 @@ def _transition_pair_stats_jax(
     if return_time_series:
         if is_stationary:
 
-            def step(_, inputs):
+            def step(_: Any, inputs: tuple[Any, ...]) -> tuple[None, jax.Array]:
                 causal_t, predictive_next, acausal_next = inputs
                 return (
                     None,
@@ -531,7 +545,7 @@ def _transition_pair_stats_jax(
             )
         else:
 
-            def step(_, inputs):
+            def step(_: Any, inputs: tuple[Any, ...]) -> tuple[None, jax.Array]:
                 causal_t, predictive_next, acausal_next, transition_t = inputs
                 return (
                     None,
@@ -567,7 +581,9 @@ def _transition_pair_stats_jax(
         ),
     )
 
-    def step(joint_sum, inputs):
+    def accumulate(
+        joint_sum: jax.Array, inputs: tuple[Any, ...]
+    ) -> tuple[jax.Array, None]:
         causal_t, predictive_next, acausal_next, transition_t = inputs
         counts_t = aggregate(
             causal_t,
@@ -578,7 +594,7 @@ def _transition_pair_stats_jax(
         return joint_sum + counts_t, None
 
     joint_sum, _ = jax.lax.scan(
-        step,
+        accumulate,
         initial_counts,
         (
             causal_posterior[:-1],
@@ -595,7 +611,7 @@ def estimate_discrete_transition_responses_from_expanded_posteriors(
     causal_posterior: np.ndarray,
     predictive_posterior: np.ndarray,
     acausal_posterior: np.ndarray,
-    transition_matrix: np.ndarray,
+    transition_matrix: np.ndarray | jax.Array,
     state_ind: np.ndarray,
 ) -> np.ndarray:
     """Return exact expected discrete transition responses.
@@ -658,7 +674,7 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
     causal_posterior: np.ndarray,
     predictive_posterior: np.ndarray,
     acausal_posterior: np.ndarray,
-    transition_matrix: np.ndarray,
+    transition_matrix: np.ndarray | jax.Array,
     state_ind: np.ndarray,
 ) -> np.ndarray:
     """Return exact expected discrete transition counts.
@@ -728,11 +744,11 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
 
 
 def estimate_discrete_transition_responses_from_factorized_posteriors(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    continuous_transition_matrix: np.ndarray,
-    discrete_transition_matrix: np.ndarray,
+    causal_posterior: np.ndarray | jax.Array,
+    predictive_posterior: np.ndarray | jax.Array,
+    acausal_posterior: np.ndarray | jax.Array,
+    continuous_transition_matrix: np.ndarray | jax.Array,
+    discrete_transition_matrix: np.ndarray | jax.Array,
     state_ind: np.ndarray,
 ) -> np.ndarray:
     """Return exact discrete transition responses from factorized transitions.
@@ -805,11 +821,11 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
 
 
 def estimate_discrete_transition_counts_from_factorized_posteriors(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    continuous_transition_matrix: np.ndarray,
-    discrete_transition_matrix: np.ndarray,
+    causal_posterior: np.ndarray | jax.Array,
+    predictive_posterior: np.ndarray | jax.Array,
+    acausal_posterior: np.ndarray | jax.Array,
+    continuous_transition_matrix: np.ndarray | jax.Array,
+    discrete_transition_matrix: np.ndarray | jax.Array,
     state_ind: np.ndarray,
 ) -> np.ndarray:
     """Return exact counts from stationary factorized transitions.
@@ -963,7 +979,7 @@ class CovariateTransitionFit(NamedTuple):
     coefficients: np.ndarray
     transition: np.ndarray
     smoothness: np.ndarray
-    covariance: np.ndarray
+    covariance: np.ndarray | None
 
 
 # REML searches the curvature-penalty strength over this grid of log10
@@ -1157,7 +1173,7 @@ def _row_smoothness(
         values = 1.0 if initial_smoothness is None else initial_smoothness
         _validate_smoothness(values)
     else:
-        values = smoothness
+        values = cast(float | np.ndarray, smoothness)
     n_terms = (
         0
         if smoothness_matrix is None
@@ -1257,7 +1273,7 @@ def _fit_covariate_transition(
         smoothness, initial_smoothness, smoothness_matrix, n_states
     )
 
-    options: dict = {}
+    options: dict[str, Any] = {}
     if maxiter is not None:
         options["maxiter"] = maxiter
     # scipy deprecated `disp`/`iprint` for L-BFGS-B (removal in 1.18), so
@@ -1290,7 +1306,7 @@ def _fit_covariate_transition(
                 def fit_row(
                     start: np.ndarray,
                     strengths: np.ndarray,
-                    blocks: list = blocks,
+                    blocks: _Blocks = blocks,
                     prior_per_bin: jnp.ndarray = prior_per_bin,
                     from_state: int = from_state,
                     warn: bool = True,
@@ -1492,7 +1508,7 @@ def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
         factor = cho_factor(matrix)
     except np.linalg.LinAlgError:
         return np.full_like(matrix, np.nan)
-    return cho_solve(factor, np.eye(matrix.shape[0]))
+    return cast(np.ndarray, cho_solve(factor, np.eye(matrix.shape[0])))
 
 
 def _precision_log_pdet(
@@ -1562,7 +1578,7 @@ def _precision_log_pdet(
 def _reml_row(
     coefficients: np.ndarray,
     fit_row: Callable[..., np.ndarray],
-    blocks: list,
+    blocks: _Blocks,
     prior_per_bin: jnp.ndarray,
     penalty: Callable[[np.ndarray], np.ndarray],
     penalties: np.ndarray,
@@ -1601,7 +1617,7 @@ def _reml_row(
     """
     n_terms, n_coefficients = penalties.shape[:2]
     n_free = np.size(coefficients) // n_coefficients
-    fits: dict[tuple, tuple[np.ndarray, float]] = {}
+    fits: dict[tuple[float, ...], tuple[np.ndarray, float]] = {}
 
     def laml(log10_strengths: np.ndarray, start: np.ndarray) -> float:
         key = tuple(np.asarray(log10_strengths, dtype=np.float64))
@@ -1618,7 +1634,7 @@ def _reml_row(
             sign, log_det = np.linalg.slogdet(
                 _blocked_hessian(beta, blocks, prior_per_bin, row_penalty)
             )
-        value = (
+        value: float = (
             -_blocked_loss(beta, blocks, prior_per_bin, row_penalty)
             + 0.5 * log_pdet
             - 0.5 * log_det
@@ -1636,7 +1652,7 @@ def _reml_row(
         """The log10 strength ``x`` maximizing ``laml(point(x))``: a grid,
         strongest first with each fit starting from the next-stronger one,
         then a bounded refinement within a decade of the best."""
-        scores: dict[float, tuple] = {}
+        scores: dict[float, tuple[float, ...]] = {}
 
         def score(x: float, start: np.ndarray) -> float:
             value = laml(point(x), start)
@@ -1709,11 +1725,11 @@ def _reml_row(
 
 def _fit_covariate_row(
     initial_coefficients: np.ndarray,
-    blocks: list,
+    blocks: _Blocks,
     prior_per_bin: jnp.ndarray,
     penalty: np.ndarray,
     optimization_method: str,
-    options: dict,
+    options: dict[str, Any],
     from_state: int,
     warn: bool = True,
 ) -> np.ndarray:
@@ -1805,10 +1821,10 @@ def _fit_covariate_row(
             from_state,
             result.message,
         )
-    return result.x.reshape(np.shape(initial_coefficients))
+    return cast(np.ndarray, result.x.reshape(np.shape(initial_coefficients)))
 
 
-def _newton_decrement(coefficients: np.ndarray, *args) -> float:
+def _newton_decrement(coefficients: np.ndarray, *args: Any) -> float:
     """Loss decrease a Newton step predicts, ``g @ inv(H) @ g / 2``.
 
     Near the optimum of a badly conditioned row (strong penalties give
@@ -1948,10 +1964,13 @@ def estimate_stationary_state_transition_from_counts(
     prior_fallback = alpha / alpha.sum(axis=-1, keepdims=True)
     row_totals = new_transition_matrix.sum(axis=-1, keepdims=True)
     safe_row_totals = np.where(row_totals == 0, 1.0, row_totals)
-    return np.where(
-        row_totals == 0,
-        prior_fallback,
-        new_transition_matrix / safe_row_totals,
+    return cast(
+        np.ndarray,
+        np.where(
+            row_totals == 0,
+            prior_fallback,
+            new_transition_matrix / safe_row_totals,
+        ),
     )
 
 
@@ -2046,7 +2065,7 @@ def _row_problem(
     design_blocks: list[jnp.ndarray],
     response: np.ndarray,
     alpha: float | np.ndarray,
-) -> tuple[list, jnp.ndarray]:
+) -> tuple[_Blocks, jnp.ndarray]:
     """One row's blocks of transitions and its prior pseudo-counts per bin.
 
     Call with JAX in float64.
@@ -2120,7 +2139,7 @@ def _penalty_value(coefficients: np.ndarray, penalty: np.ndarray) -> float:
 
 def _blocked_loss(
     coefficients: np.ndarray,
-    blocks: list,
+    blocks: _Blocks,
     prior_per_bin: jnp.ndarray,
     penalty: np.ndarray,
 ) -> float:
@@ -2140,7 +2159,7 @@ def _blocked_loss(
 
 def _blocked_loss_and_gradient(
     coefficients: np.ndarray,
-    blocks: list,
+    blocks: _Blocks,
     prior_per_bin: jnp.ndarray,
     penalty: np.ndarray,
 ) -> tuple[float, np.ndarray]:
@@ -2165,7 +2184,7 @@ def _blocked_loss_and_gradient(
 
 def _blocked_hessian(
     coefficients: np.ndarray,
-    blocks: list,
+    blocks: _Blocks,
     prior_per_bin: jnp.ndarray,
     penalty: np.ndarray,
 ) -> np.ndarray:
@@ -2589,8 +2608,8 @@ def _discrete_transition_from_statistics(
         discrete_transition_coefficients, discrete_transition_design_matrix
     ):
         fit = _fit_covariate_transition(
-            discrete_transition_coefficients,
-            discrete_transition_design_matrix,
+            cast(np.ndarray, discrete_transition_coefficients),
+            cast(np.ndarray, discrete_transition_design_matrix),
             statistics,
             concentration=transition_concentration,
             stickiness=transition_stickiness,
@@ -2604,6 +2623,7 @@ def _discrete_transition_from_statistics(
         return _DiscreteTransitionMStep(
             fit.transition, fit.coefficients, fit.smoothness
         )
+    stickiness_value: float | np.ndarray
     if (
         isinstance(transition_stickiness, np.ndarray)
         and transition_stickiness.size == 1
@@ -2653,7 +2673,7 @@ class _QuantileBSpline:
 
     def memorize_chunk(
         self,
-        x,
+        x: ArrayLike,
         n_knots: int = 5,
         degree: int = 3,
         lower_quantile: float = 0.0,
@@ -2695,14 +2715,17 @@ class _QuantileBSpline:
 
     def transform(
         self,
-        x,
+        x: ArrayLike,
         n_knots: int = 5,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
         degree: int = 3,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
         lower_quantile: float = 0.0,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
         upper_quantile: float = 1.0,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
     ) -> np.ndarray:
-        return self._spline.transform(
-            np.clip(np.asarray(x, dtype=float), self._lower, self._upper)
+        return cast(
+            np.ndarray,
+            self._spline.transform(
+                np.clip(np.asarray(x, dtype=float), self._lower, self._upper)
+            ),
         )
 
     def curvature_penalty(self) -> np.ndarray:
@@ -2727,7 +2750,7 @@ class _QuantileBSpline:
         penalty = _curvature_gram(second, np.unique(knots), degree)
         # d2f/du2 = width**2 d2f/dx2 and du = dx / width. patsy's bs drops the
         # first basis column, whose effect the intercept absorbs.
-        return width**3 * penalty[1:, 1:]
+        return cast(np.ndarray, width**3 * penalty[1:, 1:])
 
 
 def _curvature_gram(
@@ -2746,7 +2769,7 @@ def _curvature_gram(
     points = (left[:, None] + right[:, None]) / 2 + (right - left)[:, None] / 2 * nodes
     point_weights = (right - left)[:, None] / 2 * weights
     values = second(points.ravel())
-    return (values * point_weights.ravel()[:, None]).T @ values
+    return cast(np.ndarray, (values * point_weights.ravel()[:, None]).T @ values)
 
 
 class _CyclicBSpline:
@@ -2765,7 +2788,12 @@ class _CyclicBSpline:
         self._chunks: list[np.ndarray] = []
 
     def memorize_chunk(
-        self, x, lower: float, upper: float, n_knots: int = 8, degree: int = 3
+        self,
+        x: ArrayLike,
+        lower: float,
+        upper: float,
+        n_knots: int = 8,
+        degree: int = 3,
     ) -> None:
         if not (np.isfinite(lower) and np.isfinite(upper) and lower < upper):
             msg = (
@@ -2820,7 +2848,7 @@ class _CyclicBSpline:
 
     def transform(
         self,
-        x,
+        x: ArrayLike,
         lower: float,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
         upper: float,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
         n_knots: int = 8,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
@@ -2918,7 +2946,11 @@ class DiscreteStationaryDiagonal:
 
     diagonal_values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:  # noqa: ARG002 -- shared make_state_transition signature
+    def make_state_transition(
+        self,
+        *args: Any,  # noqa: ARG002 -- shared make_state_transition signature
+        **kwargs: Any,  # noqa: ARG002 -- shared make_state_transition signature
+    ) -> tuple[np.ndarray, None, None]:
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -2951,7 +2983,11 @@ class DiscreteStationaryCustom:
 
     values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:  # noqa: ARG002 -- shared make_state_transition signature
+    def make_state_transition(
+        self,
+        *args: Any,  # noqa: ARG002 -- shared make_state_transition signature
+        **kwargs: Any,  # noqa: ARG002 -- shared make_state_transition signature
+    ) -> tuple[np.ndarray, None, None]:
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -2972,7 +3008,7 @@ class DiscreteStationaryCustom:
 def _initial_nonstationary_transition(
     discrete_transition: np.ndarray,
     formula: str,
-    covariate_data: pd.DataFrame | dict | None,
+    covariate_data: pd.DataFrame | dict[str, Any] | None,
     smoothness: float | str,
 ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
     """Initial structures of a covariate-driven transition from its intercept matrix.
@@ -3063,7 +3099,7 @@ class DiscreteNonStationaryDiagonal:
         _validate_smoothness(self.smoothness)
 
     def make_state_transition(
-        self, covariate_data: pd.DataFrame | dict
+        self, covariate_data: pd.DataFrame | dict[str, Any]
     ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
         """Constructs the initial non-stationary discrete transition structures.
 
@@ -3128,7 +3164,7 @@ class DiscreteNonStationaryCustom:
         _validate_smoothness(self.smoothness)
 
     def make_state_transition(
-        self, covariate_data: pd.DataFrame | dict | None
+        self, covariate_data: pd.DataFrame | dict[str, Any] | None
     ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
         """Constructs the initial non-stationary discrete transition structures.
 
@@ -3155,7 +3191,7 @@ class DiscreteNonStationaryCustom:
 def predict_discrete_state_transitions(
     discrete_transition_design_matrix: DesignMatrix,
     discrete_transition_coefficients: np.ndarray,
-    discrete_transition_covariate_data: pd.DataFrame | dict,
+    discrete_transition_covariate_data: pd.DataFrame | dict[str, Any],
 ) -> np.ndarray:
     """Predict the discrete state transitions based on new covariate data.
 
@@ -3181,7 +3217,7 @@ def predict_discrete_state_transitions(
 
 
 def _transitions_on_design(
-    design_matrix: np.ndarray, coefficients: np.ndarray
+    design_matrix: np.ndarray | jax.Array, coefficients: np.ndarray | jax.Array
 ) -> np.ndarray:
     """Transition probabilities at the rows of a built design matrix.
 
@@ -3216,7 +3252,7 @@ def predict_discrete_state_transition_intervals(
     discrete_transition_design_matrix: DesignMatrix,
     discrete_transition_coefficients: np.ndarray,
     discrete_transition_coefficient_covariance: np.ndarray,
-    discrete_transition_covariate_data: pd.DataFrame | dict,
+    discrete_transition_covariate_data: pd.DataFrame | dict[str, Any],
     coverage: float = 0.95,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pointwise intervals of covariate-dependent transition probabilities.
@@ -3263,7 +3299,7 @@ def _transition_intervals(
     discrete_transition_design_matrix: DesignMatrix,
     discrete_transition_coefficients: np.ndarray,
     discrete_transition_coefficient_covariance: np.ndarray,
-    discrete_transition_covariate_data: pd.DataFrame | dict,
+    discrete_transition_covariate_data: pd.DataFrame | dict[str, Any],
     coverage: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """:func:`predict_discrete_state_transition_intervals`, with the

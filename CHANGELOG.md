@@ -94,6 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests without a `unit` / `integration` / `property` / `snapshot` marker are marked `unit` at collection, so `-m unit` and `-m integration` no longer leave out 137 unmarked likelihood tests. The golden regression tests are `integration`.
 - The 15-minute per-test limit is set in `pyproject.toml` (`timeout = 900`), so local runs with the `test` extra match CI.
 - Following the [Scientific Python development guide](https://learn.scientific-python.org/development/): pytest runs with `--strict-config` and `xfail_strict`; pre-commit adds whitespace and file checks, codespell, `validate-pyproject`, workflow and dependabot schema checks and zizmor; CI lints the workflows with zizmor; and releases publish to PyPI through a trusted publisher instead of an API token.
+- **Type checking:** the package passes `mypy --strict` (with `ignore-without-code`, `redundant-expr` and `truthy-bool`), and CI and pre-commit run it. Every function is annotated. The package ships `py.typed`, so type checkers in projects that use it now see complete types. Several annotations that disagreed with the code are corrected:
+  - the base `most_likely_sequence` returns a `pandas.DataFrame`, not an `np.ndarray`
+  - `make_simulated_data` returns eight values, including `place_fields`
+  - `get_n_bins` returns an integer array
+  - fit and predict functions accept JAX arrays where they already did at runtime
+
+  There are no runtime changes.
 - The unit and physical-rate checks of each backend's direct predictor now run on every registered backend, which adds `clusterless_mark_glm`.
 - Likelihood tests pass the fit's whole encoding dictionary to `predict_*`, as the detectors do. Hand-copied keys had left out `environment_grid` and `rate_units`, so the grid and unit checks never ran in those tests, and the clusterless KDE recomputed `log_occupancy` instead of using the fitted one.
 - Duplicate test helpers and copy-paste tests are consolidated into shared fixtures and parametrized tests, and the slowest EM, covariate-pickling and goodness-of-fit tests fit smaller recordings or cache repeated simulations (`test_em_monotonicity.py` 119 s → 12 s locally).

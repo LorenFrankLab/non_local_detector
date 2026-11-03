@@ -13,10 +13,13 @@ import json
 import re
 import shutil
 import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import xarray as xr
+from numpy.typing import ArrayLike, NDArray
 from xarray.backends import BackendArray
 from xarray.core import indexing
 
@@ -37,7 +40,12 @@ class IncrementalResultWriter:
     Existing destinations are refused and never overwritten.
     """
 
-    def __init__(self, path, variables, coordinates):
+    def __init__(
+        self,
+        path: str | Path,
+        variables: Mapping[str, tuple[Sequence[str], Sequence[int], Any]],
+        coordinates: Mapping[str, tuple[Sequence[str], ArrayLike]],
+    ) -> None:
         self.path = Path(path)
         if self.path.exists():
             raise FileExistsError(self.path)
@@ -46,9 +54,9 @@ class IncrementalResultWriter:
             tempfile.mkdtemp(prefix=f".{self.path.name}-", dir=self.path.parent)
         )
         self._published = False
-        self._variables = {}
-        self._intervals = {}
-        self._coordinates = {}
+        self._variables: dict[str, dict[str, Any]] = {}
+        self._intervals: dict[str, list[tuple[int, int]]] = {}
+        self._coordinates: dict[str, dict[str, Any]] = {}
         try:
             for name, (dims, shape, dtype) in variables.items():
                 self._check_name(name)
@@ -84,12 +92,12 @@ class IncrementalResultWriter:
             raise
 
     @staticmethod
-    def _check_name(name):
+    def _check_name(name: object) -> None:
         if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_]+", name) is None:
             msg = "Store names must use letters, numbers, and underscores"
             raise ValueError(msg)
 
-    def write(self, name, start, values):
+    def write(self, name: str, start: int, values: ArrayLike) -> None:
         """Write one bounded chunk at its result-row offset, in any chunk order."""
         if self._published:
             msg = "Result already completed"
@@ -122,7 +130,7 @@ class IncrementalResultWriter:
         )
         bisect.insort(intervals, (int(start), int(stop)))
 
-    def complete(self, attrs=None):
+    def complete(self, attrs: Mapping[str, Any] | None = None) -> Path:
         """Validate coverage and atomically expose a completed immutable result."""
         if self._published:
             msg = "Result already completed"
@@ -156,19 +164,19 @@ class IncrementalResultWriter:
         self._published = True
         return self.path
 
-    def abort(self):
+    def abort(self) -> None:
         """Discard this writer's unpublished files without touching a destination."""
         if not self._published:
             shutil.rmtree(self._temporary, ignore_errors=True)
 
-    def __enter__(self):
+    def __enter__(self) -> IncrementalResultWriter:
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> None:
         self.abort()
 
 
-def _json_value(value):
+def _json_value(value: object) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, np.ndarray):
@@ -178,7 +186,7 @@ def _json_value(value):
 
 
 class _ChunkedArray(BackendArray):
-    def __init__(self, path, spec, max_read_bytes):
+    def __init__(self, path: Path, spec: dict[str, Any], max_read_bytes: int) -> None:
         self.path, self.spec = path, spec
         self.shape, self.dtype = tuple(spec["shape"]), np.dtype(spec["dtype"])
         self.max_read_bytes = max_read_bytes
@@ -187,12 +195,12 @@ class _ChunkedArray(BackendArray):
             [chunk["start"] for chunk in spec["chunks"]], dtype=np.int64
         )
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: indexing.ExplicitIndexer) -> Any:
         return indexing.explicit_indexing_adapter(
             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
         )
 
-    def _getitem(self, key):
+    def _getitem(self, key: tuple[Any, ...]) -> NDArray[Any]:
         indices = [
             _index_values(size, item)
             for size, item in zip(self.shape, key, strict=True)
@@ -239,7 +247,7 @@ class _ChunkedArray(BackendArray):
         return np.squeeze(out, axis=scalar_axes) if scalar_axes else out
 
 
-def _validate_read_budget(max_read_bytes):
+def _validate_read_budget(max_read_bytes: object) -> int:
     """Normalize an explicit byte limit without accepting booleans or truncation."""
     if (
         isinstance(max_read_bytes, (bool, np.bool_))
@@ -251,7 +259,7 @@ def _validate_read_budget(max_read_bytes):
     return int(max_read_bytes)
 
 
-def _validate_variable_chunks(path, spec):
+def _validate_variable_chunks(path: Path, spec: dict[str, Any]) -> None:
     """Check complete row coverage and mapped file headers without reading data."""
     shape, dims = tuple(spec["shape"]), tuple(spec["dims"])
     if (
@@ -291,7 +299,9 @@ def _validate_variable_chunks(path, spec):
         raise ValueError(msg)
 
 
-def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
+def open_result_store(
+    path: str | Path, *, max_read_bytes: int = DEFAULT_MAX_READ_BYTES
+) -> xr.Dataset:
     """Open a completed chunk store without materializing spatial data.
 
     Coordinates are recording-sized metadata and loaded eagerly; each spatial
@@ -323,14 +333,14 @@ def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
     return xr.Dataset(variables, coords=coordinates, attrs=manifest["attrs"])
 
 
-def _index_values(size, item):
+def _index_values(size: int, item: Any) -> NDArray[np.intp]:
     if isinstance(item, slice):
         return np.arange(*item.indices(size))
     values = np.atleast_1d(np.asarray(item, dtype=np.intp))
     return np.where(values < 0, values + size, values)
 
 
-def _contiguous(index):
+def _contiguous(index: NDArray[np.intp]) -> slice | NDArray[np.intp]:
     """``index`` as a slice when it is an ascending run, else unchanged.
 
     Slices copy blocks of the memory map; integer arrays gather element-wise.
@@ -348,7 +358,13 @@ class PaddedBackendArray(BackendArray):
     DataArray whose backend remains lazy until selected rows/bins are read.
     """
 
-    def __init__(self, source, interior_mask, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
+    def __init__(
+        self,
+        source: xr.DataArray | xr.Variable,
+        interior_mask: ArrayLike,
+        *,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+    ) -> None:
         self.source = source.variable if isinstance(source, xr.DataArray) else source
         self.mask = np.asarray(interior_mask, dtype=bool)
         if (
@@ -367,12 +383,12 @@ class PaddedBackendArray(BackendArray):
         self.max_read_bytes = max_read_bytes
         self.mapping = np.cumsum(self.mask) - 1
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: indexing.ExplicitIndexer) -> Any:
         return indexing.explicit_indexing_adapter(
             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
         )
 
-    def _getitem(self, key):
+    def _getitem(self, key: tuple[Any, ...]) -> NDArray[Any]:
         rows, columns = [
             _index_values(size, item)
             for size, item in zip(self.shape, key, strict=True)
@@ -397,7 +413,12 @@ class PaddedBackendArray(BackendArray):
         return np.squeeze(output, axis=scalar_axes) if scalar_axes else output
 
 
-def pad_state_bins(variable, interior_mask, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
+def pad_state_bins(
+    variable: xr.DataArray | xr.Variable,
+    interior_mask: ArrayLike,
+    *,
+    max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+) -> xr.Variable:
     """Return a lazy padded variable; caller supplies original bin coordinates."""
     source = variable.variable if isinstance(variable, xr.DataArray) else variable
     backend = PaddedBackendArray(source, interior_mask, max_read_bytes=max_read_bytes)
