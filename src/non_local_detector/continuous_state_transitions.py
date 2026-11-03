@@ -18,6 +18,7 @@ from scipy.stats import multivariate_normal
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError
 from non_local_detector.graph_distances import LazyGraphDistances
+from non_local_detector.observation_models import ObservationModel
 
 
 @dataclass(frozen=True, eq=False)
@@ -744,3 +745,89 @@ class Discrete:
             The 1x1 identity transition matrix.
         """
         return np.ones((1, 1))
+
+
+def _multi_bin_local_transition(
+    transition: ContinuousTransition,
+    from_observation: ObservationModel,
+    to_observation: ObservationModel,
+    local_position_std: float | None,
+) -> ContinuousTransition:
+    """The transition to build for a block with a multi-bin Local state.
+
+    A multi-bin Local state (``local_position_std`` set) has place bins, so a
+    ``Discrete`` block into or out of it becomes ``Uniform`` over the Local
+    state's environment; a (1, 1) ``Discrete`` block would otherwise be
+    broadcast over every bin pair. Other transitions are returned unchanged.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+    from_observation, to_observation : ObservationModel
+        Observation models of the block's source and destination states.
+    local_position_std : float or None
+        The detector's Local width; None keeps a single-bin Local state.
+
+    Returns
+    -------
+    transition : ContinuousTransition
+
+    Raises
+    ------
+    ValueError
+        If the ``Discrete`` block joins states in different environments.
+    """
+    if not isinstance(transition, Discrete) or local_position_std is None:
+        return transition
+    if not (from_observation.is_local or to_observation.is_local):
+        return transition
+    # Cross-environment transitions with multi-bin local are not supported.
+    if from_observation.environment_name != to_observation.environment_name:
+        msg = (
+            f"Cross-environment Discrete() transition between "
+            f"'{from_observation.environment_name}' and "
+            f"'{to_observation.environment_name}' is not supported with "
+            f"multi-bin local (local_position_std is set). Use explicit "
+            f"Uniform(environment_name=..., environment2_name=...) instead."
+        )
+        raise ValueError(msg)
+    local_observation = (
+        from_observation if from_observation.is_local else to_observation
+    )
+    return Uniform(environment_name=local_observation.environment_name)
+
+
+def _scalar_to_spatial_destination(
+    transition: ContinuousTransition, environments: Sequence[Environment]
+) -> np.ndarray:
+    """Destination bins of a block from a state without place bins.
+
+    A block from a single-bin state (such as Local or No-Spike) to a spatial
+    state is uniform over the interior bins of the environment named by the
+    transition's ``environment_name``, whatever the transition.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+    environments : sequence of Environment
+
+    Returns
+    -------
+    destination : np.ndarray, shape (n_destination_bins,)
+        Boolean interior mask of the destination environment.
+
+    Raises
+    ------
+    ValueError
+        If the transition has no ``environment_name``.
+    """
+    if not hasattr(transition, "environment_name"):
+        # No fallback may broadcast a scalar block across the destination bins.
+        msg = (
+            "Transition must have an environment_name attribute for discrete "
+            "to continuous transitions"
+        )
+        raise ValueError(msg)
+    return find_environment_by_name(
+        environments, transition.environment_name
+    ).is_track_interior_flat_

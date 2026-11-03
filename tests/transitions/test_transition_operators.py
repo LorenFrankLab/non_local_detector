@@ -283,9 +283,6 @@ def dense_reference(
         observation_models=observations,
         local_position_std=local_std,
     )
-    model._get_environment_by_name = lambda name: next(
-        env for env in envs if env.environment_name == name
-    )
     _DetectorBase.initialize_continuous_state_transition(model, transitions, **context)
     return model.continuous_state_transitions_, model.state_ind_
 
@@ -328,16 +325,37 @@ def test_scalar_to_spatial_transition_without_environment_is_rejected(
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "transitions", [[[Uniform("missing")]], [[RandomWalk("missing")]]]
+    "transitions",
+    [
+        [[Uniform("missing")]],
+        [[RandomWalk("missing")]],
+        [[Discrete(), Uniform("missing")], [Discrete(), Identity("track")]],
+    ],
 )
 def test_unknown_environment_name_lists_available_names(transitions):
     """Dense and structured construction report a missing environment alike."""
     env = environment(name="track")
-    sizes = (len(env.place_bin_centers_),)
+    n_bins = len(env.place_bin_centers_)
+    sizes = (n_bins,) if len(transitions) == 1 else (1, n_bins)
     with pytest.raises(ValidationError, match=r"'missing'[\s\S]*\['track'\]"):
         dense_reference(transitions, [env], sizes)
     with pytest.raises(ValidationError, match=r"'missing'[\s\S]*\['track'\]"):
         build_transition_operator(transitions, [env], sizes)
+
+
+@pytest.mark.unit
+def test_cross_environment_discrete_with_multibin_local_is_rejected():
+    """Dense and structured construction share the multi-bin Local rule."""
+    env1, env2 = environment((5,), "one"), environment((5,), "two")
+    observations = [
+        ObservationModel("one", is_local=True),
+        ObservationModel("two"),
+    ]
+    transitions = [[Discrete(), Discrete()], [Uniform("two", "one"), Identity("two")]]
+    with pytest.raises(ValueError, match="Cross-environment Discrete"):
+        dense_reference(transitions, [env1, env2], (5, 5), observations, 2.0)
+    with pytest.raises(ValueError, match="Cross-environment Discrete"):
+        build_transition_operator(transitions, [env1, env2], (5, 5), observations, 2.0)
 
 
 def assert_products(operator, dense, dtype):

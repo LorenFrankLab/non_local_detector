@@ -47,9 +47,9 @@ from non_local_detector.checkpointed_inference import (
     default_replay_cache_bytes,
 )
 from non_local_detector.continuous_state_transitions import (
-    Discrete,
     TransitionContext,
-    Uniform,
+    _multi_bin_local_transition,
+    _scalar_to_spatial_destination,
 )
 from non_local_detector.core import (
     accepts_row_slice,
@@ -2527,60 +2527,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     self.state_ind_ == from_state, self.state_ind_ == to_state
                 )
 
-                # Auto-upgrade Discrete() for multi-bin local states.
-                # Must happen BEFORE make_state_transition() to avoid
-                # (1,1) -> (n,n) broadcast corruption.
-                if (
-                    isinstance(transition, Discrete)
-                    and self.local_position_std is not None
-                ):
-                    from_obs = self.observation_models[from_state]
-                    to_obs = self.observation_models[to_state]
-                    if from_obs.is_local or to_obs.is_local:
-                        # Cross-environment transitions with multi-bin
-                        # local are not supported in v1.
-                        if from_obs.environment_name != to_obs.environment_name:
-                            msg = (
-                                f"Cross-environment Discrete() transition "
-                                f"between '{from_obs.environment_name}' and "
-                                f"'{to_obs.environment_name}' is not "
-                                f"supported with multi-bin local "
-                                f"(local_position_std is set). Use explicit "
-                                f"Uniform(environment_name=..., "
-                                f"environment2_name=...) instead."
-                            )
-                            raise ValueError(msg)
-                        local_obs = from_obs if from_obs.is_local else to_obs
-                        transition = Uniform(
-                            environment_name=local_obs.environment_name
-                        )
+                transition = _multi_bin_local_transition(
+                    transition,
+                    self.observation_models[from_state],
+                    self.observation_models[to_state],
+                    self.local_position_std,
+                )
 
                 n_row_bins = np.max(inds[0].shape)
                 n_col_bins = np.max(inds[1].shape)
 
                 if np.logical_and(n_row_bins == 1, n_col_bins > 1):
-                    # transition from discrete to continuous
-                    # ASSUME uniform for now
-                    if hasattr(transition, "environment_name"):
-                        environment = self._get_environment_by_name(
-                            transition.environment_name
-                        )
-                    else:
-                        msg = "Transition must have an environment_name attribute for discrete to continuous transitions"
-                        raise ValueError(msg)
-                    if environment.is_track_interior_ is not None:
-                        self.continuous_state_transitions_[inds] = (
-                            environment.is_track_interior_.ravel()
-                            / environment.is_track_interior_.sum()
-                        ).astype(float)
-                    else:
-                        # Default fallback: uniform transition
-                        if environment.place_bin_centers_ is not None:
-                            n_bins = environment.place_bin_centers_.shape[0]
-                            self.continuous_state_transitions_[inds] = 1.0 / n_bins
-                        else:
-                            msg = "Environment must have place_bin_centers_ for discrete to continuous transitions"
-                            raise ValueError(msg)
+                    destination = _scalar_to_spatial_destination(
+                        transition, self.environments
+                    )
+                    self.continuous_state_transitions_[inds] = (
+                        destination / destination.sum()
+                    )
                 elif n_row_bins > 1 and n_col_bins == 1:
                     # Spatial to non-spatial: each source bin transitions
                     # to the single target bin with probability 1.

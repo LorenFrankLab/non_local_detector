@@ -29,6 +29,8 @@ from non_local_detector.continuous_state_transitions import (
     RandomWalkDirection2,
     TransitionContext,
     Uniform,
+    _multi_bin_local_transition,
+    _scalar_to_spatial_destination,
 )
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.graph_distances import LazyGraphDistances
@@ -1558,17 +1560,7 @@ def _structured_block(
     target_size: int,
 ) -> UniformBlock | IdentityBlock | GaussianGridBlock:
     if source_size == 1 and target_size > 1:
-        if not hasattr(transition, "environment_name"):
-            # A configuration error, as in the dense constructor: no fallback
-            # may broadcast a scalar block across the destination bins.
-            msg = (
-                "Transition must have an environment_name attribute for discrete "
-                "to continuous transitions"
-            )
-            raise ValueError(msg)
-        destination = _mask(
-            find_environment_by_name(environments, transition.environment_name)
-        )
+        destination = _scalar_to_spatial_destination(transition, environments)
         normalization = np.array(
             1.0 / destination.sum() if destination.any() else np.nan
         )
@@ -1719,24 +1711,13 @@ def build_transition_operator(
     for source, row in enumerate(transition_types):
         planned_row: list[Any] = []
         for target, transition in enumerate(row):
-            if (
-                isinstance(transition, Discrete)
-                and local_position_std is not None
-                and observation_models is not None
-            ):
-                from_obs, to_obs = (
+            if observation_models is not None:
+                transition = _multi_bin_local_transition(
+                    transition,
                     observation_models[source],
                     observation_models[target],
+                    local_position_std,
                 )
-                if from_obs.is_local or to_obs.is_local:
-                    if from_obs.environment_name != to_obs.environment_name:
-                        msg = "Cross-environment Discrete with multi-bin Local is unsupported; use explicit Uniform"
-                        raise ValueError(msg)
-                    transition = Uniform(
-                        environment_name=(
-                            from_obs if from_obs.is_local else to_obs
-                        ).environment_name
-                    )
             try:
                 block = _structured_block(
                     transition, environments, sizes[source], sizes[target]
