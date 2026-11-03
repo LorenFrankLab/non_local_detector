@@ -75,6 +75,7 @@ from track_linearization import (  # type: ignore[import-untyped]
     plot_graph_as_1D,
 )
 
+from non_local_detector import _validation as val
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import (
@@ -280,9 +281,6 @@ class Environment:
 
     def __post_init__(self) -> None:
         """Validate Environment parameters after initialization."""
-        # Import locally to avoid circular dependency
-        from non_local_detector import _validation as val
-
         # Validate place_bin_size
         if isinstance(self.place_bin_size, tuple):
             for i, size in enumerate(self.place_bin_size):
@@ -443,9 +441,6 @@ class Environment:
         ConfigurationError
             If edge_order or edge_spacing are missing when track_graph is provided
         """
-        # Import locally to avoid circular dependency
-        from non_local_detector import _validation as val
-
         # Validate track_graph is a NetworkX Graph
         val.ensure_networkx_graph(self.track_graph, "track_graph")
         assert self.track_graph is not None  # ensure_networkx_graph rejects None
@@ -634,9 +629,6 @@ class Environment:
             The fitted environment, with the fitted attributes (``edges_``,
             ``place_bin_centers_``, ...) populated.
         """
-        # Import locally to avoid circular dependency
-        from non_local_detector import _validation as val
-
         # Validate position if provided
         if position is not None:
             val.ensure_ndarray(position, "position")

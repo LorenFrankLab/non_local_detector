@@ -470,3 +470,29 @@ def calculate_time_edges(
         )
     edges: np.ndarray = start + np.arange(n_bins + 1) / sampling_frequency
     return uniform_time_edges(edges)[0]
+
+
+def decode_bin_centers(
+    time_edges: np.ndarray, row_start: int, row_stop: int
+) -> np.ndarray:
+    """Compute the centers of the decode bins ``[row_start, row_stop)``.
+
+    Local-position kernels, the non-local penalty, and local likelihoods
+    evaluate the animal's position at these observation coordinates.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        FULL decoding bin edges, in seconds.
+    row_start : int
+        First requested bin (inclusive).
+    row_stop : int
+        End of the requested bins (exclusive).
+
+    Returns
+    -------
+    centers : np.ndarray, shape (row_stop - row_start,)
+        Center time of each requested decode bin, in seconds.
+    """
+    edges = np.asarray(time_edges)[row_start : row_stop + 1]
+    return edges[:-1] + 0.5 * np.diff(edges)
