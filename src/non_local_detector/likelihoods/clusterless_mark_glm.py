@@ -132,7 +132,13 @@ class MarkMixture:
 
     @property
     def n_components(self) -> int:
-        """Number of mixture components."""
+        """Number of mixture components.
+
+        Returns
+        -------
+        n_components : int
+            Number of mixture components.
+        """
         return len(self.weights)
 
     def log_component_density(self, marks: np.ndarray) -> np.ndarray:
