@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### API hygiene
 
+- `ValidationError`, `ConfigurationError` and `DataError` also subclass `ValueError`, so `except ValueError` catches them (and `except NonLocalDetectorError` still does). Package code mixes these with plain `ValueError`, which previously could not be caught together.
+- **Removed:** `FittingError` and `ConvergenceError` (and their top-level exports). They were never raised anywhere in the package.
 - **Fixed:** importing `non_local_detector` no longer changes the global scikit-learn configuration (`sklearn.set_config(print_changed_only=False)` was called at import). Detector reprs now follow scikit-learn's default of showing only parameters changed from their defaults; call `sklearn.set_config(print_changed_only=False)` yourself to restore the old repr.
 
 ### Dependencies
