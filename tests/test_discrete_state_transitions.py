@@ -3,6 +3,7 @@
 Tests cover the core public functions that can be tested in isolation.
 """
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -293,7 +294,7 @@ class TestDirichletNegLogLikelihood:
         )
 
         # Assert
-        assert isinstance(nll, float | jnp.ndarray)
+        assert isinstance(nll, float | jax.Array)
         assert nll > 0  # Should be positive
 
     def test_dirichlet_neg_log_likelihood_with_strong_prior(self):

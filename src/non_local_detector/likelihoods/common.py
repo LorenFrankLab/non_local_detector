@@ -63,7 +63,7 @@ def log_bin_duration_evidence(
     *,
     intensity_time_scale: float = 1.0,
     _time_grid: _DecodeTimeGrid | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Compute the marked-process event term ``N_bin * log(duration / intensity_time_scale)``.
 
     ``duration`` is each decode bin's width in seconds; ``intensity_time_scale``
@@ -88,7 +88,7 @@ def log_bin_duration_evidence(
 
     Returns
     -------
-    evidence : jnp.ndarray, shape (n_rows,)
+    evidence : jax.Array, shape (n_rows,)
         ``N_bin * log(duration / intensity_time_scale)`` per requested bin, where
         ``N_bin`` is the number of spikes of all electrodes in the bin.
     """
@@ -110,9 +110,7 @@ def log_bin_duration_evidence(
     )
 
 
-def as_std_array(
-    std: "jnp.ndarray | np.ndarray | float | int", n_dims: int
-) -> jnp.ndarray:
+def as_std_array(std: "jax.Array | np.ndarray | float | int", n_dims: int) -> jax.Array:
     """Broadcast a scalar kernel bandwidth to a per-dimension array.
 
     A single ``jnp.ndim`` check covers Python ``int``/``float``, NumPy scalars
@@ -124,14 +122,14 @@ def as_std_array(
 
     Parameters
     ----------
-    std : jnp.ndarray or float or int
+    std : jax.Array or float or int
         Scalar (broadcast to ``n_dims``) or per-dimension standard deviation(s).
     n_dims : int
         Number of dimensions to broadcast a scalar to.
 
     Returns
     -------
-    std_array : jnp.ndarray
+    std_array : jax.Array
         Shape ``(n_dims,)`` for scalar input; the original array otherwise.
     """
     if jnp.ndim(std) == 0:
@@ -139,7 +137,7 @@ def as_std_array(
     return jnp.asarray(std)
 
 
-def validate_bandwidth(std: Any, n_dims: int, name: str) -> jnp.ndarray:
+def validate_bandwidth(std: Any, n_dims: int, name: str) -> jax.Array:
     """Kernel bandwidths as a per-dimension array, rejecting unusable values.
 
     A zero, negative or non-finite bandwidth would fit a degenerate kernel that
@@ -156,7 +154,7 @@ def validate_bandwidth(std: Any, n_dims: int, name: str) -> jnp.ndarray:
 
     Returns
     -------
-    std : jnp.ndarray, shape (n_dims,)
+    std : jax.Array, shape (n_dims,)
         In JAX's default floating dtype.
 
     Raises
@@ -238,7 +236,7 @@ def validate_weights(weights: np.ndarray | jax.Array, n_time: int) -> np.ndarray
     return weights
 
 
-def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
+def validate_finite(array: np.ndarray | jax.Array, name: str) -> None:
     """Raise if ``array`` contains any non-finite (NaN/inf) value.
 
     Shared fit-input finiteness check for the encoding fits: a non-finite
@@ -249,7 +247,7 @@ def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
 
     Parameters
     ----------
-    array : np.ndarray | jnp.ndarray
+    array : np.ndarray | jax.Array
         The array to check.
     name : str
         Name used in the error message (e.g. ``"position"``).
@@ -262,7 +260,7 @@ def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
     # Reduce on the array's own device: for a JAX array this keeps the full
     # (potentially GPU-resident) array on-device and transfers only the scalar
     # result, avoiding a full device->host copy per electrode on every refit.
-    if isinstance(array, jnp.ndarray):
+    if isinstance(array, jax.Array):
         all_finite = bool(jnp.all(jnp.isfinite(array)))
     else:
         all_finite = bool(np.all(np.isfinite(np.asarray(array))))
@@ -438,17 +436,17 @@ def validate_encoding_contract(
 
 
 def validate_spike_feature_pair(
-    spike_times: np.ndarray | jnp.ndarray,
-    spike_features: np.ndarray | jnp.ndarray,
+    spike_times: np.ndarray | jax.Array,
+    spike_features: np.ndarray | jax.Array,
     electrode: int,
 ) -> None:
     """Validate one electrode's parallel spike/mark arrays without copying them.
 
     Parameters
     ----------
-    spike_times : np.ndarray or jnp.ndarray, shape (n_spikes,)
+    spike_times : np.ndarray or jax.Array, shape (n_spikes,)
         Spike times of the electrode.
-    spike_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
+    spike_features : np.ndarray or jax.Array, shape (n_spikes, n_features)
         Waveform features (marks) of the electrode, one row per spike.
     electrode : int
         Electrode index, used in the error message.
@@ -485,8 +483,8 @@ def validate_spike_feature_pair(
 
 
 def validate_spike_feature_population(
-    spike_times: Sequence[np.ndarray | jnp.ndarray],
-    spike_waveform_features: Sequence[np.ndarray | jnp.ndarray],
+    spike_times: Sequence[np.ndarray | jax.Array],
+    spike_waveform_features: Sequence[np.ndarray | jax.Array],
 ) -> int:
     """Require clusterless spike times and features to describe the same electrodes.
 
@@ -598,15 +596,15 @@ def _matrix_emission_is_safe(
 
     Parameters
     ----------
-    rates : jnp.ndarray, shape (n_neurons, n_bins)
-    durations : jnp.ndarray, shape (n_rows,)
+    rates : jax.Array, shape (n_neurons, n_bins)
+    durations : jax.Array, shape (n_rows,)
         Only their dtype is used.
     accumulator_dtype : dtype
         The emission's accumulator dtype.
 
     Returns
     -------
-    is_safe : jnp.ndarray, shape ()
+    is_safe : jax.Array, shape ()
         True when every rate is positive and finite and the inputs already
         have the accumulator dtype. No duration value enters, so every row
         range of a decode grid takes the same path.
@@ -620,12 +618,12 @@ def _matrix_emission_is_safe(
 
 @jax.jit
 def _poisson_nonlocal_log_likelihood(
-    counts: jnp.ndarray,
-    rates: jnp.ndarray,
-    durations: jnp.ndarray,
-    summed_rates: jnp.ndarray,
+    counts: jax.Array,
+    rates: jax.Array,
+    durations: jax.Array,
+    summed_rates: jax.Array,
     lead: int = 0,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Batched Poisson emissions with fixed arithmetic across row partitions.
 
     A fixed 64-row matrix kernel multiplies counts by the log rates, taken
@@ -636,10 +634,10 @@ def _poisson_nonlocal_log_likelihood(
 
     Parameters
     ----------
-    counts : jnp.ndarray, shape (n_rows, n_neurons)
-    rates : jnp.ndarray, shape (n_neurons, n_bins)
-    durations : jnp.ndarray, shape (n_rows,)
-    summed_rates : jnp.ndarray, shape (n_bins,)
+    counts : jax.Array, shape (n_rows, n_neurons)
+    rates : jax.Array, shape (n_neurons, n_bins)
+    durations : jax.Array, shape (n_rows,)
+    summed_rates : jax.Array, shape (n_bins,)
     lead : int, optional
         Rows of the first 64-row block before the first row, in ``[0, 64)``;
         0 by default. Passing the first row's decode-grid index modulo 64
@@ -648,7 +646,7 @@ def _poisson_nonlocal_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    log_likelihood : jax.Array, shape (n_rows, n_bins)
     """
     n_rows, n_neurons = counts.shape
     n_bins = rates.shape[1]
@@ -778,7 +776,7 @@ def _concatenate_row_blocks(
     evaluate: Callable[[int, int], jax.Array],
     desc: str,
     disable_progress_bar: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Concatenate ``evaluate(start, stop)`` over spike-count row blocks.
 
     Parameters
@@ -795,7 +793,7 @@ def _concatenate_row_blocks(
 
     Returns
     -------
-    result : jnp.ndarray, shape (row_stop - row_start, ...)
+    result : jax.Array, shape (row_stop - row_start, ...)
         One-dimensional zeros when no rows are requested.
     """
     block_rows = _count_block_rows(n_neurons)
@@ -818,13 +816,13 @@ def _blocked_nonlocal_poisson_log_likelihood(
     time_edges: np.ndarray,
     row_start: int,
     row_stop: int,
-    rates: jnp.ndarray,
-    durations: jnp.ndarray,
-    summed_rates: jnp.ndarray,
+    rates: jax.Array,
+    durations: jax.Array,
+    summed_rates: jax.Array,
     *,
     disable_progress_bar: bool = True,
     _spike_time_order: "_SpikeTimeOrder | None" = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Non-local Poisson emission computed over bounded host count blocks.
 
     Parameters
@@ -835,11 +833,11 @@ def _blocked_nonlocal_poisson_log_likelihood(
         The complete decode grid.
     row_start, row_stop : int
         Global rows to evaluate.
-    rates : jnp.ndarray, shape (n_neurons, n_bins)
+    rates : jax.Array, shape (n_neurons, n_bins)
         Interior place fields in Hz.
-    durations : jnp.ndarray, shape (row_stop - row_start,)
+    durations : jax.Array, shape (row_stop - row_start,)
         Bin durations in seconds for the requested rows.
-    summed_rates : jnp.ndarray, shape (n_bins,)
+    summed_rates : jax.Array, shape (n_bins,)
         Population rate summed over neurons.
     disable_progress_bar : bool
     _spike_time_order : _SpikeTimeOrder, optional
@@ -847,7 +845,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (row_stop - row_start, n_bins)
+    log_likelihood : jax.Array, shape (row_stop - row_start, n_bins)
 
     Notes
     -----
@@ -899,9 +897,9 @@ def _blocked_nonlocal_poisson_log_likelihood(
 
 
 def get_position_at_time(
-    time: np.ndarray | jnp.ndarray,
-    position: np.ndarray | jnp.ndarray,
-    spike_times: np.ndarray | jnp.ndarray,
+    time: np.ndarray | jax.Array,
+    position: np.ndarray | jax.Array,
+    spike_times: np.ndarray | jax.Array,
     env: Environment | None = None,
     *,
     encoding_support: "EncodingSupport | None" = None,
@@ -910,11 +908,11 @@ def get_position_at_time(
 
     Parameters
     ----------
-    time : jnp.ndarray, shape (n_time,)
+    time : jax.Array, shape (n_time,)
         Time of each position sample, in seconds.
-    position : jnp.ndarray, shape (n_time_position, n_dims_position)
+    position : jax.Array, shape (n_time_position, n_dims_position)
         Position samples.
-    spike_times : jnp.ndarray, shape (n_spikes,)
+    spike_times : jax.Array, shape (n_spikes,)
         Spike times, in seconds.
     env : Environment | None, optional
         The spatial environment, by default None. On a track graph,
@@ -1242,7 +1240,7 @@ def select_spikes_in_rows(
     )
 
 
-def _segmented_inclusive_sum(starts: jnp.ndarray, values: jnp.ndarray) -> jnp.ndarray:
+def _segmented_inclusive_sum(starts: jax.Array, values: jax.Array) -> jax.Array:
     """Running sum of ``values`` that restarts at each ``starts`` position.
 
     A Hillis-Steele scan: step ``k`` adds the partial sum ``2**k`` rows back
@@ -1253,13 +1251,13 @@ def _segmented_inclusive_sum(starts: jnp.ndarray, values: jnp.ndarray) -> jnp.nd
 
     Parameters
     ----------
-    starts : jnp.ndarray, shape (n,), bool
+    starts : jax.Array, shape (n,), bool
         True at the first row of each segment; ``starts[0]`` must be True.
-    values : jnp.ndarray, shape (n, ...)
+    values : jax.Array, shape (n, ...)
 
     Returns
     -------
-    sums : jnp.ndarray, shape (n, ...)
+    sums : jax.Array, shape (n, ...)
         Each row holds the sum of its segment's rows up to and including it.
     """
     n = values.shape[0]
@@ -1284,25 +1282,25 @@ def _segmented_inclusive_sum(starts: jnp.ndarray, values: jnp.ndarray) -> jnp.nd
 
 
 def _segment_totals(
-    values: jnp.ndarray,
+    values: jax.Array,
     segment_ids: jax.Array | np.ndarray,
     num_segments: int,
     indices_are_sorted: bool,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jax.Array, jax.Array]:
     """Each segment's total, held at its last row, and the row it belongs to.
 
     Parameters
     ----------
-    values : jnp.ndarray, shape (n, ...), n > 0
-    segment_ids : jnp.ndarray, shape (n,), integer
+    values : jax.Array, shape (n, ...), n > 0
+    segment_ids : jax.Array, shape (n,), integer
     num_segments : int
     indices_are_sorted : bool
 
     Returns
     -------
-    sums : jnp.ndarray, shape (n, ...)
+    sums : jax.Array, shape (n, ...)
         Running segment sums, in sorted id order.
-    targets : jnp.ndarray, shape (n,)
+    targets : jax.Array, shape (n,)
         The segment at each segment's last row; a distinct negative number
         elsewhere and for ids outside ``[0, num_segments)``, so the valid
         targets are unique and every other row is out of bounds.
@@ -1327,11 +1325,11 @@ def _segment_totals(
 
 
 def _scatter_add_segment_totals(
-    output: jnp.ndarray,
-    sums: jnp.ndarray,
-    targets: jnp.ndarray,
+    output: jax.Array,
+    sums: jax.Array,
+    targets: jax.Array,
     column_start: int | jax.Array | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add each segment's total to its row of ``output``; drop every other row.
 
     Each output element receives at most one update, so the result does not
@@ -1339,8 +1337,8 @@ def _scatter_add_segment_totals(
 
     Parameters
     ----------
-    output : jnp.ndarray, shape (num_segments, ...)
-    sums, targets : jnp.ndarray
+    output : jax.Array, shape (num_segments, ...)
+    sums, targets : jax.Array
         From ``_segment_totals``.
     column_start : int or scalar array, optional
         With a 2-D ``output``, the first column of the tile ``sums`` covers.
@@ -1350,7 +1348,7 @@ def _scatter_add_segment_totals(
 
     Returns
     -------
-    output : jnp.ndarray, same shape as ``output``
+    output : jax.Array, same shape as ``output``
     """
     if column_start is None:
         indices = targets[:, None]
@@ -1380,18 +1378,18 @@ def _scatter_add_segment_totals(
 
 @partial(jax.jit, static_argnames=("num_segments", "indices_are_sorted"))
 def deterministic_segment_sum(
-    values: jnp.ndarray,
-    segment_ids: jnp.ndarray,
+    values: jax.Array,
+    segment_ids: jax.Array,
     num_segments: int,
     indices_are_sorted: bool = False,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Sum rows into segments with a fixed reduction tree.
 
     Parameters
     ----------
-    values : jnp.ndarray, shape (n, ...)
+    values : jax.Array, shape (n, ...)
         Values to sum, one row per segment id.
-    segment_ids : jnp.ndarray, shape (n,), int
+    segment_ids : jax.Array, shape (n,), int
         Segment of each row. Ids outside ``[0, num_segments)`` are dropped. With x64 disabled,
         64-bit ids wrap to 32 bits first; normalize them on the host (see
         ``spike_row_ids``).
@@ -1402,7 +1400,7 @@ def deterministic_segment_sum(
 
     Returns
     -------
-    sums : jnp.ndarray, shape (num_segments, ...)
+    sums : jax.Array, shape (num_segments, ...)
         Repeated evaluation of the same shapes is bitwise identical on every
         backend; a different segment layout changes the tree and can change
         rounding.
@@ -1446,12 +1444,12 @@ def deterministic_row_sum(
     n_rows: int,
     *,
     indices_are_sorted: bool = False,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Deterministic row sums: sequential scatter on CPU, segmented scan elsewhere.
 
     Parameters
     ----------
-    values : jnp.ndarray, shape (n, ...)
+    values : jax.Array, shape (n, ...)
         Values to sum, one row per row id.
     row_ids : array-like, shape (n,), int
         Output row of each value. Ids outside ``[0, n_rows)`` are dropped. With
@@ -1464,7 +1462,7 @@ def deterministic_row_sum(
 
     Returns
     -------
-    sums : jnp.ndarray, shape (n_rows, ...)
+    sums : jax.Array, shape (n_rows, ...)
         Sum of the values assigned to each row; rows with no values are zero.
 
     Notes
@@ -1506,20 +1504,20 @@ def deterministic_row_sum(
 
 
 def deterministic_row_add(
-    output: jnp.ndarray,
+    output: jax.Array,
     values: jax.Array | np.ndarray,
     row_ids: jax.Array | np.ndarray,
     column_start: int | jax.Array = 0,
     *,
     indices_are_sorted: bool = False,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add per-spike column-tile vectors into ``output[:, column_start:...]``.
 
     Parameters
     ----------
-    output : jnp.ndarray, shape (n_rows, n_columns)
+    output : jax.Array, shape (n_rows, n_columns)
         Array that receives the sums of the tile.
-    values : jnp.ndarray, shape (n, tile_columns)
+    values : jax.Array, shape (n, tile_columns)
         Per-spike vectors for the output columns of the tile.
     row_ids : array-like, shape (n,), int
         Row of ``output`` that each value is added to.
@@ -1530,7 +1528,7 @@ def deterministic_row_add(
 
     Returns
     -------
-    output : jnp.ndarray, shape (n_rows, n_columns)
+    output : jax.Array, shape (n_rows, n_columns)
         The tile holds ``initial + sum(contributions)``. On CPU each call
         builds an ``(n_rows, tile_columns)`` row-sum temporary. Elsewhere a
         segmented scan sums each row's contributions, keeping temporaries
@@ -1562,13 +1560,13 @@ def deterministic_row_add(
 
 
 def sum_spikes_into_rows(
-    values: np.ndarray | jnp.ndarray, selection: SpikeSelection
-) -> jnp.ndarray:
+    values: np.ndarray | jax.Array, selection: SpikeSelection
+) -> jax.Array:
     """Sum one value per selected spike into the local row that owns it.
 
     Parameters
     ----------
-    values : np.ndarray or jnp.ndarray, shape (n_selected, ...)
+    values : np.ndarray or jax.Array, shape (n_selected, ...)
         One entry per spike in ``selection``, in selection order. Host values
         are padded to a few sizes first, so chunks with nearby spike counts
         share one compiled reduction.
@@ -1578,7 +1576,7 @@ def sum_spikes_into_rows(
 
     Returns
     -------
-    row_sums : jnp.ndarray, shape (selection.n_rows, ...)
+    row_sums : jax.Array, shape (selection.n_rows, ...)
         Rows owning no selected spike sum to zero.
 
     Notes
@@ -1661,9 +1659,7 @@ def spike_row_ids(selection: SpikeSelection, n_padded: int | None = None) -> np.
 
 
 @jax.jit
-def log_gaussian_pdf(
-    x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray
-) -> jnp.ndarray:
+def log_gaussian_pdf(x: jax.Array, mean: jax.Array, sigma: jax.Array) -> jax.Array:
     """Compute the log Gaussian probability density at ``x``.
 
     Elementwise and univariate: the arguments broadcast against each other and
@@ -1673,16 +1669,16 @@ def log_gaussian_pdf(
 
     Parameters
     ----------
-    x : jnp.ndarray
+    x : jax.Array
         Input data, broadcastable with ``mean`` and ``sigma``.
-    mean : jnp.ndarray
+    mean : jax.Array
         Mean of the Gaussian.
-    sigma : jnp.ndarray
+    sigma : jax.Array
         Standard deviation of the Gaussian.
 
     Returns
     -------
-    log_pdf : jnp.ndarray
+    log_pdf : jax.Array
         Shape ``broadcast_shapes(x.shape, mean.shape, sigma.shape)``.
     """
     # For singleton-shaped tiles XLA:CPU can rewrite division by a broadcast
@@ -1698,7 +1694,7 @@ def log_gaussian_pdf(
 
 
 @jax.jit
-def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
+def gaussian_pdf(x: jax.Array, mean: jax.Array, sigma: jax.Array) -> jax.Array:
     """Compute the Gaussian probability density at ``x``.
 
     Elementwise with broadcasting, like :func:`log_gaussian_pdf`; nothing is
@@ -1706,24 +1702,24 @@ def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.n
 
     Parameters
     ----------
-    x : jnp.ndarray
+    x : jax.Array
         Input data, broadcastable with ``mean`` and ``sigma``.
-    mean : jnp.ndarray
+    mean : jax.Array
         Mean of the Gaussian.
-    sigma : jnp.ndarray
+    sigma : jax.Array
         Standard deviation of the Gaussian.
 
     Returns
     -------
-    pdf : jnp.ndarray
+    pdf : jax.Array
         Shape ``broadcast_shapes(x.shape, mean.shape, sigma.shape)``.
     """
     return jnp.exp(log_gaussian_pdf(x, mean, sigma))
 
 
 def _log_kernel_matrix(
-    eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
-) -> jnp.ndarray:
+    eval_points: jax.Array, samples: jax.Array, std: jax.Array
+) -> jax.Array:
     """Log Gaussian kernel matrix summed over dimensions.
 
     Shared by :func:`kde` and :func:`log_kde` so both build the kernel the same
@@ -1732,13 +1728,13 @@ def _log_kernel_matrix(
 
     Parameters
     ----------
-    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
-    samples : jnp.ndarray, shape (n_samples, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
+    eval_points : jax.Array, shape (n_eval_points, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
+    std : jax.Array, shape (n_dims,)
 
     Returns
     -------
-    log_kernel : jnp.ndarray, shape (n_samples, n_eval_points)
+    log_kernel : jax.Array, shape (n_samples, n_eval_points)
         ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``.
     """
     log_kernel = jnp.zeros((samples.shape[0], eval_points.shape[0]))
@@ -1753,27 +1749,27 @@ def _log_kernel_matrix(
 
 @jax.jit
 def kde(
-    eval_points: jnp.ndarray,
-    samples: jnp.ndarray,
-    std: jnp.ndarray,
-    weights: jnp.ndarray,
-) -> jnp.ndarray:
+    eval_points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    weights: jax.Array,
+) -> jax.Array:
     """Kernel density estimation.
 
     Parameters
     ----------
-    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+    eval_points : jax.Array, shape (n_eval_points, n_dims)
         Evaluation points.
-    samples : jnp.ndarray, shape (n_samples, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
+    std : jax.Array, shape (n_dims,)
         Standard deviation of the Gaussian kernel.
-    weights : jnp.ndarray, shape (n_samples,)
+    weights : jax.Array, shape (n_samples,)
         Weights for each sample.
 
     Returns
     -------
-    density_estimate : jnp.ndarray, shape (n_eval_points,)
+    density_estimate : jax.Array, shape (n_eval_points,)
         Weighted kernel density estimate at each evaluation point.
 
     Notes
@@ -1793,31 +1789,31 @@ def kde(
 
 
 def block_kde(
-    eval_points: jnp.ndarray,
-    samples: jnp.ndarray,
-    std: jnp.ndarray,
+    eval_points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
     block_size: int = 100,
-    weights: jnp.ndarray | None = None,
-) -> jnp.ndarray:
+    weights: jax.Array | None = None,
+) -> jax.Array:
     """Kernel density estimation split into blocks.
 
     Parameters
     ----------
-    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+    eval_points : jax.Array, shape (n_eval_points, n_dims)
         Evaluation points.
-    samples : jnp.ndarray, shape (n_samples, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
+    std : jax.Array, shape (n_dims,)
         Standard deviation of the Gaussian kernel.
     block_size : int, optional
         Evaluation rows per block, by default 100. Reduced when needed so one
         block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
-    weights : jnp.ndarray, shape (n_samples,), optional
+    weights : jax.Array, shape (n_samples,), optional
         Weights for each sample, by default None (uniform weights).
 
     Returns
     -------
-    density_estimate : jnp.ndarray, shape (n_eval_points,)
+    density_estimate : jax.Array, shape (n_eval_points,)
         Weighted kernel density estimate at each evaluation point.
 
     Notes
@@ -1918,10 +1914,10 @@ def _pad_rows(array: ArrayLike, n_rows: int) -> np.ndarray:
 
 def _padded_samples(
     spike_time_order: "_SpikeTimeOrder",
-    samples: np.ndarray | jnp.ndarray,
-    weights: np.ndarray | jnp.ndarray | None,
+    samples: np.ndarray | jax.Array,
+    weights: np.ndarray | jax.Array | None,
     count: Callable[[int], int] = _padded_sample_count,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jax.Array, jax.Array]:
     """Device KDE samples and weights padded with zero-weight rows, once per prediction.
 
     Zero-weight samples add nothing to weighted kernel sums, so electrodes with
@@ -1939,7 +1935,7 @@ def _padded_samples(
 
     Returns
     -------
-    samples, weights : jnp.ndarray, shape (n_padded, n_dims) and (n_padded,)
+    samples, weights : jax.Array, shape (n_padded, n_dims) and (n_padded,)
     """
 
     def build() -> tuple[jax.Array, jax.Array]:
@@ -1980,8 +1976,8 @@ def _kde_block_rows(
     ----------
     block_size : int
         Requested rows per block.
-    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
-    samples : jnp.ndarray, shape (n_samples, n_dims)
+    eval_points : jax.Array, shape (n_eval_points, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
     std, weights : array-like
         The other kernel operands. With the points, samples and the kernel's
         accumulator (the default float, float64 under x64) they set the
@@ -2047,39 +2043,39 @@ def _traced_block_kde(
 
     Parameters
     ----------
-    points : jnp.ndarray, shape (n_points, n_dims)
-    samples : jnp.ndarray, shape (n_samples, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
+    points : jax.Array, shape (n_points, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
+    std : jax.Array, shape (n_dims,)
     block_size : int
-    weights : jnp.ndarray, shape (n_samples,)
+    weights : jax.Array, shape (n_samples,)
 
     Returns
     -------
-    density : jnp.ndarray, shape (n_points,)
+    density : jax.Array, shape (n_points,)
     """
     return _traced_blocks(block_kde, kde, points, samples, std, block_size, weights)
 
 
 def _traced_block_log_kde(
-    points: jnp.ndarray,
-    samples: jnp.ndarray,
-    std: jnp.ndarray,
+    points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
     block_size: int,
-    weights: jnp.ndarray,
-) -> jnp.ndarray:
+    weights: jax.Array,
+) -> jax.Array:
     """``block_log_kde`` inside a trace, blocked like :func:`_traced_block_kde`.
 
     Parameters
     ----------
-    points : jnp.ndarray, shape (n_points, n_dims)
-    samples : jnp.ndarray, shape (n_samples, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
+    points : jax.Array, shape (n_points, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
+    std : jax.Array, shape (n_dims,)
     block_size : int
-    weights : jnp.ndarray, shape (n_samples,)
+    weights : jax.Array, shape (n_samples,)
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_points,)
+    log_density : jax.Array, shape (n_points,)
     """
     return _traced_blocks(
         block_log_kde, log_kde, points, samples, std, block_size, weights
@@ -2095,23 +2091,23 @@ _compiled_block_log_kde = jax.jit(
 
 
 def _relative_weights(
-    weights: jnp.ndarray,
+    weights: jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Weights relative to the largest, their logs, and their sum.
 
     Parameters
     ----------
-    weights : jnp.ndarray, shape (n_samples,)
+    weights : jax.Array, shape (n_samples,)
         Weights that are not positive (including NaN) carry no mass.
 
     Returns
     -------
-    relative_weights : jnp.ndarray, shape (n_samples,)
+    relative_weights : jax.Array, shape (n_samples,)
         ``weights / max(weights)``; ratios below ``tiny`` flush to zero.
-    log_weights : jnp.ndarray, shape (n_samples,)
+    log_weights : jax.Array, shape (n_samples,)
         Their logs, ``-inf`` without mass. A ratio that would flush takes its
         log from the weights themselves, so no positive weight is discarded.
-    total : jnp.ndarray, shape ()
+    total : jax.Array, shape ()
         ``sum(relative_weights)``, at least one with any mass. Flushed ratios
         add less than ``n_samples * tiny`` to it.
     """
@@ -2147,11 +2143,11 @@ def _relative_weights(
 
 @jax.jit
 def log_kde(
-    eval_points: jnp.ndarray,
-    samples: jnp.ndarray,
-    std: jnp.ndarray,
-    weights: jnp.ndarray,
-) -> jnp.ndarray:
+    eval_points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    weights: jax.Array,
+) -> jax.Array:
     """Compute the log kernel density estimate.
 
     The estimate is ``log p(x) = logsumexp_i [ log w_i + sum_d log N(x_d | s_{i,d},
@@ -2159,18 +2155,18 @@ def log_kde(
 
     Parameters
     ----------
-    eval_points : jnp.ndarray, shape (n_eval, n_dims)
+    eval_points : jax.Array, shape (n_eval, n_dims)
         Evaluation points.
-    samples : jnp.ndarray, shape (n_samp, n_dims)
+    samples : jax.Array, shape (n_samp, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
+    std : jax.Array, shape (n_dims,)
         Standard deviation of the Gaussian kernel in each dimension.
-    weights : jnp.ndarray, shape (n_samp,)
+    weights : jax.Array, shape (n_samp,)
         Weight of each sample.
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_eval,)
+    log_density : jax.Array, shape (n_eval,)
         Log kernel density estimate at each evaluation point.
 
     Notes
@@ -2238,31 +2234,31 @@ def log_kde(
 
 
 def block_log_kde(
-    eval_points: jnp.ndarray,
-    samples: jnp.ndarray,
-    std: jnp.ndarray,
+    eval_points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
     block_size: int = 100,
-    weights: jnp.ndarray | None = None,
-) -> jnp.ndarray:
+    weights: jax.Array | None = None,
+) -> jax.Array:
     """Log kernel density estimation split into blocks over eval points.
 
     Parameters
     ----------
-    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+    eval_points : jax.Array, shape (n_eval_points, n_dims)
         Evaluation points.
-    samples : jnp.ndarray, shape (n_samples, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
         Training samples.
-    std : jnp.ndarray, shape (n_dims,)
+    std : jax.Array, shape (n_dims,)
         Standard deviation of the Gaussian kernel.
     block_size : int, optional
         Evaluation rows per block, by default 100. Reduced when needed so one
         block's (samples x rows) kernel matrix fits ``_KDE_BLOCK_KERNEL_BYTES``.
-    weights : jnp.ndarray, shape (n_samples,), optional
+    weights : jax.Array, shape (n_samples,), optional
         Weights for each sample, by default None (uniform weights).
 
     Returns
     -------
-    log_density_estimate : jnp.ndarray, shape (n_eval_points,)
+    log_density_estimate : jax.Array, shape (n_eval_points,)
         Log of the weighted kernel density estimate at each evaluation point.
     """
     n_eval = eval_points.shape[0]
@@ -2329,34 +2325,34 @@ class KDEModel:
 
     Attributes
     ----------
-    std : jnp.ndarray, shape (n_dims,) or scalar
+    std : jax.Array, shape (n_dims,) or scalar
         Kernel standard deviation per dimension; a scalar applies to every
         dimension.
     block_size : int, optional
         Evaluation points per block; None (default) evaluates all at once.
-    samples_ : jnp.ndarray, shape (n_samples, n_dims)
+    samples_ : jax.Array, shape (n_samples, n_dims)
         Training samples, set by :meth:`fit`.
-    weights_ : jnp.ndarray, shape (n_samples,)
+    weights_ : jax.Array, shape (n_samples,)
         Sample weights, set by :meth:`fit` (ones when none are given).
     """
 
-    std: jnp.ndarray
+    std: jax.Array
     block_size: int | None = None
-    samples_: jnp.ndarray | None = field(init=False, default=None)
-    weights_: jnp.ndarray | None = field(init=False, default=None)
+    samples_: jax.Array | None = field(init=False, default=None)
+    weights_: jax.Array | None = field(init=False, default=None)
 
     def fit(
         self,
-        samples: jnp.ndarray | np.ndarray,
-        weights: jnp.ndarray | np.ndarray | None = None,
+        samples: jax.Array | np.ndarray,
+        weights: jax.Array | np.ndarray | None = None,
     ) -> "KDEModel":
         """Fit the model.
 
         Parameters
         ----------
-        samples : jnp.ndarray, shape (n_samples, n_dims)
+        samples : jax.Array, shape (n_samples, n_dims)
             Training samples.
-        weights : jnp.ndarray, shape (n_samples,), optional
+        weights : jax.Array, shape (n_samples,), optional
             Finite, non-negative sample weights, by default None (uniform).
             The density is normalized by their sum.
 
@@ -2385,17 +2381,17 @@ class KDEModel:
 
         return self
 
-    def predict(self, eval_points: jnp.ndarray) -> jnp.ndarray:
+    def predict(self, eval_points: jax.Array) -> jax.Array:
         """Predict the density at the evaluation points.
 
         Parameters
         ----------
-        eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+        eval_points : jax.Array, shape (n_eval_points, n_dims)
             Points at which to evaluate the density.
 
         Returns
         -------
-        density : jnp.ndarray, shape (n_eval_points,)
+        density : jax.Array, shape (n_eval_points,)
             Kernel density estimate at each evaluation point.
         """
         if self.samples_ is None:
@@ -2410,7 +2406,7 @@ class KDEModel:
 
         return block_kde(eval_points, self.samples_, std, block_size, self.weights_)
 
-    def predict_log(self, eval_points: jnp.ndarray) -> jnp.ndarray:
+    def predict_log(self, eval_points: jax.Array) -> jax.Array:
         """Predict the log density at the evaluation points.
 
         Log-density version of :meth:`predict`. A model without positive weight
@@ -2419,12 +2415,12 @@ class KDEModel:
 
         Parameters
         ----------
-        eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+        eval_points : jax.Array, shape (n_eval_points, n_dims)
             Points at which to evaluate the log density.
 
         Returns
         -------
-        log_density : jnp.ndarray, shape (n_eval_points,)
+        log_density : jax.Array, shape (n_eval_points,)
             Log kernel density estimate at each evaluation point.
         """
         if self.samples_ is None:
@@ -2443,7 +2439,7 @@ class KDEModel:
         return jnp.where(jnp.sum(self.weights_) > 0.0, values, -jnp.inf)
 
 
-def kde_log_density(model: KDEModel, points: jnp.ndarray | np.ndarray) -> jnp.ndarray:
+def kde_log_density(model: KDEModel, points: jax.Array | np.ndarray) -> jax.Array:
     """Compute the true log density, with zero total fitted weight as zero mass.
 
     No samples or zero total weight gives ``-inf`` at every point, unlike
@@ -2458,12 +2454,12 @@ def kde_log_density(model: KDEModel, points: jnp.ndarray | np.ndarray) -> jnp.nd
     ----------
     model : KDEModel
         A fitted model.
-    points : jnp.ndarray, shape (n_points, n_dims)
+    points : jax.Array, shape (n_points, n_dims)
         Points at which to evaluate the log density.
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_points,)
+    log_density : jax.Array, shape (n_points,)
         Log density at each point.
     """
     if type(model) is KDEModel:
@@ -2506,17 +2502,17 @@ def _true_kde_log_density(
 
     Parameters
     ----------
-    points : jnp.ndarray, shape (n_points, n_dims)
-    samples : jnp.ndarray, shape (n_samples, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
+    points : jax.Array, shape (n_points, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
+    std : jax.Array, shape (n_dims,)
     block_size : int
-    weights : jnp.ndarray, shape (n_samples,)
-    keys : jnp.ndarray, shape (n_samples,), optional
+    weights : jax.Array, shape (n_samples,)
+    keys : jax.Array, shape (n_samples,), optional
         From :func:`_sorted_sample_keys`.
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_points,)
+    log_density : jax.Array, shape (n_points,)
     """
     values, needs_log_space = _compiled_scaled_kde_log_density(
         points, samples, std, block_size, weights, keys
@@ -2539,14 +2535,14 @@ def _repair_in_log_space(
 
     Parameters
     ----------
-    values : jnp.ndarray, shape (n_points,)
+    values : jax.Array, shape (n_points,)
     needs_log_space : np.ndarray of bool, shape (n_points,)
     points, samples, std, block_size, weights
         The pass's inputs.
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_points,)
+    log_density : jax.Array, shape (n_points,)
     """
     if not needs_log_space.any():
         return values
@@ -2571,11 +2567,11 @@ def _kde_log_densities(
     Parameters
     ----------
     models : sequence of KDEModel
-    points : jnp.ndarray, shape (n_points, n_dims) or (n_points,)
+    points : jax.Array, shape (n_points, n_dims) or (n_points,)
 
     Returns
     -------
-    log_densities : list of jnp.ndarray, shape (n_points,)
+    log_densities : list of jax.Array, shape (n_points,)
         In the order of ``models``.
     """
     points = jnp.asarray(points)
@@ -2696,7 +2692,7 @@ def _sorted_sample_keys(
 
     Returns
     -------
-    keys : jnp.ndarray, shape (n_samples,), or None
+    keys : jax.Array, shape (n_samples,), or None
         None unless the points are 1D and there are samples.
     """
     if points.shape[1] != 1 or samples.shape[0] == 0:
@@ -2713,15 +2709,15 @@ def _nearest_sample_log_kernel(
 
     Parameters
     ----------
-    points : jnp.ndarray, shape (n_points, 1)
-    keys : jnp.ndarray, shape (n_samples,)
+    points : jax.Array, shape (n_points, 1)
+    keys : jax.Array, shape (n_samples,)
         Sorted positions of the samples with positive weight, ``inf`` for
         the rest.
-    std : jnp.ndarray, shape (1,)
+    std : jax.Array, shape (1,)
 
     Returns
     -------
-    log_kernel : jnp.ndarray, shape (n_points,)
+    log_kernel : jax.Array, shape (n_points,)
         ``-inf`` where no key is finite.
     """
     index = jnp.searchsorted(keys, points[:, 0])
@@ -2746,13 +2742,13 @@ def _kde_log_scale(
 
     Parameters
     ----------
-    points : jnp.ndarray, shape (n_points, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
-    keys : jnp.ndarray, shape (n_samples,), optional
+    points : jax.Array, shape (n_points, n_dims)
+    std : jax.Array, shape (n_dims,)
+    keys : jax.Array, shape (n_samples,), optional
 
     Returns
     -------
-    log_scale : jnp.ndarray, shape (n_points,)
+    log_scale : jax.Array, shape (n_points,)
     """
     peak = sum(
         log_gaussian_pdf(jnp.zeros(()), jnp.zeros(()), dim_std) for dim_std in std
@@ -2785,19 +2781,19 @@ def _scaled_kde_log_density(
 
     Parameters
     ----------
-    points : jnp.ndarray, shape (n_points, n_dims)
-    samples : jnp.ndarray, shape (n_samples, n_dims)
-    std : jnp.ndarray, shape (n_dims,)
+    points : jax.Array, shape (n_points, n_dims)
+    samples : jax.Array, shape (n_samples, n_dims)
+    std : jax.Array, shape (n_dims,)
     block_size : int
-    weights : jnp.ndarray, shape (n_samples,)
-    keys : jnp.ndarray, shape (n_samples,), optional
+    weights : jax.Array, shape (n_samples,)
+    keys : jax.Array, shape (n_samples,), optional
         Sorted 1D keys for an exact per-point scale; None scales by the
         kernel's peak.
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_points,)
-    needs_log_space : jnp.ndarray, shape (n_points,)
+    log_density : jax.Array, shape (n_points,)
+    needs_log_space : jax.Array, shape (n_points,)
         The flagged points, which callers re-evaluate in log space.
     """
     n_points = points.shape[0]
@@ -3159,7 +3155,7 @@ def local_kde_log_ratio(
 
 
 def select_spike_rows(
-    array: "np.ndarray | jnp.ndarray", selection: SpikeSelection
+    array: "np.ndarray | jax.Array", selection: SpikeSelection
 ) -> np.ndarray:
     """Take the rows an indexer names without materializing the whole array.
 
@@ -3179,7 +3175,7 @@ def select_spike_rows(
 
     Parameters
     ----------
-    array : np.ndarray or jnp.ndarray, shape (n_spikes, ...)
+    array : np.ndarray or jax.Array, shape (n_spikes, ...)
         Per-spike array for one unit/electrode.
     selection : SpikeSelection
         The selection from ``select_spikes_in_rows``, including the original
@@ -3235,7 +3231,7 @@ def select_spike_rows(
 
 
 def select_decode_marks(
-    spike_waveform_features: "np.ndarray | jnp.ndarray",
+    spike_waveform_features: "np.ndarray | jax.Array",
     selection: SpikeSelection,
     electrode: int,
 ) -> np.ndarray:
@@ -3251,7 +3247,7 @@ def select_decode_marks(
 
     Parameters
     ----------
-    spike_waveform_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
+    spike_waveform_features : np.ndarray or jax.Array, shape (n_spikes, n_features)
         One electrode's waveform features, row-paired with its spike times.
     selection : SpikeSelection
         The selection from ``select_spikes_in_rows`` for the same electrode.
@@ -3404,7 +3400,7 @@ def decode_bin_centers(
     return edges[:-1] + 0.5 * np.diff(edges)
 
 
-def log_nonnegative(x: jnp.ndarray) -> jnp.ndarray:
+def log_nonnegative(x: jax.Array) -> jax.Array:
     """Log of a non-negative array: ``-inf`` at zero, ``NaN`` kept.
 
     No floor is applied, so a zero intensity stays an impossible event for the
@@ -3413,12 +3409,12 @@ def log_nonnegative(x: jnp.ndarray) -> jnp.ndarray:
 
     Parameters
     ----------
-    x : jnp.ndarray
+    x : jax.Array
         Non-negative values.
 
     Returns
     -------
-    log_x : jnp.ndarray
+    log_x : jax.Array
         Same shape as ``x``.
     """
     positive = x > 0

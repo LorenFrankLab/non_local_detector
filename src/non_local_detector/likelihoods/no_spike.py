@@ -81,7 +81,7 @@ def predict_no_spike_log_likelihood(
     _time_bin_sizes: np.ndarray | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Return the log likelihood of low spike rate for each time bin.
 
     This function computes the log-likelihood under a Poisson model with
@@ -121,7 +121,7 @@ def predict_no_spike_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, 1)
         Log-likelihood values for each requested time bin under the no-spike
         model. ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
 

@@ -19,7 +19,7 @@ from non_local_detector.likelihoods.gmm import (
 pytestmark = pytest.mark.unit
 
 
-def _data() -> tuple[jnp.ndarray, np.ndarray]:
+def _data() -> tuple[jax.Array, np.ndarray]:
     """Two well-separated float32 clusters; every 13th sample weight is zeroed."""
     rng = np.random.default_rng(41)
     X = np.r_[rng.normal(5, 1, (60, 2)), rng.normal(25, 1, (60, 2))].astype(np.float32)
@@ -29,8 +29,8 @@ def _data() -> tuple[jnp.ndarray, np.ndarray]:
 
 
 def _fit(
-    X: jnp.ndarray,
-    weights: np.ndarray | jnp.ndarray,
+    X: jax.Array,
+    weights: np.ndarray | jax.Array,
     covariance_type: str = "full",
     **kwargs,
 ) -> GaussianMixtureModel:

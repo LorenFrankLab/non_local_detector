@@ -315,8 +315,8 @@ def fit_registered_backends(
 
 
 def realistic_log_background(
-    decoding_features: np.ndarray | jnp.ndarray, log_rate: float = LOG_EPS
-) -> jnp.ndarray:
+    decoding_features: np.ndarray | jax.Array, log_rate: float = LOG_EPS
+) -> jax.Array:
     """Deterministic per-spike No-Spike background for reduction parity tests.
 
     A mark reference centred on the decoding marks' mean, with scale
@@ -326,14 +326,14 @@ def realistic_log_background(
 
     Parameters
     ----------
-    decoding_features : np.ndarray or jnp.ndarray, shape (n_decoding_spikes, n_features)
+    decoding_features : np.ndarray or jax.Array, shape (n_decoding_spikes, n_features)
     log_rate : float, optional
         Log background rate in the caller's intensity units: ``LOG_EPS`` for
         the KDE backends, ``LOG_RATE_EPS_HZ`` for GMM.
 
     Returns
     -------
-    log_background : jnp.ndarray, shape (n_decoding_spikes,)
+    log_background : jax.Array, shape (n_decoding_spikes,)
     """
     features = np.asarray(decoding_features, dtype=np.float64)
     if features.shape[0] == 0:

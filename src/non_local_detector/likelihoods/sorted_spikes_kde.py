@@ -126,7 +126,7 @@ def _kde_leaf_groups(
         neuron indices ``(n_group,)``.
     block_sizes : tuple of int or None
         Each group's evaluation block size; None evaluates all rows at once.
-    order : jnp.ndarray, shape (n_neurons,)
+    order : jax.Array, shape (n_neurons,)
         Position of each neuron among the concatenated group outputs.
     """
     keys = [
@@ -189,26 +189,26 @@ def _local_kde_log_likelihood(
 
     Parameters
     ----------
-    points : jnp.ndarray, shape (n_rows, n_dims) or (n_rows,)
-    occupancy, durations : jnp.ndarray, shape (n_rows,)
-    counts : jnp.ndarray, shape (n_rows, n_neurons)
-    mean_rates : jnp.ndarray, shape (n_neurons,)
+    points : jax.Array, shape (n_rows, n_dims) or (n_rows,)
+    occupancy, durations : jax.Array, shape (n_rows,)
+    counts : jax.Array, shape (n_rows, n_neurons)
+    mean_rates : jax.Array, shape (n_neurons,)
     groups, order, block_sizes
         From ``_kde_leaf_groups``.
-    log_occupancy : jnp.ndarray, optional
+    log_occupancy : jax.Array, optional
         True log density supplied by public prediction. Ordinary rows retain
         their original linear arithmetic, and NaN densities or weights give NaN
         rates. Omitting this keyword retains the private helper's
         probability-input contract, including its explicit unsupported-position
         handling.
-    tail_rows : jnp.ndarray, shape (n_padded_tail,), optional
+    tail_rows : jax.Array, shape (n_padded_tail,), optional
         Rows whose ``log_occupancy`` is below ``log(EPS)``, padded by repeating
         the last (see ``_padded_index``). Their rates use log ratios; with
         None no log-space evaluation is compiled.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
         Neuron terms are added in the original neuron order.
     """
     if points.ndim == 1:
@@ -296,12 +296,12 @@ def _local_kde_log_likelihood(
 
 
 def fit_sorted_spikes_kde_encoding_model(
-    position_time: jnp.ndarray | np.ndarray,
-    position: jnp.ndarray | np.ndarray,
-    spike_times: list[jnp.ndarray],
+    position_time: jax.Array | np.ndarray,
+    position: jax.Array | np.ndarray,
+    spike_times: list[jax.Array],
     environment: Environment,
-    weights: jnp.ndarray | np.ndarray | None = None,
-    position_std: float | jnp.ndarray = np.sqrt(12.5),
+    weights: jax.Array | np.ndarray | None = None,
+    position_std: float | jax.Array = np.sqrt(12.5),
     block_size: int = 100,
     disable_progress_bar: bool = False,
     *,
@@ -313,15 +313,15 @@ def fit_sorted_spikes_kde_encoding_model(
 
     Parameters
     ----------
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : jax.Array, shape (n_time_position,)
         Sampling times for the position.
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : jax.Array, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jnp.ndarray]
+    spike_times : list[jax.Array]
         Spike times for each neuron.
     environment : Environment
         The spatial environment.
-    weights : jnp.ndarray, shape (n_time_position,), optional
+    weights : jax.Array, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
     position_std : float, optional
@@ -488,17 +488,17 @@ def fit_sorted_spikes_kde_encoding_model(
 
 @requires_time_edges
 def predict_sorted_spikes_kde_log_likelihood(
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
+    position_time: jax.Array,
+    position: jax.Array,
     spike_times: list[np.ndarray],
     environment: Environment,
     marginal_models: list[KDEModel],
     occupancy_model: KDEModel,
-    occupancy: jnp.ndarray,
-    mean_rates: jnp.ndarray,
-    place_fields: jnp.ndarray,
-    no_spike_part_log_likelihood: jnp.ndarray,
-    is_track_interior: jnp.ndarray,
+    occupancy: jax.Array,
+    mean_rates: jax.Array,
+    place_fields: jax.Array,
+    no_spike_part_log_likelihood: jax.Array,
+    is_track_interior: jax.Array,
     disable_progress_bar: bool = False,
     is_local: bool = False,
     row_slice: slice | None = None,
@@ -506,18 +506,18 @@ def predict_sorted_spikes_kde_log_likelihood(
     time_edges: np.ndarray,
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
-    log_occupancy: jnp.ndarray | None = None,
+    log_occupancy: jax.Array | None = None,
     environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Predict the log likelihood of sorted spikes using KDE encoding models.
 
     Parameters
     ----------
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : jax.Array, shape (n_time_position,)
         Sampling times for the position.
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : jax.Array, shape (n_time_position, n_position_dims)
         Position samples.
     spike_times : list[np.ndarray]
         Spike times for each neuron.
@@ -527,18 +527,18 @@ def predict_sorted_spikes_kde_log_likelihood(
         Marginal models for each neuron.
     occupancy_model : KDEModel
         Occupancy model.
-    occupancy : jnp.ndarray, shape (n_interior_bins,)
+    occupancy : jax.Array, shape (n_interior_bins,)
         Occupancy density at the interior bins, from the fit. Unused: the
         non-local path reads ``place_fields`` and the local path evaluates
         ``occupancy_model`` at the animal's position.
-    mean_rates : jnp.ndarray, shape (n_neurons,)
+    mean_rates : jax.Array, shape (n_neurons,)
         Mean firing rates in Hz for each neuron.
-    place_fields : jnp.ndarray, shape (n_neurons, n_place_bins)
+    place_fields : jax.Array, shape (n_neurons, n_place_bins)
         Spatial firing rates in Hz for each neuron.
-    no_spike_part_log_likelihood : jnp.ndarray, shape (n_place_bins,)
+    no_spike_part_log_likelihood : jax.Array, shape (n_place_bins,)
         Sum of Hz rates across neurons, despite the historical key name.
         Multiply by each bin's duration and subtract to score no spikes.
-    is_track_interior : jnp.ndarray, shape (n_place_bins,)
+    is_track_interior : jax.Array, shape (n_place_bins,)
         Boolean mask for track interior.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False.
@@ -557,7 +557,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     encoding_exposure_seconds : float, optional, keyword-only
         Weighted encoding occupancy time in seconds, recorded by the fit.
         Accepted so the encoding dictionary can be passed as keywords; unused.
-    log_occupancy : jnp.ndarray, shape (n_interior_bins,), optional, keyword-only
+    log_occupancy : jax.Array, shape (n_interior_bins,), optional, keyword-only
         Log occupancy density at the interior bins, from the fit. Unused, like
         ``occupancy``.
     environment_grid : dict | None, optional
@@ -575,7 +575,7 @@ def predict_sorted_spikes_kde_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) or (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, n_interior_bins) or (n_rows, 1)
         The log likelihood of the spikes at each requested time bin. ``n_rows``
         is ``n_bins`` unless ``row_slice`` is given. The shape is
         (n_rows, n_interior_bins) if is_local is False (interior bins only),

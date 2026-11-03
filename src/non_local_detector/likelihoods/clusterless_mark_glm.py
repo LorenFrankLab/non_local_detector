@@ -504,9 +504,9 @@ def fit_clusterless_mark_glm_encoding_model(
         log_rate_maps : list of np.ndarray or None
             Per electrode, shape (n_interior_bins, n_components): log rate in
             Hz of each component at the interior bin centers.
-        summed_ground_process_intensity : jnp.ndarray, shape (n_interior_bins,)
+        summed_ground_process_intensity : jax.Array, shape (n_interior_bins,)
             Sum of every component's rate, in Hz.
-        mean_rates : jnp.ndarray, shape (n_electrodes,)
+        mean_rates : jax.Array, shape (n_electrodes,)
             Weighted mean firing rate per electrode, in Hz.
         mark_dimensions : list of int
         spike_block_size, disable_progress_bar
@@ -714,7 +714,7 @@ def _component_padding(mark_mixtures: list[MarkMixture | None]) -> int:
 
 def _padded_mixture(
     mixture: MarkMixture, n_components: int
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Means, precision factors and a validity mask padded to ``n_components``.
 
     Padding lets every electrode share one compiled kernel; padded components
@@ -728,9 +728,9 @@ def _padded_mixture(
 
     Returns
     -------
-    means : jnp.ndarray, shape (n_components, n_features)
-    precisions_cholesky : jnp.ndarray, shape (n_components, n_features, n_features)
-    is_component : jnp.ndarray of bool, shape (n_components,)
+    means : jax.Array, shape (n_components, n_features)
+    precisions_cholesky : jax.Array, shape (n_components, n_features, n_features)
+    is_component : jax.Array of bool, shape (n_components,)
         False for padding.
     """
     n_features = mixture.means.shape[1]
@@ -748,11 +748,11 @@ def _padded_mixture(
 
 
 def _masked_log_density(
-    features: jnp.ndarray,
-    means: jnp.ndarray,
-    precisions_cholesky: jnp.ndarray,
-    is_component: jnp.ndarray,
-) -> jnp.ndarray:
+    features: jax.Array,
+    means: jax.Array,
+    precisions_cholesky: jax.Array,
+    is_component: jax.Array,
+) -> jax.Array:
     """``log N(m; mu_k, Sigma_k)``, shape (n_spikes, n_components).
 
     ``-inf`` for padded components, and for a mark that overflows float32 (an
@@ -764,7 +764,7 @@ def _masked_log_density(
         features, means, precisions_cholesky, "full"
     )
     return cast(
-        jnp.ndarray,
+        jax.Array,
         jnp.where(is_component[None] & ~jnp.isnan(log_density), log_density, -jnp.inf),
     )
 
@@ -775,19 +775,19 @@ def _masked_log_density(
     donate_argnums=0,
 )
 def _add_electrode_intensities(
-    log_likelihood: jnp.ndarray,
-    features: jnp.ndarray,
-    row_ids: jnp.ndarray,
-    means: jnp.ndarray,
-    precisions_cholesky: jnp.ndarray,
-    is_component: jnp.ndarray,
-    scaled_rates: jnp.ndarray,
-    log_rate_scale: jnp.ndarray,
-    log_background: jnp.ndarray,
+    log_likelihood: jax.Array,
+    features: jax.Array,
+    row_ids: jax.Array,
+    means: jax.Array,
+    precisions_cholesky: jax.Array,
+    is_component: jax.Array,
+    scaled_rates: jax.Array,
+    log_rate_scale: jax.Array,
+    log_background: jax.Array,
     *,
     block_size: int,
     indices_are_sorted: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add one electrode's non-local log intensities to their rows.
 
     The intensity ``sum_k N_k(m) lambda_k(x)`` is a matrix product: with
@@ -799,27 +799,27 @@ def _add_electrode_intensities(
 
     Parameters
     ----------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    log_likelihood : jax.Array, shape (n_rows, n_bins)
         Running sum over electrodes; donated.
-    features : jnp.ndarray, shape (n_padded_spikes, n_features)
+    features : jax.Array, shape (n_padded_spikes, n_features)
         A multiple of ``block_size`` rows; padding rows are zero.
-    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+    row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    means, precisions_cholesky, is_component : jnp.ndarray
+    means, precisions_cholesky, is_component : jax.Array
         The padded mark mixture (see ``_padded_mixture``).
-    scaled_rates : jnp.ndarray, shape (n_components, n_bins)
+    scaled_rates : jax.Array, shape (n_components, n_bins)
         ``exp(log lambda_k(x) - b(x))``; zero for padded components.
-    log_rate_scale : jnp.ndarray, shape (n_bins,)
+    log_rate_scale : jax.Array, shape (n_bins,)
         ``b(x)``.
-    log_background : jnp.ndarray, shape (n_padded_spikes,)
+    log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    log_likelihood : jax.Array, shape (n_rows, n_bins)
     """
 
-    def add_block(number: int, log_likelihood: jnp.ndarray) -> jnp.ndarray:
+    def add_block(number: int, log_likelihood: jax.Array) -> jax.Array:
         first = number * block_size
         block = jax.lax.dynamic_slice_in_dim(features, first, block_size)
         rows = jax.lax.dynamic_slice_in_dim(row_ids, first, block_size)
@@ -845,7 +845,7 @@ def _add_electrode_intensities(
         )
 
     return cast(
-        jnp.ndarray,
+        jax.Array,
         jax.lax.fori_loop(
             0, features.shape[0] // block_size, add_block, log_likelihood
         ),
@@ -854,35 +854,35 @@ def _add_electrode_intensities(
 
 @partial(jax.jit, static_argnames=("indices_are_sorted",), donate_argnums=0)
 def _add_electrode_local_terms(
-    log_likelihood: jnp.ndarray,
-    features: jnp.ndarray,
-    row_ids: jnp.ndarray,
-    means: jnp.ndarray,
-    precisions_cholesky: jnp.ndarray,
-    is_component: jnp.ndarray,
-    spike_log_rates: jnp.ndarray,
-    log_background: jnp.ndarray,
+    log_likelihood: jax.Array,
+    features: jax.Array,
+    row_ids: jax.Array,
+    means: jax.Array,
+    precisions_cholesky: jax.Array,
+    is_component: jax.Array,
+    spike_log_rates: jax.Array,
+    log_background: jax.Array,
     *,
     indices_are_sorted: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add one electrode's local spike terms to their rows.
 
     Parameters
     ----------
-    log_likelihood : jnp.ndarray, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
         Running sum over electrodes; donated.
-    features : jnp.ndarray, shape (n_padded_spikes, n_features)
-    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+    features : jax.Array, shape (n_padded_spikes, n_features)
+    row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    means, precisions_cholesky, is_component : jnp.ndarray
+    means, precisions_cholesky, is_component : jax.Array
         The padded mark mixture (see ``_padded_mixture``).
-    spike_log_rates : jnp.ndarray, shape (n_padded_spikes, n_components)
+    spike_log_rates : jax.Array, shape (n_padded_spikes, n_components)
         Log rate of each component at each spike's position, in Hz.
-    log_background : jnp.ndarray, shape (n_padded_spikes,)
+    log_background : jax.Array, shape (n_padded_spikes,)
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
     """
     log_density = _masked_log_density(
         features, means, precisions_cholesky, is_component
@@ -921,8 +921,8 @@ def predict_clusterless_mark_glm_log_likelihood(
     mark_mixtures: list[MarkMixture | None],
     rate_coefficients: list[np.ndarray | None],
     log_rate_maps: list[np.ndarray | None],
-    summed_ground_process_intensity: jnp.ndarray,
-    mean_rates: jnp.ndarray,
+    summed_ground_process_intensity: jax.Array,
+    mean_rates: jax.Array,
     is_local: bool = False,
     spike_block_size: int = 1000,
     disable_progress_bar: bool = False,
@@ -936,7 +936,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Predict the (non-local or local) log likelihood of the mark-mixture GLM.
 
     Parameters
@@ -959,9 +959,9 @@ def predict_clusterless_mark_glm_log_likelihood(
         Per electrode, shape (n_components, n_coefficients), from the fit.
     log_rate_maps : list of np.ndarray or None
         Per electrode, shape (n_interior_bins, n_components), from the fit.
-    summed_ground_process_intensity : jnp.ndarray, shape (n_interior_bins,)
+    summed_ground_process_intensity : jax.Array, shape (n_interior_bins,)
         Summed component rates in Hz, from the fit.
-    mean_rates : jnp.ndarray, shape (n_electrodes,)
+    mean_rates : jax.Array, shape (n_electrodes,)
         Mean rate per electrode in Hz, from the fit (validated, not used).
     is_local : bool, optional
         If True, evaluate at the animal's position: the expected count at each
@@ -995,7 +995,7 @@ def predict_clusterless_mark_glm_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) or (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, n_interior_bins) or (n_rows, 1)
         Non-local or local (``is_local``) log likelihood. ``n_rows`` is
         ``n_bins`` unless ``row_slice`` is given.
     """

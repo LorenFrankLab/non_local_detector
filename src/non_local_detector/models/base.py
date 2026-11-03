@@ -1765,11 +1765,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Parameters
         ----------
-        time : jnp.ndarray, shape (n_bins,)
+        time : jax.Array, shape (n_bins,)
             Decode bin centers at which the animal's position is evaluated.
-        position_time : jnp.ndarray, shape (n_time_position,)
+        position_time : jax.Array, shape (n_time_position,)
             Position sampling times.
-        position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        position : jax.Array, shape (n_time_position, n_position_dims)
             Position samples.
         environment : Environment
             The spatial environment with place_bin_centers_ and
@@ -1777,7 +1777,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Returns
         -------
-        penalty : jnp.ndarray, shape (n_time, n_interior_bins)
+        penalty : jax.Array, shape (n_time, n_interior_bins)
             Non-positive penalty values (to be added to log-likelihood).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
@@ -1817,11 +1817,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def _compute_local_position_kernel(
         self,
-        time: jnp.ndarray | np.ndarray,
-        position_time: jnp.ndarray | np.ndarray,
-        position: jnp.ndarray | np.ndarray,
+        time: jax.Array | np.ndarray,
+        position_time: jax.Array | np.ndarray,
+        position: jax.Array | np.ndarray,
         environment: "Environment",
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         """Compute log position kernel for the local state.
 
         Dispatches to one of two paths based on ``self.local_position_std``:
@@ -1854,18 +1854,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Parameters
         ----------
-        time : jnp.ndarray, shape (n_bins,)
+        time : jax.Array, shape (n_bins,)
             Decode bin centers at which the animal's position is evaluated.
-        position_time : jnp.ndarray, shape (n_time_position,)
+        position_time : jax.Array, shape (n_time_position,)
             Position sampling times.
-        position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        position : jax.Array, shape (n_time_position, n_position_dims)
             Position samples.
         environment : Environment
             The spatial environment.
 
         Returns
         -------
-        log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
+        log_kernel : jax.Array, shape (n_time, n_interior_bins)
             Log kernel. exp(log_kernel) sums to n_interior_bins per
             time step (not 1).
         """
@@ -3274,7 +3274,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         time_edges: np.ndarray,  # noqa: ARG002 -- subclasses override and use them
         row_slice: slice | None,  # noqa: ARG002 -- subclasses override and use them
         spike_time_order: _SpikeTimeOrder | None,  # noqa: ARG002 -- subclasses override and use them
-    ) -> jnp.ndarray | None:
+    ) -> jax.Array | None:
         """Term added to the No-Spike log likelihood, or None when there is none."""
         return None
 
@@ -3291,7 +3291,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         _time_grid: _DecodeTimeGrid | None,
         _position_context: _LikelihoodPositionContext | None,
         _spike_time_order: _SpikeTimeOrder | None,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         """Body of the detectors' ``compute_log_likelihood``.
 
         ``spike_data`` holds the spike arrays named by ``_SPIKE_DATA_NAMES``,
@@ -6373,7 +6373,7 @@ class ClusterlessDetector(_DetectorBase):
         time_edges: np.ndarray,
         row_slice: slice | None,
         spike_time_order: _SpikeTimeOrder | None,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         # Marked No-Spike intensity: no_spike_rate * q(mark).
         return mark_reference_log_likelihood(
             self.mark_reference_,
@@ -6399,7 +6399,7 @@ class ClusterlessDetector(_DetectorBase):
         _time_grid: _DecodeTimeGrid | None = None,
         _position_context: _LikelihoodPositionContext | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
 
@@ -6470,7 +6470,7 @@ class ClusterlessDetector(_DetectorBase):
 
         Returns
         -------
-        log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         return self._compute_spike_log_likelihood(
@@ -7313,7 +7313,7 @@ class SortedSpikesDetector(_DetectorBase):
         _time_grid: _DecodeTimeGrid | None = None,
         _position_context: _LikelihoodPositionContext | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
 
@@ -7382,7 +7382,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         Returns
         -------
-        log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         return self._compute_spike_log_likelihood(

@@ -290,8 +290,8 @@ def _effective_block(
 def fit_clusterless_diffusion_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
-    spike_times: list[jnp.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    spike_times: list[jax.Array],
+    spike_waveform_features: list[jax.Array],
     environment: Environment,
     *,
     position_std: float = float(np.sqrt(12.5)),
@@ -313,9 +313,9 @@ def fit_clusterless_diffusion_encoding_model(
         Time of each position sample.
     position : np.ndarray, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jnp.ndarray]
+    spike_times : list[jax.Array]
         Spike times for each electrode.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : list[jax.Array]
         Spike waveform features (marks) for each electrode.
     environment : Environment
         The spatial environment (must be fitted).
@@ -436,8 +436,8 @@ def fit_clusterless_diffusion_encoding_model(
 
     # ---- per electrode: marks, bin indices, weights, mean rate, ground process ----
     encoding_bin_indices: list[np.ndarray] = []
-    encoding_marks: list[jnp.ndarray] = []
-    encoding_weights: list[jnp.ndarray] = []
+    encoding_marks: list[jax.Array] = []
+    encoding_weights: list[jax.Array] = []
     weight_total: list[float] = []
     mean_rates: list[float] = []
     # Count fields to diffuse together: occupancy, then each nonzero-rate electrode.
@@ -578,9 +578,9 @@ def _kernel_columns(
 
     Parameters
     ----------
-    eigvals, eigvecs, labels : jnp.ndarray
+    eigvals, eigvecs, labels : jax.Array
         Device heat-kernel basis and component labels (``get_device_basis``).
-    sources : jnp.ndarray, shape (n_sources,)
+    sources : jax.Array, shape (n_sources,)
         Interior bin indices.
     position_std : float
         Heat-kernel bandwidth in position units.
@@ -588,7 +588,7 @@ def _kernel_columns(
 
     Returns
     -------
-    columns : jnp.ndarray, shape (n_bins, n_sources)
+    columns : jax.Array, shape (n_bins, n_sources)
     """
     n_bins = eigvecs.shape[0]
     onehot = (
@@ -629,7 +629,7 @@ def spatial_kernel_columns(
 
     Returns
     -------
-    columns : jnp.ndarray, shape (n_bins, n_sources)
+    columns : jax.Array, shape (n_bins, n_sources)
         Non-negative columns that each sum to one: the diffusion of a unit mass
         from each source bin, zero outside its connected component and below
         ``_FIELD_RESOLUTION`` of its peak. ``resolved_rank`` and
@@ -835,12 +835,12 @@ def _electrode_layout(
 
     Returns
     -------
-    marks : jnp.ndarray, shape (n_padded_samples, n_features)
-    weights : jnp.ndarray, shape (n_padded_samples,)
+    marks : jax.Array, shape (n_padded_samples, n_features)
+    weights : jax.Array, shape (n_padded_samples,)
         Zero for padding samples.
-    sources : jnp.ndarray, shape (n_padded_sources,)
+    sources : jax.Array, shape (n_padded_sources,)
         Source bins, a whole number of tiles long.
-    source_index : jnp.ndarray, shape (n_padded_samples,)
+    source_index : jax.Array, shape (n_padded_samples,)
         Each sample's position in ``sources``, ascending.
     tile : int
         Kernel columns per tile.
@@ -881,7 +881,7 @@ def _log_source_marks(
 
     Returns
     -------
-    log_source : jnp.ndarray, shape (n_sources, n_block)
+    log_source : jax.Array, shape (n_sources, n_block)
         ``-inf`` for a source without positively weighted samples.
     """
     weighted = (
@@ -952,13 +952,13 @@ def _kernel_bounds(
 
     Parameters
     ----------
-    eigvals, eigvecs, labels : jnp.ndarray
+    eigvals, eigvecs, labels : jax.Array
         Device heat-kernel basis and component labels.
-    kernel : jnp.ndarray, shape (n_bins, n_sources), or None
+    kernel : jax.Array, shape (n_bins, n_sources), or None
         The kernel columns of ``sources`` when already built.
-    sources : jnp.ndarray, shape (n_sources,)
+    sources : jax.Array, shape (n_sources,)
         A whole number of tiles long.
-    log_scale : jnp.ndarray, shape (n_bins,)
+    log_scale : jax.Array, shape (n_bins,)
         :func:`_log_intensity_scale` for a unit rate and weight.
     tile : int
     position_std : float
@@ -966,10 +966,10 @@ def _kernel_bounds(
 
     Returns
     -------
-    gain : jnp.ndarray, shape (n_sources,)
+    gain : jax.Array, shape (n_sources,)
         Largest ``log_scale(x) + log H[x, s]`` over bins: how much a source can
         add to any bin's log intensity per unit of its mark density.
-    floor : jnp.ndarray, shape (n_sources,)
+    floor : jax.Array, shape (n_sources,)
         Smallest positive ``log H[x, s]`` over bins: a source's scaled mark
         density times this may underflow first.
     """
@@ -1015,20 +1015,20 @@ def _log_marked_field(
 
     Parameters
     ----------
-    log_source : jnp.ndarray, shape (n_sources, n_block)
-    rows : jnp.ndarray, shape (n_block,), or None
+    log_source : jax.Array, shape (n_sources, n_block)
+    rows : jax.Array, shape (n_block,), or None
         Each spike's own bin (local), or None to read every bin (non-local).
     columns_of : callable
         ``columns_of(start)`` gives the kernel columns of sources
         ``start:start + tile``, shape (n_bins, tile).
     n_tiles, tile : int
-    bounds : tuple of jnp.ndarray, each shape (n_sources,)
+    bounds : tuple of jax.Array, each shape (n_sources,)
         ``(gain, floor)`` of each source (see :func:`_kernel_bounds`).
-    log_background : jnp.ndarray, shape (n_block,)
+    log_background : jax.Array, shape (n_block,)
 
     Returns
     -------
-    log_field : jnp.ndarray, shape (n_bins, n_block), or (n_block,) when local
+    log_field : jax.Array, shape (n_bins, n_block), or (n_block,) when local
     """
     local = rows is not None
     peak = jnp.max(log_source, axis=0)
@@ -1137,30 +1137,30 @@ def _add_electrode_diffusion_terms(
 
     Parameters
     ----------
-    total : jnp.ndarray, shape (n_rows, n_bins), or (n_rows,) when local
+    total : jax.Array, shape (n_rows, n_bins), or (n_rows,) when local
         Running sum over electrodes; donated.
-    decode_features : jnp.ndarray, shape (n_padded_spikes, n_features)
+    decode_features : jax.Array, shape (n_padded_spikes, n_features)
         A multiple of ``block_size`` rows; padding rows are zero.
-    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+    row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    spike_bins : jnp.ndarray, shape (n_padded_spikes,), or None
+    spike_bins : jax.Array, shape (n_padded_spikes,), or None
         Animal's interior bin at each decoding spike (padding rows are zero)
         for local intensities; None for non-local.
-    encoding_marks, encoding_weights, source_index, sources : jnp.ndarray
+    encoding_marks, encoding_weights, source_index, sources : jax.Array
         From :func:`_electrode_layout`.
-    waveform_std : jnp.ndarray, shape (n_features,)
-    eigvals, eigvecs, labels : jnp.ndarray
+    waveform_std : jax.Array, shape (n_features,)
+    eigvals, eigvecs, labels : jax.Array
         Device heat-kernel basis and component labels.
-    kernel : jnp.ndarray, shape (n_bins, n_sources), or None
+    kernel : jax.Array, shape (n_bins, n_sources), or None
         The whole spatial kernel when it fits the memory budget
         (:func:`_dense_kernel`); then ``sources`` are every bin. Otherwise
         kernel columns are built from the basis, tile by tile.
-    log_scale : jnp.ndarray, shape (n_bins,)
+    log_scale : jax.Array, shape (n_bins,)
         From :func:`_log_intensity_scale`.
-    bounds : tuple of jnp.ndarray, each shape (n_sources,)
+    bounds : tuple of jax.Array, each shape (n_sources,)
         This electrode's ``(gain, floor)`` of ``sources`` (see
         :func:`_kernel_bounds`).
-    log_background : jnp.ndarray, shape (n_padded_spikes,)
+    log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
     position_std : float
     n_components : int
@@ -1172,7 +1172,7 @@ def _add_electrode_diffusion_terms(
 
     Returns
     -------
-    total : jnp.ndarray, shape (n_rows, n_bins), or (n_rows,) when local
+    total : jax.Array, shape (n_rows, n_bins), or (n_rows,) when local
     """
     columns_of = partial(
         _tile_columns,
@@ -1230,8 +1230,8 @@ def _add_electrode_diffusion_terms(
 def predict_clusterless_diffusion_log_likelihood(
     position_time: np.ndarray,
     position: np.ndarray,
-    spike_times: list[jnp.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    spike_times: list[jax.Array],
+    spike_waveform_features: list[jax.Array],
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
@@ -1243,7 +1243,7 @@ def predict_clusterless_diffusion_log_likelihood(
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     **encoding_model: object,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Predict the clusterless graph-diffusion log likelihood.
 
     Parameters
@@ -1254,9 +1254,9 @@ def predict_clusterless_diffusion_log_likelihood(
     position : np.ndarray, shape (n_time_position, n_position_dims)
         Position samples (used only by the local path; accepted for signature
         parity when ``is_local`` is False).
-    spike_times : list[jnp.ndarray]
+    spike_times : list[jax.Array]
         Decode spike times for each electrode.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : list[jax.Array]
         Decode spike waveform features (marks) for each electrode.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
@@ -1300,7 +1300,7 @@ def predict_clusterless_diffusion_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) if ``is_local`` is
+    log_likelihood : jax.Array, shape (n_rows, n_interior_bins) if ``is_local`` is
         False, else (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice``
         is given.
     """

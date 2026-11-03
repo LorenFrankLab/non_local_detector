@@ -29,7 +29,7 @@ from non_local_detector.likelihoods.common import _padded_sample_count
 # ---------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------
-Array = jnp.ndarray
+Array = jax.Array
 Params = tuple[Array, Array, Array]  # (weights, means, covariances)
 CovType = Literal["full", "tied", "diag", "spherical"]
 

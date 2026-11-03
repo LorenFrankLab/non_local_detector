@@ -565,13 +565,13 @@ def _heat_kernel_apply_jit(
 
 
 def heat_kernel_apply(
-    eigvals: jnp.ndarray,
-    eigvecs: jnp.ndarray,
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
     sigma: float,
-    fields: jnp.ndarray,
-    component_labels: jnp.ndarray | None = None,
+    fields: jax.Array,
+    component_labels: jax.Array | None = None,
     n_components: int | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """JAX port of ``diffuse``: exp(-tL) F, clipped and per-component mass-rescaled.
 
     Mirrors :func:`diffuse` exactly (clip to >=0, then rescale each column to its
@@ -582,15 +582,15 @@ def heat_kernel_apply(
 
     Parameters
     ----------
-    eigvals : jnp.ndarray, shape (m,)
+    eigvals : jax.Array, shape (m,)
         Laplacian eigenvalues from :func:`diffusion_eigenbasis`.
-    eigvecs : jnp.ndarray, shape (n_bins, m)
+    eigvecs : jax.Array, shape (n_bins, m)
         Corresponding eigenvectors as columns.
     sigma : float
         Smoothing standard deviation in coordinate units (bandwidth).
-    fields : jnp.ndarray, shape (n_bins, n_fields)
+    fields : jax.Array, shape (n_bins, n_fields)
         Count fields on the interior bins, one column per field.
-    component_labels : jnp.ndarray, shape (n_bins,), optional
+    component_labels : jax.Array, shape (n_bins,), optional
         Connected-component id per bin, 0..K-1, by default None (treated as a
         single component).
     n_components : int, optional
@@ -602,7 +602,7 @@ def heat_kernel_apply(
 
     Returns
     -------
-    smoothed : jnp.ndarray, shape (n_bins, n_fields)
+    smoothed : jax.Array, shape (n_bins, n_fields)
         Diffused fields, clipped to be non-negative and renormalized so each
         column's total mass equals the input field's total, per component
         (mass-conserving).
@@ -618,7 +618,7 @@ def heat_kernel_apply(
                 int(np.asarray(component_labels).max()) + 1
             )  # host sync — non-hot path only
     return cast(
-        jnp.ndarray,
+        jax.Array,
         _heat_kernel_apply_jit(
             eigvals, eigvecs, float(sigma), fields, labels, int(n_components)
         ),
@@ -970,7 +970,7 @@ def cached_heat_kernel_eigenbasis(
 
 def get_device_basis(
     environment: "Environment", resolved_rank: int
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
+) -> tuple[jax.Array, jax.Array, jax.Array, int]:
     """Device (jnp) eigenbasis for the clusterless_diffusion predict matmul.
 
     Transient cache on ``environment._diffusion_device_basis_`` keyed by
@@ -990,11 +990,11 @@ def get_device_basis(
 
     Returns
     -------
-    eigvals : jnp.ndarray, shape (resolved_rank,)
+    eigvals : jax.Array, shape (resolved_rank,)
         Laplacian eigenvalues, on ``device``.
-    eigvecs : jnp.ndarray, shape (n_interior, resolved_rank)
+    eigvecs : jax.Array, shape (n_interior, resolved_rank)
         Corresponding eigenvectors as columns, on ``device``.
-    component_labels : jnp.ndarray, shape (n_interior,)
+    component_labels : jax.Array, shape (n_interior,)
         Connected-component id per interior bin, ``0..n_components-1``, on
         ``device``.
     n_components : int

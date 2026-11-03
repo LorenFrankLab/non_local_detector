@@ -32,7 +32,7 @@ def key():
     return jax.random.PRNGKey(0)
 
 
-def _three_clusters(seed: int = 42, n: int = 200, scale: float = 0.4) -> jnp.ndarray:
+def _three_clusters(seed: int = 42, n: int = 200, scale: float = 0.4) -> jax.Array:
     """Three well-separated 2-D Gaussian clusters."""
     rng = np.random.default_rng(seed)
     return jnp.asarray(
@@ -46,7 +46,7 @@ def _three_clusters(seed: int = 42, n: int = 200, scale: float = 0.4) -> jnp.nda
     )
 
 
-def _two_clusters(seed: int = 1, n: int = 80, scale: float = 0.3) -> jnp.ndarray:
+def _two_clusters(seed: int = 1, n: int = 80, scale: float = 0.3) -> jax.Array:
     """Two well-separated 2-D Gaussian clusters."""
     rng = np.random.default_rng(seed)
     return jnp.asarray(
