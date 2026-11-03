@@ -10,6 +10,7 @@ during EM. Successful calls still store and replace their outputs.
 
 import copy
 import itertools
+import pickle
 
 import numpy as np
 import pytest
@@ -230,12 +231,17 @@ def test_estimation_failing_during_em_restores_detector(
     """EM fails after its internal fit has rebuilt the detector for new data and
     earlier M-steps have updated it; the detector, its environments, and its
     posterior are restored, the stored likelihood of the previous fit is
-    dropped, and no reference to the estimation data is left."""
+    dropped, and no reference to the estimation data is left.
+
+    Attributes are compared by identity and by value, so an EM step that edited
+    a previous array in place would be caught.
+    """
     reference, posterior_before = fitted
     detector = copy.deepcopy(reference)
     assert hasattr(detector, "log_likelihood_")
     snapshot = _snapshot(detector)
     del snapshot[0]["log_likelihood_"]
+    values_before = _pickled_state(detector)
     _, fit_args, _ = family_data
     refit_args, is_training = _refit_changes_state(fit_args)
     original = getattr(type(detector), step)
@@ -259,7 +265,22 @@ def test_estimation_failing_during_em_restores_detector(
         )
 
     _assert_unchanged(detector, snapshot)
+    assert _pickled_state(detector) == values_before
     np.testing.assert_array_equal(_posterior(detector, family_data), posterior_before)
+
+
+def _pickled_state(detector):
+    """The detector's and its environments' attribute values, pickled, without
+    the stored likelihood."""
+    state = {
+        name: value
+        for name, value in vars(detector).items()
+        if name != "log_likelihood_"
+    }
+    return pickle.dumps(
+        (state, [vars(env) for env in detector.environments]),
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
 
 
 @pytest.mark.unit
