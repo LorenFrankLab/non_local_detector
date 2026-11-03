@@ -17,7 +17,6 @@ import os
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,12 +27,12 @@ import xarray as xr
 from numpy.typing import ArrayLike, DTypeLike, NDArray
 
 from non_local_detector.core import (
-    _HMM_SCAN_UNROLL,
-    _condition_on,
+    _CovariateTransition,
     _degenerate_and_nan_masks_device,
-    _divide_safe,
+    _filter_scan,
     _float64_evidence,
-    _normalize,
+    _smoother_scan,
+    _StationaryTransition,
     _warn_degenerate_and_nan_timesteps,
 )
 from non_local_detector.likelihoods.common import decode_bin_centers
@@ -218,138 +217,12 @@ def default_chunk_size(n_bins: int, dtype: DTypeLike = np.float32) -> int:
     return max(MIN_DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_BYTES // row_bytes)
 
 
-@jax.tree_util.register_pytree_node_class
-class _DenseTransition:
-    def __init__(self, matrix: jax.Array, state_ind: jax.Array, n_states: int) -> None:
-        self.matrix, self.state_ind, self.n_states = matrix, state_ind, n_states
-
-    def _matrix(self, discrete_weights: jax.Array | None) -> jax.Array:
-        if discrete_weights is None:
-            return self.matrix
-        return self.matrix * discrete_weights[jnp.ix_(self.state_ind, self.state_ind)]
-
-    def forward(
-        self, probabilities: jax.Array, discrete_weights: jax.Array | None = None
-    ) -> jax.Array:
-        return jnp.matmul(
-            probabilities,
-            self._matrix(discrete_weights),
-            precision=jax.lax.Precision.HIGHEST,
-        )
-
-    def backward(
-        self, values: jax.Array, discrete_weights: jax.Array | None = None
-    ) -> jax.Array:
-        return jnp.matmul(
-            self._matrix(discrete_weights),
-            values,
-            precision=jax.lax.Precision.HIGHEST,
-        )
-
-    def pair_products(
-        self,
-        filtered: jax.Array,
-        ratio: jax.Array,
-        discrete_weights: jax.Array | None = None,
-    ) -> jax.Array:
-        """Per-state-pair terms of ``filtered @ T * ratio``; see the block operator."""
-        states = jax.nn.one_hot(self.state_ind, self.n_states, dtype=filtered.dtype)
-        precision = jax.lax.Precision.HIGHEST
-        source_rows = jnp.matmul(
-            (states * filtered[:, None]).T,
-            self._matrix(discrete_weights),
-            precision=precision,
-        )
-        return jnp.matmul(source_rows, states * ratio[:, None], precision=precision)
-
-    def tree_flatten(self) -> tuple[tuple[jax.Array, jax.Array], int]:
-        return (self.matrix, self.state_ind), self.n_states
-
-    @classmethod
-    def tree_unflatten(
-        cls, aux: int, children: tuple[jax.Array, jax.Array]
-    ) -> _DenseTransition:
-        return cls(*children, aux)
-
-
-@partial(jax.jit, static_argnames=("keep_rows", "keep_predictive", "keep_increments"))
-def _forward_chunk(
-    initial: jax.Array,
-    evidence: jax.Array,
-    likelihoods: jax.Array,
-    weights: jax.Array | None,
-    operator: Any,
-    *,
-    keep_rows: bool,
-    keep_predictive: bool,
-    keep_increments: bool = False,
-) -> tuple[Any, Any]:
-    def step(carry: tuple[jax.Array, jax.Array], args: tuple[Any, Any]) -> Any:
-        total, predicted = carry
-        ll, weight = args
-        filtered, increment = _condition_on(predicted, ll)
-        out: Any
-        if keep_rows:
-            out = (
-                filtered,
-                predicted if keep_predictive else None,
-                increment if keep_increments else None,
-            )
-        else:
-            out = increment if keep_increments else None
-        return (total + increment, operator.forward(filtered, weight)), out
-
-    return jax.lax.scan(
-        step, (evidence, initial), (likelihoods, weights), unroll=_HMM_SCAN_UNROLL
-    )
-
-
-@partial(jax.jit, static_argnames=("pair_statistics",))
-def _backward_chunk(
-    filtered: jax.Array,
-    weights: jax.Array | None,
-    operator: Any,
-    next_smoothed: jax.Array,
-    rows: jax.Array,
-    n_time: int,
-    *,
-    pair_statistics: bool = False,
-) -> tuple[Any, Any]:
-    """Smooth one chunk in reverse.
-
-    With ``pair_statistics``, also return each row's expected discrete
-    transition counts to the next row, ``operator.pair_products`` of the
-    filtered row and ``smoothed_{t+1} / predicted_{t+1}`` (zero on the last
-    recording row, which has no successor).
-    """
-
-    def step(following: jax.Array, args: tuple[Any, Any, Any]) -> Any:
-        current, weight, row = args
-        predicted = operator.forward(current, weight)
-        ratio = _divide_safe(following, predicted)
-        if pair_statistics and hasattr(operator, "backward_and_pairs"):
-            backward, pairs = operator.backward_and_pairs(ratio, current, weight)
-        else:
-            backward = operator.backward(ratio, weight)
-            if pair_statistics:
-                pairs = operator.pair_products(current, ratio, weight)
-        # Keep the core's arithmetic, including terminal and NaN semantics.
-        smoothed = current * backward * (row < n_time - 1) + current * (
-            row == n_time - 1
-        )
-        smoothed, _ = _normalize(smoothed, axis=-1)
-        if not pair_statistics:
-            return smoothed, smoothed
-        pairs = jnp.where(row < n_time - 1, pairs, 0)
-        return smoothed, (smoothed, pairs)
-
-    return jax.lax.scan(
-        step,
-        next_smoothed,
-        (filtered, weights, rows),
-        reverse=True,
-        unroll=_HMM_SCAN_UNROLL,
-    )
+# The chunk kernels are core's filter and smoother scan bodies, compiled
+# without donation: the driver reuses its inputs.
+_forward_chunk = jax.jit(
+    _filter_scan, static_argnames=("keep_rows", "keep_predictive", "keep_increments")
+)
+_backward_chunk = jax.jit(_smoother_scan, static_argnames=("pair_statistics",))
 
 
 @jax.jit
@@ -535,7 +408,7 @@ def checkpointed_forward_backward(
     ``forward(p, weight)`` and ``backward(v, weight)``; ``weight`` is None or the
     global discrete row.
     Alternatively supply a dense stationary matrix, or continuous/discrete
-    factors and ``state_ind`` for the reference covariate path.
+    factors and ``state_ind`` for the covariate path.
 
     Compact outputs are discrete-state marginals. Spatial outputs with a disk
     ``result_path`` remain lazy, without full-session spatial allocations;
@@ -768,8 +641,19 @@ def checkpointed_forward_backward(
         if matrix is None or np.shape(matrix) != (n_bins, n_bins):
             msg = "A matching dense matrix or transition_operator is required"
             raise ValueError(msg)
-        transition_operator = _DenseTransition(
-            jnp.asarray(matrix, dtype=dtype), jnp.asarray(state_ind), n_states
+        # The covariate operator applies each row's discrete matrix per
+        # discrete state, as core does, without building the joint matrix.
+        transition_operator = (
+            _CovariateTransition.create(
+                jnp.asarray(matrix, dtype=dtype), state_ind, n_states
+            )
+            if covariate
+            else _StationaryTransition(
+                jnp.asarray(matrix, dtype=dtype),
+                jnp.asarray(state_ind),
+                n_states,
+                precision=jax.lax.Precision.HIGHEST,
+            )
         )
     else:
         leaves, _ = jax.tree_util.tree_flatten(transition_operator)
