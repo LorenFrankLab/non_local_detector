@@ -3360,6 +3360,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     "fitted it; refit before decoding."
                 )
                 hint = "Call fit(...) with the original recording."
+                expected = "an encoding entry that records its algorithm"
+                got = "no recorded algorithm"
             else:
                 msg = (
                     f"Encoding entry {key!r} was fitted by {fitted!r}, but "
@@ -3369,12 +3371,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     f"Call fit(...) again to fit {current!r}, or set "
                     f"{parameter}={fitted!r} to decode with the fitted model."
                 )
-            raise ValidationError(
-                msg,
-                expected=f"{parameter}={fitted!r}",
-                got=f"{parameter}={current!r}",
-                hint=hint,
-            )
+                expected = f"{parameter}={fitted!r}"
+                got = f"{parameter}={current!r}"
+            raise ValidationError(msg, expected=expected, got=got, hint=hint)
         if is_clusterless:
             validate_spike_feature_population(spike_times, spike_waveform_features)
         else:

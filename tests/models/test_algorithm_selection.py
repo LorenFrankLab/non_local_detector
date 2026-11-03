@@ -138,5 +138,6 @@ def test_encoding_model_without_a_recorded_algorithm_raises(sorted_sim):
     detector = _fit_sorted("sorted_spikes_kde", sorted_sim)
     (encoding_model,) = detector.encoding_model_.values()
     del encoding_model["algorithm"]
-    with pytest.raises(ValidationError, match="refit"):
+    with pytest.raises(ValidationError, match="refit") as error:
         _predict_sorted(detector, sorted_sim)
+    assert "=None" not in str(error.value)
