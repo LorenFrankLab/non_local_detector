@@ -144,7 +144,6 @@ def make_simulated_run_data(
     - Spike times are strictly increasing per electrode
     - Empty electrodes have shape (0,) for times and (0, n_features) for features
     - No NaN values in spike waveform features
-
     """
     rng = np.random.default_rng(seed)
 
@@ -239,33 +238,34 @@ def make_continuous_replay(
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Creates a simulated continuous replay.
+    """Create a simulated continuous replay.
 
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     track_height : float, optional
-        Height of the simulated track
+        Height (length) of the simulated track, in the same spatial units as ``place_field_means``.
     running_speed : float, optional
-        Simulated speed of the animal
+        Simulated speed of the animal, in spatial units per second.
     place_field_means : np.ndarray, optional
         Location of the center of the Gaussian place fields.
-    replay_speedup : int, optional
-        Number of times faster the replay event is faster than the running speed
+    replay_speedup : float, optional
+        Factor by which the replay speed exceeds ``running_speed``.
     n_tetrodes : int, optional
-        Number of simulated tetrodes
+        Number of simulated tetrodes.
     n_features : int, optional
-        Number of simulated features
+        Number of simulated features (waveform feature dimensions per tetrode).
     mark_spacing : float, optional
-        Spacing between Gaussian mark features
+        Spacing between the mark values of successive neurons.
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
 
     replay_speed = running_speed * replay_speedup
@@ -301,29 +301,31 @@ def make_hover_replay(
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Creates a simulated stationary replay.
+    """Create a simulated stationary replay.
 
     Parameters
     ----------
     hover_neuron_ind : int, optional
-        Index of which neuron is the stationary neuron.
+        Flat index (into ``place_field_means`` reshaped to ``(n_tetrodes, -1)``) of the
+        stationary neuron. By default the middle neuron.
     place_field_means : np.ndarray, optional
         Location of the center of the Gaussian place fields.
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     n_tetrodes : int, optional
-        Number of simulated tetrodes
+        Number of simulated tetrodes.
     n_features : int, optional
-        Number of simulated features
+        Number of simulated features (waveform feature dimensions per tetrode).
     mark_spacing : float, optional
-        Spacing between Gaussian mark features
+        Spacing between the mark values of successive neurons.
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
 
     place_field_means = place_field_means.reshape((n_tetrodes, -1))
@@ -353,27 +355,28 @@ def make_fragmented_replay(
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Creates a simulated fragmented replay.
+    """Create a simulated fragmented replay.
 
     Parameters
     ----------
     place_field_means : np.ndarray, optional
         Location of the center of the Gaussian place fields.
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     n_tetrodes : int, optional
-        Number of simulated tetrodes
+        Number of simulated tetrodes.
     n_features : int, optional
-        Number of simulated features
+        Number of simulated features (waveform feature dimensions per tetrode).
     mark_spacing : float, optional
-        Spacing between Gaussian mark features
+        Spacing between the mark values of successive neurons.
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
 
     N_TIME = 10
@@ -407,12 +410,12 @@ def make_hover_continuous_hover_replay(
     sampling_frequency: int = SAMPLING_FREQUENCY,
     place_field_means: np.ndarray = PLACE_FIELD_MEANS,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Make a simulated replay that first is stationary, then is continuous, then is stationary again.
+    """Make a simulated replay that is stationary, then continuous, then stationary.
 
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
     place_field_means : np.ndarray, optional
         Location of the center of the Gaussian place fields.
 
@@ -421,7 +424,8 @@ def make_hover_continuous_hover_replay(
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
     _, test_multiunits1 = make_hover_replay(hover_neuron_ind=0)
     _, test_multiunits2 = make_continuous_replay()
@@ -439,19 +443,20 @@ def make_hover_continuous_hover_replay(
 def make_fragmented_hover_fragmented_replay(
     sampling_frequency: int = SAMPLING_FREQUENCY,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Makes a simulated replay that first is fragmented, then is stationary, then is fragmented again.
+    """Make a simulated replay that is fragmented, then stationary, then fragmented.
 
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
     _, test_multiunits1 = make_fragmented_replay()
     _, test_multiunits2 = make_hover_replay(hover_neuron_ind=6)
@@ -468,20 +473,20 @@ def make_fragmented_hover_fragmented_replay(
 def make_fragmented_continuous_fragmented_replay(
     sampling_frequency: int = SAMPLING_FREQUENCY,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Makes a simulated replay that first is fragmented, then is continuous, then is fragmented again.
+    """Make a simulated replay that is fragmented, then continuous, then fragmented.
 
     Parameters
     ----------
     sampling_frequency : int, optional
-        Samples per second
+        Samples per second.
 
     Returns
     -------
     replay_time : np.ndarray, shape (n_time,)
         Time in seconds.
     test_multiunits : np.ndarray, shape (n_time, n_features, n_tetrodes)
-        Binned clusterless spike times and features. NaN indicates no spike. Non-Nan indicates spike.
-
+        Binned clusterless spike features. NaN indicates no spike; non-NaN values
+        are the spike's mark features.
     """
     _, test_multiunits1 = make_fragmented_replay()
     _, test_multiunits2 = make_continuous_replay()
