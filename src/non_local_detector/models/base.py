@@ -32,7 +32,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import sklearn  # type: ignore[import-untyped]
 import xarray as xr
 from patsy import DesignMatrix, build_design_matrices  # type: ignore[import-untyped]
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
@@ -135,9 +134,6 @@ from non_local_detector.types import (
 )
 
 logger = getLogger(__name__)
-
-
-sklearn.set_config(print_changed_only=False)
 
 # Valid options for return_outputs parameter
 VALID_OUTPUTS: set[str] = {

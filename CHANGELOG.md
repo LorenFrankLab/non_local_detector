@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### API hygiene
+
+- **Fixed:** importing `non_local_detector` no longer changes the global scikit-learn configuration (`sklearn.set_config(print_changed_only=False)` was called at import). Detector reprs now follow scikit-learn's default of showing only parameters changed from their defaults; call `sklearn.set_config(print_changed_only=False)` yourself to restore the old repr.
+
 ### Dependencies
 
 - seaborn is no longer a dependency: `plot_discrete_state_transition` draws its heatmap with matplotlib. The figure is the same (colormap, color limits, `0.000` annotations, tick labels, colorbar label); the heatmap's cells are drawn with `pcolormesh` and its overlapping x tick labels are rotated as before.
