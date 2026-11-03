@@ -231,8 +231,12 @@ All contributions must:
 
 If you use `non_local_detector` in your research, please cite it. Citation
 metadata is in [CITATION.cff](CITATION.cff); on GitHub, use "Cite this
-repository" in the sidebar to get APA or BibTeX. Please also cite the
-publication that describes the method you used.
+repository" in the sidebar to get APA or BibTeX. The method is described in:
+
+> Denovellis, E. L., Gillespie, A. K., Coulter, M. E., Sosa, M., Chung, J. E.,
+> Eden, U. T., & Frank, L. M. (2021). Hippocampal replay of experience at
+> real-world speeds. *eLife*, 10, e64505.
+> [doi:10.7554/eLife.64505](https://doi.org/10.7554/eLife.64505)
 
 ## 📄 License
 

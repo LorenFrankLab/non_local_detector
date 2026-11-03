@@ -20,3 +20,26 @@ keywords:
   - hmm
   - neural-decoding
   - replay-detection
+preferred-citation:
+  type: article
+  title: "Hippocampal replay of experience at real-world speeds"
+  authors:
+    - family-names: Denovellis
+      given-names: Eric L.
+    - family-names: Gillespie
+      given-names: Anna K.
+    - family-names: Coulter
+      given-names: Michael E.
+    - family-names: Sosa
+      given-names: Marielena
+    - family-names: Chung
+      given-names: Jason E.
+    - family-names: Eden
+      given-names: Uri T.
+    - family-names: Frank
+      given-names: Loren M.
+  journal: eLife
+  volume: 10
+  start: e64505
+  year: 2021
+  doi: 10.7554/eLife.64505
