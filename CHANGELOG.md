@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed:** `Environment.fit_place_grid()` without position or a track graph raises `ValidationError` saying position is required, instead of `AttributeError: 'NoneType' object has no attribute 'ndim'`.
 - **Fixed:** `Environment.plot_grid` on an unfitted track-graph environment draws the graph without bin edges, instead of raising `TypeError`.
 - **Fixed:** `simulate.sorted_spikes_simulation.get_firing_rate` with its default `weights=None` weights every time point equally, instead of raising `TypeError`.
+- **Fixed:** `Environment.plot_grid` on a fitted one-dimensional open field draws the interior bins and bin edges along one axis, instead of raising `IndexError` on `edges_[1]`.
+- **Fixed:** `Environment.fit_place_grid` accepts one-dimensional `(n_time,)` position, treated as `(n_time, 1)`, instead of raising `IndexError` in `get_track_interior`. Detectors reshape position first, so only direct calls were affected.
+- **Fixed:** `simulate_position_with_pauses` pauses for `pause` seconds once per arrival at the track end. It inserted a pause at every sample within `np.isclose` tolerance of the end, so at 500 Hz the animal sat there 82% of the session (29% now, for 30 cm/s on a 180 cm track with 5 s pauses). Simulations that use it have longer running periods and fewer pauses.
+- **Fixed:** the progress bars of the full-grid likelihood are labeled "Likelihood", not "Non-Local Likelihood", so a plain `SortedSpikesDecoder` or `ClusterlessDecoder` no longer reports a non-local computation. A detector's non-local states show the same label; "Local Likelihood" and "No Spike Likelihood" are unchanged.
+- **Fixed:** `plot_continuous_state_transition` on a single-state model (a decoder) draws a readable figure with labeled axes instead of a 2.4 x 1.5 inch panel without ticks. The multi-state layout is unchanged.
+- **Fixed:** every predict no longer emits JAX's "Some donated buffers were not usable" `UserWarning`. The chunked smoother donated `initial`, and the covariate-dependent filter and smoother donated the discrete transition matrix (and `initial`), for which no output has a matching shape, on every backend and not only on CPU. They are no longer donated; `filtered_probs`, `log_likelihoods` and `initial_distribution`, which are reused, still are.
 
 ### Each likelihood algorithm has its own default parameters
 
