@@ -83,10 +83,11 @@ class LikelihoodAlgorithm:
     ``spike_waveform_features`` for clusterless data) and the keywords are
     ``_PREDICT_KEYWORDS`` (``_CLUSTERLESS_PREDICT_KEYWORDS``). So the encoding
     model must hold ``_ENCODING_MODEL_KEYS``, must not hold a data or keyword
-    name, and must provide every required ``predict`` parameter; unless
-    ``predict`` takes ``**kwargs``, each of its keys must be a ``predict``
-    parameter. ``tests/likelihoods/test_algorithm_contract.py`` checks every
-    registered algorithm.
+    name, and must provide every named ``predict`` parameter the detector does
+    not, so none is left at its default; unless ``predict`` takes
+    ``**kwargs``, each of its keys must be a ``predict`` parameter. Records
+    pickle and deep-copy. ``tests/likelihoods/test_algorithm_contract.py``
+    checks every registered algorithm.
     """
 
     fit: Callable[..., dict[str, Any]]

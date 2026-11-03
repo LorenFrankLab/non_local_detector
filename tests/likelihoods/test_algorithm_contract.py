@@ -17,7 +17,7 @@ import jax
 import numpy as np
 import pytest
 
-from non_local_detector import time_edges_from_centers
+from non_local_detector import Environment, time_edges_from_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -26,6 +26,10 @@ from non_local_detector.likelihoods import (
     _PREDICT_KEYWORDS,
     _SORTED_SPIKES_ALGORITHMS,
     LikelihoodAlgorithm,
+)
+from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    fit_sorted_spikes_diffusion_encoding_model,
+    predict_sorted_spikes_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
@@ -41,7 +45,7 @@ _DECODE_SAMPLES = slice(100, 140)
 
 @pytest.fixture(scope="module")
 def recording():
-    """500 samples on a ramp over the calibration decoder's (-1.5, 1.5) track."""
+    """500 samples on a ramp over (-1.4, 1.4): the first 3 of the 5 bins."""
     rng = np.random.default_rng(0)
     time = np.arange(500) * 0.002
     position = np.linspace(-1.4, 1.4, time.size)[:, None]
@@ -57,13 +61,21 @@ def _registry(algorithm):
 
 
 def _fit(algorithm, recording):
-    """A calibration decoder for ``algorithm`` and its spike data arguments."""
+    """A calibration decoder for ``algorithm`` and its spike data arguments.
+
+    The calibration grid is extended by two unvisited bins and the interior
+    inferred, so the non-local shape check tells interior bins from all bins.
+    """
     time, position, spike_times, features = recording
     spike_data = (spike_times,)
     if algorithm in _CLUSTERLESS_ALGORITHMS:
         spike_data = (spike_times, features)
-    decoder = _decoder(algorithm, calibration=True).fit(time, position, *spike_data)
-    return decoder, spike_data
+    decoder = _decoder(algorithm, calibration=True)
+    decoder.environments = [
+        Environment(place_bin_size=1, position_range=((-1.5, 3.5),))
+    ]
+    decoder.infer_track_interior = True
+    return decoder.fit(time, position, *spike_data), spike_data
 
 
 def _data_names(decoder):
@@ -82,19 +94,26 @@ def contract_violations(
     takes_var_keyword = any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
     )
-    required = {
-        name
+    named = {
+        name: p
         for name, p in parameters.items()
-        if p.default is inspect.Parameter.empty
-        and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+        if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
     }
+    required = {n for n, p in named.items() if p.default is inspect.Parameter.empty}
     keys = set(encoding_model)
+    supplied = keys | data_names | keywords
     violations = []
     if collisions := keys & (data_names | keywords):
         violations.append(f"keys the detector also passes: {sorted(collisions)}")
-    if missing := required - keys - data_names - keywords:
+    if missing := required - supplied:
         violations.append(
             f"required predict parameters not supplied: {sorted(missing)}"
+        )
+    # A renamed fit key leaves its predict parameter at its default, and a
+    # predict taking ``**kwargs`` swallows the new name.
+    if defaulted := set(named) - required - supplied:
+        violations.append(
+            f"optional predict parameters not supplied: {sorted(defaulted)}"
         )
     if not takes_var_keyword and (unaccepted := keys - set(parameters)):
         violations.append(f"keys predict does not accept: {sorted(unaccepted)}")
@@ -148,7 +167,9 @@ def test_registered_algorithm_meets_the_detector_contract(
     assert set(kwargs) == set(encoding_model) | keywords
 
     n_rows = len(edges) - 1
-    n_interior_bins = int(decoder.environments[0].is_track_interior_flat_.sum())
+    is_interior = decoder.environments[0].is_track_interior_flat_
+    n_interior_bins = int(is_interior.sum())
+    assert 0 < n_interior_bins < is_interior.size
     local_kwargs = {**kwargs, "is_local": True}
     local = record.predict(*args, **local_kwargs)
     for likelihood, shape in [
@@ -179,8 +200,34 @@ def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
     assert violations == [
         "keys the detector also passes: ['row_slice']",
         "required predict parameters not supplied: ['place_fields']",
+        "optional predict parameters not supplied: ['rate_units']",
         "keys predict does not accept: ['unread']",
         "common keys missing: ['rate_units']",
+    ]
+
+
+def test_contract_check_reports_a_renamed_key_of_a_catch_all_predict(
+    monkeypatch, recording
+):
+    """A predict taking ``**kwargs`` accepts a renamed key; the check does not."""
+
+    def renamed_fit(*args, **kwargs):
+        model = fit_sorted_spikes_diffusion_encoding_model(*args, **kwargs)
+        model["interior_log_place_field"] = model.pop("interior_log_place_fields")
+        return model
+
+    renamed = LikelihoodAlgorithm(
+        renamed_fit, predict_sorted_spikes_diffusion_log_likelihood
+    )
+    monkeypatch.setitem(_SORTED_SPIKES_ALGORITHMS, "sorted_spikes_diffusion", renamed)
+    decoder, _ = _fit("sorted_spikes_diffusion", recording)
+    (encoding_model,) = decoder.encoding_model_.values()
+
+    violations = contract_violations(
+        renamed, encoding_model, _data_names(decoder), _PREDICT_KEYWORDS
+    )
+    assert violations == [
+        "optional predict parameters not supplied: ['interior_log_place_fields']"
     ]
 
 
