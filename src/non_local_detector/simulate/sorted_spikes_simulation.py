@@ -352,20 +352,18 @@ def make_continuous_replay(
 ) -> np.ndarray:
     """Make a simulated continuous replay.
 
+    Each neuron fires one spike, in place-field order, every
+    `n_samples_between_spikes` samples.
+
     Parameters
     ----------
-    sampling_frequency : int, optional
-        Samples per second
-    track_height : float, optional
-        Height of the simulated track
-    running_speed : float, optional
-        Speed of the simulated animal
-    place_field_means : np.ndarray, optional
-        Location of the center of the Gaussian place fields.
-    replay_speedup : int, optional
-        Number of times faster, by default REPLAY_SPEEDUP
+    n_neurons : int, optional
+        Number of neurons, by default 8.
+    n_samples_between_spikes : int, optional
+        Samples between consecutive neurons' spikes, by default 20.
     is_outbound : bool, optional
-        Is it an outbound run, by default True
+        Fire from the last neuron to the first (outbound) instead of first to
+        last, by default True.
 
     Returns
     -------
