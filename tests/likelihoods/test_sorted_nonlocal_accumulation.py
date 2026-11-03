@@ -10,8 +10,8 @@ import pytest
 from scipy.special import xlogy
 
 from non_local_detector.likelihoods import sorted_spikes_glm, sorted_spikes_kde
-from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 from tests.conftest import precision_mode
+from tests.likelihoods._sorted_spikes_helpers import spike_counts_by_edge_comparison
 from tests.likelihoods.conftest import EXACT
 
 pytestmark = pytest.mark.unit
@@ -67,7 +67,7 @@ def reference(arguments, rows):
     interior = arguments["is_track_interior"]
     likelihood = np.zeros((stop - start, interior.sum()), dtype=dtype)
     for spikes, rates in zip(arguments["spike_times"], fields, strict=True):
-        counts = get_spikecount_per_time_bin(spikes, time_edges=edges, row_slice=rows)
+        counts = spike_counts_by_edge_comparison(spikes, edges, rows)
         likelihood += xlogy(
             counts.astype(dtype)[:, None], rates[interior][None, :] * duration[:, None]
         )
@@ -478,7 +478,7 @@ def per_neuron_jax_reference(position_time, position, spike_times, **arguments):
     for spikes, rates in zip(
         arguments["spike_times"], arguments["place_fields"], strict=True
     ):
-        counts = get_spikecount_per_time_bin(spikes, time_edges=edges, row_slice=rows)
+        counts = spike_counts_by_edge_comparison(spikes, edges, rows)
         likelihood += jax.scipy.special.xlogy(
             counts[:, None], rates[interior][None, :] * durations[:, None]
         )
@@ -499,7 +499,7 @@ def float64_nonlocal_emission(spike_times, arguments):
     durations = np.asarray(np.diff(edges)[start:stop]).astype(fields.dtype)
     counts = np.stack(
         [
-            get_spikecount_per_time_bin(spikes, time_edges=edges, row_slice=rows)
+            spike_counts_by_edge_comparison(spikes, edges, rows)
             for spikes in spike_times
         ],
         axis=1,

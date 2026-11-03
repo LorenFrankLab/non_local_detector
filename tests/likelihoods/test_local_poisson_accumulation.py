@@ -19,9 +19,9 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     KDEModel,
-    get_spikecount_per_time_bin,
 )
 from tests.conftest import precision_mode
+from tests.likelihoods._sorted_spikes_helpers import spike_counts_by_edge_comparison
 from tests.likelihoods.conftest import tolerance
 
 pytestmark = pytest.mark.unit
@@ -42,9 +42,7 @@ def no_spike_reference(events, edges, rate, rows):
     durations = jnp.asarray(np.diff(edges)[rows]) * rate
     result = jnp.zeros((len(np.diff(edges)[rows]),))
     for events_for_unit in events:
-        counts = get_spikecount_per_time_bin(
-            events_for_unit, time_edges=edges, row_slice=rows
-        )
+        counts = spike_counts_by_edge_comparison(events_for_unit, edges, rows)
         result += jax.scipy.special.xlogy(counts, durations) - durations
     return result[:, None]
 
@@ -193,7 +191,7 @@ def local_kde_reference(models, kwargs):
     for events, model, mean_rate in zip(
         kwargs["spike_times"], models, kwargs["mean_rates"], strict=True
     ):
-        counts = get_spikecount_per_time_bin(events, time_edges=edges)
+        counts = spike_counts_by_edge_comparison(events, edges)
         rate = mean_rate * jnp.where(
             occupancy > 0,
             model.predict(points) / jnp.where(occupancy > 0, occupancy, 1.0),
