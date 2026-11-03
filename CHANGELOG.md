@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Result layout
 
 - **Changed:** the `state_ind` coordinate of `predict` and `estimate_parameters` results, each state bin's index into `states`, lies along `state_bins` in dense and checkpointed results. It was attached on a dimension of its own, so results carried an extra `state_ind` dimension (sizes `{time: 2000, state_bins: 102, states: 4, state_ind: 102}`). Code that used `state_ind` as a dimension must use `state_bins`; values are unchanged. `load_results` gives netCDF files saved by earlier versions the new layout.
+- Dense results have the `time_bin_width` coordinate (`time_bin_end - time_bin_start`, in seconds) that checkpointed results already had, so both carry the same coordinates apart from checkpointed `source_row`.
 
 ### Simulators
 

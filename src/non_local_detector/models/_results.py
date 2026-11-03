@@ -224,6 +224,7 @@ def convert_results_to_xarray(
         "time": time,
         "time_bin_start": ("time", bin_edges[:-1]),
         "time_bin_end": ("time", bin_edges[1:]),
+        "time_bin_width": ("time", np.diff(bin_edges)),
         "time_bin_end_inclusive": ("time", np.arange(len(time)) == len(time) - 1),
         "is_missing": (
             "time",

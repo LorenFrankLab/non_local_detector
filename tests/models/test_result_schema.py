@@ -27,7 +27,7 @@ _PREDICT = {
     "time_edges": np.linspace(0, 2, 101),
 }
 # Coordinates only checkpointed results carry.
-_CHECKPOINTED_ONLY = {"source_row", "time_bin_width"}
+_CHECKPOINTED_ONLY = {"source_row"}
 
 
 @pytest.fixture(scope="module", params=["single_state", "multi_state"])
@@ -156,3 +156,12 @@ def test_files_with_a_state_ind_dimension_load_with_the_current_layout(
         restored = restored.load()
     assert "state_ind" not in restored.dims
     xr.testing.assert_equal(restored, dense)
+
+
+def test_time_bin_width_is_each_bins_duration(result):
+    np.testing.assert_array_equal(
+        result.time_bin_width, result.time_bin_end - result.time_bin_start
+    )
+    np.testing.assert_array_equal(
+        result.time_bin_width, np.diff(_PREDICT["time_edges"])
+    )
