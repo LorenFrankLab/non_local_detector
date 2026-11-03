@@ -2571,7 +2571,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             self.discrete_transition_design_matrix_ is None
         ):
             self.discrete_transition_design_matrix_ = (
-                self.discrete_transition_type.make_state_transition(covariate_data)[2]
+                self.discrete_transition_type.make_state_transition(
+                    covariate_data
+                ).design_matrix
             )
         # Detectors fitted before transition smoothing existed: no penalty
         # strengths and no covariance, so EM and intervals see an unsmoothed
@@ -2629,11 +2631,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             of a covariate-dependent transition; None before one.
         """
         logger.info("Fitting discrete state transition")
-        (
-            self.discrete_state_transitions_,
-            self.discrete_transition_coefficients_,
-            self.discrete_transition_design_matrix_,
-        ) = self.discrete_transition_type.make_state_transition(covariate_data)
+        initial = self.discrete_transition_type.make_state_transition(covariate_data)
+        self.discrete_state_transitions_ = initial.transition_matrix
+        self.discrete_transition_coefficients_ = initial.coefficients
+        self.discrete_transition_design_matrix_ = initial.design_matrix
         # patsy design matrices cannot be pickled or deep-copied; keep a copy
         # of the covariates so ``__setstate__`` can rebuild the design matrix
         # with the fitted knots even if the caller later changes them.

@@ -2956,6 +2956,26 @@ quantile_bs = stateful_transform(_QuantileBSpline)
 cyclic_bs = stateful_transform(_CyclicBSpline)
 
 
+class InitialDiscreteTransition(NamedTuple):
+    """The discrete transition a ``make_state_transition`` starts EM from.
+
+    Attributes
+    ----------
+    transition_matrix : np.ndarray, shape (n_states, n_states) or (n_time, n_states, n_states)
+        Probability of moving from each state to each state; one matrix per
+        time step for a covariate-dependent transition.
+    coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1), or None
+        Regression coefficients of a covariate-dependent transition, with
+        only the intercepts set; None for a stationary transition.
+    design_matrix : patsy.DesignMatrix or None
+        Design matrix of the covariates; None for a stationary transition.
+    """
+
+    transition_matrix: np.ndarray
+    coefficients: np.ndarray | None
+    design_matrix: DesignMatrix | None
+
+
 @dataclass
 class DiscreteStationaryDiagonal:
     """Diagonal values are placed on the diagonal.
@@ -2972,31 +2992,24 @@ class DiscreteStationaryDiagonal:
 
     def make_state_transition(
         self,
-        *args: Any,  # noqa: ARG002 -- shared make_state_transition signature
-        **kwargs: Any,  # noqa: ARG002 -- shared make_state_transition signature
-    ) -> tuple[np.ndarray, None, None]:
+        covariate_data: pd.DataFrame | dict[str, Any] | None = None,  # noqa: ARG002 -- shared make_state_transition signature
+    ) -> InitialDiscreteTransition:
         """Construct the initial discrete transition matrix.
 
         Parameters
         ----------
-        *args
-            Ignored; accepted so all transition classes share one signature.
-        **kwargs
-            Ignored; accepted so all transition classes share one signature.
+        covariate_data : pd.DataFrame or dict, optional
+            Ignored; a stationary transition has no covariates.
 
         Returns
         -------
-        discrete_transition : np.ndarray, shape (n_states, n_states)
-            The initial discrete transition matrix.
-        discrete_transition_coefficients : None
-            The coefficients for the non-stationary transition matrix.
-            It is None here because the transition matrix is stationary.
-        discrete_transition_design_matrix : None
-            The design matrix for the non-stationary transition matrix.
-            It is None here because the transition matrix is stationary.
+        initial : InitialDiscreteTransition
+            ``transition_matrix`` of shape (n_states, n_states), and None
+            ``coefficients`` and ``design_matrix`` because the transition is
+            stationary.
         """
         diag = np.asarray(self.diagonal_values)
-        return make_transition_from_diag(diag), None, None
+        return InitialDiscreteTransition(make_transition_from_diag(diag), None, None)
 
 
 @dataclass
@@ -3013,30 +3026,23 @@ class DiscreteStationaryCustom:
 
     def make_state_transition(
         self,
-        *args: Any,  # noqa: ARG002 -- shared make_state_transition signature
-        **kwargs: Any,  # noqa: ARG002 -- shared make_state_transition signature
-    ) -> tuple[np.ndarray, None, None]:
+        covariate_data: pd.DataFrame | dict[str, Any] | None = None,  # noqa: ARG002 -- shared make_state_transition signature
+    ) -> InitialDiscreteTransition:
         """Construct the initial discrete transition matrix.
 
         Parameters
         ----------
-        *args
-            Ignored; accepted so all transition classes share one signature.
-        **kwargs
-            Ignored; accepted so all transition classes share one signature.
+        covariate_data : pd.DataFrame or dict, optional
+            Ignored; a stationary transition has no covariates.
 
         Returns
         -------
-        discrete_transition : np.ndarray, shape (n_states, n_states)
-            The initial discrete transition matrix.
-        discrete_transition_coefficients : None
-            The coefficients for the non-stationary transition matrix.
-            It is None here because the transition matrix is stationary.
-        discrete_transition_design_matrix : None
-            The design matrix for the non-stationary transition matrix.
-            It is None here because the transition matrix is stationary.
+        initial : InitialDiscreteTransition
+            ``transition_matrix`` of shape (n_states, n_states), and None
+            ``coefficients`` and ``design_matrix`` because the transition is
+            stationary.
         """
-        return np.asarray(self.values), None, None
+        return InitialDiscreteTransition(np.asarray(self.values), None, None)
 
 
 def _initial_nonstationary_transition(
@@ -3044,7 +3050,7 @@ def _initial_nonstationary_transition(
     formula: str,
     covariate_data: pd.DataFrame | dict[str, Any] | None,
     smoothness: float | str,
-) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
+) -> InitialDiscreteTransition:
     """Initial structures of a covariate-driven transition from its intercept matrix.
 
     Parameters
@@ -3060,9 +3066,10 @@ def _initial_nonstationary_transition(
 
     Returns
     -------
-    initial_discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
-    initial_discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-    discrete_transition_design_matrix : patsy.DesignMatrix
+    initial : InitialDiscreteTransition
+        ``transition_matrix`` of shape (n_time, n_states, n_states),
+        ``coefficients`` of shape (n_coefficients, n_states, n_states - 1)
+        and the patsy ``design_matrix``.
     """
     n_states = len(discrete_transition)
 
@@ -3088,7 +3095,7 @@ def _initial_nonstationary_transition(
         (n_time, n_states, n_states)
     )
 
-    return (
+    return InitialDiscreteTransition(
         discrete_transition,
         discrete_transition_coefficients,
         discrete_transition_design_matrix,
@@ -3134,7 +3141,7 @@ class DiscreteNonStationaryDiagonal:
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any]
-    ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
+    ) -> InitialDiscreteTransition:
         """Construct the initial non-stationary discrete transition structures.
 
         Parameters
@@ -3145,12 +3152,13 @@ class DiscreteNonStationaryDiagonal:
 
         Returns
         -------
-        initial_discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
-            Initial guess for the transition matrix at each time step (based on intercept).
-        initial_discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-            Initial coefficients, with intercepts set based on `diagonal_values`.
-        discrete_transition_design_matrix : patsy.DesignMatrix
-            The design matrix derived from the formula and covariate data.
+        initial : InitialDiscreteTransition
+            ``transition_matrix``, shape (n_time, n_states, n_states): the
+            initial guess at each time step (based on the intercept).
+            ``coefficients``, shape (n_coefficients, n_states, n_states - 1):
+            initial coefficients, with intercepts set based on `diagonal_values`.
+            ``design_matrix``: the patsy design matrix derived from the
+            formula and covariate data.
         """
         return _initial_nonstationary_transition(
             make_transition_from_diag(self.diagonal_values),
@@ -3199,7 +3207,7 @@ class DiscreteNonStationaryCustom:
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None
-    ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
+    ) -> InitialDiscreteTransition:
         """Construct the initial non-stationary discrete transition structures.
 
         Parameters
@@ -3210,12 +3218,13 @@ class DiscreteNonStationaryCustom:
 
         Returns
         -------
-        initial_discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
-            Initial guess for the transition matrix at each time step (based on intercept).
-        initial_discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-            Initial coefficients, with intercepts set based on `values`.
-        discrete_transition_design_matrix : patsy.DesignMatrix
-            The design matrix derived from the formula and covariate data.
+        initial : InitialDiscreteTransition
+            ``transition_matrix``, shape (n_time, n_states, n_states): the
+            initial guess at each time step (based on the intercept).
+            ``coefficients``, shape (n_coefficients, n_states, n_states - 1):
+            initial coefficients, with intercepts set based on `values`.
+            ``design_matrix``: the patsy design matrix derived from the
+            formula and covariate data.
         """
         return _initial_nonstationary_transition(
             self.values, self.formula, covariate_data, self.smoothness
