@@ -71,8 +71,8 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
-from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
-from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
+from patsy import build_design_matrices, dmatrix
+from patsy.design_info import DesignInfo
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (

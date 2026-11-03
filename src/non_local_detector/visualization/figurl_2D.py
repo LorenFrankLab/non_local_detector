@@ -2,6 +2,8 @@
 
 import numpy as np
 
+from non_local_detector.visualization._optional import sortingview_available
+
 _UINT16_MAX = int(np.iinfo(np.uint16).max)
 
 
@@ -47,7 +49,7 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
     return n_position_bins
 
 
-try:
+if sortingview_available():
     from collections.abc import Callable
     from typing import Any, cast
 
@@ -58,6 +60,7 @@ try:
 
     from non_local_detector.analysis.posterior import get_spatial_posterior
     from non_local_detector.environment import Environment, get_grid, get_track_interior
+    from non_local_detector.exceptions import ValidationError
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def create_static_track_animation(
@@ -473,12 +476,22 @@ try:
         view : vvf.TrackPositionAnimationV1
 
         """
-        assert position_time.shape[0] == position.shape[0], (
-            "position_time and position must have the same length"
-        )
-        assert posterior.shape[0] == position.shape[0], (
-            "posterior and position must have the same length"
-        )
+        if position_time.shape[0] != position.shape[0]:
+            msg = "position_time and position must have the same length"
+            raise ValidationError(
+                msg,
+                expected=f"position_time with {position.shape[0]} samples",
+                got=f"position_time with {position_time.shape[0]} samples",
+                hint="Pass position and its timestamps from the same recording.",
+            )
+        if posterior.shape[0] != position.shape[0]:
+            msg = "posterior and position must have the same length"
+            raise ValidationError(
+                msg,
+                expected=f"posterior with {position.shape[0]} time bins",
+                got=f"posterior with {posterior.shape[0]} time bins",
+                hint="Pass position sampled at the decoding time bins.",
+            )
 
         position_time = np.squeeze(np.asarray(position_time)).copy()
         position = np.asarray(position)
@@ -641,6 +654,3 @@ try:
         )
 
         return cast("str", view.url(label="2D Decoding"))
-
-except ImportError:
-    pass
