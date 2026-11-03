@@ -965,24 +965,37 @@ def _sample_positions(values: ArrayLike, n_time: int) -> np.ndarray:
 
 
 def _sample_mask(values: ArrayLike, n_time: int, name: str) -> np.ndarray:
-    """A boolean mask with one entry per position sample, shape (n_time,)."""
+    """A boolean mask with one entry per position sample, shape (n_time,).
+
+    Integers equal to 0 or 1 are read as False or True. Any other integer, a
+    float or another dtype is rejected rather than combined bitwise with the
+    label masks, where ``2 & True`` is 0.
+    """
     mask = np.asarray(values)
-    if mask.dtype != np.bool_:
-        msg = f"{name} must be a boolean array"
-        raise ValidationError(
-            msg,
-            expected="dtype bool",
-            got=f"dtype {mask.dtype}",
-            hint="Pass True/False per position sample, e.g. "
-            f"{name}=speed > 4; integers and floats are not read as a mask.",
-        )
     if mask.shape != (n_time,):
         msg = f"{name} must have one entry per position sample"
         raise ValidationError(
             msg,
             expected=f"shape ({n_time},)",
             got=f"shape {mask.shape}",
-            hint="A shorter or single-entry mask is not broadcast to every sample.",
+            hint="A shorter or single-entry mask is not broadcast to every "
+            f"sample; pass a 1-D array (e.g. {name}.ravel() for a column).",
+        )
+    if mask.dtype.kind in "iu" and np.isin(mask, (0, 1)).all():
+        return mask.astype(bool)
+    if mask.dtype != np.bool_:
+        msg = f"{name} must be a boolean mask"
+        raise ValidationError(
+            msg,
+            expected="dtype bool, or integers 0 and 1",
+            got=f"dtype {mask.dtype}"
+            + (
+                f" with values {np.unique(mask)[:5].tolist()}"
+                if mask.dtype.kind in "iu"
+                else ""
+            ),
+            hint="Pass True/False per position sample, e.g. "
+            f"{name}=speed > 4; other integers and floats are not read as a mask.",
         )
     return mask
 
@@ -1058,9 +1071,9 @@ class _EncodingInputs:
         ------
         ValidationError
             If ``position`` is missing, an array has the wrong number of
-            dimensions or samples, ``is_training`` is not boolean, a label
-            array has the wrong dtype, or ``weights`` are not finite and
-            non-negative.
+            dimensions or samples, ``is_training`` is not a boolean or 0/1
+            mask, a label array has the wrong dtype, or ``weights`` are not
+            finite and non-negative.
         """
         if position is None:
             msg = "Missing required parameter: position"
@@ -6465,8 +6478,8 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
-            True for the position samples to train the encoding model on, one
-            entry per sample, by default None (every sample).
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
         encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
             Encoding group of each position sample, matched to the observation
             models' ``encoding_group``, by default None (group 0).
@@ -6640,8 +6653,8 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
-            True for the position samples to train the encoding model on, one
-            entry per sample, by default None (every sample).
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
         encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
             Encoding group of each position sample, matched to the observation
             models' ``encoding_group``, by default None (group 0).
@@ -7114,8 +7127,8 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : np.ndarray, shape (n_bins,), optional
             Boolean array indicating missing data, by default None.
         is_training : array_like of bool, shape (n_time_position,), optional
-            True for the position samples to train the encoding model on, one
-            entry per sample, by default None (every sample).
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
         encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
             Encoding group of each position sample, matched to the observation
             models' ``encoding_group``, by default None (group 0).
@@ -7473,8 +7486,8 @@ class SortedSpikesDetector(_DetectorBase):
         spike_times : list of np.ndarray
             Spike times for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
-            True for the position samples to train the encoding model on, one
-            entry per sample, by default None (every sample).
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
         encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
             Encoding group of each position sample, matched to the observation
             models' ``encoding_group``, by default None (group 0).
@@ -7610,8 +7623,8 @@ class SortedSpikesDetector(_DetectorBase):
         spike_times : list of np.ndarray
             Spike times for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
-            True for the position samples to train the encoding model on, one
-            entry per sample, by default None (every sample).
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
         encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
             Encoding group of each position sample, matched to the observation
             models' ``encoding_group``, by default None (group 0).
@@ -7960,8 +7973,8 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing : np.ndarray, shape (n_bins,), optional
             Denote missing samples, None includes all samples, by default None.
         is_training : array_like of bool, shape (n_time_position,), optional
-            True for the position samples to train the encoding model on, one
-            entry per sample, by default None (every sample).
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
         encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
             Encoding group of each position sample, matched to the observation
             models' ``encoding_group``, by default None (group 0).

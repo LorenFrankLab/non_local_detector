@@ -66,10 +66,11 @@ def fitted_local():
         np.array([True]),  # would broadcast to every sample
         np.ones((N_TIME, 1), dtype=bool),  # not one entry per sample
         np.ones(N_TIME - 1, dtype=bool),
-        np.full(N_TIME, 2),  # integers: 2 & True is False
+        np.full(N_TIME, 2),  # 2 & True is False
+        np.arange(N_TIME) % 3,  # some 0/1, some 2
         np.ones(N_TIME),  # floats are not a mask
     ],
-    ids=["length_one", "column", "short", "integer", "float"],
+    ids=["length_one", "column", "short", "integer_two", "integer_mixed", "float"],
 )
 def test_malformed_is_training_is_rejected(method, is_training):
     time, position, spike_times = _recording()
@@ -78,6 +79,29 @@ def test_malformed_is_training_is_rejected(method, is_training):
         detector.fit(time, position, spike_times)
     with pytest.raises(ValidationError, match="is_training"):
         getattr(detector, method)(time, position, spike_times, is_training=is_training)
+
+
+@pytest.mark.unit
+def test_column_is_training_hint_suggests_ravel():
+    time, position, spike_times = _recording()
+    with pytest.raises(ValidationError, match=r"ravel"):
+        _decoder().fit(
+            time, position, spike_times, is_training=np.ones((N_TIME, 1), dtype=bool)
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dtype", [np.int64, np.uint8])
+def test_zero_one_integer_is_training_matches_boolean(dtype):
+    time, position, spike_times = _recording()
+    mask = np.arange(N_TIME) < N_TIME // 2
+    from_bool = _decoder().fit(time, position, spike_times, is_training=mask)
+    from_int = _decoder().fit(
+        time, position, spike_times, is_training=mask.astype(dtype)
+    )
+    (bool_model,) = from_bool.encoding_model_.values()
+    (int_model,) = from_int.encoding_model_.values()
+    np.testing.assert_array_equal(int_model["place_fields"], bool_model["place_fields"])
 
 
 @pytest.mark.unit
