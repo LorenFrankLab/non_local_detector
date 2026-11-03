@@ -176,8 +176,8 @@ jobs:
           name: archive
           path: archive/
 
-  # Install each artifact the way a user would and check that it imports and
-  # ships its data files. The code itself is tested by the jobs above.
+  # Install each artifact the way a user would and run the smoke tests
+  # against that installation. The code itself is tested by the jobs above.
   test-package:
     runs-on: ubuntu-latest
     needs: [build]
@@ -187,6 +187,7 @@ jobs:
       matrix:
         package: ['wheel', 'sdist', 'archive']
     steps:
+      # The sdist carries the tests the wheel and sdist runs use.
       - name: Download sdist and wheel artifacts
         if: matrix.package != 'archive'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -220,13 +221,31 @@ jobs:
         run: pip install archive/archive.tgz
       - name: Install test extras
         run: pip install "non_local_detector[test]"
-      # The golden regression tests load the packaged pickles and run every
-      # decoder end to end; a missing data file fails them.
-      - name: Run installed-package smoke tests
+      - name: Unpack the tests
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          mkdir source
+          if [ "$PACKAGE" = archive ]; then
+            tar -xzf archive/archive.tgz -C source
+          else
+            tar -xzf dist/*.tar.gz -C source --strip-components=1
+          fi
+      # The package lives in source/src, off sys.path, so the tests import
+      # the installed copy; check that before trusting the result.
+      - name: Check the tests import the installed package
+        working-directory: source
         run: >-
-          pytest -p no:cacheprovider --pyargs
-          non_local_detector.tests.test_version_import
-          non_local_detector.tests.test_golden_regression
+          python -c "import non_local_detector, sys;
+          sys.exit('site-packages' not in non_local_detector.__file__)"
+      # The golden regression tests run every decoder end to end against the
+      # installed package.
+      - name: Run installed-package smoke tests
+        working-directory: source
+        run: >-
+          pytest -p no:cacheprovider
+          tests/test_version_import.py
+          tests/test_golden_regression.py
 
   publish:
     runs-on: ubuntu-latest

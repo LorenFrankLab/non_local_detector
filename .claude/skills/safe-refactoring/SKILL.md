@@ -231,7 +231,7 @@ For mathematical code, verify numerical equivalence:
 ```bash
 # Run golden regression
 uv run pytest \
-  src/non_local_detector/tests/test_golden_regression.py -v
+  tests/test_golden_regression.py -v
 ```
 
 **Expected:** Exact match (or differences < 1e-14)

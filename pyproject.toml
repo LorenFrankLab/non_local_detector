@@ -148,7 +148,6 @@ allowed-confusables = ["×", "σ", "α", "γ", "∪"]
 # MyPy configuration
 [tool.mypy]
 files = ["src/non_local_detector"]
-exclude = ["src/non_local_detector/tests/"]
 mypy_path = "src"
 # Target 3.12 so mypy can parse NumPy's stubs, which use PEP 695 `type`
 # statements (only valid for python_version >= 3.12). Runtime 3.10 support is
@@ -188,7 +187,10 @@ exclude_lines = [
 # Pytest configuration
 [tool.pytest.ini_options]
 minversion = "8.4"
-testpaths = ["src/non_local_detector/tests"]
+testpaths = ["tests"]
+# The repository root, so test modules import shared helpers as tests.*
+# however few of them a run collects.
+pythonpath = ["."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
