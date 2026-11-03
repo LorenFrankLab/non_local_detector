@@ -300,6 +300,21 @@ def _no_structured_block(transition: object) -> "Block":
 _DIRECTIONS = ("inward", "outward")
 
 
+def _validate_direction(direction: str | None) -> None:
+    """Check a ``RandomWalk.direction``.
+
+    Raises
+    ------
+    ValidationError
+        If it is not None, "inward" or "outward" (case-insensitive).
+    """
+    if direction is not None and direction.lower() not in _DIRECTIONS:
+        msg = f"direction must be 'inward' or 'outward', got {direction!r}"
+        raise ValidationError(
+            msg, hint="Use direction=None for an unconstrained random walk."
+        )
+
+
 @dataclass
 class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     """A transition where the movement stays locally close in space.
@@ -333,12 +348,7 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     direction: str | None = None
 
     def __post_init__(self) -> None:
-        if self.direction is not None and self.direction.lower() not in _DIRECTIONS:
-            msg = f"direction must be 'inward' or 'outward', got {self.direction!r}"
-            raise ValidationError(
-                msg,
-                hint="Use direction=None for an unconstrained random walk.",
-            )
+        _validate_direction(self.direction)
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
         """Separable Gaussian block of a Euclidean random walk on a complete
@@ -461,6 +471,8 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
                             "distance_between_nodes_."
                         ),
                     )
+                # ``direction`` may have been reassigned since construction.
+                _validate_direction(self.direction)
                 direction_func = {
                     "inward": np.greater_equal,
                     "outward": np.less_equal,

@@ -72,6 +72,21 @@ def test_random_walk_invalid_direction_raises_at_construction():
         RandomWalk(movement_var=3.0, direction="sideways")
 
 
+def test_random_walk_direction_assigned_after_construction_raises():
+    """An invalid direction set after construction raises ValidationError
+    when the matrix is built, not a bare KeyError."""
+    position = np.array([[0.0, 0.0], [3.0, 4.0]])
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=False
+    )
+    rw = RandomWalk(use_manifold_distance=True, direction="inward")
+    rw.direction = "sideways"
+    with pytest.raises(
+        ValidationError, match="direction must be 'inward' or 'outward'"
+    ):
+        rw.make_state_transition((env,))
+
+
 def test_environment_name_is_part_of_the_protocol():
     """Every package transition declares environment_name; Discrete has no
     place bins, so its environment_name is None."""
