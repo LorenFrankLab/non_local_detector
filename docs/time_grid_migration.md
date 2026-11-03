@@ -34,7 +34,7 @@ sequence = detector.most_likely_sequence(spike_times, time_edges=edges)
 ```
 
 For a runnable example with camera jitter, tracking gaps, and independent
-intervals, see [`scripts/time_grid_migration_example.py`](../scripts/time_grid_migration_example.py).
+intervals, see [`scripts/time_grid_migration_example.py`](https://github.com/LorenFrankLab/non_local_detector/blob/main/scripts/time_grid_migration_example.py).
 
 The centered conversion preserves the number of rows, but between-sample spikes
 now belong to the nearest sample's bin. Old `time` bins assigned them to the
