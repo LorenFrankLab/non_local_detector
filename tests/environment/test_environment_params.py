@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from sklearn.base import clone
 
+from non_local_detector import SortedSpikesDecoder, Uniform
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 
@@ -126,3 +127,38 @@ def test_sklearn_clone_gives_an_unfitted_copy_of_the_configuration():
     assert cloned.track_graph is not environment.track_graph
     assert nx.utils.graphs_equal(cloned.track_graph, environment.track_graph)
     assert cloned.edge_order == environment.edge_order
+
+
+@pytest.mark.parametrize("make", [_grid_environment, _track_environment])
+@pytest.mark.parametrize("infer_track_interior", [False, True])
+def test_fitting_leaves_the_configuration_unchanged(make, infer_track_interior):
+    environment = make()
+    before = environment.get_params()
+    position = None if environment.track_graph is not None else POSITION
+    environment.fit_place_grid(position, infer_track_interior=infer_track_interior)
+    after = environment.get_params()
+    assert after.keys() == before.keys()
+    for name, value in before.items():
+        assert after[name] is value, name
+
+
+def test_fit_stores_the_infer_track_interior_it_used():
+    environment = _grid_environment()  # infer_track_interior=True
+    environment.fit_place_grid(POSITION, infer_track_interior=False)
+    assert environment.infer_track_interior is True
+    assert environment.infer_track_interior_ is False
+    assert environment.is_track_interior_.all()
+
+
+def test_detector_environments_keep_the_caller_configuration():
+    time = np.arange(100) * 0.002
+    position = (50 + 8 * np.sin(time * 40))[:, None]
+    environment = Environment(place_bin_size=5.0)
+    decoder = SortedSpikesDecoder(
+        environments=environment,
+        continuous_transition_types=[[Uniform()]],
+        infer_track_interior=False,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, [np.array([0.021, 0.067, 0.121])])
+    assert decoder.environments[0].get_params() == environment.get_params()
+    assert decoder.environments[0].infer_track_interior_ is False

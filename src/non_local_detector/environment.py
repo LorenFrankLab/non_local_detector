@@ -179,7 +179,10 @@ class Environment:
         If None, range is determined from position data.
     infer_track_interior : bool, optional
         If True and `is_track_interior` is None, infer track geometry from position data.
-        Defaults to True. Ignored if `track_graph` is provided.
+        Defaults to True. Ignored if `track_graph` is provided. The
+        ``infer_track_interior`` argument of :meth:`fit_place_grid` (True by
+        default) takes precedence; the value a fit used is stored as
+        ``infer_track_interior_``.
     fill_holes : bool, optional
         Fill holes in the inferred track interior. Defaults to False. Ignored if `track_graph` is provided.
     dilate : bool, optional
@@ -200,6 +203,9 @@ class Environment:
         Shape of the grid in terms of bins per dimension.
     is_track_interior_ : np.ndarray, shape (n_bins,) or (n_bins_dim1, n_bins_dim2, ...)
         Boolean array indicating which bins are part of the track interior.
+    infer_track_interior_ : bool or None
+        The ``infer_track_interior`` argument the last :meth:`fit_place_grid`
+        used. None for track-graph environments.
     is_track_boundary_ : np.ndarray or None
         Boolean array indicating boundary bins (only for N-D environments).
     track_graphDD : networkx.Graph or None
@@ -255,6 +261,7 @@ class Environment:
     place_bin_centers_: np.ndarray | None = field(default=None, metadata=_FITTED)
     centers_shape_: tuple[int, ...] | None = field(default=None, metadata=_FITTED)
     is_track_interior_: np.ndarray | None = field(default=None, metadata=_FITTED)
+    infer_track_interior_: bool | None = field(default=None, metadata=_FITTED)
     is_track_boundary_: np.ndarray | None = field(default=None, metadata=_FITTED)
     track_graphDD: nx.Graph | None = field(  # For N-D case
         default=None, metadata=_FITTED
@@ -729,8 +736,9 @@ class Environment:
             treated as ``(n_time, 1)``.
         infer_track_interior : bool, optional
             Whether to infer the interior of the track from ``position`` when
-            ``is_track_interior`` was not given, by default True. Stored on the
-            environment; ignored if ``track_graph`` is provided.
+            ``is_track_interior`` was not given, by default True. Stored as
+            ``infer_track_interior_``; the ``infer_track_interior`` field is
+            left unchanged. Ignored if ``track_graph`` is provided.
         compute_all_pairs_distances : bool, optional
             By default True, which builds the all-pairs graph-distance matrix.
             False keeps an exact sparse query view for Cartesian environments,
@@ -810,7 +818,7 @@ class Environment:
                 self.position_range,
             )
 
-            self.infer_track_interior = infer_track_interior
+            self.infer_track_interior_ = infer_track_interior
 
             if self.is_track_interior is not None:
                 val.ensure_ndarray(self.is_track_interior, "is_track_interior")
@@ -831,7 +839,7 @@ class Environment:
                         hint="Include the grid's boundary bins in the mask",
                     )
                 self.is_track_interior_ = self.is_track_interior.copy()
-            elif self.infer_track_interior:
+            elif self.infer_track_interior_:
                 self.is_track_interior_ = get_track_interior(
                     position,
                     self.edges_,
