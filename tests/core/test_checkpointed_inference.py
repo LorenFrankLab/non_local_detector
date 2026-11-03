@@ -8,6 +8,7 @@ import xarray as xr
 
 from non_local_detector.checkpointed_inference import checkpointed_forward_backward
 from non_local_detector.core import (
+    TransitionOperator,
     filter,
     filter_covariate_dependent,
     smoother,
@@ -358,11 +359,15 @@ def test_failure_leaves_no_completed_output_or_checkpoints(tmp_path):
 
 
 @jax.tree_util.register_pytree_node_class
-class MatrixProductOperator:
-    """Minimal pytree operator with the forward/backward product protocol."""
+class MatrixProductOperator(TransitionOperator):
+    """Minimal user pytree operator implementing ``TransitionOperator``.
 
-    def __init__(self, matrix):
-        self.matrix = matrix
+    ``states`` is the (n_bins, n_states) one-hot state membership that the
+    per-state-pair products need; ``backward_and_pairs`` is inherited.
+    """
+
+    def __init__(self, matrix, states):
+        self.matrix, self.states = matrix, states
 
     def forward(self, p, discrete_weights=None):
         return p @ self.matrix
@@ -370,12 +375,24 @@ class MatrixProductOperator:
     def backward(self, v, discrete_weights=None):
         return self.matrix @ v
 
+    def pair_products(self, filtered, ratio, discrete_weights=None):
+        return (
+            (self.states * filtered[:, None]).T
+            @ self.matrix
+            @ (self.states * ratio[:, None])
+        )
+
     def tree_flatten(self):
-        return (self.matrix,), None
+        return (self.matrix, self.states), None
 
     @classmethod
     def tree_unflatten(cls, aux, children):
         return cls(*children)
+
+
+def one_hot(state_ind):
+    """(n_bins, n_states) one-hot membership of ``state_ind``."""
+    return np.eye(state_ind.max() + 1, dtype=np.float32)[state_ind]
 
 
 def test_operator_forward_backward_protocol(tmp_path):
@@ -386,35 +403,29 @@ def test_operator_forward_backward_protocol(tmp_path):
         initial,
         lambda edges, **kw: ll[kw["row_slice"]],
         transition_operator=MatrixProductOperator(
-            jnp.asarray(kwargs["transition_matrix"])
+            jnp.asarray(kwargs["transition_matrix"]), jnp.asarray(one_hot(state_ind))
         ),
         state_ind=state_ind,
         chunk_size=4,
         output_mode="spatial",
         result_path=tmp_path / "result",
+        transition_statistics="counts",
     )
     np.testing.assert_allclose(
         result.dataset.acausal_posterior, reference[3], rtol=1e-5, atol=1e-6
     )
-
-
-def test_transition_statistics_need_pair_products():
-    """An operator without pair_products fails before any likelihood call."""
-    edges, initial, ll, state_ind, kwargs, _ = problem()
-    calls = []
-
-    with pytest.raises(TypeError, match="pair_products"):
-        checkpointed_forward_backward(
-            edges,
-            initial,
-            lambda edges, **kw: calls.append(1) or ll[kw["row_slice"]],
-            transition_operator=MatrixProductOperator(
-                jnp.asarray(kwargs["transition_matrix"])
-            ),
-            state_ind=state_ind,
-            transition_statistics="counts",
-        )
-    assert calls == []
+    dense = checkpointed_forward_backward(
+        edges,
+        initial,
+        lambda edges, **kw: ll[kw["row_slice"]],
+        state_ind=state_ind,
+        chunk_size=4,
+        transition_statistics="counts",
+        **kwargs,
+    )
+    np.testing.assert_allclose(
+        result.transition_statistics, dense.transition_statistics, rtol=1e-5
+    )
 
 
 @pytest.mark.parametrize("bad", [0, -1, 1.5, True])
@@ -850,12 +861,17 @@ def test_production_grid_uniform_marginals_preserve_pairwise_normalization(tmp_p
     initial = np.full(len(state_ind), 1 / len(state_ind), dtype=np.float32)
 
     @jax.tree_util.register_pytree_node_class
-    class Identity:
+    class Identity(TransitionOperator):
         def forward(self, values, discrete_weights=None):
             return values
 
         def backward(self, values, discrete_weights=None):
             return values
+
+        def pair_products(self, filtered, ratio, discrete_weights=None):
+            return jnp.diag(
+                jax.ops.segment_sum(filtered * ratio, state_ind, num_segments=4)
+            )
 
         def tree_flatten(self):
             return (), None
@@ -1100,24 +1116,6 @@ def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monke
 
     edges, initial, ll, state_ind, kwargs, reference = problem()
 
-    @jax.tree_util.register_pytree_node_class
-    class MatrixOperator:
-        def __init__(self, matrix):
-            self.matrix = matrix
-
-        def forward(self, p, discrete_weights=None):
-            return p @ self.matrix
-
-        def backward(self, v, discrete_weights=None):
-            return self.matrix @ v
-
-        def tree_flatten(self):
-            return (self.matrix,), None
-
-        @classmethod
-        def tree_unflatten(cls, aux, children):
-            return cls(*children)
-
     leaf_types = []
     originals = {
         name: getattr(checkpointed, name)
@@ -1142,7 +1140,9 @@ def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monke
         edges,
         initial,
         lambda edges, **kw: ll[kw["row_slice"]],
-        transition_operator=MatrixOperator(np.asarray(kwargs["transition_matrix"])),
+        transition_operator=MatrixProductOperator(
+            np.asarray(kwargs["transition_matrix"]), one_hot(state_ind)
+        ),
         state_ind=state_ind,
         chunk_size=4,
         output_mode="spatial",

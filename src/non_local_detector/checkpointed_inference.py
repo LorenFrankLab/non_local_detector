@@ -27,14 +27,18 @@ import xarray as xr
 from numpy.typing import ArrayLike, DTypeLike, NDArray
 
 from non_local_detector.core import (
+    TransitionOperator,
+    _check_shape,
     _CovariateTransition,
     _degenerate_and_nan_masks_device,
     _filter_scan,
     _float64_evidence,
     _smoother_scan,
     _StationaryTransition,
+    _validate_hmm_inputs,
     _warn_degenerate_and_nan_timesteps,
 )
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.result_store import (
     DEFAULT_MAX_READ_BYTES,
     IncrementalResultWriter,
@@ -277,9 +281,13 @@ def _selected_rows(selected: ArrayLike | None, n_time: int) -> NDArray[np.intp]:
         return np.arange(n_time)
     selected = np.asarray(selected)
     if selected.dtype.kind == "b":
-        if selected.shape != (n_time,):
-            msg = "selected_rows Boolean mask must match the recording"
-            raise ValueError(msg)
+        _check_shape(
+            "selected_rows Boolean mask",
+            selected,
+            (n_time,),
+            "A Boolean mask selects rows of the whole recording, one entry per "
+            "decode bin.",
+        )
         selected = np.flatnonzero(selected)
     if (
         selected.ndim != 1
@@ -289,7 +297,13 @@ def _selected_rows(selected: ArrayLike | None, n_time: int) -> NDArray[np.intp]:
         or np.any(selected[1:] <= selected[:-1])
     ):
         msg = "selected_rows must be unique, increasing recording row indices"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected=f"increasing integers in [0, {n_time})",
+            got=f"shape {selected.shape}, dtype {selected.dtype}",
+            hint="Pass sorted unique row indices, e.g. np.unique(rows), or a "
+            "Boolean mask over the decode bins.",
+        )
     return selected.astype(np.intp, copy=False)
 
 
@@ -376,7 +390,7 @@ def checkpointed_forward_backward(
     log_likelihood_func: Callable[..., Any],
     *,
     transition_matrix: ArrayLike | None = None,
-    transition_operator: Any = None,
+    transition_operator: TransitionOperator | None = None,
     discrete_transition_matrix: ArrayLike | None = None,
     continuous_transition_matrix: ArrayLike | None = None,
     state_ind: ArrayLike | None = None,
@@ -403,9 +417,9 @@ def checkpointed_forward_backward(
     requested over the final ``chunk_size`` rows and its earlier rows are
     discarded, so compiled likelihood kernels see one row count.
     This driver applies neutral likelihoods to missing rows and checks replay
-    determinism. ``transition_operator`` is a registered JAX pytree with pure-JAX
-    ``forward(p, weight)`` and ``backward(v, weight)``; ``weight`` is None or the
-    global discrete row.
+    determinism. ``transition_operator`` is a registered JAX pytree implementing
+    :class:`~non_local_detector.core.TransitionOperator`; ``weight`` is None or
+    the global discrete row.
     Alternatively supply a dense stationary matrix, or continuous/discrete
     factors and ``state_ind`` for the covariate path.
 
@@ -452,28 +466,35 @@ def checkpointed_forward_backward(
     time_edges : array_like, shape (n_time + 1,)
         Uniform decoding bin boundaries in seconds.
     initial_distribution : array_like, shape (n_bins,)
-        Initial probability of each hidden state bin.
+        Initial probability of each hidden state bin: nonnegative, summing
+        to 1.
     log_likelihood_func : callable
         Callback ``log_likelihood_func(time_edges, row_slice=..., is_missing=...)``
         returning the log likelihood of the requested global rows,
         shape (n_rows, n_bins).
     transition_matrix : array_like, shape (n_bins, n_bins), optional
-        Dense stationary transition matrix. Used when neither
-        ``transition_operator`` nor ``discrete_transition_matrix`` is given.
-    transition_operator : registered JAX pytree, optional
-        Operator with pure-JAX ``forward(p, weight)`` and
-        ``backward(v, weight)`` methods, used instead of a dense matrix.
+        Dense stationary transition matrix, nonnegative with each row summing
+        to at most 1. Used when neither ``transition_operator`` nor
+        ``discrete_transition_matrix`` is given.
+    transition_operator : TransitionOperator, optional
+        Registered JAX pytree implementing
+        :class:`~non_local_detector.core.TransitionOperator`, used instead of
+        a dense matrix. Its products are not checked against the probability
+        contract below; ``discrete_transition_matrix`` still is.
     discrete_transition_matrix : array_like, shape (n_time, n_states, n_states), optional
         Per-row discrete state transition weights for the covariate path,
-        combined with ``continuous_transition_matrix``.
+        combined with ``continuous_transition_matrix``: nonnegative, each row
+        summing to 1.
     continuous_transition_matrix : array_like, shape (n_bins, n_bins), optional
         Dense continuous transition matrix used with
-        ``discrete_transition_matrix``.
+        ``discrete_transition_matrix``: nonnegative, each bin's row summing to
+        at most 1 over the bins of each discrete state.
     state_ind : array_like of int, shape (n_bins,), optional
         Discrete state index of each hidden bin. Required for
         ``output_mode="compact"``; by default each bin is its own state.
     n_states : int, optional
-        Number of discrete states; by default one more than the largest
+        Number of discrete states; by default the last axis of
+        ``discrete_transition_matrix``, or one more than the largest
         ``state_ind``.
     is_missing : array_like of bool, shape (n_time,), optional
         Rows without observations, which get neutral likelihoods. By default
@@ -511,7 +532,7 @@ def checkpointed_forward_backward(
         keeps the original cumulative carry. By default "stable".
     transition_statistics : {"counts", "responses"}, optional
         Also compute expected discrete transition counts or per-row
-        responses. Requires an operator with ``pair_products``. By default
+        responses, from the operator's ``backward_and_pairs``. By default
         None.
     replay_cache_bytes : int, optional
         Host memory budget for keeping forward-pass chunks to avoid
@@ -525,12 +546,15 @@ def checkpointed_forward_backward(
 
     Raises
     ------
-    ValueError
+    ValidationError
         If an argument is invalid, such as a non-positive ``chunk_size``, an
-        unrecognized output, or a likelihood callback that returns the wrong
-        shape or changes between passes.
+        unrecognized output, an input that breaks the shape, dtype or
+        probability contract of the dense drivers (float64 requires JAX's
+        64-bit mode), or a likelihood callback that returns the wrong shape or
+        changes between passes.
     TypeError
-        If ``transition_operator`` is not a registered JAX pytree.
+        If ``transition_operator`` is not a registered JAX pytree implementing
+        :class:`~non_local_detector.core.TransitionOperator`.
     """
     if (
         isinstance(chunk_size, bool)
@@ -538,68 +562,90 @@ def checkpointed_forward_backward(
         or chunk_size <= 0
     ):
         msg = "chunk_size must be a positive integer"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected="an integer of at least 1",
+            got=repr(chunk_size),
+            hint="Pass the number of decode bins per checkpoint chunk.",
+        )
     if evidence_accumulation not in ("reference", "stable"):
         msg = "evidence_accumulation must be reference or stable"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected="'stable' or 'reference'",
+            got=repr(evidence_accumulation),
+            hint="Use 'stable' (float64 host sums) unless reproducing the "
+            "original cumulative carry.",
+        )
     if transition_statistics not in (None, "counts", "responses"):
         msg = "transition_statistics must be None, counts or responses"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected="None, 'counts' or 'responses'",
+            got=repr(transition_statistics),
+            hint="'counts' sums the expected discrete transitions over the "
+            "recording; 'responses' keeps them per row.",
+        )
     if (
         isinstance(replay_cache_bytes, bool)
         or not isinstance(replay_cache_bytes, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
         or replay_cache_bytes < 0
     ):
         msg = "replay_cache_bytes must be a nonnegative integer"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected="an integer number of bytes, at least 0",
+            got=repr(replay_cache_bytes),
+            hint="Pass 0 to recompute every chunk in the replay.",
+        )
+    if output_mode not in ("compact", "spatial"):
+        msg = "output_mode must be compact or spatial"
+        raise ValidationError(
+            msg,
+            expected="'compact' or 'spatial'",
+            got=repr(output_mode),
+            hint="'compact' returns discrete-state probabilities; 'spatial' "
+            "returns per-bin posteriors.",
+        )
     max_read_bytes = _validate_read_budget(max_read_bytes)
     edges, _ = uniform_time_edges(time_edges)
-    n_time, dtype = len(edges) - 1, np.dtype(dtype)
-    if dtype not in (np.dtype("float32"), np.dtype("float64")):
-        msg = "dtype must be float32 or float64"
-        raise ValueError(msg)
-    if dtype == np.dtype("float64") and not jax.config.x64_enabled:  # type: ignore[attr-defined]  # jax.config attributes are defined dynamically
-        msg = "float64 requires JAX_ENABLE_X64=1; precision is not silently downgraded"
-        raise ValueError(msg)
-    initial = np.asarray(initial_distribution, dtype=dtype)
-    if initial.ndim != 1 or not len(initial):
-        msg = "initial_distribution must be a nonempty vector"
-        raise ValueError(msg)
-    n_bins = len(initial)
+    n_time = len(edges) - 1
     if state_ind is None:
         if output_mode == "compact":
             msg = "Compact state marginals require state_ind"
-            raise ValueError(msg)
-        state_ind = np.arange(n_bins)
+            raise ValidationError(
+                msg,
+                expected="state_ind with output_mode='compact'",
+                got="state_ind=None",
+                hint="Pass the discrete state of each hidden bin, or use "
+                "output_mode='spatial'.",
+            )
+        state_ind = np.arange(np.size(initial_distribution))
+    covariate = discrete_transition_matrix is not None
+    dense = transition_operator is None
+    dtype, validated_states = _validate_hmm_inputs(
+        n_time=n_time,
+        initial_distribution=initial_distribution,
+        dtype=np.dtype(dtype),
+        state_ind=state_ind,
+        n_states=n_states,
+        transition_matrix=transition_matrix if dense and not covariate else None,
+        discrete_transition_matrix=discrete_transition_matrix,
+        continuous_transition_matrix=(
+            continuous_transition_matrix if dense and covariate else None
+        ),
+        is_missing=is_missing,
+    )
+    assert validated_states is not None  # state_ind is always set here
+    n_states = validated_states
+    initial = np.asarray(initial_distribution, dtype=dtype)
+    n_bins = len(initial)
     state_ind = np.asarray(state_ind)
-    if (
-        state_ind.shape != (n_bins,)
-        or state_ind.dtype.kind not in "iu"
-        or np.any(state_ind < 0)
-    ):
-        msg = "state_ind must contain one nonnegative integer per hidden bin"
-        raise ValueError(msg)
-    minimum_states = int(state_ind.max()) + 1
-    n_states = minimum_states if n_states is None else n_states
-    if (
-        isinstance(n_states, bool)
-        or not isinstance(n_states, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
-        or n_states < minimum_states
-    ):
-        msg = "n_states must include every declared state_ind value"
-        raise ValueError(msg)
-    n_states = int(n_states)
     missing = (
         np.zeros(n_time, bool)
         if is_missing is None
         else np.asarray(is_missing, dtype=bool)
     )
-    if missing.shape != (n_time,):
-        msg = "is_missing must contain one value per decode bin"
-        raise ValueError(msg)
-    if output_mode not in ("compact", "spatial"):
-        msg = "output_mode must be compact or spatial"
-        raise ValueError(msg)
     outputs = (
         (
             ("acausal_state_probabilities",)
@@ -612,10 +658,20 @@ def checkpointed_forward_backward(
     outputs = {outputs} if isinstance(outputs, str) else set(outputs)
     if not outputs or outputs - (_SPATIAL | _MARGINAL):
         msg = "Unrecognized or empty return_outputs"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected=f"a nonempty subset of {sorted(_SPATIAL | _MARGINAL)}",
+            got=repr(sorted(outputs)),
+            hint="Name each output to return.",
+        )
     if output_mode == "compact" and outputs & _SPATIAL:
         msg = "Compact mode only retains state probabilities"
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected=f"outputs among {sorted(_MARGINAL)}",
+            got=repr(sorted(outputs & _SPATIAL)),
+            hint="Use output_mode='spatial' for per-bin outputs.",
+        )
     state_columns = (
         tuple(
             jnp.asarray(np.flatnonzero(state_ind == state)) for state in range(n_states)
@@ -624,22 +680,23 @@ def checkpointed_forward_backward(
         else ()
     )
     selected = _selected_rows(selected_rows, n_time)
-    covariate = discrete_transition_matrix is not None
     weights = (
         None if not covariate else np.asarray(discrete_transition_matrix, dtype=dtype)
     )
-    if covariate and cast("NDArray[Any]", weights).shape != (
-        n_time,
-        n_states,
-        n_states,
-    ):
-        msg = "Discrete transition rows must match the full recording/state dimensions"
-        raise ValueError(msg)
     if transition_operator is None:
         matrix = continuous_transition_matrix if covariate else transition_matrix
-        if matrix is None or np.shape(matrix) != (n_bins, n_bins):
-            msg = "A matching dense matrix or transition_operator is required"
-            raise ValueError(msg)
+        if matrix is None:
+            needed = (
+                "continuous_transition_matrix" if covariate else "transition_matrix"
+            )
+            msg = "checkpointed_forward_backward needs a transition"
+            raise ValidationError(
+                msg,
+                expected="transition_matrix, transition_operator, or "
+                "continuous_transition_matrix with discrete_transition_matrix",
+                got=f"no {needed}",
+                hint=f"Pass {needed} or a transition_operator.",
+            )
         # The covariate operator applies each row's discrete matrix per
         # discrete state, as core does, without building the joint matrix.
         transition_operator = (
@@ -665,12 +722,23 @@ def checkpointed_forward_backward(
                 f"{type(transition_operator).__name__}."
             )
             raise TypeError(msg)
-        if transition_statistics is not None and not hasattr(
-            transition_operator, "pair_products"
-        ):
+        if not isinstance(transition_operator, TransitionOperator):
+            missing_methods = [  # type: ignore[unreachable]  # runtime check of caller input
+                name
+                for name in (
+                    "forward",
+                    "backward",
+                    "pair_products",
+                    "backward_and_pairs",
+                )
+                if not callable(getattr(transition_operator, name, None))
+            ]
             msg = (
-                "transition_statistics needs a transition_operator with "
-                f"pair_products; {type(transition_operator).__name__} has none."
+                "transition_operator must implement "
+                "non_local_detector.core.TransitionOperator; "
+                f"{type(transition_operator).__name__} lacks "
+                f"{', '.join(missing_methods)}. Subclass TransitionOperator "
+                "to inherit backward_and_pairs."
             )
             raise TypeError(msg)
         # Transfer array leaves once; each jitted chunk call would otherwise
@@ -754,9 +822,13 @@ def checkpointed_forward_backward(
             ),
             dtype=dtype,
         )
-        if values.shape != (stop - first, n_bins):
-            msg = "Likelihood callback must return exactly the requested global rows and hidden bins"
-            raise ValueError(msg)
+        _check_shape(
+            "log_likelihood_func output",
+            values,
+            (stop - first, n_bins),
+            "The likelihood callback must return exactly the requested global "
+            "rows (row_slice) and one column per hidden bin.",
+        )
         diagnostics["likelihood_evaluations"] += 1
         diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - first)
         return cast(
@@ -987,8 +1059,18 @@ def checkpointed_forward_backward(
                 if pending is not None:
                     emit_chunk(*pending)
                 if not np.array_equal(np.asarray(checksum), expected_checksum):
-                    msg = "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
-                    raise ValueError(msg)
+                    msg = (
+                        "Likelihood callback changed during checkpoint replay; "
+                        "deterministic inputs are required"
+                    )
+                    raise ValidationError(
+                        msg,
+                        expected="the same values for a row_slice on every call",
+                        got=f"different values for rows {start} to {stop}",
+                        hint="Make the likelihood callback deterministic: no "
+                        "randomness or state that changes between the forward "
+                        "pass and the replay.",
+                    )
                 pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)

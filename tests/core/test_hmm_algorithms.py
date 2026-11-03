@@ -547,11 +547,6 @@ class TestFilterDegenerateTimestepWarning:
 
 
 @pytest.mark.unit
-# These tests pass ``dtype=jnp.float64`` explicitly while JAX x64 is off, so JAX
-# truncates to float32 and warns; the truncation is incidental to what they check.
-@pytest.mark.filterwarnings(
-    "ignore:Explicitly requested dtype .*float64.* requested in asarray is not available:UserWarning"
-)
 class TestChunkedFilterDegenerateWarning:
     """Degenerate-step tally across chunks in ``chunked_filter_smoother``."""
 
@@ -585,7 +580,6 @@ class TestChunkedFilterDegenerateWarning:
                 n_chunks=2,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=False,
-                dtype=jnp.float64,
             )
 
         # Assert: a single warning reporting 2 of 4 degenerate steps.
@@ -597,7 +591,7 @@ class TestChunkedFilterDegenerateWarning:
         assert "2/4" in records[0].getMessage(), records[0].getMessage()
 
     def test_chunked_filter_collects_global_degenerate_indices(self):
-        """``degenerate_indices_out`` receives the GLOBAL indices of all-impossible
+        """``degenerate_indices`` holds the GLOBAL indices of all-impossible
         steps, even when likelihoods are uncached (so they cannot be recovered
         from the returned ``log_likelihoods``, which is then ``None``)."""
         # Arrange: degenerate steps at global indices 1 and 2, across 2 chunks.
@@ -621,8 +615,6 @@ class TestChunkedFilterDegenerateWarning:
         def ll_func(time, *args, is_missing=None, row_slice=None):
             return all_ll[np.asarray(time).astype(int)][row_slice]
 
-        collected: list[int] = []
-
         # Act
         result = chunked_filter_smoother(
             time=time,
@@ -634,14 +626,13 @@ class TestChunkedFilterDegenerateWarning:
             n_chunks=2,
             log_likelihoods=None,
             cache_log_likelihoods=False,
-            dtype=jnp.float64,
-            degenerate_indices_out=collected,
         )
 
-        # Assert: global indices collected; the returned log_likelihoods is None
+        # Assert: global indices returned; the returned log_likelihoods is None
         # (uncached), so this is the only place those indices survive.
-        assert sorted(collected) == [1, 2]
-        assert result[5] is None
+        np.testing.assert_array_equal(result.degenerate_indices, [1, 2])
+        assert result.degenerate_indices.dtype.kind == "i"
+        assert result.log_likelihoods is None
 
 
 @pytest.mark.unit
