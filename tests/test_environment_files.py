@@ -59,12 +59,12 @@ def _runtime(pyproject: dict) -> dict[str, str]:
 
 
 def _tools(pyproject: dict) -> set[str]:
-    """Names of the test and dev tools, without the package itself."""
-    extras = pyproject["project"]["optional-dependencies"]
+    """Names of the packages in the test and dev dependency groups."""
+    groups = pyproject["dependency-groups"]
     return {
         _parse_requirement(requirement)[0]
-        for requirement in extras["test"] + extras["dev"]
-        if not requirement.startswith("non_local_detector")
+        for requirement in groups["test"] + groups["dev"]
+        if isinstance(requirement, str)
     }
 
 
@@ -86,5 +86,5 @@ def test_environment_file_matches_pyproject(filename, pyproject):
 
     extra = set(environment) - set(runtime) - CONDA_ONLY
     assert extra == _tools(pyproject), (
-        f"{filename}: tools differ from the pyproject.toml test and dev extras"
+        f"{filename}: tools differ from the pyproject.toml test and dev dependency groups"
     )
