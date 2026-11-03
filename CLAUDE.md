@@ -101,3 +101,10 @@ After changing JAX code, verify:
 - ✓ Shapes match expectations
 - ✓ Both CPU and GPU code paths work (if applicable)
 - ✓ Performance is acceptable (profile if critical)
+
+### Array annotations
+
+- NumPy side: inputs `numpy.typing.ArrayLike` (only if the function converts them; ndarray-only code keeps `np.ndarray`), outputs `NDArray[<dtype>]` or `np.ndarray`.
+- JAX side: inputs `jax.typing.ArrayLike`, outputs `jax.Array`. Never `jnp.ndarray` (an alias of `jax.Array`).
+- Dtypes: `DTypeLike`. Keep `list[...]` for per-neuron / per-electrode lists of arrays.
+- Shapes live in NumPy-style docstrings, e.g. `(n_time, n_position_bins)`.

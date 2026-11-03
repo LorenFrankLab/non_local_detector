@@ -47,6 +47,16 @@ Every warning is an error in the test suite, unless a test expects it (`pytest.w
 - Docstrings are [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) style and give array shapes and units, e.g. `(n_time, n_position_dims)` and seconds or Hz.
 - Vectorize with NumPy or JAX rather than looping over arrays in Python.
 
+### Array annotations
+
+Follow JAX's guidance (`jax.typing`, JEP 12049): lenient inputs, concrete outputs.
+
+- NumPy-side code: inputs are `numpy.typing.ArrayLike` when the function converts them (`np.asarray`), outputs are `NDArray[<dtype>]` or `np.ndarray`. If a function needs an ndarray (`.shape`, `.ndim`, in-place use), annotate `np.ndarray`.
+- JAX-side code: inputs are `jax.typing.ArrayLike`, outputs are `jax.Array`. Never write `jnp.ndarray`, which is only an alias of `jax.Array`. Do not accept lists or tuples in place of arrays in jitted code.
+- Dtypes are `DTypeLike` (`numpy.typing` or `jax.typing`, matching the side).
+- Keep `list[...]` where the API takes a list of per-neuron or per-electrode arrays.
+- Shapes go in the NumPy-style docstring, e.g. `(n_time, n_position_bins)`, not in the annotation.
+
 Run all of the checks, the same ones CI runs, with:
 
 ```bash

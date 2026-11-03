@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Type annotations
+
+- Array annotations follow JAX's guidance: `jnp.ndarray` is now `jax.Array`, and the `time_edges` argument of the public detector methods (`estimate_parameters`, `most_likely_sequence`, `compute_log_likelihood`, `predict`) is typed `ArrayLike`. No runtime change. The convention is in CONTRIBUTING.md.
+
 ### Dependencies
 
 - seaborn is no longer a dependency: `plot_discrete_state_transition` draws its heatmap with matplotlib. The figure is the same (colormap, color limits, `0.000` annotations, tick labels, colorbar label); the heatmap's cells are drawn with `pcolormesh` and its overlapping x tick labels are rotated as before.
