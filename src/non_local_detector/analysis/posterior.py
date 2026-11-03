@@ -46,8 +46,9 @@ def get_spatial_posterior(
     Raises
     ------
     ValueError
-        If ``posterior`` has no ``state_bins`` MultiIndex with a ``state`` level,
-        or no state bin with a position remains after selection.
+        If ``posterior`` has no ``state_bins`` MultiIndex with a ``state`` level
+        and a position level, if ``states`` names a state the posterior does not
+        have, or if no state bin with a position remains after selection.
     """
     if "state_bins" not in posterior.dims:
         msg = f"posterior needs a 'state_bins' dimension; got dims {posterior.dims}."
@@ -58,11 +59,24 @@ def get_spatial_posterior(
         raise ValueError(msg)
 
     position_levels = [n for n in index.names if _is_position_dim(n)]
+    if not position_levels:
+        msg = (
+            "posterior's 'state_bins' has no position level (such as 'position' "
+            f"or 'x_position'); got levels {list(index.names)}."
+        )
+        raise ValueError(msg)
+    state_names = index.get_level_values("state")
+    if states is not None:
+        available = list(dict.fromkeys(state_names))
+        unknown = [state for state in states if state not in available]
+        if unknown:
+            msg = f"Unknown states {unknown}; the posterior has states {available}."
+            raise ValueError(msg)
     keep = np.ones(len(index), dtype=bool)
     for level in position_levels:
         keep &= ~np.isnan(np.asarray(index.get_level_values(level), dtype=float))
     if states is not None:
-        keep &= index.get_level_values("state").isin(list(states))
+        keep &= state_names.isin(list(states))
     if not keep.any():
         msg = f"No state bins with a position remain (states={states!r})."
         raise ValueError(msg)
@@ -74,7 +88,8 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
 
     Computes the maximum a posteriori (MAP) estimate by finding the position
     bin with the highest probability at each time point. Handles both 1D
-    and 2D position representations.
+    and 2D position representations. NaN bins (for example off-track bins)
+    are ignored.
 
     Parameters
     ----------
@@ -91,16 +106,33 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
     map_estimate : np.ndarray, shape (n_time, n_spatial_dims)
         Most likely position coordinates at each time point. For 1D tracks,
         shape is (n_time, 1). For 2D environments, shape is (n_time, 2).
+        Time points with no probability on any position bin (zero or
+        non-finite total, e.g. all mass in Local or No-Spike, or every bin
+        NaN) are NaN rather than the first bin.
     """
     if "state_bins" in posterior.dims:
         posterior = get_spatial_posterior(posterior).sum("state")
-    try:
-        stacked_posterior = posterior.stack(z=["x_position", "y_position"])
-        map_estimate = stacked_posterior.z[stacked_posterior.argmax("z")]
-        map_estimate = np.asarray(map_estimate.values.tolist())
-    except KeyError:
-        map_estimate = posterior.position[posterior.argmax("position")]
-        map_estimate = np.asarray(map_estimate)[:, np.newaxis]
+    if "x_position" in posterior.dims and "y_position" in posterior.dims:
+        position_dims = ["x_position", "y_position"]
+    else:
+        position_dims = ["position"]
+    probability = posterior.transpose(..., *position_dims).to_numpy()
+    probability = probability.reshape(probability.shape[0], -1)
+    bin_coordinates = np.stack(
+        [
+            grid.ravel()
+            for grid in np.meshgrid(
+                *(posterior[dim].to_numpy() for dim in position_dims), indexing="ij"
+            )
+        ],
+        axis=1,
+    ).astype(float)
+
+    total = np.nansum(probability, axis=1)
+    has_mass = np.isfinite(total) & (total > 0)
+    map_index = np.argmax(np.where(np.isnan(probability), -np.inf, probability), axis=1)
+    map_estimate = bin_coordinates[map_index]
+    map_estimate[~has_mass] = np.nan
     return map_estimate
 
 
