@@ -337,3 +337,27 @@ def test_simulate_poisson_spikes_returns_counts() -> None:
     indicator = counts > 0
     assert indicator.dtype == np.bool_
     assert indicator.sum() <= counts.sum()
+
+
+def test_get_firing_rate_without_weights_matches_unit_weights() -> None:
+    """weights=None (the default) weights every time point equally."""
+    from non_local_detector.simulate.sorted_spikes_simulation import get_firing_rate
+
+    rng = np.random.default_rng(0)
+    n_time = 200
+    position = rng.uniform(0, 10, size=(n_time, 1))
+    is_spike = (rng.uniform(size=n_time) < 0.2).astype(float)
+    place_bin_centers = np.linspace(0, 10, 11)[:, np.newaxis]
+    args = (
+        is_spike,
+        position,
+        place_bin_centers,
+        np.ones(11, dtype=bool),
+        np.ones(n_time, dtype=bool),
+        np.full(11, 0.1),
+        np.array([1.0]),
+    )
+
+    np.testing.assert_allclose(
+        get_firing_rate(*args), get_firing_rate(*args, weights=np.ones(n_time))
+    )

@@ -358,6 +358,29 @@ class TestFitPlaceGridValidation:
         assert "position" in str(exc_info.value)
         assert "no time points" in str(exc_info.value).lower()
 
+    def test_position_required_without_track_graph(self):
+        """Without a track graph, the grid's extent comes from position."""
+        with pytest.raises(ValidationError, match="position is required"):
+            Environment().fit_place_grid()
+
+    def test_unfitted_get_bin_ind_raises_configuration_error(self):
+        """An unfitted environment says to fit it, not a TypeError."""
+        with pytest.raises(ConfigurationError, match="fit_place_grid"):
+            Environment().get_bin_ind(np.zeros((3, 2)))
+
+    def test_unfitted_plot_grid_with_track_graph_draws_the_graph(self):
+        """Before fitting there are no bin edges to draw, only the graph."""
+        import matplotlib.pyplot as plt
+
+        g = nx.Graph()
+        g.add_node(0, pos=(0, 0))
+        g.add_node(1, pos=(1, 1))
+        g.add_edge(0, 1, distance=1.0, edge_id=0)
+        env = Environment(track_graph=g, edge_order=[(0, 1)], edge_spacing=0.0)
+        ax = env.plot_grid()
+        assert ax.get_ylim() == (0, 0.1)  # plot_grid ran to completion
+        plt.close(ax.figure)
+
     def test_valid_position_1d(self):
         """Test that valid 1D position works."""
         env = Environment()

@@ -608,7 +608,8 @@ class Environment:
         Parameters
         ----------
         position : np.ndarray, shape (n_time, n_dim), optional
-            Position of the animal.
+            Position of the animal. Required without a ``track_graph``, where it
+            sets the grid's extent.
         infer_track_interior : bool, optional
             Whether to infer the spatial geometry of track from position
         compute_all_pairs_distances : bool, optional
@@ -685,13 +686,21 @@ class Environment:
             del self._linear_position_cache_
 
         if self.track_graph is None:
+            if position is None:
+                msg = "position is required to fit a grid without a track_graph"
+                raise ValidationError(
+                    msg,
+                    expected="position array of shape (n_time, n_dim)",
+                    got="position=None",
+                    hint="Pass position, or give the Environment a track_graph",
+                )
             (
                 self.edges_,
                 self.place_bin_edges_,
                 self.place_bin_centers_,
                 self.centers_shape_,
             ) = get_grid(
-                position,  # type: ignore[arg-type]  # BUG: position=None without a track_graph fails in get_grid
+                position,
                 self.place_bin_size,
                 self.position_range,
             )
@@ -719,7 +728,7 @@ class Environment:
                 self.is_track_interior_ = self.is_track_interior.copy()
             elif self.infer_track_interior:
                 self.is_track_interior_ = get_track_interior(
-                    position,  # type: ignore[arg-type]  # BUG: position=None without a track_graph fails here
+                    position,
                     self.edges_,
                     self.fill_holes,
                     self.dilate,
@@ -815,12 +824,10 @@ class Environment:
             plot_graph_as_1D(
                 self.track_graph, self.edge_order, self.edge_spacing, ax=ax
             )
-            try:
-                for edge in self.edges_[0]:  # type: ignore[index]  # edges_ is set by fit_place_grid; unfitted use fails at runtime
+            # Before fit_place_grid there are no bin edges to draw.
+            if self.edges_ is not None:
+                for edge in self.edges_[0]:
                     ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
-            except AttributeError:
-                # Edges have not been fit yet
-                pass
             ax.set_ylim((0, 0.1))
         else:
             if ax is None:
@@ -900,10 +907,9 @@ class Environment:
         """
         if not self._is_fitted:
             msg = "Environment has not been fitted yet"
-            raise ConfigurationError(  # type: ignore[call-arg]  # BUG: ConfigurationError takes no `example`; raises TypeError
+            raise ConfigurationError(
                 msg,
-                hint="Call fit_place_grid() before using this method",
-                example="    env = Environment(place_bin_size=5.0)\n    env.fit_place_grid(position=position_data)",
+                hint="Call env.fit_place_grid(position=position) before this method",
             )
         if self.edges_ is None:
             msg = "Environment edges not defined"
