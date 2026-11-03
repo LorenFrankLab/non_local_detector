@@ -395,7 +395,7 @@ def test_feature_order_reorders_the_sequential_conditionals(
 def test_transforms_reject_an_unknown_algorithm(transform, recorded):
     """The recorded algorithm is checked before the encoding model is read."""
     time = np.linspace(0.0, 1.0, 11)
-    with pytest.raises(ValueError, match="fitted by a clusterless algorithm"):
+    with pytest.raises(ValueError, match="refit with one of"):
         transform(
             recorded,
             0,

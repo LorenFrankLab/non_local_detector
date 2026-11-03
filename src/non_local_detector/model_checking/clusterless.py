@@ -245,9 +245,8 @@ def _electrode_intensity(
     record = _CLUSTERLESS_ALGORITHMS.get(algorithm)  # type: ignore[arg-type]
     if record is None:
         msg = (
-            "encoding_model must be fitted by a clusterless algorithm, one of "
-            f"{supported}; it records {algorithm!r}. Refit an encoding model "
-            "that records none."
+            "encoding_model must be fitted by a clusterless algorithm, but it "
+            f"records {algorithm!r}; refit with one of {supported}"
         )
         raise ValueError(msg)
     if record.electrode_intensity is None:
