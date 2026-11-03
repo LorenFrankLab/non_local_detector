@@ -67,8 +67,9 @@ def _get_conditional_non_local_posterior(
         )
     )
     if not non_local_states:
+        msg = "The detector has no non-local states"
         raise ValidationError(
-            "The detector has no non-local states",
+            msg,
             expected="at least one observation model with is_local=False "
             "and is_no_spike=False",
             got=f"states {list(state_names)}",
@@ -76,8 +77,9 @@ def _get_conditional_non_local_posterior(
     result_states = set(results.acausal_posterior.coords["state"].values)
     missing = [name for name in non_local_states if name not in result_states]
     if missing:
+        msg = f"results lack the detector's non-local states {missing}"
         raise ValidationError(
-            f"results lack the detector's non-local states {missing}",
+            msg,
             expected=f"results with states {list(state_names)}",
             got=f"states {sorted(result_states)}",
             hint="Pass results from this detector's predict method.",

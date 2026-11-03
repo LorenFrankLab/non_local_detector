@@ -54,7 +54,7 @@ def _true_transition(speed: np.ndarray) -> np.ndarray:
 def _sampled_responses(rng: np.random.Generator, transition: np.ndarray) -> np.ndarray:
     """One categorical draw per row and time bin, shape (n_time - 1, n_states, n_states)."""
     cumulative = np.cumsum(transition[:-1], axis=-1)
-    draws = rng.uniform(size=cumulative.shape[:2] + (1,))
+    draws = rng.uniform(size=(*cumulative.shape[:2], 1))
     next_state = np.minimum((draws > cumulative).sum(axis=-1), N_STATES - 1)
     return np.eye(N_STATES)[next_state]
 
@@ -651,7 +651,7 @@ class TestRemlSmoothness:
         the unsmoothed fit of the same basis."""
         errors = {"none": [], "reml": []}
         for seed in range(4):
-            _, speed, design, truth, response = _row_problem(seed=20 + seed)
+            _, _speed, design, truth, response = _row_problem(seed=20 + seed)
             for name, smoothness in (("none", 0.0), ("reml", "reml")):
                 fit = _fit_covariate_transition(
                     np.zeros((design.shape[1], N_STATES, N_STATES - 1)),
@@ -782,7 +782,7 @@ class TestLaplaceIntervals:
         )
         logits = np.einsum("tc,scrk->strk", new_design, samples)
         sampled = softmax(
-            np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1),
+            np.concatenate((logits, np.zeros((*logits.shape[:-1], 1))), axis=-1),
             axis=-1,
         )
         sampled_lower, sampled_upper = np.quantile(sampled, [0.05, 0.95], axis=0)
@@ -1055,7 +1055,7 @@ def test_max_transition_change_matches_the_full_transitions():
 def _transitions_on_design(design_matrix, coefficients):
     """Covariate transitions from a design matrix, shape (n_time, n_states, n_states)."""
     logits = np.einsum("tc,crk->trk", design_matrix, coefficients)
-    logits = np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1)
+    logits = np.concatenate((logits, np.zeros((*logits.shape[:-1], 1))), axis=-1)
     return softmax(logits, axis=-1)
 
 
@@ -1071,7 +1071,8 @@ def test_a_failing_newton_optimizer_falls_back_to_gradient_steps(monkeypatch):
     def flaky_minimize(*args, **kwargs):
         methods.append(kwargs["method"])
         if kwargs["method"] == "trust-exact":
-            raise ValueError("array must not contain infs or NaNs")
+            msg = "array must not contain infs or NaNs"
+            raise ValueError(msg)
         return real_minimize(*args, **kwargs)
 
     monkeypatch.setattr(module, "minimize", flaky_minimize)

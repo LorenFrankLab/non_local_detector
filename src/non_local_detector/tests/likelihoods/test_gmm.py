@@ -83,9 +83,9 @@ def test_refit_after_total_failure_does_not_retain_stale_fit(key):
         model.fit(good, key)
     assert model.weights_ is not None  # first fit succeeded
 
-    with pytest.raises(RuntimeError):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(RuntimeError):
             model.fit(degenerate, key)
     # The failed refit must not leave the previous fit's parameters in place.
     assert model.weights_ is None
@@ -283,9 +283,9 @@ def test_singular_covariance_raises_actionable_error(key):
     """
     degenerate = jnp.ones((60, 2), dtype=jnp.float32)
     model = GaussianMixtureModel(n_components=2, reg_covar=0.0, random_state=0)
-    with pytest.raises(RuntimeError, match="reg_covar"):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(RuntimeError, match="reg_covar"):
             model.fit(degenerate, key)
 
 

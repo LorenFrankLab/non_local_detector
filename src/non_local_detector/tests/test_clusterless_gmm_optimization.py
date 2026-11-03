@@ -346,7 +346,8 @@ def test_gmm_empty_and_sparse_electrodes_are_supported(gmm_simulation_data):
     sparse_times = np.asarray(gmm_simulation_data["spike_times"][0][:3])
     sparse_features = np.asarray(gmm_simulation_data["spike_features"][0][:3])
 
-    with pytest.warns(UserWarning) as record:
+    # Two distinct warnings are expected; both are asserted from ``record`` below.
+    with pytest.warns(UserWarning) as record:  # noqa: PT030
         encoding = fit_clusterless_gmm_encoding_model(
             gmm_simulation_data["position_time"],
             gmm_simulation_data["position"],

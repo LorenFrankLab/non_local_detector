@@ -32,7 +32,8 @@ class TestIntervalRescalingTransform:
             time, spike_times, features, np.full(100, 2.0), _standard_normal_cdf
         )
 
-        assert u.shape == (3,) and v.shape == (3, 3)
+        assert u.shape == (3,)
+        assert v.shape == (3, 3)
         assert np.all((u >= 0.0) & (u <= 1.0))
         assert np.all((v >= 0.0) & (v <= 1.0))
 

@@ -84,15 +84,15 @@ def interval_rescaling_transform(
     """
     ground_at_spikes = np.interp(spike_times, time, ground_process_intensity)
     if not np.all(np.isfinite(ground_at_spikes) & (ground_at_spikes > 0)):
-        raise ValueError(
+        msg = (
             "ground_process_intensity is zero or invalid at some spike times, "
             "so the model gives those spikes no probability"
         )
+        raise ValueError(msg)
     marks = np.asarray(spike_waveform_features, dtype=float)
     if marks.ndim != 2 or marks.shape[0] != len(spike_times):
-        raise ValueError(
-            "spike_waveform_features must be an (n_spikes, n_features) matrix"
-        )
+        msg = "spike_waveform_features must be an (n_spikes, n_features) matrix"
+        raise ValueError(msg)
     u = scipy.stats.expon.cdf(
         _compute_rescaled_isi(ground_process_intensity, spike_times, time)
     )
@@ -101,10 +101,11 @@ def interval_rescaling_transform(
         dtype=np.float64,
     )
     if v.shape != marks.shape or not np.all(np.isfinite(v) & (v >= 0) & (v <= 1)):
-        raise ValueError(
+        msg = (
             "conditional_mark_cdf must return finite values in [0, 1], one per "
             "spike and feature"
         )
+        raise ValueError(msg)
     return u, v
 
 
@@ -137,9 +138,8 @@ def _compute_rescaled_isi(
     time = np.asarray(time, dtype=float)
     spike_times = np.asarray(spike_times, dtype=float)
     if intensity.ndim != 1 or not intensity.size or time.shape != intensity.shape:
-        raise ValueError(
-            "time and intensity must have matching nonempty one-dimensional rows"
-        )
+        msg = "time and intensity must have matching nonempty one-dimensional rows"
+        raise ValueError(msg)
     with np.errstate(over="ignore", invalid="ignore"):
         durations = np.diff(time)
     if (
@@ -147,20 +147,24 @@ def _compute_rescaled_isi(
         or not np.all(np.isfinite(durations))
         or np.any(durations <= 0)
     ):
-        raise ValueError("time must be finite and strictly increasing")
+        msg = "time must be finite and strictly increasing"
+        raise ValueError(msg)
     if (
         spike_times.ndim != 1
         or not np.all(np.isfinite(spike_times))
         or np.any(np.diff(spike_times) < 0)
     ):
-        raise ValueError("spike_times must be finite, one-dimensional, and ordered")
+        msg = "spike_times must be finite, one-dimensional, and ordered"
+        raise ValueError(msg)
     if np.any((spike_times < time[0]) | (spike_times > time[-1])):
-        raise ValueError("spike_times must lie within the intensity sample time range")
+        msg = "spike_times must lie within the intensity sample time range"
+        raise ValueError(msg)
     if not np.all(np.isfinite(intensity)) or np.any(intensity < 0):
-        raise ValueError(
+        msg = (
             "ground_process_intensity must be finite and nonnegative; "
             "non-finite or <= 0 values at spike times are invalid"
         )
+        raise ValueError(msg)
     if len(time) == 1:
         ici_at_spike = np.zeros_like(spike_times)
     else:
@@ -187,10 +191,11 @@ def _prepare_inputs(
     """Validated sample times, positions, spike times and marks."""
     time = np.asarray(position_time, dtype=float)
     if time.ndim != 1 or time.size < 2 or not np.all(np.diff(time) > 0):
-        raise ValueError(
+        msg = (
             "position_time must be one-dimensional, strictly increasing and have "
             "at least two samples"
         )
+        raise ValueError(msg)
     spike_times = np.asarray(spike_times, dtype=float)
     if (
         spike_times.ndim != 1
@@ -198,18 +203,16 @@ def _prepare_inputs(
         or np.any(np.diff(spike_times) < 0)
         or np.any((spike_times < time[0]) | (spike_times > time[-1]))
     ):
-        raise ValueError(
-            "spike_times must be finite, ordered and within the position_time range"
-        )
+        msg = "spike_times must be finite, ordered and within the position_time range"
+        raise ValueError(msg)
     marks = np.asarray(spike_waveform_features, dtype=float)
     if (
         marks.ndim != 2
         or marks.shape[0] != spike_times.size
         or not np.isfinite(marks).all()
     ):
-        raise ValueError(
-            "spike_waveform_features must be a finite (n_spikes, n_features) matrix"
-        )
+        msg = "spike_waveform_features must be a finite (n_spikes, n_features) matrix"
+        raise ValueError(msg)
     environment = encoding_model["environment"]
     positions = np.asarray(
         get_position_at_time(time, position, time, environment), dtype=float
@@ -218,10 +221,11 @@ def _prepare_inputs(
         get_position_at_time(time, position, spike_times, environment), dtype=float
     )
     if not (np.isfinite(positions).all() and np.isfinite(spike_positions).all()):
-        raise ValueError(
+        msg = (
             "position must be finite at every position_time sample; split the "
             "period at tracking gaps"
         )
+        raise ValueError(msg)
     if positions.ndim == 1:
         positions, spike_positions = positions[:, None], spike_positions[:, None]
     return time, positions, spike_times, spike_positions, marks
@@ -229,9 +233,8 @@ def _prepare_inputs(
 
 def _check_algorithm(algorithm):
     if algorithm not in SUPPORTED_ALGORITHMS:
-        raise ValueError(
-            f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
-        )
+        msg = f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
+        raise ValueError(msg)
 
 
 def ircm_transform(
@@ -309,10 +312,11 @@ def ircm_transform(
     ground = model.ground_intensity(positions)
     ground_at_spikes = model.ground_intensity(spike_positions)
     if not np.all(np.isfinite(ground_at_spikes) & (ground_at_spikes > 0)):
-        raise ValueError(
+        msg = (
             "the fitted ground intensity is zero or invalid at some spike "
             "positions, so the model gives those spikes no probability"
         )
+        raise ValueError(msg)
     u = scipy.stats.expon.cdf(_compute_rescaled_isi(ground, spike_times, time))
     v = model.conditional_mark_cdf(spike_positions, marks, feature_order)
     return u, v
@@ -430,10 +434,11 @@ def mdci_transform(
             ).T
         log_mass = logsumexp(log_total_time[:, None] + log_intensity, axis=0)
         if not np.all(np.isfinite(log_mass)):
-            raise ValueError(
+            msg = (
                 "the fitted intensity of some spike marks is zero over the whole "
                 "trajectory, so the model gives those spikes no probability"
             )
+            raise ValueError(msg)
         u[first:last] = np.exp(
             logsumexp(log_elapsed + log_intensity, axis=0) - log_mass
         )
@@ -449,9 +454,8 @@ def _unit_cube_samples(samples):
         or not np.all(np.isfinite(samples))
         or np.any((samples < 0) | (samples > 1))
     ):
-        raise ValueError(
-            "samples must be a nonempty (n_samples, n_dims) array in [0, 1]"
-        )
+        msg = "samples must be a nonempty (n_samples, n_dims) array in [0, 1]"
+        raise ValueError(msg)
     return samples
 
 
@@ -524,7 +528,8 @@ def pearson_chi_squared_test(
         while n_bins_per_dim > 2 and n_samples / n_bins_per_dim**n_dims < 5.0:
             n_bins_per_dim -= 1
     if n_bins_per_dim < 1:
-        raise ValueError("n_bins_per_dim must be a positive integer")
+        msg = "n_bins_per_dim must be a positive integer"
+        raise ValueError(msg)
     n_cells = n_bins_per_dim**n_dims
     cell = np.minimum(np.floor(samples * n_bins_per_dim), n_bins_per_dim - 1)
     flat = np.ravel_multi_index(cell.astype(int).T, (n_bins_per_dim,) * n_dims)
@@ -604,7 +609,8 @@ def multivariate_ks_test(
     """
     samples = _unit_cube_samples(samples)
     if n_simulations < 1 or max_samples < 1:
-        raise ValueError("n_simulations and max_samples must be positive")
+        msg = "n_simulations and max_samples must be positive"
+        raise ValueError(msg)
     rng = np.random.default_rng(rng)
     if len(samples) > max_samples:
         samples = samples[rng.choice(len(samples), max_samples, replace=False)]

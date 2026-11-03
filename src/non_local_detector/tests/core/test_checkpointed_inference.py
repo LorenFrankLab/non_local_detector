@@ -337,7 +337,8 @@ def test_failure_leaves_no_completed_output_or_checkpoints(tmp_path):
         nonlocal calls
         calls += 1
         if calls == 6:
-            raise RuntimeError("writer upstream failure")
+            msg = "writer upstream failure"
+            raise RuntimeError(msg)
         return ll[kwargs["row_slice"]]
 
     with pytest.raises(RuntimeError, match="upstream failure"):
@@ -418,7 +419,7 @@ def test_transition_statistics_need_pair_products():
 
 @pytest.mark.parametrize("bad", [0, -1, 1.5, True])
 def test_bad_chunk_size_rejected_before_callback(bad):
-    edges, initial, ll, state_ind, kwargs, _ = problem()
+    edges, initial, _ll, _state_ind, kwargs, _ = problem()
     with pytest.raises(ValueError, match="chunk_size"):
         checkpointed_forward_backward(
             edges,
@@ -779,7 +780,7 @@ def test_all_impossible_diagnostics_use_numpy_metadata_not_per_row_python_object
     "budget", [0, -1, True, False, 1.5, np.float64(512), "1024", None]
 )
 @pytest.mark.parametrize(
-    "mode,path_enabled", [("compact", False), ("compact", True), ("spatial", True)]
+    ("mode", "path_enabled"), [("compact", False), ("compact", True), ("spatial", True)]
 )
 def test_read_budget_is_validated_before_callbacks_or_files(
     tmp_path, budget, mode, path_enabled
@@ -816,7 +817,7 @@ def test_numpy_integer_read_budget_is_normalized(tmp_path):
 
 
 def test_unregistered_operator_is_rejected(tmp_path):
-    edges, initial, ll, state_ind, kwargs, reference = problem()
+    edges, initial, ll, state_ind, _kwargs, _reference = problem()
 
     class Unregistered:
         def forward(self, p, discrete_weights=None):
@@ -1048,7 +1049,8 @@ def test_sum_evidence_propagates_chunk_source_errors():
 
     def chunks():
         yield 1.0
-        raise OverflowError("raised by the likelihood callback")
+        msg = "raised by the likelihood callback"
+        raise OverflowError(msg)
 
     with pytest.raises(OverflowError, match="likelihood callback"):
         _sum_evidence(chunks())
@@ -1064,7 +1066,8 @@ def test_likelihood_overflow_error_aborts_stable_checkpointed_pass(tmp_path):
         # as an unrelated missing-checkpoint failure during replay.
         calls.append(kw["row_slice"].start)
         if calls.count(4) == 1 and kw["row_slice"].start == 4:
-            raise OverflowError("raised by the likelihood callback")
+            msg = "raised by the likelihood callback"
+            raise OverflowError(msg)
         return ll[kw["row_slice"]]
 
     with pytest.raises(OverflowError, match="likelihood callback"):
@@ -1181,7 +1184,7 @@ _GiB = 2**30
 
 
 @pytest.mark.parametrize(
-    "membership, files, expected",
+    ("membership", "files", "expected"),
     [
         # cgroup v2: the process's own cgroup.
         (

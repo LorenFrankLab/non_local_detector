@@ -173,7 +173,7 @@ def test_legacy_empty_rescaling_can_still_be_constructed_and_count_spikes():
     "checker", [uniform_rescaled_ISIs, point_process_residuals, TimeRescaling]
 )
 def test_sorted_hz_requires_an_explicit_physical_grid(checker):
-    with pytest.raises(ValueError, match="Hz.*time"):
+    with pytest.raises(ValueError, match=r"Hz.*time"):
         checker(np.ones(3), np.zeros(3, dtype=bool), rate_units="Hz")
 
 
@@ -182,7 +182,7 @@ def test_sorted_hz_requires_an_explicit_physical_grid(checker):
     "checker", [uniform_rescaled_ISIs, point_process_residuals, TimeRescaling]
 )
 @pytest.mark.parametrize(
-    "kwargs, message",
+    ("kwargs", "message"),
     [
         ({"rate_units": "wat"}, "rate_units"),
         ({"time": np.arange(3.0)}, "expected_counts"),

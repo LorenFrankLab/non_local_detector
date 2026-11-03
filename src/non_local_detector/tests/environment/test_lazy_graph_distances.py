@@ -134,7 +134,8 @@ def test_deferred_environment_matches_topology_and_queries(monkeypatch):
     )
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("eager all-pairs construction was called")
+        msg = "eager all-pairs construction was called"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(nx, "shortest_path_length", forbidden)
     lazy_env = Environment(**kwargs, is_track_interior=mask).fit_place_grid(
@@ -190,7 +191,8 @@ def test_eager_environment_distances_match_networkx_shortest_paths(position_rang
         env.track_graphDD, weight="distance"
     ):
         expected[source, list(distances)] = list(distances.values())
-    assert np.isfinite(expected).any() and np.isinf(expected).any()
+    assert np.isfinite(expected).any()
+    assert np.isinf(expected).any()
     np.testing.assert_array_equal(env.distance_between_nodes_, expected)
 
 

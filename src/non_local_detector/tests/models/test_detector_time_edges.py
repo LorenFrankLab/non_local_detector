@@ -372,7 +372,8 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
         np.interp(position_time, centers, recorded["probabilities"][0][:, local]),
         0.0,
     )
-    assert not inside[0] and inside[1:].all()
+    assert not inside[0]
+    assert inside[1:].all()
     np.testing.assert_allclose(recorded["weights"][0], expected, rtol=1e-6)
 
 
@@ -537,7 +538,8 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
         min_encoding_local_ess=0.0,
     )
     outside = (position_time < edges[0]) | (position_time > edges[-1])
-    assert outside.any() and (~outside).any()
+    assert outside.any()
+    assert (~outside).any()
     np.testing.assert_array_equal(weights[0][outside], 0.0)
     assert np.all(weights[0][~outside] > 0.0)
 

@@ -147,7 +147,8 @@ def predict_no_spike_log_likelihood(
         not isinstance(no_spike_rate, jax.core.Tracer)
         and (not np.isfinite(no_spike_rate) or no_spike_rate < 0)
     ):
-        raise ValidationError("no_spike_rate must be a finite nonnegative scalar")
+        msg = "no_spike_rate must be a finite nonnegative scalar"
+        raise ValidationError(msg)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:

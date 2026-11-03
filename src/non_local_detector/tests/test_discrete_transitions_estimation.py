@@ -7,6 +7,7 @@ Tests the core EM algorithm functions:
 """
 
 import inspect
+import re
 import warnings
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -591,7 +592,8 @@ class TestExpandedDiscreteTransitionCounts:
         monkeypatch.setattr(transitions, "_stationary_counts_block", record)
         blocked = counts()
 
-        assert max(block_rows) == 300 and sum(block_rows) == n_time - 1
+        assert max(block_rows) == 300
+        assert sum(block_rows) == n_time - 1
         np.testing.assert_allclose(blocked, whole, rtol=1e-6)
 
     @pytest.mark.parametrize("factorized", [True, False])
@@ -603,7 +605,7 @@ class TestExpandedDiscreteTransitionCounts:
         posteriors = self._stationary_posteriors(
             rng, n_time, n_bins, state_ind, n_states
         )
-        causal, predictive, acausal, continuous, discrete, full = posteriors
+        causal, predictive, acausal, _continuous, _discrete, full = posteriors
         assert np.any(predictive == 0.0)
         expected = _expanded_responses_numpy_reference(
             causal, predictive, acausal, full, state_ind
@@ -792,7 +794,7 @@ class TestExpandedDiscreteTransitionCounts:
             )
 
     @pytest.mark.parametrize(
-        "estimator, transition_args, match",
+        ("estimator", "transition_args", "match"),
         [
             # Broadcastable expanded transitions should not produce silent counts
             (
@@ -1209,8 +1211,10 @@ class TestExpandedTransitionMstepEndToEnd:
             ("1 + quantile_bs(covariate, n_knots=6)", 1),
             # A cyclic covariate the transitions do not depend on.
             (
-                "1 + quantile_bs(covariate, n_knots=6)"
-                " + cyclic_bs(phase, lower=0.0, upper=6.283185307179586)",
+                (
+                    "1 + quantile_bs(covariate, n_knots=6)"
+                    " + cyclic_bs(phase, lower=0.0, upper=6.283185307179586)"
+                ),
                 2,
             ),
         ],
@@ -1674,7 +1678,7 @@ class TestEstimateNonStationaryStateTransition:
         dm = design_matrix_data
         response = _response_from_post(post)
 
-        with pytest.raises(ValueError, match="prior parameters >= 1.0"):
+        with pytest.raises(ValueError, match=re.escape("prior parameters >= 1.0")):
             estimate_non_stationary_state_transition_from_responses(
                 transition_coefficients=dm["transition_coefficients"],
                 design_matrix=dm["design_matrix"][: post["n_time"]],
@@ -1977,7 +1981,7 @@ def _sampled_transition_responses(
     response : np.ndarray, shape (n_time - 1, n_states, n_states)
     """
     cumulative = np.cumsum(transition, axis=-1)
-    draws = rng.uniform(size=transition.shape[:2] + (1,))
+    draws = rng.uniform(size=(*transition.shape[:2], 1))
     next_state = np.minimum((draws > cumulative).sum(axis=-1), transition.shape[-1] - 1)
     return np.eye(transition.shape[-1])[next_state]
 
@@ -2133,7 +2137,7 @@ class TestNonStationaryPriorAndConvergence:
         true_coefficients[0] += 2.0 * np.eye(n_states)[:, : n_states - 1]
         logits = np.einsum("tc,csk->tsk", design_matrix[:-1], true_coefficients)
         true_transition = softmax(
-            np.concatenate((logits, np.zeros(logits.shape[:-1] + (1,))), axis=-1),
+            np.concatenate((logits, np.zeros((*logits.shape[:-1], 1))), axis=-1),
             axis=-1,
         )
         response = _sampled_transition_responses(rng, true_transition)
@@ -2320,7 +2324,7 @@ class TestEstimateStationaryStateTransition:
         post = posterior_data
         joint_sum = _joint_sum_from_post(post)
 
-        with pytest.raises(ValueError, match="prior parameters >= 1.0"):
+        with pytest.raises(ValueError, match=re.escape("prior parameters >= 1.0")):
             estimate_stationary_state_transition_from_counts(
                 joint_sum,
                 concentration=0.5,

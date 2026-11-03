@@ -412,7 +412,7 @@ class TestGenuineImpossibilityAndNaN:
     """Zero support keeps the prior fallback; NaN stays visible everywhere."""
 
     @pytest.mark.parametrize(
-        "prior, ll",
+        ("prior", "ll"),
         [
             ([0.3, 0.7], [-np.inf, -np.inf]),  # all impossible
             ([1.0, 0.0], [-np.inf, 0.0]),  # disjoint support
@@ -428,7 +428,7 @@ class TestGenuineImpossibilityAndNaN:
         assert jnp.isneginf(log_norm)
 
     @pytest.mark.parametrize(
-        "prior, ll",
+        ("prior", "ll"),
         [
             ([0.4, 0.6], [-0.5, np.nan]),  # NaN on a reachable state
             ([1.0, 0.0], [-0.5, np.nan]),  # NaN on a zero-prior state
@@ -465,7 +465,7 @@ class TestPositiveInfiniteLikelihood:
     """A ``+inf`` log-likelihood is invalid input and must stay visible."""
 
     @pytest.mark.parametrize(
-        "prior, ll",
+        ("prior", "ll"),
         [
             ([0.5, 0.5], [np.inf, -1.0]),  # +inf on a reachable state
             ([1.0, 0.0], [-1.0, np.inf]),  # +inf on a zero-prior state
@@ -496,7 +496,7 @@ class TestConditionOnGradients:
     """
 
     @pytest.mark.parametrize(
-        "prior, ll",
+        ("prior", "ll"),
         [
             ([0.2, 0.8], [0.0, 0.0]),  # tied likelihoods
             ([0.3, 0.7], [-1.0, -2.0]),
@@ -524,7 +524,7 @@ class TestConditionOnGradients:
         )
 
     @pytest.mark.parametrize(
-        "prior, ll",
+        ("prior", "ll"),
         [
             ([0.3, 0.7], [-1.0, -2.0]),
             ([1.0, 0.0], [0.0, -2.0]),  # zero-prior state: d log Z / d p_1 = e^-2 / Z
@@ -816,7 +816,8 @@ class TestMultiStepEnumerationReference:
 
         def log_likelihood_func(time_idx, is_missing=None):
             rows = ll[np.asarray(time_idx, dtype=int)].copy()
-            assert is_missing is not None and len(is_missing) == len(rows)
+            assert is_missing is not None
+            assert len(is_missing) == len(rows)
             rows[is_missing] = 0.0
             return rows
 

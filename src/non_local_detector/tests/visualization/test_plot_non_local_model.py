@@ -1,6 +1,6 @@
 """``plot_non_local_model`` draws the posterior given the non-local states."""
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import pytest
 
@@ -8,8 +8,8 @@ from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_cen
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from non_local_detector.visualization.static import plot_non_local_model
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+mpl.use("Agg")
+import matplotlib.pyplot as plt
 
 pytestmark = pytest.mark.integration
 

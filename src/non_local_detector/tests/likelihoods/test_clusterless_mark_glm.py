@@ -5,6 +5,8 @@ mixture, which sets the number of components; each component's rate map is a
 Poisson GLM fit to the spikes' component responsibilities.
 """
 
+from itertools import pairwise
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -544,10 +546,7 @@ def test_track_graph_seam_does_not_leak_between_arms():
         place_bin_size=1.0, track_graph=graph, edge_order=edges, edge_spacing=0.0
     ).fit_place_grid()
     sequence = (0, 1, 2, 1, 3, 1, 0)
-    legs = [
-        np.linspace(nodes[a], nodes[b], 1500)
-        for a, b in zip(sequence[:-1], sequence[1:], strict=True)
-    ]
+    legs = [np.linspace(nodes[a], nodes[b], 1500) for a, b in pairwise(sequence)]
     position = np.tile(np.concatenate(legs), (8, 1))
     time = np.arange(len(position)) * DT
     rng = np.random.default_rng(5)

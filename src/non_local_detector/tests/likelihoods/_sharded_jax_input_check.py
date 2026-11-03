@@ -114,13 +114,17 @@ def setup():
     """
     injected = os.environ.get("NLD_SHARDED_CHECK_INJECT")
     if injected == "setup":
-        raise EnvironmentUnavailable("injected setup failure")
+        msg = "injected setup failure"
+        raise EnvironmentUnavailable(msg)
     if injected == "setup-bug":
-        raise RuntimeError("injected setup bug")
+        msg = "injected setup bug"
+        raise RuntimeError(msg)
     if len(jax.devices()) < N_DEVICES:
-        raise EnvironmentUnavailable(f"only {len(jax.devices())} device(s) available")
+        msg = f"only {len(jax.devices())} device(s) available"
+        raise EnvironmentUnavailable(msg)
     if not hasattr(jax.sharding, "AxisType"):
-        raise EnvironmentUnavailable("this JAX predates jax.sharding.AxisType")
+        msg = "this JAX predates jax.sharding.AxisType"
+        raise EnvironmentUnavailable(msg)
     try:
         return {
             axis_type: jax.make_mesh(
@@ -131,13 +135,15 @@ def setup():
             for axis_type in AXIS_TYPES
         }
     except TypeError as exc:  # older signature without ``axis_types``
-        raise EnvironmentUnavailable(f"jax.make_mesh: {exc}") from exc
+        msg = f"jax.make_mesh: {exc}"
+        raise EnvironmentUnavailable(msg) from exc
 
 
 def run(meshes) -> int:
     """Fit, predict and assert. Any exception here is a FAILURE, not a skip."""
     if os.environ.get("NLD_SHARDED_CHECK_INJECT") == "run":
-        raise RuntimeError("injected run failure")
+        msg = "injected run failure"
+        raise RuntimeError(msg)
 
     rng = np.random.default_rng(7)
     position_time = np.linspace(0.0, DURATION, 2_000)
@@ -218,9 +224,8 @@ def run(meshes) -> int:
             except Exception as exc:
                 # Name the case: the traceback alone does not say which
                 # backend, ``is_local`` value or mesh axis type raised.
-                raise RuntimeError(
-                    f"{name} is_local={is_local} axis={axis_type} raised"
-                ) from exc
+                msg = f"{name} is_local={is_local} axis={axis_type} raised"
+                raise RuntimeError(msg) from exc
 
             full_copy = (SPIKE_COUNTS[-1] + 2) * N_FEATURES * 4
             growth = peaks[-1] - peaks[0]
@@ -230,7 +235,7 @@ def run(meshes) -> int:
             # exact and deterministic, so it carries the assertion.
             ok = (not cached) if EXPECT_NO_HOST_COPY[axis_type] else True
             failures += not ok
-            print(
+            print(  # noqa: T201  # stdout is the protocol the parent test reads
                 f"{'OK  ' if ok else 'FAIL'} {name:22s} is_local={is_local!s:5s} "
                 f"axis={axis_type:8s} features_host_cached={cached!s:5s} "
                 f"peak_rss_growth={growth:12,d} {RSS_UNIT} (informational; one "
@@ -245,7 +250,7 @@ if __name__ == "__main__":
     except EnvironmentUnavailable as exc:
         # The parent test requires exactly this marker before it skips, so an
         # unrelated exit status 2 (Python could not open this file, say) fails.
-        print(f"SKIP {type(exc).__name__}: {exc}")
+        print(f"SKIP {type(exc).__name__}: {exc}")  # noqa: T201  # parent reads stdout
         raise SystemExit(EXIT_ENVIRONMENT) from None
     # ``run`` is deliberately NOT wrapped: an exception while fitting, predicting
     # or asserting prints its traceback and exits 1, which the parent test fails.

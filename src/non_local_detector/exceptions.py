@@ -71,8 +71,6 @@ class NonLocalDetectorError(Exception):
     ...     pass
     """
 
-    pass
-
 
 class ValidationError(NonLocalDetectorError):
     """Raised when input validation fails.

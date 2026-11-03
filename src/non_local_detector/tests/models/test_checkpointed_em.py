@@ -292,7 +292,7 @@ def test_auto_em_with_row_chunks_runs_dense_em():
     assert not _uses_operator(model)
     _assert_same_fit(auto, dense)
     model, data = _recording("sorted")
-    with pytest.raises(ValidationError, match="n_chunks .* cannot be combined"):
+    with pytest.raises(ValidationError, match=r"n_chunks .* cannot be combined"):
         model.estimate_parameters(
             **data,
             max_iter=1,
@@ -388,7 +388,9 @@ def test_rejected_chunk_options_leave_the_fitted_model_unchanged(options):
     transitions = np.array(model.discrete_state_transitions_)
     encoding = model.encoding_model_
     log_likelihood = model.log_likelihood_
-    with pytest.raises(ValidationError, match="chunk_size|replay_cache_bytes|n_chunks"):
+    with pytest.raises(
+        ValidationError, match=r"chunk_size|replay_cache_bytes|n_chunks"
+    ):
         model.estimate_parameters(**data, max_iter=1, **options)
     np.testing.assert_array_equal(model.discrete_state_transitions_, transitions)
     assert model.encoding_model_ is encoding
@@ -494,7 +496,8 @@ def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
             result_path=tmp_path / "b",
             store_log_likelihood=True,
         )
-    assert not (tmp_path / "a").exists() and not (tmp_path / "b").exists()
+    assert not (tmp_path / "a").exists()
+    assert not (tmp_path / "b").exists()
 
 
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
@@ -652,7 +655,8 @@ def test_default_replay_cache_is_capped_by_available_memory(available, monkeypat
         **data, max_iter=1, transition_representation="structured"
     )
     expected = 4 * 2**30 if available == 8 * 2**30 else 16 * 2**30
-    assert budgets and set(budgets) == {expected}
+    assert budgets
+    assert set(budgets) == {expected}
 
 
 def test_auto_em_device_memory_boundary(monkeypatch):
@@ -723,7 +727,7 @@ def test_auto_em_warns_when_memory_alone_rules_out_dense_em(reason, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "kwargs, expected",
+    ("kwargs", "expected"),
     [
         (
             {"transition_representation": "dense"},

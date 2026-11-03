@@ -90,24 +90,58 @@ extend-exclude = ["notebooks", ".claude"]
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-    "FA",  # flake8-future-annotations
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "FA",   # flake8-future-annotations
+    "NPY",  # numpy-specific rules
+    "PD",   # pandas-vet
+    "RUF",  # ruff-specific rules
+    "ARG",  # unused arguments
+    "EM",   # exception messages assigned before the raise
+    "EXE",  # shebangs
+    "FURB", # refurb modernizations
+    "G",    # logging format
+    "ICN",  # import conventions
+    "ISC",  # implicit string concatenation
+    "PERF", # performance anti-patterns
+    "PGH",  # pygrep hooks (blanket noqa, type: ignore without code)
+    "PIE",  # misc lints
+    "PT",   # pytest style
+    "PTH",  # pathlib over os.path
+    "RET",  # return statements
+    "SIM",  # simplifications
+    "T20",  # print statements
+    "YTT",  # sys.version misuse
 ]
 ignore = [
-    "E501",  # line too long, handled by ruff format
-    "B008",  # do not perform function calls in argument defaults
-    "C901",  # too complex
+    "E501",    # line too long, handled by ruff format
+    "ISC001",  # conflicts with the formatter
+    "B008",    # do not perform function calls in argument defaults
+    "PERF203", # try in a loop: zero-cost from Python 3.11; per-item handling needs it
+    # pandas-vet cannot tell pandas from xarray (.values, .unstack) or JAX (.at).
+    "PD008",
+    "PD010",
+    "PD011",
 ]
+# Math notation in docstrings, comments and messages.
+allowed-confusables = ["×", "σ", "α", "γ", "∪"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/**/*" = ["B011"]
+"**/tests/**" = [
+    "ARG",   # pytest fixtures are used by name, not by value
+    "B011",
+]
+"{scripts,benchmarks}/**" = ["T201"]  # scripts report to stdout
+# Compares path strings as frames report them; Path.resolve would follow links.
+"src/non_local_detector/_warnings.py" = ["PTH"]
+# Progress of a long render, shown without logging configured.
+"src/non_local_detector/visualization/_parallel_video_writer.py" = ["T201"]
 
 # MyPy configuration
 [tool.mypy]

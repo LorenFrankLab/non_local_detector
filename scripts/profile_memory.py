@@ -137,7 +137,7 @@ def profile_reference_implementation():
         mark_reference_scale(waveform_std=encoding["waveform_std"]),
     )
 
-    log_likelihood = predict_reference(
+    return predict_reference(
         time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
@@ -158,8 +158,6 @@ def profile_reference_implementation():
         block_size=100,
         disable_progress_bar=True,
     )
-
-    return log_likelihood
 
 
 @memory_profile
@@ -189,7 +187,7 @@ def profile_log_implementation():
         mark_reference_scale(waveform_std=encoding["waveform_std"]),
     )
 
-    log_likelihood = predict_log(
+    return predict_log(
         time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
@@ -210,8 +208,6 @@ def profile_log_implementation():
         block_size=100,
         disable_progress_bar=True,
     )
-
-    return log_likelihood
 
 
 def estimate_memory_requirements(

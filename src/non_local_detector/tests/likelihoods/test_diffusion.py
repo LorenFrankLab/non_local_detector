@@ -253,7 +253,8 @@ def test_connected_component_labels_matches_graph_components():
     graph = nx.disjoint_union(path_graph(4), path_graph(6))
     labels = connected_component_labels(graph)
     assert labels.shape == (10,)
-    assert set(labels[:4]) == {labels[0]} and set(labels[4:]) == {labels[4]}
+    assert set(labels[:4]) == {labels[0]}
+    assert set(labels[4:]) == {labels[4]}
     assert labels[0] != labels[4]  # different components -> different labels
 
 
@@ -277,13 +278,14 @@ def test_truncated_eigsh_falls_back_when_shift_invert_fails(monkeypatch):
 
     def flaky_eigsh(*args, **kwargs):
         if kwargs.get("sigma") is not None:  # the shift-invert attempt
-            raise RuntimeError("Factor is exactly singular")
+            msg = "Factor is exactly singular"
+            raise RuntimeError(msg)
         return real_eigsh(*args, **kwargs)
 
     monkeypatch.setattr(sparse_linalg, "eigsh", flaky_eigsh)
 
     L = build_laplacian(path_graph(30))
-    trunc_vals, trunc_vecs = diffusion_eigenbasis(L, rank=6)
+    trunc_vals, _trunc_vecs = diffusion_eigenbasis(L, rank=6)
     # rank=None uses dense eigh (not eigsh), so the reference is unaffected.
     dense_vals, _ = diffusion_eigenbasis(L, rank=None)
 
@@ -306,7 +308,8 @@ def test_fallback_eigsh_is_reproducible(monkeypatch):
 
     def flaky_eigsh(*args, **kwargs):
         if kwargs.get("sigma") is not None:  # force the shift-invert attempt to fail
-            raise RuntimeError("Factor is exactly singular")
+            msg = "Factor is exactly singular"
+            raise RuntimeError(msg)
         return real_eigsh(*args, **kwargs)
 
     monkeypatch.setattr(sparse_linalg, "eigsh", flaky_eigsh)
@@ -351,7 +354,8 @@ def test_heat_kernel_rank_is_near_lossless():
     sigma, tol = 6.0, 1e-6
     full_vals, full_vecs = diffusion_eigenbasis(L, rank=None)
     rank = heat_kernel_rank(L, sigma, tol=tol)
-    assert rank is not None and rank < L.shape[0]  # this bandwidth truncates
+    assert rank is not None
+    assert rank < L.shape[0]
     trunc_vals, trunc_vecs = diffusion_eigenbasis(L, rank=rank)
 
     fields = rng.gamma(2.0, 1.0, size=(L.shape[0], 8))
@@ -464,7 +468,8 @@ def test_cached_heat_kernel_eigenbasis_reuses_probe_eigensolve(monkeypatch):
     # Eigensolves the pure rank probe performs (operates on the Laplacian, no caching).
     rank = heat_kernel_rank(laplacian, sigma)
     probe_eigensolves = calls["n"]
-    assert rank is not None and rank < laplacian.shape[0]
+    assert rank is not None
+    assert rank < laplacian.shape[0]
 
     # The fused builder does the same number of eigensolves -- no extra recompute.
     calls["n"] = 0
@@ -555,7 +560,7 @@ def test_diffuse_bandwidth_independent_of_bin_size_2d():
     t = sigma**2 / 2.0
     half_extent = 3.5 * sigma  # >3σ containment so truncation barely affects std
     for spacing in (0.5, 1.0, 2.0, 4.0):
-        n = int(round(2 * half_extent / spacing))
+        n = round(2 * half_extent / spacing)
         L = build_laplacian(grid_graph_2d(n, n, spacing))
         center = (n // 2) * n + (n // 2)
         source = np.zeros(L.shape[0])
@@ -572,7 +577,7 @@ def test_moore_diagonal_edges_oversmooth():
 
     sigma, spacing = 4.0, 1.0
     t = sigma**2 / 2.0
-    n = int(round(2 * 3.5 * sigma / spacing))
+    n = round(2 * 3.5 * sigma / spacing)
 
     face = grid_graph_2d(n, n, spacing)
     moore = face.copy()
@@ -899,7 +904,7 @@ def test_environment_graph_disconnected_components_mass_conserved():
 
     L = build_laplacian(graph)
     # A truncated basis must still carry both null modes.
-    eigvals, eigvecs = diffusion_eigenbasis(L, rank=6)
+    eigvals, _eigvecs = diffusion_eigenbasis(L, rank=6)
     assert np.count_nonzero(eigvals < 1e-9) == 2
 
     # Label nodes by component; mass placed in one component stays there.
@@ -1002,7 +1007,7 @@ def test_cached_objects_are_read_only():
         graph.add_edge(0, 99)
     for arr in (node_order, bin_sizes):
         assert not arr.flags.writeable
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="read-only"):
             arr[0] = 0
 
     eigvals, eigvecs = cached_eigenbasis(env, rank=None)
@@ -1074,7 +1079,7 @@ def test_check_bandwidth_rejects_nonpositive_sigma():
 def test_check_bandwidth_warns_when_undersmoothing():
     """A sigma below ~1 bin spacing warns; a comfortably larger sigma does not."""
     graph = environment_graph(make_2d_env())[0]  # 5.0-unit bin spacing
-    with pytest.warns(UserWarning):
+    with pytest.warns(UserWarning, match="below the characteristic bin spacing"):
         check_smoothing_bandwidth(1.0, graph)
     import warnings
 

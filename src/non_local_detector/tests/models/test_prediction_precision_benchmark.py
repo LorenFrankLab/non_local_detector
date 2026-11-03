@@ -24,7 +24,8 @@ def benchmark() -> ModuleType:
     if not SCRIPT.is_file():
         pytest.skip("benchmarks/ is not part of this installation")
     spec = importlib.util.spec_from_file_location("prediction_benchmark", SCRIPT)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -179,7 +180,7 @@ def test_reference_rejects_float32_posterior(
     with precision_mode(True):
         model, fit, predict = checkpoint_recording("sorted")
         model.fit(**fit, transition_representation="structured")
-        with pytest.raises(ValueError, match="posterior.*float64"):
+        with pytest.raises(ValueError, match=r"posterior.*float64"):
             benchmark.reference64_prediction(
                 model, predict, chunk_size=13, checkpoint_dir=tmp_path
             )

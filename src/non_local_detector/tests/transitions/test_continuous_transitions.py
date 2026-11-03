@@ -167,7 +167,8 @@ def test_empirical_movement_uses_fitted_edges(n_dims, explicit_range):
 
 def test_discrete_transition_is_ones():
     tm = Discrete().make_state_transition()
-    assert tm.shape == (1, 1) and np.isclose(tm[0, 0], 1.0)
+    assert tm.shape == (1, 1)
+    assert np.isclose(tm[0, 0], 1.0)
 
 
 def test_random_walk_inward_no_trackgraphDD_raises(simple_1d_environment):

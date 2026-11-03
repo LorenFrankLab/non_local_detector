@@ -75,7 +75,9 @@ import psutil
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import (  # noqa: E402
+import itertools
+
+from compare_prediction_modes import (
     provenance,
     set_population_defaults,
     workload,
@@ -111,7 +113,7 @@ def load_recording(path, start, duration, sampling_frequency):
     offsets = data["spike_offsets"]
     flat_times = data["spike_times_flat"]
     spike_times, features = [], []
-    for begin, end in zip(offsets[:-1], offsets[1:], strict=True):
+    for begin, end in itertools.pairwise(offsets):
         times = flat_times[begin:end]
         in_window = (times >= t0) & (times < t1)
         spike_times.append(times[in_window])
@@ -676,9 +678,11 @@ def main():
             options = jax.profiler.ProfileOptions()
             options.python_tracer_level = args.xprof_python_tracer_level
             profiler = StageProfiler(jax, False, None)
-            with instrumented(profiler, detector_class):
-                with jax.profiler.trace(str(args.xprof_dir), profiler_options=options):
-                    run_em(max_iter=1)
+            with (
+                instrumented(profiler, detector_class),
+                jax.profiler.trace(str(args.xprof_dir), profiler_options=options),
+            ):
+                run_em(max_iter=1)
             report["xprof"] = str(args.xprof_dir)
             write_report()
         if args.cprofile:

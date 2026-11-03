@@ -94,8 +94,9 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     for u, v, data in graph.edges(data=True):
         distance = data["distance"]
         if not distance > 0:  # also catches NaN
+            msg = "graph edge has a non-positive 'distance'"
             raise ValidationError(
-                "graph edge has a non-positive 'distance'",
+                msg,
                 expected="every edge 'distance' > 0",
                 got=f"distance = {distance} on edge ({u}, {v})",
                 hint="Interior-bin edges must carry a positive Euclidean distance.",
@@ -113,8 +114,9 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
 def _require_rank_covers_components(rank: int, n_components: int) -> None:
     """Raise if a truncated ``rank`` would drop a connected component's null mode."""
     if rank < n_components:
+        msg = "rank is too small to retain every connected component's null mode"
         raise ValidationError(
-            "rank is too small to retain every connected component's null mode",
+            msg,
             expected=f"rank >= n_components = {n_components}",
             got=f"rank = {rank}",
             hint=(
@@ -289,14 +291,16 @@ def _adaptive_heat_kernel_basis(
     the caller to use the full dense basis. See :func:`heat_kernel_rank` for the math.
     """
     if not sigma > 0:
+        msg = "smoothing bandwidth (sigma) must be positive"
         raise ValidationError(
-            "smoothing bandwidth (sigma) must be positive",
+            msg,
             expected="sigma > 0",
             got=f"sigma = {sigma}",
         )
     if not 0.0 < tol < 1.0:
+        msg = "heat-kernel truncation tolerance must lie in (0, 1)"
         raise ValidationError(
-            "heat-kernel truncation tolerance must lie in (0, 1)",
+            msg,
             expected="0 < tol < 1",
             got=f"tol = {tol}",
             hint="tol is a heat-kernel weight exp(-t*lambda); its cutoff -ln(tol) is "
@@ -707,8 +711,9 @@ def environment_graph(
         return cached
 
     if environment.is_track_interior_ is None or environment.place_bin_centers_ is None:
+        msg = "environment must be fitted before building the diffusion graph"
         raise ValidationError(
-            "environment must be fitted before building the diffusion graph",
+            msg,
             expected="a fitted Environment (place_bin_centers_, is_track_interior_ set)",
             got="an unfitted environment",
             hint="Call environment.fit_place_grid(position) first.",
@@ -716,16 +721,18 @@ def environment_graph(
 
     if environment.track_graph is None:
         if environment.track_graphDD is None:
+            msg = "fitted N-D environment is missing its track graph"
             raise ValidationError(
-                "fitted N-D environment is missing its track graph",
+                msg,
                 expected="track_graphDD set by fit_place_grid",
                 got="track_graphDD is None",
             )
         result = _nd_grid_graph(environment)
     else:
         if environment.track_graph_with_bin_centers_edges_ is None:
+            msg = "fitted linearized environment is missing its bin-center graph"
             raise ValidationError(
-                "fitted linearized environment is missing its bin-center graph",
+                msg,
                 expected="track_graph_with_bin_centers_edges_ set by fit_place_grid",
                 got="track_graph_with_bin_centers_edges_ is None",
             )
@@ -775,8 +782,9 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
         the smoother will barely spread beyond a single bin.
     """
     if not sigma > 0:
+        msg = "smoothing bandwidth (position_std) must be positive"
         raise ValidationError(
-            "smoothing bandwidth (position_std) must be positive",
+            msg,
             expected="position_std > 0",
             got=f"position_std = {sigma}",
         )

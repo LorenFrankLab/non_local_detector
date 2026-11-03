@@ -73,22 +73,26 @@ class MarkReference:
         location = np.array(self.location, dtype=np.float64)
         scale = np.array(self.scale, dtype=np.float64)
         if location.ndim != 1 or scale.shape != location.shape:
+            msg = "A mark reference needs one scale per feature"
             raise ValidationError(
-                "A mark reference needs one scale per feature",
+                msg,
                 got=f"location shape {location.shape}, scale shape {scale.shape}",
             )
         if not np.all(np.isfinite(location)):
-            raise ValidationError("Mark reference locations must be finite")
+            msg = "Mark reference locations must be finite"
+            raise ValidationError(msg)
         if not np.all(np.isfinite(scale) & (scale > 0)):
+            msg = "Mark reference scales must be finite and positive"
             raise ValidationError(
-                "Mark reference scales must be finite and positive",
+                msg,
                 hint="The scale adds the mark bandwidth to the training spread; "
                 "check waveform_std or gmm_reg_covar.",
             )
         dof = float(self.degrees_of_freedom)
         if not (np.isfinite(dof) and dof > 0):
+            msg = "Mark reference degrees of freedom must be finite and positive"
             raise ValidationError(
-                "Mark reference degrees of freedom must be finite and positive",
+                msg,
                 got=repr(self.degrees_of_freedom),
             )
         location.setflags(write=False)
@@ -110,10 +114,11 @@ class MarkReference:
         """
         marks = np.asarray(marks, dtype=np.float64)
         if marks.ndim != 2 or marks.shape[1] != self.location.shape[0]:
-            raise ValidationError(
+            msg = (
                 f"Marks with {marks.shape[1:]} waveform features do not match a mark "
                 f"reference fitted with {self.location.shape[0]}"
             )
+            raise ValidationError(msg)
         # Standardize on the host in float64 so large waveform offsets do not
         # lose digits to float32 subtraction.
         z = (marks - self.location) / self.scale
@@ -166,24 +171,29 @@ def fit_mark_reference(
     marks = np.asarray(marks, dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)
     if marks.ndim != 2 or weights.shape != marks.shape[:1]:
-        raise ValidationError(
+        msg = (
             f"Training marks and weights of electrode {electrode} do not pair "
-            "one weight with each spike",
+            "one weight with each spike"
+        )
+        raise ValidationError(
+            msg,
             expected="marks (n_spikes, n_features) and weights (n_spikes,)",
             got=f"marks {marks.shape}, weights {weights.shape}",
             hint="Pass each electrode's weights at its own spike times.",
         )
     kernel_scale = np.asarray(kernel_scale, dtype=np.float64)
     if kernel_scale.shape not in ((), marks.shape[1:]):
+        msg = f"kernel_scale of electrode {electrode} does not match its features"
         raise ValidationError(
-            f"kernel_scale of electrode {electrode} does not match its features",
+            msg,
             expected=f"a scalar or shape {marks.shape[1:]}",
             got=f"shape {kernel_scale.shape}",
         )
     if not np.all(np.isfinite(weights) & (weights >= 0)):
-        raise ValidationError(
+        msg = (
             f"Training weights of electrode {electrode} must be finite and non-negative"
         )
+        raise ValidationError(msg)
     keep = weights > 0
     if not np.any(keep):
         return None

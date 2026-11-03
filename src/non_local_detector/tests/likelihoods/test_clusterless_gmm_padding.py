@@ -100,7 +100,7 @@ def recording(request):
 
 
 def predict(recording, is_local, row_slice, **kwargs):
-    env, position_time, position, encoding, mark_reference, times, marks, edges = (
+    _env, position_time, position, encoding, mark_reference, times, marks, edges = (
         recording
     )
     return predict_clusterless_gmm_log_likelihood(

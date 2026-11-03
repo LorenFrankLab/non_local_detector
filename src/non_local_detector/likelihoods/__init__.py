@@ -12,7 +12,7 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
 )
-from non_local_detector.likelihoods.clusterless_gmm import (  # noqa
+from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
@@ -24,10 +24,10 @@ from non_local_detector.likelihoods.clusterless_mark_glm import (
     fit_clusterless_mark_glm_encoding_model,
     predict_clusterless_mark_glm_log_likelihood,
 )
-from non_local_detector.likelihoods.mark_reference import (  # noqa
+from non_local_detector.likelihoods.mark_reference import (
     fit_mark_references,
 )
-from non_local_detector.likelihoods.no_spike import (  # noqa
+from non_local_detector.likelihoods.no_spike import (
     predict_no_spike_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
@@ -139,8 +139,9 @@ def _resolve_fit_params(
     """
     if algorithm not in algorithms:
         algorithm_name = params_name.removesuffix("_params")
+        msg = f"Unknown {algorithm_name} {algorithm!r}"
         raise ValidationError(
-            f"Unknown {algorithm_name} {algorithm!r}",
+            msg,
             expected=f"one of {sorted(algorithms)}",
             got=repr(algorithm),
         )
@@ -157,8 +158,9 @@ def _resolve_fit_params(
     ]
     unknown = sorted(set(resolved) - set(accepted))
     if unknown:
+        msg = f"unknown {algorithm} parameter(s) in {params_name}: {', '.join(unknown)}"
         raise ValidationError(
-            f"unknown {algorithm} parameter(s) in {params_name}: {', '.join(unknown)}",
+            msg,
             expected=f"parameters among: {', '.join(accepted)}",
             got=", ".join(f"{name}={resolved[name]!r}" for name in unknown),
             hint="Check the spelling, and that the parameter belongs to "

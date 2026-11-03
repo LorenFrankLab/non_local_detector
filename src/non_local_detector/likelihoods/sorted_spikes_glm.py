@@ -226,7 +226,7 @@ def make_spline_design_matrix(
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     # ``inner_knots`` is read by name by the patsy formula below.
-    varying_dimensions, inner_knots = _spline_inner_knots(
+    varying_dimensions, inner_knots = _spline_inner_knots(  # noqa: RUF059
         position, place_bin_edges, knot_spacing
     )
     if not len(varying_dimensions):
@@ -268,7 +268,9 @@ def _track_branches(graph) -> list[list[tuple]]:
     for node in sorted(anchors, key=str):
         for neighbor in sorted(graph.neighbors(node), key=str):
             if frozenset((node, neighbor)) not in seen:
-                branches.append(walk(node, neighbor))
+                # A loop, not a comprehension: walk() adds to the `seen` the
+                # condition reads.
+                branches.append(walk(node, neighbor))  # noqa: PERF401
     for u, v in sorted(graph.edges(), key=str):  # cycles with no anchor
         if frozenset((u, v)) not in seen:
             branches.append(walk(u, v))
@@ -778,8 +780,9 @@ def log_rate_prior_l2_penalty(
         for an intercept-only basis.
     """
     if not (np.isfinite(log_rate_prior_std) and log_rate_prior_std > 0):
+        msg = "log_rate_prior_std must be a positive, finite standard deviation"
         raise ValidationError(
-            "log_rate_prior_std must be a positive, finite standard deviation",
+            msg,
             expected="a float > 0 (nats of log-rate)",
             got=repr(log_rate_prior_std),
             hint=f"The default is {GLM_LOG_RATE_PRIOR_STD}.",
@@ -1276,9 +1279,9 @@ def fit_sorted_spikes_glm_encoding_model(
     spike_times: list[jnp.ndarray],
     environment: Environment,
     place_bin_edges: np.ndarray,
-    edges: np.ndarray,
+    edges: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
     is_track_interior: np.ndarray,
-    is_track_boundary: np.ndarray,
+    is_track_boundary: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
     weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float | None = None,
@@ -1458,7 +1461,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,

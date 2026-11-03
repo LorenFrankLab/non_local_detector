@@ -86,7 +86,7 @@ def unblocked_finished(values, log_background):
     return estimate_log_joint_mark_intensity(**values, log_background=log_background)
 
 
-@pytest.mark.parametrize("n_dec,n_enc", [(0, 7), (1, 0), (1, 7), (13, 9)])
+@pytest.mark.parametrize(("n_dec", "n_enc"), [(0, 7), (1, 0), (1, 7), (13, 9)])
 @pytest.mark.parametrize("weight_kind", ["none", "zero", "weighted"])
 def test_marked_blocks_match_finished_unblocked_intensity(n_dec, n_enc, weight_kind):
     values = arguments(n_dec, n_enc, weight_kind)
@@ -96,7 +96,7 @@ def test_marked_blocks_match_finished_unblocked_intensity(n_dec, n_enc, weight_k
     actual = block_estimate_log_joint_mark_intensity(
         **values, block_size=4, log_background=log_background
     )
-    oracle, _, intensity = independent_finished_intensity_and_gradient(
+    oracle, _, _intensity = independent_finished_intensity_and_gradient(
         values, log_background
     )
     expected = unblocked_finished(values, log_background)
@@ -168,7 +168,7 @@ def test_marked_block_gradients_match_unblocked_kernel():
     log_background = realistic_log_background(
         values["decoding_spike_waveform_features"]
     )
-    _, oracle, intensity = independent_finished_intensity_and_gradient(
+    _, oracle, _intensity = independent_finished_intensity_and_gradient(
         values, log_background
     )
     marks = values.pop("decoding_spike_waveform_features")

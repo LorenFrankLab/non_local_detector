@@ -45,7 +45,7 @@ def requires_time_edges(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
         if "time" in kwargs or "time_edges" not in kwargs:
-            raise TypeError(
+            msg = (
                 f"{function.__qualname__} requires keyword-only time_edges "
                 "(n_bins + 1 bin boundaries). For uniformly spaced sample "
                 "timestamps, use time_edges=time_edges_from_centers(time). "
@@ -53,6 +53,7 @@ def requires_time_edges(function):
                 "ownership. See docs/time_grid_migration.md for irregular "
                 "tracking, masks, and independent sequences."
             )
+            raise TypeError(msg)
         return function(*args, **kwargs)
 
     return wrapped
@@ -77,8 +78,9 @@ def _validate_time_precision(
     if not np.isfinite(tolerance) or (
         tolerance > _MAX_RELATIVE_SPACING_TOLERANCE * smallest
     ):
+        msg = f"{name} has insufficient precision for its bin widths"
         raise DataError(
-            f"{name} has insufficient precision for its bin widths",
+            msg,
             data_name=name,
             hint=f"dtype {time_edges.dtype} resolves timestamps near "
             f"{np.max(np.abs(time_edges)):.6g} only to about {tolerance:.3g} s, which "
@@ -117,8 +119,9 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
     """
     edges = np.asarray(time_edges)
     if edges.ndim != 1 or edges.shape[0] < 2:
+        msg = f"{name} must be a one-dimensional array of at least two bin edges"
         raise ValidationError(
-            f"{name} must be a one-dimensional array of at least two bin edges",
+            msg,
             expected="array with shape (n_bins + 1,), n_bins >= 1",
             got=f"array with shape {edges.shape}",
             hint="Pass bin boundaries, not one timestamp per bin; see "
@@ -129,15 +132,17 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
         np.issubdtype(edges.dtype, np.integer)
         or np.issubdtype(edges.dtype, np.floating)
     ):
+        msg = f"{name} must contain real numbers"
         raise ValidationError(
-            f"{name} must contain real numbers",
+            msg,
             expected="an integer or floating-point array",
             got=f"dtype {edges.dtype}",
             hint="Convert timestamps to seconds as float64.",
         )
     if not np.all(np.isfinite(edges)):
+        msg = f"Found non-finite values in {name}"
         raise DataError(
-            f"Found non-finite values in {name}",
+            msg,
             data_name=name,
             hint="Every bin edge must be a finite timestamp.",
         )
@@ -146,8 +151,9 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
         widths = np.diff(edges.astype(np.result_type(edges.dtype, np.float64)))
     span = float(edges[-1]) - float(edges[0])
     if not np.all(np.isfinite(widths)) or not np.isfinite(span):
+        msg = f"{name} must describe finite bin durations and a finite span"
         raise DataError(
-            f"{name} must describe finite bin durations and a finite span",
+            msg,
             data_name=name,
             hint="Subtract a reference time or express timestamps in seconds "
             "at a scale whose differences remain finite.",
@@ -158,8 +164,9 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
     bad = np.flatnonzero(widths <= 0)
     if bad.size > 0:
         i = int(bad[0])
+        msg = f"{name} must be strictly increasing"
         raise DataError(
-            f"{name} must be strictly increasing",
+            msg,
             data_name=name,
             hint=f"{name}[{i}] = {edges[i]!r} and {name}[{i + 1}] = "
             f"{edges[i + 1]!r}. Repeated edges give zero-width bins and "
@@ -299,8 +306,9 @@ def uniform_time_edges(
     tolerance = _uniformity_tolerance(edges, width)
     if np.any(deviation > tolerance):
         i = int(np.argmax(deviation))
+        msg = f"{name} must describe uniform bins for this detector"
         raise DataError(
-            f"{name} must describe uniform bins for this detector",
+            msg,
             data_name=name,
             hint=f"Bin {i} is {edges[i + 1] - edges[i]:.9g} s wide but the mean "
             f"width is {width:.9g} s (tolerance {tolerance:.3g} s). The HMM "
@@ -339,8 +347,9 @@ def time_edges_from_centers(time) -> np.ndarray:
     """
     centers = np.asarray(time)
     if centers.ndim == 1 and centers.shape[0] < 2:
+        msg = "time_edges_from_centers needs at least two timestamps"
         raise ValidationError(
-            "time_edges_from_centers needs at least two timestamps",
+            msg,
             expected="array with shape (n_bins,), n_bins >= 2",
             got=f"array with shape {centers.shape}",
             hint="A single timestamp does not determine a bin duration; pass "
@@ -392,14 +401,16 @@ def calculate_time_edges(
         validated by the same uniformity guard as detector inputs.
     """
     if not (np.isfinite(sampling_frequency) and sampling_frequency > 0):
+        msg = "sampling_frequency must be a positive finite number"
         raise ValidationError(
-            "sampling_frequency must be a positive finite number",
+            msg,
             expected="bins per second > 0",
             got=repr(sampling_frequency),
         )
     if np.shape(time_range) != (2,):
+        msg = "time_range must be (start, stop)"
         raise ValidationError(
-            "time_range must be (start, stop)",
+            msg,
             expected="array with shape (2,)",
             got=f"array with shape {np.shape(time_range)}",
         )
@@ -419,8 +430,9 @@ def calculate_time_edges(
     n_bins = int(np.round(n_float))
     if abs(n_float - n_bins) > tolerance:
         if not trim:
+            msg = "time_range is not a whole number of bins"
             raise ValidationError(
-                "time_range is not a whole number of bins",
+                msg,
                 expected=f"a duration that is a multiple of 1/{sampling_frequency} s",
                 got=f"{stop - start!r} s = {n_float:.6f} bins",
                 hint="Pass trim=True to drop the partial final bin, or adjust "
@@ -428,8 +440,9 @@ def calculate_time_edges(
             )
         n_bins = int(np.floor(n_float))
     if n_bins < 1:
+        msg = "time_range contains no complete bin"
         raise ValidationError(
-            "time_range contains no complete bin",
+            msg,
             expected=f"a duration of at least 1/{sampling_frequency} s",
             got=f"{stop - start!r} s",
         )

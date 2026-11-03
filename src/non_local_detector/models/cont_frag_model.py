@@ -40,11 +40,12 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
     unstacked = results.acausal_posterior.unstack("state_bins")
     position_dims = get_position_dims(unstacked)
     if not position_dims:
-        raise ValueError(
+        msg = (
             "get_posterior found no position dimension to marginalize over; "
             f"acausal_posterior unstacked to dims {tuple(unstacked.dims)}. "
             "Expected a dim named 'position' or ending in '_position'."
         )
+        raise ValueError(msg)
     return unstacked.sum(position_dims)
 
 

@@ -114,7 +114,7 @@ def _estimate_gaussian_covariances_full(
 def _estimate_gaussian_covariances_tied(
     resp: Array,
     X: Array,
-    nk: Array,
+    nk: Array,  # noqa: ARG001 -- covariance-type dispatch signature
     means: Array,
     reg_covar: float,
 ) -> Array:
@@ -448,7 +448,8 @@ def _estimate_log_gaussian_prob(
     log_prob : Array, shape (n_samples, n_components)
     """
     if X.ndim != 2 or means.ndim != 2 or X.shape[1] != means.shape[1]:
-        raise ValueError("X and means must be 2-D with matching feature dimensions")
+        msg = "X and means must be 2-D with matching feature dimensions"
+        raise ValueError(msg)
     n_components, n_features = means.shape
     # Validate every parameterization here: 'full'/'tied' would otherwise fail
     # deep inside solve_triangular with a shape message that names neither the
@@ -460,10 +461,11 @@ def _estimate_log_gaussian_prob(
         "spherical": (n_components,),
     }[covariance_type]
     if tuple(precisions_chol.shape) != expected_precision_shape:
-        raise ValueError(
+        msg = (
             f"precisions_chol for covariance_type='{covariance_type}' must have "
             f"shape {expected_precision_shape}, got {tuple(precisions_chol.shape)}"
         )
+        raise ValueError(msg)
 
     if covariance_type == "full":
 
@@ -917,48 +919,54 @@ class GaussianMixtureModel:
         from non_local_detector.exceptions import ValidationError
 
         if self.n_components <= 0:
+            msg = "Number of GMM components must be positive"
             raise ValidationError(
-                "Number of GMM components must be positive",
+                msg,
                 expected="n_components > 0",
                 got=f"n_components = {self.n_components}",
                 hint="Use at least 1 component for the Gaussian mixture",
                 example="    GaussianMixture(n_components=3, ...)",
             )
         if self.covariance_type not in ["full", "tied", "diag", "spherical"]:
+            msg = "Invalid covariance type for GMM"
             raise ValidationError(
-                "Invalid covariance type for GMM",
+                msg,
                 expected="One of: 'full', 'tied', 'diag', 'spherical'",
                 got=f"covariance_type = '{self.covariance_type}'",
                 hint="Use 'full' for full covariance matrices, 'tied' for shared covariance, 'diag' for diagonal, or 'spherical' for single variance",
                 example="    GaussianMixture(covariance_type='full', ...)",
             )
         if self.tol < 0:
+            msg = "Convergence tolerance must be non-negative"
             raise ValidationError(
-                "Convergence tolerance must be non-negative",
+                msg,
                 expected="tol >= 0",
                 got=f"tol = {self.tol}",
                 hint="Use a small positive value like 1e-4 for stricter convergence",
                 example="    GaussianMixture(tol=1e-4, ...)",
             )
         if self.reg_covar < 0:
+            msg = "Covariance regularization must be non-negative"
             raise ValidationError(
-                "Covariance regularization must be non-negative",
+                msg,
                 expected="reg_covar >= 0",
                 got=f"reg_covar = {self.reg_covar}",
                 hint="Use a small positive value like 1e-6 to prevent singular covariance matrices",
                 example="    GaussianMixture(reg_covar=1e-6, ...)",
             )
         if self.max_iter <= 0:
+            msg = "Maximum iterations must be positive"
             raise ValidationError(
-                "Maximum iterations must be positive",
+                msg,
                 expected="max_iter > 0",
                 got=f"max_iter = {self.max_iter}",
                 hint="Increase max_iter to allow more time for convergence",
                 example="    GaussianMixture(max_iter=1000, ...)",
             )
         if self.n_init <= 0:
+            msg = "Number of initializations must be positive"
             raise ValidationError(
-                "Number of initializations must be positive",
+                msg,
                 expected="n_init > 0",
                 got=f"n_init = {self.n_init}",
                 hint="Use multiple initializations (e.g., 10) to find better solutions",
@@ -968,8 +976,9 @@ class GaussianMixtureModel:
         if self.weights_init is not None:
             self.weights_init = jnp.asarray(self.weights_init)
             if self.weights_init.shape != (self.n_components,):
+                msg = "weights_init has the wrong shape"
                 raise ValidationError(
-                    "weights_init has the wrong shape",
+                    msg,
                     expected=f"shape ({self.n_components},)",
                     got=f"shape {tuple(self.weights_init.shape)}",
                     hint="Provide one initial mixture weight per component",
@@ -979,8 +988,9 @@ class GaussianMixtureModel:
                 # Caught here so a bad weight is diagnosed accurately: a negative
                 # or NaN weight would otherwise produce jnp.log(weights) = NaN
                 # deep in EM and be misreported as a singular covariance.
+                msg = "weights_init must be finite and nonnegative"
                 raise ValidationError(
-                    "weights_init must be finite and nonnegative",
+                    msg,
                     expected="all weights_init >= 0 and finite",
                     got=f"weights_init = {np.asarray(self.weights_init)}",
                     hint="Mixture weights are probabilities; they cannot be negative or NaN",
@@ -993,8 +1003,9 @@ class GaussianMixtureModel:
                 self.means_init.ndim != 2
                 or self.means_init.shape[0] != self.n_components
             ):
+                msg = "means_init has the wrong shape"
                 raise ValidationError(
-                    "means_init has the wrong shape",
+                    msg,
                     expected=f"shape ({self.n_components}, n_features)",
                     got=f"shape {tuple(self.means_init.shape)}",
                     hint="Provide one initial mean vector per component",
@@ -1051,8 +1062,9 @@ class GaussianMixtureModel:
         from non_local_detector.exceptions import ValidationError
 
         if X.ndim != 2:
+            msg = "X must be a 2-D (n_samples, n_features) array"
             raise ValidationError(
-                "X must be a 2-D (n_samples, n_features) array",
+                msg,
                 expected="X.ndim == 2",
                 got=f"X.ndim = {X.ndim}, shape {tuple(X.shape)}",
                 hint="Reshape X so each row is one sample's feature vector",
@@ -1064,16 +1076,18 @@ class GaussianMixtureModel:
         if sample_weight is not None:
             sw = np.asarray(sample_weight)
             if sw.shape != (n_samples,):
+                msg = "sample_weight has the wrong length"
                 raise ValidationError(
-                    "sample_weight has the wrong length",
+                    msg,
                     expected=f"shape ({n_samples},) matching X's rows",
                     got=f"shape {tuple(sw.shape)}",
                     hint="Provide one nonnegative weight per sample in X",
                     example="    model.fit(X, key, sample_weight=np.ones(len(X)))",
                 )
             if not np.all(np.isfinite(sw)) or np.any(sw < 0):
+                msg = "sample_weight must be finite and nonnegative"
                 raise ValidationError(
-                    "sample_weight must be finite and nonnegative",
+                    msg,
                     expected="all sample_weight >= 0 and finite",
                     got=f"min = {float(np.min(sw)):.6g}, "
                     f"all_finite = {bool(np.all(np.isfinite(sw)))}",
@@ -1084,8 +1098,9 @@ class GaussianMixtureModel:
                 # An all-zero sample_weight has no effective data: dropping the
                 # zero-weight rows in ``fit`` would leave no samples, and
                 # KMeans/EM would then fail opaquely.
+                msg = "sample_weight sums to 0 (no effective training data)"
                 raise ValidationError(
-                    "sample_weight sums to 0 (no effective training data)",
+                    msg,
                     expected="sum(sample_weight) > 0",
                     got="sum = 0",
                     hint="At least one sample must carry positive weight",
@@ -1105,8 +1120,9 @@ class GaussianMixtureModel:
             finite_rows = np.asarray(jnp.all(jnp.isfinite(X), axis=1))
             all_finite = bool(np.all(finite_rows[keep]))
         if not all_finite:
+            msg = "X contains non-finite values"
             raise ValidationError(
-                "X contains non-finite values",
+                msg,
                 expected="all entries of X with positive weight are finite",
                 got="X has NaN or Inf entries",
                 hint="Remove or impute NaN/Inf samples before fitting",
@@ -1123,15 +1139,17 @@ class GaussianMixtureModel:
         n_effective = n_samples if keep is None else int(np.count_nonzero(keep))
         if n_effective < self.n_components and self._supplied_params() is None:
             if keep is None:
+                msg = "fewer samples than mixture components"
                 raise ValidationError(
-                    "fewer samples than mixture components",
+                    msg,
                     expected=f"at least n_components = {self.n_components} samples",
                     got=f"{n_samples} samples",
                     hint="Reduce n_components or supply more samples",
                     example="    model = GaussianMixtureModel(n_components=1)",
                 )
+            msg = "fewer positive-weight samples than mixture components"
             raise ValidationError(
-                "fewer positive-weight samples than mixture components",
+                msg,
                 expected=f"at least n_components = {self.n_components} samples "
                 "with positive weight",
                 got=f"{n_effective} of {n_samples} samples have usable positive "
@@ -1142,8 +1160,9 @@ class GaussianMixtureModel:
             )
 
         if self.means_init is not None and self.means_init.shape[1] != n_features:
+            msg = "means_init feature dimension does not match X"
             raise ValidationError(
-                "means_init feature dimension does not match X",
+                msg,
                 expected=f"means_init.shape == ({self.n_components}, {n_features})",
                 got=f"shape {tuple(self.means_init.shape)}",
                 hint="Each initial mean needs one entry per feature in X",
@@ -1159,8 +1178,11 @@ class GaussianMixtureModel:
             }
             expected = expected_shapes[self.covariance_type]
             if tuple(self.covariances_init.shape) != expected:
+                msg = (
+                    "covariances_init shape is inconsistent with covariance_type and X"
+                )
                 raise ValidationError(
-                    "covariances_init shape is inconsistent with covariance_type and X",
+                    msg,
                     expected=f"shape {expected} for covariance_type='{self.covariance_type}'",
                     got=f"shape {tuple(self.covariances_init.shape)}",
                     hint="Match covariances_init to the covariance parameterization and n_features",
@@ -1293,7 +1315,7 @@ class GaussianMixtureModel:
         self.lower_bound_ = float(best_lower_bound)
         if self.weights_ is None:
             if n_invalid:
-                raise RuntimeError(
+                msg = (
                     "GMM fitting failed: a component's covariance became "
                     "singular, giving a non-finite log-likelihood. Increase "
                     "reg_covar above the float32 rounding of the covariances "
@@ -1301,10 +1323,12 @@ class GaussianMixtureModel:
                     "units), reduce n_components, or remove duplicate/degenerate "
                     "samples, then refit."
                 )
-            raise RuntimeError(
+                raise RuntimeError(msg)
+            msg = (
                 "GMM fitting failed: no restart produced a finite lower bound. "
                 "Check X for NaN/Inf values or try a different initialization."
             )
+            raise RuntimeError(msg)
 
         if n_invalid:
             warnings.warn(
@@ -1352,7 +1376,8 @@ class GaussianMixtureModel:
             or self.means_ is None
             or self.precisions_chol_ is None
         ):
-            raise RuntimeError("This GMM instance is not fitted yet.")
+            msg = "This GMM instance is not fitted yet."
+            raise RuntimeError(msg)
 
     def predict(self, X: Array) -> Array:
         """
@@ -1556,7 +1581,8 @@ class GaussianMixtureModel:
         elif self.init_params == "random":
             resp = self._initialize_random(X, key)
         else:
-            raise ValueError(f"Unknown init_params: {self.init_params}")
+            msg = f"Unknown init_params: {self.init_params}"
+            raise ValueError(msg)
 
         if sample_weight is not None:
             # Responsibilities come from the kept rows; padding them only shares

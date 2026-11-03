@@ -47,7 +47,8 @@ def get_position_dim_names(n_position_dims: int) -> list[str]:
         If ``n_position_dims < 1``.
     """
     if n_position_dims < 1:
-        raise ValueError(f"n_position_dims must be >= 1; got {n_position_dims}.")
+        msg = f"n_position_dims must be >= 1; got {n_position_dims}."
+        raise ValueError(msg)
     if n_position_dims == 1:
         return ["position"]
     if n_position_dims <= len(_DIM_LABELS):

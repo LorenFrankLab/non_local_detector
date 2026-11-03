@@ -9,16 +9,16 @@ first frame each worker renders (mirroring the mesh pattern), so a non-zero
 starting frame must still set ``ax1``'s limits.
 """
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import pytest
 import xarray as xr
 
-matplotlib.use("Agg", force=True)
+mpl.use("Agg", force=True)
 
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
-from non_local_detector.visualization.movie import (  # noqa: E402
+from non_local_detector.visualization.movie import (
     _render_single_env_frame,
     _setup_single_env_figure,
 )

@@ -377,7 +377,7 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d):
         environment=env,
         rank=30,
     )
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
 
     is_interior = env.is_track_interior_.ravel()
     n_total = env.place_bin_centers_.shape[0]
@@ -601,7 +601,8 @@ def test_step_halving_converges_on_near_zero_exposure_overshoot():
 
     # The full-step Newton diverges here (never reaches tol); step-halving converges.
     assert diagnostics["converged"]
-    assert np.all(np.isfinite(eta)) and np.all(np.isfinite(mu))
+    assert np.all(np.isfinite(eta))
+    assert np.all(np.isfinite(mu))
     # Monotone descent: the fit's objective is below the constant warm-start reference
     # (the diverged full-step fit's objective is ~1e10 -- far above it).
     assert penalized_objective(coeffs) < penalized_objective(np.zeros_like(coeffs))
@@ -639,7 +640,7 @@ def test_fit_empty_spike_times_returns_empty_place_fields(env_2d):
         rank=20,
     )
     n_total = env.place_bin_centers_.shape[0]
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
     assert np.asarray(encoding["place_fields"]).shape == (0, n_total)
     assert np.asarray(encoding["no_spike_part_log_likelihood"]).shape == (n_total,)
     assert np.asarray(encoding["mrf_coefficients"]).shape == (20, 0)
@@ -661,7 +662,8 @@ def test_reml_helpers_handle_zero_neurons():
     penalty, objective = select_penalty_by_reml(
         counts, occupancy, basis, penalty_weights
     )
-    assert np.isfinite(penalty) and np.isfinite(objective)
+    assert np.isfinite(penalty)
+    assert np.isfinite(objective)
 
 
 def test_penalty_zero_is_respected_not_overridden(env_2d):
@@ -887,7 +889,7 @@ def test_component_with_any_exposure_is_fit_not_floored():
     """'Unoccupied' means exactly zero exposure: one exposed right-room sample with
     the neurons' spikes is information, so that component is fit, not EPS-floored,
     and no unoccupied-component warning is raised."""
-    env, position = make_two_room_env()
+    _env, position = make_two_room_env()
     weights = np.zeros(position.shape[0])
     weights[np.flatnonzero(position[:, 0] > 20.0)[0]] = 1.0
     with warnings.catch_warnings():
@@ -951,7 +953,7 @@ def test_fit_with_default_rank_is_valid(env_2d):
         spike_times=spike_times,
         environment=env,
     )
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
     is_interior = env.is_track_interior_.ravel()
     place_fields = np.asarray(encoding["place_fields"])
     assert np.all(np.isfinite(place_fields))

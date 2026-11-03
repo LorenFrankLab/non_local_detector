@@ -121,7 +121,7 @@ def test_non_owning_rows_do_not_read_spike_times(monkeypatch, rows, prepared):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("row_start,row_stop", [(0, 20), (401, 421), (980, 1000)])
+@pytest.mark.parametrize(("row_start", "row_stop"), [(0, 20), (401, 421), (980, 1000)])
 @pytest.mark.parametrize("ascending", [True, False])
 def test_binning_scans_only_requested_boundaries(
     monkeypatch, row_start, row_stop, ascending

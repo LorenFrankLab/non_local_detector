@@ -1,5 +1,6 @@
 """Public decoding calls expose an explicit, recoverable time contract."""
 
+import functools
 import pickle
 
 import numpy as np
@@ -178,16 +179,18 @@ def test_unknown_transition_clock_requires_refitting(recording, method):
     )
     del detector.transition_time_bin_width_
     legacy = pickle.loads(pickle.dumps(detector))
+    if method == "cached":
+        call = functools.partial(legacy._predict, edges, log_likelihoods=cached)
+    else:
+        call = functools.partial(
+            getattr(legacy, method),
+            spike_times=spikes,
+            time_edges=edges,
+            position_time=time,
+            position=position,
+        )
     with pytest.raises(ValidationError, match="refit"):
-        if method == "cached":
-            legacy._predict(edges, log_likelihoods=cached)
-        else:
-            getattr(legacy, method)(
-                spike_times=spikes,
-                time_edges=edges,
-                position_time=time,
-                position=position,
-            )
+        call()
 
 
 @pytest.mark.unit

@@ -176,9 +176,13 @@ def test_kde_and_log_kde_raise_on_dimension_mismatch():
     std = jnp.array([1.0, 1.0, 1.0])
     weights = jnp.ones((samples.shape[0],))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match=r"zip\(\) argument 2 is shorter than argument 1"
+    ):
         kde(eval_points, samples, std, weights)
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match=r"zip\(\) argument 2 is shorter than argument 1"
+    ):
         log_kde(eval_points, samples, std, weights)
 
 
@@ -186,9 +190,13 @@ def test_kde_model_predict_raises_on_dimension_mismatch():
     """KDEModel fit on 2-D samples then predicting 3-D eval points must raise
     rather than silently truncating to the shared dimensions."""
     model = KDEModel(std=1.0).fit(jnp.zeros((10, 2)))
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match=r"zip\(\) argument 2 is shorter than argument 1"
+    ):
         model.predict(jnp.zeros((5, 3)))
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match=r"zip\(\) argument 2 is shorter than argument 1"
+    ):
         model.predict_log(jnp.zeros((5, 3)))
 
 
@@ -618,7 +626,8 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
         points, samples, std, 10_000, weights
     )
 
-    assert max(rows) == 64 and sum(rows) == 300
+    assert max(rows) == 64
+    assert sum(rows) == 300
     np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
 
 

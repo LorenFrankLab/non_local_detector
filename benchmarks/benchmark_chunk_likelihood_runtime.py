@@ -41,7 +41,7 @@ from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import provenance  # noqa: E402
+from compare_prediction_modes import provenance
 
 BACKENDS = (
     "sorted_spikes_kde",

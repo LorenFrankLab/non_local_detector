@@ -55,8 +55,7 @@ def _make_env_1d(position_range=(0.0, 10.0), bin_size=1.0, n_pos=101):
         position_range=(position_range,),
     )
     pos = np.linspace(position_range[0], position_range[1], n_pos)[:, None]
-    env = env.fit_place_grid(position=pos, infer_track_interior=False)
-    return env
+    return env.fit_place_grid(position=pos, infer_track_interior=False)
 
 
 def _fit_sorted_kde(env, spike_times, n_time=101, position_std=1.0):

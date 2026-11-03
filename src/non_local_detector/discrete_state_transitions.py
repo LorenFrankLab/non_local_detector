@@ -134,10 +134,11 @@ def _validate_expanded_posterior_shapes(
 ) -> tuple[int, int]:
     """Validate expanded posterior shapes and return ``(n_time, n_state_bins)``."""
     if causal_posterior.ndim != 2:
-        raise ValueError(
+        msg = (
             "causal_posterior must have shape (n_time, n_state_bins), "
             f"got shape {causal_posterior.shape}"
         )
+        raise ValueError(msg)
 
     n_time, n_state_bins = causal_posterior.shape
     expected_posterior_shape = (n_time, n_state_bins)
@@ -146,15 +147,17 @@ def _validate_expanded_posterior_shapes(
         ("acausal_posterior", acausal_posterior),
     ):
         if posterior.shape != expected_posterior_shape:
-            raise ValueError(
+            msg = (
                 f"{name} must have shape {expected_posterior_shape}, "
                 f"got shape {posterior.shape}"
             )
+            raise ValueError(msg)
 
     if state_ind.shape != (n_state_bins,):
-        raise ValueError(
+        msg = (
             f"state_ind must have shape ({n_state_bins},), got shape {state_ind.shape}"
         )
+        raise ValueError(msg)
 
     return n_time, n_state_bins
 
@@ -170,17 +173,19 @@ def _validate_expanded_transition_shape(
     elif transition_matrix.ndim == 3:
         expected_shape = (n_time, n_state_bins, n_state_bins)
     else:
-        raise ValueError(
+        msg = (
             "transition_matrix must have shape (n_state_bins, n_state_bins) or "
             "(n_time, n_state_bins, n_state_bins), "
             f"got shape {transition_matrix.shape}"
         )
+        raise ValueError(msg)
 
     if transition_matrix.shape != expected_shape:
-        raise ValueError(
+        msg = (
             f"transition_matrix must have shape {expected_shape}, "
             f"got shape {transition_matrix.shape}"
         )
+        raise ValueError(msg)
 
     return transition_matrix.ndim == 2
 
@@ -192,10 +197,11 @@ def _validate_continuous_transition_shape(
     """Validate stationary continuous transition shape."""
     expected_shape = (n_state_bins, n_state_bins)
     if continuous_transition_matrix.shape != expected_shape:
-        raise ValueError(
+        msg = (
             f"continuous_transition_matrix must have shape {expected_shape}, "
             f"got shape {continuous_transition_matrix.shape}"
         )
+        raise ValueError(msg)
 
 
 def _validate_factorized_discrete_transition_shape(
@@ -211,10 +217,11 @@ def _validate_factorized_discrete_transition_shape(
 
     if require_stationary:
         if discrete_transition_matrix.shape != stationary_shape:
-            raise ValueError(
+            msg = (
                 "discrete_transition_matrix must be stationary with shape "
                 f"{stationary_shape}, got shape {discrete_transition_matrix.shape}"
             )
+            raise ValueError(msg)
         return True
 
     if discrete_transition_matrix.ndim == 2:
@@ -222,17 +229,19 @@ def _validate_factorized_discrete_transition_shape(
     elif discrete_transition_matrix.ndim == 3:
         expected_shape = nonstationary_shape
     else:
-        raise ValueError(
+        msg = (
             "discrete_transition_matrix must have shape (n_states, n_states) or "
             "(n_time, n_states, n_states), "
             f"got shape {discrete_transition_matrix.shape}"
         )
+        raise ValueError(msg)
 
     if discrete_transition_matrix.shape != expected_shape:
-        raise ValueError(
+        msg = (
             f"discrete_transition_matrix must have shape {expected_shape}, "
             f"got shape {discrete_transition_matrix.shape}"
         )
+        raise ValueError(msg)
 
     return discrete_transition_matrix.ndim == 2
 
@@ -289,10 +298,11 @@ def _safe_ratio_jax(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.nda
 
 def _assert_map_compatible_alpha(alpha: np.ndarray) -> None:
     if np.any(alpha < 1.0):
-        raise ValueError(
+        msg = (
             "concentration and stickiness must produce prior parameters >= 1.0 "
             "for this MAP transition update"
         )
+        raise ValueError(msg)
 
 
 # Bytes of each posterior row block copied to the device for stationary
@@ -470,7 +480,8 @@ def _transition_pair_stats_jax(
     Stationary counts use :func:`_stationary_counts` instead.
     """
     if is_stationary and not return_time_series:
-        raise ValueError("stationary counts use _stationary_counts, not this scan")
+        msg = "stationary counts use _stationary_counts, not this scan"
+        raise ValueError(msg)
     if is_factorized:
         target_masks = jax.nn.one_hot(
             state_ind,
@@ -1101,12 +1112,12 @@ def _validate_smoothness(smoothness: float | np.ndarray | str) -> bool:
     ``"reml"``. Returns whether REML estimates the strengths."""
     if isinstance(smoothness, str):
         if smoothness != "reml":
-            raise ValueError(
-                f'smoothness must be a float >= 0 or "reml", got {smoothness!r}.'
-            )
+            msg = f'smoothness must be a float >= 0 or "reml", got {smoothness!r}.'
+            raise ValueError(msg)
         return True
     if np.any(~np.isfinite(smoothness) | (np.asarray(smoothness) < 0.0)):
-        raise ValueError(f"smoothness must be finite and >= 0, got {smoothness}.")
+        msg = f"smoothness must be finite and >= 0, got {smoothness}."
+        raise ValueError(msg)
     return False
 
 
@@ -1117,10 +1128,11 @@ def _require_spline_term(
     spline term to penalize."""
     penalized = isinstance(smoothness, str) or np.any(np.asarray(smoothness) > 0.0)
     if penalized and (smoothness_matrix is None or not np.any(smoothness_matrix)):
-        raise ValueError(
+        msg = (
             "A smoothness penalty needs a quantile_bs or cyclic_bs term in the "
             "transition formula, e.g. '1 + quantile_bs(speed)'."
         )
+        raise ValueError(msg)
 
 
 def _row_smoothness(
@@ -1170,11 +1182,12 @@ def _check_smoothness_design(
     if (isinstance(smoothness, str) or smoothness != 0.0) and (
         design_matrix.design_info.column_names[0] != "Intercept"
     ):
-        raise ValueError(
+        msg = (
             "A smoothness penalty needs an intercept as the first column of the "
             "transition formula, e.g. '1 + quantile_bs(speed)', got columns "
             f"{design_matrix.design_info.column_names}."
         )
+        raise ValueError(msg)
 
 
 def _fit_covariate_transition(
@@ -1825,12 +1838,14 @@ def _row_prior_weights(prior_weight: float | np.ndarray, n_states: int) -> np.nd
     if prior_weight_arr.size == 1:
         prior_weight_arr = np.full(n_states, prior_weight_arr.item())
     if prior_weight_arr.shape != (n_states,):
-        raise ValueError(
+        msg = (
             f"prior_weight must be a scalar or array of shape ({n_states},), "
             f"got shape {prior_weight_arr.shape}"
         )
+        raise ValueError(msg)
     if np.any(prior_weight_arr < 0):
-        raise ValueError(f"prior_weight must be non-negative, got {prior_weight_arr}")
+        msg = f"prior_weight must be non-negative, got {prior_weight_arr}"
+        raise ValueError(msg)
     return prior_weight_arr
 
 
@@ -1931,13 +1946,11 @@ def estimate_stationary_state_transition_from_counts(
     prior_fallback = alpha / alpha.sum(axis=-1, keepdims=True)
     row_totals = new_transition_matrix.sum(axis=-1, keepdims=True)
     safe_row_totals = np.where(row_totals == 0, 1.0, row_totals)
-    new_transition_matrix = np.where(
+    return np.where(
         row_totals == 0,
         prior_fallback,
         new_transition_matrix / safe_row_totals,
     )
-
-    return new_transition_matrix
 
 
 def _block_loss(
@@ -2564,11 +2577,12 @@ def _discrete_transition_from_statistics(
         pairs = sorted(
             {tuple(int(i) for i in index[-2:]) for index in np.argwhere(bad)}
         )
-        raise ValueError(
+        msg = (
             "Expected discrete transition statistics are not finite for state "
             f"pairs {pairs}. This usually follows NaN or impossible likelihood "
             "rows; see the degenerate/NaN timestep warnings."
         )
+        raise ValueError(msg)
     if _is_nonstationary(
         discrete_transition_coefficients, discrete_transition_design_matrix
     ):
@@ -2588,20 +2602,19 @@ def _discrete_transition_from_statistics(
         return _DiscreteTransitionMStep(
             fit.transition, fit.coefficients, fit.smoothness
         )
+    if (
+        isinstance(transition_stickiness, np.ndarray)
+        and transition_stickiness.size == 1
+    ):
+        stickiness_value = float(transition_stickiness.item())
     else:
-        if (
-            isinstance(transition_stickiness, np.ndarray)
-            and transition_stickiness.size == 1
-        ):
-            stickiness_value = float(transition_stickiness.item())
-        else:
-            stickiness_value = transition_stickiness
-        discrete_transition = estimate_stationary_state_transition_from_counts(
-            statistics,
-            concentration=transition_concentration,
-            stickiness=stickiness_value,
-            prior_weight=transition_prior_weight,
-        )
+        stickiness_value = transition_stickiness
+    discrete_transition = estimate_stationary_state_transition_from_counts(
+        statistics,
+        concentration=transition_concentration,
+        stickiness=stickiness_value,
+        prior_weight=transition_prior_weight,
+    )
 
     return _DiscreteTransitionMStep(
         discrete_transition, discrete_transition_coefficients
@@ -2645,10 +2658,11 @@ class _QuantileBSpline:
         upper_quantile: float = 1.0,
     ) -> None:
         if not 0.0 <= lower_quantile < upper_quantile <= 1.0:
-            raise ValueError(
+            msg = (
                 "quantile_bs needs 0 <= lower_quantile < upper_quantile <= 1, got "
                 f"lower_quantile={lower_quantile}, upper_quantile={upper_quantile}."
             )
+            raise ValueError(msg)
         self._n_knots, self._degree = n_knots, degree
         self._quantiles = (lower_quantile, upper_quantile)
         self._chunks.append(np.ravel(np.asarray(x, dtype=float)))
@@ -2661,7 +2675,8 @@ class _QuantileBSpline:
         self._lower, self._upper = np.quantile(values, self._quantiles)
         distinct = np.unique(values[(values >= self._lower) & (values <= self._upper)])
         if distinct.size < 2:
-            raise ValueError("quantile_bs needs at least two distinct values.")
+            msg = "quantile_bs needs at least two distinct values."
+            raise ValueError(msg)
         knots = np.unique(
             np.quantile(distinct, np.linspace(0, 1, self._n_knots + 2)[1:-1])
         )
@@ -2679,10 +2694,10 @@ class _QuantileBSpline:
     def transform(
         self,
         x,
-        n_knots: int = 5,
-        degree: int = 3,
-        lower_quantile: float = 0.0,
-        upper_quantile: float = 1.0,
+        n_knots: int = 5,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        degree: int = 3,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        lower_quantile: float = 0.0,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        upper_quantile: float = 1.0,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
     ) -> np.ndarray:
         return self._spline.transform(
             np.clip(np.asarray(x, dtype=float), self._lower, self._upper)
@@ -2751,15 +2766,17 @@ class _CyclicBSpline:
         self, x, lower: float, upper: float, n_knots: int = 8, degree: int = 3
     ) -> None:
         if not (np.isfinite(lower) and np.isfinite(upper) and lower < upper):
-            raise ValueError(
+            msg = (
                 "cyclic_bs needs finite lower < upper bounds of the period, got "
                 f"lower={lower}, upper={upper}."
             )
+            raise ValueError(msg)
         if n_knots < degree + 1:
-            raise ValueError(
+            msg = (
                 f"cyclic_bs needs n_knots >= degree + 1 = {degree + 1}, got "
                 f"n_knots={n_knots}."
             )
+            raise ValueError(msg)
         self._lower, self._upper = float(lower), float(upper)
         self._n_knots, self._degree = n_knots, degree
         self._chunks.append(np.ravel(np.asarray(x, dtype=float)))
@@ -2770,10 +2787,11 @@ class _CyclicBSpline:
         # Missing values are left to the formula's NA_action.
         distinct = np.unique(self._wrap(values[np.isfinite(values)]))
         if distinct.size < self._n_knots:
-            raise ValueError(
+            msg = (
                 f"cyclic_bs needs at least n_knots={self._n_knots} distinct "
                 f"values, got {distinct.size}."
             )
+            raise ValueError(msg)
         self._knots = np.quantile(
             distinct, (np.arange(self._n_knots) + 0.5) / self._n_knots
         )
@@ -2799,7 +2817,12 @@ class _CyclicBSpline:
         return periodic
 
     def transform(
-        self, x, lower: float, upper: float, n_knots: int = 8, degree: int = 3
+        self,
+        x,
+        lower: float,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        upper: float,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        n_knots: int = 8,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
+        degree: int = 3,  # noqa: ARG002 -- patsy passes memorize_chunk's arguments
     ) -> np.ndarray:
         extended, start = self._extended()
         period = self._upper - self._lower
@@ -2811,7 +2834,7 @@ class _CyclicBSpline:
         shifted = start + np.mod(values[finite] - start, period)
         basis = BSpline.design_matrix(shifted, extended, self._degree)
         columns[finite] = self._fold(basis.toarray())[:, 1:]
-        return columns.reshape(np.shape(x) + (-1,))
+        return columns.reshape((*np.shape(x), -1))
 
     def curvature_penalty(self) -> np.ndarray:
         """Integrated squared second derivative of the basis over one period.
@@ -2893,7 +2916,7 @@ class DiscreteStationaryDiagonal:
 
     diagonal_values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:  # noqa: ARG002 -- shared make_state_transition signature
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -2926,7 +2949,7 @@ class DiscreteStationaryCustom:
 
     values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:  # noqa: ARG002 -- shared make_state_transition signature
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -2978,7 +3001,8 @@ def _initial_nonstationary_transition(
         formula, covariate_data, NA_action="raise"
     )
     if discrete_transition_design_matrix.shape[0] == 0:
-        raise ValueError("No covariate data provided for the transition matrix.")
+        msg = "No covariate data provided for the transition matrix."
+        raise ValueError(msg)
     _check_smoothness_design(smoothness, discrete_transition_design_matrix)
 
     n_time, n_coefficients = discrete_transition_design_matrix.shape
@@ -3248,7 +3272,8 @@ def _transition_intervals(
     transitions, lower, upper : np.ndarray, shape (n_new_time, n_states, n_states)
     """
     if not 0.0 < coverage < 1.0:
-        raise ValueError(f"coverage must be in (0, 1), got {coverage}.")
+        msg = f"coverage must be in (0, 1), got {coverage}."
+        raise ValueError(msg)
     design_matrix = np.asarray(
         build_design_matrices(
             [discrete_transition_design_matrix.design_info],

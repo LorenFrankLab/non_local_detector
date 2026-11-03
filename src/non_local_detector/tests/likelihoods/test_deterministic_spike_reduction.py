@@ -84,7 +84,8 @@ def test_fixed_input_order_and_invalid_row_drop(dtype, tail, reduction_path):
 
 
 @pytest.mark.parametrize(
-    "n_values,n_rows,tail", [(0, 0, (3,)), (0, 4, (3,)), (7, 0, (3,)), (7, 4, (0,))]
+    ("n_values", "n_rows", "tail"),
+    [(0, 0, (3,)), (0, 4, (3,)), (7, 0, (3,)), (7, 4, (0,))],
 )
 def test_empty_shapes_keep_the_exact_requested_rows(
     n_values, n_rows, tail, reduction_path

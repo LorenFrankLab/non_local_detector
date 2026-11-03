@@ -10,6 +10,7 @@ on the linear layout or on how a branch is split into edges.
 """
 
 import pickle
+from itertools import pairwise
 
 import networkx as nx
 import numpy as np
@@ -65,7 +66,7 @@ def _walk(env, node_sequence, n_per_leg=300, n_laps=12):
     nodes = env.track_graph.nodes
     legs = [
         np.linspace(nodes[a]["pos"], nodes[b]["pos"], n_per_leg)
-        for a, b in zip(node_sequence[:-1], node_sequence[1:], strict=True)
+        for a, b in pairwise(node_sequence)
     ]
     position = np.tile(np.concatenate(legs), (n_laps, 1))
     return np.arange(position.shape[0]) / 100.0, position
@@ -326,7 +327,7 @@ def test_glm_predict_and_pickle_with_track_graph_basis(y_track):
 
 
 @pytest.mark.parametrize(
-    "nodes, edges",
+    ("nodes", "edges"),
     [
         # A loop attached at a junction (a lollipop).
         (

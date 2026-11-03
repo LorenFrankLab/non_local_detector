@@ -297,15 +297,15 @@ def model_marks_center(run_data):
 @pytest.mark.parametrize("algorithm", VARIANTS, ids=VARIANT_IDS)
 @pytest.mark.parametrize("has_reference", [True, False])
 def test_zero_rate_electrode_scores_background(run_data, algorithm, has_reference):
-    train_spikes = [np.array([])] + run_data["train_spikes"][1:]
-    train_marks = [np.zeros((0, 4))] + run_data["train_marks"][1:]
+    train_spikes = [np.array([]), *run_data["train_spikes"][1:]]
+    train_marks = [np.zeros((0, 4)), *run_data["train_marks"][1:]]
     model = _fit(run_data, algorithm, train_marks, spikes=train_spikes)
     assert model["mark_reference"][0] is None
     reference = MarkReference(
         np.array([0.0, 1.0, 2.0, 3.0]), np.array([5.0, 6.0, 7.0, 8.0])
     )
     if has_reference:
-        model = dict(model, mark_reference=[reference] + model["mark_reference"][1:])
+        model = dict(model, mark_reference=[reference, *model["mark_reference"][1:]])
     spike_time = run_data["test_time"][100]
     mark = np.array([[1.0, 2.0, 3.0, 4.0]])
     spikes = [np.array([spike_time])] + [np.array([])] * 4
@@ -366,7 +366,8 @@ def test_diffusion_unvisited_bins_score_only_the_background():
     evidence = with_spikes[row] - silent[row]
     occupancy = np.asarray(model["occupancy"])
     unvisited = occupancy < 1e-6 * occupancy.max()
-    assert unvisited.sum() > 10 and (~unvisited).sum() > 10
+    assert unvisited.sum() > 10
+    assert (~unvisited).sum() > 10
     background = (
         LOG_RATE_EPS_HZ
         + model["mark_reference"][0].log_density(decode_marks[0])
@@ -445,7 +446,7 @@ def test_gmm_rate_below_the_background_still_sets_its_intensity(run_data, is_loc
         )
         return with_spikes - silent
 
-    assert 1e-13 < RATE_EPS_HZ
+    assert RATE_EPS_HZ > 1e-13
     higher, lower = spike_terms(1e-13), spike_terms(1e-14)
     assert np.all(higher >= lower - 1e-6)
     assert np.max(higher - lower) > 1e-2

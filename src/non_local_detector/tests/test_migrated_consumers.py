@@ -7,14 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import jax.numpy as jnp
-import matplotlib
+import matplotlib as mpl
 import networkx as nx
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 
 from non_local_detector import Environment, time_edges_from_centers
@@ -71,9 +71,12 @@ def _calls(path, names):
         except SyntaxError:  # IPython help/magics are not executed here.
             continue
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in names:
-                    yield node
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in names
+            ):
+                yield node
 
 
 def _evaluate_call(node, namespace):
@@ -182,13 +185,13 @@ def test_categorical_ownership_and_shortest_arc_stay_within_segments():
     )
     np.testing.assert_array_equal(valid, [True, True, False, False, True, True])
     assert aligned.loc[valid, "label"].tolist() == ["a", "a", "c", "c"]
-    assert (np.abs(aligned.loc[valid, "angle"].values[:2]) > 3.1).all()
+    assert (np.abs(aligned.loc[valid, "angle"].to_numpy()[:2]) > 3.1).all()
     np.testing.assert_allclose(aligned.loc[valid, "x"], [0.25, 0.75, 100.25, 100.75])
 
 
 @pytest.mark.parametrize(
     "name",
-    NOTEBOOKS + ["notebooks/01_models_and_validation/sorted_spikes_detector_test.py"],
+    [*NOTEBOOKS, "notebooks/01_models_and_validation/sorted_spikes_detector_test.py"],
 )
 def test_shipped_notebook_likelihood_calls_execute(name):
     time = np.arange(100) * 0.002
@@ -251,7 +254,7 @@ def test_shipped_notebook_likelihood_calls_execute(name):
 
 
 @pytest.mark.parametrize(
-    "filename, fit_name, predict_name",
+    ("filename", "fit_name", "predict_name"),
     [
         ("profile_memory.py", "fit_reference", "predict_reference"),
         ("profile_memory.py", "fit_log", "predict_log"),
@@ -349,12 +352,13 @@ def test_real_data_notebook_covariate_plot_uses_aligned_rows():
         # Execute the notebook's actual example arguments, including the
         # tracking frame chosen by the consumer, rather than a rewritten call.
         for node in ast.parse(source).body:
-            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
-                if (
-                    isinstance(node.value.func, ast.Name)
-                    and node.value.func.id == definition.name
-                ):
-                    _evaluate_call(node.value, namespace)
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == definition.name
+            ):
+                _evaluate_call(node.value, namespace)
         scatter = plt.gcf().axes[0].collections[0]
         assert scatter.get_offsets().shape == (valid.sum(), 2)
     finally:

@@ -126,7 +126,7 @@ class TestVariantSharedDefaults:
         assert np.isclose(ic.sum(), 1.0)
 
     @pytest.mark.parametrize(
-        "model_cls, n_states",
+        ("model_cls", "n_states"),
         [
             (MultiEnvironmentClusterlessClassifier, 2),
             (NoSpikeContFragClusterlessClassifier, 3),

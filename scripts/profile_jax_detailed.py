@@ -156,7 +156,7 @@ def profile_memory_usage():
 
         # Estimate memory from array sizes
         total_bytes = 0
-        for _key, val in data.items():
+        for val in data.values():
             if isinstance(val, jnp.ndarray | np.ndarray):
                 total_bytes += val.nbytes
         total_bytes += result.nbytes

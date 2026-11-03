@@ -25,7 +25,7 @@ import numpy as np
 import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import workload  # noqa: E402
+from compare_prediction_modes import workload
 
 
 def main():
@@ -120,7 +120,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     padded_side = int(np.ceil(args.arena / args.bin_size)) + 2
     upper_hidden = 2 * padded_side**2 + 2
-    n_rows = int(round(args.duration * 500))
+    n_rows = round(args.duration * 500)
     budget = int(args.host_budget_gib * 1024**3)
     # Dense setup and inference retain several host/device buffers. Do not
     # allocate a large dense target merely to measure its failure.
@@ -177,7 +177,7 @@ def main():
             int(sum(stop - start for start, stop in args.selected_intervals) * 500) + 2,
         )
     warm_rows = (
-        n_rows if args.warm_duration is None else int(round(args.warm_duration * 500))
+        n_rows if args.warm_duration is None else round(args.warm_duration * 500)
     )
     retained_rows = (
         max(spatial_rows, warm_rows)
@@ -250,7 +250,7 @@ def main():
     def invoke(index, duration=None):
         call = dict(predict)
         if duration is not None:
-            call["time_edges"] = np.arange(int(round(duration * 500)) + 1) / 500
+            call["time_edges"] = np.arange(round(duration * 500) + 1) / 500
             call.pop("selected_intervals", None)
         if args.mode == "spatial":
             call["result_path"] = args.output / f"spatial-{index}"
@@ -425,11 +425,11 @@ def main():
         )
     )
     if peak[0] > budget:
-        raise RuntimeError(f"measured peak {peak[0]} exceeds declared budget {budget}")
+        msg = f"measured peak {peak[0]} exceeds declared budget {budget}"
+        raise RuntimeError(msg)
     if hashes_before != hashes_after or not report["benchmark_stable_during_run"]:
-        raise RuntimeError(
-            "imported implementation changed during the benchmark; rerun with frozen sources"
-        )
+        msg = "imported implementation changed during the benchmark; rerun with frozen sources"
+        raise RuntimeError(msg)
     stats = devices[0].memory_stats() or {}
     if (
         args.device_budget_gib is not None
@@ -439,9 +439,8 @@ def main():
         )
         > args.device_budget_gib * 1024**3
     ):
-        raise RuntimeError(
-            "measured device allocation/reservation exceeds declared budget"
-        )
+        msg = "measured device allocation/reservation exceeds declared budget"
+        raise RuntimeError(msg)
 
 
 if __name__ == "__main__":

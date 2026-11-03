@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tracemalloc
+from itertools import pairwise
 from pathlib import Path
 
 import jax
@@ -159,9 +160,7 @@ def row_partitions(n_time: int) -> list[list[slice]]:
     # Irregular: chunk lengths 1, 4, 2, rest.
     for cuts in ([1, 5, 7], [2, 3, 11], [6]):
         bounds = [0, *cuts, n_time]
-        partitions.append(
-            [slice(a, b) for a, b in zip(bounds[:-1], bounds[1:], strict=True) if a < b]
-        )
+        partitions.append([slice(a, b) for a, b in pairwise(bounds) if a < b])
     return partitions
 
 
@@ -427,7 +426,8 @@ def test_selected_features_stay_paired_with_their_spike(shuffled):
                 N_BINS - 1,
             )
             np.testing.assert_array_equal(bin_ind, expected_rows - row_start)
-            assert np.all(bin_ind >= 0) and np.all(bin_ind < row_stop - row_start)
+            assert np.all(bin_ind >= 0)
+            assert np.all(bin_ind < row_stop - row_start)
             partition_ids.append(selected_ids)
 
         # A partition of the rows partitions the in-range spikes: each owned

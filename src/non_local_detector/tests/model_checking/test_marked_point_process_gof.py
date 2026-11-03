@@ -9,6 +9,7 @@ intensities independently of the code under test.
 """
 
 import functools
+import re
 
 import jax.numpy as jnp
 import numpy as np
@@ -326,7 +327,8 @@ def test_transforms_are_uniform_for_data_from_the_fitted_model(
         spike_times,
         marks,
     )
-    assert u.shape == (len(spike_times),) and v.shape == marks.shape
+    assert u.shape == (len(spike_times),)
+    assert v.shape == marks.shape
     result = ks_uniformity_test(np.column_stack((u, v)))
     assert result.p_value.min() > 1e-3, result
 
@@ -467,8 +469,10 @@ def test_ks_uniformity_test_reports_each_coordinate():
     rng = np.random.default_rng(3)
     samples = np.column_stack((rng.uniform(size=2000), rng.beta(2, 2, size=2000)))
     result = ks_uniformity_test(samples)
-    assert result.statistic.shape == (2,) and result.p_value.shape == (2,)
-    assert result.p_value[0] > 0.01 and result.p_value[1] < 1e-6
+    assert result.statistic.shape == (2,)
+    assert result.p_value.shape == (2,)
+    assert result.p_value[0] > 0.01
+    assert result.p_value[1] < 1e-6
     np.testing.assert_allclose(
         result.statistic[1], stats.kstest(samples[:, 1], "uniform").statistic
     )
@@ -480,7 +484,7 @@ def test_ks_uniformity_test_reports_each_coordinate():
 )
 def test_uniformity_tests_reject_points_outside_the_unit_cube(bad):
     for test in (ks_uniformity_test, pearson_chi_squared_test):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=re.escape("array in [0, 1]")):
             test(bad)
 
 
@@ -726,7 +730,7 @@ def test_mdci_in_one_bin_equals_the_conditional_at_that_bin(separated, algorithm
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_transforms_reject_missing_positions(separated, algorithm, transform):
     """A tracking gap raises instead of being read as a position bin."""
-    environment, models = separated
+    _environment, models = separated
     position_time = np.linspace(0.0, 1.0, 11)
     position = np.full((11, 1), 20.0)
     position[4:7] = np.nan

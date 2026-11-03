@@ -1,6 +1,6 @@
 import copy
 
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -45,8 +45,9 @@ def get_multiunit_firing_rate(
     """
     time = np.asarray(time)
     if time.ndim != 1 or time.shape[0] < 2:
+        msg = "get_multiunit_firing_rate needs at least two timestamps"
         raise ValidationError(
-            "get_multiunit_firing_rate needs at least two timestamps",
+            msg,
             expected="array with shape (n_time,), n_time >= 2",
             got=f"array with shape {time.shape}",
             hint="A single timestamp does not determine a row duration. Pass "
@@ -164,7 +165,7 @@ def plot_non_local_model(
     axes[1].set_ylabel("Probability")
     axes[1].set_ylim((0.0, 1.05))
 
-    cmap = copy.copy(matplotlib.colormaps["bone_r"])
+    cmap = copy.copy(mpl.colormaps["bone_r"])
     cmap.set_bad(color="lightgrey")
 
     axes[2].pcolormesh(

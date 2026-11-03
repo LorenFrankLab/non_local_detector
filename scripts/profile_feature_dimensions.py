@@ -24,7 +24,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
 )
 
 
-def create_test_data(n_features, n_encoding=200, n_decoding=100, n_positions=500):
+def create_test_data(n_features, n_encoding=200, n_decoding=100, n_positions=500):  # noqa: ARG001 -- unused
     """Create synthetic test data with specified number of features."""
     rng = np.random.default_rng(0)
 

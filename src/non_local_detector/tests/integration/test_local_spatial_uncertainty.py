@@ -26,14 +26,14 @@ DECODE_WINDOW = slice(9_000, 33_000)
 def simulated_data():
     """Generate simulated data for testing."""
     (
-        speed,
+        _speed,
         position,
         spike_times,
         time,
-        event_times,
-        sampling_frequency,
+        _event_times,
+        _sampling_frequency,
         is_event,
-        place_fields,
+        _place_fields,
     ) = make_simulated_data(n_neurons=30)
 
     return {
@@ -63,7 +63,7 @@ def fit_predict(simulated_data):
                 sorted_spikes_algorithm="sorted_spikes_kde",
                 sorted_spikes_algorithm_params={
                     "position_std": 6.0,
-                    "block_size": int(2**12),
+                    "block_size": (2**12),
                 },
                 **detector_kwargs,
             ).fit(
@@ -159,8 +159,7 @@ def test_penalty_and_kernel_simultaneous(fit_predict):
 @pytest.fixture(scope="module")
 def clusterless_simulated_data():
     """Clusterless simulated data for testing: three runs (70 s)."""
-    sim = make_simulated_run_data(n_tetrodes=5, n_runs=3, seed=42)
-    return sim
+    return make_simulated_run_data(n_tetrodes=5, n_runs=3, seed=42)
 
 
 def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
@@ -172,7 +171,7 @@ def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
         clusterless_algorithm="clusterless_kde",
         clusterless_algorithm_params={
             "position_std": 6.0,
-            "block_size": int(2**12),
+            "block_size": (2**12),
         },
     ).fit(
         sim.position_time,

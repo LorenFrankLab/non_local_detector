@@ -89,7 +89,10 @@ def _prepare_reference_likelihood(model: Any, predict: dict) -> Callable:
     centers = (edges[:-1] + edges[1:]) / 2
 
     def likelihood(
-        full_edges: np.ndarray, *, row_slice: slice, is_missing: np.ndarray
+        full_edges: np.ndarray,  # noqa: ARG001 -- likelihood callback signature
+        *,
+        row_slice: slice,
+        is_missing: np.ndarray,
     ) -> Any:
         return prepared(centers, *args, row_slice=row_slice, is_missing=is_missing)
 
@@ -115,7 +118,8 @@ def reference64_prediction(
     from non_local_detector.models.base import _missing_bins
 
     if not jax.config.x64_enabled:
-        raise ValueError("reference64 requires JAX_ENABLE_X64=1")
+        msg = "reference64 requires JAX_ENABLE_X64=1"
+        raise ValueError(msg)
     interior = model.is_track_interior_state_bins_
     operator = model._continuous_transition_operator_.restricted(interior)
     operator = operator.bind_discrete(model.discrete_state_transitions_).fused()
@@ -134,7 +138,8 @@ def reference64_prediction(
         }
     )
     if transition_dtypes != ["float64"]:
-        raise ValueError("reference64 transition inputs must actually be float64")
+        msg = "reference64 transition inputs must actually be float64"
+        raise ValueError(msg)
     prepared = _prepare_reference_likelihood(model, predict)
     observed_dtypes: set[str] = set()
     inference_dtypes: set[str] = set()
@@ -148,7 +153,8 @@ def reference64_prediction(
         promoted = values.astype(np.float64)
         inference_dtypes.add(str(promoted.dtype))
         if promoted.dtype != np.float64:
-            raise ValueError("reference64 likelihood input must actually be float64")
+            msg = "reference64 likelihood input must actually be float64"
+            raise ValueError(msg)
         return promoted
 
     result = checkpointed_forward_backward(
@@ -169,7 +175,8 @@ def reference64_prediction(
         dtype=np.float64,
     ).dataset
     if set(output_dtypes(result).values()) != {"float64"}:
-        raise ValueError("reference64 posterior must actually be float64")
+        msg = "reference64 posterior must actually be float64"
+        raise ValueError(msg)
     return result, {
         "likelihood_compute_dtypes": sorted(observed_dtypes),
         "likelihood_inference_dtypes": sorted(inference_dtypes),
@@ -227,8 +234,7 @@ def workload(args):
         "spike_times": decode_spikes,
         "position_time": decode_time,
         "position": decode_position,
-        "time_edges": np.arange(int(round(args.duration * SAMPLE_RATE)) + 1)
-        / SAMPLE_RATE,
+        "time_edges": np.arange(round(args.duration * SAMPLE_RATE) + 1) / SAMPLE_RATE,
     }
     if args.family == "clusterless":
         fit["spike_waveform_features"] = [

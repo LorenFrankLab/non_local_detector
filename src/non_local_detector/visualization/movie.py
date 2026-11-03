@@ -211,7 +211,7 @@ def _setup_single_env_figure():
     return fig, axes
 
 
-def _render_single_env_frame(fig, axes, frame_idx, data):
+def _render_single_env_frame(fig, axes, frame_idx, data):  # noqa: ARG001 -- frame-renderer signature
     """Render a single frame for single environment movie."""
 
     # Update position

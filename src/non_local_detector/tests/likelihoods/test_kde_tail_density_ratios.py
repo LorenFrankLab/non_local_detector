@@ -67,7 +67,7 @@ MODELS = [
 ]
 
 
-@pytest.mark.parametrize("fit,predict,clusterless", MODELS)
+@pytest.mark.parametrize(("fit", "predict", "clusterless"), MODELS)
 @pytest.mark.parametrize("is_local", [False, True])
 def test_equal_occupancy_and_spike_densities_keep_the_mean_rate(
     fit, predict, clusterless, is_local
@@ -92,7 +92,7 @@ def test_equal_occupancy_and_spike_densities_keep_the_mean_rate(
     np.testing.assert_allclose(score, -1.0, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("fit,predict,clusterless", MODELS[1:])
+@pytest.mark.parametrize(("fit", "predict", "clusterless"), MODELS[1:])
 @pytest.mark.parametrize("is_local", [False, True])
 def test_mark_event_term_survives_small_position_densities(
     fit, predict, clusterless, is_local
@@ -471,7 +471,7 @@ def test_batched_log_densities_match_each_model(n_dims):
 
 
 @pytest.mark.parametrize(
-    "n_models, n_samples, block_size",
+    ("n_models", "n_samples", "block_size"),
     [(16, 65_536, 1_024), (40, 65_536, 1_024), (3, 4_096, 100), (16, 20_000_000, 64)],
 )
 def test_batched_kernels_share_one_model_workspace(n_models, n_samples, block_size):

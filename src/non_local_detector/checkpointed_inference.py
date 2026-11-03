@@ -162,7 +162,7 @@ def _available_host_bytes() -> int | None:
         host = int(psutil.virtual_memory().available)
     except ImportError:
         try:
-            with open("/proc/meminfo") as meminfo:
+            with Path("/proc/meminfo").open() as meminfo:
                 for line in meminfo:
                     if line.startswith("MemAvailable:"):
                         host = int(line.split()[1]) * 1024
@@ -362,7 +362,8 @@ def _selected_rows(selected, n_time):
     selected = np.asarray(selected)
     if selected.dtype.kind == "b":
         if selected.shape != (n_time,):
-            raise ValueError("selected_rows Boolean mask must match the recording")
+            msg = "selected_rows Boolean mask must match the recording"
+            raise ValueError(msg)
         selected = np.flatnonzero(selected)
     if (
         selected.ndim != 1
@@ -371,9 +372,8 @@ def _selected_rows(selected, n_time):
         or np.any(selected >= n_time)
         or np.any(selected[1:] <= selected[:-1])
     ):
-        raise ValueError(
-            "selected_rows must be unique, increasing recording row indices"
-        )
+        msg = "selected_rows must be unique, increasing recording row indices"
+        raise ValueError(msg)
     return selected.astype(np.intp, copy=False)
 
 
@@ -534,33 +534,39 @@ def checkpointed_forward_backward(
         or not isinstance(chunk_size, (int, np.integer))
         or chunk_size <= 0
     ):
-        raise ValueError("chunk_size must be a positive integer")
+        msg = "chunk_size must be a positive integer"
+        raise ValueError(msg)
     if evidence_accumulation not in ("reference", "stable"):
-        raise ValueError("evidence_accumulation must be reference or stable")
+        msg = "evidence_accumulation must be reference or stable"
+        raise ValueError(msg)
     if transition_statistics not in (None, "counts", "responses"):
-        raise ValueError("transition_statistics must be None, counts or responses")
+        msg = "transition_statistics must be None, counts or responses"
+        raise ValueError(msg)
     if (
         isinstance(replay_cache_bytes, bool)
         or not isinstance(replay_cache_bytes, (int, np.integer))
         or replay_cache_bytes < 0
     ):
-        raise ValueError("replay_cache_bytes must be a nonnegative integer")
+        msg = "replay_cache_bytes must be a nonnegative integer"
+        raise ValueError(msg)
     max_read_bytes = _validate_read_budget(max_read_bytes)
     edges, _ = uniform_time_edges(time_edges)
     n_time, dtype = len(edges) - 1, np.dtype(dtype)
     if dtype not in (np.dtype("float32"), np.dtype("float64")):
-        raise ValueError("dtype must be float32 or float64")
+        msg = "dtype must be float32 or float64"
+        raise ValueError(msg)
     if dtype == np.dtype("float64") and not jax.config.x64_enabled:
-        raise ValueError(
-            "float64 requires JAX_ENABLE_X64=1; precision is not silently downgraded"
-        )
+        msg = "float64 requires JAX_ENABLE_X64=1; precision is not silently downgraded"
+        raise ValueError(msg)
     initial = np.asarray(initial_distribution, dtype=dtype)
     if initial.ndim != 1 or not len(initial):
-        raise ValueError("initial_distribution must be a nonempty vector")
+        msg = "initial_distribution must be a nonempty vector"
+        raise ValueError(msg)
     n_bins = len(initial)
     if state_ind is None:
         if output_mode == "compact":
-            raise ValueError("Compact state marginals require state_ind")
+            msg = "Compact state marginals require state_ind"
+            raise ValueError(msg)
         state_ind = np.arange(n_bins)
     state_ind = np.asarray(state_ind)
     if (
@@ -568,9 +574,8 @@ def checkpointed_forward_backward(
         or state_ind.dtype.kind not in "iu"
         or np.any(state_ind < 0)
     ):
-        raise ValueError(
-            "state_ind must contain one nonnegative integer per hidden bin"
-        )
+        msg = "state_ind must contain one nonnegative integer per hidden bin"
+        raise ValueError(msg)
     minimum_states = int(state_ind.max()) + 1
     n_states = minimum_states if n_states is None else n_states
     if (
@@ -578,7 +583,8 @@ def checkpointed_forward_backward(
         or not isinstance(n_states, (int, np.integer))
         or n_states < minimum_states
     ):
-        raise ValueError("n_states must include every declared state_ind value")
+        msg = "n_states must include every declared state_ind value"
+        raise ValueError(msg)
     n_states = int(n_states)
     missing = (
         np.zeros(n_time, bool)
@@ -586,9 +592,11 @@ def checkpointed_forward_backward(
         else np.asarray(is_missing, dtype=bool)
     )
     if missing.shape != (n_time,):
-        raise ValueError("is_missing must contain one value per decode bin")
+        msg = "is_missing must contain one value per decode bin"
+        raise ValueError(msg)
     if output_mode not in ("compact", "spatial"):
-        raise ValueError("output_mode must be compact or spatial")
+        msg = "output_mode must be compact or spatial"
+        raise ValueError(msg)
     outputs = (
         (
             ("acausal_state_probabilities",)
@@ -600,9 +608,11 @@ def checkpointed_forward_backward(
     )
     outputs = {outputs} if isinstance(outputs, str) else set(outputs)
     if not outputs or outputs - (_SPATIAL | _MARGINAL):
-        raise ValueError("Unrecognized or empty return_outputs")
+        msg = "Unrecognized or empty return_outputs"
+        raise ValueError(msg)
     if output_mode == "compact" and outputs & _SPATIAL:
-        raise ValueError("Compact mode only retains state probabilities")
+        msg = "Compact mode only retains state probabilities"
+        raise ValueError(msg)
     state_columns = (
         tuple(
             jnp.asarray(np.flatnonzero(state_ind == state)) for state in range(n_states)
@@ -616,15 +626,13 @@ def checkpointed_forward_backward(
         None if not covariate else np.asarray(discrete_transition_matrix, dtype=dtype)
     )
     if covariate and weights.shape != (n_time, n_states, n_states):
-        raise ValueError(
-            "Discrete transition rows must match the full recording/state dimensions"
-        )
+        msg = "Discrete transition rows must match the full recording/state dimensions"
+        raise ValueError(msg)
     if transition_operator is None:
         matrix = continuous_transition_matrix if covariate else transition_matrix
         if matrix is None or np.shape(matrix) != (n_bins, n_bins):
-            raise ValueError(
-                "A matching dense matrix or transition_operator is required"
-            )
+            msg = "A matching dense matrix or transition_operator is required"
+            raise ValueError(msg)
         transition_operator = _DenseTransition(
             jnp.asarray(matrix, dtype=dtype), jnp.asarray(state_ind), n_states
         )
@@ -633,18 +641,20 @@ def checkpointed_forward_backward(
         if len(leaves) == 1 and leaves[0] is transition_operator:
             # An unregistered object would be a static jit argument: its arrays
             # would be baked into the compiled chunks and later changes ignored.
-            raise TypeError(
+            msg = (
                 "transition_operator must be a registered JAX pytree (for "
                 "example via jax.tree_util.register_pytree_node_class), got "
                 f"{type(transition_operator).__name__}."
             )
+            raise TypeError(msg)
         if transition_statistics is not None and not hasattr(
             transition_operator, "pair_products"
         ):
-            raise TypeError(
+            msg = (
                 "transition_statistics needs a transition_operator with "
                 f"pair_products; {type(transition_operator).__name__} has none."
             )
+            raise TypeError(msg)
         # Transfer array leaves once; each jitted chunk call would otherwise
         # convert host leaves again.
         transition_operator = jax.device_put(transition_operator)
@@ -725,9 +735,8 @@ def checkpointed_forward_backward(
             dtype=dtype,
         )
         if values.shape != (stop - first, n_bins):
-            raise ValueError(
-                "Likelihood callback must return exactly the requested global rows and hidden bins"
-            )
+            msg = "Likelihood callback must return exactly the requested global rows and hidden bins"
+            raise ValueError(msg)
         diagnostics["likelihood_evaluations"] += 1
         diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - first)
         return _prepare_chunk(values[start - first :], jnp.asarray(missing[start:stop]))
@@ -947,9 +956,8 @@ def checkpointed_forward_backward(
                 if pending is not None:
                     emit_chunk(*pending)
                 if not np.array_equal(np.asarray(checksum), expected_checksum):
-                    raise ValueError(
-                        "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
-                    )
+                    msg = "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
+                    raise ValueError(msg)
                 pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)

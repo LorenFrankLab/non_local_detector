@@ -390,7 +390,7 @@ class TestGroundProcessRange:
         )
 
     @pytest.mark.parametrize(
-        "rate, gpi_logp, occ_logp",
+        ("rate", "gpi_logp", "occ_logp"),
         [(2.0, -800.0, -790.0), (2.0, -120.0, -60.0)],
         ids=["both_underflow", "gpi_underflows"],
     )
@@ -436,7 +436,7 @@ class TestGroundProcessRange:
         fitted models' own log densities in float64, so only the ratio
         arithmetic is under test; a probability-space ratio gives ``0 / 0``.
         """
-        model, env = _fit_far_from_most_bins(seed=0)
+        model, _env = _fit_far_from_most_bins(seed=0)
         bins = model["interior_place_bin_centers"]
         occ_logp = np.asarray(model["log_occupancy"], dtype=np.float64)
         gpi_logp = np.asarray(

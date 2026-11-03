@@ -1,4 +1,6 @@
-from non_local_detector.continuous_state_transitions import (  # noqa
+import contextlib
+
+from non_local_detector.continuous_state_transitions import (
     Discrete,
     EmpiricalMovement,
     Identity,
@@ -13,8 +15,8 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
 )
-from non_local_detector.environment import Environment  # noqa
-from non_local_detector.exceptions import (  # noqa
+from non_local_detector.environment import Environment
+from non_local_detector.exceptions import (
     ConfigurationError,
     ConvergenceError,
     DataError,
@@ -22,8 +24,8 @@ from non_local_detector.exceptions import (  # noqa
     NonLocalDetectorError,
     ValidationError,
 )
-from non_local_detector.initial_conditions import UniformInitialConditions  # noqa
-from non_local_detector.models import (  # noqa
+from non_local_detector.initial_conditions import UniformInitialConditions
+from non_local_detector.models import (
     ClusterlessDecoder,
     ContFragClusterlessClassifier,
     ContFragSortedSpikesClassifier,
@@ -35,12 +37,10 @@ from non_local_detector.models import (  # noqa
     NoSpikeContFragSortedSpikesClassifier,
     SortedSpikesDecoder,
 )
-from non_local_detector.time_edges import (  # noqa
+from non_local_detector.time_edges import (
     calculate_time_edges,
     time_edges_from_centers,
 )
 
-try:
+with contextlib.suppress(ImportError):
     from ._version import __version__
-except ImportError:
-    pass

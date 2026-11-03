@@ -218,7 +218,7 @@ def sorted_detector(**detector_kwargs) -> NonLocalSortedSpikesDetector:
     """An unfitted non-local sorted-spikes KDE detector."""
     return NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",
-        sorted_spikes_algorithm_params={"position_std": 6.0, "block_size": int(2**12)},
+        sorted_spikes_algorithm_params={"position_std": 6.0, "block_size": (2**12)},
         **detector_kwargs,
     )
 
@@ -658,7 +658,8 @@ def test_is_missing_straddling_boundaries_matches_unchunked(sorted_setup, n_chun
     # Premise: the mask really does straddle boundaries (a mask aligned to the
     # chunk edges would not exercise the core's per-chunk slicing).
     for row in chunk_start_rows(len(time) - 1, n_chunks):
-        assert is_missing[row - 1] and is_missing[row]
+        assert is_missing[row - 1]
+        assert is_missing[row]
 
     kwargs = sorted_predict_kwargs(sorted_setup, is_missing=is_missing)
     reference, _ = assert_chunked_matches(detector, kwargs, n_chunks)

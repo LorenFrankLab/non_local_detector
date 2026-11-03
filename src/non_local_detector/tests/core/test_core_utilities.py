@@ -37,7 +37,7 @@ class TestNormalize:
         arr = jnp.array([1.0, 2.0, 3.0])
 
         # Act
-        normalized, const = _normalize(arr, axis=0)
+        normalized, _const = _normalize(arr, axis=0)
 
         # Assert
         assert jnp.allclose(normalized.sum(), 1.0)
@@ -48,7 +48,7 @@ class TestNormalize:
         arr = jnp.array([1.0, 2.0, 3.0])
 
         # Act
-        normalized, const = _normalize(arr, axis=0)
+        _normalized, const = _normalize(arr, axis=0)
 
         # Assert
         assert jnp.allclose(const, 6.0)
@@ -203,7 +203,7 @@ class TestSafeLog:
             assert result.shape == shape, f"Failed for shape {shape}"
 
     @pytest.mark.parametrize(
-        "value,expected_result",
+        ("value", "expected_result"),
         [
             (1e-100, "neg_inf"),  # Underflows to zero in float32, becomes -inf
             (1e-300, "neg_inf"),  # Underflows to zero in float32
@@ -223,7 +223,8 @@ class TestSafeLog:
         # Assert
         if expected_result == "neg_inf":
             # Check for -inf (handles both explicit zero and underflow)
-            assert jnp.isinf(result[0]) and result[0] < 0
+            assert jnp.isinf(result[0])
+            assert result[0] < 0
         elif expected_result == "zero":
             assert jnp.allclose(result[0], 0.0)
         elif expected_result == "finite_positive":

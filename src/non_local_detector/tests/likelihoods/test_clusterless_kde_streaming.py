@@ -181,7 +181,8 @@ def test_streamed_fit_and_local_nonlocal_rows_preserve_original_support(
 
 
 @pytest.mark.parametrize(
-    "n_spikes, n_encoding", [(40_000, 200_000), (400_000, 200_000), (40_000, 2_000_000)]
+    ("n_spikes", "n_encoding"),
+    [(40_000, 200_000), (400_000, 200_000), (40_000, 2_000_000)],
 )
 def test_local_terms_keep_compiled_workspace_bounded_without_tiling(
     n_spikes, n_encoding

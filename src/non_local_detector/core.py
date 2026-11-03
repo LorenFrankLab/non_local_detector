@@ -887,10 +887,11 @@ def _chunked_filter_smoother(
     n_time = len(time)
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
     if n_chunks > n_time:
-        raise ValueError(
+        msg = (
             f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time}). "
             f"Each chunk must contain at least one time point."
         )
+        raise ValueError(msg)
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
     # Convert inputs to JAX arrays once at the top - keep data on device
@@ -1153,7 +1154,7 @@ def chunked_filter_smoother(
     def filter_chunk(
         initial_distribution: jnp.ndarray,
         log_likelihoods: jnp.ndarray,
-        time_inds: jnp.ndarray,
+        time_inds: jnp.ndarray,  # noqa: ARG001 -- chunked-filter callback signature
     ) -> tuple:
         return _filter_internal(
             initial_distribution=initial_distribution,
@@ -1298,7 +1299,8 @@ def most_likely_sequence(
         Log likelihoods for each state at each time point.
     """
     if n_chunks > 1:
-        raise NotImplementedError("Chunked Viterbi is not yet implemented.")
+        msg = "Chunked Viterbi is not yet implemented."
+        raise NotImplementedError(msg)
 
     if log_likelihoods is None:
         log_likelihoods = log_likelihood_func(
@@ -1924,7 +1926,8 @@ def most_likely_sequence_covariate_dependent(
         Log likelihoods for each state bin at each time point.
     """
     if n_chunks > 1:
-        raise NotImplementedError("Chunked Viterbi is not yet implemented.")
+        msg = "Chunked Viterbi is not yet implemented."
+        raise NotImplementedError(msg)
 
     if log_likelihoods is None:
         log_likelihoods = log_likelihood_func(

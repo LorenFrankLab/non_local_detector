@@ -40,26 +40,26 @@ class EncodingSupport:
         time = np.asarray(position_time, dtype=np.float64)
         position = np.asarray(position)
         if time.size == 0:
-            raise ValidationError(
-                "Encoding has no position samples; position_time and position must be nonempty"
-            )
+            msg = "Encoding has no position samples; position_time and position must be nonempty"
+            raise ValidationError(msg)
         if (
             time.ndim != 1
             or time.size == 0
             or position.ndim not in (1, 2)
             or position.shape[0] != time.size
         ):
-            raise ValidationError(
-                "position_time and position need matching, nonempty sample rows"
-            )
+            msg = "position_time and position need matching, nonempty sample rows"
+            raise ValidationError(msg)
         position = position.reshape(len(time), -1)
         if not np.all(np.isfinite(time)) or np.any(np.diff(time) <= 0):
+            msg = "position_time must be finite and strictly increasing"
             raise DataError(
-                "position_time must be finite and strictly increasing",
+                msg,
                 data_name="position_time",
             )
         if np.any(np.isinf(position)):
-            raise DataError("position contains infinite values", data_name="position")
+            msg = "position contains infinite values"
+            raise DataError(msg, data_name="position")
         self.time = time
         self.exposure = np.zeros(time.size)
         self.segments = []
@@ -69,19 +69,18 @@ class EncodingSupport:
         if valid_position_intervals is not None:
             intervals = np.asarray(valid_position_intervals, dtype=float)
             if intervals.ndim != 2 or intervals.shape[1] != 2:
-                raise ValidationError(
-                    "valid_position_intervals must have shape (n_intervals, 2)"
-                )
+                msg = "valid_position_intervals must have shape (n_intervals, 2)"
+                raise ValidationError(msg)
             for interval in intervals:
                 validate_time_edges(interval, name="valid_position_intervals")
             if len(intervals) > 1 and np.any(intervals[1:, 0] < intervals[:-1, 1]):
-                raise ValidationError(
-                    "valid_position_intervals must be ordered and non-overlapping"
-                )
+                msg = "valid_position_intervals must be ordered and non-overlapping"
+                raise ValidationError(msg)
             for start, stop in intervals:
                 if not np.any(finite & (time >= start) & (time <= stop)):
+                    msg = "Each valid_position_intervals segment needs a finite position sample"
                     raise ValidationError(
-                        "Each valid_position_intervals segment needs a finite position sample",
+                        msg,
                         hint="Use encoding_time_range to clip an existing interpolation segment between samples.",
                     )
         if time.size > 1 and intervals is None:
@@ -89,8 +88,9 @@ class EncodingSupport:
             try:
                 uniform_time_bin_width(np.asarray(position_time), name="position_time")
             except DataError as error:
+                msg = "Irregular position_time requires explicit continuous tracking intervals"
                 raise DataError(
-                    "Irregular position_time requires explicit continuous tracking intervals",
+                    msg,
                     data_name="position_time",
                     hint="Pass valid_position_intervals=[[start, stop], ...]. Acquisition bounds alone do not establish tracking continuity.",
                 ) from error
@@ -99,13 +99,13 @@ class EncodingSupport:
                 encoding_time_range, name="encoding_time_range"
             )
             if bounds.shape != (2,):
-                raise ValidationError("encoding_time_range must be (start, stop)")
+                msg = "encoding_time_range must be (start, stop)"
+                raise ValidationError(msg)
         elif intervals is not None and len(intervals):
             bounds = np.array([intervals[0, 0], intervals[-1, 1]])
         elif time.size < 2:
-            raise ValidationError(
-                "A single position sample requires encoding_time_range or valid_position_intervals"
-            )
+            msg = "A single position sample requires encoding_time_range or valid_position_intervals"
+            raise ValidationError(msg)
         else:
             width = uniform_time_bin_width(
                 np.asarray(position_time), name="position_time"
@@ -176,7 +176,7 @@ class EncodingSupport:
 
     def interpolate(self, values, times, *, fill_value=np.nan):
         values, times = np.asarray(values), np.asarray(times)
-        shape = (len(times),) + values.shape[1:]
+        shape = (len(times), *values.shape[1:])
         result = np.full(shape, fill_value, dtype=float)
         for start, stop, indices in self.segments:
             mask = (times >= start) & (times <= stop)

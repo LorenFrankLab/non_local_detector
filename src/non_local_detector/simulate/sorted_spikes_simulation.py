@@ -62,7 +62,7 @@ def _simulate_sinusoidal_position_by_period(
 def create_place_field(
     place_field_mean: float,
     position: np.ndarray,
-    sampling_frequency: float = SAMPLING_FREQUENCY,
+    sampling_frequency: float = SAMPLING_FREQUENCY,  # noqa: ARG001 -- unused; kept so existing calls work
     is_condition: np.ndarray | None = None,
     place_field_std_deviation: float = np.sqrt(12.5),
     max_firing_rate: float = 20.0,
@@ -240,8 +240,7 @@ def get_firing_rate(
                 0.0,
             )
         )
-    else:
-        return np.zeros_like(occupancy)
+    return np.zeros_like(occupancy)
 
 
 def simulate_two_state_inhomogenous_poisson(
@@ -512,11 +511,12 @@ def make_simulated_data(
         start_idx = int(np.searchsorted(time, event_starts[event_idx], side="left"))
         end_idx = start_idx + n_event_samples
         if end_idx > len(time):
-            raise ValueError(
+            msg = (
                 f"Event {event_idx} would run past the end of the simulated "
                 f"time axis (start_idx={start_idx}, end_idx={end_idx}, "
                 f"n_time={len(time)})"
             )
+            raise ValueError(msg)
         spikes[start_idx:end_idx] = 0
         spikes[start_idx:end_idx] = event_spikes
         event_ends[event_idx] = (

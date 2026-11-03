@@ -473,7 +473,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     *,
     time_edges: np.ndarray,
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     log_occupancy: jnp.ndarray | None = None,
     environment_grid: dict | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
@@ -580,12 +580,14 @@ def predict_sorted_spikes_kde_log_likelihood(
         # host count matrix and compiled graph stay bounded for any request.
         for model in marginal_models:
             if not isinstance(model, KDEModel):
-                raise TypeError(
+                msg = (
                     "Local sorted-spikes KDE likelihood needs KDEModel marginal "
                     f"models from the fitted encoding model, got {type(model).__name__}."
                 )
+                raise TypeError(msg)
             if model.samples_ is None:
-                raise RuntimeError("This KDE instance is not fitted yet.")
+                msg = "This KDE instance is not fitted yet."
+                raise RuntimeError(msg)
         points = jnp.asarray(interpolated_position)
         if points.ndim == 1:
             points = points[:, None]
@@ -631,17 +633,14 @@ def predict_sorted_spikes_kde_log_likelihood(
             "Local Likelihood",
             disable_progress_bar,
         )[:, None]
-    else:
-        log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
-            spike_times,
-            time_edges,
-            row_start,
-            row_stop,
-            jnp.asarray(place_fields)[:, is_track_interior],
-            durations,
-            no_spike_part_log_likelihood[is_track_interior],
-            disable_progress_bar=disable_progress_bar,
-            _spike_time_order=_spike_time_order,
-        )
-
-    return log_likelihood
+    return _blocked_nonlocal_poisson_log_likelihood(
+        spike_times,
+        time_edges,
+        row_start,
+        row_stop,
+        jnp.asarray(place_fields)[:, is_track_interior],
+        durations,
+        no_spike_part_log_likelihood[is_track_interior],
+        disable_progress_bar=disable_progress_bar,
+        _spike_time_order=_spike_time_order,
+    )

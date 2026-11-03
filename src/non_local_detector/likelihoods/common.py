@@ -131,8 +131,9 @@ def validate_bandwidth(std, n_dims: int, name: str) -> jnp.ndarray:
     """
     values = np.asarray(std, dtype=float)
     if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        msg = f"{name} must contain only finite positive values"
         raise ValidationError(
-            f"{name} must contain only finite positive values",
+            msg,
             expected="finite bandwidths greater than zero",
             got=f"{name}={std!r}",
             hint="Kernel bandwidths are standard deviations in the data's units.",
@@ -140,8 +141,9 @@ def validate_bandwidth(std, n_dims: int, name: str) -> jnp.ndarray:
     if values.ndim == 0:
         values = np.full(n_dims, values.item())
     if values.shape != (n_dims,):
+        msg = f"{name} has the wrong shape"
         raise ValidationError(
-            f"{name} has the wrong shape",
+            msg,
             expected=f"a scalar or shape ({n_dims},)",
             got=f"shape {values.shape}",
         )
@@ -149,8 +151,9 @@ def validate_bandwidth(std, n_dims: int, name: str) -> jnp.ndarray:
     with np.errstate(over="ignore", under="ignore"):
         values = values.astype(dtype)
     if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        msg = f"{name} is not representable as finite positive {dtype} values"
         raise ValidationError(
-            f"{name} is not representable as finite positive {dtype} values",
+            msg,
             got=f"{name}={std!r}",
             hint="Rescale the data or enable JAX float64 (jax_enable_x64).",
         )
@@ -184,15 +187,16 @@ def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
     weights = np.asarray(weights, dtype=float)
 
     if weights.shape != (n_time,):
-        raise ValidationError(
-            f"weights must have shape ({n_time},), got {weights.shape}"
-        )
+        msg = f"weights must have shape ({n_time},), got {weights.shape}"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(weights)):
-        raise ValidationError("weights must contain only finite values")
+        msg = "weights must contain only finite values"
+        raise ValidationError(msg)
 
     if np.any(weights < 0):
-        raise ValidationError("weights must be non-negative")
+        msg = "weights must be non-negative"
+        raise ValidationError(msg)
 
     return weights
 
@@ -226,7 +230,8 @@ def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
     else:
         all_finite = bool(np.all(np.isfinite(np.asarray(array))))
     if not all_finite:
-        raise ValidationError(f"{name} must contain only finite values")
+        msg = f"{name} must contain only finite values"
+        raise ValidationError(msg)
 
 
 def validate_population_lengths(unit_name: str, **populations: Sized | None) -> int:
@@ -263,8 +268,9 @@ def validate_population_lengths(unit_name: str, **populations: Sized | None) -> 
     expected = next(iter(lengths.values()))
     if any(length != expected for length in lengths.values()):
         details = ", ".join(f"{name}={length}" for name, length in lengths.items())
+        msg = f"{unit_name} population lengths do not match"
         raise ValidationError(
-            f"{unit_name} population lengths do not match",
+            msg,
             expected=f"all per-{unit_name} collections to have length {expected}",
             got=details,
             hint=(
@@ -353,8 +359,9 @@ def validate_encoding_contract(
         since the fit.
     """
     if rate_units != "Hz":
+        msg = "Encoding rates must be in Hz; refit legacy encoding models before decoding."
         raise ValidationError(
-            "Encoding rates must be in Hz; refit legacy encoding models before decoding.",
+            msg,
             expected='rate_units="Hz"',
             got=f"rate_units={rate_units!r}",
         )
@@ -363,9 +370,12 @@ def validate_encoding_contract(
     current = environment_grid_fingerprint(environment)
     if current == environment_grid:
         return
-    raise ValidationError(
+    msg = (
         "Encoding model was fit on a different environment grid; its per-bin "
-        "occupancy and rates no longer match the environment's bins.",
+        "occupancy and rates no longer match the environment's bins."
+    )
+    raise ValidationError(
+        msg,
         expected=(
             f"the fit-time grid: shape {environment_grid['centers_shape']}, "
             f"{environment_grid['n_interior_bins']} interior bins"
@@ -407,20 +417,23 @@ def validate_spike_feature_pair(
     times_shape = np.shape(spike_times)
     features_shape = np.shape(spike_features)
     if len(times_shape) != 1:
+        msg = f"spike_times for electrode {electrode} must be 1-D"
         raise ValidationError(
-            f"spike_times for electrode {electrode} must be 1-D",
+            msg,
             expected="shape (n_spikes,)",
             got=f"shape {times_shape}",
         )
     if len(features_shape) != 2:
+        msg = f"spike_waveform_features for electrode {electrode} must be 2-D"
         raise ValidationError(
-            f"spike_waveform_features for electrode {electrode} must be 2-D",
+            msg,
             expected="shape (n_spikes, n_features)",
             got=f"shape {features_shape}",
         )
     if features_shape[0] != times_shape[0]:
+        msg = f"spike times and waveform features disagree for electrode {electrode}"
         raise ValidationError(
-            f"spike times and waveform features disagree for electrode {electrode}",
+            msg,
             expected=f"{times_shape[0]} waveform-feature rows",
             got=f"{features_shape[0]} rows",
             hint="Provide exactly one waveform-feature row for every spike time.",
@@ -950,8 +963,9 @@ def resolve_row_slice(row_slice: slice | None, n_bins: int) -> tuple[int, int]:
     if row_slice is None:
         return 0, n_bins
     if row_slice.step not in (None, 1):
+        msg = "row_slice must select a contiguous range of rows"
         raise ValidationError(
-            "row_slice must select a contiguous range of rows",
+            msg,
             expected="a slice with step None or 1",
             got=f"step={row_slice.step}",
             hint="Chunked prediction only requests contiguous row ranges.",
@@ -1375,7 +1389,8 @@ def deterministic_row_sum(
     if not isinstance(values, jax.core.Tracer):
         values = jnp.asarray(values)
     if values.ndim == 0 or values.shape[0] != np.shape(row_ids)[0]:
-        raise ValueError("values must contain one row per row id")
+        msg = "values must contain one row per row id"
+        raise ValueError(msg)
     if _reduces_sequentially(values):
         return jax.ops.segment_sum(
             values,
@@ -1433,7 +1448,8 @@ def deterministic_row_add(
     if output.shape[0] == 0 or values.shape[0] == 0 or values.size == 0:
         return output
     if values.shape[0] != np.shape(row_ids)[0]:
-        raise ValueError("values must contain one row per row id")
+        msg = "values must contain one row per row id"
+        raise ValueError(msg)
     if not _reduces_sequentially(values):
         sums, targets = _segment_totals(
             values, row_ids, output.shape[0], indices_are_sorted
@@ -1479,14 +1495,15 @@ def sum_spikes_into_rows(
     on_host = isinstance(values, np.ndarray)
     values = values if on_host else jnp.asarray(values)
     if values.dtype == np.bool_:
-        raise TypeError(
-            "Spike row sums require numeric values; Boolean sums are unsupported"
-        )
+        msg = "Spike row sums require numeric values; Boolean sums are unsupported"
+        raise TypeError(msg)
     indices = np.asarray(selection.bin_ind)
     if indices.ndim != 1 or indices.dtype.kind not in "iu":
-        raise ValueError("Spike row indices must be a one-dimensional integer array")
+        msg = "Spike row indices must be a one-dimensional integer array"
+        raise ValueError(msg)
     if values.ndim == 0 or values.shape[0] != len(indices):
-        raise ValueError("Values must contain one entry per selected spike")
+        msg = "Values must contain one entry per selected spike"
+        raise ValueError(msg)
     # Padding rows are dropped from the sum.
     n_padded = _padded_sample_count(len(indices)) if on_host else None
     return deterministic_row_sum(
@@ -2214,7 +2231,8 @@ class KDEModel:
         density : jnp.ndarray, shape (n_eval_points,)
         """
         if self.samples_ is None:
-            raise RuntimeError("This KDE instance is not fitted yet.")
+            msg = "This KDE instance is not fitted yet."
+            raise RuntimeError(msg)
         if eval_points.ndim == 1:
             eval_points = jnp.expand_dims(eval_points, axis=1)
         std = as_std_array(self.std, eval_points.shape[1])
@@ -2232,7 +2250,8 @@ class KDEModel:
         ``predict`` returns 0 and :func:`kde_log_density` returns ``-inf``.
         """
         if self.samples_ is None:
-            raise RuntimeError("This KDE instance is not fitted yet.")
+            msg = "This KDE instance is not fitted yet."
+            raise RuntimeError(msg)
         if eval_points.ndim == 1:
             eval_points = jnp.expand_dims(eval_points, axis=1)
         std = as_std_array(self.std, eval_points.shape[1])
@@ -2258,7 +2277,8 @@ def kde_log_density(model: KDEModel, points: jnp.ndarray) -> jnp.ndarray:
     """
     if type(model) is KDEModel:
         if model.samples_ is None:
-            raise RuntimeError("This KDE instance is not fitted yet.")
+            msg = "This KDE instance is not fitted yet."
+            raise RuntimeError(msg)
         points = jnp.asarray(points)
         if points.ndim == 1:
             points = points[:, None]
@@ -2361,7 +2381,8 @@ def _kde_log_densities(models, points) -> list:
             results[index] = kde_log_density(model, points)
             continue
         if model.samples_ is None:
-            raise RuntimeError("This KDE instance is not fitted yet.")
+            msg = "This KDE instance is not fitted yet."
+            raise RuntimeError(msg)
         std = np.asarray(as_std_array(model.std, points.shape[1]))
         key = (
             _padded_sample_count(model.samples_.shape[0]),
@@ -2857,8 +2878,9 @@ def select_spike_rows(
         mismatches outside the requested chunk, without reading array values.
     """
     if array.shape[0] != selection.n_spikes:
+        msg = "spike selection does not match the length of a per-spike array"
         raise ValidationError(
-            "spike selection does not match the length of a per-spike array",
+            msg,
             expected=f"{selection.n_spikes} rows (one per spike time)",
             got=f"{array.shape[0]} rows",
             hint="Spike times and waveform features must be paired row for row.",
@@ -2926,8 +2948,9 @@ def select_decode_marks(
     is_finite = np.isfinite(marks)
     if not is_finite.all():
         n_bad = int(np.count_nonzero(~is_finite.all(axis=1)))
+        msg = f"non-finite waveform features for electrode {electrode}"
         raise ValidationError(
-            f"non-finite waveform features for electrode {electrode}",
+            msg,
             expected="finite (non-NaN, non-inf) waveform features for every "
             "spike in the decoding bins",
             got=f"{n_bad} of {marks.shape[0]} spikes with NaN or inf features",

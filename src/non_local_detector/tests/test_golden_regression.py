@@ -93,7 +93,7 @@ def fail_unless_regenerating(path: Path) -> None:
 
 
 def save_pickle(path: Path, data: Any) -> None:
-    with open(path, "wb") as f:
+    with path.open("wb") as f:
         pickle.dump(data, f)
 
 
@@ -111,7 +111,7 @@ class _NumpyCompatUnpickler(pickle.Unpickler):
 
 
 def load_pickle(path: Path) -> Any:
-    with open(path, "rb") as f:
+    with path.open("rb") as f:
         return _NumpyCompatUnpickler(f).load()
 
 
@@ -317,7 +317,7 @@ def test_sorted_spikes_decoder_golden_regression(golden_path: Path) -> None:
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
-            "block_size": int(2**12),
+            "block_size": (2**12),
         },
     )
     decoder.fit(

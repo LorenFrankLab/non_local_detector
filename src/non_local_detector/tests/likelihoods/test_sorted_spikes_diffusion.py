@@ -83,7 +83,7 @@ def place_field_core_median_rel_errors(env, std, diff_pf, kde_pf):
     0.4 * peak (where the field is well estimated). Shared by the drop-in and
     weighted-parity tests so both use the same honest, boundary-aware methodology.
     """
-    erode = int(round(std / env.place_bin_size))
+    erode = round(std / env.place_bin_size)
     core = binary_erosion(
         env.is_track_interior_.reshape(env.centers_shape_), iterations=erode
     ).ravel()
@@ -102,9 +102,9 @@ def place_field_core_median_rel_errors(env, std, diff_pf, kde_pf):
 def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffusion):
     """Fit returns the contract keys; place_fields are FULL-GRID with zeros off-track."""
     env = env_2d
-    time, position, spike_times, encoding = three_neuron_diffusion
+    _time, _position, _spike_times, encoding = three_neuron_diffusion
 
-    assert ENCODING_DICT_KEYS <= set(encoding)
+    assert set(encoding) >= ENCODING_DICT_KEYS
 
     n_total = env.place_bin_centers_.shape[0]
     is_interior = env.is_track_interior_.ravel()
@@ -297,7 +297,8 @@ def test_fit_auto_truncation_is_near_lossless_and_reduces_rank():
 
     # The default fit truncated, and used exactly the resolved rank.
     resolved = heat_kernel_rank(env._diffusion_laplacian_, std)
-    assert resolved is not None and resolved < n_interior
+    assert resolved is not None
+    assert resolved < n_interior
     assert resolved in env._diffusion_eigenbasis_
 
     # Compare where the field is substantial: at EPS-floor bins the rate is ~0 and the
@@ -1210,7 +1211,7 @@ def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_fit):
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "algorithm, algorithm_params",
+    ("algorithm", "algorithm_params"),
     [
         ("sorted_spikes_diffusion", {"position_std": 6.0}),
         ("sorted_spikes_mrf", {"rank": 40}),

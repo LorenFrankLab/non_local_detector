@@ -49,7 +49,7 @@ def measure_memory_usage(func, *args, n_runs=5):
         result = func(*args)
         result.block_until_ready()
 
-        current, peak = tracemalloc.get_traced_memory()
+        _current, peak = tracemalloc.get_traced_memory()
         peak_memories.append(peak - baseline_mem)
 
     tracemalloc.stop()
@@ -61,7 +61,7 @@ def measure_memory_usage(func, *args, n_runs=5):
     return avg_peak_mb, std_peak_mb
 
 
-def estimate_jax_device_memory(func, *args, n_runs=3):
+def estimate_jax_device_memory(func, *args, n_runs=3):  # noqa: ARG001 -- unused
     """Estimate JAX device memory usage.
 
     This measures the size of JAX arrays created during execution.
@@ -197,13 +197,13 @@ def main():
             print(f"{n_dims}D Features")
             print(f"{'-' * 70}")
 
-            np.random.seed(42)
-            eval_points = jnp.array(np.random.randn(config["n_eval"], n_dims))
-            samples = jnp.array(np.random.randn(config["n_samples"], n_dims))
+            rng = np.random.default_rng(42)
+            eval_points = jnp.array(rng.standard_normal((config["n_eval"], n_dims)))
+            samples = jnp.array(rng.standard_normal((config["n_samples"], n_dims)))
             std = jnp.ones(n_dims)
 
             # Theoretical analysis
-            orig_theory, opt_theory = analyze_array_allocations(
+            _orig_theory, _opt_theory = analyze_array_allocations(
                 config["n_eval"], config["n_samples"], n_dims
             )
 

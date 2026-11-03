@@ -60,7 +60,7 @@ def test_grid_at_or_below_uint16_index_capacity_passes(x_count, y_count):
 )
 def test_grid_above_uint16_index_capacity_raises(x_count, y_count):
     """Grids whose largest linear index exceeds uint16 must fail loudly."""
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match="fits in uint16") as excinfo:
         validate_grid_within_uint16(x_count, y_count)
 
     msg = str(excinfo.value)
@@ -72,7 +72,7 @@ def test_grid_above_uint16_index_capacity_raises(x_count, y_count):
 
 def test_error_message_explains_index_vs_count():
     """The error message should report both the bin count and the offending index."""
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match="fits in uint16") as excinfo:
         validate_grid_within_uint16(300, 300)
     msg = str(excinfo.value)
     assert "90000" in msg  # bin count

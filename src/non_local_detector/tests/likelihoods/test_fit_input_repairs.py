@@ -36,7 +36,7 @@ def test_gmm_rejects_a_singular_final_m_step():
         means_init=jnp.asarray([[1.0]]),
         covariances_init=jnp.asarray([[[1.0]]]),
     )
-    with pytest.raises(RuntimeError, match="singular|non-finite"):
+    with pytest.raises(RuntimeError, match=r"singular|non-finite"):
         model.fit(jnp.zeros((3, 1)), jax.random.PRNGKey(0))
     assert model.weights_ is None
 

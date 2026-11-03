@@ -107,7 +107,7 @@ def recording(request):
 
 
 def predict(recording, is_local, row_slice):
-    env, position_time, position, encoding, times, marks, edges = recording
+    _env, position_time, position, encoding, times, marks, edges = recording
     return predict_clusterless_kde_log_likelihood(
         position_time,
         position,
@@ -494,4 +494,5 @@ def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
         None,
     )
     assert kernel._cache_size() == 1
-    assert np.all(np.isfinite(first)) and np.all(np.isfinite(second))
+    assert np.all(np.isfinite(first))
+    assert np.all(np.isfinite(second))

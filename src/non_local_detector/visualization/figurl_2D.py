@@ -32,7 +32,7 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
     n_position_bins = x_count * y_count
     max_linear_index = n_position_bins - 1
     if max_linear_index > _UINT16_MAX:
-        raise ValueError(
+        msg = (
             f"figurl_2D decoded-position rendering currently supports grids whose "
             f"largest linear bin index fits in uint16 (up to {_UINT16_MAX + 1} "
             f"bins); got {n_position_bins} bins "
@@ -41,6 +41,7 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
             f"DecodedPositionData schema receives 'locations' as uint16; verify "
             f"the schema before widening the dtype here."
         )
+        raise ValueError(msg)
     return n_position_bins
 
 
@@ -250,8 +251,7 @@ try:
         time_counts = xr.DataArray(time_counts_np, coords={"time": times})
         raw_times = base_slice.time
         (_, good_counts) = xr.align(raw_times, time_counts, join="left", fill_value=0)
-        observations_per_frame = good_counts.values.astype(np.uint8)
-        return observations_per_frame
+        return good_counts.values.astype(np.uint8)
 
     def extract_slice_data(
         base_slice: xr.DataArray, location_fn: Callable[[tuple[float, float]], int]
@@ -369,16 +369,8 @@ try:
         else:
             decoded_data_obj = None
 
-        timestamp_start = (
-            static_track_animation["timestampStart"]
-            if "timestampStart" in static_track_animation
-            else None
-        )
-        head_direction = (
-            static_track_animation["headDirection"]
-            if "headDirection" in static_track_animation
-            else None
-        )
+        timestamp_start = static_track_animation.get("timestampStart", None)
+        head_direction = static_track_animation.get("headDirection", None)
         return vvf.TrackPositionAnimationV1(
             track_bin_width=static_track_animation["trackBinWidth"],
             track_bin_height=static_track_animation["trackBinHeight"],
@@ -590,9 +582,8 @@ try:
         )
 
         if spike_times is None:
-            raise ValueError(
-                "spike_times is required for multiunit firing rate visualization"
-            )
+            msg = "spike_times is required for multiunit firing rate visualization"
+            raise ValueError(msg)
         multiunit_firing_rate = get_multiunit_firing_rate(
             spike_times, results.time.values
         )

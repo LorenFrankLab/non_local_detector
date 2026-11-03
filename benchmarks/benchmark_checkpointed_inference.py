@@ -30,7 +30,7 @@ from non_local_detector.checkpointed_inference import checkpointed_forward_backw
 from non_local_detector.core import filter, smoother
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import provenance  # noqa: E402
+from compare_prediction_modes import provenance
 
 
 def parse():
@@ -58,11 +58,11 @@ def worker(args):
         8 * args.rows * args.bins * dtype.itemsize + 3 * args.bins**2 * dtype.itemsize
     )
     if estimated > args.memory_budget_bytes:
-        raise SystemExit(
-            f"Estimated tractable-reference memory {estimated} exceeds budget {args.memory_budget_bytes}"
-        )
+        msg = f"Estimated tractable-reference memory {estimated} exceeds budget {args.memory_budget_bytes}"
+        raise SystemExit(msg)
     if dtype == np.dtype("float64") and not jax.config.x64_enabled:
-        raise SystemExit("float64 requires JAX_ENABLE_X64=1")
+        msg = "float64 requires JAX_ENABLE_X64=1"
+        raise SystemExit(msg)
     rng = np.random.default_rng(701)
     matrix = rng.uniform(0.05, 1, (args.bins, args.bins)).astype(dtype)
     matrix /= matrix.sum(1, keepdims=True)
@@ -71,7 +71,7 @@ def worker(args):
     edges = np.arange(args.rows + 1, dtype=float) * 0.002
     columns = np.arange(args.bins, dtype=dtype)[None, :]
 
-    def ll(time_edges, *, row_slice, is_missing):
+    def ll(time_edges, *, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
         rows = np.arange(row_slice.start, row_slice.stop, dtype=dtype)[:, None]
         return -np.square(
             np.sin(
@@ -176,9 +176,8 @@ def worker(args):
 def main():
     args = parse()
     if min(args.rows, args.bins, args.chunk_size) <= 0 or args.repeat < 5:
-        raise SystemExit(
-            "Positive dimensions and at least five repetitions are required"
-        )
+        msg = "Positive dimensions and at least five repetitions are required"
+        raise SystemExit(msg)
     if args.worker:
         print(
             json.dumps(worker(args), default=lambda value: np.asarray(value).tolist())

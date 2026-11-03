@@ -6,7 +6,7 @@ import pytest
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "bounds, expected",
+    ("bounds", "expected"),
     [
         ([-0.5, 1.5], [1.0, 1.0]),
         ([0.25, 0.75], [0.25, 0.25]),

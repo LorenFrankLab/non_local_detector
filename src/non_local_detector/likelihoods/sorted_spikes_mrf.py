@@ -108,15 +108,18 @@ _DEFAULT_MAX_RANK = 250
 def _as_positive_int(name: str, value: int) -> int:
     """Validate positive integer controls used by the Newton solver."""
     if isinstance(value, bool):
-        raise ValidationError(f"{name} must be a positive integer")
+        msg = f"{name} must be a positive integer"
+        raise ValidationError(msg)
 
     try:
         int_value = int(value)
     except (TypeError, ValueError) as err:
-        raise ValidationError(f"{name} must be a positive integer") from err
+        msg = f"{name} must be a positive integer"
+        raise ValidationError(msg) from err
 
     if int_value != value or int_value < 1:
-        raise ValidationError(f"{name} must be a positive integer")
+        msg = f"{name} must be a positive integer"
+        raise ValidationError(msg)
 
     return int_value
 
@@ -126,10 +129,12 @@ def _as_positive_float(name: str, value: float) -> float:
     try:
         float_value = float(value)
     except (TypeError, ValueError) as err:
-        raise ValidationError(f"{name} must be a positive finite value") from err
+        msg = f"{name} must be a positive finite value"
+        raise ValidationError(msg) from err
 
     if not np.isfinite(float_value) or float_value <= 0:
-        raise ValidationError(f"{name} must be a positive finite value")
+        msg = f"{name} must be a positive finite value"
+        raise ValidationError(msg)
 
     return float_value
 
@@ -139,10 +144,12 @@ def _as_nonnegative_float(name: str, value: float) -> float:
     try:
         float_value = float(value)
     except (TypeError, ValueError) as err:
-        raise ValidationError(f"{name} must be a non-negative finite value") from err
+        msg = f"{name} must be a non-negative finite value"
+        raise ValidationError(msg) from err
 
     if not np.isfinite(float_value) or float_value < 0:
-        raise ValidationError(f"{name} must be a non-negative finite value")
+        msg = f"{name} must be a non-negative finite value"
+        raise ValidationError(msg)
 
     return float_value
 
@@ -154,14 +161,12 @@ def _validate_log_penalty_bounds(
     try:
         lower, upper = tuple(float(bound) for bound in log_penalty_bounds)
     except (TypeError, ValueError) as err:
-        raise ValidationError(
-            "log_penalty_bounds must contain two finite values with lower < upper"
-        ) from err
+        msg = "log_penalty_bounds must contain two finite values with lower < upper"
+        raise ValidationError(msg) from err
 
     if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
-        raise ValidationError(
-            "log_penalty_bounds must contain two finite values with lower < upper"
-        )
+        msg = "log_penalty_bounds must contain two finite values with lower < upper"
+        raise ValidationError(msg)
 
     return lower, upper
 
@@ -185,52 +190,60 @@ def _validate_mrf_problem(
     tol = _as_positive_float("tol", tol)
 
     if counts.ndim != 2:
-        raise ValidationError("counts must be a 2D array of shape (n_bins, n_neurons)")
+        msg = "counts must be a 2D array of shape (n_bins, n_neurons)"
+        raise ValidationError(msg)
 
     if occupancy.ndim != 1:
-        raise ValidationError("occupancy must be a 1D array")
+        msg = "occupancy must be a 1D array"
+        raise ValidationError(msg)
 
     if basis.ndim != 2:
-        raise ValidationError("basis must be a 2D array")
+        msg = "basis must be a 2D array"
+        raise ValidationError(msg)
 
     if penalty_weights.ndim != 1:
-        raise ValidationError("penalty_weights must be a 1D array")
+        msg = "penalty_weights must be a 1D array"
+        raise ValidationError(msg)
 
     if occupancy.shape[0] != counts.shape[0]:
-        raise ValidationError(
-            "occupancy and counts must have the same number of spatial bins"
-        )
+        msg = "occupancy and counts must have the same number of spatial bins"
+        raise ValidationError(msg)
 
     if basis.shape[0] != counts.shape[0]:
-        raise ValidationError(
-            "basis and counts must have the same number of spatial bins"
-        )
+        msg = "basis and counts must have the same number of spatial bins"
+        raise ValidationError(msg)
 
     if penalty_weights.shape[0] != basis.shape[1]:
-        raise ValidationError(
-            "penalty_weights must have one entry for each basis vector"
-        )
+        msg = "penalty_weights must have one entry for each basis vector"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(counts)):
-        raise ValidationError("counts must contain only finite values")
+        msg = "counts must contain only finite values"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(occupancy)):
-        raise ValidationError("occupancy must contain only finite values")
+        msg = "occupancy must contain only finite values"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(basis)):
-        raise ValidationError("basis must contain only finite values")
+        msg = "basis must contain only finite values"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(penalty_weights)):
-        raise ValidationError("penalty_weights must contain only finite values")
+        msg = "penalty_weights must contain only finite values"
+        raise ValidationError(msg)
 
     if np.any(counts < 0):
-        raise ValidationError("counts must be non-negative")
+        msg = "counts must be non-negative"
+        raise ValidationError(msg)
 
     if np.any(occupancy < 0):
-        raise ValidationError("occupancy must be non-negative")
+        msg = "occupancy must be non-negative"
+        raise ValidationError(msg)
 
     if np.any(penalty_weights < 0):
-        raise ValidationError("penalty_weights must be non-negative")
+        msg = "penalty_weights must be non-negative"
+        raise ValidationError(msg)
 
     return counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
 
@@ -712,8 +725,9 @@ def select_penalty_by_reml(
     # still returns an arbitrary point; reject it rather than fitting with a
     # meaningless penalty.
     if not result.success or not np.isfinite(result.fun):
+        msg = "REML failed to find a valid smoothing parameter"
         raise ValidationError(
-            "REML failed to find a valid smoothing parameter",
+            msg,
             expected="a finite REML objective for some lambda in the search interval",
             got=str(result.message)
             if not result.success

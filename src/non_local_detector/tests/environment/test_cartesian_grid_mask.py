@@ -67,14 +67,14 @@ def test_supplied_mask_shape_must_match_cartesian_grid(shape):
     position = np.array([[0.0, 0.0], [2.0, 2.0]])
     env = Environment(place_bin_size=1.0, is_track_interior=np.ones(shape, bool))
 
-    with pytest.raises(ValidationError, match="is_track_interior.*shape"):
+    with pytest.raises(ValidationError, match=r"is_track_interior.*shape"):
         env.fit_place_grid(position)
 
 
 @pytest.mark.parametrize("dtype", [int, float, str])
 def test_supplied_mask_requires_boolean_values(dtype):
     position = np.array([[0.0, 0.0], [2.0, 2.0]])
-    with pytest.raises(ValidationError, match="is_track_interior.*bool"):
+    with pytest.raises(ValidationError, match=r"is_track_interior.*bool"):
         Environment(
             place_bin_size=1.0, is_track_interior=np.ones((4, 4), dtype=dtype)
         ).fit_place_grid(position)

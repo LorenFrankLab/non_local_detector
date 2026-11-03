@@ -170,7 +170,8 @@ def main():
     args = parser.parse_args()
     expected_backend = "gpu" if args.platform == "gpu" else "cpu"
     if jax.default_backend() != expected_backend:
-        raise RuntimeError(f"Expected {expected_backend}, got {jax.default_backend()}")
+        msg = f"Expected {expected_backend}, got {jax.default_backend()}"
+        raise RuntimeError(msg)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     data = inputs()
     np.savez(args.output_dir / "inputs.npz", **data)

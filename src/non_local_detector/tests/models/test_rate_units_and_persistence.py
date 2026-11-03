@@ -10,6 +10,7 @@
 """
 
 import copy
+import functools
 
 import numpy as np
 import pytest
@@ -137,20 +138,22 @@ def test_unknown_contract_is_rejected_before_likelihood(
 
         monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_likelihood)
 
+    if entry_point == "predict":
+        call = functools.partial(detector.predict, *args, time_edges=edges)
+    elif entry_point == "viterbi":
+        call = functools.partial(detector.most_likely_sequence, *args, time_edges=edges)
+    elif entry_point == "likelihood":
+        call = functools.partial(
+            detector.compute_log_likelihood, time, position, *args, time_edges=edges
+        )
+    else:
+        call = functools.partial(
+            detector._predict,
+            edges,
+            log_likelihoods=np.zeros((5, detector.is_track_interior_state_bins_.sum())),
+        )
     with pytest.raises(ValidationError, match="refit"):
-        if entry_point == "predict":
-            detector.predict(*args, time_edges=edges)
-        elif entry_point == "viterbi":
-            detector.most_likely_sequence(*args, time_edges=edges)
-        elif entry_point == "likelihood":
-            detector.compute_log_likelihood(time, position, *args, time_edges=edges)
-        else:
-            detector._predict(
-                edges,
-                log_likelihoods=np.zeros(
-                    (5, detector.is_track_interior_state_bins_.sum())
-                ),
-            )
+        call()
 
 
 @pytest.mark.integration

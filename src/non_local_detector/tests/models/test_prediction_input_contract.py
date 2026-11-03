@@ -1,6 +1,7 @@
 """Missing observations and cached likelihoods retain input validation."""
 
 import copy
+import functools
 
 import numpy as np
 import pytest
@@ -91,19 +92,27 @@ def test_missing_tracking_cannot_hide_a_dropped_population(
     dropped_args = tuple([] for _ in args)
     edges = np.arange(21) * 0.002
     snapshot = _snapshot(detector)
+    if path == "likelihood":
+        call = functools.partial(
+            detector.compute_log_likelihood,
+            time,
+            position,
+            *dropped_args,
+            time_edges=edges,
+        )
+    else:
+        method = (
+            detector.predict if path == "predict" else detector.most_likely_sequence
+        )
+        call = functools.partial(
+            method,
+            *dropped_args,
+            time_edges=edges,
+            position_time=time,
+            position=position,
+        )
     with pytest.raises(ValidationError, match="population lengths"):
-        if path == "likelihood":
-            detector.compute_log_likelihood(
-                time, position, *dropped_args, time_edges=edges
-            )
-        elif path == "predict":
-            detector.predict(
-                *dropped_args, time_edges=edges, position_time=time, position=position
-            )
-        else:
-            detector.most_likely_sequence(
-                *dropped_args, time_edges=edges, position_time=time, position=position
-            )
+        call()
     _assert_unchanged(detector, snapshot)
 
 
@@ -169,19 +178,27 @@ def test_missing_tracking_cannot_hide_changed_waveform_features(
     changed_args = (args[0], [np.repeat(args[1][0], 2, axis=1)])
     edges = np.arange(21) * 0.002
     snapshot = _snapshot(detector)
+    if path == "likelihood":
+        call = functools.partial(
+            detector.compute_log_likelihood,
+            time,
+            position,
+            *changed_args,
+            time_edges=edges,
+        )
+    else:
+        method = (
+            detector.predict if path == "predict" else detector.most_likely_sequence
+        )
+        call = functools.partial(
+            method,
+            *changed_args,
+            time_edges=edges,
+            position_time=time,
+            position=position,
+        )
     with pytest.raises(ValidationError, match="Waveform-feature dimensionality"):
-        if path == "likelihood":
-            detector.compute_log_likelihood(
-                time, position, *changed_args, time_edges=edges
-            )
-        elif path == "predict":
-            detector.predict(
-                *changed_args, time_edges=edges, position_time=time, position=position
-            )
-        else:
-            detector.most_likely_sequence(
-                *changed_args, time_edges=edges, position_time=time, position=position
-            )
+        call()
     _assert_unchanged(detector, snapshot)
 
 
@@ -235,17 +252,21 @@ def test_fitted_covariate_rows_are_checked_before_hmm(
     )
     monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_work)
     snapshot = _snapshot(detector)
+    if path == "predict":
+        call = functools.partial(
+            detector.predict, *args, time_edges=edges, n_chunks=n_chunks
+        )
+    else:
+        call = functools.partial(
+            detector._predict,
+            edges,
+            log_likelihoods=np.zeros(
+                (n_bins, detector.is_track_interior_state_bins_.sum())
+            ),
+            n_chunks=n_chunks,
+        )
     with pytest.raises(ValidationError, match="covariate transitions"):
-        if path == "predict":
-            detector.predict(*args, time_edges=edges, n_chunks=n_chunks)
-        else:
-            detector._predict(
-                edges,
-                log_likelihoods=np.zeros(
-                    (n_bins, detector.is_track_interior_state_bins_.sum())
-                ),
-                n_chunks=n_chunks,
-            )
+        call()
     _assert_unchanged(detector, snapshot)
 
 
