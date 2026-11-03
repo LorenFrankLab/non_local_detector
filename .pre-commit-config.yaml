@@ -66,5 +66,4 @@ repos:
         language: system
         types: [python]
         files: '^src/non_local_detector/'
-        exclude: '^src/non_local_detector/tests/'
         pass_filenames: false
