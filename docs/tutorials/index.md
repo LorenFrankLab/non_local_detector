@@ -24,3 +24,6 @@ with `jupytext --to notebook <file>.py`.
   a `SortedSpikesDecoder` on the running periods, decode a whole session,
   measure the decoding error and save the results, on a linear track, a
   circular track and in a 2-D open field.
+- [Choosing a likelihood model and checking the fit](06_choosing_and_checking_models.py):
+  compare likelihood models on held-out data and check a fit with the
+  model-checking tools.
