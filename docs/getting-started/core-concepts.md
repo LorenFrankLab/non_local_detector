@@ -37,7 +37,11 @@ An `Environment` discretizes space into position bins.
 Pass environments to a model with `environments=[Environment(...)]`. Models
 with more than one environment, such as
 `MultiEnvironmentSortedSpikesClassifier`, decode which environment the
-activity represents.
+activity represents. A model fits its own copies of the environments it is
+given, so after `fit` the fitted grids are in `model.environments`, and the
+environments you passed are unchanged and can be shared between models.
+`Environment.get_params()` returns an environment's configuration, from which
+`Environment(**params)` rebuilds it.
 
 ## Models and their states
 

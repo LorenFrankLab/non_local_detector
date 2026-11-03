@@ -1789,7 +1789,6 @@ def build_transition_operator(
         "Retained dense fallback blocks plus temporary graph distances",
     )
     fallback_environments = []
-    originals_by_view = {}
     for env in environments:
         if id(env) in distance_environments:
             view = copy(env)
@@ -1797,7 +1796,6 @@ def build_transition_operator(
                 LazyGraphDistances, env.distance_between_nodes_
             ).to_dense(max_bytes=max_dense_bytes - fallback_bytes)
             fallback_environments.append(view)
-            originals_by_view[id(view)] = env
         else:
             fallback_environments.append(env)
     blocks: list[tuple[Block, ...]] = []
@@ -1832,12 +1830,6 @@ def build_transition_operator(
                 )
             else:
                 matrix = block.make_state_transition(fallback_environments)
-            # Primitive descriptors retain their environment. Restore the
-            # original sparse views so pickling never retains temporary N²
-            # distance matrices after the fitted dense block is constructed.
-            for name, value in getattr(block, "__dict__", {}).items():
-                if id(value) in originals_by_view:
-                    setattr(block, name, originals_by_view[id(value)])
             matrix = np.array(
                 np.broadcast_to(matrix, (sizes[source], sizes[target])),
                 dtype=float,

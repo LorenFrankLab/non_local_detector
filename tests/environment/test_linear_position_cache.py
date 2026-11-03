@@ -86,7 +86,7 @@ def test_changed_points_refit_and_pickle_do_not_reuse_entries(
     assert count_linearizations == [500, 500]
 
     restored = pickle.loads(pickle.dumps(track_environment))
-    assert "_linear_position_cache_" not in restored.__dict__
+    assert restored.get_cached("linear_position") is None
 
     track_environment.fit_place_grid()
     track_environment._linear_position(points)
@@ -113,5 +113,5 @@ def test_cache_entries_own_their_memory(track_environment, points):
     several times the bytes the cache counts.
     """
     track_environment._linear_position(points)
-    (entry,) = track_environment._linear_position_cache_.values()
+    (entry,) = track_environment.get_cached("linear_position").values()
     assert entry.base is None

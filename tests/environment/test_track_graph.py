@@ -245,26 +245,26 @@ def test_get_distances_to_interior_bins_1d_graph_values():
 
 
 def test_get_distances_to_interior_bins_caches_matrix():
-    """First call on a 1D track graph populates _bin_distance_matrix_."""
+    """First call on a 1D track graph caches the bin-distance matrix."""
     env = make_env_graph(place_bin_size=1.0)
-    assert not hasattr(env, "_bin_distance_matrix_")
+    assert env.get_cached("bin_distance_matrix") is None
 
     env.get_distances_to_interior_bins(np.array([[5.0]]))
 
-    assert hasattr(env, "_bin_distance_matrix_")
+    assert env.get_cached("bin_distance_matrix") is not None
     n_total_bins = env.place_bin_centers_.shape[0]
-    assert env._bin_distance_matrix_.shape == (n_total_bins, n_total_bins)
+    assert env.get_cached("bin_distance_matrix").shape == (n_total_bins, n_total_bins)
 
 
 def test_fit_place_grid_invalidates_distance_cache():
     """Re-calling fit_place_grid removes the cached distance matrix."""
     env = make_env_graph(place_bin_size=1.0)
     env.get_distances_to_interior_bins(np.array([[5.0]]))
-    assert hasattr(env, "_bin_distance_matrix_")
+    assert env.get_cached("bin_distance_matrix") is not None
 
     env.fit_place_grid()
 
-    assert not hasattr(env, "_bin_distance_matrix_"), (
+    assert env.get_cached("bin_distance_matrix") is None, (
         "fit_place_grid should invalidate the distance matrix cache"
     )
 
