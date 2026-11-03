@@ -1,3 +1,11 @@
+"""Decode position and detect non-local activity, such as replay, from spikes.
+
+The models (detectors, classifiers and decoders) are in
+:mod:`non_local_detector.models` and re-exported here, with the
+:class:`Environment`, the transition and initial-condition types, the time-bin
+helpers and the package's exceptions.
+"""
+
 import contextlib
 
 from non_local_detector.continuous_state_transitions import (
@@ -44,3 +52,37 @@ from non_local_detector.time_edges import (
 
 with contextlib.suppress(ImportError):
     from ._version import __version__
+
+__all__ = [
+    "ClusterlessDecoder",
+    "ConfigurationError",
+    "ContFragClusterlessClassifier",
+    "ContFragSortedSpikesClassifier",
+    "ConvergenceError",
+    "DataError",
+    "Discrete",
+    "DiscreteNonStationaryCustom",
+    "DiscreteNonStationaryDiagonal",
+    "DiscreteStationaryCustom",
+    "DiscreteStationaryDiagonal",
+    "EmpiricalMovement",
+    "Environment",
+    "FittingError",
+    "Identity",
+    "MultiEnvironmentClusterlessClassifier",
+    "MultiEnvironmentSortedSpikesClassifier",
+    "NoSpikeContFragClusterlessClassifier",
+    "NoSpikeContFragSortedSpikesClassifier",
+    "NonLocalClusterlessDetector",
+    "NonLocalDetectorError",
+    "NonLocalSortedSpikesDetector",
+    "RandomWalk",
+    "RandomWalkDirection1",
+    "RandomWalkDirection2",
+    "SortedSpikesDecoder",
+    "Uniform",
+    "UniformInitialConditions",
+    "ValidationError",
+    "calculate_time_edges",
+    "time_edges_from_centers",
+]

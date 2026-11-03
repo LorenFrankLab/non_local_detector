@@ -168,3 +168,6 @@ _version.py
 # Local profiling evidence and diagnostic reports
 /docs/performance_artifacts/
 /.claude/docs/gmm-background-diagnosis/
+
+# MkDocs build output
+site/
