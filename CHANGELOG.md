@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Posterior helpers
+
+- `non_local_detector.analysis.get_spatial_posterior(posterior, states=None)` unstacks `results.acausal_posterior` into `(time, state, position...)` for 1D, 2D and higher-dimensional positions, keeping only the state bins that have a position. Summing it over `state` gives the posterior over position jointly with being in a spatial state, which does not sum to 1 when Local or No-Spike carry mass (their probability is in `acausal_state_probabilities`).
+- **Fixed:** the 2D FigURL view and the movie showed a false peak at the last x/y position bin for models with Local or No-Spike states. These states have NaN position in `state_bins`, and xarray's `unstack` assigns NaN index levels to the last position bin. Both views now use `get_spatial_posterior` and show the posterior over position summed over the states that have a position. Calling `results.acausal_posterior.unstack("state_bins")` yourself has the same problem with position-less states; use `get_spatial_posterior` instead.
+- **Fixed:** `maximum_a_posteriori_estimate` accepts the raw `results.acausal_posterior` (`state_bins` dimension) and ignores position-less states; previously it required an already unstacked posterior, which for these models carried the misplaced mass.
+### Dependencies
+
+- seaborn is no longer a dependency: `plot_discrete_state_transition` draws its heatmap with matplotlib. The figure is the same (colormap, color limits, `0.000` annotations, tick labels, colorbar label); the heatmap's cells are drawn with `pcolormesh` and its overlapping x tick labels are rotated as before.
+
 ### Environment grid helpers
 
 - `Environment.is_track_interior_flat_` is the interior mask over the flattened place bins, shape `(n_bins,)`, with every bin interior when `is_track_interior_` is unset. The likelihood fits, continuous transitions, structured transition operators, state indexing, off-track snapping and clusterless model checking use it instead of their own copies. Outputs are unchanged.
@@ -91,6 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A missing golden regression file now fails the test. Set `NLD_REGENERATE_GOLDEN=1` to write new golden files.
 - `ClusterlessSimOutput` moved from `tests/_sim_contract.py` to `non_local_detector.simulate.clusterless_simulation`, so the simulator no longer imports from the test package.
 - Repeated identical fits are shared through fixtures, duplicate and weaker copies of tests are removed, and modules that had no `unit` / `integration` marker now have one.
+- The most expensive tests share their compiled kernels and references instead of recomputing them: consecutive segmented-scan `reduction_path` cases and the shuffled-order cases reuse their checked kernels rather than clearing every JAX cache, the padded-kernel parity tests slice one full-range reference, and the benchmark `--help` checks run in process (one fresh-interpreter run remains). Measured file by file, this saves about 90 s of the ~21 min local suite (about 7%); no check is removed or loosened.
+- The test suite keeps a persistent JAX compilation cache in `.cache/jax-compilation` (set `JAX_COMPILATION_CACHE_DIR` to use another directory, or `NLD_TEST_JAX_CACHE=0` to turn it off). CI restores it from the latest run on `main`; tag pushes (which publish to PyPI) never restore it, and only runs on `main` save it.
+- Reference values no longer go through the package helper the code under test uses, so a bug in that helper can no longer move both sides together: the per-neuron Poisson references count spikes by comparing them with the bin edges instead of with the package's row-range spike selection, the clusterless direct-computation and padded-kernel references add the `log(dt)` event term per spike instead of calling `log_bin_duration_evidence`, and the checkpointed-inference and mark-reference tests write out their expected masks, bin centers and spike weights. Each was shown to pass with the shared helper broken before the change and to fail after.
 - **Dependency floors raised** to versions the package works with, found by installing every runtime dependency at its floor and running the tests (now a CI job):
   - `track_linearization >=2.4.0` (no floor before): releases before 2.3 call `np.warnings`, removed in NumPy 1.24, so the package failed to import.
   - `patsy >=0.5.2` (was 0.5): earlier releases import `collections.Mapping`, removed in Python 3.10, so the package failed to import.
@@ -115,6 +127,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The unit and physical-rate checks of each backend's direct predictor now run on every registered backend, which adds `clusterless_mark_glm`.
 - Likelihood tests pass the fit's whole encoding dictionary to `predict_*`, as the detectors do. Hand-copied keys had left out `environment_grid` and `rate_units`, so the grid and unit checks never ran in those tests, and the clusterless KDE recomputed `log_occupancy` instead of using the fitted one.
 - Duplicate test helpers and copy-paste tests are consolidated into shared fixtures and parametrized tests, and the slowest EM, covariate-pickling and goodness-of-fit tests fit smaller recordings or cache repeated simulations (`test_em_monotonicity.py` 119 s → 12 s locally).
+- **Changed:** the sdist lists what it ships (`only-include`: `src`, `tests`, `README.md`, `LICENSE`, `CHANGELOG.md`, `pyproject.toml`) instead of excluding a few paths. Built from a clean checkout it is 2.9 MB instead of 9.9 MB, because it no longer carries `notebooks/`, `.claude/` or `docs/`, and a local build no longer picks up untracked directories (42.7 MB before).
+- **Fixed:** `environment.yml` and `environment_gpu.yml` had drifted from `pyproject.toml`: old floors (`numpy >=1.25`, `scipy >=1.10`, ...), a `python <3.14` cap, and no `pytest-timeout`, so `pytest` stopped with "Unknown config option: timeout" under `--strict-config`. They now carry the `pyproject.toml` floors and the `test` and `dev` tools (`pytest-timeout`, `psutil` and `mypy` added), and `tests/test_environment_files.py` fails when they disagree again.
+- **CI:** the locked test job also runs on Python 3.14, and on macOS with Python 3.13; the package declares the Python 3.14 classifier. `uv.lock` already resolved for 3.14 (JAX 0.9.0, SciPy 1.17.0), so the lock is unchanged.
+- **Changed:** the `test` and `dev` extras are now [PEP 735](https://peps.python.org/pep-0735/) dependency groups, so `pip install non_local_detector[test]` and `[dev]` no longer exist (`gpu` and `viz` stay extras). Install them with `uv sync` (installs `dev`, which includes `test`), `uv sync --no-dev --group test`, or `pip install -e . --group dev` (pip 25.1 or newer). The package declares its license as the PEP 639 expression `MIT` with `license-files`, instead of the `License ::` classifier, which needs `hatchling >=1.27`. The `dev` group gains `ipykernel`, and `environment*.yml` follow.
 
 ### Reproducible posterior samples
 

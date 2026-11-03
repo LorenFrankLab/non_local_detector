@@ -16,6 +16,7 @@ Usage:
 
 import os
 from contextlib import contextmanager
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -33,6 +34,22 @@ from non_local_detector.environment import Environment
 settings.register_profile("dev", deadline=None)
 settings.register_profile("ci", deadline=None, derandomize=True, print_blob=True)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
+
+# Persistent JAX compilation cache. Many tests clear JAX's caches or rebuild
+# identical functions, and the suite is mostly XLA compile time: on the six
+# heaviest test files (469 tests) a filled cache cut 182-194 s to 60-77 s.
+# Set JAX_COMPILATION_CACHE_DIR to use another directory, or
+# NLD_TEST_JAX_CACHE=0 to turn the cache off (e.g. to time cold compiles).
+if os.environ.get("NLD_TEST_JAX_CACHE", "1") != "0":
+    if "JAX_COMPILATION_CACHE_DIR" not in os.environ:
+        jax.config.update(
+            "jax_compilation_cache_dir",
+            str(Path(__file__).resolve().parents[1] / ".cache" / "jax-compilation"),
+        )
+    # Cache every program: most test programs compile in well under JAX's
+    # default 1 s threshold but there are thousands of them.
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 
 TEST_CATEGORIES = {"unit", "integration", "property", "snapshot"}
 
