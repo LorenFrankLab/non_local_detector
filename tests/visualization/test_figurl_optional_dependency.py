@@ -10,7 +10,6 @@ import pytest
 import non_local_detector.visualization as viz
 from non_local_detector.exceptions import ValidationError
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -53,20 +52,32 @@ def test_other_missing_module_is_not_masked(monkeypatch, tmp_path):
             monkeypatch.delitem(sys.modules, key)
     monkeypatch.syspath_prepend(str(tmp_path))
     with pytest.raises(ModuleNotFoundError, match="_nld_absent_transitive_dep"):
-        viz.create_interactive_2D_decoding_figurl
+        getattr(viz, "create_interactive_2D_decoding_figurl")  # noqa: B009
 
 
 def test_unknown_attribute_still_raises_attribute_error():
     with pytest.raises(AttributeError):
-        viz.not_a_real_name
+        getattr(viz, "not_a_real_name")  # noqa: B009
 
 
 def test_names_resolve_with_sortingview_present(monkeypatch):
     _load_figurl_2d_with_stub_sortingview(monkeypatch)  # installs the stub
-    monkeypatch.delitem(
-        sys.modules, "non_local_detector.visualization.figurl_2D", raising=False
-    )
-    assert callable(viz.create_interactive_2D_decoding_figurl)
+    module_name = "non_local_detector.visualization.figurl_2D"
+    # Register the module and the package attribute with monkeypatch first, so
+    # the stub-bound copy the lazy import creates is undone after the test.
+    monkeypatch.setitem(sys.modules, module_name, None)
+    del sys.modules[module_name]
+    monkeypatch.setattr(viz, "figurl_2D", None, raising=False)
+    delattr(viz, "figurl_2D")
+
+    function = viz.create_interactive_2D_decoding_figurl
+
+    assert function is sys.modules[module_name].create_interactive_2D_decoding_figurl
+    assert function.__module__ == module_name
+
+
+def test_dir_lists_figurl_names():
+    assert set(_NAMES) <= set(dir(viz))
 
 
 def test_length_mismatch_raises_validation_error(monkeypatch):

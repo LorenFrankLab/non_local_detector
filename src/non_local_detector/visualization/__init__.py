@@ -22,6 +22,13 @@ _FIGURL_FUNCTIONS = {
     "create_interactive_2D_decoding_figurl": "figurl_2D",
 }
 
+__all__ = [*_FIGURL_FUNCTIONS, "plot_non_local_model"]
+
+
+def __dir__() -> list[str]:
+    """List the lazily imported figurl views with the module's own names."""
+    return sorted({*globals(), *__all__})
+
 
 def __getattr__(name: str) -> Any:
     """Lazily import the figurl views, which need the optional ``sortingview``."""

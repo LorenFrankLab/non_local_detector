@@ -55,7 +55,7 @@ if os.environ.get("NLD_TEST_JAX_CACHE", "1") != "0":
 else:
     jax.config.update("jax_enable_compilation_cache", False)
 
-TEST_CATEGORIES = {"unit", "integration", "property", "snapshot"}
+TEST_CATEGORIES = {"unit", "integration", "property"}
 
 
 def pytest_collection_modifyitems(items):
