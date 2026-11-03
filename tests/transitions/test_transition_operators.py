@@ -283,7 +283,7 @@ def dense_reference(
         observation_models=observations,
         local_position_std=local_std,
     )
-    _DetectorBase.initialize_continuous_state_transition(model, transitions, **context)
+    _DetectorBase._initialize_continuous_state_transition(model, transitions, **context)
     return model.continuous_state_transitions_, model.state_ind_
 
 

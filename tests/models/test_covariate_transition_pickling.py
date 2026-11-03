@@ -138,7 +138,7 @@ def test_round_trip_ignores_later_changes_to_the_covariates(container, round_tri
     detector = NonLocalSortedSpikesDetector(
         discrete_transition_type=DiscreteNonStationaryDiagonal(np.full(4, 0.9))
     )
-    detector.initialize_discrete_state_transition(covariates)
+    detector._initialize_discrete_state_transition(covariates)
     # Speed-dependent coefficients, so the knots change the predictions.
     n_basis = detector.discrete_transition_coefficients_.shape[0] - 1
     detector.discrete_transition_coefficients_[1:, 0, 0] = np.linspace(

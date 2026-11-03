@@ -92,7 +92,7 @@ def main():
             state_ind_=state_ind,
             _get_environment_by_name=lambda name: env,  # noqa: ARG005 -- environment lookup signature
         )
-        _DetectorBase.initialize_continuous_state_transition(namespace, descriptors)
+        _DetectorBase._initialize_continuous_state_transition(namespace, descriptors)
         dense = (
             namespace.continuous_state_transitions_
             * weights[np.ix_(state_ind, state_ind)]

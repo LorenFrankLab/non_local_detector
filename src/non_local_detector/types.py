@@ -91,3 +91,36 @@ FrozenTransitionRows = (
 ``is_no_spike=True``; integer indices or a boolean mask select rows by
 position; ``None`` or an empty sequence freezes nothing.
 """
+
+# ---------------------------------------------------------------------------
+# String options of the detector methods
+# ---------------------------------------------------------------------------
+# These name the accepted strings for type checkers and readers; the methods
+# still check the values at run time, since callers pass plain strings.
+
+InferenceMode = Literal["dense", "checkpointed"]
+"""Prediction driver: in-memory ``"dense"`` or on-disk ``"checkpointed"``."""
+
+OutputMode = Literal["compact", "spatial"]
+"""Checkpointed output: state probabilities only (``"compact"``) or also the
+spatial posteriors (``"spatial"``). Dense prediction is always ``"spatial"``."""
+
+TransitionRepresentation = Literal["dense", "structured", "auto"]
+"""Continuous transition storage: the full matrix (``"dense"``), exact
+state-block operators (``"structured"``), or operators with budgeted dense
+fallback blocks (``"auto"``)."""
+
+OutputName = Literal[
+    "filter", "predictive", "predictive_posterior", "log_likelihood", "all"
+]
+"""One optional output of ``predict`` or ``estimate_parameters``.
+
+``"filter"`` adds the causal posterior and state probabilities,
+``"predictive"`` the one-step-ahead state probabilities,
+``"predictive_posterior"`` the one-step-ahead posterior over state bins,
+``"log_likelihood"`` the per-bin log likelihood, and ``"all"`` every one.
+"""
+
+ReturnOutputs = OutputName | list[OutputName] | set[OutputName] | None
+"""A ``return_outputs`` value: one output name, a list or set of them, or
+None for the smoother only. A name means the same alone or in a collection."""

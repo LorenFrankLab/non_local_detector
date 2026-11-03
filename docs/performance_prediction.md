@@ -94,9 +94,9 @@ predictive state probabilities. `"predictive_posterior"`, `"log_likelihood"` and
 `"all"` require spatial mode. The full log evidence remains available as
 `results.attrs["marginal_log_likelihoods"]`.
 
-The string `"predictive"` also requests the spatial posterior in spatial mode.
-Lists/sets select named outputs individually: `["predictive"]` requests state
-probabilities and `["predictive_posterior"]` requests the spatial posterior.
+Each name requests only its own output, alone or in a list or set: `"predictive"`
+requests the state probabilities and `"predictive_posterior"` the spatial
+posterior.
 Checkpointed totals sum per-bin log-evidence increments in float64 on the host;
 posterior calculations keep their original precision. This avoids the existing
 hour-scale drift from repeatedly adding increments to a float32 total. The dense
