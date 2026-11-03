@@ -309,6 +309,9 @@ def pixellate_interior_fields(
         Per-sample weights (must be a 1-D array).
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
+    encoding_support : EncodingSupport, optional
+        Precomputed encoding support, by default None (built from
+        ``position_time``, ``position`` and ``weights``).
 
     Returns
     -------
@@ -470,6 +473,9 @@ def fit_sorted_spikes_diffusion_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
@@ -639,8 +645,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Decoding bin edges.
     position_time : np.ndarray, shape (n_time_position,)
         Sampling times for the position.
     position : np.ndarray, shape (n_time_position, n_position_dims)
@@ -683,6 +687,14 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
     environment_grid : dict | None, optional
         The fit's record of the environment's grid (see
         ``environment_grid_fingerprint``), by default None, which skips the
@@ -692,12 +704,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
-    rate_units : str, default="Hz", keyword-only
-        Rate units recorded by the encoding fit; anything other than ``"Hz"``
-        raises ``ValidationError`` (refit legacy encoding models).
-    encoding_exposure_seconds : float, optional, keyword-only
-        Weighted encoding occupancy time in seconds, recorded by the fit.
-        Accepted so the encoding dictionary can be passed as keywords; unused.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
     **_encoding_extras
         Extra encoding-dict keys a reusing estimator carries (e.g. the MRF's
         ``mrf_*`` diagnostics); absorbed and unused.
@@ -777,6 +786,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     interior_summed_rates = no_spike_part_log_likelihood[is_track_interior]
 
     def evaluate(start: int, stop: int) -> jax.Array:
+        """Return the log likelihood of rows ``start`` to ``stop``, shape (stop - start, n_interior_bins)."""
         spike_counts = jnp.asarray(
             _spike_counts_matrix(
                 spike_times,

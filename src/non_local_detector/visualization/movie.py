@@ -1,3 +1,5 @@
+"""Create movies of 2D decoding results."""
+
 from __future__ import annotations
 
 import logging

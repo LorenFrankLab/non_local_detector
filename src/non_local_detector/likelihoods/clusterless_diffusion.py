@@ -350,6 +350,9 @@ def fit_clusterless_diffusion_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
@@ -615,9 +618,12 @@ def spatial_kernel_columns(
     Parameters
     ----------
     environment : Environment
+        The fitted environment.
     resolved_rank : int
         The fitted model's ``resolved_rank``.
     position_std : float
+        The fitted model's heat-kernel smoothing standard deviation, in
+        coordinate units.
     sources : array_like of int, shape (n_sources,)
         Interior bin indices.
 
@@ -1242,8 +1248,6 @@ def predict_clusterless_diffusion_log_likelihood(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Decoding bin edges.
     position_time : np.ndarray, shape (n_time_position,)
         Time of each position sample (used only by the local path; accepted for
         signature parity when ``is_local`` is False).
@@ -1254,6 +1258,14 @@ def predict_clusterless_diffusion_log_likelihood(
         Decode spike times for each electrode.
     spike_waveform_features : list[jnp.ndarray]
         Decode spike waveform features (marks) for each electrode.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
     is_local : bool, optional
         If True, evaluate the likelihood at the animal's position (nearest interior
         bin; the same kernel columns as the non-local path, read at the animal's
@@ -1280,12 +1292,9 @@ def predict_clusterless_diffusion_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
-    rate_units : str, default="Hz", keyword-only
-        Rate units recorded by the encoding fit; anything other than ``"Hz"``
-        raises ``ValidationError`` (refit legacy encoding models).
-    encoding_exposure_seconds : float, optional, keyword-only
-        Weighted encoding occupancy time in seconds, recorded by the fit.
-        Accepted so the encoding dictionary can be passed as keywords; unused.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
     **encoding_model
         The dict returned by :func:`fit_clusterless_diffusion_encoding_model`.
 

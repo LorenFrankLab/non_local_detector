@@ -108,13 +108,28 @@ def simulate_multiunit_with_place_fields(
     Parameters
     ----------
     place_means : np.ndarray, shape (n_neurons, n_position_dims)
+        Place-field centers, one row per neuron.
     position : np.ndarray, shape (n_time, n_position_dims)
+        Position trajectory.
     mark_spacing : float, optional
+        Spacing between the mark centers of successive neurons, by default 5.
+        Neuron ``i`` emits marks centered at ``i * mark_spacing`` in every
+        mark dimension.
     n_mark_dims : int, optional
-    place_variance : float
-    max_rate : float
-    sampling_frequency : int
-    is_condition : np.ndarray or None
+        Number of mark (waveform feature) dimensions, by default 4.
+    place_variance : float, optional
+        Variance of each neuron's Gaussian place field, by default 12.5.
+    mark_variance : float, optional
+        Variance of the isotropic Gaussian from which each spike's marks are
+        drawn, by default 1.0.
+    max_rate : float, optional
+        Peak firing rate of each neuron at its field center, in Hz, by
+        default 100.0.
+    sampling_frequency : int, optional
+        Samples per second of ``position``, by default 1000.
+    is_condition : np.ndarray, shape (n_time,) or None, optional
+        Boolean mask of times when the place fields are active, by default
+        None (always active).
     seed : int | None, optional
         Random seed for reproducibility. Ignored if rng is provided.
     rng : np.random.Generator or None, optional
@@ -123,6 +138,7 @@ def simulate_multiunit_with_place_fields(
     Returns
     -------
     multiunit : np.ndarray, shape (n_time, n_mark_dims)
+        Marks at each time sample; NaN where no neuron spiked.
     """
     if rng is None:
         rng = np.random.default_rng(seed)
