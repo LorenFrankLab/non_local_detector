@@ -21,8 +21,7 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
 )
 from tests.conftest import precision_mode
-from tests.likelihoods._sorted_spikes_helpers import spike_counts_by_edge_comparison
-from tests.likelihoods.conftest import tolerance
+from tests.likelihoods.conftest import spike_counts_by_edge_comparison, tolerance
 
 pytestmark = pytest.mark.unit
 

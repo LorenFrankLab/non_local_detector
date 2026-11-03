@@ -128,33 +128,6 @@ def simulate_sparse_uniform_tracking(
     return time, position, [spike_times], environment
 
 
-def spike_counts_by_edge_comparison(spike_times, edges, rows=None):
-    """Spikes per decode bin, compared with each bin's edges directly.
-
-    Bin ``i`` owns ``edges[i] <= t < edges[i + 1]``, and the final bin also owns
-    ``t == edges[-1]``. Every bin is counted over the whole recording and
-    ``rows`` slices the result, so the counts do not go through the package's
-    row-range spike selection, which the likelihoods under test use.
-
-    Parameters
-    ----------
-    spike_times : array_like, shape (n_spikes,)
-    edges : np.ndarray, shape (n_bins + 1,)
-    rows : slice, optional
-        Bins to return; all bins by default.
-
-    Returns
-    -------
-    counts : np.ndarray, shape (n_rows,)
-    """
-    times = np.asarray(spike_times)[:, None]
-    edges = np.asarray(edges)
-    owned = (times >= edges[:-1]) & (times < edges[1:])
-    owned[:, -1] |= times[:, 0] == edges[-1]
-    counts = owned.sum(axis=0)
-    return counts if rows is None else counts[rows]
-
-
 def poisson_log_likelihood_reference(place_fields, is_interior, spike_times, edges):
     """Independent float64 non-local Poisson log likelihood (up to ``-log n!``).
 

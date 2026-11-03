@@ -11,8 +11,7 @@ from scipy.special import xlogy
 
 from non_local_detector.likelihoods import sorted_spikes_glm, sorted_spikes_kde
 from tests.conftest import precision_mode
-from tests.likelihoods._sorted_spikes_helpers import spike_counts_by_edge_comparison
-from tests.likelihoods.conftest import EXACT
+from tests.likelihoods.conftest import EXACT, spike_counts_by_edge_comparison
 
 pytestmark = pytest.mark.unit
 

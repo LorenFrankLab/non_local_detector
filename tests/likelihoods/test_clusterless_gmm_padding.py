@@ -18,7 +18,6 @@ from non_local_detector.likelihoods.common import (
     _padded_spike_count,
     decode_bin_centers,
     get_position_at_time,
-    log_bin_duration_evidence,
     select_spike_rows,
     select_spikes_in_rows,
     sum_spikes_into_rows,
@@ -28,6 +27,7 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import (
+    log_duration_per_spike,
     tolerance,
     training_mark_references,
 )
@@ -222,7 +222,7 @@ def reference(recording, is_local, row_slice):
             )
         n_electrodes = len(encoding["mean_rates"])
         total = (total - durations * (expected + n_electrodes * RATE_EPS_HZ))[:, None]
-    return total + log_bin_duration_evidence(times, edges, row_slice, None)[:, None]
+    return total + log_duration_per_spike(times, edges, row_slice)[:, None]
 
 
 @pytest.fixture(scope="module")
