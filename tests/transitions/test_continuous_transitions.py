@@ -2,12 +2,14 @@ import numpy as np
 import pytest
 
 from non_local_detector.continuous_state_transitions import (
+    ContinuousTransition,
     Discrete,
     EmpiricalMovement,
     Identity,
     RandomWalk,
     RandomWalkDirection1,
     RandomWalkDirection2,
+    TransitionContext,
     Uniform,
 )
 from non_local_detector.environment import Environment
@@ -123,7 +125,7 @@ def test_empirical_movement_row_stochastic_and_locality(simple_1d_environment):
     # Use empirical transition with provided positions
     tm = EmpiricalMovement(
         environment_name=env.environment_name, speedup=1, is_time_reversed=False
-    ).make_state_transition(envs, position=pos)
+    ).make_state_transition(envs, TransitionContext(position=pos))
     assert tm.shape == (env.place_bin_centers_.shape[0],) * 2
     assert_stochastic_matrix(tm, atol=1e-6)
     # Empirical movement should favor near-diagonal transitions on average
@@ -157,12 +159,59 @@ def test_empirical_movement_uses_fitted_edges(n_dims, explicit_range):
     row_mass = expected.sum(axis=1, keepdims=True)
     expected /= np.where(row_mass > 0, row_mass, 1)
 
-    transition = EmpiricalMovement().make_state_transition((env,), position)
+    transition = EmpiricalMovement().make_state_transition(
+        (env,), TransitionContext(position=position)
+    )
 
     np.testing.assert_array_equal(transition, expected)
     assert np.all(np.isfinite(transition))
     assert np.all(transition >= 0)
     np.testing.assert_array_equal(transition.sum(axis=1)[row_mass[:, 0] > 0], 1)
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        Discrete(),
+        EmpiricalMovement(),
+        Identity(),
+        RandomWalk(),
+        RandomWalkDirection1(),
+        RandomWalkDirection2(),
+        Uniform(),
+    ],
+    ids=lambda transition: type(transition).__name__,
+)
+def test_transitions_share_one_signature(transition):
+    """Every package transition is a ContinuousTransition called one way."""
+    assert isinstance(transition, ContinuousTransition)
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        np.linspace(0.0, 10.0, 11)[:, None], infer_track_interior=False
+    )
+    context = TransitionContext(position=np.linspace(0.0, 10.0, 51)[:, None])
+    matrix = transition.make_state_transition(environments=(env,), context=context)
+    n_bins = 1 if isinstance(transition, Discrete) else len(env.place_bin_centers_)
+    assert matrix.shape == (n_bins, n_bins)
+
+
+@pytest.mark.parametrize("context", [None, TransitionContext()])
+def test_empirical_movement_without_position_is_rejected(
+    context, simple_1d_environment
+):
+    with pytest.raises(ValueError, match="position"):
+        EmpiricalMovement().make_state_transition((simple_1d_environment,), context)
+
+
+def test_fit_context_defaults_select_all_samples_of_group_zero():
+    """Unset training and encoding labels default as the detector fit does."""
+    position = np.zeros((4, 1))
+    context = TransitionContext.from_fit(position, is_training=np.ones((4, 1)))
+    np.testing.assert_array_equal(context.is_training, np.ones(4))
+    np.testing.assert_array_equal(context.encoding_group_labels, np.zeros(4))
+    assert context.environment_labels is None
+    default = TransitionContext.from_fit(position)
+    np.testing.assert_array_equal(default.is_training, np.ones(4, dtype=bool))
+    assert TransitionContext.from_fit(None).encoding_group_labels is None
 
 
 def test_discrete_transition_is_ones():

@@ -20,12 +20,14 @@ from scipy.spatial import cKDTree
 from scipy.stats import multivariate_normal, norm
 
 from non_local_detector.continuous_state_transitions import (
+    ContinuousTransition,
     Discrete,
     EmpiricalMovement,
     Identity,
     RandomWalk,
     RandomWalkDirection1,
     RandomWalkDirection2,
+    TransitionContext,
     Uniform,
 )
 from non_local_detector.environment import Environment, find_environment_by_name
@@ -1555,9 +1557,6 @@ def _structured_block(
     source_size: int,
     target_size: int,
 ) -> UniformBlock | IdentityBlock | GaussianGridBlock:
-    if isinstance(transition, EmpiricalMovement):
-        msg = "EmpiricalMovement requires its original fit-context dense fallback"
-        raise UnsupportedTransitionError(msg)
     if source_size == 1 and target_size > 1:
         if not hasattr(transition, "environment_name"):
             # A configuration error, as in the dense constructor: no fallback
@@ -1578,6 +1577,9 @@ def _structured_block(
         return UniformBlock(
             np.ones(source_size, dtype=bool), np.ones(1, dtype=bool), np.array(1.0)
         )
+    if isinstance(transition, EmpiricalMovement):
+        msg = "EmpiricalMovement requires its original fit-context dense fallback"
+        raise UnsupportedTransitionError(msg)
     if type(transition) is Discrete and source_size == target_size == 1:
         return IdentityBlock(np.ones(1, dtype=bool))
     if type(transition) is Uniform:
@@ -1653,7 +1655,7 @@ def _check_known_fallback_shape(
 
 
 def build_transition_operator(
-    transition_types: Sequence[Sequence[Any]],
+    transition_types: Sequence[Sequence[ContinuousTransition]],
     environments: Sequence[Environment],
     state_sizes: Sequence[int],
     observation_models: Sequence[ObservationModel] | None = None,
@@ -1661,10 +1663,7 @@ def build_transition_operator(
     *,
     allow_dense_fallback: bool = False,
     max_dense_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    position: np.ndarray | None = None,
-    is_training: np.ndarray | None = None,
-    encoding_group_labels: np.ndarray | None = None,
-    environment_labels: np.ndarray | None = None,
+    context: TransitionContext | None = None,
 ) -> BlockTransitionOperator:
     """Build exact padded conditional blocks and preflight dense fallback.
 
@@ -1680,7 +1679,7 @@ def build_transition_operator(
 
     Parameters
     ----------
-    transition_types : sequence of sequence
+    transition_types : sequence of sequence of ContinuousTransition
         ``(n_states, n_states)`` grid of continuous transition models.
     environments : list of Environment
         Fitted environments.
@@ -1695,8 +1694,9 @@ def build_transition_operator(
         Build unsupported blocks with their dense constructor.
     max_dense_bytes : int, optional
         Dense fallback budget, by default 256 MiB.
-    position, is_training, encoding_group_labels, environment_labels : optional
-        Fit context for ``EmpiricalMovement`` fallback blocks.
+    context : TransitionContext, optional
+        Fit data passed to every dense fallback constructor; required by
+        ``EmpiricalMovement`` fallback blocks.
 
     Returns
     -------
@@ -1717,7 +1717,7 @@ def build_transition_operator(
     plan: list[list[Any]] = []
     fallback_bytes = 0
     for source, row in enumerate(transition_types):
-        planned_row = []
+        planned_row: list[Any] = []
         for target, transition in enumerate(row):
             if (
                 isinstance(transition, Discrete)
@@ -1802,31 +1802,7 @@ def build_transition_operator(
             if isinstance(block, _STRUCTURED_BLOCKS):
                 result.append(block)
                 continue
-            if isinstance(block, EmpiricalMovement):
-                if position is None:
-                    msg = (
-                        "EmpiricalMovement dense fallback requires position fit context"
-                    )
-                    raise UnsupportedTransitionError(msg)
-                training = (
-                    np.ones(len(position), dtype=bool)
-                    if is_training is None
-                    else np.asarray(is_training).squeeze()
-                )
-                labels = (
-                    np.zeros(len(position), dtype=np.int32)
-                    if encoding_group_labels is None
-                    else encoding_group_labels
-                )
-                matrix = block.make_state_transition(
-                    cast(tuple[Environment, ...], fallback_environments),
-                    position,
-                    training,
-                    labels,
-                    environment_labels,
-                )
-            else:
-                matrix = block.make_state_transition(fallback_environments)
+            matrix = block.make_state_transition(fallback_environments, context)
             matrix = np.array(
                 np.broadcast_to(matrix, (sizes[source], sizes[target])),
                 dtype=float,

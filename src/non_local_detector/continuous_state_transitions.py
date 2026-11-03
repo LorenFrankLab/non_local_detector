@@ -1,7 +1,15 @@
-"""Classes for constructing different types of movement models."""
+"""Classes for constructing different types of movement models.
 
+Every continuous transition satisfies the :class:`ContinuousTransition`
+protocol: ``make_state_transition(environments, context=None)`` returns the
+block of transition probabilities between the place bins of two states.
+``context`` is a :class:`TransitionContext` holding the fit data that
+data-driven transitions such as :class:`EmpiricalMovement` read.
+"""
+
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Protocol, cast, runtime_checkable
 
 import networkx as nx
 import numpy as np
@@ -10,6 +18,90 @@ from scipy.stats import multivariate_normal
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError
 from non_local_detector.graph_distances import LazyGraphDistances
+
+
+@dataclass(frozen=True, eq=False)
+class TransitionContext:
+    """Fit data a continuous transition may read.
+
+    Attributes
+    ----------
+    position : np.ndarray, shape (n_time, n_position_dims), optional
+        Position of the animal.
+    is_training : np.ndarray, shape (n_time,), optional
+        Which time points to train on. None means all of them.
+    encoding_group_labels : np.ndarray, shape (n_time,), optional
+        Encoding group of each time point.
+    environment_labels : np.ndarray, shape (n_time,), optional
+        Environment name of each time point.
+    """
+
+    position: np.ndarray | None = None
+    is_training: np.ndarray | None = None
+    encoding_group_labels: np.ndarray | None = None
+    environment_labels: np.ndarray | None = None
+
+    @classmethod
+    def from_fit(
+        cls,
+        position: np.ndarray | None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+    ) -> "TransitionContext":
+        """The context of a detector fit, with the detector's defaults.
+
+        With position, unset ``is_training`` selects every time point and
+        unset ``encoding_group_labels`` puts every time point in encoding
+        group 0, so an ``EmpiricalMovement`` for another group gets no
+        samples. ``is_training`` is squeezed to one dimension.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time, n_position_dims) or None
+        is_training : np.ndarray, shape (n_time,), optional
+        encoding_group_labels : np.ndarray, shape (n_time,), optional
+        environment_labels : np.ndarray, shape (n_time,), optional
+
+        Returns
+        -------
+        context : TransitionContext
+        """
+        if position is not None:
+            n_time = position.shape[0]
+            if is_training is None:
+                is_training = np.ones((n_time,), dtype=bool)
+            if encoding_group_labels is None:
+                encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
+        if is_training is not None:
+            is_training = np.asarray(is_training).squeeze()
+        return cls(position, is_training, encoding_group_labels, environment_labels)
+
+
+@runtime_checkable
+class ContinuousTransition(Protocol):
+    """A model of movement between the place bins of two discrete states."""
+
+    def make_state_transition(
+        self,
+        environments: Sequence[Environment],
+        context: TransitionContext | None = None,
+    ) -> np.ndarray:
+        """Transition probabilities from each source bin to each destination bin.
+
+        Parameters
+        ----------
+        environments : sequence of Environment
+            The model's fitted environments, looked up by name.
+        context : TransitionContext, optional
+            Fit data, for transitions estimated from it.
+
+        Returns
+        -------
+        state_transition_matrix : np.ndarray, shape (n_source_bins, n_destination_bins)
+            Rows sum to 1, or to 0 for bins nothing can leave.
+        """
+        ...
 
 
 def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
@@ -160,14 +252,18 @@ class RandomWalk:
     direction: str | None = None
 
     def make_state_transition(
-        self, environments: tuple[Environment, ...]
+        self,
+        environments: Sequence[Environment],
+        context: TransitionContext | None = None,  # noqa: ARG002 -- ContinuousTransition signature
     ) -> np.ndarray:
         """Create a transition matrix for a given environment.
 
         Parameters
         ----------
-        environments : tuple[Environment, ...]
-            Tuple of available environments in the model.
+        environments : sequence of Environment
+            The model's fitted environments.
+        context : TransitionContext, optional
+            Ignored; this transition does not depend on the fit data.
 
         Returns
         -------
@@ -332,14 +428,18 @@ class Uniform:
     environment2_name: str | None = None
 
     def make_state_transition(
-        self, environments: tuple[Environment, ...]
+        self,
+        environments: Sequence[Environment],
+        context: TransitionContext | None = None,  # noqa: ARG002 -- ContinuousTransition signature
     ) -> np.ndarray:
         """Create a uniform transition matrix between environments.
 
         Parameters
         ----------
-        environments : tuple[Environment, ...]
-            Tuple of available environments in the model.
+        environments : sequence of Environment
+            The model's fitted environments.
+        context : TransitionContext, optional
+            Ignored; this transition does not depend on the fit data.
 
         Returns
         -------
@@ -391,14 +491,18 @@ class Identity:
     environment_name: str = ""
 
     def make_state_transition(
-        self, environments: tuple[Environment, ...]
+        self,
+        environments: Sequence[Environment],
+        context: TransitionContext | None = None,  # noqa: ARG002 -- ContinuousTransition signature
     ) -> np.ndarray:
         """Create an identity transition matrix for a given environment.
 
         Parameters
         ----------
-        environments : tuple[Environment, ...]
-            Tuple of available environments in the model.
+        environments : sequence of Environment
+            The model's fitted environments.
+        context : TransitionContext, optional
+            Ignored; this transition does not depend on the fit data.
 
         Returns
         -------
@@ -446,49 +550,57 @@ class EmpiricalMovement:
 
     def make_state_transition(
         self,
-        environments: tuple[Environment, ...],
-        position: np.ndarray,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
+        environments: Sequence[Environment],
+        context: TransitionContext | None = None,
     ) -> np.ndarray:
         """Create a transition matrix based on observed animal movement.
 
         Parameters
         ----------
-        environments : tuple[Environment, ...]
-            Tuple of available environments in the model.
-        position : np.ndarray, shape (n_time, n_dims)
-            Position of the animal. On a track graph, multi-dimensional
-            position is linearized and one-column position is taken as linear
-            (see ``Environment.decoding_position``).
-        is_training : np.ndarray, shape (n_time,), optional
-            Boolean mask to select time points for training. Defaults to all points.
-        encoding_group_labels : np.ndarray, shape (n_time,), optional
-            Labels for encoding groups (e.g., inbound/outbound). Defaults to group 0.
-        environment_labels : np.ndarray, shape (n_time,), optional
-            Labels for environments. Defaults to the first environment.
+        environments : sequence of Environment
+            The model's fitted environments.
+        context : TransitionContext
+            Required; its ``position`` is binned. On a track graph,
+            multi-dimensional position is linearized and one-column position
+            is taken as linear (see ``Environment.decoding_position``). Only
+            time points that are training points (all if ``is_training`` is
+            None), in ``encoding_group`` (all if ``encoding_group_labels`` is
+            None) and in this environment (all if ``environment_labels`` is
+            None) are used.
 
         Returns
         -------
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized transition probability matrix, potentially powered by `speedup`.
+
+        Raises
+        ------
+        ValueError
+            If ``context`` or its ``position`` is None.
         """
+        if context is None or context.position is None:
+            msg = (
+                "EmpiricalMovement needs the animal's position: pass "
+                "context=TransitionContext(position=...)"
+            )
+            raise ValueError(msg)
         environment = find_environment_by_name(environments, self.environment_name)
 
+        position = context.position
         n_time = position.shape[0]
+        is_training = context.is_training
         if is_training is None:
             is_training = np.ones((n_time,), dtype=bool)
 
-        if encoding_group_labels is None:
+        if context.encoding_group_labels is None:
             is_encoding = np.ones((n_time,), dtype=bool)
         else:
-            is_encoding = encoding_group_labels == self.encoding_group
+            is_encoding = context.encoding_group_labels == self.encoding_group
 
-        if environment_labels is None:
+        if context.environment_labels is None:
             is_environment = np.ones((n_time,), dtype=bool)
         else:
-            is_environment = environment_labels == self.environment_name
+            is_environment = context.environment_labels == self.environment_name
 
         position = position if position.ndim > 1 else position[:, np.newaxis]
         position = environment.decoding_position(
@@ -533,14 +645,18 @@ class RandomWalkDirection1:
     movement_var: float = 6.0
 
     def make_state_transition(
-        self, environments: tuple[Environment, ...]
+        self,
+        environments: Sequence[Environment],
+        context: TransitionContext | None = None,  # noqa: ARG002 -- ContinuousTransition signature
     ) -> np.ndarray:
         """Create a unidirectional transition matrix.
 
         Parameters
         ----------
-        environments : tuple[Environment, ...]
-            Tuple of available environments in the model.
+        environments : sequence of Environment
+            The model's fitted environments.
+        context : TransitionContext, optional
+            Ignored; this transition does not depend on the fit data.
 
         Returns
         -------
@@ -572,14 +688,18 @@ class RandomWalkDirection2:
     movement_var: float = 6.0
 
     def make_state_transition(
-        self, environments: tuple[Environment, ...]
+        self,
+        environments: Sequence[Environment],
+        context: TransitionContext | None = None,  # noqa: ARG002 -- ContinuousTransition signature
     ) -> np.ndarray:
         """Create a unidirectional transition matrix.
 
         Parameters
         ----------
-        environments : tuple[Environment, ...]
-            Tuple of available environments in the model.
+        environments : sequence of Environment
+            The model's fitted environments.
+        context : TransitionContext, optional
+            Ignored; this transition does not depend on the fit data.
 
         Returns
         -------
@@ -600,7 +720,11 @@ class Discrete:
     is just an identity matrix.
     """
 
-    def make_state_transition(self, *args: Any, **kwargs: Any) -> np.ndarray:  # noqa: ARG002 -- shared make_state_transition signature
+    def make_state_transition(
+        self,
+        environments: Sequence[Environment] = (),  # noqa: ARG002 -- ContinuousTransition signature
+        context: TransitionContext | None = None,  # noqa: ARG002 -- ContinuousTransition signature
+    ) -> np.ndarray:
         """Create a continuous transition matrix for a discrete state space.
 
         Since there is no continuous spatial component, the transition matrix
@@ -609,10 +733,10 @@ class Discrete:
 
         Parameters
         ----------
-        *args
-            Ignored; accepted so all transition classes share one signature.
-        **kwargs
-            Ignored; accepted so all transition classes share one signature.
+        environments : sequence of Environment, optional
+            Ignored; a discrete state has no place bins.
+        context : TransitionContext, optional
+            Ignored; this transition does not depend on the fit data.
 
         Returns
         -------
