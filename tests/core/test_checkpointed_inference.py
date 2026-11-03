@@ -519,7 +519,6 @@ def _wrapping_checksum(values):
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype, request):
     from non_local_detector.checkpointed_inference import _prepare_chunk
-    from non_local_detector.core import _degenerate_and_nan_masks
 
     if dtype == np.float64:
         request.getfixturevalue("x64")
@@ -528,6 +527,7 @@ def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype, re
     values[1] = -np.inf
     values[2, 3] = np.nan
     values[4, 0] = np.inf
+    values[6, 1] = np.nan
     missing = np.zeros(7, dtype=bool)
     missing[[2, 5]] = True
 
@@ -537,7 +537,12 @@ def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype, re
 
     expected = np.where(missing[:, None], dtype(0), values)
     np.testing.assert_array_equal(np.asarray(prepared), expected)
-    expected_degenerate, expected_nan = _degenerate_and_nan_masks(expected)
+    # Degenerate: every state -inf (row 1; the +inf row 4 is not). NaN: any
+    # NaN that a missing row did not replace (row 6; row 2 is missing).
+    expected_degenerate = np.all(expected == -np.inf, axis=1)
+    expected_nan = np.isnan(expected).any(axis=1)
+    np.testing.assert_array_equal(expected_degenerate, np.arange(7) == 1)
+    np.testing.assert_array_equal(expected_nan, np.arange(7) == 6)
     np.testing.assert_array_equal(np.asarray(degenerate), expected_degenerate)
     np.testing.assert_array_equal(np.asarray(nan), expected_nan)
     assert np.asarray(checksum).dtype == np.uint32
@@ -654,8 +659,6 @@ def test_float64_matches_the_original_dense_precision_path(tmp_path, x64):
 
 
 def test_result_centers_use_original_overflow_safe_native_formula():
-    from non_local_detector.likelihoods.common import decode_bin_centers
-
     edges = np.array([1e308, 1e308 + 2e300, 1e308 + 4e300])
     result = checkpointed_forward_backward(
         edges,
@@ -668,7 +671,10 @@ def test_result_centers_use_original_overflow_safe_native_formula():
         chunk_size=1,
     )
     assert np.isfinite(result.dataset.time).all()
-    np.testing.assert_array_equal(result.dataset.time, decode_bin_centers(edges, 0, 2))
+    # (left + right) / 2 overflows here; left + width / 2 does not.
+    np.testing.assert_array_equal(
+        result.dataset.time, edges[:-1] + 0.5 * np.diff(edges)
+    )
 
 
 def test_boundary_events_and_global_final_edge_keep_native_ownership(tmp_path):

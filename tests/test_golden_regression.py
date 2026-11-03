@@ -64,10 +64,12 @@ NONLOCAL_SEED = 99999
 # Tolerances for comparison. Looser than CLAUDE.md's 1e-10 standard
 # because these tests must survive cross-Python-version CI
 # (3.10/3.11/3.12/3.13) where JAX's XLA compilation and double-where
-# patterns produce ~1e-8 differences for identical algorithms. 1e-6
-# catches meaningful regressions while allowing cross-version noise.
+# patterns produce ~1e-8 differences for identical algorithms. On
+# GitHub's Apple-silicon runners (not on a local M-series Mac) one
+# clusterless posterior value differs by 1.24e-6, so ATOL is 2e-6. This
+# still catches meaningful regressions while allowing cross-platform noise.
 RTOL = 1e-6
-ATOL = 1e-6
+ATOL = 2e-6
 
 
 @pytest.fixture
