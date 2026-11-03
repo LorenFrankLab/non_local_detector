@@ -17,16 +17,12 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
 )
-from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
 )
-from non_local_detector.likelihoods.common import (
-    RATE_EPS_HZ,
-    interpolate_weights_at_spike_times,
-)
+from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     REFERENCE_DEGREES_OF_FREEDOM,
     MarkReference,
@@ -585,7 +581,6 @@ def test_reference_uses_requested_environments_every_group_and_the_weights():
         environment_labels=environments,
         weights=weights,
     )
-    support = EncodingSupport(time, position)
     sample_weights = weights * (environments == "")
     for times, marks, reference in zip(
         sim.spike_times,
@@ -593,9 +588,12 @@ def test_reference_uses_requested_environments_every_group_and_the_weights():
         detector.mark_reference_,
         strict=True,
     ):
-        spike_weights = interpolate_weights_at_spike_times(
-            times, time, sample_weights, encoding_support=support
-        )
+        # Every simulated spike falls on a position sample, so its weight is
+        # that sample's, read directly rather than through the interpolation
+        # the fit uses.
+        sample = np.searchsorted(time, times)
+        np.testing.assert_array_equal(time[sample], times)
+        spike_weights = sample_weights[sample]
         expected = spike_weights @ marks / spike_weights.sum()
         np.testing.assert_allclose(reference.location, expected, rtol=1e-10)
         # The masked environment and the weights both move the centre.
