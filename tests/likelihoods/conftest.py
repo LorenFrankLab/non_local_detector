@@ -55,16 +55,59 @@ EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
 FLOAT32_ROUNDING: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
 
 
+class _SegmentedScanKernels:
+    """Whether the JAX caches may hold kernels traced on the segmented scan.
+
+    The reduction path is chosen at trace time, so a kernel traced on one path
+    must never run on the other.
+    """
+
+    cached = False
+
+
+def _on_segmented_scan(item: pytest.Item) -> bool:
+    callspec = getattr(item, "callspec", None)
+    return callspec is not None and (
+        callspec.params.get("reduction_path") == "segmented_scan"
+    )
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Drop the segmented-scan kernels unless the next test reuses them as is.
+
+    Kept only when the next test is also on the segmented scan, in the same
+    module or class, and requests no fixture this test did not: then nothing
+    runs unpatched in between (no shared fixture is built) to trace kernels on
+    the sequential path or to run the segmented ones. Every other test, here or
+    in any later module, starts without them.
+    """
+    if not _SegmentedScanKernels.cached:
+        return
+    if (
+        nextitem is not None
+        and _on_segmented_scan(nextitem)
+        and nextitem.parent is item.parent
+        and set(nextitem.fixturenames) <= set(item.fixturenames)
+    ):
+        return
+    jax.clear_caches()
+    _SegmentedScanKernels.cached = False
+
+
 @pytest.fixture(params=["sequential", "segmented_scan"])
 def reduction_path(request, monkeypatch):
-    """Run on CPU's sequential scatter and on the off-CPU segmented scan."""
+    """Run on CPU's sequential scatter and on the off-CPU segmented scan.
+
+    Consecutive segmented-scan cases share their compiled kernels (see
+    ``pytest_runtest_teardown``) instead of each clearing every JAX cache.
+    """
     if request.param == "segmented_scan":
         monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
-        jax.clear_caches()
-        yield request.param
-        jax.clear_caches()
-    else:
-        yield request.param
+        if not _SegmentedScanKernels.cached:
+            # Kernels traced on the sequential path would bypass the patch.
+            jax.clear_caches()
+            _SegmentedScanKernels.cached = True
+    return request.param
 
 
 def tolerance(
@@ -72,6 +115,58 @@ def tolerance(
 ) -> dict[str, float]:
     """Float64 references at 1e-10; float32 at ``float32`` (the bound above)."""
     return {"rtol": 1e-10, "atol": 1e-10} if x64 else float32
+
+
+def spike_counts_by_edge_comparison(spike_times, edges, rows=None):
+    """Spikes per decode bin, compared with each bin's edges directly.
+
+    Bin ``i`` owns ``edges[i] <= t < edges[i + 1]``, and the final bin also owns
+    ``t == edges[-1]``. Every bin is counted over the whole recording and
+    ``rows`` slices the result, so the counts do not go through the package's
+    row-range spike selection, which the likelihoods under test use.
+
+    Parameters
+    ----------
+    spike_times : array_like, shape (n_spikes,)
+    edges : np.ndarray, shape (n_bins + 1,)
+    rows : slice, optional
+        Bins to return; all bins by default.
+
+    Returns
+    -------
+    counts : np.ndarray, shape (n_rows,)
+    """
+    times = np.asarray(spike_times)[:, None]
+    edges = np.asarray(edges)
+    owned = (times >= edges[:-1]) & (times < edges[1:])
+    owned[:, -1] |= times[:, 0] == edges[-1]
+    counts = owned.sum(axis=0)
+    return counts if rows is None else counts[rows]
+
+
+def log_duration_per_spike(spike_times, edges, rows=None, time_scale=1.0):
+    """Each bin's ``sum over spikes of log(duration / time_scale)``.
+
+    The ``N_bin * log(dt)`` term of a marked point process, from
+    ``spike_counts_by_edge_comparison`` rather than the package's own helper.
+
+    Parameters
+    ----------
+    spike_times : list of array_like, each shape (n_spikes,)
+        One spike train per electrode.
+    edges : np.ndarray, shape (n_bins + 1,)
+    rows : slice, optional
+        Bins to return; all bins by default.
+    time_scale : float, optional
+        Time unit of the caller's intensities, in seconds.
+
+    Returns
+    -------
+    log_duration : np.ndarray, shape (n_rows,)
+    """
+    counts = sum(spike_counts_by_edge_comparison(times, edges) for times in spike_times)
+    log_duration = counts * np.log(np.diff(edges) / time_scale)
+    return log_duration if rows is None else log_duration[rows]
 
 
 @pytest.fixture(scope="module")

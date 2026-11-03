@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: non_local_detector
+abstract: >-
+  Decoding of non-local neural activity, such as hippocampal replay, from
+  sorted-spike and clusterless electrophysiological data using Bayesian
+  inference with hidden Markov models, implemented in JAX.
+authors:
+  - family-names: Denovellis
+    given-names: Eric L.
+    orcid: https://orcid.org/0000-0003-4606-087X
+    affiliation: Howard Hughes Medical Institute - University of California, San Francisco, San Francisco, California, United States of America
+repository-code: https://github.com/LorenFrankLab/non_local_detector
+url: https://github.com/LorenFrankLab/non_local_detector
+license: MIT
+keywords:
+  - neuroscience
+  - bayesian-inference
+  - hmm
+  - neural-decoding
+  - replay-detection
+preferred-citation:
+  type: article
+  title: "Hippocampal replay of experience at real-world speeds"
+  authors:
+    - family-names: Denovellis
+      given-names: Eric L.
+    - family-names: Gillespie
+      given-names: Anna K.
+    - family-names: Coulter
+      given-names: Michael E.
+    - family-names: Sosa
+      given-names: Marielena
+    - family-names: Chung
+      given-names: Jason E.
+    - family-names: Eden
+      given-names: Uri T.
+    - family-names: Frank
+      given-names: Loren M.
+  journal: eLife
+  volume: 10
+  start: e64505
+  year: 2021
+  doi: 10.7554/eLife.64505
