@@ -249,3 +249,24 @@ def test_base_time_contract_check_fails_closed():
     detector.time_contract_ = {**detector.time_contract_, "rate_units": "per_bin"}
     with pytest.raises(ValidationError, match="refit"):
         _DetectorBase._validate_time_contract(detector)
+
+
+@pytest.mark.unit
+def test_direct_log_likelihood_accepts_list_position(fitted_local):
+    detector, time, position = fitted_local
+    _, _, spike_times = _recording()
+    expected = detector.compute_log_likelihood(
+        time, position, spike_times, time_edges=EDGES
+    )
+    actual = detector.compute_log_likelihood(
+        time.tolist(), position.tolist(), spike_times, time_edges=EDGES
+    )
+    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+
+
+@pytest.mark.unit
+def test_direct_log_likelihood_rejects_position_without_position_time(fitted_local):
+    detector, _, position = fitted_local
+    _, _, spike_times = _recording()
+    with pytest.raises(ValidationError, match="position_time is required"):
+        detector.compute_log_likelihood(None, position, spike_times, time_edges=EDGES)

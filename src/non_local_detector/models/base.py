@@ -214,7 +214,7 @@ class _LikelihoodPositionContext:
     def matches(
         self,
         time_edges: np.ndarray,
-        position_time: np.ndarray,
+        position_time: np.ndarray | None,
         position: np.ndarray | None,
         reads_position: bool,
     ) -> bool:
@@ -2142,7 +2142,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ------
         ValidationError
             If position is None but Local states or a non-local position
-            penalty read it, or its shape does not match the environments.
+            penalty read it, or position is 1-D (one column) while an
+            environment has a track graph, which needs raw 2-D positions.
         """
         if position is not None:
             self._validate_position_dimensionality(position, context="predict")
@@ -3655,8 +3656,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def _compute_spike_log_likelihood(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray | None,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
         spike_data: tuple[Any, ...],
         is_missing: np.ndarray | None,
         row_slice: slice | None,
@@ -3679,9 +3680,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if is_direct_call:
             self._validate_time_contract()
             decode = _DecodeInputs.from_arguments(position_time, position)
-            if decode.position_time is not None:
-                position_time = decode.position_time
-            position = decode.position
+            position_time, position = decode.position_time, decode.position
+        else:
+            # A decoding method prepared the context from its coerced inputs.
+            position_time = cast("np.ndarray | None", position_time)
+            position = cast("np.ndarray | None", position)
         time_edges, row_time = _decode_time_edges(
             time_edges,
             *self._learned_transition_time_bin_width(),
@@ -3819,7 +3822,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 if env_name not in env_penalties:
                     env = self._get_environment_by_name(env_name)
                     env_penalties[env_name] = self._compute_non_local_position_penalty(
-                        row_time, position_time, cast("np.ndarray", position), env
+                        row_time,
+                        cast("np.ndarray", position_time),
+                        cast("np.ndarray", position),
+                        env,
                     )
                 block = (block + jnp.asarray(env_penalties[env_name])).astype(
                     jnp.float32
@@ -3829,7 +3835,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 if env_name not in env_kernels:
                     env = self._get_environment_by_name(env_name)
                     env_kernels[env_name] = self._compute_local_position_kernel(
-                        row_time, position_time, cast("np.ndarray", position), env
+                        row_time,
+                        cast("np.ndarray", position_time),
+                        cast("np.ndarray", position),
+                        env,
                     )
                 block = (block + jnp.asarray(env_kernels[env_name])).astype(jnp.float32)
             blocks.append(block)
@@ -6748,8 +6757,8 @@ class ClusterlessDetector(_DetectorBase):
     @requires_time_edges
     def compute_log_likelihood(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray | None,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         is_missing: np.ndarray | None = None,
@@ -6799,9 +6808,9 @@ class ClusterlessDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,), or None
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims), or None
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
@@ -7681,8 +7690,8 @@ class SortedSpikesDetector(_DetectorBase):
     @requires_time_edges
     def compute_log_likelihood(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray | None,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
         spike_times: list[np.ndarray],
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
@@ -7731,9 +7740,9 @@ class SortedSpikesDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,), or None
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : array_like, shape (n_time_position, n_position_dims), or None
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
