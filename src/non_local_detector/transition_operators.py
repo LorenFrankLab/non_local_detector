@@ -1026,7 +1026,7 @@ def _rank_one_factors(block: Block) -> tuple[np.ndarray, np.ndarray] | None:
 
 @_register_operator
 @dataclass(frozen=True)
-class FusedBlockTransition:
+class FusedBlockTransition(TransitionOperator):
     """Block-operator products with every rank-one block in two matrices.
 
     Uniform and scalar identity blocks are rank one. Their source vectors,
