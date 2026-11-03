@@ -6,59 +6,11 @@ or from a checkpointed result store (``label_checkpointed_result``).
 ``non_local_detector.result_store`` writes and lazily reads that store.
 ``most_likely_sequence`` returns a DataFrame built by ``convert_seq_to_df``.
 
-Result layout (user docs: ``docs/result_layout.md``; keep the two in step,
-``tests/models/test_result_schema.py`` checks both name every field)
-
-Dimensions
-    ``time``: returned decode bins. ``state_bins``: every (state, position
-    bin) pair, absent with checkpointed ``output_mode="compact"``.
-    ``states``: discrete states, squeezed away for single-state models
-    (decoders), whose ``(time, states)`` variables are then ``(time,)`` and
-    whose ``states``, ``environments`` and ``encoding_groups`` are scalars.
-
-Coordinates on ``time``
-    ``time`` (bin centers, s), ``time_bin_start``, ``time_bin_end``,
-    ``time_bin_width`` (end - start), ``time_bin_end_inclusive`` (True only for
-    the final bin of the decode grid) and ``is_missing``. Checkpointed results
-    also carry ``source_row``, each row's index in the full decode grid.
-
-Coordinates on ``states``
-    ``states`` (names), ``environments`` and ``encoding_groups``.
-
-Coordinates on ``state_bins``
-    ``state_bins``, a MultiIndex with levels ``state`` and the position
-    dimensions (``position``; ``x_position``, ``y_position``; ...); states with
-    no position (No-Spike, Local without ``local_position_std``) have one bin
-    with NaN position. ``state_ind``, each bin's index into ``states``
-    (``detector.state_ind_``).
-
-Data variables (``state_bins`` variables are float32, NaN off the track interior)
-    ``acausal_posterior`` (time, state_bins) and
-    ``acausal_state_probabilities`` (time, states) always, except that compact
-    results have no ``state_bins`` variables. ``return_outputs`` adds
-    ``causal_state_probabilities`` and ``causal_posterior`` ("filter"),
-    ``predictive_state_probabilities`` ("predictive") and
-    ``predictive_posterior`` ("predictive" or "predictive_posterior"), and
-    ``log_likelihood`` (time, state_bins) ("log_likelihood"); "all" adds every
-    one. In a list, ``"predictive"`` adds only the state probabilities.
-
-Attributes
-    Always ``marginal_log_likelihoods`` (array), ``time_bin_convention``,
-    ``time_units`` and ``non_local_detector_version``. ``estimate_parameters``
-    adds ``em_transition_representation``, ``em_objectives``,
-    ``em_previous_objectives`` and ``em_n_chunks`` (dense EM) or
-    ``em_chunk_size`` and ``em_replay_cache_bytes`` (structured EM).
-    Checkpointed results add ``marginal_log_likelihood``, ``inference_mode``,
-    ``output_mode``, ``conditioning``, ``whole_recording_conditioning``,
-    ``recording_rows``, ``n_recording_bins``, ``transition_representation``,
-    ``dtype``, ``state_probability_dtype``, ``evidence_accumulation``,
-    ``evidence_dtype``, the diagnostics ``n_degenerate``, ``n_nan``,
-    ``degenerate_row_mask_hex``, ``nan_row_mask_hex``,
-    ``diagnostic_row_mask_encoding``, ``diagnostics_are_global``,
-    ``max_chunk_rows``, ``likelihood_evaluations``, ``checkpoint_bytes``,
-    ``checkpoint_cache_entries``, ``replay_cache_bytes`` and
-    ``global_gradients_supported``, and the internal ``_native_metadata``
-    (labels for reopening the store; ``save_results`` drops it).
+The layout of these results (dimensions, coordinates, data variables and
+attributes, by model type, ``return_outputs`` option and inference mode) is
+documented once, in ``docs/result_layout.md``;
+``tests/models/test_result_schema.py`` checks its tables against the results
+built here.
 """
 
 from typing import TYPE_CHECKING, Any

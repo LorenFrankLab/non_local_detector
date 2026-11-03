@@ -3,8 +3,10 @@
 Dense and checkpointed inference build their results separately, so these
 tests pin the coordinates both share, including those downstream code
 (Spyglass) reads, and check they survive ``save_results``/``load_results``.
+The tables of ``docs/result_layout.md`` are checked against real results.
 """
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +18,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     SortedSpikesDecoder,
 )
-from non_local_detector.models import _results
+from non_local_detector.analysis import get_spatial_posterior
 
 pytestmark = pytest.mark.integration
 
@@ -141,6 +143,7 @@ def test_netcdf_round_trip_keeps_state_ind(fitted, result, tmp_path):
     assert restored.indexes["state_bins"].equals(result.indexes["state_bins"])
     assert restored.coords["state_ind"].dims == ("state_bins",)
     np.testing.assert_array_equal(restored.state_ind, fitted.state_ind_)
+    assert restored.state_ind.dtype == result.state_ind.dtype
     for name in result.data_vars:
         np.testing.assert_array_equal(restored[name].values, result[name].values)
 
@@ -158,6 +161,7 @@ def test_files_with_a_state_ind_dimension_load_with_the_current_layout(
     with fitted.load_results(filename) as restored:
         restored = restored.load()
     assert "state_ind" not in restored.dims
+    assert restored.state_ind.dtype == dense.state_ind.dtype
     xr.testing.assert_equal(restored, dense)
 
 
@@ -170,18 +174,154 @@ def test_time_bin_width_is_each_bins_duration(result):
     )
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge")
-def test_layout_docs_name_every_field(fitted, dense, checkpointed):
-    """The user docs and the module docstring list every coordinate, data
-    variable and attribute of dense, checkpointed and EM results."""
-    em = type(fitted)(**fitted.get_params()).estimate_parameters(
-        **_PREDICT, max_iter=1, return_outputs="all"
-    )
-    names = {
-        name
-        for result in (dense, checkpointed, em)
-        for name in [*result.coords, *result.data_vars, *result.attrs]
+def test_spatial_posterior_leaves_out_state_ind(dense):
+    assert "state_ind" in dense.acausal_posterior.unstack("state_bins").coords
+    assert "state_ind" not in get_spatial_posterior(dense.acausal_posterior).coords
+
+
+_DOCS = Path(__file__).parents[2] / "docs" / "result_layout.md"
+
+
+def _doc_table(heading):
+    """Rows of the first table under ``## heading``, as {column: cell}."""
+    section = _DOCS.read_text().split(f"\n## {heading}\n", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    lines = [line for line in section.splitlines() if line.startswith("|")]
+
+    def cells(line):
+        return [cell.strip() for cell in line.strip("|").split("|")]
+
+    header = cells(lines[0])
+    return [dict(zip(header, cells(line), strict=True)) for line in lines[2:]]
+
+
+def _names(cell):
+    return re.findall(r"`([^`]+)`", cell)
+
+
+def _dims(text, single_state):
+    """``(time, states)`` or ``time`` as a tuple, without ``states`` for a
+    single-state model."""
+    dims = tuple(d.strip() for d in text.strip("`()").split(","))
+    return tuple(d for d in dims if not (single_state and d == "states"))
+
+
+def _documented_coords(kind, single_state):
+    """Coordinate dims the docs give a dense, spatial or compact result."""
+    has_state_bins = kind != "compact"
+    included = {
+        "All": True,
+        "Checkpointed": kind != "dense",
+        "With `state_bins`": has_state_bins,
     }
-    docs = (Path(__file__).parents[2] / "docs" / "result_layout.md").read_text()
-    assert sorted(n for n in names if f"`{n}`" not in docs) == []
-    assert sorted(n for n in names if f"``{n}``" not in _results.__doc__) == []
+    coords = {}
+    for row in _doc_table("Coordinates"):
+        if included[row["Present in"]]:
+            for name in _names(row["Coordinate"]):
+                coords[name] = _dims(row["Dimension"], single_state)
+    if has_state_bins:
+        # The MultiIndex levels of the 2-D test environment.
+        for level in ("state", "x_position", "y_position"):
+            coords[level] = ("state_bins",)
+    return coords
+
+
+def _documented_variables(option, compact, single_state):
+    """Data variable dims the docs give for a string ``return_outputs``."""
+    variables = {}
+    for row in _doc_table("Data variables"):
+        added_by = row["Added by `return_outputs`"]
+        options = set(re.findall(r'`"([^"`]+)"`', added_by))
+        included = added_by == "Always" or option == "all" or option in options
+        if compact and row["In compact results"] != "Yes":
+            included = False
+        if included:
+            (name,) = _names(row["Variable"])
+            variables[name] = _dims(row["Dimensions"], single_state)
+    return variables
+
+
+def _documented_attrs(*present_in):
+    return {
+        name
+        for row in _doc_table("Attributes")
+        if row["Present in"] in present_in
+        for name in _names(row["Attribute"])
+    }
+
+
+def _actual(result):
+    return (
+        {name: c.dims for name, c in result.coords.items()},
+        {name: v.dims for name, v in result.data_vars.items()},
+    )
+
+
+@pytest.mark.parametrize(
+    "option",
+    [None, "filter", "predictive", "predictive_posterior", "log_likelihood", "all"],
+)
+def test_docs_tables_match_dense_results(fitted, option):
+    single_state = len(fitted.state_names) == 1
+    result = fitted.predict(**_PREDICT, return_outputs=option)
+    assert _actual(result) == (
+        _documented_coords("dense", single_state),
+        _documented_variables(option, False, single_state),
+    )
+    assert set(result.attrs) == _documented_attrs("All")
+
+
+@pytest.mark.parametrize("option", [None, "filter", "predictive"])
+def test_docs_tables_match_compact_results(fitted, option):
+    single_state = len(fitted.state_names) == 1
+    result = fitted.predict(
+        **_PREDICT,
+        return_outputs=option,
+        inference_mode="checkpointed",
+        output_mode="compact",
+        chunk_size=13,
+    )
+    assert _actual(result) == (
+        _documented_coords("compact", single_state),
+        _documented_variables(option, True, single_state),
+    )
+    assert set(result.attrs) == _documented_attrs("All", "Checkpointed")
+
+
+def test_docs_tables_match_checkpointed_spatial_results(fitted, checkpointed):
+    single_state = len(fitted.state_names) == 1
+    assert _actual(checkpointed) == (
+        _documented_coords("spatial", single_state),
+        _documented_variables("all", False, single_state),
+    )
+    assert set(checkpointed.attrs) == _documented_attrs("All", "Checkpointed")
+
+
+@pytest.mark.filterwarnings("ignore:EM did not converge")
+@pytest.mark.parametrize(
+    ("representation", "stored", "present_in"),
+    [
+        ("dense", False, ("Dense EM",)),
+        ("structured", False, ("Structured EM",)),
+        ("structured", True, ("Structured EM", "Checkpointed")),
+    ],
+)
+def test_docs_tables_match_em_results(
+    fitted, tmp_path, representation, stored, present_in
+):
+    single_state = len(fitted.state_names) == 1
+    result = type(fitted)(**fitted.get_params()).estimate_parameters(
+        **_PREDICT,
+        max_iter=1,
+        return_outputs="all",
+        transition_representation=representation,
+        result_path=tmp_path / "em" if stored else None,
+    )
+    kind = "spatial" if stored else "dense"
+    assert _actual(result) == (
+        _documented_coords(kind, single_state),
+        _documented_variables("all", False, single_state),
+    )
+    assert set(result.attrs) == _documented_attrs(
+        "All", "`estimate_parameters`", *present_in
+    )

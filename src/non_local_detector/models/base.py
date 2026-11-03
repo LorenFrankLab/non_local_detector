@@ -5500,10 +5500,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         results = xr.open_dataset(filename)
         if "state_bins" not in results.dims:
             return results
-        if "state_ind" in results.dims:
-            # Earlier versions saved state_ind on a dimension of its own.
+        if "state_ind" in results.coords:
+            # netCDF3 stores int64 as int32, and earlier versions saved
+            # state_ind on a dimension of its own; restore the in-memory form.
             results = results.drop_vars("state_ind").assign_coords(
-                state_ind=("state_bins", results["state_ind"].values)
+                state_ind=("state_bins", results["state_ind"].values.astype(int))
             )
         # Scalar state/environment coordinates are also attached to this array,
         # but only the original one-dimensional levels form its spatial index;

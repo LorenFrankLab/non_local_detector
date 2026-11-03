@@ -80,7 +80,13 @@ def get_spatial_posterior(
     if not keep.any():
         msg = f"No state bins with a position remain (states={states!r})."
         raise ValueError(msg)
-    return posterior.isel(state_bins=np.flatnonzero(keep)).unstack("state_bins")
+    # state_ind would unstack into a NaN-padded float coordinate that only
+    # repeats the ``state`` dimension.
+    return (
+        posterior.isel(state_bins=np.flatnonzero(keep))
+        .drop_vars("state_ind", errors="ignore")
+        .unstack("state_bins")
+    )
 
 
 def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
