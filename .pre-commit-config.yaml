@@ -18,6 +18,8 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        # mkdocs.yml uses the !ENV tag; `mkdocs build --strict` validates it.
+        exclude: '^mkdocs\.yml$'
       - id: check-toml
       - id: check-added-large-files
         args: ['--maxkb=1000']

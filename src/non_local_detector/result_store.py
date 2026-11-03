@@ -38,6 +38,22 @@ class IncrementalResultWriter:
     constructor cleans up after itself. Outside a ``with`` block, call
     ``abort`` after a failed ``write``.
     Existing destinations are refused and never overwritten.
+
+    Parameters
+    ----------
+    path : str or Path
+        Destination directory of the completed result. Must not exist.
+    variables : mapping of str to tuple
+        Result variables, ``name -> (dimensions, shape, dtype)``. The leading
+        dimension is time and ``shape[0]`` is the total number of rows to be
+        written.
+    coordinates : mapping of str to tuple
+        Result coordinates, ``name -> (dimensions, values)``.
+
+    Raises
+    ------
+    FileExistsError
+        If ``path`` already exists.
     """
 
     def __init__(
@@ -98,7 +114,26 @@ class IncrementalResultWriter:
             raise ValueError(msg)
 
     def write(self, name: str, start: int, values: ArrayLike) -> None:
-        """Write one bounded chunk at its result-row offset, in any chunk order."""
+        """Write one bounded chunk at its result-row offset, in any chunk order.
+
+        Parameters
+        ----------
+        name : str
+            Name of a variable declared at construction.
+        start : int
+            Index of the first result row the chunk covers.
+        values : array_like, shape (n_rows, ...)
+            Chunk values, cast to the variable's dtype. Trailing dimensions
+            must match the declared shape.
+
+        Raises
+        ------
+        ValueError
+            If the chunk shape or row range does not match the variable, or
+            overlaps a previously written chunk.
+        RuntimeError
+            If the result was already completed.
+        """
         if self._published:
             msg = "Result already completed"
             raise RuntimeError(msg)
@@ -131,7 +166,28 @@ class IncrementalResultWriter:
         bisect.insort(intervals, (int(start), int(stop)))
 
     def complete(self, attrs: Mapping[str, Any] | None = None) -> Path:
-        """Validate coverage and atomically expose a completed immutable result."""
+        """Validate coverage and atomically expose a completed immutable result.
+
+        Parameters
+        ----------
+        attrs : mapping of str to Any, optional
+            JSON-serializable attributes stored with the result, by default
+            None (no attributes).
+
+        Returns
+        -------
+        path : Path
+            The published result directory.
+
+        Raises
+        ------
+        ValueError
+            If any variable's rows are not fully covered.
+        RuntimeError
+            If the result was already completed.
+        FileExistsError
+            If the destination appeared since construction.
+        """
         if self._published:
             msg = "Result already completed"
             raise RuntimeError(msg)
@@ -310,6 +366,26 @@ def open_result_store(
     The explicit read budget bounds the
     materialized returned array, not user arrays, filesystem cache, or copies
     made by downstream libraries. This loader does not enable global gradients.
+
+    Parameters
+    ----------
+    path : str or Path
+        Directory of a completed result written by
+        :class:`IncrementalResultWriter`.
+    max_read_bytes : int, optional
+        Largest single explicit read from the lazily loaded variables, in
+        bytes, by default 512 MiB.
+
+    Returns
+    -------
+    result : xarray.Dataset
+        Dataset whose spatial variables are lazy and whose coordinates and
+        attributes are loaded from the manifest.
+
+    Raises
+    ------
+    ValueError
+        If the store is incomplete or uses an unsupported format version.
     """
     max_read_bytes = _validate_read_budget(max_read_bytes)
     path = Path(path)
@@ -356,6 +432,22 @@ class PaddedBackendArray(BackendArray):
     Unsupported columns contain NaN. No eager global posterior or full-file
     mapping is introduced. ``source`` is a two-dimensional xarray variable or
     DataArray whose backend remains lazy until selected rows/bins are read.
+
+    Parameters
+    ----------
+    source : xarray.DataArray or xarray.Variable
+        Two-dimensional ``(n_time, n_interior_bins)`` floating-point variable.
+    interior_mask : array_like of bool, shape (n_bins,)
+        True for the original bins that ``source`` columns map to, in order;
+        its sum must equal ``source.shape[1]``.
+    max_read_bytes : int, optional
+        Largest single explicit read, in bytes, by default 512 MiB.
+
+    Raises
+    ------
+    ValueError
+        If the mask does not match the source columns or the source is not
+        floating point.
     """
 
     def __init__(
@@ -419,7 +511,22 @@ def pad_state_bins(
     *,
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
 ) -> xr.Variable:
-    """Return a lazy padded variable; caller supplies original bin coordinates."""
+    """Return a lazy padded variable; caller supplies original bin coordinates.
+
+    Parameters
+    ----------
+    variable : xarray.DataArray or xarray.Variable
+        Two-dimensional ``(n_time, n_interior_bins)`` floating-point variable.
+    interior_mask : array_like of bool, shape (n_bins,)
+        True for the original bins that ``variable`` columns map to.
+    max_read_bytes : int, optional
+        Largest single explicit read, in bytes, by default 512 MiB.
+
+    Returns
+    -------
+    padded : xarray.Variable
+        Lazy ``(n_time, n_bins)`` variable with NaN in the non-interior bins.
+    """
     source = variable.variable if isinstance(variable, xr.DataArray) else variable
     backend = PaddedBackendArray(source, interior_mask, max_read_bytes=max_read_bytes)
     return xr.Variable(

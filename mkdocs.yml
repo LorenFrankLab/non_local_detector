@@ -86,6 +86,8 @@ plugins:
   # running them for a quick local preview.
   - mkdocs-jupyter:
       include: ["tutorials/*.py"]
+      # Skip probing every Markdown page with jupytext (pandoc warnings).
+      ignore: ["*.md"]
       execute: !ENV [NLD_DOCS_EXECUTE, true]
       allow_errors: false
       include_source: true

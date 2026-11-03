@@ -1,3 +1,5 @@
+"""Interactive figurl view for 2D decoding results (requires ``sortingview``)."""
+
 import numpy as np
 
 _UINT16_MAX = int(np.iinfo(np.uint16).max)
@@ -54,6 +56,7 @@ try:
     import sortingview.views.franklab as vvf
     import xarray as xr
 
+    from non_local_detector.analysis.posterior import get_spatial_posterior
     from non_local_detector.environment import Environment, get_grid, get_track_interior
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
@@ -521,6 +524,8 @@ try:
         env : Environment
         results : xr.Dataset
         posterior : xr.DataArray, optional
+            Defaults to the posterior over position summed over the states that
+            have a position (Local and No-Spike excluded).
         spike_times : list[np.ndarray], optional
             Spike times for each neuron.
         head_dir : np.ndarray, shape (n_time_position,), optional
@@ -541,7 +546,7 @@ try:
         else:
             interior_place_bin_centers = env.place_bin_centers_
         if posterior is None:
-            posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+            posterior = get_spatial_posterior(results.acausal_posterior).sum("state")
         place_bin_size = (
             posterior.x_position.values[1] - posterior.x_position.values[0],
             posterior.y_position.values[1] - posterior.y_position.values[0],

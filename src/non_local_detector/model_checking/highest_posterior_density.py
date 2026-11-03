@@ -1,3 +1,5 @@
+"""Highest posterior density (HPD) thresholds and spatial coverage of posteriors."""
+
 import numpy as np
 import xarray as xr
 
@@ -16,8 +18,7 @@ def get_highest_posterior_threshold(
 
     Parameters
     ----------
-    posterior : xarray.DataArray or np.ndarray, shape (n_time, n_position_bins) or
-        shape (n_time, n_x_bins, n_y_bins)
+    posterior : xarray.DataArray or np.ndarray, shape (n_time, n_position_bins) or (n_time, n_x_bins, n_y_bins)
         Posterior probability distributions over position at each time point.
         The non-time dimensions are flattened for processing.
     coverage : float, optional
@@ -37,7 +38,6 @@ def get_highest_posterior_threshold(
     The algorithm sorts posterior values in descending order and finds the
     threshold where the cumulative probability first exceeds the desired coverage.
     For reference see: https://stats.stackexchange.com/questions/240749/how-to-find-95-credible-interval
-
     """
     # Reshape non-time dimensions into a single dimension
     n_time = posterior.shape[0]

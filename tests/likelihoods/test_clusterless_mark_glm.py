@@ -31,7 +31,6 @@ from non_local_detector.likelihoods.clusterless_mark_glm import (
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
-    log_bin_duration_evidence,
 )
 from non_local_detector.likelihoods.mark_reference import (
     background_log_intensity,
@@ -388,10 +387,14 @@ def test_nonlocal_matches_a_direct_computation(track_1d):
             )
         )
         rows = np.searchsorted(time_edges, spike_times[electrode], side="right") - 1
-        np.add.at(expected, rows, np.logaddexp(intensity, background[:, None]))
-    expected += np.asarray(
-        log_bin_duration_evidence(spike_times, time_edges, None, None)
-    )[:, None]
+        # Each spike adds log(lambda * dt): its log intensity plus the log of
+        # its bin's duration.
+        np.add.at(
+            expected,
+            rows,
+            np.logaddexp(intensity, background[:, None])
+            + np.log(durations[rows])[:, None],
+        )
     assert np.all(np.isfinite(result))
     np.testing.assert_allclose(result, expected, rtol=1e-5, atol=1e-3)
 
@@ -839,10 +842,11 @@ def test_local_matches_a_direct_computation_for_a_moving_animal(track_1d):
             )
         )
         rows = np.searchsorted(time_edges, spike_times[electrode], side="right") - 1
-        np.add.at(expected, rows, np.logaddexp(intensity, background))
-    expected += np.asarray(
-        log_bin_duration_evidence(spike_times, time_edges, None, None)
-    )
+        np.add.at(
+            expected,
+            rows,
+            np.logaddexp(intensity, background) + np.log(durations[rows]),
+        )
     np.testing.assert_allclose(result, expected, rtol=1e-5, atol=1e-3)
 
 
