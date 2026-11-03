@@ -451,6 +451,8 @@ def make_simulated_data(
     Parameters
     ----------
     track_height : float, optional
+        Height of the simulated track; place fields are spaced evenly over
+        ``[0, track_height]``.
     sampling_frequency : int, optional
     replay_speed : float, optional
     n_neurons : int, optional
@@ -488,8 +490,7 @@ def make_simulated_data(
     speed = np.insert(speed, 0, 0.0)
 
     # Simulate spikes
-    place_field_means = np.linspace(0, TRACK_HEIGHT, n_neurons)
-    place_field_means = place_field_means[place_field_means <= TRACK_HEIGHT]
+    place_field_means = np.linspace(0, track_height, n_neurons)
 
     place_fields = np.stack(
         [

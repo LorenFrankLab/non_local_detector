@@ -559,7 +559,12 @@ def test_fit_mark_reference_rejects_kernel_scale_per_other_features():
 def test_reference_uses_requested_environments_every_group_and_the_weights():
     """The reference spans every encoding group of the modelled environments,
     weighted by the fit's weights, and ignores environments no state models."""
-    sim = make_simulated_run_data(n_runs=1, seed=3)
+    # Pins the cell layout this test was written against: the final assertion
+    # needs the masked, weighted mean to differ from the plain mean by more
+    # than rtol=1e-3, which the default on-track layout does not give at seed 3.
+    sim = make_simulated_run_data(
+        n_runs=1, seed=3, place_field_means=np.arange(0, 200, 10)
+    )
     time, position = sim.position_time, sim.position
     detector = ClusterlessDecoder(
         clusterless_algorithm_params={"disable_progress_bar": True}

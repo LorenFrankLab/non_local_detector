@@ -93,7 +93,7 @@ def simulate_position_with_pauses(
 def simulate_multiunit_with_place_fields(
     place_means: np.ndarray,
     position: np.ndarray,
-    mark_spacing: int = 5,
+    mark_spacing: float = 5,
     n_mark_dims: int = 4,
     place_variance: float = 12.5,
     mark_variance: float = 1.0,
@@ -109,7 +109,7 @@ def simulate_multiunit_with_place_fields(
     ----------
     place_means : np.ndarray, shape (n_neurons, n_position_dims)
     position : np.ndarray, shape (n_time, n_position_dims)
-    mark_spacing : int, optional
+    mark_spacing : float, optional
     n_mark_dims : int, optional
     place_variance : float
     max_rate : float
