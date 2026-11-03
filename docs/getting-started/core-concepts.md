@@ -102,7 +102,9 @@ Fitted firing rates are in Hz.
   is uniform over the interior of the environment named by the
   transition's `environment_name`, and into it every bin moves there with
   probability 1. A custom transition has no structured operator unless it
-  implements `transition_operators.SupportsStructuredBlock`, so
+  implements `transition_operators.SupportsStructuredBlock` and defines
+  `structured_block` in its own class (a subclass of a package transition
+  that does not is treated as custom), so
   `transition_representation="structured"` rejects it. `"auto"` builds its
   dense block, except when an environment's graph distances are deferred,
   as for an open-field grid fit with a non-dense representation; use

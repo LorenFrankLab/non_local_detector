@@ -1343,3 +1343,69 @@ def test_block_with_rows_above_one_is_rejected():
     with pytest.raises(ValidationError, match="at most 1") as error:
         dense_reference([[_custom_returning(above)]], [env], (12,))
     assert "Normalize" not in str(error.value)
+
+
+@pytest.mark.unit
+def test_subclass_overriding_a_helper_falls_back_to_dense():
+    """A RandomWalk subclass that changes a helper of make_state_transition
+    is planned as a custom transition, not given RandomWalk's Gaussian
+    block."""
+    from dataclasses import dataclass
+
+    from non_local_detector.continuous_state_transitions import (
+        _euclidean_random_walk,
+    )
+
+    @dataclass
+    class WideRandomWalk(RandomWalk):
+        def _handle_no_track_graph(self, environment):
+            return _euclidean_random_walk(
+                environment, self.movement_mean, 10 * self.movement_var
+            )
+
+    env = environment((3, 4), holes=False)
+    transition = WideRandomWalk()
+    with pytest.raises(UnsupportedTransitionError):
+        build_transition_operator([[transition]], [env], (12,))
+    operator = build_transition_operator(
+        [[transition]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(
+        np.asarray(LazyDenseTransition(operator)),
+        transition.make_state_transition([env]),
+    )
+
+
+@pytest.mark.unit
+def test_subclass_defining_structured_block_uses_it():
+    """A subclass opts in again by defining structured_block itself."""
+    from dataclasses import dataclass
+
+    from non_local_detector.transition_operators import IdentityBlock
+
+    @dataclass
+    class StayingRandomWalk(RandomWalk):
+        def make_state_transition(self, environments, context=None):
+            return np.diag(environments[0].is_track_interior_flat_.astype(float))
+
+        def structured_block(self, environments):
+            return IdentityBlock(environments[0].is_track_interior_flat_)
+
+    env = environment((3, 4))
+    operator = build_transition_operator([[StayingRandomWalk()]], [env], (12,))
+    assert isinstance(operator.blocks[0][0], IdentityBlock)
+
+
+@pytest.mark.unit
+def test_instance_assigned_make_state_transition_is_custom():
+    """A make_state_transition assigned on the instance replaces the class's
+    matrix, so the class's structured block no longer describes it."""
+    env = environment((3, 4), holes=False)
+    transition = RandomWalk()
+    transition.make_state_transition = lambda environments, context=None: np.eye(12)
+    with pytest.raises(UnsupportedTransitionError):
+        build_transition_operator([[transition]], [env], (12,))
+    operator = build_transition_operator(
+        [[transition]], [env], (12,), allow_dense_fallback=True
+    )
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), np.eye(12))

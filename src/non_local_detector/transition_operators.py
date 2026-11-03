@@ -1590,10 +1590,11 @@ class SupportsStructuredBlock(Protocol):
 
     A transition opts into structured operators by implementing these
     methods alongside its ``make_state_transition``, as the package's
-    transitions do. A subclass that overrides ``make_state_transition``
-    without also overriding ``structured_block`` is treated as a transition
-    without them. Transitions without them fall back to their dense block
-    with ``transition_representation="auto"``.
+    transitions do. Only a class that defines ``structured_block`` itself is
+    planned this way: a subclass that inherits it, or an object whose
+    ``make_state_transition`` is assigned on the instance, is treated as a
+    transition without these methods. Transitions without them fall back to
+    their dense block with ``transition_representation="auto"``.
     """
 
     def structured_block(self, environments: Sequence[Environment]) -> Block:
@@ -1631,24 +1632,19 @@ class SupportsStructuredBlock(Protocol):
         ...
 
 
-def _defining_class_index(cls: type, name: str) -> int:
-    """Position in ``cls.__mro__`` of the class that defines ``name``, or
-    ``len(cls.__mro__)`` if only an instance does."""
-    return next(
-        (index for index, base in enumerate(cls.__mro__) if name in vars(base)),
-        len(cls.__mro__),
-    )
-
-
 def _planned(transition: object) -> SupportsStructuredBlock | None:
-    """The transition if its ``SupportsStructuredBlock`` methods describe its
-    ``make_state_transition``, else None."""
+    """The transition if its class plans its own blocks, else None.
+
+    Only a class that defines ``structured_block`` itself is trusted: a
+    subclass inheriting it may change ``make_state_transition`` or any helper
+    it calls, so it is planned like a custom transition. So is an object
+    whose ``make_state_transition`` was assigned on the instance.
+    """
     if not isinstance(transition, SupportsStructuredBlock):
         return None
-    cls = type(transition)
-    if _defining_class_index(cls, "structured_block") > _defining_class_index(
-        cls, "make_state_transition"
-    ):
+    if "structured_block" not in vars(type(transition)):
+        return None
+    if "make_state_transition" in getattr(transition, "__dict__", {}):
         return None
     return transition
 

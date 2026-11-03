@@ -871,16 +871,14 @@ def test_estimate_parameters_rejects_every_bin_missing(family, representation):
 
 
 def _with_opaque_random_walks(model):
-    """Swap RandomWalk blocks for a subclass the operator builder cannot read:
-    its own make_state_transition hides RandomWalk's structured block."""
+    """Swap RandomWalk blocks for a subclass the operator builder cannot read."""
     from dataclasses import dataclass, fields
 
     from non_local_detector.continuous_state_transitions import RandomWalk
 
     @dataclass
     class OpaqueRandomWalk(RandomWalk):
-        def make_state_transition(self, environments, context=None):
-            return super().make_state_transition(environments, context)
+        pass
 
     model.continuous_transition_types = [
         [
