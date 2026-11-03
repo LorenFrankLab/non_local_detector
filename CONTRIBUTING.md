@@ -85,7 +85,7 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 
 - The fit returns its encoding model as a plain dict. Describe it with a `TypedDict` derived from `SortedSpikesEncodingModel` or `ClusterlessEncodingModel` (`non_local_detector.likelihoods.encoding_model`) and annotate the fit with it, so mypy checks the returned keys and values. Set `algorithm` to the registered name.
 - The detector calls `predict(position_time, position, *spike_data, **encoding_model, ...)`. After the data arguments every fit and predict parameter is keyword-only, and predict declares every key of the encoding model (no `**kwargs`), including fit diagnostics it does not use.
-- Register a `LikelihoodAlgorithm(fit, predict, EncodingModelType)`, or for clusterless data a `ClusterlessLikelihoodAlgorithm` with its `mark_reference_scale` and, if model checking supports it, its `electrode_intensity`.
+- Register a `LikelihoodAlgorithm(fit, predict, EncodingModelType)`, or for clusterless data a `ClusterlessLikelihoodAlgorithm` with its `mark_reference_scale` and, if model checking supports it, the name of its intensity class in `model_checking._clusterless_models` (`electrode_intensity`).
 - `tests/likelihoods/test_algorithm_contract.py` checks every registered algorithm against these rules.
 
 ## Changelog

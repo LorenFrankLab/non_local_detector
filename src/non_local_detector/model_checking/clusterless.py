@@ -18,7 +18,7 @@ References
 """
 
 from collections.abc import Callable, Sequence
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 import scipy
@@ -27,6 +27,7 @@ from scipy.special import logsumexp
 
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.common import get_position_at_time
+from non_local_detector.model_checking import _clusterless_models
 from non_local_detector.model_checking.conditional_marks import (
     GaussianMixtureConditionalCDF as GaussianMixtureConditionalCDF,
 )
@@ -256,7 +257,10 @@ def _electrode_intensity(
             f"{supported}"
         )
         raise ValueError(msg)
-    return record.electrode_intensity
+    return cast(
+        "Callable[[dict[str, Any], int], Any]",
+        getattr(_clusterless_models, record.electrode_intensity),
+    )
 
 
 def ircm_transform(

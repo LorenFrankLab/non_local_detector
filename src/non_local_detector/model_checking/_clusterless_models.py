@@ -17,7 +17,8 @@ where ``Lambda(x)`` is the ground intensity in Hz at position ``x`` and
 
 The goodness-of-fit transforms only need the operations below, evaluated with
 the decoder's own definitions. Each algorithm's registry record names its
-class here (``ClusterlessLikelihoodAlgorithm.electrode_intensity``). Time
+class here (``ClusterlessLikelihoodAlgorithm.electrode_intensity``), by name so
+that the likelihoods do not import this package. Time
 integrals for the MDCI transform use the environment's interior place bins, as
 the non-local likelihood does.
 """
