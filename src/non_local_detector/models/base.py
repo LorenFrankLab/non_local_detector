@@ -6114,8 +6114,8 @@ class ClusterlessDetector(_DetectorBase):
         ----------
         weights : np.ndarray, shape (n_time_position,)
         """
-        self.fit_encoding_model(
-            **self._encoding_model_data, weights=weights, _refit_mark_reference=False
+        self._fit_encoding_model(
+            **self._encoding_model_data, weights=weights, refit_mark_reference=False
         )
 
     def _resolve_clusterless_algorithm_params(self) -> dict[str, Any]:
@@ -6206,7 +6206,6 @@ class ClusterlessDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        _refit_mark_reference: bool = True,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -6239,10 +6238,6 @@ class ClusterlessDetector(_DetectorBase):
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
-        _refit_mark_reference : bool, optional
-            Internal. If False, keep the existing ``mark_reference_`` instead
-            of refitting it, as for posterior-weighted encoding updates. By
-            default True.
 
         Attributes
         ----------
@@ -6260,6 +6255,40 @@ class ClusterlessDetector(_DetectorBase):
             adds a background intensity
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
+        """
+        self._fit_encoding_model(
+            position_time,
+            position,
+            spike_times,
+            spike_waveform_features,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+            weights,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+            refit_mark_reference=True,
+        )
+
+    def _fit_encoding_model(
+        self,
+        position_time: np.ndarray,
+        position: np.ndarray,
+        spike_times: list[np.ndarray],
+        spike_waveform_features: list[np.ndarray],
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        *,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
+        refit_mark_reference: bool,
+    ) -> None:
+        """Body of ``fit_encoding_model``.
+
+        ``refit_mark_reference=False`` keeps the existing ``mark_reference_``,
+        as posterior-weighted encoding updates do.
         """
         logger.info("Fitting clusterless spikes...")
         # Validate before any state changes and before the collections are
@@ -6354,7 +6383,7 @@ class ClusterlessDetector(_DetectorBase):
                 support,
                 kwargs,
             )
-            if _refit_mark_reference
+            if refit_mark_reference
             else self.mark_reference_
         )
 
