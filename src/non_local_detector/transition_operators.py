@@ -28,7 +28,7 @@ from non_local_detector.continuous_state_transitions import (
     RandomWalkDirection2,
     Uniform,
 )
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
 
@@ -1424,14 +1424,6 @@ class LazyDenseTransition:
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 
 
-def _find_environment(environments: Sequence[Environment], name: str) -> Environment:
-    for environment in environments:
-        if environment.environment_name == name:
-            return environment
-    msg = f"Environment {name!r} not found"
-    raise ValueError(msg)
-
-
 def _mask(environment: Environment) -> np.ndarray:
     return environment.is_track_interior_flat_
 
@@ -1576,7 +1568,7 @@ def _structured_block(
             )
             raise ValueError(msg)
         destination = _mask(
-            _find_environment(environments, transition.environment_name)
+            find_environment_by_name(environments, transition.environment_name)
         )
         normalization = np.array(
             1.0 / destination.sum() if destination.any() else np.nan
@@ -1589,11 +1581,15 @@ def _structured_block(
     if type(transition) is Discrete and source_size == target_size == 1:
         return IdentityBlock(np.ones(1, dtype=bool))
     if type(transition) is Uniform:
-        source = _mask(_find_environment(environments, transition.environment_name))
+        source = _mask(
+            find_environment_by_name(environments, transition.environment_name)
+        )
         destination = (
             source.copy()
             if transition.environment2_name is None
-            else _mask(_find_environment(environments, transition.environment2_name))
+            else _mask(
+                find_environment_by_name(environments, transition.environment2_name)
+            )
         )
         return UniformBlock(
             source,
@@ -1602,11 +1598,12 @@ def _structured_block(
         )
     if type(transition) is Identity:
         return IdentityBlock(
-            _mask(_find_environment(environments, transition.environment_name))
+            _mask(find_environment_by_name(environments, transition.environment_name))
         )
     if type(transition) is RandomWalk:
         return _gaussian_block(
-            transition, _find_environment(environments, transition.environment_name)
+            transition,
+            find_environment_by_name(environments, transition.environment_name),
         )
     msg = f"No proven exact structured operator for {type(transition).__name__}"
     raise UnsupportedTransitionError(msg)
@@ -1633,14 +1630,14 @@ def _check_known_fallback_shape(
     if type(transition) is Discrete:
         shape = (1, 1)
     elif type(transition) in _KNOWN_TRANSITIONS:
-        env = _find_environment(environments, transition.environment_name)
+        env = find_environment_by_name(environments, transition.environment_name)
         count = len(cast(np.ndarray, env.place_bin_centers_))
         other = count
         if type(transition) is Uniform and transition.environment2_name is not None:
             other = len(
                 cast(
                     np.ndarray,
-                    _find_environment(
+                    find_environment_by_name(
                         environments, transition.environment2_name
                     ).place_bin_centers_,
                 )
@@ -1776,7 +1773,7 @@ def build_transition_operator(
                 msg = "Opaque custom dense fallback with deferred graph distances has no verified exact distance contract; use the legacy dense representation"
                 raise UnsupportedTransitionError(msg)
             if type(block) is RandomWalk and block.use_manifold_distance:
-                env = _find_environment(environments, block.environment_name)
+                env = find_environment_by_name(environments, block.environment_name)
                 if isinstance(env.distance_between_nodes_, LazyGraphDistances):
                     distance_environments[id(env)] = env
     distance_bytes = sum(

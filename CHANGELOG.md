@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** detectors fit copies of the environments they are given and never change the caller's `Environment`. `fit` (and `initialize_environments`) rebuilds each environment from `get_params()` and fits the copy; `detector.environments` holds the fitted copies afterwards. Several detectors can now share one `Environment`: fitting one on other positions no longer refits the others' grids under their encoding models (which made their `predict` raise a grid-mismatch `ValidationError`). Code that read fitted attributes from the object it passed in, such as `environment.place_bin_centers_` after `detector.fit`, must read `detector.environments[i]` instead.
 - **Breaking:** continuous transitions no longer store the environment they were built on: `make_state_transition` of `RandomWalk`, `Identity`, `EmpiricalMovement`, `RandomWalkDirection1` and `RandomWalkDirection2` used to set `self.environment`, and `Uniform` set `self.environment1` and `self.environment2`. After a fit, every transition and initial-condition object holds only its constructor fields, so `type(obj)(**vars(obj))` rebuilds it, and pickled detectors no longer carry a second reference to each environment through their transitions. Read environments from `detector.environments`.
 
+### Continuous transition interface
+
+- **Breaking:** looking up an environment by a name that no environment has raises `ValidationError` everywhere, listing the available names. `find_environment_by_name` raised `KeyError`, and the detectors and structured transition operators raised `ValueError` with their own messages; the operators' private copy of the lookup is gone.
+
 ### Environment grid helpers
 
 - `Environment.is_track_interior_flat_` is the interior mask over the flattened place bins, shape `(n_bins,)`, with every bin interior when `is_track_interior_` is unset. The likelihood fits, continuous transitions, structured transition operators, state indexing, off-track snapping and clusterless model checking use it instead of their own copies. Outputs are unchanged.

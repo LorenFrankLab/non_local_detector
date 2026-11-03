@@ -17,6 +17,7 @@ from non_local_detector.continuous_state_transitions import (
     Uniform,
 )
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.models._defaults import _ModelDefaults
 from non_local_detector.models.base import _DetectorBase
@@ -322,6 +323,20 @@ def test_scalar_to_spatial_transition_without_environment_is_rejected(
             (1, count),
             allow_dense_fallback=allow_dense_fallback,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "transitions", [[[Uniform("missing")]], [[RandomWalk("missing")]]]
+)
+def test_unknown_environment_name_lists_available_names(transitions):
+    """Dense and structured construction report a missing environment alike."""
+    env = environment(name="track")
+    sizes = (len(env.place_bin_centers_),)
+    with pytest.raises(ValidationError, match=r"'missing'[\s\S]*\['track'\]"):
+        dense_reference(transitions, [env], sizes)
+    with pytest.raises(ValidationError, match=r"'missing'[\s\S]*\['track'\]"):
+        build_transition_operator(transitions, [env], sizes)
 
 
 def assert_products(operator, dense, dtype):

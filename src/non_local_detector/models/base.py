@@ -5604,16 +5604,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Raises
         ------
-        ValueError
+        ValidationError
             If environment not found.
         """
         # Looked up in ``self.environments`` on every call: each fit replaces
         # them with new fitted copies, so a stored lookup would go stale.
-        try:
-            return find_environment_by_name(self.environments, environment_name)
-        except KeyError:
-            msg = f"Environment '{environment_name}' not found in environments list"
-            raise ValueError(msg) from None
+        return find_environment_by_name(self.environments, environment_name)
 
     @staticmethod
     def _create_masked_posterior(
