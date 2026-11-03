@@ -34,6 +34,7 @@ from non_local_detector.continuous_state_transitions import (
     _scalar_to_spatial_destination,
 )
 from non_local_detector.environment import Environment, find_environment_by_name
+from non_local_detector.exceptions import NonLocalDetectorError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
 
@@ -80,11 +81,18 @@ def _register_operator(cls: type[_T]) -> type[_T]:
     return cls
 
 
-class UnsupportedTransitionError(ValueError):
+# Appended to messages that refuse a structured block.
+_DENSE_BLOCK_HINT = (
+    'use transition_representation="auto" (dense block within '
+    'max_dense_transition_bytes) or "dense"'
+)
+
+
+class UnsupportedTransitionError(NonLocalDetectorError, ValueError):
     """A configuration has no proven exact structured implementation."""
 
 
-class DenseTransitionBudgetError(MemoryError):
+class DenseTransitionBudgetError(NonLocalDetectorError, MemoryError):
     """A requested dense allocation exceeds its explicit byte budget."""
 
 
@@ -99,9 +107,10 @@ def _budget(nbytes: int, maximum: Any, description: str) -> None:
     if nbytes > maximum:
         msg = (
             f"{description} requires {nbytes:,} bytes, exceeding the "
-            f"{maximum:,}-byte dense transition budget. Use supported structured "
-            "products, request a smaller dense selection, or explicitly choose "
-            "a feasible dense budget. EM/Viterbi/plotting may require dense data."
+            f"{maximum:,}-byte dense transition budget. Raise "
+            "max_dense_transition_bytes, use transition_representation="
+            '"dense", or request a smaller dense selection. EM, Viterbi and '
+            "plotting may need the dense transition."
         )
         raise DenseTransitionBudgetError(msg)
 
@@ -1442,24 +1451,34 @@ def _gaussian_block(
         or transition.direction is not None
     ):
         msg = (
-            "Graph, manifold-distance and directional RandomWalk require dense fallback"
+            "Graph, manifold-distance and directional RandomWalk have no "
+            f"structured operator; {_DENSE_BLOCK_HINT}"
         )
         raise UnsupportedTransitionError(msg)
     centers = np.asarray(environment.place_bin_centers_, dtype=float)
     axes = tuple(np.unique(centers[:, axis]) for axis in range(centers.shape[1]))
     shape = tuple(len(axis) for axis in axes)
     if int(np.prod(shape)) != len(centers):
-        msg = "RandomWalk needs a complete Cartesian grid before interior masking"
+        msg = (
+            "Structured RandomWalk needs a complete Cartesian grid before "
+            f"interior masking; {_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     expected = np.stack(
         [grid.ravel() for grid in np.meshgrid(*axes, indexing="ij")], axis=1
     )
     if not np.array_equal(centers, expected):
-        msg = "RandomWalk grid must retain canonical Cartesian ordering"
+        msg = (
+            "Structured RandomWalk needs canonical Cartesian bin ordering; "
+            f"{_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     mean = np.asarray(transition.movement_mean)
     if mean.ndim != 0 or not np.isfinite(mean):
-        msg = "Structured RandomWalk supports only a finite scalar mean shift"
+        msg = (
+            "Structured RandomWalk supports only a finite scalar mean shift; "
+            f"{_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     covariance = np.asarray(transition.movement_var, dtype=float)
     dimensions = centers.shape[1]
@@ -1472,10 +1491,16 @@ def _gaussian_block(
     ):
         variance = np.diag(covariance)
     else:
-        msg = "Nonseparable covariance requires dense RandomWalk fallback"
+        msg = (
+            "Structured RandomWalk needs a separable (diagonal) covariance; "
+            f"{_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     if not np.all(np.isfinite(variance)) or np.any(variance <= 0):
-        msg = "Structured Gaussian variance must be finite and positive"
+        msg = (
+            "Structured RandomWalk needs a finite, positive variance; "
+            f"{_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     mask = _mask(environment)
     raw_factors = tuple(
@@ -1494,7 +1519,7 @@ def _gaussian_block(
     if not np.all(np.isfinite(scaled_destinations)) or not np.all(
         np.isfinite(scaled_sources)
     ):
-        msg = "Gaussian coordinate scaling needs dense fallback"
+        msg = f"Structured RandomWalk coordinate scaling overflows; {_DENSE_BLOCK_HINT}"
         raise UnsupportedTransitionError(msg)
     _, closest = cKDTree(scaled_destinations).query(scaled_sources)
     distribution = multivariate_normal(mean=np.zeros(dimensions), cov=variance)
@@ -1506,7 +1531,10 @@ def _gaussian_block(
     ambiguous_zero = (largest_pdf == 0) & (largest_log_pdf + uncertainty >= zero_cutoff)
     subnormal = (largest_pdf > 0) & (largest_pdf < np.finfo(float).tiny)
     if not np.all(np.isfinite(largest_pdf)) or np.any(ambiguous_zero | subnormal):
-        msg = "Subnormal/overflowed original Gaussian PDF normalization requires dense fallback"
+        msg = (
+            "Subnormal/overflowed original Gaussian PDF normalization has no "
+            f"structured operator; {_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
 
     # Multiplying each axis row by a positive constant cancels EXACTLY in the
@@ -1539,7 +1567,10 @@ def _gaussian_block(
         (largest_pdf > 0)
         & (largest_scaled_log_pdf <= np.log(np.finfo(np.float32).tiny))
     ):
-        msg = "Largest valid scaled Gaussian term is not safely normal in float32; use dense fallback"
+        msg = (
+            "Largest valid scaled Gaussian term is not safely normal in "
+            f"float32; {_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     factors = tuple(factors)
     normalizer = _axes_product(
@@ -1549,7 +1580,10 @@ def _gaussian_block(
     original_positive[mask] = largest_pdf > 0
     normalizer = np.where(original_positive, normalizer, 0)
     if np.any(original_positive & (normalizer < np.finfo(np.float32).tiny)):
-        msg = "Masked Gaussian normalization cannot be represented safely in float32; use dense fallback"
+        msg = (
+            "Masked Gaussian normalization cannot be represented safely in "
+            f"float32; {_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     return GaussianGridBlock(factors, mask, normalizer)
 
@@ -1571,7 +1605,10 @@ def _structured_block(
             np.ones(source_size, dtype=bool), np.ones(1, dtype=bool), np.array(1.0)
         )
     if isinstance(transition, EmpiricalMovement):
-        msg = "EmpiricalMovement requires its original fit-context dense fallback"
+        msg = (
+            "EmpiricalMovement is built from the fit data and has no "
+            f"structured operator; {_DENSE_BLOCK_HINT}"
+        )
         raise UnsupportedTransitionError(msg)
     if type(transition) is Discrete and source_size == target_size == 1:
         return IdentityBlock(np.ones(1, dtype=bool))
@@ -1600,7 +1637,10 @@ def _structured_block(
             transition,
             find_environment_by_name(environments, transition.environment_name),
         )
-    msg = f"No proven exact structured operator for {type(transition).__name__}"
+    msg = (
+        f"No proven exact structured operator for {type(transition).__name__}; "
+        f"{_DENSE_BLOCK_HINT}"
+    )
     raise UnsupportedTransitionError(msg)
 
 
@@ -1752,7 +1792,11 @@ def build_transition_operator(
                 isinstance(env.distance_between_nodes_, LazyGraphDistances)
                 for env in environments
             ):
-                msg = "Opaque custom dense fallback with deferred graph distances has no verified exact distance contract; use the legacy dense representation"
+                msg = (
+                    "Opaque custom dense fallback with deferred graph "
+                    "distances has no verified exact distance contract; use "
+                    'transition_representation="dense"'
+                )
                 raise UnsupportedTransitionError(msg)
             if type(block) is RandomWalk and block.use_manifold_distance:
                 env = find_environment_by_name(environments, block.environment_name)

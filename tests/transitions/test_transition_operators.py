@@ -1109,3 +1109,53 @@ def test_backward_and_pairs_matches_separate_products(max_dense_bytes):
     backward, pairs = jax.jit(fused.backward_and_pairs)(ratio, filtered)
     np.testing.assert_allclose(backward, fused.backward(ratio), rtol=1e-6)
     np.testing.assert_allclose(pairs, fused.pair_products(filtered, ratio), rtol=1e-6)
+
+
+@pytest.mark.unit
+def test_unsupported_transition_error_names_the_representation_setting():
+    """A transition without a structured operator points at the user setting
+    that permits its dense block."""
+    with pytest.raises(
+        UnsupportedTransitionError, match='transition_representation="auto"'
+    ):
+        build_transition_operator([[EmpiricalMovement()]], [environment((4, 5))], (20,))
+
+
+@pytest.mark.unit
+def test_dense_budget_error_names_the_budget_setting():
+    """Exceeding the dense fallback budget names max_dense_transition_bytes."""
+    transition = RandomWalk(movement_var=np.array([[1.0, 0.2], [0.2, 1.0]]))
+    with pytest.raises(DenseTransitionBudgetError, match="max_dense_transition_bytes"):
+        build_transition_operator(
+            [[transition]],
+            [environment((4, 5))],
+            (20,),
+            allow_dense_fallback=True,
+            max_dense_bytes=8,
+        )
+
+
+@pytest.mark.unit
+def test_opaque_custom_error_names_the_dense_representation():
+    """An opaque custom transition on deferred distances points at
+    transition_representation="dense"."""
+
+    class Custom:
+        environment_name = ""
+
+        def make_state_transition(self, environments, context=None):
+            raise AssertionError
+
+    position = np.array([[0.0, 0.0], [3.0, 4.0]])
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=False, compute_all_pairs_distances=False
+    )
+    with pytest.raises(
+        UnsupportedTransitionError, match='transition_representation="dense"'
+    ):
+        build_transition_operator(
+            [[Custom()]],
+            [env],
+            (len(env.place_bin_centers_),),
+            allow_dense_fallback=True,
+        )

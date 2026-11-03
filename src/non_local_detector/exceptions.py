@@ -22,7 +22,14 @@ Choose the appropriate exception type based on when and why the error occurs:
 All exceptions inherit from **NonLocalDetectorError**, allowing users to catch
 any package-specific error with a single except clause. ValidationError,
 ConfigurationError and DataError also inherit from ``ValueError``, so
-``except ValueError`` catches them too.
+``except ValueError`` catches them too. The same holds for the transition
+errors: ``transition_operators.UnsupportedTransitionError`` (a
+``ValueError``), ``transition_operators.DenseTransitionBudgetError`` and
+``graph_distances.GraphDistanceBudgetError`` (both ``MemoryError``).
+
+The constructors take the optional message parts as keywords:
+``expected``, ``got`` and ``hint`` on all three, ``example`` on
+ValidationError and ``data_name`` on DataError.
 
 Examples
 --------
@@ -67,6 +74,27 @@ class NonLocalDetectorError(Exception):
     """
 
 
+def _structured_message(
+    message: str,
+    *,
+    expected: str | None = None,
+    got: str | None = None,
+    hint: str | None = None,
+    example: str | None = None,
+) -> str:
+    """Join a message with its optional expected/got/hint/example parts."""
+    parts = [message]
+    if expected is not None:
+        parts.append(f"\nExpected: {expected}")
+    if got is not None:
+        parts.append(f"Got: {got}")
+    if hint is not None:
+        parts.append(f"\nHint: {hint}")
+    if example is not None:
+        parts.append(f"\nExample:\n{example}")
+    return "\n".join(parts)
+
+
 class ValidationError(NonLocalDetectorError, ValueError):
     """Raised when input validation fails.
 
@@ -100,27 +128,18 @@ class ValidationError(NonLocalDetectorError, ValueError):
     def __init__(
         self,
         message: str,
+        *,
         expected: str | None = None,
         got: str | None = None,
         hint: str | None = None,
         example: str | None = None,
-    ):
+    ) -> None:
         """Initialize ValidationError with structured message components."""
-        parts = [message]
-
-        if expected is not None:
-            parts.append(f"\nExpected: {expected}")
-
-        if got is not None:
-            parts.append(f"Got: {got}")
-
-        if hint is not None:
-            parts.append(f"\nHint: {hint}")
-
-        if example is not None:
-            parts.append(f"\nExample:\n{example}")
-
-        super().__init__("\n".join(parts))
+        super().__init__(
+            _structured_message(
+                message, expected=expected, got=got, hint=hint, example=example
+            )
+        )
 
 
 class ConfigurationError(NonLocalDetectorError, ValueError):
@@ -133,6 +152,10 @@ class ConfigurationError(NonLocalDetectorError, ValueError):
     ----------
     message : str
         Description of the configuration problem.
+    expected : str, optional
+        The configuration that was expected.
+    got : str, optional
+        The configuration that was received.
     hint : str, optional
         Actionable suggestion for fixing the configuration.
 
@@ -144,19 +167,18 @@ class ConfigurationError(NonLocalDetectorError, ValueError):
     ... )
     """
 
-    def __init__(self, message: str, hint: str | None = None) -> None:
-        """Initialize ConfigurationError with optional hint.
-
-        Parameters
-        ----------
-        message : str
-            Description of the configuration problem
-        hint : str, optional
-            Actionable suggestion for fixing the configuration
-        """
-        if hint is not None:
-            message = f"{message}\n\nHint: {hint}"
-        super().__init__(message)
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected: str | None = None,
+        got: str | None = None,
+        hint: str | None = None,
+    ) -> None:
+        """Initialize ConfigurationError with structured message components."""
+        super().__init__(
+            _structured_message(message, expected=expected, got=got, hint=hint)
+        )
 
 
 class DataError(NonLocalDetectorError, ValueError):
@@ -171,6 +193,10 @@ class DataError(NonLocalDetectorError, ValueError):
         Description of the data problem.
     data_name : str, optional
         Name of the problematic data variable.
+    expected : str, optional
+        What the data was expected to contain.
+    got : str, optional
+        What the data contains.
     hint : str, optional
         Actionable suggestion for fixing the data issue.
 
@@ -184,21 +210,17 @@ class DataError(NonLocalDetectorError, ValueError):
     """
 
     def __init__(
-        self, message: str, data_name: str | None = None, hint: str | None = None
+        self,
+        message: str,
+        *,
+        data_name: str | None = None,
+        expected: str | None = None,
+        got: str | None = None,
+        hint: str | None = None,
     ) -> None:
-        """Initialize DataError with optional data name and hint.
-
-        Parameters
-        ----------
-        message : str
-            Description of the data problem
-        data_name : str, optional
-            Name of the problematic data variable
-        hint : str, optional
-            Actionable suggestion for fixing the data issue
-        """
+        """Initialize DataError with structured message components."""
         if data_name is not None:
             message = f"{message} (data: {data_name})"
-        if hint is not None:
-            message = f"{message}\n\nHint: {hint}"
-        super().__init__(message)
+        super().__init__(
+            _structured_message(message, expected=expected, got=got, hint=hint)
+        )
