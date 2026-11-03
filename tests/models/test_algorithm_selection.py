@@ -7,6 +7,8 @@ it, and a detector whose algorithm parameter no longer names that algorithm
 refuses to decode. Unknown algorithm names are rejected at construction.
 """
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -22,6 +24,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.observation_models import ObservationModel
 
 pytestmark = pytest.mark.unit
 
@@ -109,6 +112,73 @@ def test_switching_the_algorithm_after_fit_raises(sorted_sim, fitted, switched):
     np.testing.assert_array_equal(
         np.asarray(restored.log_likelihood), np.asarray(expected.log_likelihood)
     )
+
+
+def _decode_with(entry_point, detector, sorted_sim):
+    """Decode the first rows through one of the detector's decode methods."""
+    time, position, spike_times = sorted_sim
+    edges = time_edges_from_centers(time[:_N_DECODE])
+    if entry_point == "compute_log_likelihood":
+        return detector.compute_log_likelihood(
+            time, position, spike_times, time_edges=edges
+        )
+    decode = {"time_edges": edges, "position_time": time, "position": position}
+    if entry_point == "most_likely_sequence":
+        return detector.most_likely_sequence(spike_times, **decode)
+    n_chunks = 3 if entry_point == "chunked_predict" else 1
+    return detector.predict(spike_times, **decode, n_chunks=n_chunks)
+
+
+@pytest.fixture(scope="module")
+def kde_detector(sorted_sim):
+    """A non-local detector fitted with sorted KDE, copied by each test."""
+    time, position, spike_times = sorted_sim
+    return NonLocalSortedSpikesDetector(
+        sorted_spikes_algorithm_params={"disable_progress_bar": True}
+    ).fit(time, position, spike_times)
+
+
+@pytest.mark.parametrize(
+    "entry_point",
+    ["predict", "chunked_predict", "compute_log_likelihood", "most_likely_sequence"],
+)
+def test_every_decode_method_checks_the_recorded_algorithm(
+    kde_detector, sorted_sim, entry_point
+):
+    """Dense and chunked prediction, the likelihood and Viterbi all refuse."""
+    detector = copy.deepcopy(kde_detector)
+    _decode_with(entry_point, detector, sorted_sim)
+    detector.set_params(sorted_spikes_algorithm="sorted_spikes_diffusion")
+    with pytest.raises(ValidationError, match="'sorted_spikes_kde'"):
+        _decode_with(entry_point, detector, sorted_sim)
+
+
+def test_no_spike_only_entries_are_not_checked(sorted_sim):
+    """No-Spike reads no encoding model, so its own group's entry is skipped.
+
+    An entry that only a No-Spike state uses decodes whatever algorithm it
+    records; the same mismatch on a spiking state's entry raises.
+    """
+    time, position, spike_times = sorted_sim
+    detector = NonLocalSortedSpikesDetector(
+        observation_models=[
+            ObservationModel(is_local=True),
+            ObservationModel(is_no_spike=True, encoding_group=1),
+            ObservationModel(),
+            ObservationModel(),
+        ],
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    )
+    groups = (np.arange(time.size) >= time.size // 2).astype(int)
+    detector.fit(time, position, spike_times, encoding_group_labels=groups)
+    assert set(detector.encoding_model_) == {("", 0), ("", 1)}
+
+    detector.encoding_model_[("", 1)]["algorithm"] = "sorted_spikes_glm"
+    _decode_with("predict", detector, sorted_sim)
+
+    detector.encoding_model_[("", 0)]["algorithm"] = "sorted_spikes_glm"
+    with pytest.raises(ValidationError, match="'sorted_spikes_glm'"):
+        _decode_with("predict", detector, sorted_sim)
 
 
 def test_switching_the_clusterless_algorithm_after_fit_raises(clusterless_sim):
