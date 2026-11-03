@@ -79,6 +79,7 @@ ax.plot(position_time, position, color="black", linewidth=1)
 ax.set_xlabel("Time (s)")
 ax.set_ylabel("Position (cm)")
 ax.set_title("Animal's position")
+plt.show()
 
 # %% [markdown]
 # ### Sorted spikes
@@ -124,6 +125,7 @@ axes[1].set_ylabel("Neuron")
 axes[1].set_xlabel("Time (s)")
 axes[1].set_ylim(-0.5, len(spike_times) - 0.5)
 axes[0].set_title("Position and spike raster")
+plt.show()
 
 # %% [markdown]
 # The simulation also returns each neuron's true firing rate at every position
@@ -138,6 +140,7 @@ ax.plot(position[order], true_firing_rate[order], linewidth=1)
 ax.set_xlabel("Position (cm)")
 ax.set_ylabel("Firing rate (Hz)")
 ax.set_title("True place fields of the 30 neurons")
+plt.show()
 
 # %% [markdown]
 # ## Clusterless spikes
@@ -206,6 +209,7 @@ fig.colorbar(points, ax=ax, label="Position at spike (cm)")
 ax.set_xlabel("Feature 1 (e.g. amplitude on channel 1, a.u.)")
 ax.set_ylabel("Feature 2 (a.u.)")
 ax.set_title("Electrode 0 waveform features")
+plt.show()
 
 # %% [markdown]
 # ## Decode bins
@@ -297,6 +301,7 @@ axes[1].bar(
 axes[1].set_ylabel("Spikes per bin")
 axes[1].set_xlabel("Time (s)")
 axes[0].set_title("Spikes in 2 ms decode bins (gray lines are bin edges)")
+plt.show()
 
 # %% [markdown]
 # For data with tracking gaps, recordings split into separate epochs, or
@@ -352,6 +357,7 @@ for edge in bin_edges:
 ax.set_xlabel("Position (cm)")
 ax.set_ylabel("Time in bin (s)")
 ax.set_title("1-D open field: 5 cm bins")
+plt.show()
 
 # %% [markdown]
 # The ends of the track hold the most time because the animal pauses there.
@@ -407,6 +413,7 @@ ax.set_xlabel("x position (cm)")
 ax.set_ylabel("y position (cm)")
 ax.set_aspect("equal")
 ax.set_title("2-D open field: 5 cm bins (orange: positions)")
+plt.show()
 
 # %% [markdown]
 # A few options change how the grid and interior are built:
@@ -477,6 +484,7 @@ ax.tick_params(left=True, bottom=True, labelleft=True, labelbottom=True)
 ax.set_xlabel("x position (cm)")
 ax.set_ylabel("y position (cm)")
 ax.set_title("Track graph (edge labels are edge_id)")
+plt.show()
 
 # %% [markdown]
 # ### From 2-D to 1-D: edge order and edge spacing
@@ -499,6 +507,7 @@ fig, ax = plt.subplots(figsize=(10, 1.5), constrained_layout=True)
 plot_graph_as_1D(track_graph, edge_order=edge_order, edge_spacing=0, ax=ax)
 ax.set_xlabel("Linear position (cm)")
 ax.set_title("edge_order = [(3, 2), (2, 1), (1, 0)], edge_spacing = 0")
+plt.show()
 
 # %% [markdown]
 # Here, each edge ends at the node where the next begins, so consecutive edges
@@ -510,6 +519,7 @@ fig, ax = plt.subplots(figsize=(10, 1.5), constrained_layout=True)
 plot_graph_as_1D(track_graph, edge_order=edge_order, edge_spacing=15, ax=ax)
 ax.set_xlabel("Linear position (cm)")
 ax.set_title("edge_spacing = 15")
+plt.show()
 
 # %% [markdown]
 # ### Why gaps are needed
@@ -546,6 +556,7 @@ ax.tick_params(left=True, bottom=True, labelleft=True, labelbottom=True)
 ax.set_xlabel("x position (cm)")
 ax.set_ylabel("y position (cm)")
 ax.set_title("W-track (edge labels are edge_id)")
+plt.show()
 
 # %% [markdown]
 # We lay it out as: the center arm from the center well, then the left half
@@ -567,6 +578,7 @@ ax.set_xlabel("Linear position (cm)")
 ax.set_title(
     "W-track in 1-D: a gap between the left well (3) and the center junction (1)"
 )
+plt.show()
 
 # %% [markdown]
 # Without the gap, the bin at the left well would sit right next to the bin at
@@ -655,6 +667,7 @@ for segment_id, segment in linearized.groupby("track_segment_id"):
 axes[1].set_xlabel("Time (s)")
 axes[1].set_ylabel("Linear position (cm)")
 axes[1].legend(title="track_segment_id", loc="upper left", bbox_to_anchor=(1, 1))
+plt.show()
 
 # %%
 projection_distance = np.linalg.norm(
@@ -718,6 +731,7 @@ fig, ax = plt.subplots(figsize=(10, 1.5), constrained_layout=True)
 w_environment.plot_grid(ax=ax)
 ax.set_xlabel("Linear position (cm)")
 ax.set_title("W-track environment: 2 cm bins along the track")
+plt.show()
 
 # %% [markdown]
 # `track_linearization` also has functions that build common mazes, such as
