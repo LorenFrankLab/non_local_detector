@@ -132,7 +132,13 @@ class MarkMixture:
 
     @property
     def n_components(self) -> int:
-        """Number of mixture components."""
+        """Number of mixture components.
+
+        Returns
+        -------
+        n_components : int
+            Number of mixture components.
+        """
         return len(self.weights)
 
     def log_component_density(self, marks: np.ndarray) -> np.ndarray:
@@ -1066,7 +1072,7 @@ def predict_clusterless_mark_glm_log_likelihood(
                 mark_reference,
                 strict=True,
             ),
-            desc=f"{'Local' if is_local else 'Non-Local'} Likelihood (mark GLM)",
+            desc=f"{'Local' if is_local else 'Position-Bin'} Likelihood (mark GLM)",
             unit="electrode",
             disable=disable_progress_bar,
         )

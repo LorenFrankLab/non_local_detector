@@ -1,3 +1,5 @@
+"""Likelihood algorithms and the registries that map algorithm names to them."""
+
 import inspect
 from collections.abc import Callable
 from typing import Any
