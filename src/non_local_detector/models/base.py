@@ -32,7 +32,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import sklearn  # type: ignore[import-untyped]
 import xarray as xr
 from patsy import DesignMatrix, build_design_matrices  # type: ignore[import-untyped]
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
@@ -61,6 +60,7 @@ from non_local_detector.core import (
     row_slice_aware,
 )
 from non_local_detector.discrete_state_transitions import (
+    DiscreteStationaryCustom,
     _covariate_transition_covariance,
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
@@ -91,7 +91,6 @@ from non_local_detector.likelihoods import (
 )
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
-    decode_bin_centers,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_population_lengths,
@@ -114,6 +113,7 @@ from non_local_detector.time_edges import (
     _uniform_time_grid,
     _uniformity_tolerance,
     calculate_time_edges,
+    decode_bin_centers,
     requires_time_edges,
     uniform_time_edges,
 )
@@ -135,9 +135,6 @@ from non_local_detector.types import (
 )
 
 logger = getLogger(__name__)
-
-
-sklearn.set_config(print_changed_only=False)
 
 # Valid options for return_outputs parameter
 VALID_OUTPUTS: set[str] = {
@@ -2111,11 +2108,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         DataError
             If transition matrix contains NaN or Inf
         """
-        # Deferred to avoid circular import: base.py -> discrete_state_transitions.py -> base.py
-        from non_local_detector.discrete_state_transitions import (
-            DiscreteStationaryCustom,
-        )
-
         # If it's a custom transition matrix, validate it
         if isinstance(discrete_transition_type, DiscreteStationaryCustom):
             matrix = discrete_transition_type.values
@@ -4365,10 +4357,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         with suppress(AttributeError):
             del self.log_likelihood_
-
-    def fit_predict(self) -> xr.Dataset:
-        """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
-        raise NotImplementedError
 
     @abc.abstractmethod
     def fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:

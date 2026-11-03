@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### API hygiene
+
+- **Removed:** `fit_predict` on the detectors, a stub that only raised `NotImplementedError`. Call `fit(...)` then `predict(...)`.
+- `decode_bin_centers` moved from `non_local_detector.likelihoods.common` to `non_local_detector.time_edges`, and `validate_weights` to `non_local_detector._validation`, removing a dependency of `checkpointed_inference` and `encoding_time` on the likelihood package. Neither is part of the documented public API; update imports that used the old location. The stale function-level "circular import" imports in `environment.py` and `models/base.py` are now top-level imports.
+- **Fixed:** `plot_non_local_model` finds sorted-spikes place fields through the detector's own observation model instead of the hard-coded `("", 0)` key, so it no longer silently falls back to electrode-group ordering when the environment is named or the encoding group is not 0.
+- **Fixed:** the `ContinuousTransitions` type alias includes `Identity`, which the transition operators already accept.
+- `ValidationError`, `ConfigurationError` and `DataError` also subclass `ValueError`, so `except ValueError` catches them (and `except NonLocalDetectorError` still does). Package code mixes these with plain `ValueError`, which previously could not be caught together.
+- **Removed:** `FittingError` and `ConvergenceError` (and their top-level exports). They were never raised anywhere in the package.
+- **Fixed:** importing `non_local_detector` no longer changes the global scikit-learn configuration (`sklearn.set_config(print_changed_only=False)` was called at import). Detector reprs now follow scikit-learn's default of showing only parameters changed from their defaults; call `sklearn.set_config(print_changed_only=False)` yourself to restore the old repr.
+
 ### Dependencies
 
 - Floors raised (final values): `numpy >=2.2`, `scipy >=1.15`, `pandas >=2.3`, `xarray >=2024.11`, `scikit-learn >=1.6`, `matplotlib >=3.10`, `networkx >=3.4`, `patsy >=0.5.6`, `threadpoolctl >=3.0`, `track_linearization >=2.4.0`. NumPy 1.x is no longer supported. The reasons for each floor are under "Test suite and CI".

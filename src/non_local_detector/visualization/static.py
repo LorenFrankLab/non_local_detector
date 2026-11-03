@@ -13,6 +13,7 @@ from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.models.base import SortedSpikesDetector
 
 
 def get_multiunit_firing_rate(
@@ -88,6 +89,44 @@ def get_multiunit_firing_rate(
     )
 
 
+def _unit_order(
+    detector: NonLocalClusterlessDetector | NonLocalSortedSpikesDetector,
+    n_units: int,
+) -> tuple[np.ndarray, str]:
+    """Order the units for the raster and label them.
+
+    Sorted-spikes detectors order neurons by the position of their place-field
+    peak, in the environment the place fields were fit in. Otherwise (clusterless
+    detectors, or a sorted detector with only No-Spike observation models) the
+    electrode groups keep their given order.
+
+    Parameters
+    ----------
+    detector : NonLocalClusterlessDetector | NonLocalSortedSpikesDetector
+        Fitted detector.
+    n_units : int
+        Number of neurons or electrode groups.
+
+    Returns
+    -------
+    order : np.ndarray, shape (n_units,)
+        Indices that sort the units for display.
+    label : str
+        Axis label for the units.
+    """
+    obs = next((o for o in detector.observation_models if not o.is_no_spike), None)
+    if not isinstance(detector, SortedSpikesDetector) or obs is None:
+        return np.arange(n_units), "Electrode\nGroup"
+    place_fields = detector.encoding_model_[(obs.environment_name, obs.encoding_group)][
+        "place_fields"
+    ]
+    bin_centers = detector._get_environment_by_name(
+        obs.environment_name
+    ).place_bin_centers_
+    peak_position = bin_centers[np.nanargmax(place_fields, axis=1)].squeeze()  # type: ignore[index]  # set by fit; unfitted env fails at runtime
+    return np.argsort(peak_position), "Neuron"
+
+
 def plot_non_local_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -129,15 +168,7 @@ def plot_non_local_model(
         time_slice = slice(results.time.values[0], results.time.values[-1])
 
     env = detector.environments[0]
-    try:
-        place_fields = detector.encoding_model_[("", 0)]["place_fields"]
-        neuron_sort_ind = np.argsort(
-            env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()  # type: ignore[index]  # set by fit; unfitted env fails at runtime
-        )
-        cell_label = "Neuron"
-    except KeyError:
-        neuron_sort_ind = np.arange(len(spike_times))
-        cell_label = "Electrode\nGroup"
+    neuron_sort_ind, cell_label = _unit_order(detector, len(spike_times))
 
     state_names = detector.state_names
     acausal_state_probabilities = results.sel(
