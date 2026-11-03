@@ -1,3 +1,5 @@
+"""Interactive figurl view for 1D decoding results (requires ``sortingview``)."""
+
 try:
     from typing import cast
 

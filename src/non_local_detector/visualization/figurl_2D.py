@@ -1,3 +1,5 @@
+"""Interactive figurl view for 2D decoding results (requires ``sortingview``)."""
+
 import numpy as np
 
 _UINT16_MAX = int(np.iinfo(np.uint16).max)
