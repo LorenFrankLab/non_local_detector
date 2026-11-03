@@ -203,6 +203,9 @@ filterwarnings = [
     "error",
     # JAX on CPU cannot reuse donated buffers and says so; nothing is wrong.
     "ignore:Some donated buffers were not usable:UserWarning",
+    # The tests' persistent JAX compilation cache (tests/conftest.py) is an
+    # optimization: a cache entry JAX cannot read or write is shown, not fatal.
+    "default:Error (reading|writing) persistent compilation cache entry:UserWarning",
     # Most tests decode 1-D open fields on purpose;
     # test_position_dimensionality_validation checks the warning itself.
     "ignore:Position data appears to be 1D but no track_graph:UserWarning",
