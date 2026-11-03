@@ -254,4 +254,7 @@ docs = [
     "mkdocs-section-index>=0.3.0",
     "mkdocs-jupyter>=0.25.0",
     "jupytext>=1.16.0",
+    # Tutorials render the package's tqdm progress bars as notebook widgets;
+    # without ipywidgets tqdm prints an "IProgress not found" warning instead.
+    "ipywidgets>=8.0",
 ]
