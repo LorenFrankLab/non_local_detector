@@ -23,7 +23,7 @@
 # 4. decode the **whole session**, and
 # 5. look at how each replay event is classified.
 #
-# It builds on the [clusterless decoding tutorial](03_decoding_clusterless.py);
+# It builds on the [clusterless decoding tutorial](../03_decoding_clusterless/);
 # see it for clusterless data and the encoding model.
 
 # %%
@@ -43,7 +43,10 @@ from non_local_detector import (
 )
 from non_local_detector.simulate.clusterless_simulation import (
     make_continuous_replay,
+    make_fragmented_continuous_fragmented_replay,
+    make_fragmented_hover_fragmented_replay,
     make_fragmented_replay,
+    make_hover_continuous_hover_replay,
     make_hover_replay,
     make_simulated_run_data,
 )
@@ -92,38 +95,27 @@ print(f"Running period: {run_time[0]:.0f}-{run_time[-1]:.0f} s")
 # - `make_fragmented_replay`: five spikes from cells with place fields far
 #   apart, in quick succession.
 #
-# `make_simulated_run_data` puts each tetrode's cells 10 mark units apart, but
-# the replay simulators default to `mark_spacing=5`, so we pass
-# `mark_spacing=10` to make the replay spikes match the running spikes. The
-# simulator's mixture helpers, such as `make_hover_continuous_hover_replay`,
-# do not take `mark_spacing`, so we build the three mixtures the same way they
-# do, by concatenating single events.
+# The replay simulators default to the same cells and marks as
+# `make_simulated_run_data`, and `make_hover_continuous_hover_replay`,
+# `make_fragmented_hover_fragmented_replay` and
+# `make_fragmented_continuous_fragmented_replay` build the three mixed events
+# from these.
 
 # %%
-MARK_SPACING = 10  # matches make_simulated_run_data
-place_field_means = np.arange(0, 200, 10)  # cm, the simulators' default cells
-# The default cells extend to 190 cm, past the 175 cm track; hover on the last
-# cell whose place field is on the track.
-last_cell_on_track = np.flatnonzero(place_field_means <= 175)[-1]
-
-_, continuous = make_continuous_replay(mark_spacing=MARK_SPACING)
-_, hover = make_hover_replay(mark_spacing=MARK_SPACING)  # the middle cell
-_, fragmented = make_fragmented_replay(mark_spacing=MARK_SPACING)
-_, hover_first = make_hover_replay(hover_neuron_ind=0, mark_spacing=MARK_SPACING)
-_, hover_last = make_hover_replay(
-    hover_neuron_ind=last_cell_on_track, mark_spacing=MARK_SPACING
-)
-_, hover_6 = make_hover_replay(hover_neuron_ind=6, mark_spacing=MARK_SPACING)
+_, continuous = make_continuous_replay()
+_, hover = make_hover_replay()  # the middle cell
+_, fragmented = make_fragmented_replay()
+_, hover_continuous_hover = make_hover_continuous_hover_replay()
+_, fragmented_hover_fragmented = make_fragmented_hover_fragmented_replay()
+_, fragmented_continuous_fragmented = make_fragmented_continuous_fragmented_replay()
 
 replay_events = {
     "Continuous": continuous,
     "Hover": hover,
     "Fragmented": fragmented,
-    "Hover-continuous-hover": np.concatenate([hover_first, continuous, hover_last]),
-    "Fragmented-hover-fragmented": np.concatenate([fragmented, hover_6, fragmented]),
-    "Fragmented-continuous-fragmented": np.concatenate(
-        [fragmented, continuous, fragmented]
-    ),
+    "Hover-continuous-hover": hover_continuous_hover,
+    "Fragmented-hover-fragmented": fragmented_hover_fragmented,
+    "Fragmented-continuous-fragmented": fragmented_continuous_fragmented,
 }
 for name, multiunits in replay_events.items():
     n_spikes = np.any(~np.isnan(multiunits), axis=1).sum()
@@ -354,8 +346,8 @@ for name, p in zip(classifier.state_names, stay_probability, strict=True):
 # 1 ms position samples, with `trim=True` to drop a partial final bin. These
 # classifiers do not use position at decoding time, so `predict` needs only
 # the spikes and their marks. For long sessions, see
-# [Checkpointed prediction](../performance_prediction.md) and
-# [Settings for your hardware](../hardware_settings.md).
+# [Checkpointed prediction](../../performance_prediction/) and
+# [Settings for your hardware](../../hardware_settings/).
 
 # %%
 session_range = time_edges_from_centers(time)[[0, -1]]  # s

@@ -160,7 +160,7 @@ print(
 # Choose a model with `sorted_spikes_algorithm` (or `clusterless_algorithm`)
 # and set its parameters with `sorted_spikes_algorithm_params` (or
 # `clusterless_algorithm_params`); see
-# [Core concepts](../getting-started/core-concepts.md#likelihood-models).
+# [Core concepts](../../getting-started/core-concepts/#likelihood-models).
 #
 # | Algorithm | Place-field estimate | Main parameters (default) |
 # | --- | --- | --- |
@@ -552,7 +552,7 @@ axes[-1].set_xlabel("Time (s)")
 # spike, as above, and whose other coordinates `v` are the conditional CDFs
 # of the spike's features given its position under the model. For a correct
 # model all of them are uniform on [0, 1]; `ks_uniformity_test` tests each
-# coordinate. [Checking clusterless model fit](../likelihood_mark_calibration.md)
+# coordinate. [Checking clusterless model fit](../../likelihood_mark_calibration/)
 # describes the transforms and the other tests in detail.
 #
 # We fit `ClusterlessDecoder` with `clusterless_kde` at its default

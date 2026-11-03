@@ -130,12 +130,12 @@ nav:
       - Core Concepts: getting-started/core-concepts.md
   - Tutorials:
       - tutorials/index.md
-      - Choosing and checking models: tutorials/06_choosing_and_checking_models.py
-      - Decoding a session with sorted spikes: tutorials/02_decoding_sorted_spikes.py
-      - Detecting non-local events: tutorials/05_detecting_non_local_events.py
-      - Classifying replay dynamics: tutorials/04_classifying_replay_dynamics.py
-      - Decoding with clusterless spikes: tutorials/03_decoding_clusterless.py
       - Data format and environments: tutorials/01_data_and_environments.py
+      - Decoding a session with sorted spikes: tutorials/02_decoding_sorted_spikes.py
+      - Decoding with clusterless spikes: tutorials/03_decoding_clusterless.py
+      - Classifying replay dynamics: tutorials/04_classifying_replay_dynamics.py
+      - Detecting non-local events: tutorials/05_detecting_non_local_events.py
+      - Choosing and checking models: tutorials/06_choosing_and_checking_models.py
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md
