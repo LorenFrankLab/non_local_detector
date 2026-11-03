@@ -75,7 +75,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
     sorted_spikes_algorithm_params : dict or None, optional
         Parameters for the sorted-spikes algorithm's fit. If ``None`` (the
-        default), the algorithm's entry of ``_SORTED_SPIKES_DEFAULT_PARAMS`` is
+        default), the algorithm's registered ``default_params`` are
         copied into a fresh dict at fit time; a user dict replaces those
         defaults. A key the fit does not accept raises ``ValidationError``.
         User-supplied dicts are stored as-is for sklearn ``clone()``
@@ -226,7 +226,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         by default "clusterless_kde".
     clusterless_algorithm_params : dict or None, optional
         Parameters for the clusterless algorithm's fit. If ``None`` (the
-        default), the algorithm's entry of ``_CLUSTERLESS_DEFAULT_PARAMS`` is
+        default), the algorithm's registered ``default_params`` are
         copied into a fresh dict at fit time; a user dict replaces those
         defaults. A key the fit does not accept raises ``ValidationError``.
         User-supplied dicts are stored as-is for sklearn ``clone()``

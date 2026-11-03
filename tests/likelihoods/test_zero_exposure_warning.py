@@ -46,7 +46,7 @@ def _fit(algorithm, run, weights, position=None, **support_kwargs):
     position = run_position if position is None else position
     kwargs = {"disable_progress_bar": True, **support_kwargs}
     if algorithm in _SORTED_SPIKES_ALGORITHMS:
-        fit = _SORTED_SPIKES_ALGORITHMS[algorithm][0]
+        fit = _SORTED_SPIKES_ALGORITHMS[algorithm].fit
         if algorithm == "sorted_spikes_glm":
             kwargs.update(
                 place_bin_edges=environment.place_bin_edges_,
@@ -55,7 +55,7 @@ def _fit(algorithm, run, weights, position=None, **support_kwargs):
                 is_track_boundary=environment.is_track_boundary_,
             )
         return fit(time, position, spike_times, environment, weights=weights, **kwargs)
-    fit = _CLUSTERLESS_ALGORITHMS[algorithm][0]
+    fit = _CLUSTERLESS_ALGORITHMS[algorithm].fit
     if algorithm == "clusterless_gmm":
         kwargs.update(gmm_components_occupancy=2, gmm_components_joint=2)
     return fit(

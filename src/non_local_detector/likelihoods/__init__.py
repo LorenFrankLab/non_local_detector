@@ -1,7 +1,9 @@
 """Likelihood algorithms and the registries that map algorithm names to them."""
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from non_local_detector.exceptions import ValidationError
@@ -50,62 +52,90 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
     predict_sorted_spikes_mrf_log_likelihood,
 )
 
-_SORTED_SPIKES_ALGORITHMS: dict[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
-    "sorted_spikes_glm": (
+
+@dataclass(frozen=True)
+class LikelihoodAlgorithm:
+    """A registered likelihood algorithm: its fit, predict and defaults.
+
+    Parameters
+    ----------
+    fit : Callable[..., dict[str, Any]]
+        Fits the encoding model and returns it as a dict of keyword arguments
+        for ``predict``.
+    predict : Callable[..., jax.Array]
+        Returns the log likelihood, float32 with shape
+        ``(n_rows, n_interior_bins)``, or ``(n_rows, 1)`` when ``is_local``.
+    default_params : Mapping[str, Any], optional
+        The parameters ``fit`` receives when a detector's
+        ``*_algorithm_params`` is None, beyond the fit's own defaults; a user
+        dict replaces them. Stored as a read-only copy. By default empty.
+    mark_reference_scale : Callable[..., object] or None, optional
+        Clusterless algorithms only: the mark-kernel width, from the fit
+        parameters, which the mark reference adds in quadrature to each
+        feature's training spread (see ``fit_mark_references``). By default
+        None.
+    """
+
+    fit: Callable[..., dict[str, Any]]
+    predict: Callable[..., Any]
+    default_params: Mapping[str, Any] = field(default_factory=dict)
+    mark_reference_scale: Callable[..., object] | None = None
+
+    def __post_init__(self) -> None:
+        # A read-only copy, so a caller can mutate neither the registered
+        # defaults nor, through them, every later fit.
+        object.__setattr__(
+            self, "default_params", MappingProxyType(dict(self.default_params))
+        )
+
+
+# The algorithms a detector's ``*_algorithm`` names. Only sorted KDE has default
+# params; bandwidths come from the fits (position_std sqrt(12.5)).
+_SORTED_SPIKES_ALGORITHMS: dict[str, LikelihoodAlgorithm] = {
+    "sorted_spikes_glm": LikelihoodAlgorithm(
         fit_sorted_spikes_glm_encoding_model,
         predict_sorted_spikes_glm_log_likelihood,
     ),
-    "sorted_spikes_kde": (
+    "sorted_spikes_kde": LikelihoodAlgorithm(
         fit_sorted_spikes_kde_encoding_model,
         predict_sorted_spikes_kde_log_likelihood,
+        default_params={"block_size": 10_000},
     ),
-    "sorted_spikes_diffusion": (
+    "sorted_spikes_diffusion": LikelihoodAlgorithm(
         fit_sorted_spikes_diffusion_encoding_model,
         predict_sorted_spikes_diffusion_log_likelihood,
     ),
-    "sorted_spikes_mrf": (
+    "sorted_spikes_mrf": LikelihoodAlgorithm(
         fit_sorted_spikes_mrf_encoding_model,
         predict_sorted_spikes_mrf_log_likelihood,
     ),
 }
-_CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
-    "clusterless_kde": (
+_CLUSTERLESS_ALGORITHMS: dict[str, LikelihoodAlgorithm] = {
+    "clusterless_kde": LikelihoodAlgorithm(
         fit_clusterless_kde_encoding_model,
         predict_clusterless_kde_log_likelihood,
+        mark_reference_scale=clusterless_kde.mark_reference_scale,
     ),
-    "clusterless_gmm": (
+    "clusterless_gmm": LikelihoodAlgorithm(
         fit_clusterless_gmm_encoding_model,
         predict_clusterless_gmm_log_likelihood,
+        mark_reference_scale=clusterless_gmm.mark_reference_scale,
     ),
-    "clusterless_diffusion": (
+    "clusterless_diffusion": LikelihoodAlgorithm(
         fit_clusterless_diffusion_encoding_model,
         predict_clusterless_diffusion_log_likelihood,
+        mark_reference_scale=clusterless_diffusion.mark_reference_scale,
     ),
-    "clusterless_mark_glm": (
+    "clusterless_mark_glm": LikelihoodAlgorithm(
         fit_clusterless_mark_glm_encoding_model,
         predict_clusterless_mark_glm_log_likelihood,
+        mark_reference_scale=clusterless_mark_glm.mark_reference_scale,
     ),
-}
-# The parameters each algorithm's fit receives when a detector's
-# ``*_algorithm_params`` is None, beyond the fit's own defaults; a user dict
-# replaces them. Bandwidths come from the fits (position_std sqrt(12.5)).
-_SORTED_SPIKES_DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
-    "sorted_spikes_glm": {},
-    "sorted_spikes_kde": {"block_size": 10_000},
-    "sorted_spikes_diffusion": {},
-    "sorted_spikes_mrf": {},
-}
-_CLUSTERLESS_DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
-    "clusterless_kde": {},
-    "clusterless_gmm": {},
-    "clusterless_diffusion": {},
-    "clusterless_mark_glm": {},
 }
 
 
 def _resolve_fit_params(
-    algorithms: dict[str, tuple[Callable[..., Any], Callable[..., Any]]],
-    default_params: dict[str, dict[str, Any]],
+    algorithms: dict[str, LikelihoodAlgorithm],
     algorithm: str,
     params: dict[str, Any] | None,
     params_name: str,
@@ -114,10 +144,8 @@ def _resolve_fit_params(
 
     Parameters
     ----------
-    algorithms : dict
-        The registry holding ``algorithm``'s ``(fit, predict)`` pair.
-    default_params : dict
-        The registry's per-algorithm defaults.
+    algorithms : dict[str, LikelihoodAlgorithm]
+        The registry holding ``algorithm``.
     algorithm : str
         A key of ``algorithms``.
     params : dict or None
@@ -148,8 +176,9 @@ def _resolve_fit_params(
             expected=f"one of {sorted(algorithms)}",
             got=repr(algorithm),
         )
-    resolved = dict(default_params[algorithm] if params is None else params)
-    parameters = inspect.signature(algorithms[algorithm][0]).parameters
+    record = algorithms[algorithm]
+    resolved = dict(record.default_params if params is None else params)
+    parameters = inspect.signature(record.fit).parameters
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return resolved  # a fit taking ``**kwargs`` accepts any name
     accepted = [
@@ -170,14 +199,3 @@ def _resolve_fit_params(
             f"{algorithm}: each algorithm accepts only its own fit parameters.",
         )
     return resolved
-
-
-# Each clusterless algorithm's mark-kernel width, from its fit parameters, which
-# the mark reference adds in quadrature to each feature's training spread (see
-# ``fit_mark_references``).
-_CLUSTERLESS_MARK_REFERENCE_SCALES: dict[str, Callable[..., object]] = {
-    "clusterless_kde": clusterless_kde.mark_reference_scale,
-    "clusterless_gmm": clusterless_gmm.mark_reference_scale,
-    "clusterless_diffusion": clusterless_diffusion.mark_reference_scale,
-    "clusterless_mark_glm": clusterless_mark_glm.mark_reference_scale,
-}

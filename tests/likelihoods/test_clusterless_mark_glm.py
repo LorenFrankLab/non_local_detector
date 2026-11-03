@@ -5,6 +5,7 @@ mixture, which sets the number of components; each component's rate map is a
 Poisson GLM fit to the spikes' component responsibilities.
 """
 
+from dataclasses import replace
 from itertools import pairwise
 
 import networkx as nx
@@ -18,7 +19,6 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     clusterless_mark_glm,
 )
 from non_local_detector.likelihoods.clusterless_mark_glm import (
@@ -150,11 +150,11 @@ def _component_log_density(mixture, marks):
 
 @pytest.mark.unit
 def test_registered_with_its_mark_reference_scale():
-    fit, predict = _CLUSTERLESS_ALGORITHMS["clusterless_mark_glm"]
-    assert fit is fit_clusterless_mark_glm_encoding_model
-    assert predict is predict_clusterless_mark_glm_log_likelihood
-    scale = _CLUSTERLESS_MARK_REFERENCE_SCALES["clusterless_mark_glm"]
-    assert scale(mark_reg_covar=4.0) == pytest.approx(2.0)
+    record = _CLUSTERLESS_ALGORITHMS["clusterless_mark_glm"]
+    assert record.fit is fit_clusterless_mark_glm_encoding_model
+    assert record.predict is predict_clusterless_mark_glm_log_likelihood
+    assert record.mark_reference_scale is not None
+    assert record.mark_reference_scale(mark_reg_covar=4.0) == pytest.approx(2.0)
 
 
 @pytest.mark.unit
@@ -715,7 +715,8 @@ def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
     )
     from non_local_detector.time_edges import time_edges_from_centers
 
-    fit, predict = _CLUSTERLESS_ALGORITHMS["clusterless_mark_glm"]
+    registered = _CLUSTERLESS_ALGORITHMS["clusterless_mark_glm"]
+    fit = registered.fit
     fits = []
 
     def recording_fit(*args, **kwargs):
@@ -724,7 +725,9 @@ def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
         return encoding
 
     monkeypatch.setitem(
-        _CLUSTERLESS_ALGORITHMS, "clusterless_mark_glm", (recording_fit, predict)
+        _CLUSTERLESS_ALGORITHMS,
+        "clusterless_mark_glm",
+        replace(registered, fit=recording_fit),
     )
     sim = make_simulated_run_data(
         n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=3, seed=42

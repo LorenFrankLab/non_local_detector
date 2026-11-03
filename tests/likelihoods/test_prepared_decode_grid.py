@@ -46,7 +46,7 @@ def backend(request):
         if name.startswith("clusterless")
         else _SORTED_SPIKES_ALGORITHMS
     )
-    predict = registry[name][1]
+    predict = registry[name].predict
     encoding = next(iter(detector.encoding_model_.values()))
     if name.startswith("clusterless"):
         encoding = {**encoding, "mark_reference": detector.mark_reference_}
@@ -187,7 +187,7 @@ def test_prepared_variable_duration_chunks_preserve_standalone_likelihoods(
     position_time = 1.7e9 + time
     spikes = [edges[[0, 5, 20, 39, 40]]]
     args = (spikes,)
-    if predict in [pair[1] for pair in _CLUSTERLESS_ALGORITHMS.values()]:
+    if predict in [record.predict for record in _CLUSTERLESS_ALGORITHMS.values()]:
         args = (*args, [np.zeros((5, 1))])
     options = dict(time_edges=edges, is_local=is_local, **encoding)
     full = np.asarray(predict(position_time, position, *args, **options))
@@ -230,7 +230,7 @@ def test_standalone_likelihood_rechecks_mutated_spike_order(backend):
     edges = np.arange(21) * 0.002
     spikes = [edges[[0, 5, 10, 20]].copy()]
     args = (spikes,)
-    if predict in [pair[1] for pair in _CLUSTERLESS_ALGORITHMS.values()]:
+    if predict in [record.predict for record in _CLUSTERLESS_ALGORITHMS.values()]:
         args = (*args, [np.zeros((4, 1))])
     options = dict(time_edges=edges, row_slice=slice(3, 20), **encoding)
     expected = np.asarray(predict(time, position, *args, **options))

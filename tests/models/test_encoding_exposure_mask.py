@@ -14,6 +14,7 @@ everything.
 """
 
 import warnings
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -70,7 +71,7 @@ def test_detector_passes_exposure_mask_as_weights(monkeypatch, run_data):
     monkeypatch.setitem(
         _SORTED_SPIKES_ALGORITHMS,
         "sorted_spikes_kde",
-        (spy, _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"][1]),
+        replace(_SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"], fit=spy),
     )
 
     SortedSpikesDecoder(sampling_frequency=SAMPLING_FREQUENCY).fit(

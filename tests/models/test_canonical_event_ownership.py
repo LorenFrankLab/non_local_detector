@@ -17,6 +17,7 @@ with the canonical reference.
 """
 
 from collections import defaultdict
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -92,7 +93,7 @@ def _spy(monkeypatch, family):
         if family == "sorted"
         else (_CLUSTERLESS_ALGORITHMS, "clusterless_kde")
     )
-    monkeypatch.setitem(registry, name, (record, registry[name][1]))
+    monkeypatch.setitem(registry, name, replace(registry[name], fit=record))
     return calls
 
 
@@ -280,7 +281,7 @@ def test_clusterless_exposure_uses_full_timeline_mask(
         # No occupancy is stored: exposure enters each rate map's GLM fit, and
         # test_clusterless_mark_glm checks zero weights against a subset fit.
         return
-    fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
+    fit = _CLUSTERLESS_ALGORITHMS[algorithm].fit
     dt = np.median(np.diff(sim.position_time))
     selected_indices = np.flatnonzero(is_training)
     runs = np.split(

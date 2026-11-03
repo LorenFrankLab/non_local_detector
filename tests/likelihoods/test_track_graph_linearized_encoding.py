@@ -20,7 +20,6 @@ import pytest
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
 )
 from tests.likelihoods.conftest import training_mark_references
@@ -107,7 +106,8 @@ def _fit_and_predict(algorithm, data, environment, position):
     """Fit on ``position`` with ``environment``; non-local log likelihood too."""
     params = FIT_PARAMS[algorithm]
     if algorithm in _SORTED_SPIKES_ALGORITHMS:
-        fit, predict = _SORTED_SPIKES_ALGORITHMS[algorithm]
+        record = _SORTED_SPIKES_ALGORITHMS[algorithm]
+        fit, predict = record.fit, record.predict
         spikes = (data["spike_times"],)
         encoding = fit(
             data["time"],
@@ -119,7 +119,8 @@ def _fit_and_predict(algorithm, data, environment, position):
         )
         extra = {}
     else:
-        fit, predict = _CLUSTERLESS_ALGORITHMS[algorithm]
+        record = _CLUSTERLESS_ALGORITHMS[algorithm]
+        fit, predict = record.fit, record.predict
         spikes = (data["electrode_times"], data["electrode_marks"])
         encoding = fit(
             data["time"],
@@ -133,7 +134,7 @@ def _fit_and_predict(algorithm, data, environment, position):
             "mark_reference": training_mark_references(
                 data["time"],
                 *spikes,
-                _CLUSTERLESS_MARK_REFERENCE_SCALES[algorithm](**params),
+                record.mark_reference_scale(**params),
                 position=position,
             )
         }

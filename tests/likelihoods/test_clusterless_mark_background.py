@@ -17,7 +17,6 @@ import pytest
 from non_local_detector import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
 )
 from non_local_detector.likelihoods.clusterless_mark_glm import MarkMixture
 from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
@@ -115,13 +114,14 @@ def _params(algorithm, scale=1.0):
 
 def _fit_with_reference(algorithm, time, position, spikes, marks, environment, params):
     """Encoding model plus the mark reference fitted from the same training spikes."""
-    fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
+    record = _CLUSTERLESS_ALGORITHMS[algorithm]
+    fit = record.fit
     model = fit(time, position, spikes, marks, environment, **params)
     reference = training_mark_references(
         time,
         spikes,
         marks,
-        _CLUSTERLESS_MARK_REFERENCE_SCALES[algorithm](**params),
+        record.mark_reference_scale(**params),
         params.get("weights"),
         position,
     )
@@ -143,7 +143,7 @@ def _fit(run_data, variant, marks=None, scale=1.0, spikes=None):
 
 def _predict(run_data, variant, model, marks, is_local, spikes=None):
     algorithm, overrides = variant
-    _, predict = _CLUSTERLESS_ALGORITHMS[algorithm]
+    predict = _CLUSTERLESS_ALGORITHMS[algorithm].predict
     model = {**model, **overrides}
     return np.asarray(
         predict(
@@ -359,7 +359,7 @@ def test_diffusion_unvisited_bins_score_only_the_background():
     environment.fit_place_grid(position, infer_track_interior=False)
     spike_times = [np.sort(rng.uniform(0.0, 20.0, 400))]
     marks = [rng.normal(0.0, 30.0, (400, 4))]
-    _, predict = _CLUSTERLESS_ALGORITHMS["clusterless_diffusion"]
+    predict = _CLUSTERLESS_ALGORITHMS["clusterless_diffusion"].predict
     model = _fit_with_reference(
         "clusterless_diffusion",
         time,

@@ -2,6 +2,7 @@
 
 import copy
 import functools
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -154,7 +155,9 @@ def test_later_active_entry_rejected_before_any_backend_or_hmm_work(
             _SORTED_SPIKES_ALGORITHMS,
             detector.sorted_spikes_algorithm,
         )
-    monkeypatch.setitem(registry, algorithm, (registry[algorithm][0], unexpected_work))
+    monkeypatch.setitem(
+        registry, algorithm, replace(registry[algorithm], predict=unexpected_work)
+    )
     monkeypatch.setattr(base, "chunked_filter_smoother", unexpected_work)
     with pytest.raises(ValidationError, match="refit"):
         _call_model(detector, entry, time, position, spike_args)
@@ -362,7 +365,7 @@ def test_direct_predictors_validate_supplied_units_and_default_to_hz(algorithm):
     (model,) = detector.encoding_model_.values()
     if hasattr(detector, "mark_reference_"):
         model = {**model, "mark_reference": detector.mark_reference_}
-    predictor = registry[algorithm][1]
+    predictor = registry[algorithm].predict
     edges = 0.09 + np.arange(21) * 0.002
     expected = predictor(time, position, *args, time_edges=edges, **model)
     unmarked = {key: value for key, value in model.items() if key != "rate_units"}

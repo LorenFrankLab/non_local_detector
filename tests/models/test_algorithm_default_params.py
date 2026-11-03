@@ -9,6 +9,7 @@ parameter raises instead of being dropped or ignored.
 import functools
 import inspect
 import pickle
+from dataclasses import FrozenInstanceError, replace
 
 import numpy as np
 import pytest
@@ -18,9 +19,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_DEFAULT_PARAMS,
     _SORTED_SPIKES_ALGORITHMS,
-    _SORTED_SPIKES_DEFAULT_PARAMS,
 )
 from non_local_detector.models import ClusterlessDecoder, SortedSpikesDecoder
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
@@ -100,7 +99,7 @@ def _fit(decoder, sim):
 
 def _record_fit_params(monkeypatch, registry, algorithm, decoder, sim):
     """The algorithm params the detector passes to the registered fit."""
-    fit, predict = registry[algorithm]
+    fit = registry[algorithm].fit
     calls = []
 
     @functools.wraps(fit)
@@ -108,7 +107,7 @@ def _record_fit_params(monkeypatch, registry, algorithm, decoder, sim):
         calls.append(kwargs)
         raise _StopFit
 
-    monkeypatch.setitem(registry, algorithm, (spy, predict))
+    monkeypatch.setitem(registry, algorithm, replace(registry[algorithm], fit=spy))
     with pytest.raises(_StopFit):
         _fit(decoder, sim)
     (kwargs,) = calls
@@ -116,38 +115,40 @@ def _record_fit_params(monkeypatch, registry, algorithm, decoder, sim):
 
 
 def test_default_table_is_pinned():
-    """Every registered algorithm has an entry, and the entries are pinned."""
-    assert set(_SORTED_SPIKES_DEFAULT_PARAMS) == set(_SORTED_SPIKES_ALGORITHMS)
-    assert set(_CLUSTERLESS_DEFAULT_PARAMS) == set(_CLUSTERLESS_ALGORITHMS)
+    """Every registered algorithm's defaults are pinned."""
     assert {
-        **_SORTED_SPIKES_DEFAULT_PARAMS,
-        **_CLUSTERLESS_DEFAULT_PARAMS,
+        name: dict(record.default_params)
+        for name, record in {
+            **_SORTED_SPIKES_ALGORITHMS,
+            **_CLUSTERLESS_ALGORITHMS,
+        }.items()
     } == EXPECTED_DEFAULTS
 
 
+def test_registered_defaults_are_read_only():
+    """Neither a record nor its defaults can be changed in place."""
+    record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"]
+    with pytest.raises(TypeError):
+        record.default_params["block_size"] = 5  # type: ignore[index]
+    with pytest.raises(FrozenInstanceError):
+        record.default_params = {}  # type: ignore[misc]
+
+
 @pytest.mark.parametrize(
-    ("registry", "defaults", "algorithm"),
+    ("registry", "algorithm"),
     [
-        (_SORTED_SPIKES_ALGORITHMS, _SORTED_SPIKES_DEFAULT_PARAMS, "sorted_spikes_kde"),
-        (
-            _SORTED_SPIKES_ALGORITHMS,
-            _SORTED_SPIKES_DEFAULT_PARAMS,
-            "sorted_spikes_diffusion",
-        ),
-        (_CLUSTERLESS_ALGORITHMS, _CLUSTERLESS_DEFAULT_PARAMS, "clusterless_kde"),
-        (
-            _CLUSTERLESS_ALGORITHMS,
-            _CLUSTERLESS_DEFAULT_PARAMS,
-            "clusterless_diffusion",
-        ),
+        (_SORTED_SPIKES_ALGORITHMS, "sorted_spikes_kde"),
+        (_SORTED_SPIKES_ALGORITHMS, "sorted_spikes_diffusion"),
+        (_CLUSTERLESS_ALGORITHMS, "clusterless_kde"),
+        (_CLUSTERLESS_ALGORITHMS, "clusterless_diffusion"),
     ],
 )
-def test_default_position_bandwidth(registry, defaults, algorithm):
+def test_default_position_bandwidth(registry, algorithm):
     """A detector's default position kernel is sqrt(12.5), the fits' default."""
-    parameters = inspect.signature(registry[algorithm][0]).parameters
+    parameters = inspect.signature(registry[algorithm].fit).parameters
     effective = {
         **{name: p.default for name, p in parameters.items()},
-        **defaults[algorithm],
+        **registry[algorithm].default_params,
     }
     assert effective["position_std"] == pytest.approx(np.sqrt(12.5))
 
@@ -155,8 +156,8 @@ def test_default_position_bandwidth(registry, defaults, algorithm):
 @pytest.mark.parametrize(
     "fit",
     [
-        fit
-        for fit, _ in [
+        record.fit
+        for record in [
             *_SORTED_SPIKES_ALGORITHMS.values(),
             *_CLUSTERLESS_ALGORITHMS.values(),
         ]
@@ -200,7 +201,10 @@ def test_resolved_params_are_a_fresh_copy():
     """Mutating a resolved dict leaks into neither the table nor the user's dict."""
     decoder = _sorted_decoder("sorted_spikes_kde")
     decoder._resolve_sorted_spikes_algorithm_params()["block_size"] = 5
-    assert _SORTED_SPIKES_DEFAULT_PARAMS["sorted_spikes_kde"]["block_size"] == 10_000
+    assert (
+        _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"].default_params["block_size"]
+        == 10_000
+    )
 
     params = {"position_std": 5.0}
     decoder = _clusterless_decoder("clusterless_kde", params)
