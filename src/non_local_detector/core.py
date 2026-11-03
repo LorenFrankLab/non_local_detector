@@ -1276,6 +1276,83 @@ def _require_row_slice_aware(
         raise ValueError(msg)
 
 
+def _check_shape(name: str, value: Any, expected: tuple[int, ...]) -> None:
+    """Raise ``ValueError`` unless ``value`` (an array) has shape ``expected``."""
+    if np.shape(value) != expected:
+        msg = f"{name} must have shape {expected}, got {np.shape(value)}"
+        raise ValueError(msg)
+
+
+def _check_driver_inputs(
+    *,
+    time: Any,
+    initial_distribution: Any,
+    dtype: Any,
+    state_ind: Any = None,
+    transition_matrix: Any = None,
+    discrete_transition_matrix: Any = None,
+    continuous_transition_matrix: Any = None,
+    is_missing: Any = None,
+    log_likelihoods: Any = None,
+) -> None:
+    """Host-side shape and dtype checks at a public driver's entry.
+
+    Reads only shapes and dtypes, plus the small ``state_ind`` vector, so it
+    adds no device work. Mismatched lengths otherwise surface deep inside a
+    scan or, for a short likelihood, as silently truncated outputs.
+
+    Raises
+    ------
+    ValueError
+        If ``dtype`` is not a floating dtype, ``time`` is not a nonempty
+        vector, or any array does not match ``n_time = len(time)`` and
+        ``n_state_bins = len(initial_distribution)``.
+    """
+    if np.dtype(dtype).kind != "f":
+        msg = f"dtype must be a floating dtype (float32 or float64), got {dtype}"
+        raise ValueError(msg)
+    if np.ndim(time) != 1 or np.shape(time)[0] == 0:
+        msg = f"time must be a nonempty vector, got shape {np.shape(time)}"
+        raise ValueError(msg)
+    if np.ndim(initial_distribution) != 1:
+        msg = (
+            "initial_distribution must be a vector over state bins, got shape "
+            f"{np.shape(initial_distribution)}"
+        )
+        raise ValueError(msg)
+    n_time, n_bins = np.shape(time)[0], np.shape(initial_distribution)[0]
+    for name, value in (
+        ("transition_matrix", transition_matrix),
+        ("continuous_transition_matrix", continuous_transition_matrix),
+    ):
+        if value is not None:
+            _check_shape(name, value, (n_bins, n_bins))
+    if is_missing is not None:
+        _check_shape("is_missing", is_missing, (n_time,))
+    if log_likelihoods is not None:
+        _check_shape("log_likelihoods", log_likelihoods, (n_time, n_bins))
+    if state_ind is None:
+        return
+    state_ind = np.asarray(state_ind)
+    _check_shape("state_ind", state_ind, (n_bins,))
+    if state_ind.dtype.kind not in "iu":
+        msg = f"state_ind must be integer, got dtype {state_ind.dtype}"
+        raise ValueError(msg)
+    if discrete_transition_matrix is not None:
+        n_states = np.shape(discrete_transition_matrix)[-1]
+        _check_shape(
+            "discrete_transition_matrix",
+            discrete_transition_matrix,
+            (n_time, n_states, n_states),
+        )
+        if n_bins and int(state_ind.max()) >= n_states:
+            msg = (
+                f"state_ind refers to discrete state {int(state_ind.max())} "
+                f"but discrete_transition_matrix has {n_states} states"
+            )
+            raise ValueError(msg)
+
+
 def _store_chunk_rows(
     buffer: np.ndarray | None,
     chunk: jnp.ndarray,
@@ -1461,6 +1538,11 @@ def _chunked_filter_smoother(
             np.ndarray,
             log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
         )
+        _check_shape(
+            "log_likelihood_func output",
+            log_likelihoods,
+            (n_time, len(initial_distribution)),
+        )
     log_likelihoods_jax = (
         jnp.asarray(log_likelihoods, dtype=dtype)
         if log_likelihoods is not None
@@ -1487,6 +1569,11 @@ def _chunked_filter_smoother(
                 log_likelihood_args,
                 time_inds_np,
                 is_missing_chunk,
+            )
+            _check_shape(
+                "log_likelihood_func output",
+                log_likelihood_chunk,
+                (len(time_inds_np), len(initial_distribution)),
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
@@ -1684,7 +1771,23 @@ def chunked_filter_smoother(
         ``predictive_state_probabilities``, ``log_likelihoods``,
         ``causal_posterior`` and ``predictive_posterior``; see
         :class:`FilterSmootherResult` for shapes.
+
+    Raises
+    ------
+    ValueError
+        If ``dtype`` is not floating, an input's shape does not match
+        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
+        or ``log_likelihood_func`` returns the wrong shape.
     """
+    _check_driver_inputs(
+        time=time,
+        initial_distribution=initial_distribution,
+        dtype=dtype,
+        state_ind=state_ind,
+        transition_matrix=transition_matrix,
+        is_missing=is_missing,
+        log_likelihoods=log_likelihoods,
+    )
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
 
     def filter_chunk(
@@ -1816,15 +1919,35 @@ def most_likely_sequence(
         Most likely state sequence.
     log_likelihoods : np.ndarray, shape (n_time, n_states)
         Log likelihoods for each state at each time point.
+
+    Raises
+    ------
+    ValueError
+        If ``dtype`` is not floating, an input's shape does not match
+        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
+        or ``log_likelihood_func`` returns the wrong shape.
     """
     if n_chunks > 1:
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
+    _check_driver_inputs(
+        time=time,
+        initial_distribution=initial_distribution,
+        dtype=dtype,
+        transition_matrix=transition_matrix,
+        is_missing=is_missing,
+        log_likelihoods=log_likelihoods,
+    )
 
     if log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
             log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+        )
+        _check_shape(
+            "log_likelihood_func output",
+            log_likelihoods,
+            (len(time), len(initial_distribution)),
         )
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
@@ -2116,7 +2239,24 @@ def chunked_filter_smoother_covariate_dependent(
         ``predictive_state_probabilities``, ``log_likelihoods``,
         ``causal_posterior`` and ``predictive_posterior``; see
         :class:`FilterSmootherResult` for shapes.
+
+    Raises
+    ------
+    ValueError
+        If ``dtype`` is not floating, an input's shape does not match
+        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
+        or ``log_likelihood_func`` returns the wrong shape.
     """
+    _check_driver_inputs(
+        time=time,
+        initial_distribution=initial_distribution,
+        dtype=dtype,
+        state_ind=state_ind,
+        discrete_transition_matrix=discrete_transition_matrix,
+        continuous_transition_matrix=continuous_transition_matrix,
+        is_missing=is_missing,
+        log_likelihoods=log_likelihoods,
+    )
     state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
     continuous_transition_matrix_jax = jnp.asarray(
         continuous_transition_matrix, dtype=dtype
@@ -2289,15 +2429,37 @@ def most_likely_sequence_covariate_dependent(
         Most likely state sequence.
     log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         Log likelihoods for each state bin at each time point.
+
+    Raises
+    ------
+    ValueError
+        If ``dtype`` is not floating, an input's shape does not match
+        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
+        or ``log_likelihood_func`` returns the wrong shape.
     """
     if n_chunks > 1:
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
+    _check_driver_inputs(
+        time=time,
+        initial_distribution=initial_distribution,
+        dtype=dtype,
+        state_ind=state_ind,
+        discrete_transition_matrix=discrete_transition_matrix,
+        continuous_transition_matrix=continuous_transition_matrix,
+        is_missing=is_missing,
+        log_likelihoods=log_likelihoods,
+    )
 
     if log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
             log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+        )
+        _check_shape(
+            "log_likelihood_func output",
+            log_likelihoods,
+            (len(time), len(initial_distribution)),
         )
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
