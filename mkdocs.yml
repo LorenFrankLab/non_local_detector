@@ -128,6 +128,7 @@ nav:
       - Core Concepts: getting-started/core-concepts.md
   - Tutorials:
       - tutorials/index.md
+      - Classifying replay dynamics: tutorials/04_classifying_replay_dynamics.py
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md
