@@ -67,7 +67,25 @@ class TransitionContext:
 
 @runtime_checkable
 class ContinuousTransition(Protocol):
-    """A model of movement between the place bins of two discrete states."""
+    """A model of movement between the place bins of two discrete states.
+
+    The detectors call ``make_state_transition`` only for blocks between two
+    spatial states or two one-bin states. A block between a one-bin state
+    (No-Spike, or Local without ``local_position_std``) and a spatial state
+    is set without calling it: from the one-bin state it is uniform over the
+    interior bins of the environment named by the transition's
+    ``environment_name``, which the transition must have; into the one-bin
+    state every bin moves there with probability 1.
+
+    Only the package's ``Uniform``, ``Identity``, ``Discrete`` and Euclidean
+    ``RandomWalk`` (on a complete Cartesian grid) have structured operators.
+    With ``transition_representation="structured"`` any other transition
+    raises ``UnsupportedTransitionError``; with ``"auto"`` its dense block is
+    built from ``make_state_transition``, but a transition outside the
+    package is refused when an environment's graph distances are deferred
+    (as for an open-field grid fit with a non-dense representation). Use
+    ``"dense"`` for such a transition.
+    """
 
     def make_state_transition(
         self,

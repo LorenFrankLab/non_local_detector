@@ -372,9 +372,15 @@ def test_cross_environment_discrete_with_multibin_local_is_rejected():
         ObservationModel("two"),
     ]
     transitions = [[Discrete(), Discrete()], [Uniform("two", "one"), Identity("two")]]
-    with pytest.raises(ValueError, match="Cross-environment Discrete"):
+    match = (
+        r"^Cross-environment Discrete\(\) transition between 'one' and 'two' "
+        r"is not supported with multi-bin local \(local_position_std is set\)\. "
+        r"Use explicit Uniform\(environment_name=\.\.\., "
+        r"environment2_name=\.\.\.\) instead\.$"
+    )
+    with pytest.raises(ValueError, match=match):
         dense_reference(transitions, [env1, env2], (5, 5), observations, 2.0)
-    with pytest.raises(ValueError, match="Cross-environment Discrete"):
+    with pytest.raises(ValueError, match=match):
         build_transition_operator(transitions, [env1, env2], (5, 5), observations, 2.0)
 
 
@@ -769,26 +775,30 @@ def test_fallback_receives_original_empirical_context_and_defaults():
 
 
 @pytest.mark.unit
-def test_empirical_movement_scalar_blocks_match_dense_constructor():
+@pytest.mark.parametrize("n_bins", [5, 8], ids=["no_holes", "holes"])
+def test_empirical_movement_scalar_blocks_match_dense_constructor(n_bins):
     """Scalar-to-spatial and spatial-to-scalar EmpiricalMovement blocks agree."""
-    env = environment((5,), holes=False)
-    env.edges_ = (np.arange(6.0) - 0.5,)
-    position = np.resize(np.arange(5.0), 30)[:, None]
+    env = environment((n_bins,))
+    interior = env.is_track_interior_.ravel()
+    assert interior.all() == (n_bins == 5)
+    env.edges_ = (np.arange(n_bins + 1.0) - 0.5,)
+    position = np.resize(np.arange(float(n_bins)), 6 * n_bins)[:, None]
     transitions = [
         [Discrete(), EmpiricalMovement()],
         [EmpiricalMovement(), EmpiricalMovement()],
     ]
-    dense, _ = dense_reference(transitions, [env], (1, 5), position=position)
+    sizes = (1, n_bins)
+    dense, _ = dense_reference(transitions, [env], sizes, position=position)
     operator = build_transition_operator(
         transitions,
         [env],
-        (1, 5),
+        sizes,
         allow_dense_fallback=True,
         context=TransitionContext(position),
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
-    np.testing.assert_array_equal(dense[0, 1:], np.full(5, 0.2))
-    np.testing.assert_array_equal(dense[1:, 0], np.ones(5))
+    np.testing.assert_array_equal(dense[0, 1:], interior / interior.sum())
+    np.testing.assert_array_equal(dense[1:, 0], np.ones(n_bins))
 
 
 @pytest.mark.unit
