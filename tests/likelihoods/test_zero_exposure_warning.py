@@ -47,13 +47,6 @@ def _fit(algorithm, run, weights, position=None, **support_kwargs):
     kwargs = {"disable_progress_bar": True, **support_kwargs}
     if algorithm in _SORTED_SPIKES_ALGORITHMS:
         fit = _SORTED_SPIKES_ALGORITHMS[algorithm].fit
-        if algorithm == "sorted_spikes_glm":
-            kwargs.update(
-                place_bin_edges=environment.place_bin_edges_,
-                edges=environment.edges_,
-                is_track_interior=environment.is_track_interior_,
-                is_track_boundary=environment.is_track_boundary_,
-            )
         return fit(time, position, spike_times, environment, weights=weights, **kwargs)
     fit = _CLUSTERLESS_ALGORITHMS[algorithm].fit
     if algorithm == "clusterless_gmm":

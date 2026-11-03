@@ -602,10 +602,6 @@ def test_2d_rate_maps_match_a_sorted_fit_with_the_true_units():
         position,
         [spike_times[0][unit == u] for u in range(len(means))],
         environment,
-        environment.place_bin_edges_,
-        environment.edges_,
-        environment.is_track_interior_,
-        environment.is_track_boundary_,
     )
     interior = environment.is_track_interior_.ravel()
     sorted_maps = np.asarray(sorted_fit["place_fields"])[:, interior]

@@ -1331,10 +1331,6 @@ def fit_sorted_spikes_glm_encoding_model(
     position: jnp.ndarray | np.ndarray,
     spike_times: list[jnp.ndarray],
     environment: Environment,
-    place_bin_edges: np.ndarray,
-    edges: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
-    is_track_interior: np.ndarray,
-    is_track_boundary: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
     weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float | None = None,
@@ -1364,19 +1360,10 @@ def fit_sorted_spikes_glm_encoding_model(
     spike_times : list[jnp.ndarray]
         Spike times for each neuron.
     environment : Environment
-        The spatial environment.
-    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
-        Place-bin edge coordinates (``environment.place_bin_edges_``):
-        ``(n_bins + 1, 1)`` in 1-D or on a track graph, one row per grid-edge
-        point in N-D. Their extent sets the spline's boundaries and knots.
-    edges : tuple of np.ndarray
-        Per-dimension bin edges (``environment.edges_``). Unused; accepted
-        because the detector passes the environment geometry.
-    is_track_interior : np.ndarray, shape (n_position_bins,)
-        Unused: the fit reads ``environment.is_track_interior_`` instead (all
-        bins when that is None).
-    is_track_boundary : np.ndarray, shape (n_position_bins,)
-        Unused; accepted because the detector passes the environment geometry.
+        The fitted spatial environment. The extent of its place-bin edges
+        (``place_bin_edges_``) sets the spline's boundaries and knots, and its
+        interior bins (``is_track_interior_flat_``) are where the place fields
+        are evaluated.
     weights : np.ndarray, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
@@ -1473,7 +1460,7 @@ def fit_sorted_spikes_glm_encoding_model(
         exposure = np.zeros(0)
     emission_design_info, coefficients, interior_rates = _fit_rate_maps(
         environment,
-        place_bin_edges,
+        cast(np.ndarray, environment.place_bin_edges_),
         interior_place_bin_centers,
         encoding_positions,
         event_counts,

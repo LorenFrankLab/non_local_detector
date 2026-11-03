@@ -271,20 +271,11 @@ def fit_registered_backends(
     environment = data["environment"]
 
     for name, record in _SORTED_SPIKES_ALGORITHMS.items():
-        geometry = {}
-        if name == "sorted_spikes_glm":
-            geometry = {
-                "place_bin_edges": environment.place_bin_edges_,
-                "edges": environment.edges_,
-                "is_track_interior": environment.is_track_interior_,
-                "is_track_boundary": environment.is_track_boundary_,
-            }
         encoding_model = record.fit(
             position_time=data["position_time"],
             position=data["position"],
             spike_times=data["encoding_spike_times"],
             environment=environment,
-            **geometry,
             **fit_params.get(name, {}),
         )
         yield name, record.predict, encoding_model, False

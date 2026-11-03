@@ -523,20 +523,11 @@ def fit_backend(name: str, encoding) -> FittedBackend:
     if name in _SORTED_SPIKES_ALGORITHMS:
         record = _SORTED_SPIKES_ALGORITHMS[name]
         fit_func, predict_func = record.fit, record.predict
-        geometry = {}
-        if name == "sorted_spikes_glm":
-            geometry = {
-                "place_bin_edges": environment.place_bin_edges_,
-                "edges": environment.edges_,
-                "is_track_interior": environment.is_track_interior_,
-                "is_track_boundary": environment.is_track_boundary_,
-            }
         encoding_model = fit_func(
             position_time=position_time,
             position=position,
             spike_times=spike_times,
             environment=environment,
-            **geometry,
             **BACKEND_FIT_PARAMS.get(name, {}),
         )
         is_clusterless = False

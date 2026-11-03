@@ -25,10 +25,6 @@ def _fit(env, time, position, spikes, **kwargs):
         position,
         spikes,
         env,
-        env.place_bin_edges_,
-        env.edges_,
-        env.is_track_interior_,
-        env.is_track_boundary_,
         disable_progress_bar=True,
         **kwargs,
     )

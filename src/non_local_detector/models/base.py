@@ -7163,16 +7163,6 @@ class SortedSpikesDetector(_DetectorBase):
             # the grid used to interpolate per-spike weights.
             group_weights = _group_weights(is_group, weights, likelihood_name, support)
 
-            # GLM requires environment geometry that KDE derives internally
-            glm_kwargs = {}
-            if self.sorted_spikes_algorithm == "sorted_spikes_glm":
-                glm_kwargs = {
-                    "place_bin_edges": environment.place_bin_edges_,
-                    "edges": environment.edges_,
-                    "is_track_interior": environment.is_track_interior_,
-                    "is_track_boundary": environment.is_track_boundary_,
-                }
-
             encoding_model[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
@@ -7187,7 +7177,6 @@ class SortedSpikesDetector(_DetectorBase):
                 environment=environment,
                 _encoding_support=support,
                 weights=group_weights,
-                **glm_kwargs,
                 **kwargs,
             )
 

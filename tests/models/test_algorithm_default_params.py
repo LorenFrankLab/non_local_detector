@@ -48,10 +48,6 @@ _DETECTOR_SUPPLIED = {
     "environment",
     "weights",
     "_encoding_support",
-    "place_bin_edges",
-    "edges",
-    "is_track_interior",
-    "is_track_boundary",
 }
 
 
@@ -238,7 +234,7 @@ def test_unknown_sorted_algorithm_raises():
 
 
 def test_sorted_glm_geometry_is_not_a_user_param(sim):
-    """The detector supplies the GLM's environment geometry itself."""
+    """The GLM reads its geometry from the environment; it is not a parameter."""
     decoder = _sorted_decoder("sorted_spikes_glm", {"edges": None})
     with pytest.raises(ValidationError, match="edges"):
         _fit(decoder, sim)

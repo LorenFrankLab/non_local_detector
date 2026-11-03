@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### One registry record per likelihood algorithm
 
 - Each likelihood algorithm is registered as one frozen `LikelihoodAlgorithm` record (`fit`, `predict`, `default_params`, `mark_reference_scale`) in `_SORTED_SPIKES_ALGORITHMS` or `_CLUSTERLESS_ALGORITHMS` of `non_local_detector.likelihoods`. It replaces the registries' `(fit, predict)` tuples and the parallel `_SORTED_SPIKES_DEFAULT_PARAMS`, `_CLUSTERLESS_DEFAULT_PARAMS` and `_CLUSTERLESS_MARK_REFERENCE_SCALES` dictionaries, so a new algorithm is added in one place and cannot be registered without its defaults. A record's `default_params` is read-only. Outputs are unchanged. Code that unpacked `fit, predict = _SORTED_SPIKES_ALGORITHMS[name]` reads `.fit` and `.predict` instead.
+- **Changed:** `fit_sorted_spikes_glm_encoding_model` reads the place-bin edges from `environment.place_bin_edges_`, as the other fits read their geometry from the environment, and no longer takes the `place_bin_edges`, `edges`, `is_track_interior` and `is_track_boundary` arguments (three of them were unused). The detectors no longer special-case the GLM by name. A direct call passing them raises `TypeError`; a positional call should pass `weights` after `environment`. Likelihoods and posteriors are bit-identical.
 
 ### Warnings point at the caller's code
 

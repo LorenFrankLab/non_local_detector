@@ -78,10 +78,6 @@ def _fit(env, time, position, spike_times):
         position,
         spike_times,
         env,
-        env.place_bin_edges_,
-        env.edges_,
-        env.is_track_interior_,
-        env.is_track_boundary_,
         disable_progress_bar=True,
     )
 
