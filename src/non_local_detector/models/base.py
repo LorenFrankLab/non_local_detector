@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 import sklearn  # type: ignore[import-untyped]
 import xarray as xr
+from numpy.typing import ArrayLike
 from patsy import DesignMatrix, build_design_matrices  # type: ignore[import-untyped]
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
@@ -721,7 +722,7 @@ def _resolve_em_options(
 
 
 def _validate_estimation_arguments(
-    time_edges: np.ndarray,
+    time_edges: ArrayLike,
     n_chunks: int,
     return_outputs: str | list[str] | set[str] | None,
     save_log_likelihood_to_results: bool | None,
@@ -735,7 +736,7 @@ def _validate_estimation_arguments(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
+    time_edges : array_like, shape (n_bins + 1,)
     n_chunks : int
     return_outputs : str or list of str or set of str, optional
     save_log_likelihood_to_results : bool, optional
@@ -784,7 +785,7 @@ def _validate_estimation_arguments(
 
 
 def _decode_time_edges(
-    time_edges: np.ndarray,
+    time_edges: ArrayLike,
     transition_time_bin_width: float | None,
     transition_time_bin_width_tolerance: float = 0.0,
     *,
@@ -799,7 +800,7 @@ def _decode_time_edges(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
+    time_edges : array_like, shape (n_bins + 1,)
     transition_time_bin_width : float or None
         Bin width recorded with learned transitions, or None.
     transition_time_bin_width_tolerance : float, optional
@@ -827,6 +828,7 @@ def _decode_time_edges(
     if prepared_uniform_grid:
         assert _time_grid is not None
         assert _time_grid.uniform_width is not None
+        time_edges = _time_grid.edges  # the same array, typed as ndarray
         width = _time_grid.uniform_width
         uniform_tolerance = _time_grid.uniform_tolerance
     else:
@@ -3286,7 +3288,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         is_missing: np.ndarray | None,
         row_slice: slice | None,
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         _no_spike_time_bin_sizes: np.ndarray | None,
         _time_grid: _DecodeTimeGrid | None,
         _position_context: _LikelihoodPositionContext | None,
@@ -3477,7 +3479,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self,
         spike_data: tuple[Any, ...],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         position: np.ndarray | None,
         position_time: np.ndarray | None,
         is_missing: np.ndarray | None,
@@ -3667,7 +3669,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         position: np.ndarray,
         spike_data: tuple[Any, ...],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         is_missing: np.ndarray | None,
         is_training: np.ndarray | None,
         encoding_group_labels: np.ndarray | None,
@@ -3788,7 +3790,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self,
         spike_data: tuple[Any, ...],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         position: np.ndarray | None,
         position_time: np.ndarray | None,
         is_missing: np.ndarray | None,
@@ -4485,7 +4487,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def estimate_parameters(
         self,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
         estimate_initial_conditions: bool = True,
@@ -4509,7 +4511,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Parameters
         ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the bin
             centers, and the bin width is recorded with the learned transitions
             as ``transition_time_bin_width_``.
@@ -5340,7 +5342,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def most_likely_sequence(
         self,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
@@ -5352,7 +5354,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Parameters
         ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Validated decode bin edges.
         log_likelihood_args : tuple, optional
             Arguments for the log likelihood function, by default None.
@@ -6394,7 +6396,7 @@ class ClusterlessDetector(_DetectorBase):
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         _no_spike_time_bin_sizes: np.ndarray | None = None,
         _time_grid: _DecodeTimeGrid | None = None,
         _position_context: _LikelihoodPositionContext | None = None,
@@ -6435,7 +6437,7 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         position_time : np.ndarray, shape (n_time_position,)
@@ -6492,7 +6494,7 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         position: np.ndarray | None = None,
         position_time: np.ndarray | None = None,
         is_missing: np.ndarray | None = None,
@@ -6520,7 +6522,7 @@ class ClusterlessDetector(_DetectorBase):
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         position : np.ndarray, shape (n_time_position, n_position_dims), optional
@@ -6695,7 +6697,7 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         is_missing: np.ndarray | None = None,
         is_training: np.ndarray | None = None,
         encoding_group_labels: np.ndarray | None = None,
@@ -6735,7 +6737,7 @@ class ClusterlessDetector(_DetectorBase):
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
@@ -6893,7 +6895,7 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         position: np.ndarray | None = None,
         position_time: np.ndarray | None = None,
         is_missing: np.ndarray | None = None,
@@ -6911,7 +6913,7 @@ class ClusterlessDetector(_DetectorBase):
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
@@ -7308,7 +7310,7 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         _no_spike_time_bin_sizes: np.ndarray | None = None,
         _time_grid: _DecodeTimeGrid | None = None,
         _position_context: _LikelihoodPositionContext | None = None,
@@ -7349,7 +7351,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         position_time : np.ndarray, shape (n_time_position,)
@@ -7403,7 +7405,7 @@ class SortedSpikesDetector(_DetectorBase):
         self,
         spike_times: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         position: np.ndarray | None = None,
         position_time: np.ndarray | None = None,
         is_missing: np.ndarray | None = None,
@@ -7429,7 +7431,7 @@ class SortedSpikesDetector(_DetectorBase):
         ----------
         spike_times : list of np.ndarray
             Spike times for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         position : np.ndarray, shape (n_time_position, n_position_dims), optional
@@ -7527,7 +7529,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: np.ndarray,
         spike_times: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         is_missing: np.ndarray | None = None,
         is_training: np.ndarray | None = None,
         encoding_group_labels: np.ndarray | None = None,
@@ -7566,7 +7568,7 @@ class SortedSpikesDetector(_DetectorBase):
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
             Each element of the list is an array of spike times for a neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
@@ -7726,7 +7728,7 @@ class SortedSpikesDetector(_DetectorBase):
         self,
         spike_times: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         position: np.ndarray | None = None,
         position_time: np.ndarray | None = None,
         is_missing: np.ndarray | None = None,
@@ -7742,7 +7744,7 @@ class SortedSpikesDetector(_DetectorBase):
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
             Each element of the list is an array of spike times for a neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
         is_missing : np.ndarray, shape (n_bins,), optional
