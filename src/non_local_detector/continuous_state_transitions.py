@@ -25,16 +25,22 @@ from non_local_detector.observation_models import ObservationModel
 class TransitionContext:
     """Fit data a continuous transition may read.
 
+    With ``position``, an unset ``is_training`` selects every time point and
+    unset ``encoding_group_labels`` puts every time point in encoding group 0,
+    as in a detector fit, so an ``EmpiricalMovement`` for another group gets
+    no samples. ``is_training`` is squeezed to one dimension.
+
     Attributes
     ----------
     position : np.ndarray, shape (n_time, n_position_dims), optional
         Position of the animal.
     is_training : np.ndarray, shape (n_time,), optional
-        Which time points to train on. None means all of them.
+        Which time points to train on; all of them by default.
     encoding_group_labels : np.ndarray, shape (n_time,), optional
-        Encoding group of each time point.
+        Encoding group of each time point; group 0 by default.
     environment_labels : np.ndarray, shape (n_time,), optional
-        Environment name of each time point.
+        Environment name of each time point. None means every time point is
+        in every environment.
     """
 
     position: np.ndarray | None = None
@@ -42,41 +48,20 @@ class TransitionContext:
     encoding_group_labels: np.ndarray | None = None
     environment_labels: np.ndarray | None = None
 
-    @classmethod
-    def from_fit(
-        cls,
-        position: np.ndarray | None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-    ) -> "TransitionContext":
-        """The context of a detector fit, with the detector's defaults.
-
-        With position, unset ``is_training`` selects every time point and
-        unset ``encoding_group_labels`` puts every time point in encoding
-        group 0, so an ``EmpiricalMovement`` for another group gets no
-        samples. ``is_training`` is squeezed to one dimension.
-
-        Parameters
-        ----------
-        position : np.ndarray, shape (n_time, n_position_dims) or None
-        is_training : np.ndarray, shape (n_time,), optional
-        encoding_group_labels : np.ndarray, shape (n_time,), optional
-        environment_labels : np.ndarray, shape (n_time,), optional
-
-        Returns
-        -------
-        context : TransitionContext
-        """
-        if position is not None:
-            n_time = position.shape[0]
+    def __post_init__(self) -> None:
+        is_training = self.is_training
+        if self.position is not None:
+            n_time = self.position.shape[0]
             if is_training is None:
                 is_training = np.ones((n_time,), dtype=bool)
-            if encoding_group_labels is None:
-                encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
+            if self.encoding_group_labels is None:
+                object.__setattr__(
+                    self,
+                    "encoding_group_labels",
+                    np.zeros((n_time,), dtype=np.int32),
+                )
         if is_training is not None:
-            is_training = np.asarray(is_training).squeeze()
-        return cls(position, is_training, encoding_group_labels, environment_labels)
+            object.__setattr__(self, "is_training", np.asarray(is_training).squeeze())
 
 
 @runtime_checkable
@@ -564,10 +549,9 @@ class EmpiricalMovement:
             Required; its ``position`` is binned. On a track graph,
             multi-dimensional position is linearized and one-column position
             is taken as linear (see ``Environment.decoding_position``). Only
-            time points that are training points (all if ``is_training`` is
-            None), in ``encoding_group`` (all if ``encoding_group_labels`` is
-            None) and in this environment (all if ``environment_labels`` is
-            None) are used.
+            time points that are training points, in ``encoding_group`` and
+            in this environment (all if ``environment_labels`` is None) are
+            used; see ``TransitionContext`` for the defaults.
 
         Returns
         -------
@@ -589,14 +573,11 @@ class EmpiricalMovement:
 
         position = context.position
         n_time = position.shape[0]
-        is_training = context.is_training
-        if is_training is None:
-            is_training = np.ones((n_time,), dtype=bool)
-
-        if context.encoding_group_labels is None:
-            is_encoding = np.ones((n_time,), dtype=bool)
-        else:
-            is_encoding = context.encoding_group_labels == self.encoding_group
+        # A context with position has set is_training and the group labels.
+        is_training = cast(np.ndarray, context.is_training)
+        is_encoding = (
+            cast(np.ndarray, context.encoding_group_labels) == self.encoding_group
+        )
 
         if context.environment_labels is None:
             is_environment = np.ones((n_time,), dtype=bool)

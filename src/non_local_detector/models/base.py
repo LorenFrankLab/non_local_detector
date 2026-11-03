@@ -2493,7 +2493,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self._transition_representation_ = transition_representation
         self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
         self.__dict__.pop("_continuous_transition_operator_", None)
-        context = TransitionContext.from_fit(
+        context = TransitionContext(
             position, is_training, encoding_group_labels, environment_labels
         )
         if transition_representation != "dense":

@@ -731,11 +731,11 @@ def test_fallback_receives_original_empirical_context_and_defaults():
         [env],
         (5,),
         allow_dense_fallback=True,
-        context=TransitionContext.from_fit(**context),
+        context=TransitionContext(**context),
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
-    # The fit context defaults absent labels to group zero before calling the
-    # empirical estimator, rather than its standalone "all groups" default.
+    # The context defaults absent labels to group zero, as the detector fit
+    # always has.
     transitions = [[EmpiricalMovement(encoding_group=1)]]
     dense, _ = dense_reference(transitions, [env], (5,), position=position)
     operator = build_transition_operator(
@@ -743,7 +743,7 @@ def test_fallback_receives_original_empirical_context_and_defaults():
         [env],
         (5,),
         allow_dense_fallback=True,
-        context=TransitionContext.from_fit(position),
+        context=TransitionContext(position),
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
 
@@ -764,7 +764,7 @@ def test_empirical_movement_scalar_blocks_match_dense_constructor():
         [env],
         (1, 5),
         allow_dense_fallback=True,
-        context=TransitionContext.from_fit(position),
+        context=TransitionContext(position),
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
     np.testing.assert_array_equal(dense[0, 1:], np.full(5, 0.2))

@@ -202,16 +202,41 @@ def test_empirical_movement_without_position_is_rejected(
         EmpiricalMovement().make_state_transition((simple_1d_environment,), context)
 
 
-def test_fit_context_defaults_select_all_samples_of_group_zero():
+def test_context_defaults_select_all_samples_of_group_zero():
     """Unset training and encoding labels default as the detector fit does."""
     position = np.zeros((4, 1))
-    context = TransitionContext.from_fit(position, is_training=np.ones((4, 1)))
+    context = TransitionContext(position, is_training=np.ones((4, 1)))
     np.testing.assert_array_equal(context.is_training, np.ones(4))
     np.testing.assert_array_equal(context.encoding_group_labels, np.zeros(4))
     assert context.environment_labels is None
-    default = TransitionContext.from_fit(position)
+    default = TransitionContext(position=position)
     np.testing.assert_array_equal(default.is_training, np.ones(4, dtype=bool))
-    assert TransitionContext.from_fit(None).encoding_group_labels is None
+    assert TransitionContext().encoding_group_labels is None
+
+
+@pytest.mark.parametrize("encoding_group", [0, 1])
+def test_context_construction_routes_give_identical_empirical_movement(
+    encoding_group,
+):
+    """Unset labels mean the same as explicit all-training, group-0 labels."""
+    env = Environment(place_bin_size=1.0).fit_place_grid(
+        np.linspace(0.0, 10.0, 11)[:, None], infer_track_interior=False
+    )
+    position = np.linspace(0.0, 10.0, 51)[:, None]
+    transition = EmpiricalMovement(encoding_group=encoding_group)
+    implicit = transition.make_state_transition(
+        (env,), TransitionContext(position=position)
+    )
+    explicit = transition.make_state_transition(
+        (env,),
+        TransitionContext(
+            position=position,
+            is_training=np.ones((51, 1), dtype=bool),
+            encoding_group_labels=np.zeros(51, dtype=np.int32),
+        ),
+    )
+    np.testing.assert_array_equal(implicit, explicit)
+    np.testing.assert_array_equal(implicit.sum(axis=1) > 0, encoding_group == 0)
 
 
 def test_discrete_transition_is_ones():
