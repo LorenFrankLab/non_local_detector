@@ -24,18 +24,19 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "numpy >=1.25",
-    "scipy >=1.10",
+    "numpy >=2.2",
+    "scipy >=1.15",
     "jax >=0.6.2",
-    "pandas >=2.0",
-    "networkx >=3.0",
-    "xarray >=2024.5",
-    "scikit-learn >=1.3",
+    "pandas >=2.3",
+    # 3.5 (the SPEC 0 floor) needs Python 3.11; 3.4 is the last for 3.10.
+    "networkx >=3.4",
+    "xarray >=2024.11",
+    "scikit-learn >=1.6",
     "threadpoolctl >=3.0",
     "patsy >=0.5.2",
     "tqdm >=4.60",
     "track_linearization >=2.4.0",
-    "matplotlib >=3.7",
+    "matplotlib >=3.10",
     "seaborn >=0.12",
 ]
 dynamic = ["version"]
