@@ -201,6 +201,11 @@ filterwarnings = [
     # Most tests decode 1-D open fields on purpose;
     # test_position_dimensionality_validation checks the warning itself.
     "ignore:Position data appears to be 1D but no track_graph:UserWarning",
+    # matplotlib 3.10.0 (the floor) calls camelCase pyparsing names that
+    # pyparsing 3.3 deprecates ("'oneOf' deprecated - use 'one_of'"). The
+    # category is named by its base class: older pyparsing releases have
+    # no pyparsing.warnings module to import.
+    "ignore:'\\w+' deprecated - use '\\w+':DeprecationWarning",
 ]
 # Per-test limit from pytest-timeout (in the test extra), locally and in CI.
 timeout = 900
