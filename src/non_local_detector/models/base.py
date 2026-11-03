@@ -3915,61 +3915,69 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         )
         # Before the internal fit, so a refused estimate leaves the model as is.
         _require_observed_bins(is_missing)
-        self._fit_em_model(
-            lambda representation: self.fit(
-                position_time,
-                position,
-                *spike_data,
-                is_training=is_training,
-                encoding_group_labels=encoding_group_labels,
-                environment_labels=environment_labels,
-                discrete_transition_covariate_data=discrete_transition_covariate_data,
-                encoding_time_range=encoding_time_range,
-                valid_position_intervals=valid_position_intervals,
-                transition_representation=representation,
-                max_dense_transition_bytes=max_dense_transition_bytes,
-            ),
-            transition_representation,
-            len(time_edges) - 1,
-            structured_required=bool(
-                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
-            ),
-        )
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-            "encoding_time_range": encoding_time_range,
-            "valid_position_intervals": valid_position_intervals,
-        }
-
-        return self._run_em(
-            time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                *spike_data,
-            ),
-            is_missing=is_missing,
-            estimate_initial_conditions=estimate_initial_conditions,
-            estimate_discrete_transition=estimate_discrete_transition,
-            estimate_encoding_model=estimate_encoding_model,
-            max_iter=max_iter,
-            tolerance=tolerance,
-            cache_likelihood=cache_likelihood,
-            store_log_likelihood=store_log_likelihood,
-            n_chunks=n_chunks,
-            return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
-            min_encoding_local_mass=min_encoding_local_mass,
-            min_encoding_local_ess=min_encoding_local_ess,
-            chunk_size=chunk_size,
-            result_path=result_path,
-            replay_cache_bytes=replay_cache_bytes,
-        )
+        # EM is atomic: if the internal fit or any EM step raises, the detector
+        # and its environments are left as they were before this call. The
+        # M-steps rebind or edit only attributes the internal fit rebuilt, so
+        # restoring the attribute snapshot undoes them.
+        with self._restore_state_on_error():
+            self._fit_em_model(
+                lambda representation: self.fit(
+                    position_time,
+                    position,
+                    *spike_data,
+                    is_training=is_training,
+                    encoding_group_labels=encoding_group_labels,
+                    environment_labels=environment_labels,
+                    discrete_transition_covariate_data=discrete_transition_covariate_data,
+                    encoding_time_range=encoding_time_range,
+                    valid_position_intervals=valid_position_intervals,
+                    transition_representation=representation,
+                    max_dense_transition_bytes=max_dense_transition_bytes,
+                ),
+                transition_representation,
+                len(time_edges) - 1,
+                structured_required=bool(
+                    _structured_em_options(chunk_size, result_path, replay_cache_bytes)
+                ),
+            )
+            self._encoding_model_data = {
+                "position_time": position_time,
+                "position": position,
+                **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
+                "is_training": is_training,
+                "encoding_group_labels": encoding_group_labels,
+                "environment_labels": environment_labels,
+                "encoding_time_range": encoding_time_range,
+                "valid_position_intervals": valid_position_intervals,
+            }
+            try:
+                return self._run_em(
+                    time_edges=time_edges,
+                    log_likelihood_args=(
+                        position_time,
+                        position,
+                        *spike_data,
+                    ),
+                    is_missing=is_missing,
+                    estimate_initial_conditions=estimate_initial_conditions,
+                    estimate_discrete_transition=estimate_discrete_transition,
+                    estimate_encoding_model=estimate_encoding_model,
+                    max_iter=max_iter,
+                    tolerance=tolerance,
+                    cache_likelihood=cache_likelihood,
+                    store_log_likelihood=store_log_likelihood,
+                    n_chunks=n_chunks,
+                    return_outputs=return_outputs,
+                    save_log_likelihood_to_results=save_log_likelihood_to_results,
+                    min_encoding_local_mass=min_encoding_local_mass,
+                    min_encoding_local_ess=min_encoding_local_ess,
+                    chunk_size=chunk_size,
+                    result_path=result_path,
+                    replay_cache_bytes=replay_cache_bytes,
+                )
+            finally:
+                # Drop the references to the caller's arrays.
+                del self._encoding_model_data
 
     def _most_likely_spike_sequence(
         self,
@@ -4892,9 +4900,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         if settings.store_log_likelihood:
             self.log_likelihood_ = final.log_likelihood
-
-        if hasattr(self, "_encoding_model_data"):
-            del self._encoding_model_data
 
         if settings.result_path is not None:
             # The store already holds the EM attributes and traces.

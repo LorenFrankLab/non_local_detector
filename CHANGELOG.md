@@ -99,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### EM engine
 
 - The EM and Viterbi engines that the detectors' `estimate_parameters` and `most_likely_sequence` call are the protected `_DetectorBase._run_em` and `_DetectorBase._run_viterbi`. `_DetectorBase` no longer has an `estimate_parameters(time_edges, log_likelihood_args, ...)` or `most_likely_sequence(time_edges, log_likelihood_args, ...)` whose signature the detectors' methods silently replaced; code that called `_DetectorBase.estimate_parameters(detector, ...)` directly calls `detector._run_em(...)`. Detector methods and results are unchanged.
+- **Fixed:** `estimate_parameters` is atomic. An exception during EM (an M-step, the encoding refit, the final E-step, or an interrupt) used to leave the detector rebuilt by EM's internal fit and partly updated by the M-steps (`discrete_state_transitions_`, transition coefficients, `initial_conditions_`, EM result attributes), still holding references to the estimation data in `_encoding_model_data`. The detector and its environments are now restored to their state before the call, and the reference to the data is always dropped.
 
 ### Smoother covariate-dependent discrete transitions
 
