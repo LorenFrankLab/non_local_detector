@@ -89,7 +89,6 @@ from non_local_detector.likelihoods.common import (
     _concatenate_row_blocks,
     _spike_counts_matrix,
     _SpikeTimeOrder,
-    decode_bin_centers,
     environment_grid_fingerprint,
     get_position_at_time,
     resolve_row_slice,
@@ -101,6 +100,7 @@ from non_local_detector.likelihoods.no_spike import _poisson_row_log_likelihood
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
+    decode_bin_centers,
     requires_time_edges,
 )
 

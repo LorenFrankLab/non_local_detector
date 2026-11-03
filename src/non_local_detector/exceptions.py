@@ -12,13 +12,6 @@ Choose the appropriate exception type based on when and why the error occurs:
   initialization or before model fitting). Use when user-provided values are
   invalid, have wrong shapes, or violate constraints.
 
-- **FittingError**: Problems occur during model training/fitting. Use when the
-  fitting process encounters errors, but the inputs were valid.
-
-- **ConvergenceError**: Iterative algorithms fail to converge (specialized
-  FittingError). Use when EM algorithm, gradient descent, or other iterative
-  methods don't reach convergence criteria.
-
 - **ConfigurationError**: Incompatible parameter combinations or missing
   required configuration. Use when parameters are individually valid but
   incompatible with each other.
@@ -27,7 +20,9 @@ Choose the appropriate exception type based on when and why the error occurs:
   when the data values (not just shapes) are problematic.
 
 All exceptions inherit from **NonLocalDetectorError**, allowing users to catch
-any package-specific error with a single except clause.
+any package-specific error with a single except clause. ValidationError,
+ConfigurationError and DataError also inherit from ``ValueError``, so
+``except ValueError`` catches them too.
 
 Examples
 --------
@@ -72,7 +67,7 @@ class NonLocalDetectorError(Exception):
     """
 
 
-class ValidationError(NonLocalDetectorError):
+class ValidationError(NonLocalDetectorError, ValueError):
     """Raised when input validation fails.
 
     This exception indicates that user-provided data doesn't meet the
@@ -128,44 +123,7 @@ class ValidationError(NonLocalDetectorError):
         super().__init__("\n".join(parts))
 
 
-class FittingError(NonLocalDetectorError):
-    """Raised when model fitting fails.
-
-    This exception indicates that the model fitting process encountered
-    an error, such as convergence failure, invalid training data, or
-    numerical instability.
-
-    Parameters
-    ----------
-    message : str
-        Description of what went wrong during fitting.
-    hint : str, optional
-        Actionable suggestion for fixing the error.
-
-    Examples
-    --------
-    >>> raise FittingError(
-    ...     "Model failed to converge after 1000 iterations",
-    ...     hint="Try increasing discrete_transition_concentration or check for NaN values in data"
-    ... )
-    """
-
-    def __init__(self, message: str, hint: str | None = None) -> None:
-        """Initialize FittingError with optional hint.
-
-        Parameters
-        ----------
-        message : str
-            Description of what went wrong during fitting
-        hint : str, optional
-            Actionable suggestion for fixing the error
-        """
-        if hint is not None:
-            message = f"{message}\n\nHint: {hint}"
-        super().__init__(message)
-
-
-class ConfigurationError(NonLocalDetectorError):
+class ConfigurationError(NonLocalDetectorError, ValueError):
     """Raised when configuration is invalid or inconsistent.
 
     This exception indicates that model parameters are incompatible
@@ -201,62 +159,7 @@ class ConfigurationError(NonLocalDetectorError):
         super().__init__(message)
 
 
-class ConvergenceError(FittingError):
-    """Raised when an iterative algorithm fails to converge.
-
-    This is a specialized fitting error for convergence failures,
-    providing specific guidance about iteration limits and tolerances.
-
-    Parameters
-    ----------
-    message : str
-        Description of the convergence failure.
-    iterations : int, optional
-        Number of iterations attempted.
-    tolerance : float, optional
-        Convergence tolerance that wasn't met.
-    hint : str, optional
-        Actionable suggestion for fixing convergence issues.
-
-    Examples
-    --------
-    >>> raise ConvergenceError(
-    ...     "EM algorithm did not converge",
-    ...     iterations=1000,
-    ...     tolerance=1e-4,
-    ...     hint="Try increasing max_iterations or relaxing convergence tolerance"
-    ... )
-    """
-
-    def __init__(
-        self,
-        message: str,
-        iterations: int | None = None,
-        tolerance: float | None = None,
-        hint: str | None = None,
-    ) -> None:
-        """Initialize ConvergenceError with iteration details.
-
-        Parameters
-        ----------
-        message : str
-            Description of the convergence failure
-        iterations : int, optional
-            Number of iterations attempted
-        tolerance : float, optional
-            Convergence tolerance that wasn't met
-        hint : str, optional
-            Actionable suggestion for fixing convergence issues
-        """
-        if iterations is not None:
-            message = f"{message} (iterations: {iterations})"
-        if tolerance is not None:
-            message = f"{message} (tolerance: {tolerance})"
-
-        super().__init__(message, hint=hint)
-
-
-class DataError(NonLocalDetectorError):
+class DataError(NonLocalDetectorError, ValueError):
     """Raised when input data has problems (NaN, Inf, wrong structure).
 
     This exception indicates issues with the actual data values rather

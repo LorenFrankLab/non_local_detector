@@ -75,6 +75,7 @@ from track_linearization import (  # type: ignore[import-untyped]
     plot_graph_as_1D,
 )
 
+from non_local_detector import _validation as val
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import (
@@ -280,9 +281,6 @@ class Environment:
 
     def __post_init__(self) -> None:
         """Validate Environment parameters after initialization."""
-        # Import locally to avoid circular dependency
-        from non_local_detector import _validation as val
-
         # Validate place_bin_size
         if isinstance(self.place_bin_size, tuple):
             for i, size in enumerate(self.place_bin_size):
@@ -443,9 +441,6 @@ class Environment:
         ConfigurationError
             If edge_order or edge_spacing are missing when track_graph is provided
         """
-        # Import locally to avoid circular dependency
-        from non_local_detector import _validation as val
-
         # Validate track_graph is a NetworkX Graph
         val.ensure_networkx_graph(self.track_graph, "track_graph")
         assert self.track_graph is not None  # ensure_networkx_graph rejects None
@@ -634,9 +629,6 @@ class Environment:
             The fitted environment, with the fitted attributes (``edges_``,
             ``place_bin_centers_``, ...) populated.
         """
-        # Import locally to avoid circular dependency
-        from non_local_detector import _validation as val
-
         # Validate position if provided
         if position is not None:
             val.ensure_ndarray(position, "position")
@@ -1383,17 +1375,19 @@ def get_grid(
     """Calculate bin edges and centers for a spatial grid.
 
     Creates a grid based on the provided position data or range, using
-    a specified bin size. Handles multiple position dimensions. Adds
-    boundary bins to the edges.
+    a specified bin size. Handles multiple position dimensions. For grids with
+    more than one dimension, one boundary bin is added at each end of every
+    dimension's edges; the edges of a 1-D grid are not padded.
 
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
         Position data used to determine the grid extent if `position_range`
         is not provided. NaNs are ignored.
-    bin_size : float, optional
-        The desired approximate size of the bins in each dimension. The actual
-        size may vary slightly to evenly cover the range. By default 2.5.
+    bin_size : float or tuple of float, optional
+        The desired approximate size of the bins in each dimension (one value
+        per dimension if a tuple). The actual size may vary slightly to evenly
+        cover the range. By default 2.5.
     position_range : list[tuple[float, float]] | None, optional
         A list of tuples, one for each position dimension, specifying the
         (min, max) boundary for the grid. If None, the min/max of the
@@ -1404,7 +1398,8 @@ def get_grid(
     edges : tuple[np.ndarray, ...]
         A tuple containing the bin edges for each position dimension. Each
         element is a 1D array of shape (n_bins_d + 1,), where n_bins_d is
-        the number of bins in that dimension `d`. Includes boundary bins.
+        the number of bins in that dimension `d`. Includes the boundary bins
+        for grids with more than one dimension.
     place_bin_edges_flat : np.ndarray, shape (n_total_edges, n_position_dims)
         The meshgrid of the bin edges, flattened so each row is one edge-grid
         point.

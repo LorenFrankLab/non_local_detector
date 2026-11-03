@@ -299,8 +299,10 @@ print(results)
 #   they are always 1.
 # - Coordinates: `time` (bin centers), `time_bin_start` and `time_bin_end`
 #   (bin edges), `is_missing`, and `state_bins`, which pairs each state with a
-#   position bin. Unstack it to get a `(time, state, position)` array, and
-#   sum over `state` for the posterior over position.
+#   position bin. For this single-state decoder, unstack it to get a
+#   `(time, state, position)` array, and sum over `state` for the posterior
+#   over position. Models with Local or No-Spike states need
+#   `non_local_detector.analysis.get_spatial_posterior` instead.
 #
 # Only interior position bins appear in `state_bins`. The full posterior is
 # `n_time × n_position_bins` float32 numbers, and `n_chunks` does not change
@@ -883,8 +885,10 @@ for name, error in [("movement_var=6", box_error), ("movement_var=2", slow_error
 #   with `time_edges` from `calculate_time_edges([start, stop])`. Use
 #   `n_chunks` to compute the likelihood in pieces, and checkpointed
 #   prediction for sessions whose posterior does not fit in memory.
-# - Unstack `state_bins` and sum over `state` for the posterior over position;
-#   `maximum_a_posteriori_estimate` gives the most likely position.
+# - For a single-state decoder, unstack `state_bins` and sum over `state` for
+#   the posterior over position (models with Local or No-Spike states: use
+#   `get_spatial_posterior`); `maximum_a_posteriori_estimate` gives the most
+#   likely position.
 # - Save results with `save_results` and read them with `load_results`.
 # - On mazes, use a track-graph `Environment`; the random walk then follows
 #   the track, including around loops.

@@ -14,6 +14,7 @@ from numpy.typing import ArrayLike, NDArray
 if TYPE_CHECKING:
     import jax
 
+from non_local_detector._validation import validate_weights
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.time_edges import uniform_time_bin_width, validate_time_edges
@@ -428,8 +429,6 @@ def prepare_encoding_support(
     position : np.ndarray, shape (n_samples, n_position_dims)
         Position with non-finite values replaced by zero.
     """
-    from non_local_detector.likelihoods.common import validate_weights
-
     position = np.asarray(position)
     position = position[:, None] if position.ndim == 1 else position
     support = _encoding_support or EncodingSupport(

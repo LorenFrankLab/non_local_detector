@@ -24,7 +24,6 @@ from non_local_detector.likelihoods.common import (
     _padded_spike_count,
     as_std_array,
     block_log_kde,
-    decode_bin_centers,
     get_position_at_time,
     select_spike_rows,
     select_spikes_in_rows,
@@ -33,6 +32,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.mark_reference import (
     background_log_intensity,
 )
+from non_local_detector.time_edges import decode_bin_centers
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import (
     log_duration_per_spike,

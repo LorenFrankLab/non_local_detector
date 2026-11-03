@@ -10,9 +10,14 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded pull-request builds; let main deployments finish in order.
+# A newer push to a pull request cancels its superseded build. Each push to
+# main gets a group of its own, so every merged commit is built: GitHub keeps
+# only one pending run per group and would cancel an older pending build when
+# a newer one queued. The deploy job orders the deployments.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request'
+    && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -61,11 +66,18 @@ jobs:
         with:
           path: ./site
 
+  # Deployments run one at a time, and a newer one waiting replaces an older
+  # one waiting, so the site moves forward. Builds finish in any order, so a
+  # deploy also skips itself when main has moved past its commit: that
+  # commit's own run deploys the newer site.
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: ${{ github.workflow }}-deploy
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write
@@ -73,6 +85,22 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Check this is still the newest commit on main
+        id: newest
+        run: |
+          set -euo pipefail
+          head="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" refs/heads/main | cut -f1)"
+          if [ -z "$head" ]; then
+            echo "::error::could not read the head of main"
+            exit 1
+          fi
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head; its run deploys instead of $GITHUB_SHA"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Deploy to GitHub Pages
+        if: steps.newest.outputs.deploy == 'true'
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
