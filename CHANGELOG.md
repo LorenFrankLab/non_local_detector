@@ -111,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate test helpers and copy-paste tests are consolidated into shared fixtures and parametrized tests, and the slowest EM, covariate-pickling and goodness-of-fit tests fit smaller recordings or cache repeated simulations (`test_em_monotonicity.py` 119 s → 12 s locally).
 - **Changed:** the sdist lists what it ships (`only-include`: `src`, `tests`, `README.md`, `LICENSE`, `CHANGELOG.md`, `pyproject.toml`) instead of excluding a few paths. Built from a clean checkout it is 2.9 MB instead of 9.9 MB, because it no longer carries `notebooks/`, `.claude/` or `docs/`, and a local build no longer picks up untracked directories (42.7 MB before).
 - **Fixed:** `environment.yml` and `environment_gpu.yml` had drifted from `pyproject.toml`: old floors (`numpy >=1.25`, `scipy >=1.10`, ...), a `python <3.14` cap, and no `pytest-timeout`, so `pytest` stopped with "Unknown config option: timeout" under `--strict-config`. They now carry the `pyproject.toml` floors and the `test` and `dev` tools (`pytest-timeout`, `psutil` and `mypy` added), and `tests/test_environment_files.py` fails when they disagree again.
+- **CI:** the locked test job also runs on Python 3.14, and on macOS with Python 3.13; the package declares the Python 3.14 classifier. `uv.lock` already resolved for 3.14 (JAX 0.9.0, SciPy 1.17.0), so the lock is unchanged.
 
 ### Reproducible posterior samples
 
