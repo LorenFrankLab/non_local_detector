@@ -1337,6 +1337,45 @@ def _state_marginals(posterior: jnp.ndarray, aggregation: jnp.ndarray) -> jnp.nd
     return jnp.matmul(posterior, aggregation, precision=jax.lax.Precision.HIGHEST)
 
 
+class FilterSmootherResult(NamedTuple):
+    """Outputs of the chunked forward-backward drivers.
+
+    Returned by :func:`chunked_filter_smoother` and
+    :func:`chunked_filter_smoother_covariate_dependent`. It unpacks like the
+    positional tuple those drivers returned before, in field order.
+
+    Attributes
+    ----------
+    acausal_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
+        Smoothed state probabilities. A JAX array with ``host_outputs=False``.
+    acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
+        Smoothed state probabilities for each state index.
+    marginal_likelihood : float
+        Log marginal likelihood of the observations, summed in float64.
+    causal_state_probabilities : np.ndarray, shape (n_time, n_states)
+        Filtered state probabilities for each state index.
+    predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
+        One-step-ahead predicted state probabilities for each state index.
+    log_likelihoods : np.ndarray, shape (n_time, n_state_bins), or None
+        Log likelihoods for each state bin at each time point; None when they
+        were neither given, cached nor accumulated.
+    causal_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
+        Filtered state probabilities. A JAX array with ``host_outputs=False``.
+    predictive_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
+        One-step-ahead predicted state probabilities over state bins. A JAX
+        array with ``host_outputs=False``.
+    """
+
+    acausal_posterior: np.ndarray | jax.Array
+    acausal_state_probabilities: np.ndarray
+    marginal_likelihood: float
+    causal_state_probabilities: np.ndarray
+    predictive_state_probabilities: np.ndarray
+    log_likelihoods: np.ndarray | None
+    causal_posterior: np.ndarray | jax.Array
+    predictive_posterior: np.ndarray | jax.Array
+
+
 def _chunked_filter_smoother(
     filter_chunk: Callable[..., tuple[Any, ...]],
     smoother_chunk: Callable[..., jnp.ndarray],
@@ -1354,16 +1393,7 @@ def _chunked_filter_smoother(
     degenerate_indices_out: list[int] | None,
     accumulate_log_likelihoods: bool,
     host_outputs: bool,
-) -> tuple[
-    np.ndarray | jax.Array,
-    np.ndarray,
-    float,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray | None,
-    np.ndarray | jax.Array,
-    np.ndarray | jax.Array,
-]:
+) -> FilterSmootherResult:
     """Chunked forward-backward shared by the stationary and covariate drivers.
 
     The transition model enters only through the two per-chunk steps, which
@@ -1558,15 +1588,16 @@ def _chunked_filter_smoother(
     # The state probabilities are small and always go to the host; the
     # (n_time, n_state_bins) posteriors only when the caller wants host arrays.
     spatial = np.asarray if host_outputs else jnp.asarray
-    return (
-        spatial(acausal_posterior_jax),
-        np.asarray(acausal_state_probabilities_jax),
-        float(marginal_likelihood),
-        np.asarray(causal_state_probabilities_jax),
-        np.asarray(predictive_state_probabilities_jax),
-        log_likelihoods,  # Keep as original (may be None or NumPy)
-        spatial(causal_posterior_jax),
-        spatial(predictive_posterior_jax),
+    return FilterSmootherResult(
+        acausal_posterior=spatial(acausal_posterior_jax),
+        acausal_state_probabilities=np.asarray(acausal_state_probabilities_jax),
+        marginal_likelihood=float(marginal_likelihood),
+        causal_state_probabilities=np.asarray(causal_state_probabilities_jax),
+        predictive_state_probabilities=np.asarray(predictive_state_probabilities_jax),
+        # Keep as original (may be None or NumPy)
+        log_likelihoods=log_likelihoods,
+        causal_posterior=spatial(causal_posterior_jax),
+        predictive_posterior=spatial(predictive_posterior_jax),
     )
 
 
@@ -1586,16 +1617,7 @@ def chunked_filter_smoother(
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
-) -> tuple[
-    np.ndarray | jax.Array,
-    np.ndarray,
-    float,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray | None,
-    np.ndarray | jax.Array,
-    np.ndarray | jax.Array,
-]:
+) -> FilterSmootherResult:
     """Filter and smooth the state probabilities in chunks.
 
     Parameters
@@ -1656,22 +1678,12 @@ def chunked_filter_smoother(
 
     Returns
     -------
-    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Smoothed state probabilities
-    acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        Smoothed state probabilities for each state index
-    marginal_likelihood : float
-        Log marginal likelihood of the observations.
-    causal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        Filtered state probabilities for each state index
-    predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
-        One-step-ahead predicted state probabilities for each state index
-    log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
-        Log likelihoods for each state at each time point
-    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Filtered state probabilities
-    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
-        One-step-ahead predicted state probabilities over state bins
+    result : FilterSmootherResult
+        Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
+        ``marginal_likelihood``, ``causal_state_probabilities``,
+        ``predictive_state_probabilities``, ``log_likelihoods``,
+        ``causal_posterior`` and ``predictive_posterior``; see
+        :class:`FilterSmootherResult` for shapes.
     """
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
 
@@ -2028,16 +2040,7 @@ def chunked_filter_smoother_covariate_dependent(
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
-) -> tuple[
-    np.ndarray | jax.Array,
-    np.ndarray,
-    float,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray | None,
-    np.ndarray | jax.Array,
-    np.ndarray | jax.Array,
-]:
+) -> FilterSmootherResult:
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
 
     Parameters
@@ -2107,22 +2110,12 @@ def chunked_filter_smoother_covariate_dependent(
 
     Returns
     -------
-    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Smoothed state probabilities
-    acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        Smoothed state probabilities for each state index
-    marginal_likelihood : float
-        Log marginal likelihood of the observations.
-    causal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        Filtered state probabilities for each state index
-    predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
-        One-step-ahead predicted state probabilities for each state index
-    log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
-        Log likelihoods for each state at each time point
-    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Filtered state probabilities
-    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
-        One-step-ahead predicted state probabilities over state bins
+    result : FilterSmootherResult
+        Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
+        ``marginal_likelihood``, ``causal_state_probabilities``,
+        ``predictive_state_probabilities``, ``log_likelihoods``,
+        ``causal_posterior`` and ``predictive_posterior``; see
+        :class:`FilterSmootherResult` for shapes.
     """
     state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
     continuous_transition_matrix_jax = jnp.asarray(
