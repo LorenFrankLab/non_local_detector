@@ -5500,12 +5500,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         results = xr.open_dataset(filename)
         if "state_bins" not in results.dims:
             return results
+        if "state_ind" in results.dims:
+            # Earlier versions saved state_ind on a dimension of its own.
+            results = results.drop_vars("state_ind").assign_coords(
+                state_ind=("state_bins", results["state_ind"].values)
+            )
         # Scalar state/environment coordinates are also attached to this array,
-        # but only the original one-dimensional levels form its spatial index.
+        # but only the original one-dimensional levels form its spatial index;
+        # state_ind is a plain coordinate along it.
         coord_names = [
             name
             for name, coordinate in results.coords.items()
-            if name != "state_bins" and coordinate.dims == ("state_bins",)
+            if name not in {"state_bins", "state_ind"}
+            and coordinate.dims == ("state_bins",)
         ]
         return results.set_index(state_bins=coord_names)
 

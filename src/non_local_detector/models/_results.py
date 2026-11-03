@@ -81,7 +81,7 @@ def label_checkpointed_result(
             names=("state", *metadata["position_names"]),
         )
         coordinates.update(xr.Coordinates.from_pandas_multiindex(index, "state_bins"))
-        coordinates["state_ind"] = state_ind
+        coordinates["state_ind"] = ("state_bins", state_ind)
         dataset = xr.Dataset(variables, coords=coordinates, attrs=dataset.attrs)
     if len(states) == 1:
         dataset = dataset.squeeze("states")
@@ -229,7 +229,7 @@ def convert_results_to_xarray(
             "time",
             saved_missing,
         ),
-        "state_ind": detector.state_ind_,
+        "state_ind": ("state_bins", detector.state_ind_),
         "states": states,
         "environments": ("states", environment_names),
         "encoding_groups": ("states", encoding_group_names),

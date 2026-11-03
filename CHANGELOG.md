@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed:** the 2D FigURL view and the movie showed a false peak at the last x/y position bin for models with Local or No-Spike states. These states have NaN position in `state_bins`, and xarray's `unstack` assigns NaN index levels to the last position bin. Both views now use `get_spatial_posterior` and show the posterior over position summed over the states that have a position. Calling `results.acausal_posterior.unstack("state_bins")` yourself has the same problem with position-less states; use `get_spatial_posterior` instead.
 - **Fixed:** `maximum_a_posteriori_estimate` accepts the raw `results.acausal_posterior` (`state_bins` dimension) and ignores position-less states; previously it required an already unstacked posterior, which for these models carried the misplaced mass.
 
+### Result layout
+
+- **Changed:** the `state_ind` coordinate of `predict` and `estimate_parameters` results, each state bin's index into `states`, lies along `state_bins` in dense and checkpointed results. It was attached on a dimension of its own, so results carried an extra `state_ind` dimension (sizes `{time: 2000, state_bins: 102, states: 4, state_ind: 102}`). Code that used `state_ind` as a dimension must use `state_bins`; values are unchanged. `load_results` gives netCDF files saved by earlier versions the new layout.
+
 ### Simulators
 
 - **Fixed:** the clusterless replay simulators and `make_simulated_run_data` share one default `MARK_SPACING` (10). The replays defaulted to 5 while the run data used 10, so a model fit on the run data decoded the default replays at the wrong place (the default hover replay at 90 cm instead of 100, the continuous replay ending at 170 cm). `make_simulated_run_data` takes new `mark_spacing` and `n_features` arguments, and `make_hover_continuous_hover_replay`, `make_fragmented_hover_fragmented_replay` and `make_fragmented_continuous_fragmented_replay` take `place_field_means`, `n_tetrodes`, `n_features` and `mark_spacing` (the two with a continuous segment also `track_height`), so they can be made to match the run data.
