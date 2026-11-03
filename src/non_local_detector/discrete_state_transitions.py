@@ -1,3 +1,13 @@
+"""Discrete state transition models and their estimation.
+
+This module defines the classes that specify the initial discrete-state
+transition matrix of a detector (stationary diagonal or custom matrices, and
+non-stationary matrices that depend on covariates through a design-matrix
+formula) together with the M-step routines that estimate them from expected
+transition counts, including Dirichlet priors, stickiness, and penalized
+(optionally spline-smoothed) multinomial regression on covariates.
+"""
+
 import logging
 import warnings
 from collections.abc import Callable
@@ -903,12 +913,12 @@ def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
     Parameters
     ----------
     y : jnp.ndarray, shape (n_states,) or (n_samples, n_states)
-        The input values
+        The input values.
 
     Returns
     -------
     log_softmax : jnp.ndarray, shape (n_states + 1,) or (n_samples, n_states + 1)
-        The log softmax of the input values
+        The log softmax of the input values.
 
     Example
     -------
@@ -928,7 +938,7 @@ def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
 def get_transition_prior(
     concentration: float, stickiness: float | np.ndarray, n_states: int
 ) -> np.ndarray:
-    """Creates a Dirichlet prior for the transition matrix rows.
+    """Create a Dirichlet prior for the transition matrix rows.
 
     Constructs prior parameters for a Dirichlet distribution over transition
     matrix rows, incorporating base concentration and state-specific stickiness.
@@ -1947,6 +1957,7 @@ def estimate_stationary_state_transition_from_counts(
     Returns
     -------
     new_transition_matrix : np.ndarray, shape (n_states, n_states)
+        Row-stochastic transition matrix estimated from the counts.
     """
     n_states = joint_sum.shape[0]
     alpha = get_transition_prior(concentration, stickiness, n_states)
@@ -2263,6 +2274,7 @@ def dirichlet_neg_log_likelihood(
     Returns
     -------
     negative_log_posterior : float
+        Value of the penalized negative log posterior.
     """
     with _float64_jax():
         return _blocked_loss(
@@ -2293,6 +2305,8 @@ def dirichlet_gradient(
     Returns
     -------
     gradient : np.ndarray, shape (n_coefficients * (n_states - 1),)
+        Gradient of the negative log posterior with respect to the
+        flattened coefficients.
     """
     with _float64_jax():
         return _blocked_loss_and_gradient(
@@ -2952,7 +2966,6 @@ class DiscreteStationaryDiagonal:
     ----------
     diagonal_values : np.ndarray, shape (n_states,)
         The diagonal of the transition matrix.
-
     """
 
     diagonal_values: np.ndarray
@@ -2962,7 +2975,14 @@ class DiscreteStationaryDiagonal:
         *args: Any,  # noqa: ARG002 -- shared make_state_transition signature
         **kwargs: Any,  # noqa: ARG002 -- shared make_state_transition signature
     ) -> tuple[np.ndarray, None, None]:
-        """Constructs the initial discrete transition matrix.
+        """Construct the initial discrete transition matrix.
+
+        Parameters
+        ----------
+        *args
+            Ignored; accepted so all transition classes share one signature.
+        **kwargs
+            Ignored; accepted so all transition classes share one signature.
 
         Returns
         -------
@@ -2974,7 +2994,6 @@ class DiscreteStationaryDiagonal:
         discrete_transition_design_matrix : None
             The design matrix for the non-stationary transition matrix.
             It is None here because the transition matrix is stationary.
-
         """
         diag = np.asarray(self.diagonal_values)
         return make_transition_from_diag(diag), None, None
@@ -2982,14 +3001,12 @@ class DiscreteStationaryDiagonal:
 
 @dataclass
 class DiscreteStationaryCustom:
-    """Creates a custom discrete transition matrix.
-
+    """Create a custom discrete transition matrix.
 
     Attributes
     ----------
     values : np.ndarray, shape (n_states, n_states)
         The transition matrix values. Rows must sum to 1.
-
     """
 
     values: np.ndarray
@@ -2999,7 +3016,14 @@ class DiscreteStationaryCustom:
         *args: Any,  # noqa: ARG002 -- shared make_state_transition signature
         **kwargs: Any,  # noqa: ARG002 -- shared make_state_transition signature
     ) -> tuple[np.ndarray, None, None]:
-        """Constructs the initial discrete transition matrix.
+        """Construct the initial discrete transition matrix.
+
+        Parameters
+        ----------
+        *args
+            Ignored; accepted so all transition classes share one signature.
+        **kwargs
+            Ignored; accepted so all transition classes share one signature.
 
         Returns
         -------
@@ -3011,7 +3035,6 @@ class DiscreteStationaryCustom:
         discrete_transition_design_matrix : None
             The design matrix for the non-stationary transition matrix.
             It is None here because the transition matrix is stationary.
-
         """
         return np.asarray(self.values), None, None
 
@@ -3112,7 +3135,7 @@ class DiscreteNonStationaryDiagonal:
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any]
     ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
-        """Constructs the initial non-stationary discrete transition structures.
+        """Construct the initial non-stationary discrete transition structures.
 
         Parameters
         ----------
@@ -3177,7 +3200,7 @@ class DiscreteNonStationaryCustom:
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None
     ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
-        """Constructs the initial non-stationary discrete transition structures.
+        """Construct the initial non-stationary discrete transition structures.
 
         Parameters
         ----------

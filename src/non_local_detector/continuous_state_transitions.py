@@ -35,18 +35,17 @@ def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
 
 
 def estimate_movement_var(position: np.ndarray) -> np.ndarray:
-    """Estimates the movement variance based on position differences.
+    """Estimate the movement variance based on position differences.
 
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dim)
-        Position of the animal
+        Position of the animal.
 
     Returns
     -------
     movement_var : np.ndarray, shape (n_position_dim,)
-        Variance of the movement per time bin
-
+        Variance of the movement per time bin.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     is_nan = np.any(np.isnan(position), axis=1)
@@ -152,7 +151,6 @@ class RandomWalk:
     direction : ("inward", "outward"), optional
         If using manifold distance on a 2D track, constrain movement direction
         relative to the track center. Defaults to None (no constraint).
-
     """
 
     environment_name: str = ""
@@ -164,7 +162,7 @@ class RandomWalk:
     def make_state_transition(
         self, environments: tuple[Environment, ...]
     ) -> np.ndarray:
-        """Creates a transition matrix for a given environment.
+        """Create a transition matrix for a given environment.
 
         Parameters
         ----------
@@ -336,7 +334,7 @@ class Uniform:
     def make_state_transition(
         self, environments: tuple[Environment, ...]
     ) -> np.ndarray:
-        """Creates a uniform transition matrix between environments.
+        """Create a uniform transition matrix between environments.
 
         Parameters
         ----------
@@ -397,7 +395,7 @@ class Identity:
     def make_state_transition(
         self, environments: tuple[Environment, ...]
     ) -> np.ndarray:
-        """Creates an identity transition matrix for a given environment.
+        """Create an identity transition matrix for a given environment.
 
         Parameters
         ----------
@@ -456,7 +454,7 @@ class EmpiricalMovement:
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Creates a transition matrix based on observed animal movement.
+        """Create a transition matrix based on observed animal movement.
 
         Parameters
         ----------
@@ -539,7 +537,7 @@ class RandomWalkDirection1:
     def make_state_transition(
         self, environments: tuple[Environment, ...]
     ) -> np.ndarray:
-        """Creates a unidirectional transition matrix.
+        """Create a unidirectional transition matrix.
 
         Parameters
         ----------
@@ -579,7 +577,7 @@ class RandomWalkDirection2:
     def make_state_transition(
         self, environments: tuple[Environment, ...]
     ) -> np.ndarray:
-        """Creates a unidirectional transition matrix.
+        """Create a unidirectional transition matrix.
 
         Parameters
         ----------
@@ -607,14 +605,22 @@ class Discrete:
     """
 
     def make_state_transition(self, *args: Any, **kwargs: Any) -> np.ndarray:  # noqa: ARG002 -- shared make_state_transition signature
-        """Creates a continuous transition matrix for a discrete state space.
+        """Create a continuous transition matrix for a discrete state space.
 
         Since there is no continuous spatial component, the transition matrix
         is effectively a 1x1 identity matrix representing staying within the
         single discrete "location".
 
+        Parameters
+        ----------
+        *args
+            Ignored; accepted so all transition classes share one signature.
+        **kwargs
+            Ignored; accepted so all transition classes share one signature.
+
         Returns
         -------
         state_transition_matrix : np.ndarray, shape (1, 1)
+            The 1x1 identity transition matrix.
         """
         return np.ones((1, 1))
