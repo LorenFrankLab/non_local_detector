@@ -10,7 +10,7 @@ data-driven transitions such as :class:`EmpiricalMovement` read.
 import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import networkx as nx
 import numpy as np
@@ -230,8 +230,24 @@ def _euclidean_random_walk(
     )
 
 
+class _DropsLegacyEnvironment:
+    """Unpickle without the environment that earlier releases stored.
+
+    Before 0.7.0, ``make_state_transition`` stored the environment it was
+    built on as ``environment`` (``environment1`` and ``environment2`` for
+    ``Uniform``). Pickles made then carry those attributes, which would keep
+    the old grid alive and break ``type(t)(**vars(t))``.
+    """
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the fields, dropping legacy environment attributes."""
+        for name in ("environment", "environment1", "environment2"):
+            state.pop(name, None)
+        self.__dict__.update(state)
+
+
 @dataclass
-class RandomWalk:
+class RandomWalk(_DropsLegacyEnvironment):
     """A transition where the movement stays locally close in space.
 
     Attributes
@@ -417,7 +433,7 @@ class RandomWalk:
 
 
 @dataclass
-class Uniform:
+class Uniform(_DropsLegacyEnvironment):
     """Transition where all valid destination bins are equally likely.
 
     Attributes
@@ -484,7 +500,7 @@ class Uniform:
 
 
 @dataclass
-class Identity:
+class Identity(_DropsLegacyEnvironment):
     """A transition where the movement must stay within the same place bin.
 
     Attributes
@@ -531,7 +547,7 @@ class Identity:
 
 
 @dataclass
-class EmpiricalMovement:
+class EmpiricalMovement(_DropsLegacyEnvironment):
     """A transition matrix estimated from the animal's actual movement patterns.
 
     Attributes
@@ -629,7 +645,7 @@ class EmpiricalMovement:
 
 
 @dataclass
-class RandomWalkDirection1:
+class RandomWalkDirection1(_DropsLegacyEnvironment):
     """A Gaussian random walk constrained to move in one direction (increasing index).
 
     Only valid for 1D environments.
@@ -672,7 +688,7 @@ class RandomWalkDirection1:
 
 
 @dataclass
-class RandomWalkDirection2:
+class RandomWalkDirection2(_DropsLegacyEnvironment):
     """A Gaussian random walk constrained to move in one direction (decreasing index).
 
     Only valid for 1D environments.
