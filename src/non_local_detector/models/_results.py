@@ -181,9 +181,6 @@ def convert_results_to_xarray(
     environment_names = [obs.environment_name for obs in detector.observation_models]
     encoding_group_names = [obs.encoding_group for obs in detector.observation_models]
 
-    # Create environment lookup dict for O(1) access
-    env_dict = {env.environment_name: env for env in detector.environments}
-
     # Get position dimensionality
     if not detector.environments:
         msg = "No environments found in model"
@@ -199,10 +196,7 @@ def convert_results_to_xarray(
         if obs.is_no_spike or (obs.is_local and detector.local_position_std is None):
             position_blocks.append(np.full((1, n_position_dims), np.nan))
         else:
-            environment = env_dict.get(obs.environment_name)
-            if environment is None:
-                msg = f"Environment '{obs.environment_name}' not found in environments list"
-                raise ValueError(msg)
+            environment = detector._get_environment_by_name(obs.environment_name)
             if environment.place_bin_centers_ is None:
                 msg = (
                     f"place_bin_centers_ is None for environment {obs.environment_name}"

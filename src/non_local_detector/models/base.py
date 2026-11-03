@@ -46,9 +46,10 @@ from non_local_detector.checkpointed_inference import (
     default_replay_cache_bytes,
 )
 from non_local_detector.continuous_state_transitions import (
-    Discrete,
-    EmpiricalMovement,
-    Uniform,
+    TransitionContext,
+    _make_transition_block,
+    _multi_bin_local_transition,
+    _scalar_to_spatial_destination,
 )
 from non_local_detector.core import (
     accepts_row_slice,
@@ -2492,6 +2493,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         self._transition_representation_ = transition_representation
         self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
         self.__dict__.pop("_continuous_transition_operator_", None)
+        context = TransitionContext(
+            position, is_training, encoding_group_labels, environment_labels
+        )
         if transition_representation != "dense":
             from non_local_detector.transition_operators import (
                 LazyDenseTransition,
@@ -2506,10 +2510,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 local_position_std=self.local_position_std,
                 allow_dense_fallback=transition_representation == "auto",
                 max_dense_bytes=int(max_dense_transition_bytes),
-                position=position,
-                is_training=is_training,
-                encoding_group_labels=encoding_group_labels,
-                environment_labels=environment_labels,
+                context=context,
             )
             self._continuous_transition_operator_ = operator
             self.continuous_state_transitions_ = LazyDenseTransition(
@@ -2526,101 +2527,31 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     self.state_ind_ == from_state, self.state_ind_ == to_state
                 )
 
-                if isinstance(transition, EmpiricalMovement):
-                    if is_training is None:
-                        if position is not None:
-                            n_time = position.shape[0]
-                            is_training = np.ones((n_time,), dtype=bool)
-                        else:
-                            msg = "Position cannot be None when is_training is None"
-                            raise ValueError(msg)
+                transition = _multi_bin_local_transition(
+                    transition,
+                    self.observation_models[from_state],
+                    self.observation_models[to_state],
+                    self.local_position_std,
+                )
 
-                    if encoding_group_labels is None:
-                        if position is not None:
-                            n_time = position.shape[0]
-                            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
-                        else:
-                            msg = "Position cannot be None when encoding_group_labels is None"
-                            raise ValueError(msg)
+                n_row_bins = np.max(inds[0].shape)
+                n_col_bins = np.max(inds[1].shape)
 
-                    is_training = np.asarray(is_training).squeeze()
-                    if position is None:
-                        msg = "position must not be None for EmpiricalMovement transitions"
-                        raise ValueError(msg)
-                    self.continuous_state_transitions_[inds] = (
-                        transition.make_state_transition(
-                            self.environments,
-                            position,
-                            is_training,
-                            encoding_group_labels,
-                            environment_labels,
-                        )
+                if np.logical_and(n_row_bins == 1, n_col_bins > 1):
+                    destination = _scalar_to_spatial_destination(
+                        transition, self.environments
                     )
+                    self.continuous_state_transitions_[inds] = (
+                        destination / destination.sum()
+                    )
+                elif n_row_bins > 1 and n_col_bins == 1:
+                    # Spatial to non-spatial: each source bin transitions
+                    # to the single target bin with probability 1.
+                    self.continuous_state_transitions_[inds] = np.ones((n_row_bins, 1))
                 else:
-                    # Auto-upgrade Discrete() for multi-bin local states.
-                    # Must happen BEFORE make_state_transition() to avoid
-                    # (1,1) -> (n,n) broadcast corruption.
-                    if (
-                        isinstance(transition, Discrete)
-                        and self.local_position_std is not None
-                    ):
-                        from_obs = self.observation_models[from_state]
-                        to_obs = self.observation_models[to_state]
-                        if from_obs.is_local or to_obs.is_local:
-                            # Cross-environment transitions with multi-bin
-                            # local are not supported in v1.
-                            if from_obs.environment_name != to_obs.environment_name:
-                                msg = (
-                                    f"Cross-environment Discrete() transition "
-                                    f"between '{from_obs.environment_name}' and "
-                                    f"'{to_obs.environment_name}' is not "
-                                    f"supported with multi-bin local "
-                                    f"(local_position_std is set). Use explicit "
-                                    f"Uniform(environment_name=..., "
-                                    f"environment2_name=...) instead."
-                                )
-                                raise ValueError(msg)
-                            local_obs = from_obs if from_obs.is_local else to_obs
-                            transition = Uniform(
-                                environment_name=local_obs.environment_name
-                            )
-
-                    n_row_bins = np.max(inds[0].shape)
-                    n_col_bins = np.max(inds[1].shape)
-
-                    if np.logical_and(n_row_bins == 1, n_col_bins > 1):
-                        # transition from discrete to continuous
-                        # ASSUME uniform for now
-                        if hasattr(transition, "environment_name"):
-                            environment = self._get_environment_by_name(
-                                transition.environment_name
-                            )
-                        else:
-                            msg = "Transition must have an environment_name attribute for discrete to continuous transitions"
-                            raise ValueError(msg)
-                        if environment.is_track_interior_ is not None:
-                            self.continuous_state_transitions_[inds] = (
-                                environment.is_track_interior_.ravel()
-                                / environment.is_track_interior_.sum()
-                            ).astype(float)
-                        else:
-                            # Default fallback: uniform transition
-                            if environment.place_bin_centers_ is not None:
-                                n_bins = environment.place_bin_centers_.shape[0]
-                                self.continuous_state_transitions_[inds] = 1.0 / n_bins
-                            else:
-                                msg = "Environment must have place_bin_centers_ for discrete to continuous transitions"
-                                raise ValueError(msg)
-                    elif n_row_bins > 1 and n_col_bins == 1:
-                        # Spatial to non-spatial: each source bin transitions
-                        # to the single target bin with probability 1.
-                        self.continuous_state_transitions_[inds] = np.ones(
-                            (n_row_bins, 1)
-                        )
-                    else:
-                        self.continuous_state_transitions_[inds] = (
-                            transition.make_state_transition(self.environments)
-                        )
+                    self.continuous_state_transitions_[inds] = _make_transition_block(
+                        transition, self.environments, context
+                    )
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design matrix, which cannot be pickled.
@@ -2640,7 +2571,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             self.discrete_transition_design_matrix_ is None
         ):
             self.discrete_transition_design_matrix_ = (
-                self.discrete_transition_type.make_state_transition(covariate_data)[2]
+                self.discrete_transition_type.make_state_transition(
+                    covariate_data
+                ).design_matrix
             )
         # Detectors fitted before transition smoothing existed: no penalty
         # strengths and no covariance, so EM and intervals see an unsmoothed
@@ -2698,11 +2631,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             of a covariate-dependent transition; None before one.
         """
         logger.info("Fitting discrete state transition")
-        (
-            self.discrete_state_transitions_,
-            self.discrete_transition_coefficients_,
-            self.discrete_transition_design_matrix_,
-        ) = self.discrete_transition_type.make_state_transition(covariate_data)
+        initial = self.discrete_transition_type.make_state_transition(covariate_data)
+        self.discrete_state_transitions_ = initial.transition_matrix
+        self.discrete_transition_coefficients_ = initial.coefficients
+        self.discrete_transition_design_matrix_ = initial.design_matrix
         # patsy design matrices cannot be pickled or deep-copied; keep a copy
         # of the covariates so ``__setstate__`` can rebuild the design matrix
         # with the fitted knots even if the caller later changes them.
@@ -5609,16 +5541,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Raises
         ------
-        ValueError
+        ValidationError
             If environment not found.
         """
         # Looked up in ``self.environments`` on every call: each fit replaces
         # them with new fitted copies, so a stored lookup would go stale.
-        try:
-            return find_environment_by_name(self.environments, environment_name)
-        except KeyError:
-            msg = f"Environment '{environment_name}' not found in environments list"
-            raise ValueError(msg) from None
+        return find_environment_by_name(self.environments, environment_name)
 
 
 class ClusterlessDetector(_DetectorBase):
