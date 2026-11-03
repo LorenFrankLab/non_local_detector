@@ -55,16 +55,59 @@ EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
 FLOAT32_ROUNDING: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
 
 
+class _SegmentedScanKernels:
+    """Whether the JAX caches may hold kernels traced on the segmented scan.
+
+    The reduction path is chosen at trace time, so a kernel traced on one path
+    must never run on the other.
+    """
+
+    cached = False
+
+
+def _on_segmented_scan(item: pytest.Item) -> bool:
+    callspec = getattr(item, "callspec", None)
+    return callspec is not None and (
+        callspec.params.get("reduction_path") == "segmented_scan"
+    )
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Drop the segmented-scan kernels unless the next test reuses them as is.
+
+    Kept only when the next test is also on the segmented scan, in the same
+    module or class, and requests no fixture this test did not: then nothing
+    runs unpatched in between (no shared fixture is built) to trace kernels on
+    the sequential path or to run the segmented ones. Every other test, here or
+    in any later module, starts without them.
+    """
+    if not _SegmentedScanKernels.cached:
+        return
+    if (
+        nextitem is not None
+        and _on_segmented_scan(nextitem)
+        and nextitem.parent is item.parent
+        and set(nextitem.fixturenames) <= set(item.fixturenames)
+    ):
+        return
+    jax.clear_caches()
+    _SegmentedScanKernels.cached = False
+
+
 @pytest.fixture(params=["sequential", "segmented_scan"])
 def reduction_path(request, monkeypatch):
-    """Run on CPU's sequential scatter and on the off-CPU segmented scan."""
+    """Run on CPU's sequential scatter and on the off-CPU segmented scan.
+
+    Consecutive segmented-scan cases share their compiled kernels (see
+    ``pytest_runtest_teardown``) instead of each clearing every JAX cache.
+    """
     if request.param == "segmented_scan":
         monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
-        jax.clear_caches()
-        yield request.param
-        jax.clear_caches()
-    else:
-        yield request.param
+        if not _SegmentedScanKernels.cached:
+            # Kernels traced on the sequential path would bypass the patch.
+            jax.clear_caches()
+            _SegmentedScanKernels.cached = True
+    return request.param
 
 
 def tolerance(
