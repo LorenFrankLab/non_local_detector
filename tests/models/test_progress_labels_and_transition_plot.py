@@ -35,7 +35,7 @@ def test_decoder_predict_progress_bar_is_not_labeled_non_local(
         position_time=time,
     )
     stderr = capfd.readouterr().err
-    assert "Likelihood" in stderr
+    assert "Position-Bin Likelihood" in stderr
     assert "Non-Local" not in stderr
 
 

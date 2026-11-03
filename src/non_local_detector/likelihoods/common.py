@@ -831,7 +831,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
         counts = _spike_counts_matrix(
             spike_times,
             time_edges,
-            "Likelihood",
+            "Position-Bin Likelihood",
             True,
             slice(start, stop),
             _spike_time_order=_spike_time_order,
@@ -854,7 +854,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
         row_stop,
         len(spike_times),
         evaluate,
-        "Likelihood",
+        "Position-Bin Likelihood",
         disable_progress_bar,
     )
 

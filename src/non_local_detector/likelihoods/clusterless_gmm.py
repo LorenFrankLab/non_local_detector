@@ -1056,7 +1056,7 @@ def predict_clusterless_gmm_log_likelihood(
                 mark_reference,
                 strict=True,
             ),
-            desc="Likelihood (GMM, log-space)",
+            desc="Position-Bin Likelihood (GMM, log-space)",
             unit="electrode",
             disable=disable_progress_bar,
         )
