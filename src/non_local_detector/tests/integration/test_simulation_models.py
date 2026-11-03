@@ -76,7 +76,6 @@ def test_nonlocal_sorted_spikes_detector(simulated_data, nonlocal_detector):
         time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
-        save_log_likelihood_to_results=False,  # Skip for speed
     )
 
     # Check output shapes
@@ -215,7 +214,6 @@ def test_sorted_spikes_decoder(simulated_data):
         time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
-        save_log_likelihood_to_results=False,  # Skip for speed
     )
 
     # Check output shapes
@@ -296,7 +294,6 @@ def test_silent_period_shifts_mass_to_no_spike_state(simulated_data, nonlocal_de
         time_edges=time_edges_from_centers(time),
         position=simulated_data["position"][window],
         position_time=time,
-        save_log_likelihood_to_results=False,
     )
 
     state_probs = results.acausal_state_probabilities

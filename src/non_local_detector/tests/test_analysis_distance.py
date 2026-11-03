@@ -470,7 +470,8 @@ class TestAheadBehindDistance2DTrackGraph:
     """
 
     @pytest.fixture(scope="class")
-    def env_2d(self):
+    @classmethod
+    def env_2d(cls):
         """A fitted 2D environment with a connected bin grid (built once)."""
         from non_local_detector.environment import Environment
 

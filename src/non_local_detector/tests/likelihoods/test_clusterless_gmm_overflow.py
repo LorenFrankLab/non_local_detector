@@ -150,7 +150,8 @@ def test_overparameterized_gmm_overflow_locations(comparison_data):
             if gpi is not None
         ]
     )
-    expected_intensity = np.exp(log_terms).sum(axis=0)  # (n_bins,) float64
+    with np.errstate(over="ignore"):  # float64 reference may overflow by design
+        expected_intensity = np.exp(log_terms).sum(axis=0)  # (n_bins,) float64
     summed = np.asarray(gmm_enc["summed_ground_process_intensity"])
     working_max = np.finfo(summed.dtype).max
     overflow = expected_intensity > working_max

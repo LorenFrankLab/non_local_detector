@@ -366,7 +366,8 @@ class TestGroundProcessRange:
         occ_logp = _log_gaussian([5.0], [occ_mean], 1.0)[0]
         assert occ_logp == pytest.approx(-85.0, abs=1e-6)
         diff = gpi_logp - occ_logp
-        assert np.isinf(np.exp(np.float32(diff))), "separate exp must overflow"
+        with np.errstate(over="ignore"):  # the overflow is the point of this check
+            assert np.isinf(np.exp(np.float32(diff))), "separate exp must overflow"
         expected = -(np.exp(np.log(np.float64(rate)) + diff))
         assert np.isfinite(np.float32(expected))
 

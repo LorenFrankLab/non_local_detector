@@ -225,6 +225,8 @@ def reference(recording, is_local, row_slice):
     return total + log_bin_duration_evidence(times, edges, row_slice, None)[:, None]
 
 
+# zero-rate electrode: observed spikes are scored by the background by design.
+@pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning")
 @pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("rows", [(0, 2000), (300, 333), (5, 6)])
 def test_padded_kernels_match_the_per_electrode_formulation(recording, is_local, rows):

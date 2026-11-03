@@ -57,6 +57,17 @@ from non_local_detector.tests.likelihoods.conftest import (
     training_mark_references,
 )
 
+pytestmark = [
+    # The shared all-backend fixtures fit tiny synthetic data: a small
+    # position_std and zero-rate electrodes are fixture properties, not under test.
+    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
+    pytest.mark.filterwarnings(
+        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
+    ),
+]
+
 # A relative tolerance is only a meaningful guard if the values it is applied to
 # have a sane magnitude. Losing or misplacing one decoding spike changes an
 # affected row by O(1) at the very least (measured on this fixture: 23-46 on

@@ -13,7 +13,11 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import ValidationError
 
-pytestmark = pytest.mark.integration
+# These tests cap max_iter for speed, so EM stops before convergence.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning"),
+]
 
 N_BINS = 300
 
@@ -248,6 +252,12 @@ def test_single_state_covariate_em(transition_representation):
         {"estimate_initial_conditions": False},
         {"estimate_encoding_model": False},
     ],
+)
+# With max_iter=3 and a 1e-12 tolerance the MAP objective can dip between
+# iterations, and EM reports it; the test compares structured and dense fits.
+@pytest.mark.filterwarnings(
+    "ignore:EM iteration \\d+.{2}penalized log-likelihood decreased:UserWarning",
+    "ignore:Final E-step penalized log-likelihood:UserWarning",
 )
 def test_checkpointed_em_honors_estimation_flags(flags):
     model, data = _recording("sorted")
@@ -659,6 +669,11 @@ def test_default_replay_cache_is_capped_by_available_memory(available, monkeypat
     assert set(budgets) == {expected}
 
 
+# The test sets the device memory limit so auto picks structured EM; the
+# warning that says so is checked in the next test.
+@pytest.mark.filterwarnings(
+    'ignore:EM with transition_representation="auto" runs structured EM because:UserWarning'
+)
 def test_auto_em_device_memory_boundary(monkeypatch):
     """Dense EM needs its arrays to fit in half the device memory."""
     from non_local_detector.models import base

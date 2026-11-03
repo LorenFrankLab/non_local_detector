@@ -125,6 +125,10 @@ def test_fitted_workspace_policy_is_carried_to_prediction(
         )
 
 
+# all-zero weights give zero exposure by design.
+@pytest.mark.filterwarnings(
+    "ignore:Clusterless KDE encoding has zero training exposure:UserWarning"
+)
 @pytest.mark.parametrize(
     ("x64", "weight_kind", "empty_encoding"),
     [

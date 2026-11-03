@@ -20,6 +20,17 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 from non_local_detector.tests.likelihoods.conftest import ALGORITHMS
 
+pytestmark = [
+    # The shared all-backend fixtures fit tiny synthetic data: a small
+    # position_std and zero-rate electrodes are fixture properties, not under test.
+    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
+    pytest.mark.filterwarnings(
+        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
+    ),
+]
+
 EDGES = np.arange(6.0)  # five bins
 
 

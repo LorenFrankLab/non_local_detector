@@ -216,6 +216,11 @@ def test_clusterless_rejects_events_outside_or_invalid_for_sampled_support(bad_s
     "algorithm",
     [*_SORTED_SPIKES_ALGORITHMS, *_CLUSTERLESS_ALGORITHMS],
 )
+# The mark GLM initializes its mixture with k-means, which finds fewer
+# distinct points than components on this tiny fixture.
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
 def test_fitted_hz_rates_feed_physical_time_checkers(algorithm, frequency):
     from non_local_detector.tests.models._helpers import _decoder
 

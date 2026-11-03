@@ -121,6 +121,16 @@ def fitted_backends(decode_data):
     return fitted
 
 
+# reduced components and zero-rate electrodes in the fixture are by design.
+@pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning")
+# zero-rate electrode is by design.
+@pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning")
+# zero-rate electrode is by design.
+@pytest.mark.filterwarnings(
+    "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
+)
+# small position_std is incidental to this test.
+@pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning")
 @pytest.mark.integration
 @pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("algorithm", ALGORITHMS)

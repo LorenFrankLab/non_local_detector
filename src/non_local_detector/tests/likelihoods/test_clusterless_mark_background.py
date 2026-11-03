@@ -29,6 +29,17 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 from non_local_detector.tests.likelihoods.conftest import training_mark_references
 from non_local_detector.time_edges import time_edges_from_centers
 
+pytestmark = [
+    # Tiny synthetic fixtures: a small position_std and zero-rate electrodes are
+    # properties of the fixture, not under test here.
+    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
+    pytest.mark.filterwarnings(
+        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
+    ),
+]
+
 # Every registered algorithm, plus the tiled / streamed prediction paths that
 # score spikes with separate kernels.
 _TILED_PREDICT_OVERRIDES = {

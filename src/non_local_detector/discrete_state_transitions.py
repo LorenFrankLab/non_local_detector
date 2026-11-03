@@ -1,4 +1,5 @@
 import logging
+import warnings
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -1629,9 +1630,11 @@ def _reml_row(
         )
         row_penalty = penalty(strengths)
         log_pdet = n_free * _precision_log_pdet(penalties, strengths, l2_penalty)
-        sign, log_det = np.linalg.slogdet(
-            _blocked_hessian(beta, blocks, prior_per_bin, row_penalty)
-        )
+        # A singular Hessian is handled below; slogdet need not warn about it.
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            sign, log_det = np.linalg.slogdet(
+                _blocked_hessian(beta, blocks, prior_per_bin, row_penalty)
+            )
         value: float = (
             -_blocked_loss(beta, blocks, prior_per_bin, row_penalty)
             + 0.5 * log_pdet
@@ -1773,7 +1776,17 @@ def _fit_covariate_row(
     if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
         minimize_kwargs["hess"] = _blocked_hessian
     try:
-        result = minimize(**minimize_kwargs)
+        # scipy 1.15's trust-exact takes the square root of a negative bound
+        # product on some Hessians and warns; the loss check below guards the
+        # result whatever the optimizer did.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                "invalid value encountered in sqrt",
+                RuntimeWarning,
+                r"scipy\.optimize\._trustregion_exact",
+            )
+            result = minimize(**minimize_kwargs)
     except (ValueError, np.linalg.LinAlgError) as error:
         # trust-exact's subproblem can fail on a badly conditioned Hessian
         # (seen with scipy 1.12 at strong curvature penalties): fall back to

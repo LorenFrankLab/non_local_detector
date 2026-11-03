@@ -26,6 +26,11 @@ from non_local_detector.tests.models._helpers import (
     _snapshot,
 )
 
+# These tests cap max_iter for speed, so EM stops before convergence.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:EM did not converge after max_iter:UserWarning"
+)
+
 FAMILIES = ["sorted", "clusterless"]
 
 
@@ -331,6 +336,10 @@ def test_bins_touched_by_nan_position_are_missing(family, fitted):
 
 # ----------------------------------------------------------------- EM
 @pytest.mark.integration
+# Edges offset by half a sample leave the last bin past the tracked period.
+@pytest.mark.filterwarnings(
+    r"ignore:\d+ of \d+ decode bins extend more than half a position sample:UserWarning"
+)
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
 def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypatch):
     """Equal bin and sample counts do not mean equal coordinates: edges offset

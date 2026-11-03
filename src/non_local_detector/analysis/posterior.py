@@ -31,9 +31,7 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
         map_estimate = stacked_posterior.z[stacked_posterior.argmax("z")]
         map_estimate = np.asarray(map_estimate.values.tolist())
     except KeyError:
-        map_estimate = posterior.position[
-            cast("xr.DataArray", np.log(posterior)).argmax("position")
-        ]
+        map_estimate = posterior.position[posterior.argmax("position")]
         map_estimate = np.asarray(map_estimate)[:, np.newaxis]
     return map_estimate
 

@@ -114,6 +114,11 @@ def _log_likelihood(run_data, algorithm, scale, offset):
 
 
 @pytest.mark.integration
+# The simulated run leaves one electrode without training spikes; backends fit
+# it as zero-rate and say so, which these tests do not depend on.
+@pytest.mark.filterwarnings(
+    r"ignore:(Clusterless GMM.{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
+)
 @pytest.mark.parametrize("algorithm", ["clusterless_kde", "clusterless_diffusion"])
 def test_state_odds_do_not_depend_on_waveform_units(run_data, algorithm):
     """Every state and position shifts by the same Jacobian per spike."""
@@ -132,6 +137,11 @@ def test_state_odds_do_not_depend_on_waveform_units(run_data, algorithm):
 
 
 @pytest.mark.integration
+# The simulated run leaves one electrode without training spikes; backends fit
+# it as zero-rate and say so, which these tests do not depend on.
+@pytest.mark.filterwarnings(
+    r"ignore:(Clusterless GMM.{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
+)
 @pytest.mark.parametrize(
     "algorithm", ["clusterless_kde", "clusterless_gmm", "clusterless_diffusion"]
 )
@@ -236,6 +246,11 @@ def test_no_spike_adds_training_reference_log_density_per_spike():
 
 
 @pytest.mark.integration
+# Two training spikes cannot support the default joint mixture size, so the GMM
+# backend reduces it and says so.
+@pytest.mark.filterwarnings(
+    r"ignore:Clusterless GMM.{2}electrode \d+ has \d+ effective encoding spikes; reduced joint components:UserWarning"
+)
 @pytest.mark.parametrize(
     ("algorithm", "bandwidth"),
     [
@@ -295,6 +310,8 @@ def test_electrode_without_training_marks_adds_no_reference_term():
 
 
 @pytest.mark.integration
+# max_iter=2 is a speed cap, so EM stops before convergence.
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
 def test_encoding_refit_keeps_training_reference(run_data):
     detector = NonLocalClusterlessDetector(
         clusterless_algorithm_params={

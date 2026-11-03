@@ -75,6 +75,10 @@ def test_basis_does_not_depend_on_the_tracking_rate():
     np.testing.assert_array_equal(knots[0][0], knots[1][0])
 
 
+# test fits with loose solver settings; convergence is not under test.
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
 @pytest.mark.parametrize("bin_size", [5.0, 10.0])
 def test_natural_spline_boundaries_are_the_physical_track_ends(bin_size):
     time = np.linspace(0, 1, 201)

@@ -273,6 +273,11 @@ def test_kde_only_param_raises_for_mixture_models(sim, algorithm, accepted, kde_
     assert accepted in str(error.value)
 
 
+# The default position_std is below the simulated bin spacing; the test is about
+# predicting from a fitted model, not the smoothing width.
+@pytest.mark.filterwarnings(
+    r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
+)
 def test_fitted_detector_with_a_removed_param_still_predicts(sim):
     """A fitted detector predicts from its encoding model, not its params.
 

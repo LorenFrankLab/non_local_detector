@@ -1,4 +1,5 @@
 import logging
+import warnings
 from collections.abc import Sequence
 from typing import cast
 
@@ -129,10 +130,16 @@ def get_map_estimate_direction_from_track_graph(
         first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
         # The all-pairs nx.shortest_path is a dict {source: {target: path}} in
         # networkx 3.0-3.4 but a generator of (source, {target: path}) pairs in
-        # >= 3.5 (the package pins networkx >= 3.0). Iterate the generator
+        # >= 3.5 (the package supports networkx >= 3.4). Iterate the generator
         # lazily when available — processing one source at a time avoids holding
         # all O(n_nodes^2) paths at once — and fall back to .items() for the dict.
-        all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
+        # networkx 3.4 warns of that change; both shapes are handled below. The
+        # warning text starts with blank lines, hence the leading \s*.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", r"\s*shortest_path will return an iterator", FutureWarning
+            )
+            all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
         if isinstance(all_pairs_paths, dict):
             all_pairs_paths = all_pairs_paths.items()
         for from_node_id, to_node_data in all_pairs_paths:

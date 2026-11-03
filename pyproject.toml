@@ -33,7 +33,8 @@ dependencies = [
     "xarray >=2024.11",
     "scikit-learn >=1.6",
     "threadpoolctl >=3.0",
-    "patsy >=0.5.2",
+    # 0.5.6 is the first release without pandas is_categorical_dtype warnings.
+    "patsy >=0.5.6",
     "tqdm >=4.60",
     "track_linearization >=2.4.0",
     "matplotlib >=3.10",
@@ -201,6 +202,21 @@ addopts = [
 ]
 xfail_strict = true
 log_level = "INFO"
+# Every warning fails its test unless the test expects it (pytest.warns) or
+# marks it as incidental (pytest.mark.filterwarnings, with the reason).
+filterwarnings = [
+    "error",
+    # JAX on CPU cannot reuse donated buffers and says so; nothing is wrong.
+    "ignore:Some donated buffers were not usable:UserWarning",
+    # Most tests decode 1-D open fields on purpose;
+    # test_position_dimensionality_validation checks the warning itself.
+    "ignore:Position data appears to be 1D but no track_graph:UserWarning",
+    # matplotlib 3.10.0 (the floor) calls camelCase pyparsing names that
+    # pyparsing 3.3 deprecates ("'oneOf' deprecated - use 'one_of'"). The
+    # category is named by its base class: older pyparsing releases have
+    # no pyparsing.warnings module to import.
+    "ignore:'\\w+' deprecated - use '\\w+':DeprecationWarning",
+]
 # Per-test limit from pytest-timeout (in the test extra), locally and in CI.
 timeout = 900
 

@@ -98,7 +98,10 @@ def prior_gradient_reference(prior, log_likelihood) -> np.ndarray:
     gradient : np.ndarray, shape (n_states,)
     """
     _, log_evidence = bayes_reference(prior, log_likelihood)
-    return np.exp(np.asarray(log_likelihood, dtype=np.float64) - log_evidence)
+    # The reference overflows to inf on purpose for an unreachable state whose
+    # likelihood dwarfs the reachable ones; callers mask those entries.
+    with np.errstate(over="ignore"):
+        return np.exp(np.asarray(log_likelihood, dtype=np.float64) - log_evidence)
 
 
 def enumerate_reference(
