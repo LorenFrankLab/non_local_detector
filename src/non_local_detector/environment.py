@@ -611,9 +611,10 @@ class Environment:
 
         Parameters
         ----------
-        position : np.ndarray, shape (n_time, n_dim), optional
+        position : np.ndarray, shape (n_time, n_dim) or (n_time,), optional
             Position of the animal. Required without a ``track_graph``, where it
-            sets the grid's extent.
+            sets the grid's extent. A one-dimensional ``(n_time,)`` array is
+            treated as ``(n_time, 1)``.
         infer_track_interior : bool, optional
             Whether to infer the interior of the track from ``position`` when
             ``is_track_interior`` was not given, by default True. Stored on the
@@ -670,6 +671,9 @@ class Environment:
                     hint="Provide position data with at least one time point",
                     example="    position = np.array([[0, 0]])  # At least one position",
                 )
+
+            if position.ndim == 1:
+                position = position[:, np.newaxis]
 
         # Invalidate cached dense distance matrix if it exists (used by
         # get_distances_to_interior_bins for 1D track graph kernels).
@@ -835,6 +839,22 @@ class Environment:
                 for edge in self.edges_[0]:
                     ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
             ax.set_ylim((0, 0.1))
+        elif self.edges_ is not None and len(self.edges_) == 1:
+            if ax is None:
+                _, ax = plt.subplots(figsize=(15, 2))
+            edges = self.edges_[0]
+            if self.is_track_interior_ is not None:
+                ax.pcolormesh(
+                    edges,
+                    [0.0, 1.0],
+                    self.is_track_interior_[np.newaxis, :],
+                    cmap="bone_r",
+                )
+            ax.vlines(edges, 0.0, 1.0, color="black", linewidth=0.5)
+            ax.set_xlim(edges[0], edges[-1])
+            ax.set_ylim((0, 1))
+            ax.set_yticks([])
+            ax.set_xlabel("Position")
         else:
             if ax is None:
                 _, ax = plt.subplots(figsize=(6, 7))

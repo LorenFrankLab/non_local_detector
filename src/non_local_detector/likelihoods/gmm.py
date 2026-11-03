@@ -839,7 +839,7 @@ class GaussianMixtureModel:
     """
     Gaussian Mixture Model (GMM) with EM in JAX.
 
-    Parameters
+    Attributes
     ----------
     n_components : int
         Number of mixture components (K).
@@ -871,9 +871,6 @@ class GaussianMixtureModel:
         User-provided initial means.
     covariances_init : Array | None, shape depends on covariance_type, default=None
         User-provided initial covariances.
-
-    Attributes
-    ----------
     weights_ : Array, shape (n_components,)
         Learned mixture weights.
     means_ : Array, shape (n_components, n_features)
@@ -1227,6 +1224,7 @@ class GaussianMixtureModel:
         Returns
         -------
         self : GaussianMixtureModel
+            The fitted model.
 
         Raises
         ------
@@ -1393,10 +1391,12 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Data to label.
 
         Returns
         -------
         labels : Array, shape (n_samples,)
+            Index of the most probable component of each sample.
         """
         return jnp.argmax(self.predict_proba(X), axis=1)
 
@@ -1407,10 +1407,12 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Data to score.
 
         Returns
         -------
         probs : Array, shape (n_samples, n_components)
+            Posterior probability of each component for each sample.
         """
         self._check_fitted()
         _, log_resp = _estimate_log_prob_resp(
@@ -1425,10 +1427,12 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Data to score.
 
         Returns
         -------
         log_likelihoods : Array, shape (n_samples,)
+            Log density of the mixture at each sample.
         """
         self._check_fitted()
         log_likelihoods, _ = _estimate_log_prob_resp(

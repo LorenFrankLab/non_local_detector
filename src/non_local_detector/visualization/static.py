@@ -1,3 +1,5 @@
+"""Static matplotlib plots of non-local decoding results."""
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,11 +31,13 @@ def get_multiunit_firing_rate(
         end. Rates use each row's duration. Gaussian smoothing uses the median
         sample interval, which approximates smoothing in time for irregular rows.
     smoothing_sigma : float, optional
-        Standard deviation of the Gaussian smoothing, by default 0.015
+        Standard deviation of the Gaussian smoothing, by default 0.015.
 
     Returns
     -------
     multiunit_firing_rate : pd.DataFrame
+        Multiunit firing rate in Hz, with ``time`` as the index and a single
+        ``"firing_rate"`` column.
 
     Raises
     ------
@@ -98,15 +102,27 @@ def plot_non_local_model(
 
     Parameters
     ----------
-    position_time : np.ndarray
-    position : np.ndarray
+    position_time : np.ndarray, shape (n_position_time,)
+        Timestamps of the position samples, in seconds.
+    position : np.ndarray, shape (n_position_time,)
+        Position of the animal at each position timestamp, in cm.
     spike_times : list[np.ndarray]
-    speed : np.ndarray
+        Spike times in seconds for each neuron (sorted spikes) or electrode
+        group (clusterless).
+    speed : np.ndarray, shape (n_position_time,)
+        Speed of the animal at each position timestamp, in cm / s.
     detector : NonLocalClusterlessDetector | NonLocalSortedSpikesDetector
+        Fitted detector that produced ``results``.
     results : xr.Dataset
+        Decoding results from the detector, with a ``time`` coordinate and
+        ``acausal_state_probabilities``.
     figsize : tuple[int, int], optional
+        Figure size in inches, by default (20, 10).
     time_slice : slice | None, optional
+        Start and stop time (in the units of ``results.time``) to plot. By
+        default None, which plots the full time range of ``results``.
     posterior_max : float, optional
+        Upper color limit of the posterior heatmap, by default 0.25.
     """
     if time_slice is None:
         time_slice = slice(results.time.values[0], results.time.values[-1])

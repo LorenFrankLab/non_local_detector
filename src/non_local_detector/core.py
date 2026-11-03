@@ -683,11 +683,12 @@ smoother = jax.jit(_smoother_impl)
 
 
 # Internal version with buffer donation for use in chunked drivers
-# Donates filtered_probs and initial - both are single-use in chunked loops.
+# Donates filtered_probs, which is single-use in chunked loops and has the
+# output's shape. ``initial`` is not donated: XLA can only reuse a donated buffer
+# for an output of the same shape and dtype, and no output is (n_states,), so
+# donating it only made JAX warn "Some donated buffers were not usable".
 # Donation is specified by name (call sites pass by keyword).
-_smoother_internal = jax.jit(
-    _smoother_impl, donate_argnames=("filtered_probs", "initial")
-)
+_smoother_internal = jax.jit(_smoother_impl, donate_argnames=("filtered_probs",))
 
 
 ROW_SLICE_ATTRIBUTE = "accepts_row_slice"
@@ -1524,16 +1525,13 @@ _filter_covariate_dependent_jit = jax.jit(_filter_covariate_dependent_impl)
 
 
 # Internal version with buffer donation for use in chunked drivers
-# Donates initial_distribution, discrete_transition_matrix, and log_likelihoods.
-# dtm is chunked per-iteration so safe to donate. Donation is specified by name
-# because call sites pass by keyword.
+# Donates initial_distribution and log_likelihoods, which have outputs of their
+# shape to reuse. The (n_time, n_states, n_states) discrete_transition_matrix has
+# no such output, so donating it only made JAX warn "Some donated buffers were
+# not usable". Donation is specified by name because call sites pass by keyword.
 _filter_covariate_dependent_internal = jax.jit(
     _filter_covariate_dependent_impl,
-    donate_argnames=(
-        "initial_distribution",
-        "discrete_transition_matrix",
-        "log_likelihoods",
-    ),
+    donate_argnames=("initial_distribution", "log_likelihoods"),
 )
 
 
@@ -1678,12 +1676,11 @@ smoother_covariate_dependent = jax.jit(_smoother_covariate_dependent_impl)
 
 
 # Internal version with buffer donation for use in chunked drivers
-# Donates discrete_transition_matrix, filtered_probs, and initial.
-# dtm is chunked per-iteration, all are single-use. Donation is specified by name
-# because call sites pass by keyword.
+# Donates filtered_probs, the only input with an output of its shape to reuse
+# (a donated buffer without one makes JAX warn "Some donated buffers were not
+# usable"). Donation is specified by name because call sites pass by keyword.
 _smoother_covariate_dependent_internal = jax.jit(
-    _smoother_covariate_dependent_impl,
-    donate_argnames=("discrete_transition_matrix", "filtered_probs", "initial"),
+    _smoother_covariate_dependent_impl, donate_argnames=("filtered_probs",)
 )
 
 

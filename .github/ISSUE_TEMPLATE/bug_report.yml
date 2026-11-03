@@ -1,0 +1,77 @@
+name: Bug report
+description: Report incorrect results, a crash, or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please search [existing issues](https://github.com/LorenFrankLab/non_local_detector/issues) first.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include the full traceback or warning text if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Minimal example
+      description: >-
+        The smallest code that reproduces the problem, ideally on simulated data
+        (see `non_local_detector.simulate`). Please do not attach private recordings.
+      render: python
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: non_local_detector version
+      description: "Output of `python -c \"import non_local_detector; print(non_local_detector.__version__)\"`, or the commit if installed from source."
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04, macOS 15 (arm64), ..."
+    validations:
+      required: true
+  - type: input
+    id: jax
+    attributes:
+      label: JAX and jaxlib versions
+      description: "Output of `python -c \"import jax, jaxlib; print(jax.__version__, jaxlib.__version__)\"`."
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - CPU
+        - GPU (CUDA)
+        - Both / not sure
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU model and CUDA version
+      description: Only if you ran on a GPU.
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Installation method (pip, conda, uv), likelihood algorithm used, data sizes.
+    validations:
+      required: false

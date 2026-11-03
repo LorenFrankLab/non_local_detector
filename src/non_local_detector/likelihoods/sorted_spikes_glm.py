@@ -226,11 +226,13 @@ def make_spline_design_matrix(
         Place-bin edge coordinates (``Environment.place_bin_edges_``); only
         each dimension's extent is used, to place the knots.
     knot_spacing : float, optional
-        Spacing of spline knots
+        Spacing of spline knots, in coordinate units, by default
+        ``2 * sqrt(12.5)``.
 
     Returns
     -------
     design_matrix : np.ndarray, shape (n_points, n_spline_basis)
+        Spline design matrix with an intercept column.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     # ``inner_knots`` is read by name by the patsy formula below.
@@ -424,10 +426,12 @@ class TrackGraphBasis:
         Parameters
         ----------
         linear_position : np.ndarray, shape (n_points,) or (n_points, 1)
+            Linear positions, in the environment's linearized coordinates.
 
         Returns
         -------
         edge : np.ndarray, shape (n_points,)
+            Index into ``edge_order`` of the edge holding each position.
         """
         x = np.asarray(linear_position, dtype=float).reshape(-1)
         # Edges are laid out in order along the linear axis: the candidates are
@@ -453,6 +457,7 @@ class TrackGraphBasis:
         Parameters
         ----------
         linear_position : np.ndarray, shape (n_points,) or (n_points, 1)
+            Linear positions, in the environment's linearized coordinates.
         edge : np.ndarray, shape (n_points,), optional
             Edge (index into ``edge_order``) holding each position, by default
             ``edge_index(linear_position)``. Positions are read at the nearest
@@ -461,6 +466,7 @@ class TrackGraphBasis:
         Returns
         -------
         design : np.ndarray, shape (n_points, n_columns)
+            Design matrix, with an intercept in the first column.
         """
         x = np.asarray(linear_position, dtype=float).reshape(-1)
         edge = self.edge_index(x) if edge is None else np.asarray(edge, dtype=int)
@@ -514,6 +520,7 @@ def make_track_graph_basis(
     Returns
     -------
     basis : TrackGraphBasis
+        The spline basis along the branches of the track graph.
     """
     graph = cast(Any, environment.track_graph)
     edge_order = [
@@ -717,13 +724,16 @@ def make_spline_predict_matrix(
     Parameters
     ----------
     design_info : patsy.design_info.DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+        Description of the fitted basis, as stored in the encoding model's
+        ``emission_design_info``.
     position : jnp.ndarray, shape (n_position_bins, n_position_dims)
         Positions; linear positions, shape ``(n_position_bins, 1)``, for a
         ``TrackGraphBasis``.
 
     Returns
     -------
-    jnp.ndarray, shape (n_position_bins, n_spline_basis)
+    predict_matrix : jnp.ndarray, shape (n_position_bins, n_spline_basis)
+        Basis evaluated at ``position``; rows with a NaN position are NaN.
     """
     if isinstance(design_info, SelectedColumnsDesign):
         full = make_spline_predict_matrix(design_info.design_info, position)
@@ -927,6 +937,7 @@ def fit_poisson_regressions(
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Design matrix shared by all cells; its first column is the intercept.
     spikes : np.ndarray, shape (n_cells, n_time)
         Event mass per row and cell: the weighted spike counts from
         ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
@@ -942,6 +953,7 @@ def fit_poisson_regressions(
     Returns
     -------
     coefficients : jnp.ndarray, shape (n_cells, n_coefficients)
+        Fitted coefficients of each cell.
     """
     design_matrix = np.asarray(design_matrix, dtype=np.float32)
     spikes = np.asarray(spikes, dtype=np.float32)
@@ -975,6 +987,21 @@ def fit_poisson_regressions(
     penalized[0] = 0.0
 
     def evaluate(coefficients: np.ndarray, derivatives: bool) -> list[np.ndarray]:
+        """Evaluate the penalized negative log likelihood and its derivatives.
+
+        Parameters
+        ----------
+        coefficients : np.ndarray, shape (n_cells, n_coefficients)
+            Coefficients at which to evaluate.
+        derivatives : bool
+            Whether to also return the gradient and Hessian.
+
+        Returns
+        -------
+        sums : list[np.ndarray]
+            The loss, shape (n_cells,), per unit of total weight; with
+            ``derivatives`` also the gradient and the Hessian.
+        """
         sums: Any = _poisson_regression_sums(
             design,
             counts,
@@ -1107,6 +1134,7 @@ def fit_poisson_regression(
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Design matrix; its first column is the intercept.
     spikes : np.ndarray, shape (n_time,)
         Event mass per row: the weighted spike counts from
         ``EncodingSupport.event_counts``, not multiplied by ``weights`` again.
@@ -1121,6 +1149,7 @@ def fit_poisson_regression(
     Returns
     -------
     coefficients : jnp.ndarray, shape (n_coefficients,)
+        Fitted coefficients.
     """
     return fit_poisson_regressions(
         design_matrix,
@@ -1316,7 +1345,7 @@ def fit_sorted_spikes_glm_encoding_model(
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
 ) -> dict[str, Any]:
-    """Fit a GLM encoding model
+    """Fit a GLM encoding model.
 
     The Poisson likelihood depends on position only through the basis, so the
     spike counts and exposure are summed over square position cells a sixteenth
@@ -1329,7 +1358,9 @@ def fit_sorted_spikes_glm_encoding_model(
     Parameters
     ----------
     position_time : jnp.ndarray, shape (n_time_position,)
+        Time of each position sample, in seconds.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
     spike_times : list[jnp.ndarray]
         Spike times for each neuron.
     environment : Environment
@@ -1363,7 +1394,6 @@ def fit_sorted_spikes_glm_encoding_model(
     disable_progress_bar : bool, optional
         Stored in the encoding model for prediction's progress bars; the fit
         has none. By default False.
-
     log_rate_prior_std : float, optional
         Prior SD, in nats, of each neuron's log-rate deviation from its
         baseline across the interior bins, by default
@@ -1379,10 +1409,16 @@ def fit_sorted_spikes_glm_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
     encoding_model : dict
+        Keyword arguments for ``predict_sorted_spikes_glm_log_likelihood``,
+        with the entries below.
+
         coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
             Fitted coefficients for each neuron.
         emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
@@ -1399,7 +1435,6 @@ def fit_sorted_spikes_glm_encoding_model(
             ``"Hz"``.
         encoding_exposure_seconds : float
             Weighted encoding occupancy time in seconds.
-
     """
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -1498,8 +1533,6 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Timestamps corresponding to the position data.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -1536,6 +1569,14 @@ def predict_sorted_spikes_glm_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
     environment_grid : dict | None, optional
         The fit's record of the environment's grid (see
         ``environment_grid_fingerprint``), by default None, which skips the
@@ -1545,12 +1586,9 @@ def predict_sorted_spikes_glm_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
-    rate_units : str, default="Hz", keyword-only
-        Rate units recorded by the encoding fit; anything other than ``"Hz"``
-        raises ``ValidationError`` (refit legacy encoding models).
-    encoding_exposure_seconds : float, optional, keyword-only
-        Weighted encoding occupancy time in seconds, recorded by the fit.
-        Accepted so the encoding dictionary can be passed as keywords; unused.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------

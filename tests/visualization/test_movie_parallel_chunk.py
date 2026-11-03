@@ -147,3 +147,32 @@ def test_ax1_limits_set_once_per_worker():
         np.testing.assert_allclose(axes["ax1"].get_ylim(), sentinel, atol=1e-9)
     finally:
         plt.close(fig)
+
+
+def test_movie_posterior_has_no_false_peak_at_last_bin():
+    """Local's mass must not be placed on the last x/y bin of the movie posterior."""
+    import pandas as pd
+    import xarray as xr
+
+    from non_local_detector.visualization.movie import _spatial_posterior_for_movie
+
+    rows = [("Local", np.nan, np.nan)] + [
+        ("NL", x, y) for x in np.arange(3.0) for y in np.arange(2.0)
+    ]
+    index = pd.MultiIndex.from_tuples(rows, names=["state", "x_position", "y_position"])
+    values = np.full((2, len(rows)), 0.02)
+    values[:, 0] = 0.9
+    results = xr.Dataset(
+        {
+            "acausal_posterior": xr.DataArray(
+                values,
+                dims=["time", "state_bins"],
+                coords={"time": [0.0, 0.1], "state_bins": index},
+            )
+        }
+    )
+    interior = np.ones((3, 2), dtype=bool)
+
+    posterior = _spatial_posterior_for_movie(results, slice(0, 2), interior)
+
+    np.testing.assert_allclose(posterior.values, 0.02)

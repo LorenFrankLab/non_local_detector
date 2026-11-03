@@ -1,5 +1,5 @@
 """
-Clusterless decoding using Gaussian Mixture Models (GMM)
+Clusterless decoding using Gaussian Mixture Models (GMM).
 
 Spike log intensities are the raw ``log(rate) + log p(pos, mark) - log
 p_occ(pos)`` and the ground process is ``rate * p_joint(pos) / p_occ(pos)``,
@@ -564,12 +564,15 @@ def fit_clusterless_gmm_encoding_model(
     Parameters
     ----------
     position_time : jnp.ndarray, shape (n_time_position,)
+        Time of each position sample, in seconds.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
     spike_times : list[jnp.ndarray]
         Encoding spike times per electrode.
     spike_waveform_features : list[jnp.ndarray]
         Encoding spike waveform features per electrode.
     environment : Environment
+        The spatial environment (must be fitted).
     weights : jnp.ndarray | None, shape (n_time_position,), default=None
         Per-sample weights (e.g. posterior state probabilities during EM). None means
         uniform. Weights the occupancy and joint (position+mark) GMMs (via
@@ -615,6 +618,9 @@ def fit_clusterless_gmm_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
@@ -881,8 +887,6 @@ def predict_clusterless_gmm_log_likelihood(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Time of each position sample for the decoding period (used only by the
         local path; accepted for signature parity when ``is_local`` is False).
@@ -928,12 +932,21 @@ def predict_clusterless_gmm_log_likelihood(
         Reduces memory from O(spike_block_size × n_bins) to O(spike_block_size × bin_tile_size).
         Useful for very large position grids (> 2000 bins).
     disable_progress_bar : bool, default=False
+        Turn off the progress bar.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges: spikes are binned
         against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
     mark_dimensions : list[int], keyword-only
         Fitted waveform-feature count per electrode, taken from the encoding
         model. Predict rejects decode spikes whose feature dimension differs, so
@@ -945,12 +958,6 @@ def predict_clusterless_gmm_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
-    rate_units : str, default="Hz", keyword-only
-        Rate units recorded by the encoding fit; anything other than ``"Hz"``
-        raises ``ValidationError`` (refit legacy encoding models).
-    encoding_exposure_seconds : float, optional, keyword-only
-        Weighted encoding occupancy time in seconds, recorded by the fit.
-        Accepted so the encoding dictionary can be passed as keywords; unused.
     environment_grid : dict | None, optional
         The fit's record of the environment's grid (see
         ``environment_grid_fingerprint``), by default None, which skips the
@@ -960,6 +967,12 @@ def predict_clusterless_gmm_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
+    **kwargs : Any
+        Ignored. Accepted so the shared encoding-model dictionary of any
+        likelihood algorithm can be passed as keywords.
 
     Returns
     -------
@@ -1056,7 +1069,7 @@ def predict_clusterless_gmm_log_likelihood(
                 mark_reference,
                 strict=True,
             ),
-            desc="Non-Local Likelihood (GMM, log-space)",
+            desc="Position-Bin Likelihood (GMM, log-space)",
             unit="electrode",
             disable=disable_progress_bar,
         )
@@ -1219,6 +1232,9 @@ def compute_local_log_likelihood(
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------

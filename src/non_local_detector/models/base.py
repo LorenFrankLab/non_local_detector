@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
+from itertools import pairwise
 from logging import getLogger
 from pathlib import Path
 from typing import Any, cast
@@ -31,7 +32,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns  # type: ignore[import-untyped]
 import sklearn  # type: ignore[import-untyped]
 import xarray as xr
 from patsy import DesignMatrix, build_design_matrices  # type: ignore[import-untyped]
@@ -2828,25 +2828,52 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 discrete_state_transition = (
                     1 / (1 - self.discrete_state_transitions_)
                 ) / sampling_frequency
-                vmin, vmax, fmt = 0.0, None, "0.03f"
+                vmin, vmax = 0.0, None
                 label = "Seconds"
             else:
                 discrete_state_transition = self.discrete_state_transitions_
-                vmin, vmax, fmt = 0.0, 1.0, "0.03f"
+                vmin, vmax = 0.0, 1.0
                 label = "Probability"
 
-            sns.heatmap(
-                data=discrete_state_transition,
+            n_states = len(self.state_names)
+            mesh = ax.pcolormesh(
+                discrete_state_transition,
                 vmin=vmin,
                 vmax=vmax,
-                annot=True,
-                fmt=fmt,
                 cmap=cmap,
-                xticklabels=self.state_names,
-                yticklabels=self.state_names,
-                ax=ax,
-                cbar_kws={"label": label},
             )
+            # Row 0 at the top and tick labels centered on the cells.
+            ax.set_xlim(0, n_states)
+            ax.set_ylim(n_states, 0)
+            ticks = np.arange(n_states) + 0.5
+            ax.set_xticks(ticks, labels=self.state_names)
+            ax.set_yticks(ticks, labels=self.state_names)
+            cbar = ax.figure.colorbar(mesh, ax=ax, label=label)
+            plt.setp(cbar.outline, visible=False)
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            # Rotate tick labels that would overlap (as seaborn's heatmap did).
+            ax.figure.canvas.draw()
+            for axis in (ax.xaxis, ax.yaxis):
+                boxes = [label.get_window_extent() for label in axis.get_ticklabels()]
+                if any(a.overlaps(b) for a, b in pairwise(boxes)):
+                    plt.setp(axis.get_ticklabels(), rotation="vertical")
+            # Dark text on light cells, white text on dark cells.
+            for (row, col), value, rgba in zip(
+                np.ndindex(discrete_state_transition.shape),
+                discrete_state_transition.ravel(),
+                mesh.to_rgba(discrete_state_transition.ravel()),
+                strict=True,
+            ):
+                luminance = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
+                ax.text(
+                    col + 0.5,
+                    row + 0.5,
+                    format(value, ".03f"),
+                    ha="center",
+                    va="center",
+                    color=".15" if luminance > 0.408 else "w",
+                )
             ax.set_ylabel("Previous State", fontsize=12)
             ax.set_xlabel("Current State", fontsize=12)
             ax.set_title("Discrete State Transition", fontsize=16)
@@ -2905,6 +2932,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         GOLDEN_RATIO = 1.618
 
+        if self.n_discrete_states_ == 1:
+            # A single state has one panel, which needs room for its tick labels.
+            _, ax = plt.subplots(
+                constrained_layout=True,
+                figsize=(4.0 * figsize_scaling, 3.5 * figsize_scaling),
+            )
+            ax.pcolormesh(self.continuous_state_transitions_, vmin=0.0, vmax=vmax)
+            ax.set_xlabel("To position bin")
+            ax.set_ylabel("From position bin")
+            ax.set_title(self.state_names[0])
+            return
+
         fig, axes = plt.subplots(
             self.n_discrete_states_,
             self.n_discrete_states_,
@@ -2919,40 +2958,33 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             ),
         )
 
-        try:
-            for from_state, ax_row in enumerate(axes):
-                for to_state, ax in enumerate(ax_row):
-                    ind = np.ix_(
-                        self.state_ind_ == from_state, self.state_ind_ == to_state
-                    )
-                    ax.pcolormesh(
-                        self.continuous_state_transitions_[ind], vmin=0.0, vmax=vmax
-                    )
-                    ax.set_xticks([])
-                    ax.set_yticks([])
+        for from_state, ax_row in enumerate(axes):
+            for to_state, ax in enumerate(ax_row):
+                ind = np.ix_(self.state_ind_ == from_state, self.state_ind_ == to_state)
+                ax.pcolormesh(
+                    self.continuous_state_transitions_[ind], vmin=0.0, vmax=vmax
+                )
+                ax.set_xticks([])
+                ax.set_yticks([])
 
-                    if to_state == 0:
-                        ax.set_ylabel(
-                            self.state_names[from_state],
-                            rotation=0,
-                            ha="right",
-                            va="center",
-                        )
+                if to_state == 0:
+                    ax.set_ylabel(
+                        self.state_names[from_state],
+                        rotation=0,
+                        ha="right",
+                        va="center",
+                    )
 
-                    if from_state == self.n_discrete_states_ - 1:
-                        ax.set_xlabel(
-                            self.state_names[to_state],
-                            rotation=45,
-                            ha="right",
-                            va="top",
-                            labelpad=1.0,
-                        )
-            fig.supylabel("From State")
-            fig.supxlabel("To State")
-        except TypeError:
-            axes.pcolormesh(self.continuous_state_transitions_, vmin=0.0, vmax=vmax)
-            axes.set_xticks([])
-            axes.set_yticks([])
+                if from_state == self.n_discrete_states_ - 1:
+                    ax.set_xlabel(
+                        self.state_names[to_state],
+                        rotation=45,
+                        ha="right",
+                        va="top",
+                        labelpad=1.0,
+                    )
+        fig.supylabel("From State")
+        fig.supxlabel("To State")
 
     def plot_initial_conditions(
         self, figsize_scaling: float = 1.5, vmax: float = 0.3

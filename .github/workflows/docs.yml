@@ -21,7 +21,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -34,6 +34,7 @@ jobs:
         run: uv sync --locked --group docs
       # --strict fails on broken nav, broken relative links and docstring
       # parameters that do not match the signature.
+      # Also runs every tutorial (mkdocs-jupyter); a failing cell fails the build.
       - name: Build documentation
         run: uv run --no-sync mkdocs build --strict
       # A project site is served under /non_local_detector/, so map that path

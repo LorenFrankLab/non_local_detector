@@ -50,6 +50,27 @@ def align_tracking_to_results(
     split that column's interpolation support. Non-numeric columns must be
     declared categorical.
 
+    Parameters
+    ----------
+    position_info : pandas.DataFrame
+        Tracking samples, indexed by strictly increasing numeric timestamps in
+        seconds.
+    results : xarray.Dataset
+        Decoder results with ``time``, ``time_bin_start`` and ``time_bin_end``
+        coordinates (seconds) and, optionally, an ``is_missing`` variable.
+    position_columns : sequence of str
+        Names of the numeric columns in `position_info` that define measured
+        position; samples with non-finite values here split the supported spans.
+    valid_position_intervals : array_like, shape (n_intervals, 2)
+        Ordered, non-overlapping ``[start, stop]`` intervals in seconds in which
+        tracking is valid.
+    categorical_columns : sequence of str, optional
+        Columns held at the value of the preceding sample instead of being
+        interpolated, by default ().
+    circular_columns : sequence of str, optional
+        Numeric columns of angles in radians, interpolated along the shortest
+        arc, by default ().
+
     Returns
     -------
     aligned : pandas.DataFrame
