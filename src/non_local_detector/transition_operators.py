@@ -1632,8 +1632,12 @@ class SupportsStructuredBlock(Protocol):
 
 
 def _defining_class_index(cls: type, name: str) -> int:
-    """Position in ``cls.__mro__`` of the class that defines ``name``."""
-    return next(index for index, base in enumerate(cls.__mro__) if name in vars(base))
+    """Position in ``cls.__mro__`` of the class that defines ``name``, or
+    ``len(cls.__mro__)`` if only an instance does."""
+    return next(
+        (index for index, base in enumerate(cls.__mro__) if name in vars(base)),
+        len(cls.__mro__),
+    )
 
 
 def _planned(transition: object) -> SupportsStructuredBlock | None:
