@@ -1375,17 +1375,19 @@ def get_grid(
     """Calculate bin edges and centers for a spatial grid.
 
     Creates a grid based on the provided position data or range, using
-    a specified bin size. Handles multiple position dimensions. Adds
-    boundary bins to the edges.
+    a specified bin size. Handles multiple position dimensions. For grids with
+    more than one dimension, one boundary bin is added at each end of every
+    dimension's edges; the edges of a 1-D grid are not padded.
 
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
         Position data used to determine the grid extent if `position_range`
         is not provided. NaNs are ignored.
-    bin_size : float, optional
-        The desired approximate size of the bins in each dimension. The actual
-        size may vary slightly to evenly cover the range. By default 2.5.
+    bin_size : float or tuple of float, optional
+        The desired approximate size of the bins in each dimension (one value
+        per dimension if a tuple). The actual size may vary slightly to evenly
+        cover the range. By default 2.5.
     position_range : list[tuple[float, float]] | None, optional
         A list of tuples, one for each position dimension, specifying the
         (min, max) boundary for the grid. If None, the min/max of the
@@ -1396,7 +1398,8 @@ def get_grid(
     edges : tuple[np.ndarray, ...]
         A tuple containing the bin edges for each position dimension. Each
         element is a 1D array of shape (n_bins_d + 1,), where n_bins_d is
-        the number of bins in that dimension `d`. Includes boundary bins.
+        the number of bins in that dimension `d`. Includes the boundary bins
+        for grids with more than one dimension.
     place_bin_edges_flat : np.ndarray, shape (n_total_edges, n_position_dims)
         The meshgrid of the bin edges, flattened so each row is one edge-grid
         point.
