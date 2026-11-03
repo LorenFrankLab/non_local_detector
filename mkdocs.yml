@@ -133,6 +133,7 @@ nav:
       - Data format and environments: tutorials/01_data_and_environments.py
       - Decoding with clusterless spikes: tutorials/03_decoding_clusterless.py
       - Classifying replay dynamics: tutorials/04_classifying_replay_dynamics.py
+      - Detecting non-local events: tutorials/05_detecting_non_local_events.py
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md

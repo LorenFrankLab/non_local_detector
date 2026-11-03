@@ -17,3 +17,6 @@ with `jupytext --to notebook <file>.py`.
 - [Classifying replay dynamics](04_classifying_replay_dynamics.py): fit a
   classifier with continuous, fragmented and No-Spike states on running, decode
   a whole session, and classify simulated replay events of each type.
+- [Detecting non-local events across a session](05_detecting_non_local_events.py):
+  fit on running, decode a whole session, extract replay events and describe
+  each one.
