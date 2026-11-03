@@ -1,6 +1,8 @@
 """Interactive figurl view for 1D decoding results (requires ``sortingview``)."""
 
-try:
+from non_local_detector.visualization._optional import sortingview_available
+
+if sortingview_available():
     from typing import cast
 
     import numpy as np
@@ -237,6 +239,3 @@ try:
         )
 
         return cast("str", view.url(label="1D Decoding"))
-
-except ImportError:
-    pass
