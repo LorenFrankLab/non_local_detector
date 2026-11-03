@@ -20,7 +20,7 @@ The `non_local_detector` package provides state-of-the-art algorithms for:
 
 ### Key Features
 
-- 🔬 **Multiple Likelihood Models**: GLM, KDE, and GMM-based approaches for both sorted and clusterless spike data
+- 🔬 **Multiple Likelihood Models**: GLM, KDE, GMM, diffusion/MRF and mark-mixture GLM approaches for both sorted and clusterless spike data
 - ⚡ **JAX-Powered**: GPU-accelerated computations for large-scale analyses
 - 🎯 **Scikit-learn Compatible**: Familiar fit/predict interface for easy integration
 - 📊 **Rich Visualizations**: Built-in plotting functions for results analysis
@@ -30,16 +30,23 @@ The `non_local_detector` package provides state-of-the-art algorithms for:
 
 ### Quick Install (CPU)
 
+The documentation and the examples below follow the `main` branch. The latest
+PyPI release, 0.6.9, predates the explicit time-bin API they use, so install
+from GitHub:
+
 ```bash
-pip install non_local_detector
+pip install "non_local_detector @ git+https://github.com/LorenFrankLab/non_local_detector"
 ```
+
+(`pip install non_local_detector` installs the older 0.6.9 release; use its
+matching documentation.)
 
 ### GPU Installation (Recommended for Large Datasets)
 
 For CUDA-enabled GPU acceleration:
 
 ```bash
-pip install non_local_detector[gpu]
+pip install "non_local_detector[gpu]"
 ```
 
 Or using conda/mamba:
@@ -165,22 +172,22 @@ covariates, independent intervals, and downstream pipeline changes.
 
 ### Core Components
 
-1. **Likelihood Models** (`non_local_detector.likelihoods`)
-   - `sorted_spikes_glm`: GLM-based likelihood for sorted spike data
-   - `sorted_spikes_kde`: KDE-based likelihood for sorted spike data
-   - `clusterless_kde`: KDE-based likelihood for clusterless data
-   - `clusterless_gmm`: GMM-based likelihood for clusterless data
-   - `clusterless_mark_glm`: a mark mixture (variational Bayes Gaussian mixture over each electrode's marks) with a Poisson GLM rate map per component, for clusterless data
+1. **Likelihood Models** (`non_local_detector.likelihoods`), selected with `sorted_spikes_algorithm` or `clusterless_algorithm`
+   - Sorted spikes: `sorted_spikes_glm`, `sorted_spikes_kde`, `sorted_spikes_diffusion`, `sorted_spikes_mrf`
+   - Clusterless: `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion`, `clusterless_mark_glm` (a mark mixture with a Poisson GLM rate map per component)
 
 2. **State Transition Models**
-   - **Continuous**: `RandomWalk`, `EmpiricalMovement`, `Identity`, `Uniform`
+   - **Continuous**: `RandomWalk`, `RandomWalkDirection1`, `RandomWalkDirection2`, `EmpiricalMovement`, `Identity`, `Uniform`, `Discrete`
    - **Discrete**: Stationary/non-stationary diagonal and custom transitions
 
-3. **Decoder Models** (`non_local_detector.models`)
-   - `NonLocalDetector`: Main replay detection models
-   - `ContFragClassifier`: Fragmented decoding for interrupted sequences
-   - `ClusterlessDecoder`/`SortedSpikesDecoder`: Basic position decoding
-   - `MultiEnvironmentClassifier`: Multi-environment decoding
+3. **Decoder Models** (exported from `non_local_detector`)
+   - Detectors: `NonLocalSortedSpikesDetector`, `NonLocalClusterlessDetector`
+   - Classifiers: `ContFragSortedSpikesClassifier`, `ContFragClusterlessClassifier`, and the `NoSpikeContFrag*Classifier` variants that add a No-Spike state
+   - Multi-environment classifiers: `MultiEnvironmentSortedSpikesClassifier`, `MultiEnvironmentClusterlessClassifier`
+   - Position decoders: `SortedSpikesDecoder`, `ClusterlessDecoder`
+
+See the [Core Concepts](https://lorenfranklab.github.io/non_local_detector/getting-started/core-concepts/)
+page for how the states, transitions and likelihoods fit together.
 
 ## 🛠️ Development
 

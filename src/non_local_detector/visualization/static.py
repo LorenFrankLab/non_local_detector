@@ -31,7 +31,8 @@ def get_multiunit_firing_rate(
         end. Rates use each row's duration. Gaussian smoothing uses the median
         sample interval, which approximates smoothing in time for irregular rows.
     smoothing_sigma : float, optional
-        Standard deviation of the Gaussian smoothing, by default 0.015.
+        Standard deviation of the Gaussian smoothing in seconds (the units of
+        ``time``), by default 0.015.
 
     Returns
     -------
