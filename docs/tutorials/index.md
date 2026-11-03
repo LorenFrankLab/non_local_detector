@@ -11,3 +11,9 @@ with `jupytext --to notebook <file>.py`.
 - [Classifying replay dynamics](04_classifying_replay_dynamics.py): fit a
   classifier with continuous, fragmented and No-Spike states on running, decode
   a whole session, and classify simulated replay events of each type.
+- [Decoding with clusterless spikes](03_decoding_clusterless.py): decode position
+  from unsorted spikes and their waveform features with `ClusterlessDecoder`,
+  fit on running and applied to a whole session.
+- [Data format and environments](01_data_and_environments.py): what the
+  inputs look like (position, sorted and clusterless spikes, decode bins) and
+  how to describe space with open-field and track-graph environments.

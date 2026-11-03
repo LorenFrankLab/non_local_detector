@@ -86,6 +86,8 @@ plugins:
   # running them for a quick local preview.
   - mkdocs-jupyter:
       include: ["tutorials/*.py"]
+      # Skip probing every Markdown page with jupytext (pandoc warnings).
+      ignore: ["*.md"]
       execute: !ENV [NLD_DOCS_EXECUTE, true]
       allow_errors: false
       include_source: true
@@ -129,6 +131,8 @@ nav:
   - Tutorials:
       - tutorials/index.md
       - Classifying replay dynamics: tutorials/04_classifying_replay_dynamics.py
+      - Decoding with clusterless spikes: tutorials/03_decoding_clusterless.py
+      - Data format and environments: tutorials/01_data_and_environments.py
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Checkpointed prediction: performance_prediction.md

@@ -84,16 +84,17 @@ from non_local_detector.graph_distances import (
 
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:
-    """Given a set of bin edges, return the center of the bin.
+    """Return the center of each bin given the bin edges.
 
     Parameters
     ----------
     bin_edges : np.ndarray, shape (n_edges,)
+        Monotonically increasing bin edges.
 
     Returns
     -------
     bin_centers : np.ndarray, shape (n_edges - 1,)
-
+        Midpoint of each pair of adjacent edges.
     """
     return bin_edges[:-1] + np.diff(bin_edges) / 2
 
@@ -107,12 +108,15 @@ def find_environment_by_name(
     Parameters
     ----------
     environments : sequence of Environment
+        Environments to search.
     name : str
         The ``environment_name`` to match.
 
     Returns
     -------
     Environment
+        The first environment in ``environments`` whose ``environment_name``
+        equals ``name``.
 
     Raises
     ------
@@ -603,15 +607,18 @@ class Environment:
         compute_all_pairs_distances: bool = True,
         max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> "Environment":
-        """Fits a discrete grid of the spatial environment.
+        """Fit a discrete grid of the spatial environment.
 
         Parameters
         ----------
-        position : np.ndarray, shape (n_time, n_dim), optional
+        position : np.ndarray, shape (n_time, n_dim) or (n_time,), optional
             Position of the animal. Required without a ``track_graph``, where it
-            sets the grid's extent.
+            sets the grid's extent. A one-dimensional ``(n_time,)`` array is
+            treated as ``(n_time, 1)``.
         infer_track_interior : bool, optional
-            Whether to infer the spatial geometry of track from position
+            Whether to infer the interior of the track from ``position`` when
+            ``is_track_interior`` was not given, by default True. Stored on the
+            environment; ignored if ``track_graph`` is provided.
         compute_all_pairs_distances : bool, optional
             By default True, which builds the all-pairs graph-distance matrix.
             False keeps an exact sparse query view for Cartesian environments,
@@ -623,8 +630,9 @@ class Environment:
 
         Returns
         -------
-        self
-
+        self : Environment
+            The fitted environment, with the fitted attributes (``edges_``,
+            ``place_bin_centers_``, ...) populated.
         """
         # Import locally to avoid circular dependency
         from non_local_detector import _validation as val
@@ -663,6 +671,9 @@ class Environment:
                     hint="Provide position data with at least one time point",
                     example="    position = np.array([[0, 0]])  # At least one position",
                 )
+
+            if position.ndim == 1:
+                position = position[:, np.newaxis]
 
         # Invalidate cached dense distance matrix if it exists (used by
         # get_distances_to_interior_bins for 1D track graph kernels).
@@ -808,14 +819,13 @@ class Environment:
 
         Parameters
         ----------
-        ax : plt.axes, optional
-            Plot on this axis if given, by default None
+        ax : matplotlib.axes.Axes, optional
+            Plot on this axis if given, by default None, which creates a new figure.
 
         Returns
         -------
-        ax : plt.axes
+        ax : matplotlib.axes.Axes
             The axis on which the grid is plotted.
-
         """
         if self.track_graph is not None:
             if ax is None:
@@ -829,6 +839,22 @@ class Environment:
                 for edge in self.edges_[0]:
                     ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
             ax.set_ylim((0, 0.1))
+        elif self.edges_ is not None and len(self.edges_) == 1:
+            if ax is None:
+                _, ax = plt.subplots(figsize=(15, 2))
+            edges = self.edges_[0]
+            if self.is_track_interior_ is not None:
+                ax.pcolormesh(
+                    edges,
+                    [0.0, 1.0],
+                    self.is_track_interior_[np.newaxis, :],
+                    cmap="bone_r",
+                )
+            ax.vlines(edges, 0.0, 1.0, color="black", linewidth=0.5)
+            ax.set_xlim(edges[0], edges[-1])
+            ax.set_ylim((0, 1))
+            ax.set_yticks([])
+            ax.set_xlabel("Position")
         else:
             if ax is None:
                 _, ax = plt.subplots(figsize=(6, 7))
@@ -847,24 +873,24 @@ class Environment:
         return ax
 
     def save_environment(self, filename: str = "environment.pkl") -> None:
-        """Saves the environment object as a pickled file.
+        """Save the environment object as a pickled file.
 
         Parameters
         ----------
         filename : str, optional
-            File name to save the environment to. Defaults to "environment.pkl".
+            File name to save the environment to, by default "environment.pkl".
         """
         with Path(filename).open("wb") as file_handle:
             pickle.dump(self, file_handle)
 
     @classmethod
     def load_environment(cls, filename: str = "environment.pkl") -> "Environment":
-        """Loads a pickled environment object from a file.
+        """Load a pickled environment object from a file.
 
         Parameters
         ----------
         filename : str, optional
-            File name to load the environment from. Defaults to "environment.pkl".
+            File name to load the environment from, by default "environment.pkl".
 
         Returns
         -------
@@ -1041,7 +1067,7 @@ class Environment:
     def get_manifold_distances(
         self, position1: np.ndarray, position2: np.ndarray
     ) -> np.ndarray:
-        """Computes the distance between pairs of positions along the track manifold.
+        """Compute the distance between pairs of positions along the track manifold.
 
         This uses the precomputed shortest path distances between bin centers on the
         graph representation of the environment (either 1D or N-D).
@@ -1051,20 +1077,14 @@ class Environment:
         position1 : np.ndarray, shape (n_time, n_dims) or (n_dims,)
             The first set of positions.
         position2 : np.ndarray, shape (n_time, n_dims) or (n_dims,)
-             The second set of positions. Must have the same shape as position1.
+            The second set of positions. Must have the same shape as position1.
 
         Returns
         -------
         distances : np.ndarray, shape (n_time,)
             The shortest path distance along the track for each pair of positions.
-            Returns np.inf if no path exists between the bins corresponding to the positions.
-
-        Raises
-        ------
-        RuntimeError
-            If the environment has not been fitted.
-        ValueError
-            If input shapes mismatch or required attributes are missing.
+            Returns np.inf if no path exists between the bins corresponding to the
+            positions.
         """
         if not self._is_fitted:
             msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
@@ -1328,19 +1348,24 @@ def get_n_bins(
     bin_size: float | tuple[float, ...] = 2.5,
     position_range: Sequence[tuple[float, float]] | None = None,
 ) -> NDArray[np.int32]:
-    """Get number of bins need to span a range given a bin size.
+    """Get the number of bins needed to span a range given a bin size.
 
     Parameters
     ----------
-    position : np.ndarray, shape (n_time,)
-    bin_size : float, optional
-    position_range : None or list of np.ndarray
-        Use this to define the extent instead of position
+    position : np.ndarray, shape (n_time,) or (n_time, n_position_dims)
+        Position samples. Their extent (maximum minus minimum) is used unless
+        ``position_range`` is given.
+    bin_size : float or tuple of float, optional
+        Approximate bin size in each dimension, in the units of ``position``,
+        by default 2.5.
+    position_range : sequence of tuple of float, optional
+        ``(min, max)`` for each dimension. If given, defines the extent
+        instead of ``position``, by default None.
 
     Returns
     -------
     n_bins : np.ndarray of int32
-
+        ``ceil(extent / bin_size)``, one entry per position dimension.
     """
     if position_range is not None:
         extent = np.diff(position_range, axis=1).squeeze()
@@ -1380,17 +1405,15 @@ def get_grid(
         A tuple containing the bin edges for each position dimension. Each
         element is a 1D array of shape (n_bins_d + 1,), where n_bins_d is
         the number of bins in that dimension `d`. Includes boundary bins.
-    place_bin_edges_flat : np.ndarray, shape (n_total_bins, n_position_dims)
-        The edges corresponding to each bin in the flattened grid. Note: This
-        output might be less standard or useful than `edges` and
-        `place_bin_centers`. Consider if it's truly needed.
+    place_bin_edges_flat : np.ndarray, shape (n_total_edges, n_position_dims)
+        The meshgrid of the bin edges, flattened so each row is one edge-grid
+        point.
     place_bin_centers_flat : np.ndarray, shape (n_total_bins, n_position_dims)
         The center coordinate of each bin in the flattened grid.
         `n_total_bins` is the product of the number of bins in each dimension.
     centers_shape : tuple[int, ...]
         The shape of the grid in terms of the number of bins in each dimension
         (e.g., (n_bins_x, n_bins_y)).
-
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     is_nan = np.any(np.isnan(position), axis=1)
@@ -1424,30 +1447,31 @@ def get_track_interior(
     dilate: bool = False,
     bin_count_threshold: int = 0,
 ) -> np.ndarray:
-    """Infers the interior bins of the track given positions.
+    """Infer the interior bins of the track from the positions.
 
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
-    bins : sequence or int, optional
+        Position samples used to count occupancy in each bin.
+    bins : int or sequence of int or sequence of np.ndarray
         The bin specification:
 
         * A sequence of arrays describing the bin edges along each dimension.
         * The number of bins for each dimension (nx, ny, ... =bins)
         * The number of bins for all dimensions (nx=ny=...=bins).
     fill_holes : bool, optional
-        Fill any holes in the extracted track interior bins
+        Fill any holes in the extracted track interior bins, by default False.
     dilate : bool, optional
-        Inflate the extracted track interior bins
+        Inflate the extracted track interior bins, by default False.
     bin_count_threshold : int, optional
-        Greater than this number of samples should be in the bin for it to
-        be considered on the track.
+        A bin is considered on the track if it contains more than this number
+        of samples, by default 0.
 
     Returns
     -------
-    is_track_interior : np.ndarray
-        The interior bins of the track as inferred from position
-
+    is_track_interior : np.ndarray, shape (n_bins_dim1, n_bins_dim2, ...)
+        Boolean array, True for bins in the track interior as inferred from
+        position.
     """
     bin_counts, _ = np.histogramdd(position, bins=bins)
     is_track_interior = (bin_counts > bin_count_threshold).astype(int)
@@ -1475,16 +1499,17 @@ def get_track_interior(
 
 
 def get_track_segments_from_graph(track_graph: nx.Graph) -> np.ndarray:
-    """Returns a 2D array of node positions corresponding to each edge.
+    """Return the node positions of each edge in a track graph.
 
     Parameters
     ----------
-    track_graph : networkx Graph
+    track_graph : networkx.Graph
+        Track graph whose nodes have a ``pos`` attribute.
 
     Returns
     -------
-    track_segments : np.ndarray, shape (n_segments, n_nodes, n_space)
-
+    track_segments : np.ndarray, shape (n_segments, 2, n_space)
+        For each edge, the positions of its two end nodes.
     """
     node_positions = nx.get_node_attributes(track_graph, "pos")
     return np.asarray(
@@ -1498,17 +1523,20 @@ def get_track_segments_from_graph(track_graph: nx.Graph) -> np.ndarray:
 def project_points_to_segment(
     track_segments: np.ndarray, position: np.ndarray
 ) -> np.ndarray:
-    """Finds the closet point on a track segment in terms of Euclidean distance
+    """Find the closest point on each track segment in Euclidean distance.
 
     Parameters
     ----------
-    track_segments : np.ndarray, shape (n_segments, n_nodes, 2)
-    position : np.ndarray, shape (n_time, 2)
+    track_segments : np.ndarray, shape (n_segments, 2, n_space)
+        End-point positions of each segment.
+    position : np.ndarray, shape (n_time, n_space)
+        Positions to project.
 
     Returns
     -------
     projected_positions : np.ndarray, shape (n_time, n_segments, n_space)
-
+        For each position, the closest point on each segment, clipped to the
+        segment's end points.
     """
     segment_diff = np.diff(track_segments, axis=1).squeeze(axis=1)
     sum_squares = np.sum(segment_diff**2, axis=1)
@@ -1617,13 +1645,19 @@ def make_track_graph_with_bin_centers_edges(
 
     Parameters
     ----------
-    track_graph : nx.Graph
+    track_graph : networkx.Graph
+        Track graph whose nodes have a ``pos`` attribute.
     place_bin_size : float
+        Approximate size of the position bins, in the units of the node
+        positions. Each edge is split into ``2 * ceil(length / place_bin_size) + 1``
+        alternating bin-edge and bin-center nodes.
 
     Returns
     -------
-    track_graph_with_bin_centers_edges : nx.Graph
-
+    track_graph_with_bin_centers_edges : networkx.Graph
+        Copy of the track graph in which each original edge is replaced by a
+        path through the added nodes. Added nodes have ``pos``, ``edge_id`` and
+        ``is_bin_edge`` attributes.
     """
     track_graph_with_bin_centers_edges = track_graph.copy()
     n_nodes = len(track_graph.nodes)
@@ -1686,21 +1720,29 @@ def extract_bin_info_from_track_graph(
     edge_order: list[tuple[Any, ...]],
     edge_spacing: float | list[float],
 ) -> pd.DataFrame:
-    """For each node, find edge_id, is_bin_edge, x_position, y_position, and
-    linear_position.
+    """Find the edge, position and linear position of each node of the track graph.
+
+    For each node, finds ``edge_id``, ``is_bin_edge``, ``x_position``,
+    ``y_position`` and ``linear_position``.
 
     Parameters
     ----------
-    track_graph : nx.Graph
-    track_graph_with_bin_centers_edges : nx.Graph
+    track_graph : networkx.Graph
+        The original track graph.
+    track_graph_with_bin_centers_edges : networkx.Graph
+        The track graph with bin edge and bin center nodes added, from
+        `make_track_graph_with_bin_centers_edges`.
     edge_order : list of 2-tuples
-    edge_spacing : list, len n_edges - 1
+        Order in which the edges are laid out in 1D.
+    edge_spacing : float or list of float
+        Spacing between consecutive edges in 1D, either one value or one per
+        gap (``len(edge_order) - 1``).
 
     Returns
     -------
     nodes_df : pd.DataFrame
-        Collect information about each bin
-
+        One row per node (index ``node_id``) with the columns listed above,
+        sorted by edge position and linear position.
     """
     nodes_df = (
         pd.DataFrame.from_dict(
@@ -1752,34 +1794,49 @@ def get_track_grid(
     pd.DataFrame,
     pd.DataFrame,
 ]:
-    """Figures out 1D spatial bins given a track graph.
+    """Figure out the 1D spatial bins given a track graph.
 
     Parameters
     ----------
-    track_graph : nx.Graph
+    track_graph : networkx.Graph
+        Track graph whose nodes have a ``pos`` attribute.
     edge_order : list of 2-tuples
-    edge_spacing : list, len n_edges - 1
+        Order in which the edges are laid out in 1D.
+    edge_spacing : float or list of float
+        Spacing between consecutive edges in 1D, either one value or one per
+        gap (``len(edge_order) - 1``). Bins that fall in a gap with positive
+        spacing are marked as not on the track.
     place_bin_size : float
+        Approximate size of the position bins, in the units of the node
+        positions.
 
     Returns
     -------
-    place_bin_centers : np.ndarray, shape (n_bins, n_position_dims)
-    place_bin_edges : np.ndarray, shape (n_bins + n_position_dims, n_position_dims)
-    is_track_interior : np.ndarray, shape (n_bins, n_position_dim)
+    place_bin_centers : np.ndarray, shape (n_bins, 1)
+        Linear position of the center of each bin.
+    place_bin_edges : np.ndarray, shape (n_bin_edges, 1)
+        Linear position of the bin edges.
+    is_track_interior : np.ndarray, shape (n_bins,)
+        Boolean array, False for bins that fall in a gap between edges.
     distance_between_nodes : dict
-    centers_shape : tuple
-    edges : tuple of np.ndarray
-    track_graph_with_bin_centers_edges : nx.Graph
+        Shortest-path distance between every pair of nodes of
+        `track_graph_with_bin_centers_edges`, as a dict of dicts.
+    centers_shape : tuple of int
+        Grid shape, ``(n_bins,)``.
+    edges : list of np.ndarray
+        One-element list holding the 1D bin edges.
+    track_graph_with_bin_centers_edges : networkx.Graph
+        Track graph with bin edge and bin center nodes added.
     original_nodes_df : pd.DataFrame
-        Table of information about the original nodes in the track graph
+        Table of information about the original nodes in the track graph.
     place_bin_edges_nodes_df : pd.DataFrame
-        Table of information with bin edges and centers
+        Table of information about the added bin edge nodes.
     place_bin_centers_nodes_df : pd.DataFrame
-        Table of information about bin centers
+        Table of information about bin centers, including bin centers that
+        are not on the track.
     nodes_df : pd.DataFrame
-        Table of information with information about the original nodes,
-        bin edges, and bin centers
-
+        Table of information about the original nodes, bin edges, and bin
+        centers.
     """
     track_graph_with_bin_centers_edges = make_track_graph_with_bin_centers_edges(
         track_graph, place_bin_size
@@ -1873,25 +1930,28 @@ def get_track_grid(
 def get_track_boundary(
     is_track_interior: np.ndarray, n_position_dims: int = 2, connectivity: int = 1
 ) -> np.ndarray:
-    """Determines the boundary of the valid interior track bins. The boundary
-    are not bins on the track but surround it.
+    """Determine the boundary of the valid interior track bins.
+
+    The boundary bins are not on the track but surround it.
 
     Parameters
     ----------
     is_track_interior : np.ndarray, shape (n_bins_x, n_bins_y)
-    n_position_dims : int
-    connectivity : int
-         `connectivity` determines which elements of the output array belong
-         to the structure, i.e., are considered as neighbors of the central
-         element. Elements up to a squared distance of `connectivity` from
-         the center are considered neighbors. `connectivity` may range from 1
-         (no diagonal elements are neighbors) to `rank` (all elements are
-         neighbors).
+        Boolean array, True for bins in the track interior.
+    n_position_dims : int, optional
+        Number of dimensions of the grid, by default 2.
+    connectivity : int, optional
+        Determines which elements of the output array belong to the structure,
+        i.e., are considered as neighbors of the central element. Elements up
+        to a squared distance of `connectivity` from the center are considered
+        neighbors. `connectivity` may range from 1 (no diagonal elements are
+        neighbors) to `n_position_dims` (all elements are neighbors). By
+        default 1.
 
     Returns
     -------
-    is_track_boundary : np.ndarray, shape (n_bins,)
-
+    is_track_boundary : np.ndarray, same shape as ``is_track_interior``
+        Boolean array, True for bins adjacent to the track interior.
     """
     structure = ndimage.generate_binary_structure(
         rank=n_position_dims, connectivity=connectivity
@@ -1904,17 +1964,22 @@ def get_track_boundary(
 
 
 def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
-    """Create a graph of the track with nodes at the center of each on track bin and
-    edges between adjacent bins on the track.
+    """Create a graph of the track with nodes at the center of each bin.
+
+    Nodes are the bin centers and edges connect adjacent on-track bins
+    (including diagonals), weighted by their Euclidean distance.
 
     Parameters
     ----------
     environment : Environment
+        A fitted N-D environment (``place_bin_centers_``, ``is_track_interior_``
+        and ``centers_shape_`` set).
 
     Returns
     -------
-    track_graph : nx.Graph
-
+    track_graph : networkx.Graph
+        Graph with node attributes ``pos`` and ``is_track_interior`` and edge
+        attributes ``distance`` and ``edge_id``.
     """
     track_graph = nx.Graph()
     axis_offsets = [-1, 0, 1]
@@ -2008,12 +2073,13 @@ def gaussian_smooth(
     axis: int = 0,
     truncate: int = 8,
 ) -> np.ndarray:
-    """1D convolution of the data with a Gaussian.
+    """Convolve the data with a 1D Gaussian along one axis.
 
-    The standard deviation of the gaussian is in the units of the sampling
-    frequency. The function is just a wrapper around scipy's
-    `gaussian_filter1d`, The support is truncated at 8 by default, instead
-    of 4 in `gaussian_filter1d`
+    The standard deviation of the Gaussian is in time units (seconds when
+    ``sampling_frequency`` is in Hz). The function is a wrapper around scipy's
+    `gaussian_filter1d` with a constant (zero) boundary mode. The support is
+    truncated at 8 standard deviations by default, instead of 4 in
+    `gaussian_filter1d`.
 
     Parameters
     ----------
@@ -2032,7 +2098,6 @@ def gaussian_smooth(
     -------
     smoothed_data : np.ndarray, same shape as data
         Gaussian smoothed data array.
-
     """
     return cast(
         "np.ndarray",
