@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from non_local_detector import (
+    ClusterlessDecoder,
     Environment,
     NonLocalSortedSpikesDetector,
     SortedSpikesDecoder,
@@ -156,7 +157,7 @@ def test_list_environment_labels_match_array():
 @pytest.mark.unit
 def test_fit_rejects_position_without_one_row_per_sample():
     time, position, spike_times = _recording()
-    with pytest.raises(ValidationError, match="position"):
+    with pytest.raises(ValidationError, match="one row per position_time sample"):
         _decoder().fit(time, position[:-1], spike_times)
 
 
@@ -209,7 +210,7 @@ def test_decode_requires_position_time_with_position(fitted_local, method):
 def test_decode_rejects_position_without_one_row_per_sample(fitted_local, method):
     detector, time, position = fitted_local
     _, _, spike_times = _recording()
-    with pytest.raises(ValidationError, match="position"):
+    with pytest.raises(ValidationError, match="one row per position_time sample"):
         getattr(detector, method)(
             spike_times, time_edges=EDGES, position=position[:-1], position_time=time
         )
@@ -294,3 +295,105 @@ def test_direct_log_likelihood_rejects_position_without_position_time(fitted_loc
     _, _, spike_times = _recording()
     with pytest.raises(ValidationError, match="position_time is required"):
         detector.compute_log_likelihood(None, position, spike_times, time_edges=EDGES)
+
+
+def _clusterless_recording():
+    time, position, spike_times = _recording()
+    features = [np.array([[0.1], [-0.1], [0.2], [-0.2]])]
+    return time, position, spike_times, features
+
+
+def _clusterless_decoder():
+    return ClusterlessDecoder(
+        environments=Environment(place_bin_size=5, position_range=((40, 60),)),
+        infer_track_interior=False,
+        clusterless_algorithm="clusterless_kde",
+        clusterless_algorithm_params={"disable_progress_bar": True},
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["fit", "fit_encoding_model"])
+@pytest.mark.parametrize(
+    ("name", "value", "match"),
+    [
+        ("is_training", np.array([True]), "is_training"),
+        ("is_training", np.full(N_TIME, 2), "is_training"),
+        ("environment_labels", np.zeros(N_TIME), "environment_labels"),
+        ("encoding_group_labels", np.zeros(N_TIME - 1, dtype=int), "encoding_group"),
+    ],
+    ids=["mask_length_one", "mask_integer_two", "env_numeric", "group_short"],
+)
+def test_clusterless_fit_rejects_malformed_inputs(method, name, value, match):
+    time, position, spike_times, features = _clusterless_recording()
+    detector = _clusterless_decoder().fit(time, position, spike_times, features)
+    snapshot = _snapshot(detector)
+    with pytest.raises(ValidationError, match=match):
+        getattr(detector, method)(
+            time, position, spike_times, features, **{name: value}
+        )
+    if method == "fit":
+        _assert_unchanged(detector, snapshot)
+
+
+@pytest.mark.unit
+def test_clusterless_fit_accepts_list_inputs():
+    time, position, spike_times, features = _clusterless_recording()
+    mask = np.arange(N_TIME) < N_TIME // 2
+    from_array = _clusterless_decoder().fit(
+        time, position, spike_times, features, is_training=mask
+    )
+    from_list = _clusterless_decoder().fit(
+        time.tolist(),
+        position.tolist(),
+        spike_times,
+        features,
+        is_training=mask.astype(int).tolist(),
+        environment_labels=[""] * N_TIME,
+    )
+    edges = EDGES
+    np.testing.assert_array_equal(
+        from_list.predict(spike_times, features, time_edges=edges).acausal_posterior,
+        from_array.predict(spike_times, features, time_edges=edges).acausal_posterior,
+    )
+
+
+@pytest.mark.unit
+def test_estimate_parameters_rejects_malformed_inputs_before_fitting(monkeypatch):
+    time, position, spike_times = _recording()
+    detector = _decoder().fit(time, position, spike_times)
+    snapshot = _snapshot(detector)
+
+    def unexpected_fit(*args, **kwargs):
+        pytest.fail("Inputs must be checked before the internal fit")
+
+    monkeypatch.setattr(type(detector), "fit", unexpected_fit)
+    with pytest.raises(ValidationError, match="is_training"):
+        detector.estimate_parameters(
+            time,
+            position,
+            spike_times,
+            time_edges=EDGES,
+            is_training=np.array([True]),
+        )
+    with pytest.raises(ValidationError, match="one row per position_time sample"):
+        detector.estimate_parameters(time, position[:-1], spike_times, time_edges=EDGES)
+    monkeypatch.undo()
+    _assert_unchanged(detector, snapshot)
+
+
+@pytest.mark.unit
+# max_iter=1 is a speed cap, so EM stops before convergence.
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+def test_estimate_parameters_accepts_list_inputs():
+    time, position, spike_times = _recording()
+    options = {
+        "time_edges": EDGES,
+        "max_iter": 1,
+        "estimate_discrete_transition": False,
+    }
+    expected = _decoder().estimate_parameters(time, position, spike_times, **options)
+    actual = _decoder().estimate_parameters(
+        time.tolist(), position.tolist(), spike_times, **options
+    )
+    np.testing.assert_array_equal(actual.acausal_posterior, expected.acausal_posterior)
