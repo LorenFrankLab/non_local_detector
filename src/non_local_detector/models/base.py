@@ -4358,10 +4358,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         with suppress(AttributeError):
             del self.log_likelihood_
 
-    def fit_predict(self) -> xr.Dataset:
-        """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
-        raise NotImplementedError
-
     @abc.abstractmethod
     def fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:
         """Fit the encoding model. To be implemented by inheriting class.

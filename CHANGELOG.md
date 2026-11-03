@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### API hygiene
 
+- **Removed:** `fit_predict` on the detectors, a stub that only raised `NotImplementedError`. Call `fit(...)` then `predict(...)`.
 - `decode_bin_centers` moved from `non_local_detector.likelihoods.common` to `non_local_detector.time_edges`, and `validate_weights` to `non_local_detector._validation`, removing a dependency of `checkpointed_inference` and `encoding_time` on the likelihood package. Neither is part of the documented public API; update imports that used the old location. The stale function-level "circular import" imports in `environment.py` and `models/base.py` are now top-level imports.
 - **Fixed:** `plot_non_local_model` finds sorted-spikes place fields through the detector's own observation model instead of the hard-coded `("", 0)` key, so it no longer silently falls back to electrode-group ordering when the environment is named or the encoding group is not 0.
 - **Fixed:** the `ContinuousTransitions` type alias includes `Identity`, which the transition operators already accept.
