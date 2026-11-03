@@ -14,10 +14,15 @@ on:
     - cron: "23 7 * * 1"
   workflow_dispatch:
 
-# Cancel superseded runs of a pull request; let every push to main or a tag
-# finish so each merged commit gets a complete result.
+# A newer push to a pull request cancels its superseded run. Every other run
+# (a push to main, maint/* or a tag, the weekly schedule, a manual dispatch)
+# gets a group of its own: GitHub keeps only one pending run per group and
+# cancels the older one when another queues, so a shared group would drop
+# CI for some merged commits even without cancel-in-progress.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request'
+    && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
