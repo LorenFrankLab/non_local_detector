@@ -1068,6 +1068,37 @@ def _scalar_to_spatial_destination(
     ).is_track_interior_flat_
 
 
+def _check_block_shape(
+    transition: object, shape: tuple[int, ...], expected: tuple[int, int]
+) -> None:
+    """Check the shape of a transition's block against its two states.
+
+    Used for the dense block, a planned structured block and a planned dense
+    shape alike, so every representation reports a mismatch the same way.
+
+    Raises
+    ------
+    ValidationError
+        If ``shape`` is not ``expected``.
+    """
+    if tuple(shape) == expected:
+        return
+    msg = (
+        f"{type(transition).__name__} gives a block with the wrong shape for "
+        "its two states"
+    )
+    raise ValidationError(
+        msg,
+        expected=f"shape {expected}, (source state bins, destination state bins)",
+        got=f"shape {tuple(shape)}",
+        hint=(
+            "Return one row per bin of the source state's environment and "
+            "one column per bin of the destination state's environment; a "
+            "Discrete transition joins only states without place bins."
+        ),
+    )
+
+
 def _make_transition_block(
     transition: ContinuousTransition,
     environments: Sequence[Environment],
@@ -1117,18 +1148,8 @@ def _make_transition_block(
             ),
         ) from None
     block = np.asarray(transition.make_state_transition(environments, context))
+    _check_block_shape(transition, block.shape, shape)
     label = f"{name}.make_state_transition(...)"
-    if block.shape != shape:
-        msg = f"{label} returned a block with the wrong shape"
-        raise ValidationError(
-            msg,
-            expected=f"shape {shape}, (source state bins, destination state bins)",
-            got=f"shape {block.shape}",
-            hint=(
-                "Return one row per bin of the source state's environment and "
-                "one column per bin of the destination state's environment."
-            ),
-        )
     val.ensure_all_finite(block, label)
     val.ensure_all_non_negative(block, label)
     val.ensure_substochastic_matrix(block, label)

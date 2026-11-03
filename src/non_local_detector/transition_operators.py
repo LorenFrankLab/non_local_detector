@@ -23,6 +23,7 @@ from non_local_detector.continuous_state_transitions import (
     ContinuousTransition,
     RandomWalk,
     TransitionContext,
+    _check_block_shape,
     _check_continuous_transition,
     _make_transition_block,
     _multi_bin_local_transition,
@@ -1725,12 +1726,7 @@ def _check_fallback_shape(
     planned = _planned(transition)
     if planned is None:
         return
-    shape = planned.dense_block_shape(environments)
-    if shape != expected:
-        msg = (
-            f"Dense transition block shape {shape} does not match state bins {expected}"
-        )
-        raise ValueError(msg)
+    _check_block_shape(transition, planned.dense_block_shape(environments), expected)
 
 
 def build_transition_operator(
@@ -1813,9 +1809,9 @@ def build_transition_operator(
                 block = _structured_block(
                     transition, environments, sizes[source], sizes[target]
                 )
-                if block.shape != (sizes[source], sizes[target]):
-                    msg = f"Transition block shape {block.shape} does not match state bins {(sizes[source], sizes[target])}"
-                    raise ValueError(msg)
+                _check_block_shape(
+                    transition, block.shape, (sizes[source], sizes[target])
+                )
                 planned_row.append(block)
             except UnsupportedTransitionError:
                 if not allow_dense_fallback:

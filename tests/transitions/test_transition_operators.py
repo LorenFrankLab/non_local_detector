@@ -1221,12 +1221,14 @@ def test_spatial_discrete_block_is_rejected_instead_of_broadcast():
     """A one-bin Discrete block between two spatial states is not broadcast
     into a matrix of ones."""
     env = environment((3, 4))
-    with pytest.raises(ValueError, match="shape"):
+    match = r"Discrete gives a block with the wrong shape"
+    with pytest.raises(ValidationError, match=match):
         dense_reference([[Discrete()]], [env], (12,))
-    with pytest.raises(ValueError, match="shape"):
-        build_transition_operator(
-            [[Discrete()]], [env], (12,), allow_dense_fallback=True
-        )
+    for allow_dense_fallback in (False, True):
+        with pytest.raises(ValidationError, match=match):
+            build_transition_operator(
+                [[Discrete()]], [env], (12,), allow_dense_fallback=allow_dense_fallback
+            )
 
 
 @pytest.mark.unit
