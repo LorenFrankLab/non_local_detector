@@ -1,3 +1,9 @@
+"""Continuous vs. fragmented replay classifiers.
+
+Two-state models, for sorted spikes and clusterless data, that distinguish
+replay that moves continuously through space from fragmented replay.
+"""
+
 from typing import Any, cast
 
 import numpy as np

@@ -1,3 +1,12 @@
+"""Ready-made detector, classifier and decoder models.
+
+Each model fixes the discrete states and transitions of a ``SortedSpikesDetector``
+or ``ClusterlessDetector`` (see :mod:`non_local_detector.models.base`): decoders
+with a single continuous state, continuous-vs-fragmented classifiers,
+multi-environment classifiers, and non-local detectors with Local, No-Spike and
+non-local states.
+"""
+
 from non_local_detector.models.cont_frag_model import (
     ContFragClusterlessClassifier,
     ContFragSortedSpikesClassifier,

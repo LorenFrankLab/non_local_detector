@@ -1,3 +1,9 @@
+"""No-Spike, continuous and fragmented classifiers.
+
+Three-state models, for sorted spikes and clusterless data, with No-Spike,
+Continuous and Fragmented states.
+"""
+
 from typing import Any
 
 import numpy as np

@@ -1,3 +1,9 @@
+"""Detectors of non-local activity such as replay.
+
+Four-state models, for sorted spikes and clusterless data, with Local,
+No-Spike, Non-Local Continuous and Non-Local Fragmented states.
+"""
+
 from collections.abc import Sequence
 from typing import Any, cast
 

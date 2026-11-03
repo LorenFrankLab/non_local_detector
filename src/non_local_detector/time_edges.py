@@ -46,6 +46,17 @@ def requires_time_edges(function: _F) -> _F:
 
     This is an error adapter, not a compatibility conversion: old inputs are
     never interpreted as bin boundaries automatically.
+
+    Parameters
+    ----------
+    function : callable
+        Function that takes a keyword-only ``time_edges`` argument.
+
+    Returns
+    -------
+    callable
+        ``function`` wrapped so that calls without the ``time_edges``
+        keyword, or with the obsolete ``time`` keyword, raise ``TypeError``.
     """
 
     @wraps(function)
@@ -261,6 +272,7 @@ def uniform_time_bin_width(time_edges: ArrayLike, name: str = "time_edges") -> f
     Parameters
     ----------
     time_edges : array_like, shape (n_bins + 1,)
+        Bin boundaries in seconds.
     name : str, optional
         Name used in error messages, by default "time_edges".
 
@@ -289,6 +301,7 @@ def uniform_time_edges(
     Parameters
     ----------
     time_edges : array_like, shape (n_bins + 1,)
+        Bin boundaries in seconds.
     name : str, optional
         Name used in error messages, by default "time_edges".
 
@@ -327,7 +340,7 @@ def uniform_time_edges(
 
 
 def time_edges_from_centers(time: ArrayLike) -> np.ndarray:
-    """Edges of uniform bins centered on uniformly spaced timestamps.
+    """Return the edges of uniform bins centered on uniformly spaced timestamps.
 
     This is the migration for code that decoded one row per position sample:
     each sample ``t[i]`` becomes the center of the bin
@@ -341,6 +354,8 @@ def time_edges_from_centers(time: ArrayLike) -> np.ndarray:
     Returns
     -------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        Bin boundaries in the units of ``time``: the midpoints between
+        adjacent centers, with half a bin width added beyond each end.
 
     Raises
     ------
@@ -394,6 +409,7 @@ def calculate_time_edges(
     Returns
     -------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        Uniform bin boundaries in seconds.
 
     Raises
     ------
