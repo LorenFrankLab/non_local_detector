@@ -629,6 +629,20 @@ def checkpointed_forward_backward(
                 "output_mode='spatial'.",
             )
         state_ind = np.arange(np.size(initial_distribution))
+        if discrete_transition_matrix is not None and np.shape(
+            discrete_transition_matrix
+        )[-1:] != (len(state_ind),):
+            msg = (
+                "discrete_transition_matrix needs one discrete state per hidden "
+                "bin without state_ind"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"shape ({n_time}, {len(state_ind)}, {len(state_ind)})",
+                got=f"shape {np.shape(discrete_transition_matrix)}",
+                hint="Pass state_ind, the discrete state of each hidden bin, to "
+                "use fewer discrete states than hidden bins.",
+            )
     covariate = discrete_transition_matrix is not None
     dense = transition_operator is None
     dtype, validated_states = _validate_hmm_inputs(

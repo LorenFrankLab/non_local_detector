@@ -510,3 +510,20 @@ def test_result_reports_no_degenerate_steps_as_an_empty_integer_array(name):
     result = _call(name, _inputs())
     assert result.degenerate_indices.shape == (0,)
     assert result.degenerate_indices.dtype.kind == "i"
+
+
+def test_checkpointed_spatial_without_state_ind_names_the_discrete_matrix():
+    """Without ``state_ind`` every bin is its own state; the error says so
+    instead of blaming a ``state_ind`` the caller never passed."""
+    inputs = _inputs()
+    message = _raises(
+        "checkpointed_covariate",
+        inputs,
+        "discrete_transition_matrix needs one discrete state per hidden bin "
+        "without state_ind",
+        f"Expected: shape ({N_TIME}, {N_BINS}, {N_BINS})",
+        f"Got: shape ({N_TIME}, {N_STATES}, {N_STATES})",
+        state_ind=None,
+        output_mode="spatial",
+    )
+    assert "Pass state_ind" in message
