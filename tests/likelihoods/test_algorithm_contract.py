@@ -4,13 +4,15 @@ A detector stores the dict an algorithm's fit returns as its encoding model and
 unpacks it into the algorithm's predict beside its own data and keyword
 arguments (see ``LikelihoodAlgorithm``). Nothing checks the keys when an
 algorithm is registered, so a mismatch would surface only as a ``TypeError`` at
-decode time. These tests fit each registered algorithm through a detector, so
-the keyword arguments checked are the ones the detector actually passes.
+decode time, or not at all. These tests fit each registered algorithm through a
+detector, so the keyword arguments checked are the ones the detector actually
+passes, and check the fit's keys against the ``TypedDict`` its record names.
 """
 
 import copy
 import inspect
 import pickle
+import typing
 from dataclasses import replace
 
 import jax
@@ -18,20 +20,31 @@ import numpy as np
 import pytest
 
 from non_local_detector import Environment, time_edges_from_centers
-from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_PREDICT_KEYWORDS,
     _ENCODING_MODEL_KEYS,
     _PREDICT_KEYWORDS,
     _SORTED_SPIKES_ALGORITHMS,
+    ClusterlessLikelihoodAlgorithm,
     LikelihoodAlgorithm,
 )
+from non_local_detector.likelihoods.clusterless_kde import (
+    ClusterlessKDEEncodingModel,
+    fit_clusterless_kde_encoding_model,
+    predict_clusterless_kde_log_likelihood,
+)
+from non_local_detector.likelihoods.encoding_model import (
+    ClusterlessEncodingModel,
+    SortedSpikesEncodingModel,
+)
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    SortedSpikesDiffusionEncodingModel,
     fit_sorted_spikes_diffusion_encoding_model,
     predict_sorted_spikes_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
+    SortedSpikesKDEEncodingModel,
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
@@ -83,6 +96,11 @@ def _data_names(decoder):
     return {"position_time", "position", *type(decoder)._SPIKE_DATA_NAMES}
 
 
+def _declared_keys(encoding_model_type):
+    """Every key of an encoding-model ``TypedDict``."""
+    return encoding_model_type.__required_keys__ | encoding_model_type.__optional_keys__
+
+
 def contract_violations(
     record: LikelihoodAlgorithm,
     encoding_model: dict,
@@ -102,7 +120,12 @@ def contract_violations(
     required = {n for n, p in named.items() if p.default is inspect.Parameter.empty}
     keys = set(encoding_model)
     supplied = keys | data_names | keywords
+    declared = _declared_keys(record.encoding_model_type)
     violations = []
+    if undeclared := keys - declared:
+        violations.append(f"keys the encoding model type omits: {sorted(undeclared)}")
+    if unreturned := declared - keys:
+        violations.append(f"declared keys the fit omits: {sorted(unreturned)}")
     if collisions := keys & (data_names | keywords):
         violations.append(f"keys the detector also passes: {sorted(collisions)}")
     if missing := required - supplied:
@@ -150,6 +173,8 @@ def test_registered_algorithm_meets_the_detector_contract(
     data_names = _data_names(decoder)
 
     assert contract_violations(record, encoding_model, data_names, keywords) == []
+    assert encoding_model["algorithm"] == algorithm
+    assert type(encoding_model) is dict  # pickles and round-trips as a plain dict
 
     calls = []
 
@@ -195,7 +220,11 @@ def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
         del model["place_fields"], model["rate_units"]
         return {**model, "row_slice": None, "unread": 0}
 
-    broken = LikelihoodAlgorithm(broken_fit, predict_sorted_spikes_kde_log_likelihood)
+    broken = LikelihoodAlgorithm(
+        broken_fit,
+        predict_sorted_spikes_kde_log_likelihood,
+        SortedSpikesKDEEncodingModel,
+    )
     monkeypatch.setitem(_SORTED_SPIKES_ALGORITHMS, "sorted_spikes_kde", broken)
     decoder, _ = _fit("sorted_spikes_kde", recording)
     (encoding_model,) = decoder.encoding_model_.values()
@@ -204,6 +233,8 @@ def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
         broken, encoding_model, _data_names(decoder), _PREDICT_KEYWORDS
     )
     assert violations == [
+        "keys the encoding model type omits: ['row_slice', 'unread']",
+        "declared keys the fit omits: ['place_fields', 'rate_units']",
         "keys the detector also passes: ['row_slice']",
         "required predict parameters not supplied: ['place_fields']",
         "optional predict parameters not supplied: ['rate_units']",
@@ -212,10 +243,8 @@ def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
     ]
 
 
-def test_contract_check_reports_a_renamed_key_of_a_catch_all_predict(
-    monkeypatch, recording
-):
-    """A predict taking ``**kwargs`` accepts a renamed key; the check does not."""
+def test_contract_check_reports_a_renamed_key(monkeypatch, recording):
+    """A renamed fit key breaks the type, and predict neither takes nor gets it."""
 
     def renamed_fit(*args, **kwargs):
         model = fit_sorted_spikes_diffusion_encoding_model(*args, **kwargs)
@@ -223,7 +252,9 @@ def test_contract_check_reports_a_renamed_key_of_a_catch_all_predict(
         return model
 
     renamed = LikelihoodAlgorithm(
-        renamed_fit, predict_sorted_spikes_diffusion_log_likelihood
+        renamed_fit,
+        predict_sorted_spikes_diffusion_log_likelihood,
+        SortedSpikesDiffusionEncodingModel,
     )
     monkeypatch.setitem(_SORTED_SPIKES_ALGORITHMS, "sorted_spikes_diffusion", renamed)
     decoder, _ = _fit("sorted_spikes_diffusion", recording)
@@ -233,8 +264,47 @@ def test_contract_check_reports_a_renamed_key_of_a_catch_all_predict(
         renamed, encoding_model, _data_names(decoder), _PREDICT_KEYWORDS
     )
     assert violations == [
-        "optional predict parameters not supplied: ['interior_log_place_fields']"
+        "keys the encoding model type omits: ['interior_log_place_field']",
+        "declared keys the fit omits: ['interior_log_place_fields']",
+        "optional predict parameters not supplied: ['interior_log_place_fields']",
+        "keys predict does not accept: ['interior_log_place_field']",
     ]
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_record_names_the_type_its_fit_returns(algorithm):
+    """The fit is annotated with the record's TypedDict, with its family's keys."""
+    record = _registry(algorithm)[0][algorithm]
+    assert typing.get_type_hints(record.fit)["return"] is record.encoding_model_type
+    family = (
+        SortedSpikesEncodingModel
+        if algorithm in _SORTED_SPIKES_ALGORITHMS
+        else ClusterlessEncodingModel
+    )
+    # A TypedDict supports no subclass check; its keys include its bases'.
+    assert family.__required_keys__ <= record.encoding_model_type.__required_keys__
+    assert family.__required_keys__ >= _ENCODING_MODEL_KEYS
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_model_parameters_are_keyword_only(algorithm):
+    """After the data arguments, fit and predict take their parameters by keyword.
+
+    A catch-all ``**kwargs`` predict would hide a renamed key, so none takes one.
+    """
+    record = _registry(algorithm)[0][algorithm]
+    spike_data = ["spike_times"]
+    if algorithm in _CLUSTERLESS_ALGORITHMS:
+        spike_data.append("spike_waveform_features")
+    data = ["position_time", "position", *spike_data]
+    for function, positional in [
+        (record.predict, data),
+        (record.fit, [*data, "environment", "weights"]),
+    ]:
+        parameters = inspect.signature(function).parameters
+        assert list(parameters)[: len(positional)] == positional
+        kinds = {p.kind for name, p in parameters.items() if name not in positional}
+        assert kinds == {inspect.Parameter.KEYWORD_ONLY}, function.__name__
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
@@ -247,13 +317,11 @@ def test_records_pickle_and_copy(algorithm):
             restored.default_params["block_size"] = 5  # type: ignore[index]
 
 
-def test_clusterless_record_without_a_mark_scale_raises(monkeypatch, recording):
-    """The detector names the algorithm instead of calling None."""
-    record = _CLUSTERLESS_ALGORITHMS["clusterless_kde"]
-    monkeypatch.setitem(
-        _CLUSTERLESS_ALGORITHMS,
-        "clusterless_kde",
-        replace(record, mark_reference_scale=None),
-    )
-    with pytest.raises(ValidationError, match="without a mark_reference_scale"):
-        _fit("clusterless_kde", recording)
+def test_clusterless_record_requires_a_mark_scale():
+    """A clusterless record cannot be registered without its mark-kernel width."""
+    with pytest.raises(TypeError, match="mark_reference_scale"):
+        ClusterlessLikelihoodAlgorithm(  # type: ignore[call-arg]
+            fit_clusterless_kde_encoding_model,
+            predict_clusterless_kde_log_likelihood,
+            ClusterlessKDEEncodingModel,
+        )

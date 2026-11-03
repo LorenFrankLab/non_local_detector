@@ -77,6 +77,15 @@ This package produces scientific results, so a change that alters numbers needs 
 - Do not loosen tolerances or convergence criteria without the same explanation.
 - After changing JAX code, check for unexpected recompilation, NaN/Inf in outputs, and unchanged shapes. If you changed GPU-specific paths, run the relevant tests on a CUDA machine.
 
+## Adding a likelihood algorithm
+
+A likelihood algorithm is a fit and a predict function registered in `_SORTED_SPIKES_ALGORITHMS` or `_CLUSTERLESS_ALGORITHMS` of `non_local_detector.likelihoods`; a detector can only select a registered name.
+
+- The fit returns its encoding model as a plain dict. Describe it with a `TypedDict` derived from `SortedSpikesEncodingModel` or `ClusterlessEncodingModel` (`non_local_detector.likelihoods.encoding_model`) and annotate the fit with it, so mypy checks the returned keys and values. Set `algorithm` to the registered name.
+- The detector calls `predict(position_time, position, *spike_data, **encoding_model, ...)`. After the data arguments every fit and predict parameter is keyword-only, and predict declares every key of the encoding model (no `**kwargs`), including fit diagnostics it does not use.
+- Register a `LikelihoodAlgorithm(fit, predict, EncodingModelType)`, or for clusterless data a `ClusterlessLikelihoodAlgorithm` with its `mark_reference_scale` and, if model checking supports it, its `electrode_intensity`.
+- `tests/likelihoods/test_algorithm_contract.py` checks every registered algorithm against these rules.
+
 ## Changelog
 
 Add an entry under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for every user-visible change (new features, behavior changes, fixes, deprecations). Say what changed for users, and mark changes that alter results.

@@ -86,6 +86,7 @@ from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
+    ClusterlessLikelihoodAlgorithm,
     LikelihoodAlgorithm,
     _resolve_fit_params,
 )
@@ -3600,6 +3601,43 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
     ) -> None:
         """Validate active fitted populations before missing-data shortcuts."""
         is_clusterless = isinstance(self, ClusterlessDetector)
+        active_keys = {
+            (obs.environment_name, obs.encoding_group)
+            for obs in self.observation_models
+            if not obs.is_no_spike
+        }
+        # Each encoding model unpacks into its own algorithm's predict, which
+        # the algorithm parameter selects; another predict would reject or
+        # misread its keys.
+        parameter = (
+            "clusterless_algorithm" if is_clusterless else "sorted_spikes_algorithm"
+        )
+        current = getattr(self, parameter)
+        for key in sorted(active_keys, key=repr):
+            fitted = self.encoding_model_[key].get("algorithm")
+            if fitted == current:
+                continue
+            if fitted is None:
+                msg = (
+                    f"Encoding entry {key!r} does not record the algorithm that "
+                    "fitted it; refit before decoding."
+                )
+                hint = "Call fit(...) with the original recording."
+            else:
+                msg = (
+                    f"Encoding entry {key!r} was fitted by {fitted!r}, but "
+                    f"{parameter} is now {current!r}; refit before decoding."
+                )
+                hint = (
+                    f"Call fit(...) again to fit {current!r}, or set "
+                    f"{parameter}={fitted!r} to decode with the fitted model."
+                )
+            raise ValidationError(
+                msg,
+                expected=f"{parameter}={fitted!r}",
+                got=f"{parameter}={current!r}",
+                hint=hint,
+            )
         if is_clusterless:
             validate_spike_feature_population(spike_times, spike_waveform_features)
         else:
@@ -3611,26 +3649,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                         expected="one array with shape (n_spikes,) per neuron",
                         got=f"shape {np.shape(times)}",
                     )
+        # The per-unit rates every fit of the family stores (see
+        # ``SortedSpikesEncodingModel`` and ``ClusterlessEncodingModel``).
         field = "mean_rates" if is_clusterless else "place_fields"
-        for key in {
-            (obs.environment_name, obs.encoding_group)
-            for obs in self.observation_models
-            if not obs.is_no_spike
-        }:
+        for key in active_keys:
             model = self.encoding_model_[key]
             validate_population_lengths(
                 "electrode" if is_clusterless else "neuron",
                 spike_times=spike_times,
-                **{field: model.get(field)},
+                **{field: model[field]},
             )
             if is_clusterless:
-                if "mark_dimensions" in model:
-                    dimensions = model["mark_dimensions"]
-                else:
-                    encoded_marks = model.get(
-                        "encoding_spike_waveform_features", model.get("encoding_marks")
-                    )
-                    dimensions = [np.shape(marks)[1] for marks in encoded_marks]
+                dimensions = model["mark_dimensions"]
                 validate_population_lengths(
                     "electrode", spike_times=spike_times, mark_dimensions=dimensions
                 )
@@ -6373,6 +6403,7 @@ class ClusterlessDetector(_DetectorBase):
             local_position_std=local_position_std,
         )
         self.clusterless_algorithm = clusterless_algorithm
+        self._clusterless_algorithm()  # rejects an unregistered name
         # Stored as-is to keep sklearn's clone() contract intact; the dict
         # copy + default resolution happens lazily in
         # ``_resolve_clusterless_algorithm_params`` at fit time.
@@ -6388,8 +6419,8 @@ class ClusterlessDetector(_DetectorBase):
         ----------
         weights : np.ndarray, shape (n_time_position,)
         """
-        self.fit_encoding_model(
-            **self._encoding_model_data, weights=weights, _refit_mark_reference=False
+        self._fit_encoding_model(
+            **self._encoding_model_data, weights=weights, refit_mark_reference=False
         )
 
     def _resolve_clusterless_algorithm_params(self) -> dict[str, Any]:
@@ -6408,7 +6439,7 @@ class ClusterlessDetector(_DetectorBase):
             "clusterless_algorithm_params",
         )
 
-    def _clusterless_algorithm(self) -> LikelihoodAlgorithm:
+    def _clusterless_algorithm(self) -> ClusterlessLikelihoodAlgorithm:
         """The registered record of ``clusterless_algorithm``."""
         try:
             return _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
@@ -6456,17 +6487,6 @@ class ClusterlessDetector(_DetectorBase):
         # The reference adds the mark bandwidth, in waveform units, to each
         # feature's training spread.
         mark_reference_scale = self._clusterless_algorithm().mark_reference_scale
-        if mark_reference_scale is None:
-            msg = (
-                f"clusterless_algorithm {self.clusterless_algorithm!r} is "
-                "registered without a mark_reference_scale"
-            )
-            raise ValidationError(
-                msg,
-                hint="Register it as LikelihoodAlgorithm(fit, predict, "
-                "mark_reference_scale=...): the mark reference that scores "
-                "No-Spike marks needs the algorithm's mark-kernel width.",
-            )
         kernel_scale = cast(
             "float | np.ndarray", mark_reference_scale(**algorithm_params)
         )
@@ -6491,7 +6511,6 @@ class ClusterlessDetector(_DetectorBase):
         *,
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
-        _refit_mark_reference: bool = True,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -6526,10 +6545,6 @@ class ClusterlessDetector(_DetectorBase):
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
             Encoding support does not automatically mark decode bins missing.
-        _refit_mark_reference : bool, optional
-            Internal. If False, keep the existing ``mark_reference_`` instead
-            of refitting it, as for posterior-weighted encoding updates. By
-            default True.
 
         Attributes
         ----------
@@ -6547,6 +6562,40 @@ class ClusterlessDetector(_DetectorBase):
             adds a background intensity
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
+        """
+        self._fit_encoding_model(
+            position_time,
+            position,
+            spike_times,
+            spike_waveform_features,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+            weights,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+            refit_mark_reference=True,
+        )
+
+    def _fit_encoding_model(
+        self,
+        position_time: np.ndarray,
+        position: np.ndarray,
+        spike_times: list[np.ndarray],
+        spike_waveform_features: list[np.ndarray],
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        *,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
+        refit_mark_reference: bool,
+    ) -> None:
+        """Body of ``fit_encoding_model``.
+
+        ``refit_mark_reference=False`` keeps the existing ``mark_reference_``,
+        as posterior-weighted encoding updates do.
         """
         logger.info("Fitting clusterless spikes...")
         # Validate before any state changes and before the collections are
@@ -6643,7 +6692,7 @@ class ClusterlessDetector(_DetectorBase):
                 support,
                 kwargs,
             )
-            if _refit_mark_reference
+            if refit_mark_reference
             else self.mark_reference_
         )
 
@@ -7470,6 +7519,7 @@ class SortedSpikesDetector(_DetectorBase):
             local_position_std=local_position_std,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
+        self._sorted_spikes_algorithm()  # rejects an unregistered name
         # Stored as-is to keep sklearn's clone() contract intact; the dict
         # copy + default resolution happens lazily in
         # ``_resolve_sorted_spikes_algorithm_params`` at fit time.
@@ -7489,6 +7539,18 @@ class SortedSpikesDetector(_DetectorBase):
             self.sorted_spikes_algorithm_params,
             "sorted_spikes_algorithm_params",
         )
+
+    def _sorted_spikes_algorithm(self) -> LikelihoodAlgorithm:
+        """The registered record of ``sorted_spikes_algorithm``."""
+        try:
+            return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
+        except KeyError:
+            msg = f"Unknown sorted_spikes_algorithm {self.sorted_spikes_algorithm!r}"
+            raise ValidationError(
+                msg,
+                expected=f"one of {sorted(_SORTED_SPIKES_ALGORITHMS)}",
+                got=repr(self.sorted_spikes_algorithm),
+            ) from None
 
     def fit_encoding_model(
         self,
@@ -7589,9 +7651,7 @@ class SortedSpikesDetector(_DetectorBase):
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            encoding_algorithm = _SORTED_SPIKES_ALGORITHMS[
-                self.sorted_spikes_algorithm
-            ].fit
+            encoding_algorithm = self._sorted_spikes_algorithm().fit
             is_group = is_training & is_encoding & is_environment
             # The mask is this model's exposure: a sample outside the selection
             # must contribute no occupancy, because only in-group spikes are
@@ -7726,7 +7786,7 @@ class SortedSpikesDetector(_DetectorBase):
     )
 
     def _likelihood_predict_function(self) -> Callable[..., Any]:
-        return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm].predict
+        return self._sorted_spikes_algorithm().predict
 
     @row_slice_aware
     @requires_time_edges

@@ -62,6 +62,7 @@ from non_local_detector.likelihoods.diffusion import (
     environment_graph,
     to_density,
 )
+from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
@@ -413,21 +414,38 @@ def _assemble_place_fields(
     return place_fields, jnp.sum(place_fields, axis=0), interior_log_place_fields
 
 
+class SortedSpikesDiffusionEncodingModel(SortedSpikesEncodingModel):
+    """The encoding model ``fit_sorted_spikes_diffusion_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_sorted_spikes_diffusion_log_likelihood``, documented there.
+    """
+
+    occupancy: np.ndarray
+    mean_rates: list[float]
+    no_spike_part_log_likelihood: jax.Array
+    interior_log_place_fields: jax.Array
+    is_track_interior: np.ndarray
+    node_order: np.ndarray
+    bin_sizes: np.ndarray
+    local_interpolation: str
+
+
 def fit_sorted_spikes_diffusion_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[np.ndarray],
     environment: Environment,
     weights: np.ndarray | None = None,
+    *,
     position_std: float = float(np.sqrt(12.5)),
     rank: int | None = None,
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
-    *,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> SortedSpikesDiffusionEncodingModel:
     """Fit a graph-diffusion encoding model for sorted spikes.
 
     Parameters
@@ -479,7 +497,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : SortedSpikesDiffusionEncodingModel
+        - 'algorithm': ``"sorted_spikes_diffusion"``
         - 'environment': the spatial environment
         - 'occupancy': occupancy density at interior place bins
         - 'mean_rates': mean firing rate per neuron
@@ -588,6 +607,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
     )
 
     return {
+        "algorithm": "sorted_spikes_diffusion",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy,
@@ -610,6 +630,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[np.ndarray],
+    *,
     environment: Environment,
     occupancy: np.ndarray,  # noqa: ARG001 -- shared likelihood-algorithm signature
     mean_rates: list[float],
@@ -623,14 +644,13 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     is_local: bool = False,
     interior_log_place_fields: jax.Array | None = None,
     row_slice: slice | None = None,
-    *,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-    **_encoding_extras: object,
 ) -> jax.Array:
     """Predict the Poisson log-likelihood of sorted spikes under the diffusion model.
 
@@ -638,10 +658,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     dict as keyword arguments. ``occupancy``, ``mean_rates``, and ``bin_sizes`` are
     carried for encoding-dict parity but unused here (the rate is already baked into
     ``place_fields``); ``node_order`` is used only to guard local interpolation against
-    crossing invalid graph stencils. ``**_encoding_extras`` absorbs any extra keys a
-    reusing estimator adds to its dict -- e.g. the MRF-GAM's ``mrf_*`` diagnostics,
-    since ``predict_sorted_spikes_mrf_log_likelihood`` is this same function -- so the
-    diffusion signature need not enumerate another estimator's fields.
+    crossing invalid graph stencils. The MRF-GAM predicts with this function too
+    (``predict_sorted_spikes_mrf_log_likelihood``), after its own fit diagnostics.
 
     Parameters
     ----------
@@ -689,6 +707,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         result equals the full-time result sliced by ``row_slice``.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).
@@ -707,9 +728,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     _time_grid : _DecodeTimeGrid, optional
         Internal prepared decode grid shared across a detector's states and
         chunks; direct callers omit it.
-    **_encoding_extras
-        Extra encoding-dict keys a reusing estimator carries (e.g. the MRF's
-        ``mrf_*`` diagnostics); absorbed and unused.
 
     Returns
     -------

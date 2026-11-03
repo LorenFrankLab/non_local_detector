@@ -16,8 +16,10 @@ where ``Lambda(x)`` is the ground intensity in Hz at position ``x`` and
 - clusterless GMM: the joint mixture's components conditioned on ``x``.
 
 The goodness-of-fit transforms only need the operations below, evaluated with
-the decoder's own definitions. Time integrals for the MDCI transform use the
-environment's interior place bins, as the non-local likelihood does.
+the decoder's own definitions. Each algorithm's registry record names its
+class here (``ClusterlessLikelihoodAlgorithm.electrode_intensity``). Time
+integrals for the MDCI transform use the environment's interior place bins, as
+the non-local likelihood does.
 """
 
 from collections.abc import Sequence
@@ -37,26 +39,7 @@ from non_local_detector.model_checking.conditional_marks import (
     GaussianMixtureConditionalCDF,
 )
 
-SUPPORTED_ALGORITHMS = (
-    "clusterless_kde",
-    "clusterless_gmm",
-    "clusterless_diffusion",
-)
 _BATCH = 512
-
-
-def electrode_model(
-    encoding_model: dict[str, Any], algorithm: str, electrode: int
-) -> Any:
-    """The fitted intensity of one electrode, for a supported algorithm."""
-    if algorithm == "clusterless_kde":
-        return _KDEElectrode(encoding_model, electrode)
-    if algorithm == "clusterless_gmm":
-        return _GMMElectrode(encoding_model, electrode)
-    if algorithm == "clusterless_diffusion":
-        return _DiffusionElectrode(encoding_model, electrode)
-    msg = f"algorithm must be one of {SUPPORTED_ALGORITHMS}, got {algorithm!r}"
-    raise ValueError(msg)
 
 
 def _gaussian_log_kernel(
@@ -165,7 +148,7 @@ class _MarkKernelMixture:
         )
 
 
-class _KDEElectrode(_MarkKernelMixture):
+class KDEElectrode(_MarkKernelMixture):
     """Clusterless KDE: Gaussian position and mark kernels on encoding spikes."""
 
     def __init__(self, model: dict[str, Any], electrode: int) -> None:
@@ -254,7 +237,7 @@ class _KDEElectrode(_MarkKernelMixture):
         return self._time_integrated_cdf(log_mass, marks, feature_order)
 
 
-class _DiffusionElectrode(_MarkKernelMixture):
+class DiffusionElectrode(_MarkKernelMixture):
     """Clusterless diffusion: heat-kernel position weights on encoding spikes.
 
     The model diffuses every source bin with one fixed, normalized spatial
@@ -390,7 +373,7 @@ def _full_covariances(model: Any) -> np.ndarray:
     return np.stack([np.eye(n_dims) * c for c in covariances])
 
 
-class _GMMElectrode:
+class GMMElectrode:
     """Clusterless GMM: the ground-process mixture and the joint conditional.
 
     Fits store the joint mixture's position marginal as ``p_gpi``, so
