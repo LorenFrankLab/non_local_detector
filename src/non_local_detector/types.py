@@ -15,6 +15,7 @@ import numpy as np
 from non_local_detector.continuous_state_transitions import (
     Discrete,
     EmpiricalMovement,
+    Identity,
     RandomWalk,
     RandomWalkDirection1,
     RandomWalkDirection2,
@@ -41,6 +42,7 @@ ContinuousTransitions = list[
     list[
         Discrete
         | EmpiricalMovement
+        | Identity
         | RandomWalk
         | RandomWalkDirection1
         | RandomWalkDirection2
