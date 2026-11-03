@@ -192,7 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Mark responsibilities do not depend on position, so where two units' marks overlap a component's rate map mixes their fields.
   - Weights count as spikes in the mixture's prior, so a fit whose weights sum to few spikes supports fewer components.
   - Off a track graph its patsy spline basis cannot be pickled, as for `sorted_spikes_glm`.
-  - `model_checking.clusterless` does not support it yet.
+  - `model_checking.clusterless` does not support it yet: `ircm_transform` and `mdci_transform` raise `ValueError` saying so before reading the encoding model, instead of the generic unknown-algorithm message.
   - Each EM encoding refit refits the mark mixtures from scratch.
 - Internal: the sorted GLM's spatial fit is factored into `_fit_rate_maps`, which both GLMs use; sorted GLM fits are unchanged (bit-identical on 1-D, weighted, track-graph and 2-D fixtures).
 - Choosing the number of joint-GMM components did not help `clusterless_gmm` on the same recording: BIC-selected components gave 15.3 ± 27.6 nats/s less information than the default 64, and a variational Bayes joint mixture 36.1 ± 26.9 less, with more time in non-local states.
