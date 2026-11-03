@@ -254,7 +254,9 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: [quality, test, test-lowest]
+    # A release is tested at the floors and at the newest versions a user
+    # would install, as well as at the locked ones.
+    needs: [quality, test, test-lowest, test-latest]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
