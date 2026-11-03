@@ -1,3 +1,9 @@
+"""Classifiers of which environment the neural activity represents.
+
+Two-state models, for sorted spikes and clusterless data, with one state per
+environment.
+"""
+
 from typing import Any
 
 import numpy as np

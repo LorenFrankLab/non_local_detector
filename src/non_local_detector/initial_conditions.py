@@ -36,7 +36,7 @@ class UniformInitialConditions:
         observation_model: ObservationModel,
         environments: tuple[Environment, ...],
     ) -> np.ndarray:
-        """Creates initial conditions array for the specified observation model.
+        """Create the initial conditions array for the specified observation model.
 
         Generates a uniform probability distribution over position bins,
         with special handling for local and no-spike observation models.

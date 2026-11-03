@@ -325,11 +325,11 @@ def fit_sorted_spikes_kde_encoding_model(
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
     position_std : float, optional
-        Gaussian kernel standard deviation for position, by default sqrt(12.5)
+        Gaussian kernel standard deviation for position, by default sqrt(12.5).
     block_size : int, optional
-        Size of blocks for KDE computation, by default 100
+        Size of blocks for KDE computation, by default 100.
     disable_progress_bar : bool, optional
-        Turn off progress bar, by default False
+        Turn off progress bar, by default False.
 
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds. Clips encoding support using the
@@ -340,6 +340,9 @@ def fit_sorted_spikes_kde_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
@@ -512,8 +515,6 @@ def predict_sorted_spikes_kde_log_likelihood(
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Sampling times for the position.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -540,23 +541,16 @@ def predict_sorted_spikes_kde_log_likelihood(
     is_track_interior : jnp.ndarray, shape (n_place_bins,)
         Boolean mask for track interior.
     disable_progress_bar : bool, optional
-        Turn off progress bar, by default False
+        Turn off progress bar, by default False.
     is_local : bool, optional
-        Compute the log likelihood at the animal's position, by default False
+        Compute the log likelihood at the animal's position, by default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
         against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
-    environment_grid : dict | None, optional
-        The fit's record of the environment's grid (see
-        ``environment_grid_fingerprint``), by default None, which skips the
-        check (a model fitted before the grid was recorded). Prediction raises
-        if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
-        Internal ordering preparation that a detector prediction shares across
-        observation states and chunks. Direct callers omit it; the spike-time
-        ordering is then verified on this call.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).
@@ -566,6 +560,18 @@ def predict_sorted_spikes_kde_log_likelihood(
     log_occupancy : jnp.ndarray, shape (n_interior_bins,), optional, keyword-only
         Log occupancy density at the interior bins, from the fit. Unused, like
         ``occupancy``.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid (see
+        ``environment_grid_fingerprint``), by default None, which skips the
+        check (a model fitted before the grid was recorded). Prediction raises
+        if the environment has since been refit to another grid.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
@@ -574,7 +580,6 @@ def predict_sorted_spikes_kde_log_likelihood(
         is ``n_bins`` unless ``row_slice`` is given. The shape is
         (n_rows, n_interior_bins) if is_local is False (interior bins only),
         otherwise (n_rows, 1).
-
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
     _time_grid = _resolve_time_grid(time_edges, _time_grid)

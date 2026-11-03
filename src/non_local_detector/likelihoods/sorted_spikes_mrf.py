@@ -710,6 +710,7 @@ def select_penalty_by_reml(
     max_iter = int(max_iter)
 
     def objective(log_penalty: float) -> float:
+        """Return the REML objective minimized at ``log_penalty`` (``inf`` if not finite)."""
         log_penalty = float(log_penalty)
         if not np.isfinite(log_penalty):
             return np.inf
@@ -875,6 +876,9 @@ def fit_sorted_spikes_mrf_encoding_model(
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
         Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------

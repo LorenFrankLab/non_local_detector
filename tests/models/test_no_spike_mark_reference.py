@@ -17,16 +17,12 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
 )
-from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_MARK_REFERENCE_SCALES,
 )
-from non_local_detector.likelihoods.common import (
-    RATE_EPS_HZ,
-    interpolate_weights_at_spike_times,
-)
+from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     REFERENCE_DEGREES_OF_FREEDOM,
     MarkReference,
@@ -563,7 +559,12 @@ def test_fit_mark_reference_rejects_kernel_scale_per_other_features():
 def test_reference_uses_requested_environments_every_group_and_the_weights():
     """The reference spans every encoding group of the modelled environments,
     weighted by the fit's weights, and ignores environments no state models."""
-    sim = make_simulated_run_data(n_runs=1, seed=3)
+    # Pins the cell layout this test was written against: the final assertion
+    # needs the masked, weighted mean to differ from the plain mean by more
+    # than rtol=1e-3, which the default on-track layout does not give at seed 3.
+    sim = make_simulated_run_data(
+        n_runs=1, seed=3, place_field_means=np.arange(0, 200, 10)
+    )
     time, position = sim.position_time, sim.position
     detector = ClusterlessDecoder(
         clusterless_algorithm_params={"disable_progress_bar": True}
@@ -585,7 +586,6 @@ def test_reference_uses_requested_environments_every_group_and_the_weights():
         environment_labels=environments,
         weights=weights,
     )
-    support = EncodingSupport(time, position)
     sample_weights = weights * (environments == "")
     for times, marks, reference in zip(
         sim.spike_times,
@@ -593,9 +593,12 @@ def test_reference_uses_requested_environments_every_group_and_the_weights():
         detector.mark_reference_,
         strict=True,
     ):
-        spike_weights = interpolate_weights_at_spike_times(
-            times, time, sample_weights, encoding_support=support
-        )
+        # Every simulated spike falls on a position sample, so its weight is
+        # that sample's, read directly rather than through the interpolation
+        # the fit uses.
+        sample = np.searchsorted(time, times)
+        np.testing.assert_array_equal(time[sample], times)
+        spike_weights = sample_weights[sample]
         expected = spike_weights @ marks / spike_weights.sum()
         np.testing.assert_allclose(reference.location, expected, rtol=1e-10)
         # The masked environment and the weights both move the centre.

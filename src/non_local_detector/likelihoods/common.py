@@ -1,3 +1,9 @@
+"""Shared building blocks for the likelihood algorithms.
+
+Kernel density estimation helpers, spike binning, encoding-support preparation
+and deterministic reductions used by several likelihood modules.
+"""
+
 import hashlib
 import itertools
 from collections import OrderedDict
@@ -58,10 +64,33 @@ def log_bin_duration_evidence(
     intensity_time_scale: float = 1.0,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
-    """The marked-process event term ``N_bin * log(duration / intensity_time_scale)``.
+    """Compute the marked-process event term ``N_bin * log(duration / intensity_time_scale)``.
 
     ``duration`` is each decode bin's width in seconds; ``intensity_time_scale``
     (seconds, by default 1) is the time unit of the caller's intensities.
+
+    Parameters
+    ----------
+    spike_times : sequence of np.ndarray, each shape (n_spikes,)
+        Decoding spike times for each electrode, in seconds.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        FULL decoding bin edges, in seconds.
+    row_slice : slice | None
+        Contiguous range of decode bins to evaluate, or None for all bins.
+    spike_time_order : _SpikeTimeOrder | None
+        Internal ordering preparation shared across states and chunks; None
+        verifies the spike-time ordering on this call.
+    intensity_time_scale : float, optional
+        Time unit of the caller's intensities, in seconds, by default 1.0.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
+
+    Returns
+    -------
+    evidence : jnp.ndarray, shape (n_rows,)
+        ``N_bin * log(duration / intensity_time_scale)`` per requested bin, where
+        ``N_bin`` is the number of spikes of all electrodes in the bin.
     """
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
@@ -418,7 +447,9 @@ def validate_spike_feature_pair(
     Parameters
     ----------
     spike_times : np.ndarray or jnp.ndarray, shape (n_spikes,)
+        Spike times of the electrode.
     spike_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
+        Waveform features (marks) of the electrode, one row per spike.
     electrode : int
         Electrode index, used in the error message.
 
@@ -466,11 +497,14 @@ def validate_spike_feature_population(
     Parameters
     ----------
     spike_times : sequence of arrays, each shape (n_spikes,)
+        Spike times for each electrode.
     spike_waveform_features : sequence of arrays, each shape (n_spikes, n_features)
+        Waveform features (marks) for each electrode.
 
     Returns
     -------
     n_electrodes : int
+        Number of electrodes.
 
     Raises
     ------
@@ -507,8 +541,11 @@ def interpolate_weights_at_spike_times(
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
+        Spike times, in seconds.
     position_time : np.ndarray, shape (n_time_position,)
+        Time of each position sample, in seconds.
     weights : np.ndarray, shape (n_time_position,)
+        Per-position-sample weights.
     encoding_support : EncodingSupport, optional
         Encoding support whose segments bound the interpolation; by default
         None.
@@ -516,6 +553,7 @@ def interpolate_weights_at_spike_times(
     Returns
     -------
     spike_weights : np.ndarray, shape (n_spikes,)
+        Weight of each spike.
     """
     if encoding_support is not None:
         return encoding_support.interpolate(weights, spike_times, fill_value=0.0)
@@ -543,6 +581,7 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     Returns
     -------
     mean_rate : float
+        Weighted mean firing rate, in Hz.
     """
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
@@ -831,7 +870,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
         counts = _spike_counts_matrix(
             spike_times,
             time_edges,
-            "Non-Local Likelihood",
+            "Position-Bin Likelihood",
             True,
             slice(start, stop),
             _spike_time_order=_spike_time_order,
@@ -854,7 +893,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
         row_stop,
         len(spike_times),
         evaluate,
-        "Non-Local Likelihood",
+        "Position-Bin Likelihood",
         disable_progress_bar,
     )
 
@@ -872,17 +911,24 @@ def get_position_at_time(
     Parameters
     ----------
     time : jnp.ndarray, shape (n_time,)
+        Time of each position sample, in seconds.
     position : jnp.ndarray, shape (n_time_position, n_dims_position)
+        Position samples.
     spike_times : jnp.ndarray, shape (n_spikes,)
+        Spike times, in seconds.
     env : Environment | None, optional
         The spatial environment, by default None. On a track graph,
         multi-dimensional position is linearized after interpolation and
         one-column position is taken as linear (see
         ``Environment.decoding_position``).
+    encoding_support : EncodingSupport, optional
+        Encoding support whose segments bound the interpolation, by default
+        None (interpolate over all of ``time``, extrapolating outside it).
 
     Returns
     -------
     position_at_spike_times : np.ndarray, shape (n_spikes, n_decoding_dims)
+        Position interpolated at each spike time.
     """
     if encoding_support is None:
         position_at_spike_times = scipy.interpolate.interpn(
@@ -986,8 +1032,10 @@ def resolve_row_slice(row_slice: slice | None, n_bins: int) -> tuple[int, int]:
     Returns
     -------
     row_start : int
+        First requested row (inclusive).
     row_stop : int
-        Half-open row range with ``0 <= row_start <= row_stop <= n_bins``.
+        End of the requested rows (exclusive), with
+        ``0 <= row_start <= row_stop <= n_bins``.
     """
     if row_slice is None:
         return 0, n_bins
@@ -1123,11 +1171,12 @@ def select_spikes_in_rows(
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
         Decoding spike times for one neuron/electrode.
+    row_start : int
+        First requested bin (inclusive), as returned by ``resolve_row_slice``.
+    row_stop : int
+        End of the requested bins (exclusive), as returned by ``resolve_row_slice``.
     time_edges : np.ndarray, shape (n_bins + 1,)
         FULL decoding bin edges (not the chunk's).
-    row_start : int
-    row_stop : int
-        Half-open range of requested bins, as returned by ``resolve_row_slice``.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal prediction-local preparation shared across states and chunks.
         Direct callers omit it and verify ordering on each call.
@@ -1341,8 +1390,9 @@ def deterministic_segment_sum(
     Parameters
     ----------
     values : jnp.ndarray, shape (n, ...)
-    segment_ids : jnp.ndarray, shape (n,), integer
-        Ids outside ``[0, num_segments)`` are dropped. With x64 disabled,
+        Values to sum, one row per segment id.
+    segment_ids : jnp.ndarray, shape (n,), int
+        Segment of each row. Ids outside ``[0, num_segments)`` are dropped. With x64 disabled,
         64-bit ids wrap to 32 bits first; normalize them on the host (see
         ``spike_row_ids``).
     num_segments : int
@@ -1402,17 +1452,20 @@ def deterministic_row_sum(
     Parameters
     ----------
     values : jnp.ndarray, shape (n, ...)
-    row_ids : array-like, shape (n,), integer
-        Ids outside ``[0, n_rows)`` are dropped. With x64 disabled, 64-bit
-        ids wrap to 32 bits first; normalize them on the host (see
-        ``spike_row_ids``).
+        Values to sum, one row per row id.
+    row_ids : array-like, shape (n,), int
+        Output row of each value. Ids outside ``[0, n_rows)`` are dropped. With
+        x64 disabled, 64-bit ids wrap to 32 bits first; normalize them on the
+        host (see ``spike_row_ids``).
     n_rows : int
+        Number of output rows.
     indices_are_sorted : bool
         True only when ``row_ids`` is verified nondecreasing.
 
     Returns
     -------
     sums : jnp.ndarray, shape (n_rows, ...)
+        Sum of the values assigned to each row; rows with no values are zero.
 
     Notes
     -----
@@ -1465,11 +1518,15 @@ def deterministic_row_add(
     Parameters
     ----------
     output : jnp.ndarray, shape (n_rows, n_columns)
+        Array that receives the sums of the tile.
     values : jnp.ndarray, shape (n, tile_columns)
-    row_ids : array-like, shape (n,), integer
+        Per-spike vectors for the output columns of the tile.
+    row_ids : array-like, shape (n,), int
+        Row of ``output`` that each value is added to.
     column_start : int or scalar array
         First output column of the tile.
     indices_are_sorted : bool
+        True only when ``row_ids`` is verified nondecreasing.
 
     Returns
     -------
@@ -1583,7 +1640,23 @@ def _normalized_row_ids(
 
 
 def spike_row_ids(selection: SpikeSelection, n_padded: int | None = None) -> np.ndarray:
-    """``_normalized_row_ids`` for a selection's spikes and row count."""
+    """Normalize the row ids of a selection's spikes for ``deterministic_row_sum``.
+
+    Parameters
+    ----------
+    selection : SpikeSelection
+        The selection from ``select_spikes_in_rows``; supplies the local row of
+        each spike and the row count.
+    n_padded : int, optional
+        Length to pad to, by default None (no padding). Padded entries use the
+        dropped id ``selection.n_rows``, which keeps sorted ids sorted.
+
+    Returns
+    -------
+    row_ids : np.ndarray of intp, shape (n_padded or n_selected,)
+        Local row id of each selected spike, with invalid ids mapped to dropped
+        ids (see ``deterministic_row_sum``).
+    """
     return _normalized_row_ids(selection.bin_ind, selection.n_rows, n_padded)
 
 
@@ -1591,8 +1664,7 @@ def spike_row_ids(selection: SpikeSelection, n_padded: int | None = None) -> np.
 def log_gaussian_pdf(
     x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray
 ) -> jnp.ndarray:
-    """Compute the log of the Gaussian probability density function at x with
-    given mean and sigma.
+    """Compute the log Gaussian probability density at ``x``.
 
     Elementwise and univariate: the arguments broadcast against each other and
     nothing is summed over dimensions. Kernel builders pass one dimension at a
@@ -1627,8 +1699,7 @@ def log_gaussian_pdf(
 
 @jax.jit
 def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
-    """Compute the value of a Gaussian probability density function at x with
-    given mean and sigma.
+    """Compute the Gaussian probability density at ``x``.
 
     Elementwise with broadcasting, like :func:`log_gaussian_pdf`; nothing is
     summed over dimensions.
@@ -1703,6 +1774,7 @@ def kde(
     Returns
     -------
     density_estimate : jnp.ndarray, shape (n_eval_points,)
+        Weighted kernel density estimate at each evaluation point.
 
     Notes
     -----
@@ -1746,6 +1818,7 @@ def block_kde(
     Returns
     -------
     density_estimate : jnp.ndarray, shape (n_eval_points,)
+        Weighted kernel density estimate at each evaluation point.
 
     Notes
     -----
@@ -2079,16 +2152,29 @@ def log_kde(
     std: jnp.ndarray,
     weights: jnp.ndarray,
 ) -> jnp.ndarray:
-    """
-    Log kernel density estimate:
-        log p(x) = logsumexp_i [ log w_i + sum_d log N(x_d | s_{i,d}, std_d) ] - logsumexp_i [log w_i]
-    Shapes:
-      eval_points: (n_eval, n_dims)
-      samples:     (n_samp, n_dims)
-      std:         (n_dims,)
-      weights:     (n_samp,)
-    Returns: (n_eval,)
+    """Compute the log kernel density estimate.
 
+    The estimate is ``log p(x) = logsumexp_i [ log w_i + sum_d log N(x_d | s_{i,d},
+    std_d) ] - logsumexp_i [log w_i]``.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval, n_dims)
+        Evaluation points.
+    samples : jnp.ndarray, shape (n_samp, n_dims)
+        Training samples.
+    std : jnp.ndarray, shape (n_dims,)
+        Standard deviation of the Gaussian kernel in each dimension.
+    weights : jnp.ndarray, shape (n_samp,)
+        Weight of each sample.
+
+    Returns
+    -------
+    log_density : jnp.ndarray, shape (n_eval,)
+        Log kernel density estimate at each evaluation point.
+
+    Notes
+    -----
     With no samples or no positive weight it returns the finite floor
     ``LOG_EPS`` at every point (``kde_log_density`` returns ``-inf`` there). A
     point whose weighted kernel mass underflows to zero gets ``-inf``.
@@ -2107,6 +2193,7 @@ def log_kde(
     positive = weights > 0
 
     def supported(_: None) -> jax.Array:
+        """Evaluate the log density when the total weight is positive."""
         # Offset each point by its largest weighted term, so weights of any
         # representable ratio contribute. Each kernel is taken relative to the
         # offset before its log weight is added: adding a log weight to a huge
@@ -2176,6 +2263,7 @@ def block_log_kde(
     Returns
     -------
     log_density_estimate : jnp.ndarray, shape (n_eval_points,)
+        Log of the weighted kernel density estimate at each evaluation point.
     """
     n_eval = eval_points.shape[0]
 
@@ -2218,13 +2306,16 @@ def drop_zero_weight_samples(
     Parameters
     ----------
     samples : np.ndarray, shape (n_samples, ...)
+        Training samples.
     weights : np.ndarray, shape (n_samples,)
         Non-negative weights.
 
     Returns
     -------
-    samples, weights
-        The rows with positive weight.
+    samples : np.ndarray, shape (n_kept, ...)
+        The samples with positive weight.
+    weights : np.ndarray, shape (n_kept,)
+        The positive weights.
     """
     keep = np.asarray(weights) > 0.0
     if not np.any(keep) or np.all(keep):
@@ -2272,6 +2363,7 @@ class KDEModel:
         Returns
         -------
         self : KDEModel
+            The fitted model.
 
         Raises
         ------
@@ -2299,10 +2391,12 @@ class KDEModel:
         Parameters
         ----------
         eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+            Points at which to evaluate the density.
 
         Returns
         -------
         density : jnp.ndarray, shape (n_eval_points,)
+            Kernel density estimate at each evaluation point.
         """
         if self.samples_ is None:
             msg = "This KDE instance is not fitted yet."
@@ -2317,11 +2411,21 @@ class KDEModel:
         return block_kde(eval_points, self.samples_, std, block_size, self.weights_)
 
     def predict_log(self, eval_points: jnp.ndarray) -> jnp.ndarray:
-        """
-        Log-density version of predict(). Same inputs, returns log p(eval_points).
+        """Predict the log density at the evaluation points.
 
-        A model without positive weight has zero density, so ``-inf``, as
-        ``predict`` returns 0 and :func:`kde_log_density` returns ``-inf``.
+        Log-density version of :meth:`predict`. A model without positive weight
+        has zero density, so ``-inf``, as ``predict`` returns 0 and
+        :func:`kde_log_density` returns ``-inf``.
+
+        Parameters
+        ----------
+        eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+            Points at which to evaluate the log density.
+
+        Returns
+        -------
+        log_density : jnp.ndarray, shape (n_eval_points,)
+            Log kernel density estimate at each evaluation point.
         """
         if self.samples_ is None:
             msg = "This KDE instance is not fitted yet."
@@ -2340,7 +2444,7 @@ class KDEModel:
 
 
 def kde_log_density(model: KDEModel, points: jnp.ndarray | np.ndarray) -> jnp.ndarray:
-    """True log density, with zero total fitted weight represented as zero mass.
+    """Compute the true log density, with zero total fitted weight as zero mass.
 
     No samples or zero total weight gives ``-inf`` at every point, unlike
     :func:`log_kde`, which returns the finite floor ``LOG_EPS``.
@@ -2349,6 +2453,18 @@ def kde_log_density(model: KDEModel, points: jnp.ndarray | np.ndarray) -> jnp.nd
     on its largest log kernel, exact for 1D points; points whose pass could
     have lost mass are then evaluated in log space (see
     :func:`_scaled_kde_log_density`).
+
+    Parameters
+    ----------
+    model : KDEModel
+        A fitted model.
+    points : jnp.ndarray, shape (n_points, n_dims)
+        Points at which to evaluate the log density.
+
+    Returns
+    -------
+    log_density : jnp.ndarray, shape (n_points,)
+        Log density at each point.
     """
     if type(model) is KDEModel:
         if model.samples_ is None:
@@ -2901,11 +3017,27 @@ def log_density_intensity(
     log_density: jax.Array,
     log_occupancy: jax.Array,
 ) -> jax.Array:
-    """Log(rate * density / occupancy), with density ratios formed before rates.
+    """Compute ``log(rate * density / occupancy)``, forming density ratios before rates.
 
     An unsupported occupancy or numerator gives zero signal, rather than NaN
     from subtracting two negative infinities. Finite tails and NaN diagnostics
     remain visible. Clusterless callers combine the result with their background.
+
+    Parameters
+    ----------
+    mean_rate : jax.Array or float
+        Mean firing rate, broadcastable with ``log_density``, in the same time
+        unit as the caller's intensities.
+    log_density : jax.Array
+        Log of the joint (or ground-process) density.
+    log_occupancy : jax.Array
+        Log occupancy density, broadcastable with ``log_density``.
+
+    Returns
+    -------
+    log_intensity : jax.Array
+        ``log(mean_rate) + log_density - log_occupancy``, or ``-inf`` where the
+        rate, density or occupancy has no support.
     """
     safe_occupancy = jnp.where(jnp.isneginf(log_occupancy), 0.0, log_occupancy)
     safe_rate = jnp.where(mean_rate == 0.0, 1.0, mean_rate)
@@ -2928,11 +3060,39 @@ def local_kde_log_ratio(
     weights: jax.Array,
     block_size: int,
 ) -> jax.Array:
-    """Joint KDE/occupancy ratio, dividing position kernels before adding marks.
+    """Compute the joint KDE/occupancy log ratio, dividing position kernels before adding marks.
 
     Keeping the mark term separate preserves its normalizer when position log
     densities are large enough that adding it would round it away in float32.
     Evaluation blocking retains the shared KDE kernel-workspace limit.
+
+    Parameters
+    ----------
+    positions : jax.Array, shape (n_eval, n_position_dims)
+        Positions at which to evaluate the ratio.
+    marks : jax.Array, shape (n_eval, n_features)
+        Waveform features (marks) at the evaluation points.
+    encoding_positions : jax.Array, shape (n_encoding, n_position_dims)
+        Positions of the encoding spikes.
+    encoding_marks : jax.Array, shape (n_encoding, n_features)
+        Waveform features (marks) of the encoding spikes.
+    position_std : jax.Array, shape (n_position_dims,)
+        Position kernel standard deviation.
+    mark_std : jax.Array, shape (n_features,)
+        Waveform-feature kernel standard deviation.
+    log_occupancy : jax.Array, shape (n_eval,)
+        Log occupancy density at ``positions``.
+    weights : jax.Array, shape (n_encoding,)
+        Weight of each encoding spike; zero weights drop the spike.
+    block_size : int
+        Maximum number of evaluation points per block.
+
+    Returns
+    -------
+    log_ratio : jax.Array, shape (n_eval,)
+        Log of the weighted joint KDE divided by the occupancy density at each
+        evaluation point, normalized by the sum of ``weights``; ``-inf`` where
+        the occupancy is zero or the weights sum to zero.
     """
     n_position_dims = positions.shape[1]
     points = jnp.concatenate((positions, marks, log_occupancy[:, None]), axis=1)
@@ -2942,7 +3102,10 @@ def local_kde_log_ratio(
     def kernel(
         query: jax.Array, samples: jax.Array, std: jax.Array, weights: jax.Array
     ) -> jax.Array:
+        """Evaluate the log ratio of one block of query rows."""
+
         def supported(_: None) -> jax.Array:
+            """Evaluate the ratio for a query with positive total weight."""
             log_occ = query[:, -1]
             safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
             log_position = (
@@ -2982,6 +3145,7 @@ def local_kde_log_ratio(
         rows: int,
         weights: jax.Array,
     ) -> jax.Array:
+        """Evaluate the log ratio of ``query`` in blocks of ``rows`` rows."""
         return jnp.concatenate(
             [
                 kernel(query[start : start + rows], samples, std, weights)
@@ -3136,15 +3300,16 @@ def get_spikecount_per_time_bin(
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        FULL decoding bin edges, which define the bin a spike belongs to (see
-        ``select_spikes_in_rows``). Direct calls validate these edges. Internal
-        calls with prepared spike ordering reuse the detector's validated grid.
+        Decoding spike times, in seconds.
     row_slice : slice | None, optional
         Contiguous range of bins to count, by default None (all bins).
         Counting bins ``[a, b)`` of the full timeline gives the same values as
         counting all bins and slicing ``[a:b]``, so concatenating the chunks of
         a partition reproduces the full-time counts exactly.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        FULL decoding bin edges, which define the bin a spike belongs to (see
+        ``select_spikes_in_rows``). Direct calls validate these edges. Internal
+        calls with prepared spike ordering reuse the detector's validated grid.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -3216,7 +3381,7 @@ def _spike_counts_matrix(
 def decode_bin_centers(
     time_edges: np.ndarray, row_start: int, row_stop: int
 ) -> np.ndarray:
-    """Centers of the decode bins ``[row_start, row_stop)``.
+    """Compute the centers of the decode bins ``[row_start, row_stop)``.
 
     Local-position kernels, the non-local penalty, and local likelihoods
     evaluate the animal's position at these observation coordinates.
@@ -3224,12 +3389,16 @@ def decode_bin_centers(
     Parameters
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        FULL decoding bin edges, in seconds.
     row_start : int
+        First requested bin (inclusive).
     row_stop : int
+        End of the requested bins (exclusive).
 
     Returns
     -------
     centers : np.ndarray, shape (row_stop - row_start,)
+        Center time of each requested decode bin, in seconds.
     """
     edges = np.asarray(time_edges)[row_start : row_stop + 1]
     return edges[:-1] + 0.5 * np.diff(edges)

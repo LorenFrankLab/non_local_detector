@@ -135,7 +135,19 @@ def _ratio(numerator: np.ndarray, denominator: ArrayLike) -> np.ndarray:
 @_register_operator
 @dataclass(frozen=True)
 class UniformBlock:
-    """A masked rank-one block, including legacy scalar/spatial overrides."""
+    """A masked rank-one block, including legacy scalar/spatial overrides.
+
+    Attributes
+    ----------
+    source_mask : np.ndarray or jax.Array, shape (n_source_bins,)
+        Weight of each source bin (1 where the bin can be left, else 0).
+    destination_mask : np.ndarray or jax.Array, shape (n_destination_bins,)
+        Weight of each destination bin (1 where the bin can be entered, else 0).
+    normalization : np.ndarray or jax.Array
+        Scalar multiplying ``source_mask[i] * destination_mask[j]``; typically
+        the reciprocal of the number of enabled destination bins, so each
+        enabled row sums to one.
+    """
 
     source_mask: _Array
     destination_mask: _Array
@@ -143,9 +155,22 @@ class UniformBlock:
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Shape ``(n_source_bins, n_destination_bins)`` of the block."""
         return (len(self.source_mask), len(self.destination_mask))
 
     def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_source_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_destination_bins,)
+            ``values @ T``, over the destination bins.
+        """
         source = jnp.asarray(self.source_mask, dtype=values.dtype)
         destination = jnp.asarray(self.destination_mask, dtype=values.dtype)
         divisor = jnp.asarray(self.normalization, dtype=values.dtype)
@@ -153,12 +178,38 @@ class UniformBlock:
         return _nan_result(result, values)
 
     def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_destination_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_source_bins,)
+            ``T @ values``, over the source bins.
+        """
         source = jnp.asarray(self.source_mask, dtype=values.dtype)
         destination = jnp.asarray(self.destination_mask, dtype=values.dtype)
         divisor = jnp.asarray(self.normalization, dtype=values.dtype)
         return _nan_result(source * jnp.sum(values * destination * divisor), values)
 
     def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
         return cast(
             np.ndarray,
             (
@@ -172,26 +223,86 @@ class UniformBlock:
 @_register_operator
 @dataclass(frozen=True)
 class IdentityBlock:
+    """A masked identity block: probability stays in the same bin.
+
+    Attributes
+    ----------
+    mask : np.ndarray or jax.Array, shape (n_bins,)
+        Weight of each bin (1 where the bin is on the track, else 0), applied on
+        the diagonal.
+    """
+
     mask: _Array
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Shape ``(n_bins, n_bins)`` of the block."""
         return (len(self.mask), len(self.mask))
 
     def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``values @ T``, over the destination bins.
+        """
         return _nan_result(values * jnp.asarray(self.mask, dtype=values.dtype), values)
 
     def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``T @ values``, over the source bins.
+        """
         return self.forward(values)
 
     def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
         return cast(np.ndarray, np.asarray(self.mask)[rows] * (rows == columns))
 
 
 @_register_operator
 @dataclass(frozen=True)
 class GaussianGridBlock:
-    """Masked, row-normalized tensor product of untruncated Gaussian axes."""
+    """Masked, row-normalized tensor product of untruncated Gaussian axes.
+
+    Attributes
+    ----------
+    factors : tuple of np.ndarray or jax.Array
+        One square matrix per grid axis, shape ``(n_axis_bins, n_axis_bins)``,
+        holding the Gaussian transition density between that axis's bins.
+    mask : np.ndarray or jax.Array, shape (n_bins,)
+        Weight of each flattened grid bin (1 where on the track, else 0).
+    row_normalization : np.ndarray or jax.Array, shape (n_bins,)
+        Sum over destination bins of each masked row of the unnormalized
+        product, used to normalize the rows.
+    """
 
     factors: tuple[_Array, ...]
     mask: _Array
@@ -199,13 +310,27 @@ class GaussianGridBlock:
 
     @property
     def grid_shape(self) -> tuple[int, ...]:
+        """Number of bins along each grid axis."""
         return tuple(factor.shape[0] for factor in self.factors)
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the block, with ``n_bins`` the grid size."""
         return (int(np.prod(self.grid_shape)),) * 2
 
     def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``values @ T``, over the destination bins.
+        """
         mask = jnp.asarray(self.mask, dtype=values.dtype)
         normalizer = jnp.asarray(self.row_normalization, dtype=values.dtype)
         safe = jnp.where(normalizer > 0, normalizer, 1)
@@ -226,6 +351,18 @@ class GaussianGridBlock:
         return _nan_result(result * scale, values)
 
     def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``T @ values``, over the source bins.
+        """
         mask = jnp.asarray(self.mask, dtype=values.dtype)
         normalizer = jnp.asarray(self.row_normalization, dtype=values.dtype)
         safe = jnp.where(normalizer > 0, normalizer, 1)
@@ -250,6 +387,20 @@ class GaussianGridBlock:
         return _nan_result(result * scale, values)
 
     def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
         rows, columns = np.broadcast_arrays(rows, columns)
         coordinates_from = np.unravel_index(rows, self.grid_shape)
         coordinates_to = np.unravel_index(columns, self.grid_shape)
@@ -265,15 +416,34 @@ class GaussianGridBlock:
 @_register_operator
 @dataclass(frozen=True)
 class DenseBlock:
-    """Explicit fallback; its retained matrix counts against the dense budget."""
+    """Explicit fallback; its retained matrix counts against the dense budget.
+
+    Attributes
+    ----------
+    matrix : np.ndarray or jax.Array, shape (n_source_bins, n_destination_bins)
+        Dense transition probabilities.
+    """
 
     matrix: _Array
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_source_bins, n_destination_bins)`` of the block."""
         return self.matrix.shape
 
     def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_source_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_destination_bins,)
+            ``values @ T``, over the destination bins.
+        """
         return jnp.matmul(
             values,
             jnp.asarray(self.matrix, dtype=values.dtype),
@@ -281,6 +451,18 @@ class DenseBlock:
         )
 
     def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_destination_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_source_bins,)
+            ``T @ values``, over the source bins.
+        """
         return jnp.matmul(
             jnp.asarray(self.matrix, dtype=values.dtype),
             values,
@@ -288,13 +470,37 @@ class DenseBlock:
         )
 
     def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
         return cast(np.ndarray, np.asarray(self.matrix)[rows, columns])
 
 
 @_register_operator
 @dataclass(frozen=True)
 class RestrictedBlock:
-    """An exact indexed submatrix; selection never renormalizes its rows."""
+    """An exact indexed submatrix; selection never renormalizes its rows.
+
+    Attributes
+    ----------
+    original : Block
+        The block being restricted.
+    rows : np.ndarray or jax.Array, shape (n_rows,)
+        Indices of the original block's source bins that are kept.
+    columns : np.ndarray or jax.Array, shape (n_columns,)
+        Indices of the original block's destination bins that are kept.
+    """
 
     original: "Block"
     rows: _Array
@@ -302,9 +508,22 @@ class RestrictedBlock:
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Shape ``(n_rows, n_columns)`` of the restricted block."""
         return (len(self.rows), len(self.columns))
 
     def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_rows,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_columns,)
+            ``values @ T``, over the destination bins.
+        """
         if not len(self.rows) or not len(self.columns):
             return jnp.zeros(len(self.columns), dtype=values.dtype)
         full = (
@@ -315,6 +534,18 @@ class RestrictedBlock:
         return self.original.forward(full)[jnp.asarray(self.columns)]
 
     def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_columns,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_rows,)
+            ``T @ values``, over the source bins.
+        """
         if not len(self.rows) or not len(self.columns):
             return jnp.zeros(len(self.rows), dtype=values.dtype)
         full = (
@@ -325,6 +556,20 @@ class RestrictedBlock:
         return self.original.backward(full)[jnp.asarray(self.rows)]
 
     def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Indices into the kept source bins, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Indices into the kept destination bins, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
         return self.original.entries(
             np.asarray(self.rows)[rows], np.asarray(self.columns)[columns]
         )
@@ -338,6 +583,17 @@ class BlockTransitionOperator:
     ``bind_discrete`` sets stationary defaults. A driver supplies a single S-by-S
     matrix to each forward/backward call for covariate transitions. All floating
     runtime factors cast to the input vector dtype; host dense views remain float64.
+
+    Attributes
+    ----------
+    blocks : tuple of tuple of Block
+        ``blocks[i][j]`` is the conditional spatial transition from the bins of
+        discrete state ``i`` to the bins of discrete state ``j``.
+    state_sizes : tuple of int
+        Number of spatial bins of each discrete state.
+    discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+        Stationary discrete transition probabilities multiplying each block, by
+        default None (all ones).
     """
 
     blocks: tuple[tuple[Block, ...], ...]
@@ -346,22 +602,28 @@ class BlockTransitionOperator:
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the combined transition matrix."""
         return (sum(self.state_sizes),) * 2
 
     @property
     def n_bins(self) -> int:
+        """Total number of bins over all discrete states."""
         return self.shape[0]
 
     @property
     def dtype(self) -> np.dtype[np.float64]:
+        """Data type of dense views of the operator, always float64."""
         return np.dtype(np.float64)
 
     @property
     def storage_nbytes(self) -> int:
+        """Memory held by the operator's array leaves, in bytes."""
         return sum(np.asarray(leaf).nbytes for leaf in jax.tree_util.tree_leaves(self))
 
     @property
     def dense_fallback_nbytes(self) -> int:
+        """Memory held by the dense matrices of its ``DenseBlock`` blocks, in bytes."""
+
         def size(block: Block) -> int:
             if isinstance(block, RestrictedBlock):
                 return size(block.original)
@@ -372,12 +634,48 @@ class BlockTransitionOperator:
         return sum(size(block) for row in self.blocks for block in row)
 
     def bind_discrete(self, weights: _Array) -> "BlockTransitionOperator":
+        """Return a copy with stationary discrete transition weights.
+
+        Parameters
+        ----------
+        weights : np.ndarray or jax.Array, shape (n_states, n_states)
+            Discrete state transition probabilities multiplying each block.
+
+        Returns
+        -------
+        operator : BlockTransitionOperator
+            Copy of this operator with ``discrete_weights`` set.
+
+        Raises
+        ------
+        ValueError
+            If ``weights`` is not ``(n_states, n_states)``.
+        """
         if np.shape(weights) != (len(self.state_sizes),) * 2:
             msg = "discrete_weights must have shape (n_states, n_states)"
             raise ValueError(msg)
         return replace(self, discrete_weights=weights)
 
     def restricted(self, mask: ArrayLike) -> "BlockTransitionOperator":
+        """Return the operator restricted to a subset of the combined bins.
+
+        Rows are not renormalized after the restriction.
+
+        Parameters
+        ----------
+        mask : array_like of bool, shape (n_bins,)
+            True for the bins to keep, over the combined bins of all states.
+
+        Returns
+        -------
+        operator : BlockTransitionOperator
+            Operator over the kept bins, with ``state_sizes`` updated.
+
+        Raises
+        ------
+        ValueError
+            If ``mask`` does not have one entry per combined bin.
+        """
         mask = np.asarray(mask, dtype=bool)
         if mask.shape != (self.n_bins,):
             msg = "Restriction mask must have one entry per combined state bin"
@@ -410,6 +708,22 @@ class BlockTransitionOperator:
     def forward(
         self, probabilities: ArrayLike, discrete_weights: _Array | None = None
     ) -> jax.Array:
+        """Apply the transition from the left, ``probabilities @ T``.
+
+        Parameters
+        ----------
+        probabilities : array_like, shape (n_bins,)
+            Probability over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None, which uses the bound weights (or
+            ones if none were bound).
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The one-step-ahead prediction ``probabilities @ T``.
+        """
         probabilities = jnp.asarray(probabilities)
         weights = self._weights(probabilities, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -425,6 +739,22 @@ class BlockTransitionOperator:
     def backward(
         self, values: ArrayLike, discrete_weights: _Array | None = None
     ) -> jax.Array:
+        """Apply the transition from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : array_like, shape (n_bins,)
+            Values over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None, which uses the bound weights (or
+            ones if none were bound).
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The product ``T @ values``.
+        """
         values = jnp.asarray(values)
         weights = self._weights(values, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -456,13 +786,17 @@ class BlockTransitionOperator:
         Parameters
         ----------
         filtered : jax.Array, shape (n_bins,)
+            Filtered state probabilities at time ``t``.
         ratio : jax.Array, shape (n_bins,)
+            Elementwise ratio of smoothed to predicted probabilities at time
+            ``t + 1``.
         discrete_weights : jax.Array, shape (n_states, n_states), optional
             Overrides the bound stationary weights.
 
         Returns
         -------
         pairs : jax.Array, shape (n_states, n_states)
+            Expected transition mass between each pair of discrete states.
         """
         filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
         weights = self._weights(filtered, discrete_weights)
@@ -497,6 +831,16 @@ class BlockTransitionOperator:
         host) fit ``max_dense_bytes``; the rest keep separable products.
         Products agree with this operator to rounding; ``entries`` and dense
         views stay on this operator.
+
+        Parameters
+        ----------
+        max_dense_bytes : int, optional
+            Budget in bytes for all retained dense matrices, by default 256 MiB.
+
+        Returns
+        -------
+        operator : FusedBlockTransition
+            Operator with the same forward and backward products.
         """
         boundaries = np.cumsum((0, *self.state_sizes))
         n_states = len(self.state_sizes)
@@ -536,6 +880,22 @@ class BlockTransitionOperator:
         )
 
     def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the combined transition matrix.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices over the combined bins, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices over the combined bins, broadcast against
+            ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``, including the bound
+            discrete weights.
+        """
         rows, columns = np.broadcast_arrays(rows, columns)
         shape = rows.shape
         rows, columns = rows.ravel(), columns.ravel()
@@ -567,6 +927,25 @@ class BlockTransitionOperator:
         max_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         dtype: DTypeLike | None = None,
     ) -> np.ndarray:
+        """Convert to a dense matrix within a byte budget.
+
+        Parameters
+        ----------
+        max_bytes : int, optional
+            Largest allowed size of the dense matrix in bytes, by default 256 MiB.
+        dtype : dtype, optional
+            Data type of the result, by default float64.
+
+        Returns
+        -------
+        matrix : np.ndarray, shape (n_bins, n_bins)
+            The combined transition matrix.
+
+        Raises
+        ------
+        DenseTransitionBudgetError
+            If the dense matrix would exceed ``max_bytes``.
+        """
         dtype = np.dtype(self.dtype if dtype is None else dtype)
         _budget(self.n_bins**2 * dtype.itemsize, max_bytes, "Dense combined transition")
         result = np.empty(self.shape, dtype=dtype)
@@ -658,6 +1037,24 @@ class FusedBlockTransition:
 
     Built by ``BlockTransitionOperator.fused``. Forward products are ``p @ T``
     and backward products ``T @ v``.
+
+    Attributes
+    ----------
+    sources : np.ndarray or jax.Array, shape (n_bins, n_rank_one)
+        Source vectors of the rank-one blocks, scaled by their normalizations.
+    destinations : np.ndarray or jax.Array, shape (n_rank_one, n_bins)
+        Destination masks of the rank-one blocks.
+    weight_index : np.ndarray or jax.Array, shape (n_rank_one,)
+        Flat index into the ``(n_states, n_states)`` discrete weights for each
+        rank-one block.
+    blocks : tuple of Block
+        Blocks that keep their own products.
+    block_positions : tuple of tuple of int
+        ``(source_state, target_state)`` of each entry of ``blocks``.
+    state_sizes : tuple of int
+        Number of spatial bins of each discrete state.
+    discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+        Stationary discrete transition probabilities, by default None (all ones).
     """
 
     sources: _Array  # (n_bins, n_rank_one)
@@ -670,10 +1067,12 @@ class FusedBlockTransition:
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the combined transition matrix."""
         return (sum(self.state_sizes),) * 2
 
     @property
     def n_bins(self) -> int:
+        """Total number of bins over all discrete states."""
         return self.shape[0]
 
     def _flat_weights(self, values: jax.Array, override: _Array | None) -> jax.Array:
@@ -688,6 +1087,21 @@ class FusedBlockTransition:
     def forward(
         self, probabilities: ArrayLike, discrete_weights: _Array | None = None
     ) -> jax.Array:
+        """Apply the transition from the left, ``probabilities @ T``.
+
+        Parameters
+        ----------
+        probabilities : array_like, shape (n_bins,)
+            Probability over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The one-step-ahead prediction ``probabilities @ T``.
+        """
         probabilities = jnp.asarray(probabilities)
         weights = self._flat_weights(probabilities, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -714,6 +1128,21 @@ class FusedBlockTransition:
     def backward(
         self, values: ArrayLike, discrete_weights: _Array | None = None
     ) -> jax.Array:
+        """Apply the transition from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : array_like, shape (n_bins,)
+            Values over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The product ``T @ values``.
+        """
         values = jnp.asarray(values)
         weights = self._flat_weights(values, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -747,6 +1176,21 @@ class FusedBlockTransition:
 
         A rank-one block contributes ``(filtered . source) * (destination .
         ratio)``, so all of them cost one product with each factor matrix.
+
+        Parameters
+        ----------
+        filtered : jax.Array, shape (n_bins,)
+            Filtered state probabilities at time ``t``.
+        ratio : jax.Array, shape (n_bins,)
+            Elementwise ratio of smoothed to predicted probabilities at time
+            ``t + 1``.
+        discrete_weights : jax.Array, shape (n_states, n_states), optional
+            Overrides the bound stationary weights.
+
+        Returns
+        -------
+        pairs : jax.Array, shape (n_states, n_states)
+            Expected transition mass between each pair of discrete states.
         """
         filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
         weights = self._flat_weights(filtered, discrete_weights)
@@ -785,7 +1229,7 @@ class FusedBlockTransition:
         filtered: ArrayLike,
         discrete_weights: _Array | None = None,
     ) -> tuple[jax.Array, jax.Array]:
-        """``backward(values)`` and ``pair_products(filtered, values)`` together.
+        """Compute ``backward(values)`` and ``pair_products(filtered, values)`` together.
 
         Each block's backward product, and the rank-one destination sums, are
         computed once and serve both, so the smoother's transition statistics
@@ -794,13 +1238,19 @@ class FusedBlockTransition:
         Parameters
         ----------
         values : jax.Array, shape (n_bins,)
+            Values over the combined bins, used both as the vector to multiply
+            and as the ratio in the pair products.
         filtered : jax.Array, shape (n_bins,)
+            Filtered state probabilities for the pair products.
         discrete_weights : jax.Array, shape (n_states, n_states), optional
+            Overrides the bound stationary weights.
 
         Returns
         -------
         backward : jax.Array, shape (n_bins,)
+            The product ``T @ values``.
         pairs : jax.Array, shape (n_states, n_states)
+            Per-state-pair terms of ``pair_products(filtered, values)``.
         """
         values, filtered = jnp.asarray(values), jnp.asarray(filtered)
         weights = self._flat_weights(values, discrete_weights)
@@ -849,6 +1299,14 @@ class LazyDenseTransition:
     Basic and orthogonal/paired integer indexing materialize only the requested
     entries. Other NumPy indexing falls back to a budgeted full dense view.
     Dense results are not cached and cannot mutate the structured operator.
+
+    Parameters
+    ----------
+    operator : BlockTransitionOperator
+        The structured transition operator to view as a dense matrix.
+    max_bytes : int, optional
+        Largest allowed size of any materialized selection in bytes, by default
+        256 MiB.
     """
 
     def __init__(
@@ -862,18 +1320,22 @@ class LazyDenseTransition:
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the transition matrix."""
         return self.operator.shape
 
     @property
     def dtype(self) -> np.dtype[np.float64]:
+        """Data type of the transition matrix, float64."""
         return self.operator.dtype
 
     @property
     def ndim(self) -> int:
+        """Number of dimensions, always 2."""
         return 2
 
     @property
     def size(self) -> int:
+        """Total number of entries in the transition matrix."""
         return int(np.prod(self.shape))
 
     def __array__(
@@ -945,6 +1407,20 @@ class LazyDenseTransition:
         raise TypeError(msg)
 
     def astype(self, dtype: DTypeLike, **kwargs: Any) -> np.ndarray:  # noqa: ARG002 -- ndarray.astype signature
+        """Convert to a dense array within the byte budget.
+
+        Parameters
+        ----------
+        dtype : dtype
+            Data type of the result.
+        **kwargs
+            Ignored; accepted for compatibility with ``np.ndarray.astype``.
+
+        Returns
+        -------
+        matrix : np.ndarray, shape (n_bins, n_bins)
+            The dense transition matrix.
+        """
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 
 
