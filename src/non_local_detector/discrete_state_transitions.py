@@ -1,4 +1,5 @@
 import logging
+import warnings
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -1775,7 +1776,17 @@ def _fit_covariate_row(
     if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
         minimize_kwargs["hess"] = _blocked_hessian
     try:
-        result = minimize(**minimize_kwargs)
+        # scipy 1.15's trust-exact takes the square root of a negative bound
+        # product on some Hessians and warns; the loss check below guards the
+        # result whatever the optimizer did.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                "invalid value encountered in sqrt",
+                RuntimeWarning,
+                r"scipy\.optimize\._trustregion_exact",
+            )
+            result = minimize(**minimize_kwargs)
     except (ValueError, np.linalg.LinAlgError) as error:
         # trust-exact's subproblem can fail on a badly conditioned Hessian
         # (seen with scipy 1.12 at strong curvature penalties): fall back to
