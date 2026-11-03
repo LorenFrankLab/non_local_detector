@@ -1640,7 +1640,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         exactly those of ``__init__``. The new values are applied only if the
         constructor accepts them; on error the detector is unchanged. Fitted
         attributes are not touched, and caches derived from the parameters
-        (the environment lookup) are dropped.
+        (the environment lookup) are dropped. Changing ``environments``,
+        ``state_names``, ``observation_models`` or any other parameter a fit
+        depends on after fitting therefore requires refitting.
 
         As with the constructor, parameters that must agree (for example
         ``discrete_initial_conditions``, ``observation_models``,
@@ -1651,7 +1653,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ----------
         **params : Any
             Constructor parameters to change. Nested ``component__parameter``
-            keys are handled by scikit-learn after the top-level ones.
+            keys are validated first, then handled by scikit-learn after the
+            top-level ones.
 
         Returns
         -------
@@ -1670,10 +1673,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         current = self.get_params(deep=False)
         top_level = {k: v for k, v in params.items() if "__" not in k}
         nested = {k: v for k, v in params.items() if "__" in k}
-        unknown = set(top_level) - set(current)
-        if unknown:
-            # sklearn raises its standard "Invalid parameter" error
-            super().set_params(**top_level)
+        # Validate every name before applying anything, so any error leaves the
+        # detector unchanged.
+        invalid = sorted(
+            [k for k in top_level if k not in current]
+            + [
+                k
+                for k in nested
+                if not hasattr(current.get(k.split("__", 1)[0]), "set_params")
+            ]
+        )
+        if invalid:
+            msg = (
+                f"Invalid parameter(s) {invalid!r} for estimator "
+                f"{type(self).__name__}. Valid parameters are: "
+                f"{sorted(current)!r}."
+            )
+            raise ValueError(msg)
         if top_level:
             # Build a fresh detector first so a rejected value leaves ``self``
             # untouched.

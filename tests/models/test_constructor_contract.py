@@ -92,6 +92,23 @@ class TestSetParams:
             default
         )
 
+    def test_mixed_nested_error_leaves_detector_unchanged(self):
+        detector = NonLocalSortedSpikesDetector()
+        before = detector.get_params(deep=False)
+        with pytest.raises(ValueError, match="Invalid parameter"):
+            detector.set_params(sampling_frequency=250.0, foo__bar=1)
+        assert detector.sampling_frequency == 500.0
+        for name, value in before.items():
+            assert getattr(detector, name) is value
+
+    def test_changing_number_of_states_alone_raises_and_leaves_detector(self):
+        detector = NonLocalSortedSpikesDetector()
+        before = detector.get_params(deep=False)
+        with pytest.raises(ValidationError):
+            detector.set_params(discrete_initial_conditions=np.array([1.0, 0.0]))
+        for name, value in before.items():
+            assert getattr(detector, name) is value
+
     def test_unknown_parameter_raises(self):
         with pytest.raises(ValueError, match="Invalid parameter"):
             NonLocalSortedSpikesDetector().set_params(not_a_parameter=1)
