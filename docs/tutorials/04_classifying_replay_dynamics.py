@@ -23,7 +23,7 @@
 # 4. decode the **whole session**, and
 # 5. look at how each replay event is classified.
 #
-# It builds on the [clusterless decoding tutorial](03_decoding_clusterless.py);
+# It builds on the [clusterless decoding tutorial](../03_decoding_clusterless/);
 # see it for clusterless data and the encoding model.
 
 # %%
@@ -346,8 +346,8 @@ for name, p in zip(classifier.state_names, stay_probability, strict=True):
 # 1 ms position samples, with `trim=True` to drop a partial final bin. These
 # classifiers do not use position at decoding time, so `predict` needs only
 # the spikes and their marks. For long sessions, see
-# [Checkpointed prediction](../performance_prediction.md) and
-# [Settings for your hardware](../hardware_settings.md).
+# [Checkpointed prediction](../../performance_prediction/) and
+# [Settings for your hardware](../../hardware_settings/).
 
 # %%
 session_range = time_edges_from_centers(time)[[0, -1]]  # s

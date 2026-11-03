@@ -257,7 +257,7 @@ ax.set(
 # `NonLocalSortedSpikesDetector` has four states: **Local** (the spikes
 # represent the rat's position), **No-Spike** (the cells are nearly silent),
 # **Non-Local Continuous** and **Non-Local Fragmented** (see
-# [Core concepts](../getting-started/core-concepts.md)). Its default
+# [Core concepts](../../getting-started/core-concepts/)). Its default
 # transitions assume 2 ms time bins: the detector's `sampling_frequency` is
 # 500 Hz.
 #
@@ -903,7 +903,7 @@ pd.Series(compare_events(clusterless_events, simulated_events), name="clusterles
 # ## Long recordings
 #
 # A real session can be hours of 2 ms bins, too much to hold the full
-# posterior in memory. [Checkpointed prediction](../performance_prediction.md)
+# posterior in memory. [Checkpointed prediction](../../performance_prediction/)
 # decodes in chunks and writes the results to disk, and
-# [Settings for your hardware](../hardware_settings.md) lists memory and
+# [Settings for your hardware](../../hardware_settings/) lists memory and
 # speed settings for CPUs and GPUs.

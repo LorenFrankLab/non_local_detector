@@ -181,7 +181,7 @@ axes[1].set_xlim(0, 60)
 # - **Environment.** `Environment(place_bin_size=2.0)` discretizes the track
 #   into 2 cm bins. With 1-D position and no track graph the track is treated
 #   as a 1-D open field; the decoder warns about this, which is fine for a
-#   straight track. See [Core concepts](../getting-started/core-concepts.md#environments)
+#   straight track. See [Core concepts](../../getting-started/core-concepts/#environments)
 #   for mazes.
 # - **Likelihood algorithm.** `clusterless_algorithm="clusterless_kde"` (the
 #   default) estimates the joint density of position and marks with a Gaussian
@@ -226,8 +226,8 @@ decoder.fit(
 # decoder's single state does not use it).
 #
 # This session is six minutes and decodes in seconds. For hour-long sessions,
-# see [Checkpointed prediction](../performance_prediction.md) and
-# [Settings for your hardware](../hardware_settings.md).
+# see [Checkpointed prediction](../../performance_prediction/) and
+# [Settings for your hardware](../../hardware_settings/).
 
 # %%
 time_edges = time_edges_from_centers(position_time)
@@ -356,7 +356,7 @@ ax.legend()
 # Each algorithm takes its own parameters in `clusterless_algorithm_params` (a
 # key the algorithm does not accept raises an error); with
 # `clusterless_algorithm_params=None` it uses its defaults. The
-# [Core concepts](../getting-started/core-concepts.md#likelihood-models) page
+# [Core concepts](../../getting-started/core-concepts/#likelihood-models) page
 # lists all four clusterless algorithms.
 
 # %%
@@ -390,7 +390,7 @@ fig.colorbar(image, ax=ax, label="Posterior probability", extend="max")
 # %% [markdown]
 # On this simulation both algorithms decode the position well. Which one suits
 # your data depends on the number of spikes and mark dimensions; see the
-# [Clusterless model fit guide](../likelihood_mark_calibration.md) for how to
+# [Clusterless model fit guide](../../likelihood_mark_calibration/) for how to
 # check a fitted clusterless model.
 #
 # ## Summary
