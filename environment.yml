@@ -19,7 +19,6 @@ dependencies:
 - tqdm >=4.60
 - track_linearization >=2.4.0
 - matplotlib >=3.10
-- seaborn >=0.12
 # Test and development tools (the pyproject.toml test and dev dependency groups).
 - pytest
 - pytest-cov

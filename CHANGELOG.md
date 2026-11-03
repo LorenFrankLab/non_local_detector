@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Dependencies
+
+- seaborn is no longer a dependency: `plot_discrete_state_transition` draws its heatmap with matplotlib. The figure is the same (colormap, color limits, `0.000` annotations, tick labels, colorbar label); the heatmap's cells are drawn with `pcolormesh` and its overlapping x tick labels are rotated as before.
+
 ### Environment grid helpers
 
 - `Environment.is_track_interior_flat_` is the interior mask over the flattened place bins, shape `(n_bins,)`, with every bin interior when `is_track_interior_` is unset. The likelihood fits, continuous transitions, structured transition operators, state indexing, off-track snapping and clusterless model checking use it instead of their own copies. Outputs are unchanged.
