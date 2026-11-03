@@ -128,6 +128,12 @@ def contract_violations(
 @pytest.mark.filterwarnings(
     "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
 )
+# The sorted GLM's fit on this tiny fixture ends near its gradient tolerance,
+# above it on some platforms; the test checks the fit/predict contract, not
+# the fit's quality.
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
 def test_registered_algorithm_meets_the_detector_contract(
     monkeypatch, recording, algorithm
 ):
