@@ -131,6 +131,8 @@ allowed-confusables = ["×", "σ", "α", "γ", "∪"]
     "B011",
 ]
 "{scripts,benchmarks}/**" = ["T201"]  # scripts report to stdout
+# Tutorials print, and a bare expression in a cell displays its value.
+"docs/tutorials/**" = ["T201", "B018"]
 # Compares path strings as frames report them; Path.resolve would follow links.
 "src/non_local_detector/_warnings.py" = ["PTH"]
 # Progress of a long render, shown without logging configured.
@@ -258,4 +260,7 @@ docs = [
     "mkdocs-section-index>=0.3.0",
     "mkdocs-jupyter>=0.25.0",
     "jupytext>=1.16.0",
+    # Tutorials render the package's tqdm progress bars as notebook widgets;
+    # without ipywidgets tqdm prints an "IProgress not found" warning instead.
+    "ipywidgets>=8.0",
 ]
