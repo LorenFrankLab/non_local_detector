@@ -5878,8 +5878,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         Load results saved by ``save_results`` or a checkpointed result_path.
 
-        A netCDF file gets its ``state_bins`` MultiIndex back and its integer
-        variables and coordinates the dtypes they were saved with. A directory
+        A netCDF file is read lazily and gets its ``state_bins`` MultiIndex
+        back and its integer variables and coordinates the dtypes they were
+        saved with; closing the returned dataset closes the file. A directory
         is opened as a checkpointed result store with lazy arrays.
 
         Parameters
@@ -5905,16 +5906,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 metadata = {**metadata, "max_read_bytes": max_read_bytes}
                 return label_checkpointed_result(results, metadata)
             return results
-        results = xr.open_dataset(filename)
+        opened = xr.open_dataset(filename)
+        results = opened
         if _INTEGER_DTYPES_ATTR in results.attrs:
             integer_dtypes = json.loads(results.attrs.pop(_INTEGER_DTYPES_ATTR))
         else:
             # Files saved before the dtypes were recorded: restore state_ind.
             integer_dtypes = {"state_ind": np.dtype(int).name}
+        # Only a still-integer variable is restored: one edited to another
+        # dtype after saving (say, float with NaN) keeps its values.
         restored = {
             name: results.variables[name].astype(dtype)
             for name, dtype in integer_dtypes.items()
-            if name in results.variables and results.variables[name].dtype != dtype
+            if name in results.variables
+            and results.variables[name].dtype.kind in "iu"
+            and results.variables[name].dtype != dtype
         }
         results = results.assign_coords(
             {name: value for name, value in restored.items() if name in results.coords}
@@ -5925,23 +5931,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 if name in results.data_vars
             }
         )
-        if "state_bins" not in results.dims:
-            return results
-        if "state_ind" in results.dims:
-            # Earlier versions saved state_ind on a dimension of its own.
-            results = results.drop_vars("state_ind").assign_coords(
-                state_ind=("state_bins", results["state_ind"].values)
-            )
-        # Scalar state/environment coordinates are also attached to this array,
-        # but only the original one-dimensional levels form its spatial index;
-        # state_ind is a plain coordinate along it.
-        coord_names = [
-            name
-            for name, coordinate in results.coords.items()
-            if name not in {"state_bins", "state_ind"}
-            and coordinate.dims == ("state_bins",)
-        ]
-        return results.set_index(state_bins=coord_names)
+        if "state_bins" in results.dims:
+            if "state_ind" in results.dims:
+                # Earlier versions saved state_ind on a dimension of its own.
+                results = results.drop_vars("state_ind").assign_coords(
+                    state_ind=("state_bins", results["state_ind"].values)
+                )
+            # Scalar state/environment coordinates are also attached to this
+            # array, but only the original one-dimensional levels form its
+            # spatial index; state_ind is a plain coordinate along it.
+            coord_names = [
+                name
+                for name, coordinate in results.coords.items()
+                if name not in {"state_bins", "state_ind"}
+                and coordinate.dims == ("state_bins",)
+            ]
+            results = results.set_index(state_bins=coord_names)
+        # The transformations above drop the file's close handle; closing the
+        # returned results (or leaving a ``with`` block) must close the file.
+        results.set_close(opened.close)
+        return results
 
     def copy(self) -> "_DetectorBase":
         """

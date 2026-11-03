@@ -117,9 +117,11 @@ neither netCDF4 nor h5netcdf is installed) stores int64 as int32.
 `load_results("results.nc")` rebuilds the `state_bins` MultiIndex, keeping
 `state_ind` as an integer coordinate along it, and gives the integer
 variables and coordinates (`state_ind`, `encoding_groups`, checkpointed
-`source_row`) their recorded dtypes; strings come back as object arrays, as
-xarray reads them. `load_results(result_path)` reopens a checkpointed store
-with lazy arrays.
+`source_row`) their recorded dtypes, unless a variable was changed to a
+non-integer dtype after saving; strings come back as object arrays, as xarray
+reads them. The netCDF data are read lazily, and closing the returned dataset
+(or leaving a `with` block) closes the file. `load_results(result_path)`
+reopens a checkpointed store with lazy arrays.
 
 ## Most likely sequence
 
