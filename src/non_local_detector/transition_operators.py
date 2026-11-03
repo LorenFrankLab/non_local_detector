@@ -971,7 +971,12 @@ def _gaussian_block(transition, environment):
         maximum = np.max(factor[:, eligible], axis=1, keepdims=True)
         with np.errstate(divide="ignore"):
             log_row_scale += np.log(maximum[source_coordinates[axis], 0])
-        scaled = np.where(maximum > 0, factor / np.where(maximum > 0, maximum, 1), 0)
+        # Only columns outside `eligible` can exceed the row maximum and
+        # overflow; they are zeroed next.
+        with np.errstate(over="ignore"):
+            scaled = np.where(
+                maximum > 0, factor / np.where(maximum > 0, maximum, 1), 0
+            )
         # Columns absent from every valid destination contribute exact zero.
         # Remove them before a tiny eligible maximum can produce inf * 0.
         scaled[:, ~eligible] = 0

@@ -869,6 +869,17 @@ def _add_electrode_local_terms(
     )
 
 
+def _device_marks(marks: np.ndarray, n_rows: int) -> jax.Array:
+    """Marks padded to ``n_rows`` on the device, in JAX's default dtype.
+
+    A mark beyond float32's range overflows to inf in the cast; the
+    likelihood treats it as background-only (see ``_add_electrode_intensities``),
+    so the cast need not warn.
+    """
+    with np.errstate(over="ignore"):
+        return jnp.asarray(_pad_rows(marks, n_rows))
+
+
 @requires_time_edges
 def predict_clusterless_mark_glm_log_likelihood(
     position_time: np.ndarray,
@@ -1093,7 +1104,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             )
             log_likelihood = _add_electrode_local_terms(
                 log_likelihood,
-                jnp.asarray(_pad_rows(marks, n_padded)),
+                _device_marks(marks, n_padded),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 means,
                 precisions_cholesky,
@@ -1112,7 +1123,7 @@ def predict_clusterless_mark_glm_log_likelihood(
         )
         log_likelihood = _add_electrode_intensities(
             log_likelihood,
-            jnp.asarray(_pad_rows(marks, n_padded)),
+            _device_marks(marks, n_padded),
             jnp.asarray(spike_row_ids(selection, n_padded)),
             means,
             precisions_cholesky,

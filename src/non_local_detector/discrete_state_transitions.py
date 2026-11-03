@@ -1613,9 +1613,11 @@ def _reml_row(
         )
         row_penalty = penalty(strengths)
         log_pdet = n_free * _precision_log_pdet(penalties, strengths, l2_penalty)
-        sign, log_det = np.linalg.slogdet(
-            _blocked_hessian(beta, blocks, prior_per_bin, row_penalty)
-        )
+        # A singular Hessian is handled below; slogdet need not warn about it.
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            sign, log_det = np.linalg.slogdet(
+                _blocked_hessian(beta, blocks, prior_per_bin, row_penalty)
+            )
         value = (
             -_blocked_loss(beta, blocks, prior_per_bin, row_penalty)
             + 0.5 * log_pdet
