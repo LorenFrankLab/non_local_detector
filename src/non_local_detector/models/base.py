@@ -1448,6 +1448,7 @@ class _DetectorBase(
                 is_interior=self.is_track_interior_state_bins_[
                     self.state_ind_ == state
                 ],
+                discrete_weight=self.discrete_initial_conditions[state],
             )
         self.continuous_initial_conditions_ = np.concatenate(ic_parts)
         self.initial_conditions_ = (
