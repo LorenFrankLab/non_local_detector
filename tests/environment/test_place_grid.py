@@ -16,7 +16,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment, PlaceGrid
+from non_local_detector.environment import Environment, PlaceGrid, get_centers
 from non_local_detector.exceptions import (
     ConfigurationError,
     NotFittedError,
@@ -270,3 +270,45 @@ def test_grid_configuration_is_read_only(fitted):
         configuration["place_bin_size"] = 3.0  # type: ignore[index]
     for copied in (copy.deepcopy(fitted), pickle.loads(pickle.dumps(fitted))):
         assert copied.place_grid_.configuration["place_bin_size"] == 2.0
+
+
+def test_legacy_open_field_with_x_fastest_centers_gets_its_own_bin_graph():
+    """Until 0.5.11 ``get_grid`` stored the centers of a 2-D grid x fastest
+    (``np.meshgrid``'s default "xy" order) while ``is_track_interior_`` is
+    shaped ``(n_x, n_y)``. The rebuilt graph keeps the stored bin order: node
+    ``k`` is ``place_bin_centers_[k]``, with that bin's interior flag, and
+    edges join neighbouring bins only."""
+    rng = np.random.default_rng(0)
+    # L-shaped field, 5 x 3 bins of 10 cm.
+    position = np.concatenate(
+        [
+            rng.uniform([0, 0], [50, 10], (500, 2)),
+            rng.uniform([0, 0], [10, 30], (500, 2)),
+        ]
+    )
+    fitted = Environment(place_bin_size=10.0).fit_place_grid(position)
+    n_x, n_y = fitted.centers_shape_
+    assert n_x != n_y
+    interior = fitted.is_track_interior_
+    assert not np.array_equal(interior, interior[::-1, ::-1])
+    centers = [get_centers(edge) for edge in fitted.edges_]
+    x_fastest = np.stack([axis.ravel() for axis in np.meshgrid(*centers)], axis=1)
+    state = {
+        **_legacy_state(fitted, drop=("distance_between_nodes_", "track_graphDD")),
+        "place_bin_centers_": x_fastest,
+    }
+
+    graph = _unpickle_legacy(state).track_graphDD
+
+    for node, data in graph.nodes(data=True):
+        np.testing.assert_array_equal(data["pos"], x_fastest[node])
+        x_ind, y_ind = (
+            np.flatnonzero(np.isclose(axis, value))[0]
+            for axis, value in zip(centers, x_fastest[node], strict=True)
+        )
+        assert data["is_track_interior"] == interior[x_ind, y_ind]
+    bin_size = np.array([np.diff(axis).max() for axis in centers])
+    for u, v in graph.edges:
+        step = np.abs(x_fastest[u] - x_fastest[v]) / bin_size
+        assert np.all(step <= 1 + 1e-9), (u, v)
+    assert graph.number_of_edges() == fitted.track_graphDD.number_of_edges()

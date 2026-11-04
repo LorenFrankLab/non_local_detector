@@ -335,6 +335,43 @@ class PlaceGrid:
         self.__post_init__()
 
 
+def _legacy_nd_track_graph(
+    place_bin_centers: np.ndarray,
+    is_track_interior: np.ndarray,
+    edges: Sequence[np.ndarray],
+) -> nx.Graph:
+    """The bin-center graph of an N-D grid stored by an earlier release.
+
+    Until 0.5.11 ``get_grid`` built the centers with ``np.meshgrid``'s default
+    "xy" indexing, so they vary along the first axis fastest while
+    ``is_track_interior`` keeps the ``(n_x, n_y, ...)`` shape. The graph is
+    built in the stored bin order, so node ``k`` is ``place_bin_centers[k]``
+    with its own interior flag, as the stored encoding models and results
+    index the bins.
+
+    Parameters
+    ----------
+    place_bin_centers : np.ndarray, shape (n_bins, n_dims)
+    is_track_interior : np.ndarray of bool, shape (n_x, n_y, ...)
+    edges : sequence of np.ndarray
+        The stored bin edges of each dimension.
+
+    Returns
+    -------
+    track_graph : networkx.Graph
+    """
+    if len(edges) > 1:
+        axes = [get_centers(np.asarray(edge)) for edge in edges]
+        x_fastest = np.stack([axis.ravel() for axis in np.meshgrid(*axes)], axis=1)
+        if place_bin_centers.shape == x_fastest.shape and np.allclose(
+            place_bin_centers, x_fastest
+        ):
+            is_track_interior = np.swapaxes(is_track_interior, 0, 1)
+    return _make_nD_track_graph(
+        place_bin_centers, is_track_interior, is_track_interior.shape
+    )
+
+
 def _legacy_place_grid(
     environment: "Environment", fitted: dict[str, Any]
 ) -> PlaceGrid | None:
@@ -364,8 +401,8 @@ def _legacy_place_grid(
         # Releases before 0.5.13 stored no graph or distances for an N-D
         # grid; rebuild them as fit_place_grid does (dense, its default).
         if "track_graphDD" not in fitted:
-            fitted["track_graphDD"] = _make_nD_track_graph(
-                fitted["place_bin_centers"], is_track_interior, centers_shape
+            fitted["track_graphDD"] = _legacy_nd_track_graph(
+                fitted["place_bin_centers"], is_track_interior, fitted["edges"]
             )
         if "distance_between_nodes" not in fitted:
             fitted["distance_between_nodes"] = _graph_distances(fitted["track_graphDD"])
