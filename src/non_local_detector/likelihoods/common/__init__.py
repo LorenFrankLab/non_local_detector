@@ -139,6 +139,7 @@ from non_local_detector.likelihoods.common.validation import (
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
+    validate_positive_int,
     validate_spike_feature_pair,
     validate_spike_feature_population,
 )
@@ -297,6 +298,7 @@ __all__ = [
     "validate_encoding_contract",
     "validate_finite",
     "validate_population_lengths",
+    "validate_positive_int",
     "validate_spike_feature_pair",
     "validate_spike_feature_population",
     "validate_time_edges",

@@ -74,6 +74,7 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
+    validate_positive_int,
     weighted_mean_rate,
     zero_if_neginf,
 )
@@ -1212,19 +1213,24 @@ estimate_log_joint_mark_intensity = jax.jit(
 )
 
 
-def _validate_tile_sizes(enc_tile_size: Any, pos_tile_size: Any) -> None:
-    """Reject tile sizes that are not None or a positive integer."""
-    for name, value in (
-        ("enc_tile_size", enc_tile_size),
-        ("pos_tile_size", pos_tile_size),
-    ):
-        if value is not None and (
-            isinstance(value, (bool, np.bool_))
-            or not isinstance(value, (int, np.integer))
-            or value < 1
-        ):
-            msg = f"{name} must be None or a positive integer"
-            raise ValidationError(msg, got=repr(value))
+def _validate_execution_settings(
+    block_size: Any, enc_tile_size: Any, pos_tile_size: Any, use_streaming: Any
+) -> None:
+    """Reject block and tile settings the fit and the prediction cannot use."""
+    validate_positive_int("block_size", block_size)
+    validate_positive_int("enc_tile_size", enc_tile_size, allow_none=True)
+    validate_positive_int("pos_tile_size", pos_tile_size, allow_none=True)
+    if not isinstance(use_streaming, (bool, np.bool_)):
+        msg = "use_streaming must be True or False"
+        raise ValidationError(msg, got=repr(use_streaming))
+    if use_streaming and enc_tile_size is None:
+        msg = "use_streaming=True requires enc_tile_size"
+        raise ValidationError(
+            msg,
+            expected="an enc_tile_size with use_streaming=True",
+            got="enc_tile_size=None",
+            hint="Set enc_tile_size, for example 2048, or use_streaming=False.",
+        )
 
 
 def _pad_with_last_row(array: ArrayLike, n_rows: int) -> np.ndarray:
@@ -1679,7 +1685,9 @@ def fit_clusterless_kde_encoding_model(
     integrate the interpolation basis over valid encoding support in seconds;
     event weights are dimensionless. Decode bins may differ from tracking samples.
     """
-    _validate_tile_sizes(enc_tile_size, pos_tile_size)
+    _validate_execution_settings(
+        block_size, enc_tile_size, pos_tile_size, use_streaming
+    )
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -1970,7 +1978,9 @@ def predict_clusterless_kde_log_likelihood(
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _validate_tile_sizes(enc_tile_size, pos_tile_size)
+    _validate_execution_settings(
+        block_size, enc_tile_size, pos_tile_size, use_streaming
+    )
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     # The fitted density models are evaluated in the requested blocks.
     occupancy_model = kde_model_with_block_size(

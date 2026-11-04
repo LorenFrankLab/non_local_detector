@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from non_local_detector import Environment, time_edges_from_centers
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_PREDICT_KEYWORDS,
@@ -334,8 +335,32 @@ _CHANGED_SETTINGS = {
         "use_streaming": True,
     },
     "clusterless_gmm": {"spike_block_size": 7, "bin_tile_size": 2},
-    "clusterless_diffusion": {"block_size": 7, "memory_budget": 1 << 14},
+    # Far below the dense kernel, so the kernel is built one column per tile.
+    "clusterless_diffusion": {"block_size": 7, "memory_budget": 64},
     "clusterless_mark_glm": {"spike_block_size": 7},
+}
+# A fit parameter that is not an execution setting, changed after fitting:
+# prediction must ignore it until the next fit.
+_CHANGED_FIT_PARAMETER = {
+    "sorted_spikes_glm": {"emission_knot_spacing": 0.5},
+    "sorted_spikes_kde": {"position_std": 0.3},
+    "sorted_spikes_diffusion": {"position_std": 0.3},
+    "sorted_spikes_mrf": {"penalty": 10.0},
+    "clusterless_kde": {"position_std": 0.3},
+    "clusterless_gmm": {"gmm_components_joint": 2},
+    "clusterless_diffusion": {"position_std": 0.3},
+    "clusterless_mark_glm": {"n_mark_components": 2},
+}
+# An invalid value of each algorithm's execution settings.
+_INVALID_SETTINGS = {
+    "clusterless_kde": [
+        {"block_size": 0},
+        {"enc_tile_size": -1},
+        {"use_streaming": True, "enc_tile_size": None},
+    ],
+    "clusterless_gmm": [{"spike_block_size": 0}, {"bin_tile_size": 0}],
+    "clusterless_diffusion": [{"block_size": 0}, {"memory_budget": 0}],
+    "clusterless_mark_glm": [{"spike_block_size": 0}],
 }
 
 
@@ -350,7 +375,8 @@ def test_predict_reads_execution_settings_changed_after_fitting(
     monkeypatch, recording, algorithm
 ):
     """Settings set in the algorithm params after fitting reach predict without a
-    refit; settings the params do not name keep their fitted values."""
+    refit; settings the params do not name keep their fitted values, and other
+    fit parameters wait for the next fit."""
     registry, _ = _registry(algorithm)
     record = registry[algorithm]
     decoder, spike_data = _fit(algorithm, recording)
@@ -385,10 +411,51 @@ def test_predict_reads_execution_settings_changed_after_fitting(
         if algorithm in _SORTED_SPIKES_ALGORITHMS
         else "clusterless_algorithm_params"
     )
-    setattr(decoder, name, {**getattr(decoder, name), **changed})
+    params = getattr(decoder, name)
+    if algorithm == "clusterless_diffusion":
+        import non_local_detector.likelihoods.clusterless_diffusion as diffusion
+
+        n_bins = encoding_model["occupancy"].shape[0]
+        rank = int(encoding_model["resolved_rank"])
+        assert diffusion._dense_kernel_fits(n_bins, encoding_model["memory_budget"])
+        assert not diffusion._dense_kernel_fits(n_bins, changed["memory_budget"])
+        assert diffusion._source_tile_size(changed["memory_budget"], n_bins, rank) == 1
+    setattr(decoder, name, {**params, **changed})
     after = log_likelihood()
     assert received[-1] == {**fitted, **changed}
     np.testing.assert_allclose(after, before, rtol=1e-5, atol=1e-4)
+
+    setattr(decoder, name, {**params, **_CHANGED_FIT_PARAMETER[algorithm]})
+    np.testing.assert_array_equal(log_likelihood(), before)
+    assert received[-1] == fitted
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "invalid"),
+    [
+        (algorithm, invalid)
+        for algorithm, cases in _INVALID_SETTINGS.items()
+        for invalid in cases
+    ],
+)
+def test_invalid_execution_settings_are_rejected_at_fit_and_after_it(
+    recording, algorithm, invalid
+):
+    """The fit's checks also apply to settings changed after fitting, so a bad
+    value raises ValidationError instead of failing deep in predict."""
+    decoder, spike_data = _fit(algorithm, recording)
+    params = decoder.clusterless_algorithm_params
+    decoder.clusterless_algorithm_params = {**params, **invalid}
+    time, position, *_ = recording
+    with pytest.raises(ValidationError):
+        decoder.predict(
+            *spike_data,
+            time_edges=time_edges_from_centers(time[_DECODE_SAMPLES]),
+            position_time=time,
+            position=position,
+        )
+    with pytest.raises(ValidationError):
+        decoder.fit(time, position, *spike_data)
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)

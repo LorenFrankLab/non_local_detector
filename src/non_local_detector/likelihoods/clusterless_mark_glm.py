@@ -82,6 +82,7 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
+    validate_positive_int,
     validate_spike_feature_pair,
     weighted_mean_rate,
 )
@@ -531,6 +532,7 @@ def fit_clusterless_mark_glm_encoding_model(
         encoding_exposure_seconds : float
             Weighted encoding occupancy time in seconds.
     """
+    validate_positive_int("spike_block_size", spike_block_size)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -1032,6 +1034,7 @@ def predict_clusterless_mark_glm_log_likelihood(
         ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
+    validate_positive_int("spike_block_size", spike_block_size)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "electrode",

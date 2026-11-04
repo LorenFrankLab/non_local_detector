@@ -116,6 +116,7 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
+    validate_positive_int,
     weighted_mean_rate,
     zero_if_neginf,
 )
@@ -145,6 +146,12 @@ logger = logging.getLogger(__name__)
 # float32 working dtype for the diffusion matmul; its item size drives the memory
 # policy -- do not hardcode 4 elsewhere.
 _WORKING_ITEMSIZE = np.dtype(np.float32).itemsize
+
+
+def _validate_execution_settings(memory_budget: Any, block_size: Any) -> None:
+    """Reject a memory budget (bytes) or block size the fit and prediction cannot use."""
+    validate_positive_int("memory_budget", memory_budget)
+    validate_positive_int("block_size", block_size)
 
 
 def _validate_diffusion_params(
@@ -206,32 +213,7 @@ def _validate_diffusion_params(
                 got=f"heat_kernel_rank = {heat_kernel_rank}",
             )
 
-    if isinstance(memory_budget, bool) or not isinstance(memory_budget, int):
-        msg = "memory_budget must be a positive integer number of bytes"
-        raise ValidationError(
-            msg,
-            expected="a positive int",
-            got=f"{memory_budget!r} (type {type(memory_budget).__name__})",
-        )
-    if memory_budget < 1:
-        msg = "memory_budget must be a positive integer number of bytes"
-        raise ValidationError(
-            msg,
-            expected="memory_budget >= 1",
-            got=f"memory_budget = {memory_budget}",
-        )
-
-    if (
-        isinstance(block_size, bool)
-        or not isinstance(block_size, int)  # type: ignore[redundant-expr]  # runtime check of user input
-        or block_size < 1
-    ):
-        msg = "block_size must be a positive integer"
-        raise ValidationError(
-            msg,
-            expected="a positive int >= 1",
-            got=f"{block_size!r}",
-        )
+    _validate_execution_settings(memory_budget, block_size)
 
     return position_std
 
@@ -1399,6 +1381,7 @@ def predict_clusterless_diffusion_log_likelihood(
         is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
+    _validate_execution_settings(memory_budget, block_size)
     fitted_occupancy = occupancy
     occupancy = jnp.asarray(occupancy)
     summed_ground_process_intensity = jnp.asarray(

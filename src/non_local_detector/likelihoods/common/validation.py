@@ -98,6 +98,34 @@ def validate_bandwidth(std: Any, n_dims: int, name: str) -> jax.Array:
     return jnp.asarray(values)
 
 
+def validate_positive_int(name: str, value: Any, *, allow_none: bool = False) -> None:
+    """Reject a setting that is not a positive integer (or None, if allowed).
+
+    Parameters
+    ----------
+    name : str
+        The parameter name, for the error message.
+    value : object
+    allow_none : bool, optional
+        Whether None is accepted, by default False.
+
+    Raises
+    ------
+    ValidationError
+        If ``value`` is a bool, not an integer, or below 1.
+    """
+    if allow_none and value is None:
+        return
+    if (
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (int, np.integer))
+        or value < 1
+    ):
+        expected = "None or a positive integer" if allow_none else "a positive integer"
+        msg = f"{name} must be {expected}"
+        raise ValidationError(msg, expected=expected, got=repr(value))
+
+
 def validate_finite(array: np.ndarray | jax.Array, name: str) -> None:
     """Raise if ``array`` contains any non-finite (NaN/inf) value.
 

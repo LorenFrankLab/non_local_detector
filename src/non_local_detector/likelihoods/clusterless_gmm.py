@@ -57,6 +57,7 @@ from non_local_detector.likelihoods.common import (
     sum_spikes_into_rows,
     validate_encoding_contract,
     validate_population_lengths,
+    validate_positive_int,
     validate_spike_feature_pair,
     weighted_mean_rate,
 )
@@ -517,6 +518,12 @@ def _gmm_sample_weight(
     return weights
 
 
+def _validate_execution_settings(spike_block_size: Any, bin_tile_size: Any) -> None:
+    """Reject block and tile settings the fit and the prediction cannot use."""
+    validate_positive_int("spike_block_size", spike_block_size)
+    validate_positive_int("bin_tile_size", bin_tile_size, allow_none=True)
+
+
 def mark_reference_scale(
     gmm_reg_covar: float = DEFAULT_GMM_REG_COVAR, **_fit_params: object
 ) -> float:
@@ -668,6 +675,7 @@ def fit_clusterless_gmm_encoding_model(
         - rate_units ("Hz")
         - encoding_exposure_seconds (weighted encoding occupancy time, seconds)
     """
+    _validate_execution_settings(spike_block_size, bin_tile_size)
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -1013,6 +1021,7 @@ def predict_clusterless_gmm_log_likelihood(
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
+    _validate_execution_settings(spike_block_size, bin_tile_size)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "electrode",
