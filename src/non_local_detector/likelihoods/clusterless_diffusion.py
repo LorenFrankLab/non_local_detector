@@ -588,23 +588,6 @@ def _kernel_columns(
     -------
     columns : jax.Array, shape (n_bins, n_sources)
     """
-    if sources.shape[0] == 1:
-        # One column would take XLA's matrix-vector product, whose float32
-        # rounding differs from the matrix product of wider tiles and the dense
-        # kernel by ~4e-7. The log intensity amplifies that at bins near the
-        # resolution floor (to 1.5e-2 on a 144-bin grid), so a one-column tile
-        # would change results. Build two columns and keep the first.
-        return cast(
-            jax.Array,
-            _kernel_columns(
-                eigvals,
-                eigvecs,
-                labels,
-                jnp.concatenate([sources, sources]),
-                position_std=position_std,
-                n_components=n_components,
-            )[:, :1],
-        )
     n_bins = eigvecs.shape[0]
     onehot = (
         jnp.zeros((n_bins, sources.shape[0]), eigvecs.dtype)
