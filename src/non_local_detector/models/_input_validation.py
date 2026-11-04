@@ -387,12 +387,13 @@ def _validate_spike_data(
     """Check spike data where it enters a public fitting or decoding method.
 
     Checks the structure (``_validate_spike_structure``), then that every
-    spike time is a finite number. With ``time_range``, warns when every
-    spike of every unit lies before it, or every one after it: the spike times
-    are then most likely in other units (ms rather than s) or on another clock
-    than the times they are compared with. A range without spikes between
-    spikes (a quiet window) and a unit whose spikes all lie outside it are not
-    reported.
+    spike time is a finite number. With ``time_range``, warns when the span
+    of all the spike times, ``[min, max]`` over every unit, is disjoint from
+    it and farther from it than ``max - min``: the spike times are then most
+    likely in other units (ms rather than s) or on another clock than the
+    times they are compared with. A range without spikes next to them (a
+    quiet window before, between or after the spikes) and a unit whose spikes
+    all lie outside it are not reported.
 
     Parameters
     ----------
@@ -418,7 +419,7 @@ def _validate_spike_data(
     Warns
     -----
     DataQualityWarning
-        If there are spikes, all before or all after ``time_range``.
+        If the spikes lie farther from ``time_range`` than they span.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -454,8 +455,11 @@ def _validate_spike_data(
         return
     first = min(times.min() for times in arrays if times.size)
     last = max(times.max() for times in arrays if times.size)
-    # A quiet window between spikes is data, not a clock mismatch.
-    if start <= last and first <= stop:
+    # A unit or clock mismatch (ms for s ~1000x, or spike times from 0
+    # against Unix-epoch edges) puts the spikes farther from the range than
+    # they span; a quiet window before, between or after the spikes is data.
+    gap = max(first - stop, start - last)
+    if gap <= last - first:
         return
     warnings.warn(
         f"None of the {n_spikes} spike times lies within the {range_name} "
