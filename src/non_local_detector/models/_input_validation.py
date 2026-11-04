@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, get_args
 import numpy as np
 from numpy.typing import ArrayLike
 
+import non_local_detector
 from non_local_detector import _validation as val
 from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
@@ -47,7 +48,7 @@ from non_local_detector.types import (
 )
 
 if TYPE_CHECKING:
-    from non_local_detector.models.base import _DetectorBase
+    import non_local_detector.models.base
 
 
 # Units of a fitted encoding model. Every fit records a copy as
@@ -668,7 +669,9 @@ class _InputValidationMixin:
     """Validation methods of ``_DetectorBase``."""
 
     def _validate_position_dimensionality(  # type: ignore[misc]
-        self: "_DetectorBase", position: np.ndarray, context: str = "fit"
+        self: "non_local_detector.models.base._DetectorBase",
+        position: np.ndarray,
+        context: str = "fit",
     ) -> None:
         """Check that position shape matches the environment type.
 
@@ -724,7 +727,8 @@ class _InputValidationMixin:
             )
 
     def _validate_decode_position(  # type: ignore[misc]
-        self: "_DetectorBase", position: np.ndarray | None
+        self: "non_local_detector.models.base._DetectorBase",
+        position: np.ndarray | None,
     ) -> None:
         """Check that decoding has the position its likelihood reads.
 
@@ -760,7 +764,7 @@ class _InputValidationMixin:
         )
 
     def _validate_initial_conditions(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         discrete_initial_conditions: np.ndarray,
         continuous_initial_conditions_types: ContinuousInitialConditions,
         continuous_transition_types: ContinuousTransitions,
@@ -1020,7 +1024,9 @@ class _InputValidationMixin:
                 got=f"{len(observation_models)}",
             )
 
-    def _validate_time_contract(self: "_DetectorBase") -> None:  # type: ignore[misc]
+    def _validate_time_contract(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+    ) -> None:
         """Reject an unfitted model, unknown encoding units or transition clocks.
 
         Public decoding methods call this once, before any work. Subclasses

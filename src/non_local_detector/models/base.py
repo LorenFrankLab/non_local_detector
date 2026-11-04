@@ -97,53 +97,33 @@ from non_local_detector.likelihoods.no_spike import (
 )
 from non_local_detector.models._checkpointed import (
     _CheckpointedPredictionMixin,
-    _driver_outputs,  # noqa: F401 -- importable from base
     _PosteriorOutputs,
 )
 
 # EM looks these names up in models._em: patch them there, not here.
 from non_local_detector.models._em import (
-    _AUTO_DENSE_TRANSITION_BYTES,  # noqa: F401 -- importable from base
-    _DENSE_EM_WORKING_ARRAYS,  # noqa: F401 -- importable from base
-    _TRANSITION_CHANGE_TOLERANCE,  # noqa: F401 -- importable from base
-    _dense_em_memory,  # noqa: F401 -- importable from base
-    _device_memory_limit,  # noqa: F401 -- importable from base
-    _EMEStep,  # noqa: F401 -- importable from base
-    _EMFinalEStep,  # noqa: F401 -- importable from base
     _EMMixin,
-    _EMSettings,  # noqa: F401 -- importable from base
-    _EMState,  # noqa: F401 -- importable from base
     _require_observed_bins,
     _resolve_em_options,
     _structured_em_options,
-    _validate_em_options,  # noqa: F401 -- importable from base
     _validate_encoding_update_damping,
     _validate_estimation_arguments,
-    _warn_if_dense_em_exceeds_memory,  # noqa: F401 -- importable from base
 )
 from non_local_detector.models._input_validation import (
-    _OPTIONAL_OUTPUTS,  # noqa: F401 -- importable from base
     _TIME_CONTRACT,
-    VALID_OUTPUTS,  # noqa: F401 -- importable from base
     _decode_time_edges,
     _DecodeInputs,
     _EncodingInputs,
     _InputValidationMixin,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
-    _sample_labels,  # noqa: F401 -- importable from base
-    _sample_mask,  # noqa: F401 -- importable from base
-    _sample_positions,  # noqa: F401 -- importable from base
-    _sample_times,  # noqa: F401 -- importable from base
     _validate_covariate_time_length,
     _validate_inference_arguments,
-    _validate_penalty_params,  # noqa: F401 -- importable from base
+    _validate_penalty_params,  # noqa: F401 -- imported from base by tests
     _validate_transition_arguments,
 )
 from non_local_detector.models._persistence import (
-    _INTEGER_DTYPES_ATTR,  # noqa: F401 -- importable from base
-    _PARAMETERS_BEFORE_THEY_EXISTED,  # noqa: F401 -- importable from base
-    _ModelUnpickler,  # noqa: F401 -- importable from base
+    _ModelUnpickler,  # noqa: F401 -- stored-artifact compatibility tests import it from base
     _PersistenceMixin,
     _upgrade_saved_state,
 )

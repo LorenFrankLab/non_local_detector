@@ -1,7 +1,7 @@
 # Warnings
 
 Every warning the package raises itself is an instance of
-`NonLocalDetectorWarning`, a `UserWarning`, so you can silence or escalate the
+`NonLocalDetectorWarning`, so you can silence or escalate the
 package's warnings without matching message text. Warnings from other libraries
 (JAX, scikit-learn, ...) are not instances of it.
 
@@ -40,4 +40,8 @@ In pytest, use `pytest.warns(NumericalWarning)` or
 `pytest.mark.filterwarnings("error::non_local_detector.NumericalWarning")`.
 Existing filters on `UserWarning` (or `DeprecationWarning` for
 `CompatibilityWarning`) keep working because each class subclasses the category
-it replaced.
+it replaced. The base class `NonLocalDetectorWarning` is a plain `Warning`, as
+in astropy: `DataQualityWarning`, `NumericalWarning` and `ParameterWarning` are
+also `UserWarning`s, and `CompatibilityWarning` is a `DeprecationWarning` only,
+so a filter on `UserWarning` no longer catches deprecations. Default visibility
+is unchanged.
