@@ -88,6 +88,7 @@ def _validate_transition_arguments(
 def _validate_inference_arguments(
     inference_mode: InferenceMode,
     output_mode: OutputMode,
+    *,
     cache_likelihood: bool,
     n_chunks: int,
     chunk_size: int | None,
@@ -175,7 +176,7 @@ def _sample_positions(values: ArrayLike, n_time: int) -> np.ndarray:
 
 
 def _sample_mask(values: ArrayLike, n_time: int, name: str) -> np.ndarray:
-    """A boolean mask with one entry per position sample, shape (n_time,).
+    """Return a boolean mask with one entry per position sample, shape (n_time,).
 
     Integers equal to 0 or 1 are read as False or True. Any other integer, a
     float or another dtype is rejected rather than combined bitwise with the
@@ -388,12 +389,15 @@ def _decode_time_edges(
     Parameters
     ----------
     time_edges : array_like, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
     transition_time_bin_width : float or None
         Bin width recorded with learned transitions, or None.
     transition_time_bin_width_tolerance : float, optional
         Uniformity tolerance of the grid the width was learned on. The widths
         match when they differ by no more than the larger of the two grids'
         tolerances.
+    row_slice : slice or None, optional
+        Rows (bins) for which to return centers; None selects all bins.
 
     Returns
     -------
@@ -590,6 +594,7 @@ def _validate_covariate_time_length(
     Parameters
     ----------
     predicted_transitions : np.ndarray, shape (n_covariate_time, n_states, n_states)
+        Covariate-derived discrete transition matrices, one per time step.
     time : np.ndarray, shape (n_bins,)
         Decode bin centers.
 
@@ -723,6 +728,7 @@ class _InputValidationMixin:
         Parameters
         ----------
         position : np.ndarray, shape (n_time_position, n_position_dims), or None
+            Position supplied for decoding, or None if not supplied.
 
         Raises
         ------

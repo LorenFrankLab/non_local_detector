@@ -117,7 +117,7 @@ class _PosteriorOutputs:
     predictive_posterior: Any = None
 
     def requested_results(self, requested_outputs: set[str]) -> dict[str, Any]:
-        """The optional ``convert_results_to_xarray`` arrays that were requested.
+        """Return the optional ``convert_results_to_xarray`` arrays that were requested.
 
         Parameters
         ----------
@@ -239,13 +239,17 @@ class _CheckpointedPredictionMixin:
         Parameters
         ----------
         time_edges : np.ndarray, shape (n_time + 1,)
+            Time bin edges of the whole recording.
         log_likelihood_args : tuple
+            Arguments forwarded to the checkpointed likelihood builder.
         is_missing : np.ndarray, shape (n_time,), or None
+            Boolean mask of bins with missing data, or None if no bin is missing.
         chunk_size : int
             Rows per checkpoint chunk.
         outputs : iterable of str
             Driver outputs. Spatial outputs are held in memory.
         transition_statistics : {None, "counts", "responses"}
+            Transition statistics the driver accumulates, or None for none.
         replay_cache_bytes : int
             Host bytes for forward-pass rows reused by the replay.
 

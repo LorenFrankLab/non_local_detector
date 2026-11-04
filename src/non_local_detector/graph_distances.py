@@ -326,7 +326,9 @@ class LazyGraphDistances:
         return result[()] if result.ndim == 0 else result
 
     def __array__(
-        self, dtype: DTypeLike | None = None, copy: bool | None = None
+        self,
+        dtype: DTypeLike | None = None,
+        copy: bool | None = None,  # noqa: FBT001 -- NumPy __array__ protocol
     ) -> NDArray[Any]:
         return self.to_dense(dtype=dtype)
 

@@ -232,7 +232,8 @@ def test_one_segment_spanning_every_row_sums_all_rows(n_values, reduction_path):
     expected = np.zeros((3, 2), np.float32)
     expected[1] = values.sum(axis=0)
     np.testing.assert_array_equal(
-        deterministic_segment_sum(jnp.asarray(values), ids, 3, True), expected
+        deterministic_segment_sum(jnp.asarray(values), ids, 3, indices_are_sorted=True),
+        expected,
     )
     np.testing.assert_array_equal(
         reductions.deterministic_row_add(
@@ -261,7 +262,7 @@ def test_segment_totals_target_each_present_segment_once(is_sorted):
         ids = np.sort(ids)
     values = rng.integers(-5, 6, 40).astype(np.float32)
     sums, targets = reductions._segment_totals(
-        jnp.asarray(values), jnp.asarray(ids), n_segments, is_sorted
+        jnp.asarray(values), jnp.asarray(ids), n_segments, indices_are_sorted=is_sorted
     )
     sums, targets = np.asarray(sums), np.asarray(targets)
     assert np.unique(targets).size == targets.size
@@ -339,7 +340,10 @@ def test_deterministic_segment_sum_matches_float64_reference(is_sorted, tail):
         ids = np.sort(ids)
     values = rng.normal(size=(n_values, *tail)).astype(np.float32)
     actual = deterministic_segment_sum(
-        jnp.asarray(values), jnp.asarray(ids, jnp.int32), n_segments, is_sorted
+        jnp.asarray(values),
+        jnp.asarray(ids, jnp.int32),
+        n_segments,
+        indices_are_sorted=is_sorted,
     )
     assert_within_pairwise_bound(actual, values, ids, n_segments)
 
@@ -348,9 +352,13 @@ def test_deterministic_segment_sum_is_bitwise_repeatable():
     rng = np.random.default_rng(7614)
     values = jnp.asarray(rng.normal(-13, 7, (5000, 254)).astype(np.float32))
     ids = jnp.asarray(np.sort(rng.integers(0, 256, 5000)).astype(np.int32))
-    reference = np.asarray(deterministic_segment_sum(values, ids, 256, True))
+    reference = np.asarray(
+        deterministic_segment_sum(values, ids, 256, indices_are_sorted=True)
+    )
     for _ in range(20):
-        actual = np.asarray(deterministic_segment_sum(values, ids, 256, True))
+        actual = np.asarray(
+            deterministic_segment_sum(values, ids, 256, indices_are_sorted=True)
+        )
         np.testing.assert_array_equal(actual.view(np.uint32), reference.view(np.uint32))
 
 
@@ -432,7 +440,7 @@ def test_deterministic_segment_sum_handles_unsigned_and_narrow_ids(id_dtype):
     values = np.arange(1, 9, dtype=np.float32)[:, None]
     n_segments = 300
     actual = deterministic_segment_sum(
-        jnp.asarray(values), jnp.asarray(ids), n_segments, False
+        jnp.asarray(values), jnp.asarray(ids), n_segments, indices_are_sorted=False
     )
     np.testing.assert_array_equal(actual, ordered_reference(values, ids, n_segments))
 

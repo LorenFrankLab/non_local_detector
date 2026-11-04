@@ -58,11 +58,11 @@ def get_position_dim_names(n_position_dims: int) -> list[str]:
 
 
 def _is_position_dim(name: object) -> bool:
-    """Whether ``name`` is one of the canonical position-dim names.
+    r"""Whether ``name`` is one of the canonical position-dim names.
 
     Matches *exactly* the closed vocabulary produced by
     :func:`get_position_dim_names` — ``position``, the labelled
-    ``x``/``y``/``z``/``w``/``v``/``u``\\ ``_position`` names, or the numbered
+    ``x``/``y``/``z``/``w``/``v``/``u``\ ``_position`` names, or the numbered
     ``dim{i}_position`` fallback — so a stray ``_position``-suffixed dim such as
     ``head_position`` or ``linear_position`` is not mistaken for a decoder
     position axis.

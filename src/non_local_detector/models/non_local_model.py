@@ -119,7 +119,7 @@ class _NonLocalMixin:
     non_local_penalty_std: float
 
     def _non_local_position_penalty(self) -> float:
-        """The non-local position penalty, validated where it is used.
+        """Return the non-local position penalty, validated where it is used.
 
         Validating at use, not only at construction, also checks values set
         later with ``set_params``.

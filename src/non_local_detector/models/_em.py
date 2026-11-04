@@ -76,6 +76,7 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
     Parameters
     ----------
     encoding_update_damping : float
+        Requested damping of encoding updates; only 0.0 is accepted.
 
     Raises
     ------
@@ -144,6 +145,7 @@ def _structured_em_options(
 
 
 def _validate_em_options(
+    *,
     structured: bool,
     n_chunks: int,
     chunk_size: int | None,
@@ -289,6 +291,7 @@ def _resolve_em_options(
     n_chunks: int,
     chunk_size: int | None,
     result_path: str | Path | None,
+    *,
     store_log_likelihood: bool,
     replay_cache_bytes: int | None,
 ) -> TransitionRepresentation:
@@ -321,12 +324,12 @@ def _resolve_em_options(
             )
         transition_representation = "dense"
     _validate_em_options(
-        transition_representation != "dense",
-        n_chunks,
-        chunk_size,
-        result_path,
-        store_log_likelihood,
-        replay_cache_bytes,
+        structured=transition_representation != "dense",
+        n_chunks=n_chunks,
+        chunk_size=chunk_size,
+        result_path=result_path,
+        store_log_likelihood=store_log_likelihood,
+        replay_cache_bytes=replay_cache_bytes,
     )
     return transition_representation
 
@@ -335,6 +338,7 @@ def _validate_estimation_arguments(
     time_edges: ArrayLike,
     n_chunks: int,
     return_outputs: ReturnOutputs,
+    *,
     save_log_likelihood_to_results: bool | None,
     min_encoding_local_mass: float,
     min_encoding_local_ess: float,
@@ -347,11 +351,18 @@ def _validate_estimation_arguments(
     Parameters
     ----------
     time_edges : array_like, shape (n_bins + 1,)
+        Time bin edges; must be uniform.
     n_chunks : int
+        Number of chunks the bins are split into; at most ``n_bins``.
     return_outputs : str or list of str or set of str, optional
+        Requested outputs; cannot be combined with
+        ``save_log_likelihood_to_results``.
     save_log_likelihood_to_results : bool, optional
+        Deprecated flag to store the log likelihood in the results.
     min_encoding_local_mass : float
+        Minimum local mass for an encoding update; must be >= 0.
     min_encoding_local_ess : float
+        Minimum local effective sample size for an encoding update; must be >= 0.
 
     Returns
     -------
@@ -629,6 +640,7 @@ class _EMMixin:
         Parameters
         ----------
         weights : np.ndarray, shape (n_time_position,)
+            Posterior weight of each time sample in the refit.
         encoding_fit_arguments : dict
             The other keyword arguments of ``_fit_encoding_model``: the
             estimation's position, spike data, training mask and labels.
@@ -640,6 +652,7 @@ class _EMMixin:
         fit: Callable[[str], Any],
         transition_representation: TransitionRepresentation,
         n_time: int,
+        *,
         structured_required: bool,
     ) -> None:
         """Run EM's internal fit and, for "auto", choose dense or structured EM.
@@ -739,6 +752,7 @@ class _EMMixin:
         time_edges: ArrayLike,
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
+        *,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
@@ -1010,9 +1024,9 @@ class _EMMixin:
             time_edges,
             n_chunks,
             return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
         )
         if (
             estimate_encoding_model
@@ -1031,12 +1045,12 @@ class _EMMixin:
             getattr(self, "_continuous_transition_operator_", None) is not None
         )
         _validate_em_options(
-            checkpointed,
-            n_chunks,
-            chunk_size,
-            result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
+            structured=checkpointed,
+            n_chunks=n_chunks,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            store_log_likelihood=store_log_likelihood,
+            replay_cache_bytes=replay_cache_bytes,
         )
         # Resolved once and recorded on the results, so users can tell which
         # EM path ran and with what chunks.
@@ -1206,8 +1220,10 @@ class _EMMixin:
         statistics: np.ndarray,
         coefficients: np.ndarray | None = None,
     ) -> float:
-        """Log prior of the current transitions (or covariate
-        ``coefficients``) under one M-step's prior."""
+        """Return the log prior of the current transitions under one M-step's prior.
+
+        With covariate ``coefficients``, the prior of those.
+        """
         return _transition_log_prior(
             statistics,
             self.discrete_state_transitions_,
@@ -1301,7 +1317,7 @@ class _EMMixin:
     def _em_update_encoding_model(  # type: ignore[misc]
         self: "_DetectorBase", settings: _EMSettings, state: _EMState, e_step: _EMEStep
     ) -> None:
-        """Encoding M-step: refit with the local observations' posterior.
+        """Run the encoding M-step: refit with the local observations' posterior.
 
         Skipped without local observations, or when their posterior mass or
         effective sample size is below the thresholds.
@@ -1486,7 +1502,9 @@ class _EMMixin:
         Parameters
         ----------
         settings : _EMSettings
+            Resolved options of this EM run.
         state : _EMState
+            Mutable EM loop state; updated in place.
         marginal_log_likelihood : float
             This iteration's E-step marginal log-likelihood.
         log_prior_before, log_prior_after : float
@@ -1753,7 +1771,7 @@ class _EMMixin:
         final: _PosteriorOutputs,
         traces: dict[str, list[float]],
     ) -> xr.Dataset:
-        """The in-memory results of EM: the final E-step and EM's traces."""
+        """Return the in-memory results of EM: the final E-step and EM's traces."""
         # Every final E-step without a result_path returns them.
         assert final.acausal_state_probabilities is not None
         em_attrs = dict(settings.em_attrs)

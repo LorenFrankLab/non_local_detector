@@ -190,7 +190,7 @@ def _prepare_inputs(
     spike_times: ArrayLike,
     spike_waveform_features: ArrayLike,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Validated sample times, positions, spike times and marks."""
+    """Return validated sample times, positions, spike times and marks."""
     time = np.asarray(position_time, dtype=float)
     if time.ndim != 1 or time.size < 2 or not np.all(np.diff(time) > 0):
         msg = (
@@ -236,7 +236,7 @@ def _prepare_inputs(
 def _electrode_intensity(
     encoding_model: dict[str, Any],
 ) -> Callable[[dict[str, Any], int], Any]:
-    """The registered intensity builder of the algorithm that fitted the model."""
+    """Return the registered intensity builder of the algorithm that fitted the model."""
     supported = sorted(
         name
         for name, record in _CLUSTERLESS_ALGORITHMS.items()
@@ -363,9 +363,11 @@ def _time_in_bins(
     Parameters
     ----------
     sample_times : np.ndarray, shape (n_time,)
+        Time of each position sample.
     sample_bins : np.ndarray, shape (n_time,)
         Bin of the position at each sample.
     n_bins : int
+        Number of bins.
     query_times : np.ndarray, shape (n_queries,)
         Ordered times within ``sample_times``.
 

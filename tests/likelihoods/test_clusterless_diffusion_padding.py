@@ -75,7 +75,7 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
     )
     dense = _dense_kernel_fits(n_bins, encoding["memory_budget"])
     layouts = [
-        _electrode_layout(bins, marks, weights, n_bins, tile_budget, dense)
+        _electrode_layout(bins, marks, weights, n_bins, tile_budget, dense=dense)
         for bins, marks, weights in zip(
             encoding["encoding_bin_indices"],
             encoding["encoding_marks"],

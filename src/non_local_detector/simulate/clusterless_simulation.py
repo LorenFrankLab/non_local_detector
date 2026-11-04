@@ -145,6 +145,7 @@ def make_simulated_run_data(
     n_tetrodes: int = N_TETRODES,
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
+    *,
     make_inbound_outbound_neurons: bool = False,
     seed: int | None = 0,
 ) -> ClusterlessSimOutput:
@@ -332,7 +333,6 @@ def make_continuous_replay(
         Binned clusterless spike features. NaN indicates no spike; non-NaN values
         are the spike's mark features.
     """
-
     replay_speed = running_speed * replay_speedup
     n_samples = int(0.5 * sampling_frequency * 2 * track_height / replay_speed)
     replay_time = simulate_time(n_samples, sampling_frequency)
@@ -395,7 +395,6 @@ def make_hover_replay(
         Binned clusterless spike features. NaN indicates no spike; non-NaN values
         are the spike's mark features.
     """
-
     place_field_means = _cells_by_tetrode(place_field_means, n_tetrodes)
 
     if hover_neuron_ind is None:
@@ -448,7 +447,6 @@ def make_fragmented_replay(
         Binned clusterless spike features. NaN indicates no spike; non-NaN values
         are the spike's mark features.
     """
-
     N_TIME = 10
 
     place_field_means = _cells_by_tetrode(place_field_means, n_tetrodes)

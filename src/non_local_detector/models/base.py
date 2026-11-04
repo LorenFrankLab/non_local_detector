@@ -386,9 +386,13 @@ def _missing_bins(
     Parameters
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
     is_missing : np.ndarray, shape (n_bins,), optional
+        Caller's boolean mask of missing bins.
     position_time : np.ndarray, shape (n_time_position,), optional
+        Times of the position samples.
     position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        Position samples; non-finite rows mark untracked times.
     reads_position : bool, optional
         Whether the decode likelihood reads position, by default True. When
         False, position marks no bin missing; only ``is_missing`` does.
@@ -474,6 +478,7 @@ def _bins_outside_tracking(
     Parameters
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
     position_time : np.ndarray, shape (n_time_position,)
         Finite and non-decreasing.
 
@@ -506,7 +511,9 @@ def _bins_reading_nan_position(
     Parameters
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
     position_time : np.ndarray, shape (n_time_position,)
+        Times of the position samples.
     is_nan : np.ndarray of bool, shape (n_time_position,)
         Samples with a non-finite position; at least one is True.
 
@@ -562,9 +569,14 @@ def _group_spike_mask(
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
+        Spike times.
     position_time : np.ndarray, shape (n_time_position,)
+        Times of the position samples (the full position timeline).
     group_weights : np.ndarray, shape (n_time_position,)
         Per-sample weights of this group (mask times any EM weight).
+    encoding_support : EncodingSupport, optional
+        Support of the encoding fit used to decide which spikes are in bounds;
+        by default None, which uses the ends of ``position_time``.
 
     Returns
     -------
@@ -602,6 +614,7 @@ def _group_weights(
     Parameters
     ----------
     is_group : np.ndarray of bool, shape (n_time_position,)
+        Mask of the samples belonging to the group.
     weights : np.ndarray, shape (n_time_position,), optional
         Extra per-sample weights (e.g. EM local-state weights).
     likelihood_name : tuple
@@ -1752,6 +1765,14 @@ class _DetectorBase(
             If there are multiple environments, label each time point with the environment name, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            By default "dense", which builds the full matrix. "structured"
+            requires exact supported state-block operators; "auto" permits
+            budgeted dense fallback blocks.
+        max_dense_transition_bytes : int, optional
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy view, by default
+            ``DEFAULT_MAX_DENSE_BYTES``. Does not limit "dense".
 
         Returns
         -------
@@ -1910,7 +1931,7 @@ class _DetectorBase(
     """Example ``predict`` call shown in validation errors."""
 
     def _likelihood_predict_function(self) -> Callable[..., Any]:
-        """The predict function of the detector's likelihood algorithm."""
+        """Return the predict function of the detector's likelihood algorithm."""
         raise NotImplementedError
 
     def _likelihood_predict_kwargs(self) -> dict[str, Any]:
@@ -1918,7 +1939,7 @@ class _DetectorBase(
         return {}
 
     def _likelihood_execution_settings(self) -> dict[str, Any]:
-        """Execution settings of the current algorithm params, over the fitted ones."""
+        """Return the execution settings of the current algorithm params, over the fitted ones."""
         return {}
 
     def _no_spike_mark_log_likelihood(
@@ -2318,13 +2339,13 @@ class _DetectorBase(
         _validate_inference_arguments(
             inference_mode,
             output_mode,
-            cache_likelihood,
-            n_chunks,
-            chunk_size,
-            result_path,
-            checkpoint_dir,
-            selected_intervals,
-            replay_cache_bytes,
+            cache_likelihood=cache_likelihood,
+            n_chunks=n_chunks,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            selected_intervals=selected_intervals,
+            replay_cache_bytes=replay_cache_bytes,
         )
         return_log_likelihood = "log_likelihood" in requested_outputs
         if (
@@ -2433,16 +2454,16 @@ class _DetectorBase(
             n_chunks,
             chunk_size,
             result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
+            store_log_likelihood=store_log_likelihood,
+            replay_cache_bytes=replay_cache_bytes,
         )
         time_edges, _ = _validate_estimation_arguments(
             time_edges,
             n_chunks,
             return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
         )
         inputs = _EncodingInputs.from_arguments(
             position_time,
@@ -2583,6 +2604,7 @@ class _DetectorBase(
         log_likelihood_args: tuple[Any, ...] = (),
         is_missing: np.ndarray | None = None,
         log_likelihoods: np.ndarray | None = None,
+        *,
         cache_likelihood: bool = True,
         n_chunks: int = 1,
         discrete_state_transitions: np.ndarray | None = None,
@@ -2801,12 +2823,15 @@ class _DetectorBase(
             ``fit_group(environment, group_weights)`` fits the family's
             algorithm to one group's spikes and returns its encoding model.
         is_training : np.ndarray of bool, shape (n_time_position,)
+            Samples the encoding models are trained on.
         encoding_group_labels : np.ndarray, shape (n_time_position,)
+            Encoding group label of each sample.
         environment_labels : np.ndarray, shape (n_time_position,)
             From ``_encoding_masks``.
         weights : np.ndarray, shape (n_time_position,), or None
             Training weights.
         support : EncodingSupport
+            Support of the encoding fit (exposure of each sample).
 
         Returns
         -------
@@ -2965,7 +2990,7 @@ class _DetectorBase(
         return convert_seq_to_df(self, sequence_ind, time_centers)
 
     def calculate_time_edges(
-        self, time_range: np.ndarray, trim: bool = False
+        self, time_range: np.ndarray, *, trim: bool = False
     ) -> np.ndarray:
         """Uniform decode edges at ``1 / sampling_frequency`` spanning a range.
 
@@ -3155,6 +3180,7 @@ class ClusterlessDetector(_DetectorBase):
         Parameters
         ----------
         weights : np.ndarray, shape (n_time_position,)
+            Posterior weight of each time sample in the refit.
         encoding_fit_arguments : dict
             The other keyword arguments of ``_fit_encoding_model``.
         """
@@ -3179,7 +3205,7 @@ class ClusterlessDetector(_DetectorBase):
         )
 
     def _clusterless_algorithm(self) -> ClusterlessLikelihoodAlgorithm:
-        """The registered record of ``clusterless_algorithm``."""
+        """Return the registered record of ``clusterless_algorithm``."""
         try:
             return _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
         except KeyError:
@@ -4250,7 +4276,7 @@ class SortedSpikesDetector(_DetectorBase):
         )
 
     def _sorted_spikes_algorithm(self) -> LikelihoodAlgorithm:
-        """The registered record of ``sorted_spikes_algorithm``."""
+        """Return the registered record of ``sorted_spikes_algorithm``."""
         try:
             return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
         except KeyError:
@@ -4742,9 +4768,9 @@ class SortedSpikesDetector(_DetectorBase):
         result_path: str | Path | None = None,
         replay_cache_bytes: int | None = None,
     ) -> xr.Dataset:
-        """
-        Estimate the initial conditions and transition probabilities
-         using the Expectation-Maximization (EM) algorithm.
+        """Estimate the initial conditions and transition probabilities.
+
+        Uses the Expectation-Maximization (EM) algorithm.
 
         Parameters
         ----------

@@ -31,7 +31,7 @@ ArrayLike: TypeAlias = jax.Array | np.ndarray
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
 def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jax.Array, jax.Array]:
-    """Normalizes the values within the axis in a way that they sum up to 1.
+    """Normalize the values within the axis in a way that they sum up to 1.
 
     Divides by the exact sum so any positive total mass — down to the smallest
     normal value of the dtype — normalizes to one. A slice whose sum is exactly
@@ -118,8 +118,9 @@ def _condition_on_primal(
 
 @jax.custom_jvp
 def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jax.Array, jax.Array]:
-    """Condition on new emissions, given in the form of log likelihoods
-    for each discrete state, while avoiding numerical underflow.
+    """Condition on new emissions without numerical underflow.
+
+    The emissions are given as log likelihoods for each discrete state.
 
     Parameters
     ----------
@@ -164,7 +165,7 @@ def _condition_on_jvp(
     primals: tuple[jax.Array, jax.Array],
     tangents: tuple[jax.Array, jax.Array],
 ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array]]:
-    """Derivative rule for :func:`_condition_on`.
+    """Define the derivative rule for :func:`_condition_on`.
 
     With ``r = exp(ll) / Z`` and posterior ``q``, the tangent of the normalized
     weight ``w / Z`` (``Z`` held fixed) is ``r * d(probs) + q * d(ll)``. Its
@@ -449,8 +450,7 @@ def _safe_log(p: ArrayLike) -> jax.Array:
 
 
 def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jax.Array:
-    """Divides two arrays, while setting the result to 0.0
-    if the denominator is 0.0.
+    """Divide two arrays, setting the result to 0.0 where the denominator is 0.0.
 
     Parameters
     ----------
@@ -560,7 +560,9 @@ def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jax.Array
     state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
     n_states : int
+        Number of discrete states.
     dtype : dtype
+        Dtype of the returned one-hot matrix.
 
     Returns
     -------
@@ -587,8 +589,11 @@ def _covariate_forward_product(
     Parameters
     ----------
     probs : jax.Array, shape (n_state_bins,)
+        Probability of each state bin before the step.
     discrete_transition_matrix_t : jax.Array, shape (n_states, n_states)
+        Discrete transition matrix ``D`` of this step.
     continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix ``C`` of this step.
     state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
     one_hot : jax.Array, shape (n_states, n_state_bins)
@@ -622,8 +627,11 @@ def _covariate_backward_product(
     Parameters
     ----------
     values : jax.Array, shape (n_state_bins,)
+        Value of each state bin at the next time step.
     discrete_transition_matrix_t : jax.Array, shape (n_states, n_states)
+        Discrete transition matrix ``D`` of this step.
     continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix ``C`` of this step.
     state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
     one_hot : jax.Array, shape (n_states, n_state_bins)
@@ -897,10 +905,12 @@ def _filter_scan(
     evidence : scalar
         Evidence accumulated before the first row (the carried total starts here).
     log_likelihoods : array, shape (n_rows, n_state_bins)
+        Log likelihood of each row's observations in each state bin.
     weights : array, shape (n_rows, n_states, n_states), or None
         Per-row discrete transitions handed to ``operator`` (None for a
         stationary operator).
     operator : TransitionProducts
+        Transition products used to propagate the predicted distribution.
     keep_rows, keep_predictive, keep_increments : bool
         Which per-row outputs to emit (static under jit).
 
@@ -953,9 +963,13 @@ def _smoother_scan(
     Parameters
     ----------
     filtered : array, shape (n_rows, n_state_bins)
+        Filtered distribution of each row.
     weights : array, shape (n_rows, n_states, n_states), or None
+        Per-row discrete transitions handed to ``operator`` (None for a
+        stationary operator).
     operator : TransitionProducts
-        A :class:`TransitionOperator` when ``pair_statistics`` is set.
+        Transition products used to pull the smoothed row backward. A
+        :class:`TransitionOperator` when ``pair_statistics`` is set.
     next_smoothed : array, shape (n_state_bins,)
         Smoothed row after the last row (any row of the right shape for the
         recording's final row, which is its own smoothed row).
@@ -976,7 +990,6 @@ def _smoother_scan(
         Or ``(smoothed, pairs)`` with ``pair_statistics``, pairs of shape
         (n_rows, n_states, n_states).
     """
-
     paired: TransitionOperator | None = None
     if pair_statistics:
         if not isinstance(operator, TransitionOperator):
@@ -1024,7 +1037,9 @@ def _viterbi_scan(
     Parameters
     ----------
     initial_distribution : array, shape (n_state_bins,)
+        Initial probability of each state bin.
     log_likelihoods : array, shape (n_time, n_state_bins)
+        Log likelihood of each time bin's observations in each state bin.
     log_weights : array, shape (n_time, n_states, n_states), or None
         Log per-row discrete transitions (None for a stationary operator).
     log_operator : log-domain operator
@@ -1118,6 +1133,7 @@ def _float64_evidence(increments: ArrayLike) -> float:
     Parameters
     ----------
     increments : array-like, shape (n_time,)
+        Per-row log normalizers (log evidence increments).
 
     Returns
     -------
@@ -1387,7 +1403,7 @@ def _check_shape(
 
 
 def _validate_dtype(dtype: DTypeLike) -> np.dtype[Any]:
-    """The working dtype: float32, or float64 with JAX's 64-bit mode on."""
+    """Return the working dtype: float32, or float64 with JAX's 64-bit mode on."""
     dtype = np.dtype(dtype)
     if dtype not in _SUPPORTED_DTYPES:
         msg = "dtype must be float32 or float64"
@@ -1412,7 +1428,7 @@ def _validate_dtype(dtype: DTypeLike) -> np.dtype[Any]:
 
 
 def _validate_time(time: Any) -> int:
-    """Number of time bins of a dense driver's nonempty ``time`` vector."""
+    """Return the number of time bins of a dense driver's nonempty ``time`` vector."""
     if np.ndim(time) != 1 or np.shape(time)[0] == 0:
         msg = "time must be a nonempty vector"
         raise ValidationError(
@@ -1608,7 +1624,9 @@ def _validate_hmm_inputs(
         Covariate-path continuous transition; each bin's row sums to at most
         1 over the bins of each discrete state.
     is_missing : array_like, shape (n_time,), optional
+        True for time bins without observations; checked for shape only.
     log_likelihoods : array_like, shape (n_time, n_state_bins), optional
+        Precomputed log likelihoods; checked for shape only.
 
     Returns
     -------
@@ -1763,6 +1781,7 @@ def _state_marginals(posterior: jax.Array, aggregation: jax.Array) -> jax.Array:
     Parameters
     ----------
     posterior : jax.Array, shape (n_time, n_state_bins)
+        Probability of each state bin at each time bin.
     aggregation : jax.Array, shape (n_state_bins, n_states)
         One-hot state membership.
 
@@ -1855,8 +1874,36 @@ def _chunked_filter_smoother(
         (the last filtered row for the final chunk), as :func:`_smoother_impl`
         does.
 
-    The remaining parameters and the returns are those of
-    :func:`chunked_filter_smoother`.
+    time : np.ndarray, shape (n_time,)
+        Time of each decoding bin; its length sets the number of time bins.
+    state_ind : np.ndarray, shape (n_state_bins,)
+        Connects the discrete states to the state space.
+    initial_distribution : np.ndarray, shape (n_state_bins,)
+        Initial probability of each state bin.
+    log_likelihood_func : callable
+        Called as ``log_likelihood_func(time, *log_likelihood_args,
+        is_missing=...)``.
+    log_likelihood_args : tuple
+        Extra positional arguments passed to ``log_likelihood_func``.
+    is_missing : np.ndarray, shape (n_time,), or None
+        True for time bins without observations.
+    n_chunks : int
+        Number of chunks to split the time bins into.
+    log_likelihoods : np.ndarray, shape (n_time, n_state_bins), or None
+        Precomputed log likelihoods used instead of calling
+        ``log_likelihood_func``.
+    cache_log_likelihoods : bool
+        If True, compute and cache the log likelihoods before the loop.
+    dtype : dtype
+        Working dtype, float32 or float64.
+    accumulate_log_likelihoods : bool
+        If True and the log likelihoods are not cached, copy each chunk's rows
+        into one host array that is returned.
+    host_outputs : bool
+        If True, return the posteriors as NumPy arrays; otherwise keep them on
+        the device as JAX arrays.
+
+    The returns are those of :func:`chunked_filter_smoother`.
     """
     causal_posterior = []
     predictive_posterior = []
@@ -2068,7 +2115,8 @@ def chunked_filter_smoother(
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
-    cache_log_likelihoods: bool = True,
+    # positional: ``dtype`` after it is public positional API (a test pins it)
+    cache_log_likelihoods: bool = True,  # noqa: FBT001, FBT002
     dtype: DTypeLike = jnp.float32,
     *,
     accumulate_log_likelihoods: bool = False,
@@ -2396,7 +2444,7 @@ def filter_covariate_dependent(
     state_ind: ArrayLike,
     log_likelihoods: ArrayLike,
 ) -> tuple[tuple[float, jax.Array], tuple[jax.Array, jax.Array]]:
-    """Filtering step with covariate dependent transitions.
+    """Run a filtering step with covariate dependent transitions.
 
     Parameters
     ----------
@@ -2469,13 +2517,20 @@ def _smoother_covariate_dependent_impl(
     Parameters
     ----------
     discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
+        Per-time discrete transition matrices.
     continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix.
     state_ind : jax.Array, shape (n_state_bins,)
         Maps each state bin to its discrete state.
     filtered_probs : jax.Array, shape (n_time, n_state_bins)
+        Filtered distribution of each time bin.
     initial : jax.Array, shape (n_state_bins,), optional
+        Smoothed row after the last row; by default the last filtered row.
     ind : jax.Array, shape (n_time,), optional
+        Row indices of the recording; by default ``arange(n_time)``.
     n_time : int, optional
+        Rows in the whole recording; by default the length of
+        ``filtered_probs``.
 
     Returns
     -------
@@ -2528,7 +2583,8 @@ def chunked_filter_smoother_covariate_dependent(
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
-    cache_log_likelihoods: bool = True,
+    # positional: ``dtype`` after it is public positional API (a test pins it)
+    cache_log_likelihoods: bool = True,  # noqa: FBT001, FBT002
     dtype: DTypeLike = jnp.float32,
     *,
     accumulate_log_likelihoods: bool = False,

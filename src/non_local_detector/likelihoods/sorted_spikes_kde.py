@@ -191,9 +191,15 @@ def _local_kde_log_likelihood(
     Parameters
     ----------
     points : jax.Array, shape (n_rows, n_dims) or (n_rows,)
-    occupancy, durations : jax.Array, shape (n_rows,)
+        Position at which each row's KDE is evaluated.
+    occupancy : jax.Array, shape (n_rows,)
+        Occupancy density at each point; the marginal KDE is divided by it.
     counts : jax.Array, shape (n_rows, n_neurons)
+        Spike count of each neuron in each row.
     mean_rates : jax.Array, shape (n_neurons,)
+        Mean firing rate of each neuron.
+    durations : jax.Array, shape (n_rows,)
+        Duration of each row, multiplying the rate to give expected counts.
     groups, order, block_sizes
         From ``_kde_leaf_groups``.
     log_occupancy : jax.Array, optional
@@ -656,8 +662,8 @@ def predict_sorted_spikes_kde_log_likelihood(
                 spike_times,
                 rows.time_edges,
                 "Local Likelihood",
-                True,
-                slice(start, stop),
+                disable_progress_bar=True,
+                row_slice=slice(start, stop),
                 _spike_time_order=rows.spike_time_order,
             )
             # Only rows in occupancy tails need log ratios; without any, the
@@ -682,7 +688,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             len(spike_times),
             evaluate,
             "Local Likelihood",
-            disable_progress_bar,
+            disable_progress_bar=disable_progress_bar,
         )[:, None]
     return blocked_nonlocal_poisson_log_likelihood(
         spike_times,
