@@ -81,7 +81,6 @@ def make_single_environment_movie(
     str
         Path to the output movie file.
     """
-
     position_name = (
         ["head_position_x", "head_position_y"]
         if position_name is None
@@ -175,7 +174,7 @@ def _spatial_posterior_for_movie(
 
 
 def _setup_single_env_figure() -> tuple[Figure, dict[str, Any]]:
-    """Setup figure for single environment movie."""
+    """Set up figure for single environment movie."""
     with plt.style.context("dark_background"):
         fig, axes_array = plt.subplots(
             2,
@@ -246,7 +245,6 @@ def _render_single_env_frame(
     data: dict[str, Any],
 ) -> None:
     """Render a single frame for single environment movie."""
-
     # Update position
     axes["position_dot"].set_offsets(data["position"][frame_idx])
 

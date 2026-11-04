@@ -105,6 +105,7 @@ def validate_positive_int(name: str, value: Any, *, allow_none: bool = False) ->
     name : str
         The parameter name, for the error message.
     value : object
+        Setting to check.
     allow_none : bool, optional
         Whether None is accepted, by default False.
 

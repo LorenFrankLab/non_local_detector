@@ -25,10 +25,15 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
+    CompatibilityWarning,
     ConfigurationError,
     DataError,
+    DataQualityWarning,
     NonLocalDetectorError,
+    NonLocalDetectorWarning,
     NotFittedError,
+    NumericalWarning,
+    ParameterWarning,
     ValidationError,
 )
 from non_local_detector.initial_conditions import UniformInitialConditions
@@ -54,10 +59,12 @@ with contextlib.suppress(ImportError):
 
 __all__ = [
     "ClusterlessDecoder",
+    "CompatibilityWarning",
     "ConfigurationError",
     "ContFragClusterlessClassifier",
     "ContFragSortedSpikesClassifier",
     "DataError",
+    "DataQualityWarning",
     "Discrete",
     "DiscreteNonStationaryCustom",
     "DiscreteNonStationaryDiagonal",
@@ -72,8 +79,11 @@ __all__ = [
     "NoSpikeContFragSortedSpikesClassifier",
     "NonLocalClusterlessDetector",
     "NonLocalDetectorError",
+    "NonLocalDetectorWarning",
     "NonLocalSortedSpikesDetector",
     "NotFittedError",
+    "NumericalWarning",
+    "ParameterWarning",
     "RandomWalk",
     "RandomWalkDirection1",
     "RandomWalkDirection2",

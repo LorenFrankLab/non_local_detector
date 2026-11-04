@@ -112,8 +112,10 @@ class ContinuousTransition(Protocol):
 
     @property
     def environment_name(self) -> str | None:
-        """Name of the environment of the source bins; None for a transition
-        without place bins, such as ``Discrete``."""
+        """Name of the environment of the source bins.
+
+        None for a transition without place bins, such as ``Discrete``.
+        """
         ...
 
     def make_state_transition(
@@ -145,6 +147,7 @@ def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     x : np.ndarray, shape (n_rows, n_cols)
+        Unnormalized transition matrix.
 
     Returns
     -------
@@ -187,8 +190,7 @@ def _random_walk_on_track_graph(
     place_bin_center_ind_to_node: np.ndarray,
     distance_between_nodes: dict[int, dict[int, float]] | LazyGraphDistances,
 ) -> np.ndarray:
-    """Estimates the random walk probabilities based on the spatial
-    topology given by the track graph.
+    """Estimate the random walk probabilities from the track graph topology.
 
     Parameters
     ----------
@@ -230,13 +232,16 @@ def _random_walk_on_track_graph(
 def _euclidean_random_walk(
     environment: Environment, movement_mean: float, movement_var: float
 ) -> np.ndarray:
-    """Estimates the random walk probabilities based on the Euclidean distance
+    """Estimate the random walk probabilities from the Euclidean distance.
 
     Parameters
     ----------
     environment : Environment
+        Environment whose ``place_bin_centers_`` define the bins.
     movement_mean : float
+        Mean displacement added to each bin center.
     movement_var : float
+        Covariance of the Gaussian step distribution.
 
     Returns
     -------
@@ -273,8 +278,7 @@ class _DropsLegacyEnvironment:
 
 
 class _EnvironmentBlock:
-    """``SupportsStructuredBlock`` defaults of a transition within one
-    environment.
+    """``SupportsStructuredBlock`` defaults of a transition within one environment.
 
     Its dense block spans the bins of ``environment_name`` in both
     directions, and it reads no graph distances.
@@ -283,8 +287,7 @@ class _EnvironmentBlock:
     environment_name: str
 
     def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:
-        """``(n_bins, n_bins)`` of ``environment_name``, without building
-        the block."""
+        """Return ``(n_bins, n_bins)`` of ``environment_name``, unbuilt."""
         environment = find_environment_by_name(environments, self.environment_name)
         n_bins = len(environment.place_bin_centers_)
         return (n_bins, n_bins)
@@ -388,8 +391,9 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
         super().__setstate__(state)
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
-        """Separable Gaussian block of a Euclidean random walk on a complete
-        Cartesian grid.
+        """Separable Gaussian block of a Euclidean random walk on a complete grid.
+
+        The grid is Cartesian.
 
         Raises
         ------
@@ -407,8 +411,10 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     def graph_distance_environment(
         self, environments: Sequence[Environment]
     ) -> Environment | None:
-        """The environment whose graph distances a manifold-distance random
-        walk reads; None for a Euclidean one."""
+        """Return the environment whose graph distances the walk reads.
+
+        A manifold-distance random walk reads them; None for a Euclidean one.
+        """
         if not self.use_manifold_distance:
             return None
         return find_environment_by_name(environments, self.environment_name)
@@ -572,8 +578,11 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
     environment2_name: str | None = None
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
-        """Rank-one block from the interior of ``environment_name`` to the
-        interior of ``environment2_name`` (or the same environment)."""
+        """Rank-one block from the interior of ``environment_name`` to its target.
+
+        The target is the interior of ``environment2_name`` (or the same
+        environment).
+        """
         from non_local_detector.transition_operators import UniformBlock
 
         source = find_environment_by_name(
@@ -916,7 +925,7 @@ class Discrete:
         self,
         environments: Sequence[Environment] = (),  # noqa: ARG002 -- SupportsStructuredBlock signature
     ) -> "Block":
-        """The (1, 1) identity block."""
+        """Return the (1, 1) identity block."""
         from non_local_detector.transition_operators import IdentityBlock
 
         return IdentityBlock(np.ones(1, dtype=bool))
@@ -967,7 +976,7 @@ def _multi_bin_local_transition(
     to_observation: ObservationModel,
     local_position_std: float | None,
 ) -> ContinuousTransition:
-    """The transition to build for a block with a multi-bin Local state.
+    """Return the transition to build for a block with a multi-bin Local state.
 
     A multi-bin Local state (``local_position_std`` set) has place bins, so a
     ``Discrete`` block into or out of it becomes ``Uniform`` over the Local
@@ -977,6 +986,7 @@ def _multi_bin_local_transition(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     from_observation, to_observation : ObservationModel
         Observation models of the block's source and destination states.
     local_position_std : float or None
@@ -1051,8 +1061,10 @@ class _NamesDestinationEnvironment(Protocol):
 
 
 def _declared_destination(transition: ContinuousTransition) -> str | None:
-    """The environment a transition moves into: its ``environment2_name``
-    when set, else its ``environment_name``."""
+    """Return the environment a transition moves into.
+
+    This is its ``environment2_name`` when set, else its ``environment_name``.
+    """
     if (
         isinstance(transition, _NamesDestinationEnvironment)
         and transition.environment2_name is not None
@@ -1079,7 +1091,9 @@ def _check_block_environments(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     environments : sequence of Environment
+        Environments in which the declared names are looked up.
     source_environment_name, destination_environment_name : str or None
         Environments of the block's source and destination states (their
         observation models' ``environment_name``); None when unknown, which
@@ -1142,7 +1156,9 @@ def _scalar_to_spatial_destination(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     environments : sequence of Environment
+        Environments in which the declared destination is looked up.
 
     Returns
     -------
@@ -1209,14 +1225,18 @@ def _make_transition_block(
     context: TransitionContext | None,
     shape: tuple[int, int],
 ) -> np.ndarray:
-    """Call ``transition.make_state_transition(environments, context)`` and
-    check the block it returns.
+    """Call ``transition.make_state_transition(environments, context)``.
+
+    The block it returns is checked.
 
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition whose block is built.
     environments : sequence of Environment
+        Environments passed to ``make_state_transition``.
     context : TransitionContext or None
+        Context passed to ``make_state_transition``.
     shape : tuple of int
         ``(n_source_bins, n_destination_bins)`` of the two states.
 

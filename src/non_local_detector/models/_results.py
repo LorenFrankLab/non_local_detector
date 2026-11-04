@@ -228,6 +228,12 @@ def convert_results_to_xarray(
         One-step-ahead predicted state probabilities, by default None.
     predictive_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
         One-step-ahead predicted posterior probabilities over state bins, by default None.
+    time_edges : np.ndarray, shape (n_time + 1,)
+        Time bin edges; stored as the ``time_bin_start`` / ``time_bin_end`` /
+        ``time_bin_width`` coordinates.
+    is_missing : np.ndarray, shape (n_time,), optional
+        Boolean mask of bins with missing data, stored as a coordinate. By
+        default None, which marks no bin as missing.
 
     Returns
     -------
@@ -356,7 +362,7 @@ def convert_results_to_xarray(
 def convert_seq_to_df(
     detector: "_DetectorBase", sequence_ind: np.ndarray, time: np.ndarray
 ) -> pd.DataFrame:
-    """Converts the sequence indices to a DataFrame.
+    """Convert the sequence indices to a DataFrame.
 
     Parameters
     ----------
@@ -365,6 +371,7 @@ def convert_seq_to_df(
     sequence_ind : np.ndarray, shape (n_time,)
         Most likely sequence indices.
     time : np.ndarray, shape (n_time,)
+        Time of each sequence index.
 
     Returns
     -------

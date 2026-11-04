@@ -17,7 +17,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryDiagonal,
     InitialDiscreteTransition,
 )
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from non_local_detector.models import SortedSpikesDecoder
 from non_local_detector.observation_models import ObservationModel
 
@@ -411,7 +411,7 @@ class TestPositionDimensionalityWarning:
 
         position_warnings = self._fit_and_collect_warnings(decoder, position_1d)
         assert len(position_warnings) == 1
-        assert position_warnings[0].category is UserWarning
+        assert position_warnings[0].category is DataQualityWarning
 
     def test_2d_position_no_warning(self):
         """2D position should not trigger the warning."""
@@ -442,7 +442,7 @@ class TestPositionDimensionalityWarning:
 
         position_warnings = self._fit_and_collect_warnings(decoder, position_col)
         assert len(position_warnings) == 1
-        assert position_warnings[0].category is UserWarning
+        assert position_warnings[0].category is DataQualityWarning
 
 
 if __name__ == "__main__":

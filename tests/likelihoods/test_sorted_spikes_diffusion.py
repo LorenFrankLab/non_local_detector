@@ -583,7 +583,13 @@ def test_pixellated_spikes_share_the_exposure_rule_under_sparse_tracking():
     time, position, spike_times, env = simulate_sparse_uniform_tracking(rate=20.0)
     _, node_order, _ = environment_graph(env)
     exposure, (counts,), (mean_rate,) = pixellate_interior_fields(
-        time, position, spike_times, env, node_order, np.ones_like(time), True
+        time,
+        position,
+        spike_times,
+        env,
+        node_order,
+        np.ones_like(time),
+        disable_progress_bar=True,
     )
     unexposed = exposure == 0.0
     assert unexposed.sum() >= 15  # the odd bins (and the never-visited last bin)

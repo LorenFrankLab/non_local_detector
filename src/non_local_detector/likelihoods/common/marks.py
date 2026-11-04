@@ -50,6 +50,7 @@ def repair_flagged(
     values : jax.Array
         Estimates, updated in place by ``repaired``.
     needs_exact : jax.Array of bool, shape (n,)
+        True at the indices to repair.
     repaired : callable
         ``repaired(values, index, flag) -> values``; leaves ``values`` unchanged
         when ``flag`` is False.

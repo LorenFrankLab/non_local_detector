@@ -30,7 +30,11 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.clusterless_spikes import (
     ElectrodeSpikes,
     add_background_only,
@@ -230,12 +234,21 @@ def _add_electrode_gmm_intensities(
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     bin_centers : jax.Array, shape (n_bins, n_position_dims)
+        Place bin centers.
     parameters : tuple of jax.Array
         The joint GMM's fitted means, Cholesky precisions and weights.
     log_rate : jax.Array, scalar
+        Log of the electrode's mean rate.
     log_occupancy : jax.Array, shape (n_bins,)
+        Log occupancy density at each bin.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    covariance_type : str
+        Covariance structure of the joint GMM.
+    block_size : int
+        Decoding spikes per block.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -301,13 +314,21 @@ def _add_electrode_gmm_spike_terms(
     spike_positions : jax.Array, shape (n_padded_spikes, n_position_dims)
         Position at each decoding spike; padding rows are zero.
     features : jax.Array, shape (n_padded_spikes, n_features)
+        Waveform features of each decoding spike.
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     joint, occupancy : tuple of jax.Array
         Fitted means, Cholesky precisions and weights of each GMM.
     mean_rate : jax.Array, scalar
+        Electrode's mean rate.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    joint_type : str
+        Covariance structure of the joint GMM.
+    occupancy_type : str
+        Covariance structure of the occupancy GMM.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -356,6 +377,9 @@ def _add_gmm_expected_counts(
     log_occupancy : jax.Array, shape (n_rows,)
         Log occupancy density at ``positions``.
     mean_rate : jax.Array, scalar
+        Electrode's mean rate.
+    gpi_type : str
+        Covariance structure of the ground-process-intensity GMM.
 
     Returns
     -------
@@ -369,7 +393,7 @@ def _add_gmm_expected_counts(
 def _ground_process_intensity(
     mean_rate: jax.Array, gpi_logp: jax.Array, log_occupancy: jax.Array
 ) -> jax.Array:
-    """Expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
+    """Return expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
 
     Parameters
     ----------
@@ -504,7 +528,7 @@ def _position_marginal(
 
 
 def _gmm_sample_weight(
-    weights: np.ndarray, weights_was_none: bool
+    weights: np.ndarray, *, weights_was_none: bool
 ) -> np.ndarray | None:
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
@@ -707,7 +731,9 @@ def fit_clusterless_gmm_encoding_model(
     # time each sample covers (its integrated interpolation exposure).
     weight_sum = float(exposure_weights.sum())
     warn_if_no_encoding_exposure(exposure_weights, "Clusterless GMM", clusterless=True)
-    occupancy_sample_weight = _gmm_sample_weight(exposure_weights, False)
+    occupancy_sample_weight = _gmm_sample_weight(
+        exposure_weights, weights_was_none=False
+    )
 
     is_track_interior = environment.is_track_interior_flat_
 
@@ -733,7 +759,7 @@ def fit_clusterless_gmm_encoding_model(
             f"{gmm_components_occupancy} to {effective_occupancy_components} "
             f"because only {occupancy_n_samples} effective position samples are "
             "available.",
-            UserWarning,
+            ParameterWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -800,7 +826,7 @@ def fit_clusterless_gmm_encoding_model(
                 "spikes (empty or zero total weight); it is treated as "
                 "zero-rate -- its observed decode spikes are explained by the background rate "
                 "rather than fit on the de-weighted spikes.",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             mean_rates.append(0.0)
@@ -830,7 +856,7 @@ def fit_clusterless_gmm_encoding_model(
                 f"Clusterless GMM: electrode {electrode} has {n_joint_spikes} "
                 "effective encoding spikes; reduced "
                 f"joint components {gmm_components_joint}->{n_joint_components}.",
-                UserWarning,
+                ParameterWarning,
                 stacklevel=user_stacklevel(),
             )
 
@@ -1210,9 +1236,9 @@ def compute_local_log_likelihood(
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
     mean_rates: jax.Array,
+    *,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
-    *,
     mark_reference: list[MarkReference | None],
     _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,

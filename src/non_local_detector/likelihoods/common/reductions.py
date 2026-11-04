@@ -9,7 +9,7 @@ import numpy as np
 
 
 def _segmented_inclusive_sum(starts: jax.Array, values: jax.Array) -> jax.Array:
-    """Running sum of ``values`` that restarts at each ``starts`` position.
+    """Return the running sum of ``values`` that restarts at each ``starts`` position.
 
     A Hillis-Steele scan: step ``k`` adds the partial sum ``2**k`` rows back
     unless a segment start lies between. Its ``ceil(log2 n)`` steps run in a
@@ -22,6 +22,7 @@ def _segmented_inclusive_sum(starts: jax.Array, values: jax.Array) -> jax.Array:
     starts : jax.Array, shape (n,), bool
         True at the first row of each segment; ``starts[0]`` must be True.
     values : jax.Array, shape (n, ...)
+        Values to sum within each segment.
 
     Returns
     -------
@@ -53,6 +54,7 @@ def _segment_totals(
     values: jax.Array,
     segment_ids: jax.Array | np.ndarray,
     num_segments: int,
+    *,
     indices_are_sorted: bool,
 ) -> tuple[jax.Array, jax.Array]:
     """Each segment's total, held at its last row, and the row it belongs to.
@@ -60,9 +62,13 @@ def _segment_totals(
     Parameters
     ----------
     values : jax.Array, shape (n, ...), n > 0
+        Values to total within each segment.
     segment_ids : jax.Array, shape (n,), integer
+        Segment of each row.
     num_segments : int
+        Number of segments.
     indices_are_sorted : bool
+        Whether ``segment_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -106,6 +112,7 @@ def _scatter_add_segment_totals(
     Parameters
     ----------
     output : jax.Array, shape (num_segments, ...)
+        Array whose rows receive the segment totals.
     sums, targets : jax.Array
         From ``_segment_totals``.
     column_start : int or scalar array, optional
@@ -149,6 +156,7 @@ def deterministic_segment_sum(
     values: jax.Array,
     segment_ids: jax.Array,
     num_segments: int,
+    *,
     indices_are_sorted: bool = False,
 ) -> jax.Array:
     """Sum rows into segments with a fixed reduction tree.
@@ -184,7 +192,7 @@ def deterministic_segment_sum(
     if n == 0 or num_segments == 0:
         return jnp.zeros(shape, values.dtype)
     sums, targets = _segment_totals(
-        values, segment_ids, num_segments, indices_are_sorted
+        values, segment_ids, num_segments, indices_are_sorted=indices_are_sorted
     )
     return _scatter_add_segment_totals(jnp.zeros(shape, values.dtype), sums, targets)
 
@@ -267,7 +275,9 @@ def deterministic_row_sum(
             )
     return cast(
         jax.Array,
-        deterministic_segment_sum(values, row_ids, n_rows, indices_are_sorted),
+        deterministic_segment_sum(
+            values, row_ids, n_rows, indices_are_sorted=indices_are_sorted
+        ),
     )
 
 
@@ -314,7 +324,7 @@ def deterministic_row_add(
         raise ValueError(msg)
     if not _reduces_sequentially(values):
         sums, targets = _segment_totals(
-            values, row_ids, output.shape[0], indices_are_sorted
+            values, row_ids, output.shape[0], indices_are_sorted=indices_are_sorted
         )
         return _scatter_add_segment_totals(output, sums, targets, column_start)
     tile = deterministic_row_sum(

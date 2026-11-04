@@ -83,7 +83,7 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment, get_n_bins
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NumericalWarning, ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
@@ -120,7 +120,9 @@ def glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
     Parameters
     ----------
     design : jax.Array, shape (n_rows, n_basis)
+        Design matrix.
     coefficients : jax.Array, shape (n_cells, n_basis)
+        Fitted GLM coefficients for each cell.
 
     Returns
     -------
@@ -158,8 +160,11 @@ def _spline_inner_knots(
     Parameters
     ----------
     position : np.ndarray, shape (n_points, n_position_dims)
+        Position samples.
     place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+        Place-bin edges; the knot grid spans their range in each dimension.
     knot_spacing : float
+        Target spacing between knots, in position units.
 
     Returns
     -------
@@ -268,7 +273,7 @@ _SPLINE_REBUILD_ATOL_PER_POINT = 1e-12
 
 
 def _read_only_copy(array: ArrayLike) -> np.ndarray:
-    """A copy of ``array`` that cannot be written to."""
+    """Return a copy of ``array`` that cannot be written to."""
     copied = np.array(array)
     copied.setflags(write=False)
     return copied
@@ -325,7 +330,7 @@ class TensorSplineBasis:
         self.__dict__["design_info"] = design_info
 
     def _build_design(self) -> tuple[DesignInfo, np.ndarray]:
-        """The patsy design of every column, and its fingerprint."""
+        """Return the patsy design of every column, and its fingerprint."""
         design = make_spline_design_matrix(
             self.basis_positions, self.place_bin_edges, knot_spacing=self.knot_spacing
         )
@@ -423,7 +428,7 @@ def _track_branches(graph: Any) -> list[list[tuple[Any, Any]]]:
 
 
 def _cubic_cardinal_basis(
-    knots: np.ndarray, x: np.ndarray, periodic: bool = False
+    knots: np.ndarray, x: np.ndarray, *, periodic: bool = False
 ) -> np.ndarray:
     """Cubic splines through unit values at each knot, evaluated at ``x``.
 
@@ -742,6 +747,7 @@ def _select_supported_columns(
     basis : TensorSplineBasis
         A basis with every column.
     positions : np.ndarray, shape (n_points, n_position_dims)
+        Positions at which column support is evaluated.
 
     Returns
     -------
@@ -785,6 +791,7 @@ def _aggregate_by_position_cell(
     Parameters
     ----------
     position : np.ndarray, shape (n_samples, n_position_dims)
+        Position of each sample.
     counts : np.ndarray, shape (n_cells, n_samples), or callable
         Event mass of each cell (neuron) at each sample. A callable instead
         takes each sample's position-cell index, shape (n_samples,), and the
@@ -792,6 +799,7 @@ def _aggregate_by_position_cell(
         (n_cells, n_position_cells); it avoids a dense per-sample array when
         the events are sparse.
     exposure : np.ndarray, shape (n_samples,)
+        Exposure (time) of each sample.
     cell_size : float
         Width of the position cells.
     region : np.ndarray, shape (n_samples,), optional
@@ -977,10 +985,15 @@ def _poisson_regression_sums(
         ``n_rows`` is a multiple of ``block_rows``; padding rows have zero
         weight and spikes.
     spikes : jax.Array, shape (n_cells, n_rows)
+        Event count of each cell in each row.
     weights : jax.Array, shape (n_rows,)
+        Exposure of each row, which multiplies the rate.
     coefficients : jax.Array, shape (n_cells, n_coefficients)
+        GLM coefficients of each cell.
     rate_floor : float
+        Lower bound applied to the rate ``exp(design_matrix @ coefficients)``.
     block_rows : int
+        Number of rows processed per block.
     derivatives : bool
         Also return the gradient and Hessian of the data term.
 
@@ -1113,7 +1126,7 @@ def fit_poisson_regressions(
     penalized = np.ones(n_coefficients)
     penalized[0] = 0.0
 
-    def evaluate(coefficients: np.ndarray, derivatives: bool) -> list[np.ndarray]:
+    def evaluate(coefficients: np.ndarray, *, derivatives: bool) -> list[np.ndarray]:
         """Evaluate the penalized negative log likelihood and its derivatives.
 
         Parameters
@@ -1213,7 +1226,7 @@ def fit_poisson_regressions(
             f"exposure when l2_penalty is 0; least squares leaves those "
             f"combinations at their starting values. Use a positive l2_penalty "
             f"to identify them.",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -1239,7 +1252,7 @@ def fit_poisson_regressions(
             f"gradient inf-norm {worst:.3e} vs tolerance "
             f"{GLM_CONVERGENCE_GRAD_TOL:.1e} (a non-finite gradient or loss means "
             f"the fit diverged). Place-field coefficients may be unreliable.",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -1310,9 +1323,11 @@ def fit_rate_maps(
     Parameters
     ----------
     environment : Environment
+        Environment whose track graph or grid defines the spline basis.
     place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
         Place-bin edge coordinates (``environment.place_bin_edges_``).
     interior_place_bin_centers : jax.Array, shape (n_interior_bins, n_position_dims)
+        Centers of the interior place bins, where rates are reported.
     encoding_positions : np.ndarray, shape (n_samples, n_position_dims)
         Position of each encoding sample; linear position on a track graph.
     event_counts : np.ndarray, shape (n_maps, n_samples), or callable
@@ -1757,8 +1772,8 @@ def predict_sorted_spikes_glm_log_likelihood(
                 spike_times,
                 rows.time_edges,
                 "Local Likelihood",
-                True,
-                slice(start, stop),
+                disable_progress_bar=True,
+                row_slice=slice(start, stop),
                 _spike_time_order=rows.spike_time_order,
             )
             return cast(
@@ -1774,7 +1789,7 @@ def predict_sorted_spikes_glm_log_likelihood(
             len(spike_times),
             evaluate,
             "Local Likelihood",
-            disable_progress_bar,
+            disable_progress_bar=disable_progress_bar,
         )[:, None]
     else:
         log_likelihood = blocked_nonlocal_poisson_log_likelihood(

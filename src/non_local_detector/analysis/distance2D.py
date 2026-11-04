@@ -50,7 +50,6 @@ def make_2D_track_graph_from_environment(
         adjacent on-track bins carrying ``distance`` and ``edge_id``
         attributes.
     """
-
     return make_nD_track_graph_from_environment(environment)
 
 
@@ -114,6 +113,7 @@ def get_map_estimate_direction_from_track_graph(
     map_estimate: np.ndarray,
     track_graph: nx.Graph,
     edges: Sequence[np.ndarray],
+    *,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Get the direction of the MAP estimate from the animal's head position.
@@ -244,6 +244,7 @@ def get_2D_distance(
     position2: np.ndarray,
     track_graph: nx.Graph = None,
     edges: Sequence[np.ndarray] | None = None,
+    *,
     precomputed_distance: bool = True,
 ) -> np.ndarray:
     """Distance of two points along the graph of the track.
@@ -331,6 +332,7 @@ def head_direction_simliarity(
     map_estimate: np.ndarray,
     track_graph: nx.Graph = None,
     edges: Sequence[np.ndarray] | None = None,
+    *,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Cosine similarity of the head direction with the direction to the MAP.
@@ -385,7 +387,11 @@ def head_direction_simliarity(
             msg = "edges parameter is required when track_graph is provided"
             raise ValueError(msg)
         map_estimate_direction = get_map_estimate_direction_from_track_graph(
-            head_position, map_estimate, track_graph, edges, precomputed_distance
+            head_position,
+            map_estimate,
+            track_graph,
+            edges,
+            precomputed_distance=precomputed_distance,
         )
 
     return cast("np.ndarray", np.cos(head_direction - map_estimate_direction))
@@ -397,6 +403,7 @@ def get_ahead_behind_distance2D(
     map_position: np.ndarray,
     track_graph: nx.Graph = None,
     edges: Sequence[np.ndarray] | None = None,
+    *,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Signed distance of the MAP decoded position from the animal's head.
@@ -430,9 +437,12 @@ def get_ahead_behind_distance2D(
         Signed distance (positive ahead of the head, negative behind), in the
         units of the position.
     """
-
     distance = get_2D_distance(
-        head_position, map_position, track_graph, edges, precomputed_distance
+        head_position,
+        map_position,
+        track_graph,
+        edges,
+        precomputed_distance=precomputed_distance,
     )
 
     direction_similarity = head_direction_simliarity(
@@ -441,7 +451,7 @@ def get_ahead_behind_distance2D(
         map_position,
         track_graph,
         edges,
-        precomputed_distance,
+        precomputed_distance=precomputed_distance,
     )
     ahead_behind = np.sign(direction_similarity)
 

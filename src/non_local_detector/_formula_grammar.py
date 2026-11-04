@@ -190,7 +190,7 @@ def check_design_info(
 
 
 def _eval_code(code: str, transforms: Collection[str]) -> str:
-    """The ``eval_code`` patsy derives from a factor's ``code``.
+    """Return the ``eval_code`` patsy derives from a factor's ``code``.
 
     patsy (``EvalFactor.memorize_passes_needed``) names the stateful
     transform called ``i``-th ``_patsy_stobj{i}__{name}__`` and replaces the
@@ -212,8 +212,10 @@ def _eval_code(code: str, transforms: Collection[str]) -> str:
 def _check_expression(
     code: str, formula: str, covariate_names: Collection[str] | None
 ) -> None:
-    """Refuse a Python expression of ``formula`` outside the grammar, or one
-    naming a covariate missing from ``covariate_names``."""
+    """Refuse a Python expression of ``formula`` outside the grammar.
+
+    Also refuse one naming a covariate missing from ``covariate_names``.
+    """
     try:
         expression = ast.parse(code, mode="eval").body
     except SyntaxError:
@@ -234,7 +236,7 @@ def _check_expression(
 
 
 def _offending(node: ast.AST) -> str | None:
-    """Description of the first node of ``node`` outside the grammar, or None."""
+    """Describe the first node of ``node`` outside the grammar, or return None."""
     if isinstance(node, ast.Name):
         if node.id.startswith("__"):
             return f"the name {node.id}"
@@ -281,7 +283,7 @@ def _offending(node: ast.AST) -> str | None:
 
 
 def _offending_call(call: ast.Call) -> str | None:
-    """Description of what a call does outside the grammar, or None."""
+    """Describe what a call does outside the grammar, or return None."""
     function = call.func
     if isinstance(function, ast.Name):
         allowed = function.id in _FUNCTIONS
@@ -310,7 +312,7 @@ def _offending_call(call: ast.Call) -> str | None:
 
 
 def _number(node: ast.expr) -> float | None:
-    """The value of a (signed) int or float literal, or None for anything else."""
+    """Return the value of a (signed) int or float literal, or None otherwise."""
     sign = 1
     while isinstance(node, ast.UnaryOp) and isinstance(node.op, _UNARY_OPERATORS):
         if isinstance(node.op, ast.USub):
@@ -326,8 +328,10 @@ def _number(node: ast.expr) -> float | None:
 
 
 def _names(node: ast.AST) -> set[str]:
-    """Covariate names of a grammar-checked expression: its names, other than
-    the functions it calls and ``np``."""
+    """Return the covariate names of a grammar-checked expression.
+
+    These are its names, other than the functions it calls and ``np``.
+    """
     if isinstance(node, ast.Name):
         return {node.id}
     if isinstance(node, ast.Attribute):

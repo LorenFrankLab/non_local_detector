@@ -147,7 +147,7 @@ class TestEMMonotonicity:
         bins not marked missing (a missing bin adds nothing to the objective),
         and the max_iter warning reports the change per such bin, the units of
         ``tolerance``."""
-        from non_local_detector.models import base as base_module
+        from non_local_detector.models import _em as em_module
 
         is_missing = np.zeros(len(sorted_sim.fit_args["time_edges"]) - 1, dtype=bool)
         is_missing[:1_000] = True
@@ -160,7 +160,7 @@ class TestEMMonotonicity:
                 current, previous, tolerance, n_time_bins=n_time_bins
             )
 
-        monkeypatch.setattr(base_module, "check_converged", spy)
+        monkeypatch.setattr(em_module, "check_converged", spy)
         detector = NonLocalSortedSpikesDetector()
         with pytest.warns(UserWarning, match="did not converge") as caught:
             results = detector.estimate_parameters(
@@ -357,7 +357,7 @@ class TestEMConvergenceSurfacing:
         channel as the other EM fit-quality diagnostics), not ``logger``.
         """
         from non_local_detector.core import check_converged as _real_check_converged
-        from non_local_detector.models import base as base_module
+        from non_local_detector.models import _em as em_module
 
         call_count = {"n": 0}
 
@@ -370,7 +370,7 @@ class TestEMConvergenceSurfacing:
             is_increasing = call_count["n"] != 1
             return is_converged, is_increasing
 
-        monkeypatch.setattr(base_module, "check_converged", fake_check_converged)
+        monkeypatch.setattr(em_module, "check_converged", fake_check_converged)
 
         decoder = ClusterlessDecoder()
         with warnings.catch_warnings(record=True) as caught:
@@ -528,12 +528,12 @@ class TestEMConvergenceSurfacing:
         with each E-step, so a flat objective is not enough: every
         transition probability must also have moved by less than
         ``tolerance`` in the last M-step."""
-        from non_local_detector.models import base as base_module
+        from non_local_detector.models import _em as em_module
 
         # Every objective check passes, so only the transition change can
         # keep EM going.
         monkeypatch.setattr(
-            base_module,
+            em_module,
             "check_converged",
             lambda curr, prev, tolerance, **kwargs: (True, True),
         )

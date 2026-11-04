@@ -404,6 +404,7 @@ def simulate_linear_distance_with_pauses(
 def make_continuous_replay(
     n_neurons: int = 8,
     n_samples_between_spikes: int = 20,
+    *,
     is_outbound: bool = True,
 ) -> np.ndarray:
     """Make a simulated continuous replay.

@@ -55,7 +55,7 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataQualityWarning, ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
 from non_local_detector.likelihoods.clusterless_spikes import (
     ElectrodeSpikes,
@@ -594,7 +594,7 @@ def fit_clusterless_mark_glm_encoding_model(
                 "encoding spikes (empty or zero total weight); it is treated as "
                 "zero-rate -- its observed decode spikes are explained by the "
                 "background rate.",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             mark_mixtures.append(None)
@@ -757,6 +757,7 @@ def _padded_mixture(
     Parameters
     ----------
     mixture : MarkMixture
+        Fitted mark mixture of one electrode.
     n_components : int
         Padded number of components, at least ``mixture.n_components``.
 
@@ -847,6 +848,10 @@ def _add_electrode_intensities(
         ``b(x)``.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    block_size : int
+        Decoding spikes per block.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -906,6 +911,7 @@ def _add_electrode_local_terms(
     log_likelihood : jax.Array, shape (n_rows,)
         Running sum over electrodes; donated.
     features : jax.Array, shape (n_padded_spikes, n_features)
+        Waveform features of each decoding spike.
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     means, precisions_cholesky, is_component : jax.Array
@@ -913,6 +919,9 @@ def _add_electrode_local_terms(
     spike_log_rates : jax.Array, shape (n_padded_spikes, n_components)
         Log rate of each component at each spike's position, in Hz.
     log_background : jax.Array, shape (n_padded_spikes,)
+        Log background intensity of each spike, in Hz.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -934,7 +943,7 @@ def _add_electrode_local_terms(
 
 
 def _device_marks(marks: np.ndarray, n_rows: int) -> jax.Array:
-    """Marks padded to ``n_rows`` on the device, in JAX's default dtype.
+    """Return marks padded to ``n_rows`` on the device, in JAX's default dtype.
 
     A mark beyond float32's range overflows to inf in the cast; the
     likelihood treats it as background-only (see ``_add_electrode_intensities``),

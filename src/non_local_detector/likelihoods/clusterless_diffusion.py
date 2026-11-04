@@ -80,7 +80,7 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataQualityWarning, ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale as mark_reference_scale,
 )
@@ -496,7 +496,7 @@ def fit_clusterless_diffusion_encoding_model(
                 f"electrode {electrode} has zero total encoding weight (zero-rate): "
                 "no effective encoding spikes. It contributes no ground-process "
                 "intensity and its decode spikes are explained by the background rate.",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             continue
@@ -590,6 +590,7 @@ def _kernel_columns(
     position_std : float
         Heat-kernel bandwidth in position units.
     n_components : int
+        Static number of connected components in the heat-kernel basis.
 
     Returns
     -------
@@ -618,7 +619,7 @@ def spatial_kernel_columns(
     position_std: float,
     sources: ArrayLike,
 ) -> jax.Array:
-    """The model's spatial kernel ``H[:, sources]``, for a fitted environment.
+    """Return the model's spatial kernel ``H[:, sources]``, for a fitted environment.
 
     Parameters
     ----------
@@ -706,8 +707,11 @@ def _dense_kernel(
 
 
 def _source_tile_size(memory_budget: int, n_bins: int, rank: int) -> int:
-    """Kernel columns per tile, so a tile and its spectral temporaries fit half
-    of ``memory_budget`` (a power of two, for shared compiled kernels)."""
+    """Return the kernel columns per tile.
+
+    A tile and its spectral temporaries fit half of ``memory_budget``. The
+    count is a power of two, for shared compiled kernels.
+    """
     raw = max(memory_budget // (2 * _WORKING_ITEMSIZE * (3 * n_bins + rank)), 1)
     return 1 << (raw.bit_length() - 1)
 
@@ -767,7 +771,9 @@ def log_intensity_scale(
     Parameters
     ----------
     occupancy, bin_sizes : array, shape (n_bins,)
+        Occupancy and size of each place bin.
     mean_rate, weight_total : float
+        Mean rate and total encoding weight.
 
     Returns
     -------
@@ -795,6 +801,7 @@ def _source_layout(
     bins : np.ndarray, shape (n_padded_samples,)
         Bin of each encoding sample; padding samples use ``n_bins``.
     n_bins : int
+        Number of bins; the bin index used for padding samples.
     tile_budget : int
         Largest kernel tile (see :func:`_source_tile_size`).
 
@@ -825,9 +832,10 @@ def _electrode_layout(
     weights: ArrayLike,
     n_bins: int,
     tile_budget: int,
+    *,
     dense: bool = False,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, int]:
-    """Padded, bin-sorted encoding samples with their source layout, for one electrode.
+    """Return padded, bin-sorted encoding samples with their source layout, for one electrode.
 
     Models fitted before encoding spikes were stored bin-sorted are sorted here
     (stably). Padding samples take the dropped bin ``n_bins``, zero marks and
@@ -966,8 +974,11 @@ def _kernel_bounds(
     log_scale : jax.Array, shape (n_bins,)
         :func:`log_intensity_scale` for a unit rate and weight.
     tile : int
+        Kernel columns per tile.
     position_std : float
+        Heat-kernel bandwidth in position units.
     n_components : int
+        Static number of connected components in the heat-kernel basis.
 
     Returns
     -------
@@ -1021,15 +1032,19 @@ def _log_marked_field(
     Parameters
     ----------
     log_source : jax.Array, shape (n_sources, n_block)
+        Log of each source's unscaled mark density for each spike
+        (``log sum_i w_i K_mark``); the peak scaling happens here.
     rows : jax.Array, shape (n_block,), or None
         Each spike's own bin (local), or None to read every bin (non-local).
     columns_of : callable
         ``columns_of(start)`` gives the kernel columns of sources
         ``start:start + tile``, shape (n_bins, tile).
     n_tiles, tile : int
+        Number of tiles of kernel columns and columns per tile.
     bounds : tuple of jax.Array, each shape (n_sources,)
         ``(gain, floor)`` of each source (see :func:`_kernel_bounds`).
     log_background : jax.Array, shape (n_block,)
+        Log background intensity of each spike.
 
     Returns
     -------
@@ -1154,6 +1169,7 @@ def _add_electrode_diffusion_terms(
     encoding_marks, encoding_weights, source_index, sources : jax.Array
         From :func:`_electrode_layout`.
     waveform_std : jax.Array, shape (n_features,)
+        Waveform-feature kernel bandwidths.
     eigvals, eigvecs, labels : jax.Array
         Device heat-kernel basis and component labels.
     kernel : jax.Array, shape (n_bins, n_sources), or None
@@ -1168,12 +1184,15 @@ def _add_electrode_diffusion_terms(
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
     position_std : float
+        Heat-kernel bandwidth in position units.
     n_components : int
+        Static number of connected components in the heat-kernel basis.
     tile : int
         Kernel columns per tile (divides ``sources``' length).
     block_size : int
         Decoding spikes per block.
     indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -1499,7 +1518,7 @@ def predict_clusterless_diffusion_log_likelihood(
                     electrode_weights,
                     n_bins,
                     tile_budget,
-                    dense,
+                    dense=dense,
                 ),
             )
         )

@@ -363,7 +363,7 @@ class DiffusionElectrode(_MarkKernelMixture):
 
 
 def _full_covariances(model: Any) -> np.ndarray:
-    """A fitted GMM's covariances as ``(n_components, n_dims, n_dims)``."""
+    """Return a fitted GMM's covariances as ``(n_components, n_dims, n_dims)``."""
     covariances = np.asarray(model.covariances_, dtype=np.float64)
     n_components, n_dims = np.shape(model.means_)
     if model.covariance_type == "full":
