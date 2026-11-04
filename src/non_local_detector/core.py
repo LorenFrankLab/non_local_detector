@@ -1774,26 +1774,38 @@ def _check_operator_rows(
     Raises
     ------
     ValidationError
-        If the operator cannot be applied to ``n_bins`` state bins, or its
-        row sums are not finite, are negative, or exceed 1 (per target state
+        If applying the operator to an all-ones vector raises ``TypeError``
+        or ``ValueError``, or the row sums do not have one entry per state
+        bin, are not finite, are negative, or exceed 1 (per target state
         with weights) beyond ``PROBABILITY_SUM_TOLERANCE``.
     """
     name = "transition_operator"
+    weight = (
+        "None"
+        if n_states is None
+        else f"each ({n_states}, {n_states}) column-indicator weight"
+    )
     try:
         sums = np.asarray(
             _operator_row_sums(operator, n_bins, np.dtype(dtype), n_states),
             dtype=np.float64,
         )
-        failure = None if sums.shape[:1] == (n_bins,) else f"shape {sums.shape[:1]}"
     except (TypeError, ValueError) as error:
-        # A product of another size fails inside JAX's shape checks.
-        failure = f"{type(error).__name__}: {error}"
-    if failure is not None:
+        msg = f"{name} could not be applied to an all-ones vector"
+        raise ValidationError(
+            msg,
+            expected=f"backward(ones({n_bins}), {weight}) to return row sums",
+            got=f"{type(error).__name__}: {error}",
+            hint="The operator must act on the state bins of "
+            "initial_distribution, and take per-row weights exactly when "
+            "discrete_transition_matrix is given.",
+        ) from error
+    if sums.shape[:1] != (n_bins,):
         msg = f"{name} gives row sums of the wrong shape"
         raise ValidationError(
             msg,
             expected=f"shape ({n_bins},), one sum per state bin",
-            got=failure,
+            got=f"shape {sums.shape[:1]}",
             hint="The operator's state bins must be those of "
             "initial_distribution and state_ind.",
         )
