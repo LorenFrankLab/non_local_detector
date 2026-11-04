@@ -319,6 +319,28 @@ def test_open_field_pickled_before_its_distances_were_stored_rebuilds_them(
     )
 
 
+def test_open_field_saved_by_0_5_12_gets_the_distances_of_a_fresh_fit(inputs):
+    """0.5.12 stored no graph or distances for an open field (0.5.13 was the
+    first to). The rebuilt ones equal those of fitting the stored
+    configuration on the recording, and those 0.5.13 stored for it."""
+    environment = _load_model("v0.5.12", "nonlocal_clusterless_2d").environments[0]
+    (state,) = _stored_environment_states("v0.5.12", "nonlocal_clusterless_2d")
+    assert "distance_between_nodes_" not in state
+    fresh = Environment(**environment.get_params()).fit_place_grid(
+        inputs["field_position"],
+        infer_track_interior=environment.infer_track_interior_,
+    )
+    stored_by_0_5_13 = _load_model("v0.5.13", "nonlocal_clusterless_2d").environments[0]
+
+    np.testing.assert_array_equal(
+        environment.place_bin_centers_, fresh.place_bin_centers_
+    )
+    for expected in (fresh, stored_by_0_5_13):
+        np.testing.assert_array_equal(
+            environment.distance_between_nodes_, expected.distance_between_nodes_
+        )
+
+
 UNFILTERED_ROWS = [row for row in ROWS if row[0] in ("main-84259d49", "main-66047901")]
 
 
