@@ -3708,8 +3708,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
+        # A refit replaces every structure a loaded detector rebuilt, but
+        # must not evaluate a formula the file was not trusted with.
+        rebuild_check = self.__dict__.get("_rebuild_check_")
+        if rebuild_check is not None:
+            rebuild_check.check_fit(self)
         self._invalidate_stored_log_likelihood()  # stale after a refit
-        # A refit replaces every structure a loaded detector rebuilt.
         self.__dict__.pop("_rebuild_check_", None)
         self.initialize_environments(
             position=position,
@@ -6464,7 +6468,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         numpy functions such as ``np.log`` and ``np.sin``, and ``C()`` with
         patsy's contrasts) is not evaluated: the model loads for inspection
         only, with a ``UserWarning`` naming the formula, and decoding raises
-        ``ValidationError``.
+        ``ValidationError``, as does fitting it until the transition is given
+        a formula of your own.
 
         A pickle saved by an earlier release loads for inspection, including
         one pickled with JAX 0.4.30 or earlier. Decoding with one fitted

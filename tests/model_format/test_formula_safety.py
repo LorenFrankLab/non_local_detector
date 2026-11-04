@@ -274,3 +274,70 @@ def test_covariates_that_are_not_numbers_or_strings_are_refused(fitted, tmp_path
 
     with pytest.raises(ValidationError, match="object array"):
         fitted.save_model(tmp_path / "object.nld")
+
+
+def _refit(detector, sorted_recording):
+    time, position, spike_times = sorted_recording
+    speed = np.abs(np.gradient(position, time))
+    return detector.fit(
+        time, position, spike_times, discrete_transition_covariate_data={"speed": speed}
+    )
+
+
+@pytest.mark.parametrize("formula", ATTACKS)
+@pytest.mark.parametrize("fit_before_saving", [True, False], ids=["fitted", "unfitted"])
+def test_a_model_loaded_for_inspection_refuses_to_fit(
+    formula, fit_before_saving, sorted_recording, tmp_path, monkeypatch
+):
+    """Fitting would evaluate the file's formula, so it is refused too."""
+    detector = _fit(sorted_recording, "1 + speed")
+    if not fit_before_saving:
+        detector = nld.NonLocalSortedSpikesDetector(**detector.get_params(deep=False))
+    path = tmp_path / "model.nld"
+    detector.save_model(path)
+    _with_formula(path, formula)
+    for module in (patsy, dst):
+        monkeypatch.setattr(module, "dmatrix", _patsy_must_not_run)
+        monkeypatch.setattr(module, "build_design_matrices", _patsy_must_not_run)
+
+    with pytest.warns(UserWarning, match="trust_formulas=True"):
+        loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+
+    with pytest.raises(ValidationError, match="trust_formulas=True") as refused:
+        _refit(loaded, sorted_recording)
+    assert repr(formula) in str(refused.value)
+
+
+def test_a_model_loaded_for_inspection_fits_with_a_formula_of_your_own(
+    fitted_outside_grammar, fitted, sorted_recording, tmp_path
+):
+    path = tmp_path / "model.nld"
+    fitted_outside_grammar.save_model(path)
+    with pytest.warns(UserWarning, match="trust_formulas=True"):
+        loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+
+    loaded.discrete_transition_type.formula = "1 + speed"
+    _refit(loaded, sorted_recording)
+
+    np.testing.assert_array_equal(
+        loaded.discrete_transition_design_matrix_,
+        fitted.discrete_transition_design_matrix_,
+    )
+
+
+def test_an_unfitted_model_with_a_trusted_formula_loads_without_warning(
+    sorted_recording, tmp_path
+):
+    detector = nld.NonLocalSortedSpikesDetector(
+        discrete_transition_type=nld.DiscreteNonStationaryDiagonal(
+            diagonal_values=np.full(4, 0.98), formula=OUTSIDE_GRAMMAR
+        ),
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+    )
+    path = tmp_path / "model.nld"
+    detector.save_model(path)
+
+    loaded = nld.NonLocalSortedSpikesDetector.load_model(path, trust_formulas=True)
+
+    _refit(loaded, sorted_recording)
+    assert loaded.discrete_transition_type.formula == OUTSIDE_GRAMMAR

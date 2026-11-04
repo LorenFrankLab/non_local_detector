@@ -103,7 +103,9 @@ lists of numbers, `np.pi`, the package's spline and transform functions
 A file whose formula is outside the grammar loads for inspection only:
 `load_model` warns, naming the formula, and does not call patsy, so the design
 (and the training-time `discrete_state_transitions_`) is not rebuilt, and
-decoding or saving the model again raises `ValidationError`. If you trust the
+decoding or saving the model again raises `ValidationError`. So does fitting
+it, which would evaluate the formula, until you give the transition a formula
+of your own; this applies to an unfitted saved model too. If you trust the
 file, for example because you saved it yourself, load it with
 `load_model(path, trust_formulas=True)`, which rebuilds any formula.
 `read_model_summary` never evaluates a formula, so it reads any file.
