@@ -35,6 +35,8 @@ _PREDICT = {
     "spike_times": _SPIKES,
     "time_edges": np.linspace(0, 2, 101),
 }
+# The decode edges above are 20 ms wide.
+_RATE = 50.0
 # Coordinates only checkpointed results carry.
 _CHECKPOINTED_ONLY = {"source_row"}
 
@@ -49,6 +51,7 @@ def fitted(request):
     model = model_class(
         environments=Environment(place_bin_size=2, position_range=((0, 10), (0, 10))),
         infer_track_interior=False,
+        sampling_frequency=_RATE,
     )
     return model.fit(position_time=_TIME, position=_POSITION, spike_times=_SPIKES)
 

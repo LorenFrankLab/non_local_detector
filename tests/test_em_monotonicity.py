@@ -32,6 +32,7 @@ from non_local_detector.core import EM_MONOTONICITY_SLACK, check_converged
 from non_local_detector.discrete_state_transitions import _transition_log_prior
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE
 
 
 @pytest.fixture
@@ -161,7 +162,7 @@ class TestEMMonotonicity:
             )
 
         monkeypatch.setattr(em_module, "check_converged", spy)
-        detector = NonLocalSortedSpikesDetector()
+        detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
         with pytest.warns(UserWarning, match="did not converge") as caught:
             results = detector.estimate_parameters(
                 **sorted_sim.fit_args,
@@ -188,6 +189,7 @@ class TestEMMonotonicity:
         marginal_log_likelihoods is non-decreasing while the discrete
         transitions are actually re-estimated."""
         detector = NonLocalSortedSpikesDetector(
+            sampling_frequency=SORTED_SIM_RATE,
             discrete_transition_concentration=1.0,
             discrete_transition_stickiness=np.zeros(4),
         )
@@ -232,7 +234,7 @@ class TestEncodingUpdateGuards:
         below ``min_encoding_local_mass``; an unreachable threshold skips
         every refit. The refit is replaced by a recorder, so only the guard's
         decision is under test."""
-        detector = NonLocalSortedSpikesDetector()
+        detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
         local_masses = []
         monkeypatch.setattr(
             detector,
@@ -258,7 +260,7 @@ class TestEncodingUpdateGuards:
         """A standard converging fit sets ``converged_`` to True, records
         no monotonicity violations, and emits no ``UserWarning``."""
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             decoder.estimate_parameters(
@@ -301,6 +303,7 @@ class TestEncodingUpdateGuards:
         """NonLocalSortedSpikesDetector with GLM encoding updates should
         run to completion without errors."""
         detector = NonLocalSortedSpikesDetector(
+            sampling_frequency=SORTED_SIM_RATE,
             sorted_spikes_algorithm="sorted_spikes_glm",
             sorted_spikes_algorithm_params={},
         )
@@ -331,7 +334,7 @@ class TestEMAttributeInitialization:
         from non_local_detector.exceptions import ValidationError
         from non_local_detector.models.base import _DetectorBase
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         with pytest.raises(ValidationError):
             _DetectorBase._run_em(
                 decoder, time_edges=None, estimate_encoding_model=False
@@ -372,7 +375,7 @@ class TestEMConvergenceSurfacing:
 
         monkeypatch.setattr(em_module, "check_converged", fake_check_converged)
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             decoder.estimate_parameters(
@@ -402,7 +405,7 @@ class TestEMConvergenceSurfacing:
         there is a monotonicity violation and leaves the fit unconverged, even
         when the loop met its tolerance."""
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         # An infinite tolerance (nats per time bin) is met by any increase, so
         # the loop ends at iteration 2 and the final E-step is the third.
         _shift_marginal(monkeypatch, decoder, lambda n: -1000.0 if n == 3 else 0.0)
@@ -436,7 +439,7 @@ class TestEMConvergenceSurfacing:
         and emits a ``UserWarning`` mentioning "did not converge".
         """
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         with pytest.warns(UserWarning, match="did not converge"):
             decoder.estimate_parameters(
                 position_time=sim.position_time,
@@ -458,7 +461,7 @@ class TestEMConvergenceSurfacing:
         """A decrease never counts as convergence at any tolerance, so the
         max-iter warning after one must not suggest relaxing tolerance."""
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         # Far larger than any real EM gain, so every E-step decreases.
         _shift_marginal(monkeypatch, decoder, lambda n: -1e6 * n)
 
@@ -489,7 +492,7 @@ class TestEMConvergenceSurfacing:
         monotonicity violations, and its max-iter warning says the objective
         is ``-inf`` instead of suggesting a looser tolerance."""
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         _shift_marginal(monkeypatch, decoder, lambda n: -np.inf)
 
         with warnings.catch_warnings(record=True) as caught:
@@ -538,7 +541,8 @@ class TestEMConvergenceSurfacing:
             lambda curr, prev, tolerance, **kwargs: (True, True),
         )
         detector = NonLocalSortedSpikesDetector(
-            discrete_transition_prior_weight=prior_weight
+            sampling_frequency=SORTED_SIM_RATE,
+            discrete_transition_prior_weight=prior_weight,
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -564,7 +568,7 @@ class TestEMConvergenceSurfacing:
     def test_zero_iterations_returns_posterior(self, sim, transition_representation):
         """``max_iter=0`` skips EM but still returns the final E-step posterior."""
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         with pytest.warns(UserWarning, match="did not converge"):
             results = decoder.estimate_parameters(
                 position_time=sim.position_time,
@@ -600,7 +604,7 @@ class TestEMMonitorsMapObjective:
         """The default stickiness (1e5 pseudo-counts on two diagonals) pulls the
         marginal log-likelihood down, while every check of the penalized
         log-likelihood rises."""
-        detector = NonLocalSortedSpikesDetector()
+        detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             results = detector.estimate_parameters(
@@ -624,9 +628,10 @@ class TestEMMonitorsMapObjective:
         includes the covariate transitions' float64 log prior, without the
         default frozen No-Spike row."""
         detector = NonLocalSortedSpikesDetector(
+            sampling_frequency=SORTED_SIM_RATE,
             discrete_transition_type=DiscreteNonStationaryDiagonal(
                 np.full(4, 0.98), formula="1 + speed"
-            )
+            ),
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -670,7 +675,8 @@ class TestEMMonitorsMapObjective:
         objective of the same E-step."""
         tolerance = 1e-14
         detector = NonLocalSortedSpikesDetector(
-            discrete_transition_prior_weight=prior_weight
+            sampling_frequency=SORTED_SIM_RATE,
+            discrete_transition_prior_weight=prior_weight,
         )
         # This fit has no violations of its own, so lower the fourth E-step's
         # marginal log-likelihood to give the checks one to reproduce.

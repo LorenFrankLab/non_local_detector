@@ -47,6 +47,8 @@ def test_old_keyword_explains_centered_grid_migration(recording):
 
 
 @pytest.mark.integration
+# Decodes a short window before the first spike, which warns of a clock mismatch.
+@pytest.mark.filterwarnings("ignore:None of the .* spike times:UserWarning")
 def test_results_preserve_edges_and_missing_mask_through_pickle_and_concat(recording):
     detector, _, _, spikes = recording
     pieces = []
@@ -74,6 +76,8 @@ def test_results_preserve_edges_and_missing_mask_through_pickle_and_concat(recor
 
 
 @pytest.mark.integration
+# Decodes a short window before the first spike, which warns of a clock mismatch.
+@pytest.mark.filterwarnings("ignore:None of the .* spike times:UserWarning")
 def test_saved_results_recover_time_metadata_and_spatial_index(recording, tmp_path):
     detector, _, _, spikes = recording
     result = detector.predict(
@@ -148,6 +152,8 @@ def test_clusterless_diffusion_masks_missing_tracking_for_local_prediction(
 
 
 @pytest.mark.integration
+# Decodes a short window before the first spike, which warns of a clock mismatch.
+@pytest.mark.filterwarnings("ignore:None of the .* spike times:UserWarning")
 def test_single_bin_keeps_a_time_dimension(recording):
     detector, _, _, spikes = recording
     result = detector.predict(spikes, time_edges=np.array([0.0, 0.002]))
@@ -216,6 +222,8 @@ def test_unfitted_decoder_explains_fit_requirement(method):
 
 
 @pytest.mark.integration
+# Decodes a short window before the first spike, which warns of a clock mismatch.
+@pytest.mark.filterwarnings("ignore:None of the .* spike times:UserWarning")
 @pytest.mark.parametrize("n_bins", [1, 5])
 def test_one_spatial_bin_keeps_its_index_through_save_load(tmp_path, n_bins):
     from non_local_detector import Uniform
@@ -237,6 +245,8 @@ def test_one_spatial_bin_keeps_its_index_through_save_load(tmp_path, n_bins):
 
 
 @pytest.mark.integration
+# Decodes a short window before the first spike, which warns of a clock mismatch.
+@pytest.mark.filterwarnings("ignore:None of the .* spike times:UserWarning")
 @pytest.mark.parametrize("n_transition_rows", [4, 6])
 def test_viterbi_rejects_unaligned_covariate_transitions_before_likelihood(
     recording, monkeypatch, n_transition_rows
@@ -257,6 +267,8 @@ def test_viterbi_rejects_unaligned_covariate_transitions_before_likelihood(
 
 
 @pytest.mark.integration
+# Decodes a short window before the first spike, which warns of a clock mismatch.
+@pytest.mark.filterwarnings("ignore:None of the .* spike times:UserWarning")
 def test_viterbi_accepts_aligned_fitted_covariate_transitions(recording):
     detector, _, _, spikes = recording
     detector.discrete_state_transitions_ = np.broadcast_to(

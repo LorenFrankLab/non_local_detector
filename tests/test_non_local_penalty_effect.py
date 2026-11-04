@@ -12,6 +12,7 @@ import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import SORTED_SIM_RATE
 
 PENALTY_STD = 5.0
 
@@ -53,6 +54,7 @@ def test_penalty_suppresses_non_local_mass_near_animal():
     )
 
     detector = NonLocalSortedSpikesDetector(
+        sampling_frequency=SORTED_SIM_RATE,
         sorted_spikes_algorithm="sorted_spikes_kde",
         non_local_position_penalty=0.0,
     ).fit(time, position, spike_times, is_training=~is_event)

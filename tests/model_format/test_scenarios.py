@@ -18,7 +18,13 @@ from non_local_detector import Environment, time_edges_from_centers
 from non_local_detector.models.base import SortedSpikesDetector
 from non_local_detector.observation_models import ObservationModel
 from tests.model_format._compare import assert_same_fitted_state
-from tests.model_format.conftest import N_DECODE, algorithm_params, decode
+from tests.model_format.conftest import (
+    CLUSTERLESS_RATE,
+    N_DECODE,
+    SORTED_RATE,
+    algorithm_params,
+    decode,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -45,7 +51,9 @@ def _assert_round_trip(detector, tmp_path, time, position, spikes, **decode_kwar
 
 def _sorted_detector(**kwargs):
     return nld.NonLocalSortedSpikesDetector(
-        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"), **kwargs
+        sampling_frequency=SORTED_RATE,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        **kwargs,
     )
 
 
@@ -152,6 +160,7 @@ def test_two_dimensional_open_field(
         environments=Environment(place_bin_size=4.0),
         sorted_spikes_algorithm=algorithm,
         sorted_spikes_algorithm_params=algorithm_params(algorithm),
+        sampling_frequency=SORTED_RATE,
     )
     detector.fit(time, position, spike_times, transition_representation=representation)
 
@@ -163,6 +172,7 @@ def test_empirical_movement_block_is_stored(sorted_recording, tmp_path):
     detector = nld.SortedSpikesDecoder(
         continuous_transition_types=[[nld.EmpiricalMovement()]],
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     )
     detector.fit(time, position, spike_times)
 
@@ -181,6 +191,7 @@ def test_em_after_an_auto_fit_rebuilds_the_dense_matrix(
     time, position, spike_times, features = clusterless_recording
     detector = nld.NonLocalClusterlessDetector(
         clusterless_algorithm_params=algorithm_params("clusterless_kde"),
+        sampling_frequency=CLUSTERLESS_RATE,
     )
     spikes = {"spike_times": spike_times, "spike_waveform_features": features}
     detector.estimate_parameters(
@@ -228,6 +239,7 @@ def test_encoding_groups(sorted_recording, tmp_path):
         ),
         state_names=["first", "second"],
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     )
     half = len(time) // 2
     labels = np.array(["first"] * half + ["second"] * (len(time) - half))
@@ -247,6 +259,7 @@ def test_zero_dimensional_parameters_keep_their_shape(sorted_recording, tmp_path
     detector = nld.SortedSpikesDecoder(
         environments=Environment(place_bin_size=4.0),
         continuous_transition_types=[[nld.RandomWalk(movement_var=np.array(6.0))]],
+        sampling_frequency=SORTED_RATE,
         sorted_spikes_algorithm_params={
             **algorithm_params("sorted_spikes_kde"),
             "position_std": np.array(4.0),
@@ -268,6 +281,7 @@ def test_one_bin_environment(transition, sorted_recording, tmp_path):
         environments=Environment(place_bin_size=100.0, position_range=((0.0, 30.0),)),
         continuous_transition_types=[[transition]],
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     )
     detector.fit(time, position, spike_times)
     assert detector.environments_[0].place_bin_centers_.shape == (1, 1)
@@ -278,7 +292,8 @@ def test_one_bin_environment(transition, sorted_recording, tmp_path):
 def test_detector_with_no_units(sorted_recording, tmp_path):
     time, position, _ = sorted_recording
     detector = nld.SortedSpikesDecoder(
-        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde")
+        sampling_frequency=SORTED_RATE,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
     ).fit(time, position, [])
 
     _assert_round_trip(detector, tmp_path, time, position, {"spike_times": []})
@@ -304,6 +319,7 @@ def test_electrode_without_spikes(algorithm, clusterless_recording, tmp_path):
     detector = nld.ClusterlessDecoder(
         clusterless_algorithm=algorithm,
         clusterless_algorithm_params=algorithm_params(algorithm),
+        sampling_frequency=CLUSTERLESS_RATE,
     ).fit(time, position, **spikes)
 
     _assert_round_trip(detector, tmp_path, time, position, spikes)

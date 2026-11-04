@@ -158,6 +158,18 @@ def test_decoder_output_shapes_consistent(n_tetrodes: int) -> None:
         seed=seed,
     )
 
+    # Use 70% for training
+    n_encode = int(0.7 * len(sim.position_time))
+
+    # Test bins: the detector's sampling_frequency is the rate of these bins
+    # The decoder returns one row per bin: n_time_bins + 1 edges
+    n_time_bins = 10
+    test_time_edges = np.linspace(
+        sim.position_time[n_encode],
+        sim.position_time[-1],
+        n_time_bins + 1,
+    )
+
     # Fit decoder
     decoder = ClusterlessDecoder(
         environments=sim.environment,
@@ -167,10 +179,8 @@ def test_decoder_output_shapes_consistent(n_tetrodes: int) -> None:
             "waveform_std": 24.0,
             "block_size": 100,
         },
+        sampling_frequency=1.0 / (test_time_edges[1] - test_time_edges[0]),
     )
-
-    # Use 70% for training
-    n_encode = int(0.7 * len(sim.position_time))
 
     decoder.fit(
         position_time=sim.position_time[:n_encode],
@@ -184,15 +194,6 @@ def test_decoder_output_shapes_consistent(n_tetrodes: int) -> None:
                 sim.spike_times, sim.spike_waveform_features, strict=True
             )
         ],
-    )
-
-    # Predict on test data
-    # The decoder returns one row per bin: n_time_bins + 1 edges
-    n_time_bins = 10
-    test_time_edges = np.linspace(
-        sim.position_time[n_encode],
-        sim.position_time[-1],
-        n_time_bins + 1,
     )
 
     results = decoder.predict(

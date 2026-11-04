@@ -51,7 +51,7 @@ def ensure_probability_distribution(
     >>> ensure_probability_distribution(np.array([0.5, 0.5]), "probs")  # OK
     >>> ensure_probability_distribution(np.array([0.6, 0.6]), "probs")  # Raises
     """
-    arr_sum = np.sum(arr)
+    arr_sum = np.sum(np.asarray(arr))
     if not np.isclose(arr_sum, 1.0, atol=tolerance):
         msg = f"{name} must be a valid probability distribution"
         raise ValidationError(
@@ -109,12 +109,12 @@ def ensure_positive_scalar(
         )
 
 
-def ensure_array_1d(arr: np.ndarray, name: str) -> None:
+def ensure_array_1d(arr: ArrayLike, name: str) -> None:
     """Verify array is 1-dimensional.
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -129,6 +129,7 @@ def ensure_array_1d(arr: np.ndarray, name: str) -> None:
     >>> ensure_array_1d(np.array([1, 2, 3]), "probs")  # OK
     >>> ensure_array_1d(np.array([[1, 2]]), "probs")  # Raises
     """
+    arr = np.asarray(arr)
     if arr.ndim != 1:
         msg = f"{name} must be a 1-dimensional array"
         raise ValidationError(
@@ -140,12 +141,12 @@ def ensure_array_1d(arr: np.ndarray, name: str) -> None:
         )
 
 
-def ensure_all_finite(arr: np.ndarray, name: str) -> None:
+def ensure_all_finite(arr: ArrayLike, name: str) -> None:
     """Verify all array elements are finite (no NaN or Inf).
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -160,6 +161,7 @@ def ensure_all_finite(arr: np.ndarray, name: str) -> None:
     >>> ensure_all_finite(np.array([1.0, 2.0]), "data")  # OK
     >>> ensure_all_finite(np.array([1.0, np.nan]), "data")  # Raises
     """
+    arr = np.asarray(arr)
     if not np.all(np.isfinite(arr)):
         n_nan = np.sum(np.isnan(arr))
         n_inf = np.sum(np.isinf(arr))
@@ -171,12 +173,12 @@ def ensure_all_finite(arr: np.ndarray, name: str) -> None:
         )
 
 
-def ensure_all_non_negative(arr: np.ndarray, name: str) -> None:
+def ensure_all_non_negative(arr: ArrayLike, name: str) -> None:
     """Verify all array elements are non-negative.
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -191,6 +193,7 @@ def ensure_all_non_negative(arr: np.ndarray, name: str) -> None:
     >>> ensure_all_non_negative(np.array([0.0, 1.0]), "probs")  # OK
     >>> ensure_all_non_negative(np.array([-0.1, 1.0]), "probs")  # Raises
     """
+    arr = np.asarray(arr)
     if np.any(arr < 0):
         n_negative = np.sum(arr < 0)
         min_val = np.min(arr)
@@ -203,12 +206,12 @@ def ensure_all_non_negative(arr: np.ndarray, name: str) -> None:
         )
 
 
-def ensure_in_range(arr: np.ndarray, name: str, low: float, high: float) -> None:
+def ensure_in_range(arr: ArrayLike, name: str, low: float, high: float) -> None:
     """Verify all array elements are within a range [low, high].
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -227,6 +230,7 @@ def ensure_in_range(arr: np.ndarray, name: str, low: float, high: float) -> None
     >>> ensure_in_range(np.array([0.5, 0.8]), "probs", 0.0, 1.0)  # OK
     >>> ensure_in_range(np.array([1.5]), "probs", 0.0, 1.0)  # Raises
     """
+    arr = np.asarray(arr)
     if np.any(arr < low) or np.any(arr > high):
         min_val = np.min(arr)
         max_val = np.max(arr)
@@ -239,12 +243,12 @@ def ensure_in_range(arr: np.ndarray, name: str, low: float, high: float) -> None
         )
 
 
-def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
+def ensure_square_matrix(matrix: ArrayLike, name: str) -> None:
     """Verify matrix is square (n x n).
 
     Parameters
     ----------
-    matrix : np.ndarray
+    matrix : array_like
         Matrix to check
     name : str
         Name of the matrix for error messages
@@ -259,6 +263,7 @@ def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
     >>> ensure_square_matrix(np.eye(3), "transition_matrix")  # OK
     >>> ensure_square_matrix(np.zeros((3, 4)), "transition_matrix")  # Raises
     """
+    matrix = np.asarray(matrix)
     if matrix.ndim != 2:
         msg = f"{name} must be a 2-dimensional matrix"
         raise ValidationError(
@@ -289,13 +294,13 @@ def _bad_rows_description(row_sums: np.ndarray, bad_rows: np.ndarray) -> str:
 
 
 def ensure_stochastic_matrix(
-    matrix: np.ndarray, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
+    matrix: ArrayLike, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
 ) -> None:
     """Verify matrix is row-stochastic (each row sums to 1).
 
     Parameters
     ----------
-    matrix : np.ndarray, shape (n_rows, n_columns)
+    matrix : array_like, shape (n_rows, n_columns)
         Matrix to check
     name : str
         Name of the matrix for error messages
@@ -314,7 +319,7 @@ def ensure_stochastic_matrix(
     >>> bad_matrix = np.array([[0.5, 0.5], [0.6, 0.3]])  # Row 2 sums to 0.9
     >>> ensure_stochastic_matrix(bad_matrix, "transition_matrix")  # Raises
     """
-    row_sums = np.sum(matrix, axis=1)
+    row_sums = np.sum(np.asarray(matrix), axis=1)
     bad_rows = np.abs(row_sums - 1.0) > tolerance
 
     if np.any(bad_rows):
@@ -329,7 +334,7 @@ def ensure_stochastic_matrix(
 
 
 def ensure_substochastic_matrix(
-    matrix: np.ndarray, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
+    matrix: ArrayLike, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
 ) -> None:
     """Verify each row of a non-negative matrix sums to at most 1.
 
@@ -340,7 +345,7 @@ def ensure_substochastic_matrix(
 
     Parameters
     ----------
-    matrix : np.ndarray, shape (n_rows, n_columns)
+    matrix : array_like, shape (n_rows, n_columns)
         Matrix to check; its entries are already known to be non-negative.
     name : str
         Name of the matrix for error messages
@@ -353,7 +358,7 @@ def ensure_substochastic_matrix(
     ValidationError
         If any row sums to more than ``1 + tolerance``.
     """
-    row_sums = np.sum(matrix, axis=1)
+    row_sums = np.sum(np.asarray(matrix), axis=1)
     bad_rows = row_sums > 1.0 + tolerance
     if np.any(bad_rows):
         msg = f"{name} must have rows that sum to at most 1"
@@ -400,13 +405,13 @@ def ensure_ndarray(value: Any, name: str) -> None:
 
 
 def ensure_monotonic_increasing(
-    arr: np.ndarray, name: str, *, strict: bool = False
+    arr: ArrayLike, name: str, *, strict: bool = False
 ) -> None:
     """Verify array is monotonically increasing.
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -424,6 +429,7 @@ def ensure_monotonic_increasing(
     >>> ensure_monotonic_increasing(np.array([1, 2, 3]), "time")  # OK
     >>> ensure_monotonic_increasing(np.array([1, 3, 2]), "time")  # Raises
     """
+    arr = np.asarray(arr)
     diffs = np.diff(arr)
 
     if strict:

@@ -22,7 +22,7 @@ from non_local_detector.model_format import (
     _container,
     read_model_summary,
 )
-from tests.model_format.conftest import algorithm_params, decode
+from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 
 pytestmark = pytest.mark.integration
 
@@ -49,7 +49,8 @@ def _edit_json(path, name, edit):
 def fitted(sorted_recording):
     time, position, spike_times = sorted_recording
     detector = nld.NonLocalSortedSpikesDetector(
-        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde")
+        sampling_frequency=SORTED_RATE,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
     )
     return detector.fit(time, position, spike_times)
 
@@ -77,6 +78,7 @@ def test_saving_an_unregistered_transition_says_how_to_register_it(
     detector = nld.SortedSpikesDecoder(
         continuous_transition_types=[[_UnregisteredUniform()]],
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     ).fit(time, position, spike_times)
 
     with pytest.raises(ValidationError, match="not registered") as error:

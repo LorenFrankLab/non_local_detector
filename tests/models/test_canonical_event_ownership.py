@@ -38,8 +38,11 @@ from non_local_detector.models.cont_frag_model import (
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 FAMILIES = ["sorted", "clusterless"]
+# Rate of the simulated recordings, which are decoded one bin per sample.
+SIM_RATE = CLUSTERLESS_SIM_RATE
 
 
 def _event_weights(call: dict) -> dict[float, float]:
@@ -260,7 +263,9 @@ def test_clusterless_exposure_uses_full_timeline_mask(
     count fractionally, instead of being bridged by a subset timeline.
     """
     sim, is_training = gapped_clusterless_run
-    detector = ClusterlessDecoder(clusterless_algorithm=algorithm).fit(
+    detector = ClusterlessDecoder(
+        clusterless_algorithm=algorithm, sampling_frequency=SIM_RATE
+    ).fit(
         sim.position_time,
         sim.position,
         sim.spike_times,
@@ -322,6 +327,7 @@ def test_clusterless_group_without_training_coverage(gapped_clusterless_run, alg
     decoder = ClusterlessDecoder(
         clusterless_algorithm=algorithm,
         observation_models=[ObservationModel(encoding_group=1)],
+        sampling_frequency=SIM_RATE,
     )
     with pytest.warns(UserWarning, match="no training samples"):
         decoder.fit(
@@ -369,6 +375,7 @@ def test_sorted_group_without_training_coverage(clusterless_sim, algorithm):
     decoder = SortedSpikesDecoder(
         sorted_spikes_algorithm=algorithm,
         observation_models=[ObservationModel(encoding_group=1)],
+        sampling_frequency=SIM_RATE,
     )
     with pytest.warns(UserWarning, match="no training samples"):
         decoder.fit(
@@ -415,7 +422,9 @@ def test_glm_em_refit_with_gapped_mask_and_off_sample_spikes():
     ]
     is_training = (np.arange(n) // 40) % 3 != 2
 
-    detector = NonLocalSortedSpikesDetector(sorted_spikes_algorithm="sorted_spikes_glm")
+    detector = NonLocalSortedSpikesDetector(
+        sorted_spikes_algorithm="sorted_spikes_glm", sampling_frequency=SIM_RATE
+    )
     results = detector.estimate_parameters(
         position_time=sim.position_time,
         position=sim.position,

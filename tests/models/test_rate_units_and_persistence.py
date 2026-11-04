@@ -44,9 +44,11 @@ def test_known_rate_is_calibrated_through_public_fit_and_predict(
     args = (spikes,)
     if algorithm.startswith("clusterless"):
         args = (*args, [np.zeros((5, 1))])
-    detector = _decoder(algorithm, calibration=True).fit(time, position, *args)
-
     for width in (0.002, 0.004):
+        # The detector's sampling frequency must match the decode bin width.
+        detector = _decoder(
+            algorithm, calibration=True, sampling_frequency=1 / width
+        ).fit(time, position, *args)
         result = detector.predict(
             *args,
             time_edges=0.2 + np.arange(3) * width,

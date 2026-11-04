@@ -38,6 +38,12 @@ An `Environment` discretizes space into position bins.
   the order NetworkX lists the edges (`graph.edges`), as
   `track_linearization.make_track_graph` does: that function assumes it.
 
+1-D position with no track graph is decoded as a 1-D open field: the model
+moves between neighboring bins of that line and knows nothing of the track's
+topology. For a linear track or a maze, pass the raw 2-D `(x, y)` position with
+a `track_graph`, `edge_order` and `edge_spacing` instead of position you
+linearized yourself; with a track graph, 1-D position raises `ValidationError`.
+
 Pass environments to a model with `environments=[Environment(...)]`. Models
 with more than one environment, such as
 `MultiEnvironmentSortedSpikesClassifier`, decode which environment the

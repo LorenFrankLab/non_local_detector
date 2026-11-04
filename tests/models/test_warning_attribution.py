@@ -7,6 +7,7 @@ import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import SORTED_SIM_RATE
 
 pytestmark = pytest.mark.unit
 
@@ -40,21 +41,23 @@ def _past_tracking(time):
 
 
 @pytest.mark.parametrize("entry", ["fit", "estimate_parameters"])
-def test_one_dimensional_position_warning(recording, entry):
-    detector = NonLocalSortedSpikesDetector()
+def test_spikes_outside_the_recording_warning(recording, entry):
+    """Raised in fit_encoding_model, under fit or estimate_parameters."""
+    in_ms = {**recording, "spike_times": [t * 1_000 for t in recording["spike_times"]]}
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
     if entry == "fit":
-        call = lambda: detector.fit(**recording)  # noqa: E731
+        call = lambda: detector.fit(**in_ms)  # noqa: E731
     else:
         edges = time_edges_from_centers(recording["position_time"])
         call = lambda: detector.estimate_parameters(  # noqa: E731
-            **recording, time_edges=edges, max_iter=1
+            **in_ms, time_edges=edges, max_iter=1
         )
-    assert _sources("appears to be 1D", call) == {__file__}
+    assert _sources("None of the", call) == {__file__}
 
 
 def test_em_not_converged_warning(recording):
     edges = time_edges_from_centers(recording["position_time"])
-    detector = NonLocalSortedSpikesDetector()
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
     call = lambda: detector.estimate_parameters(  # noqa: E731
         **recording, time_edges=edges, max_iter=1
     )
@@ -62,7 +65,9 @@ def test_em_not_converged_warning(recording):
 
 
 def test_deprecated_output_flag_warning(recording):
-    detector = NonLocalSortedSpikesDetector().fit(**recording)
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE).fit(
+        **recording
+    )
     edges = time_edges_from_centers(recording["position_time"])
     call = lambda: detector.predict(  # noqa: E731
         spike_times=recording["spike_times"],
@@ -78,7 +83,9 @@ def test_deprecated_output_flag_warning(recording):
     "entry", ["predict", "compute_log_likelihood", "most_likely_sequence"]
 )
 def test_outside_tracking_warning(recording, entry):
-    detector = NonLocalSortedSpikesDetector().fit(**recording)
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE).fit(
+        **recording
+    )
     edges = _past_tracking(recording["position_time"])
     if entry == "compute_log_likelihood":
         call = lambda: detector.compute_log_likelihood(  # noqa: E731
@@ -99,7 +106,7 @@ def test_outside_tracking_warning(recording, entry):
 
 def test_encoding_fit_warning(recording):
     """Warnings from the likelihood fits point at the caller too."""
-    detector = NonLocalSortedSpikesDetector()
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
     n = len(recording["position_time"])
     call = lambda: detector.fit(  # noqa: E731
         **recording, is_training=np.zeros(n, dtype=bool)

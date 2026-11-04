@@ -239,6 +239,7 @@ def test_native_detector_preserves_workspace_policy_and_posterior(
         model = NonLocalClusterlessDetector(
             environments=environment,
             infer_track_interior=False,
+            sampling_frequency=8.0,  # time_edges are 1 / 8 s wide
             clusterless_algorithm_params={
                 "position_std": 0.8,
                 "waveform_std": 0.7,

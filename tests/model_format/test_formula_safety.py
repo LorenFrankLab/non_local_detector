@@ -26,7 +26,7 @@ from non_local_detector.exceptions import ParameterWarning, ValidationError
 from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.model_format import read_model_summary
 from tests.model_format._compare import assert_same_fitted_state
-from tests.model_format.conftest import algorithm_params, decode
+from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 
 pytestmark = pytest.mark.integration
 
@@ -57,6 +57,7 @@ def _fit(sorted_recording, formula):
             diagonal_values=np.full(4, 0.98), formula=formula
         ),
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     )
     return detector.fit(
         time, position, spike_times, discrete_transition_covariate_data={"speed": speed}
@@ -236,6 +237,7 @@ def test_string_and_categorical_covariates_round_trip(
             diagonal_values=np.full(4, 0.98), formula="1 + C(task)"
         ),
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     ).fit(
         time,
         position,
@@ -318,6 +320,7 @@ def test_an_unfitted_model_with_a_trusted_formula_loads_without_warning(
             diagonal_values=np.full(4, 0.98), formula=OUTSIDE_GRAMMAR
         ),
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     )
     path = tmp_path / "model.nld"
     detector.save_model(path)

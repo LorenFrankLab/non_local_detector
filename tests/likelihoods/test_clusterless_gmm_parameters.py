@@ -65,6 +65,7 @@ def test_detector_tiling_parameters_reach_predict(sim, monkeypatch):
 
     def decode(params):
         decoder = ClusterlessDecoder(
+            sampling_frequency=1000.0,  # make_simulated_run_data rate
             clusterless_algorithm="clusterless_gmm",
             clusterless_algorithm_params={
                 "gmm_components_occupancy": 4,

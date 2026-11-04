@@ -31,7 +31,8 @@ from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_
 ) = make_simulated_data(n_neurons=30)
 
 # Learn each neuron's place field from the run, outside the replay events.
-detector = NonLocalSortedSpikesDetector().fit(
+# sampling_frequency sets the decode bin width, 1 / sampling_frequency s.
+detector = NonLocalSortedSpikesDetector(sampling_frequency=sampling_frequency).fit(
     time, position, spike_times, is_training=~is_event
 )
 

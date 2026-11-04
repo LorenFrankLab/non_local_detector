@@ -16,7 +16,7 @@ import non_local_detector as nld
 from non_local_detector import Environment, environment
 from non_local_detector.exceptions import ValidationError
 from tests.model_format._compare import assert_same_fitted_state
-from tests.model_format.conftest import algorithm_params, decode
+from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 from tests.model_format.test_scenarios import _on_track, _track_graph
 
 pytestmark = pytest.mark.integration
@@ -75,6 +75,7 @@ def saved(request, sorted_recording, tmp_path):
     detector = nld.NonLocalSortedSpikesDetector(
         environments=env,
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     ).fit(time, position, spike_times)
     path = tmp_path / "model.nld"
     detector.save_model(path)

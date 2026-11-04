@@ -87,6 +87,10 @@ def test_registry_and_end_to_end() -> None:
     )
 
     n_encode = int(0.7 * len(sim.position_time))
+    # Ten equal decode bins over the held-out span set the detector's bin rate.
+    decode_sampling_frequency = 10 / (
+        sim.position_time[-1] - sim.position_time[n_encode]
+    )
     encode_position_time = sim.position_time[:n_encode]
     encode_position = sim.position[:n_encode]
     encode_spike_times = [st[st <= encode_position_time[-1]] for st in sim.spike_times]
@@ -104,6 +108,7 @@ def test_registry_and_end_to_end() -> None:
     # --- ClusterlessDecoder ---
     decoder = ClusterlessDecoder(
         environments=sim.environment,
+        sampling_frequency=decode_sampling_frequency,
         clusterless_algorithm="clusterless_diffusion",
         clusterless_algorithm_params=algorithm_params,
     )
@@ -140,6 +145,7 @@ def test_registry_and_end_to_end() -> None:
     # --- NonLocalClusterlessDetector ---
     detector = NonLocalClusterlessDetector(
         environments=sim.environment,
+        sampling_frequency=decode_sampling_frequency,
         clusterless_algorithm="clusterless_diffusion",
         clusterless_algorithm_params=algorithm_params,
     )
@@ -337,6 +343,10 @@ def test_save_load_predict_parity(tmp_path) -> None:
     )
 
     n_encode = int(0.7 * len(sim.position_time))
+    # Ten equal decode bins over the held-out span set the detector's bin rate.
+    decode_sampling_frequency = 10 / (
+        sim.position_time[-1] - sim.position_time[n_encode]
+    )
     encode_position_time = sim.position_time[:n_encode]
     encode_position = sim.position[:n_encode]
     encode_spike_times = [st[st <= encode_position_time[-1]] for st in sim.spike_times]
@@ -353,6 +363,7 @@ def test_save_load_predict_parity(tmp_path) -> None:
 
     detector = NonLocalClusterlessDetector(
         environments=sim.environment,
+        sampling_frequency=decode_sampling_frequency,
         clusterless_algorithm="clusterless_diffusion",
         clusterless_algorithm_params=algorithm_params,
     )

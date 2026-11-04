@@ -55,7 +55,8 @@ def test_detector_setting_disables_no_spike_bar(capfd, run_data, clusterless):
     params = {"disable_progress_bar": True}
     if clusterless:
         detector = NonLocalClusterlessDetector(
-            clusterless_algorithm_params={**params, "waveform_std": 10.0}
+            sampling_frequency=SAMPLING_FREQUENCY,
+            clusterless_algorithm_params={**params, "waveform_std": 10.0},
         ).fit(time, position, spike_times, marks)
         detector.compute_log_likelihood(
             time,
@@ -66,7 +67,7 @@ def test_detector_setting_disables_no_spike_bar(capfd, run_data, clusterless):
         )
     else:
         detector = NonLocalSortedSpikesDetector(
-            sorted_spikes_algorithm_params=params
+            sampling_frequency=SAMPLING_FREQUENCY, sorted_spikes_algorithm_params=params
         ).fit(time, position, spike_times)
         detector.compute_log_likelihood(
             time,

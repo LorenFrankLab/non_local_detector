@@ -20,6 +20,7 @@ from non_local_detector.discrete_state_transitions import (
     predict_discrete_state_transitions,
 )
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import SORTED_SIM_RATE
 
 # These tests cap max_iter for speed, so EM stops before convergence.
 pytestmark = [
@@ -54,6 +55,7 @@ def fitted(request):
         discrete_transition_type=DiscreteNonStationaryDiagonal(
             np.array([0.99, 0.98, 0.96, 0.96]), **formula
         ),
+        sampling_frequency=SORTED_SIM_RATE,
     )
     phase = np.mod(2 * np.pi * 8.0 * time, 2 * np.pi)
     detector.estimate_parameters(
