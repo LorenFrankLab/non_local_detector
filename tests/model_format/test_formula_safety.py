@@ -3,14 +3,15 @@
 A file whose stored formula was edited to one outside the formula grammar
 loads for inspection only, as an unpickled detector with such a formula does:
 ``load_model`` warns, never calls patsy, and the loaded detector refuses to
-decode; ``read_model_summary`` still reads it. Covariates are stored only as
-numeric ``.npy`` arrays.
+decode; ``read_model_summary`` still reads it. Covariates are stored as
+numeric or string ``.npy`` arrays (categoricals as codes and categories).
 """
 
 import json
 import zipfile
 
 import numpy as np
+import pandas as pd
 import patsy
 import pytest
 
@@ -19,6 +20,7 @@ from non_local_detector import discrete_state_transitions as dst
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.model_format import read_model_summary
+from tests.model_format._compare import assert_same_fitted_state
 from tests.model_format.conftest import algorithm_params, decode
 
 pytestmark = pytest.mark.integration
@@ -117,20 +119,72 @@ def test_an_allowed_stored_formula_rebuilds_the_design(fitted, tmp_path):
     )
 
 
-def test_covariates_are_stored_as_numeric_arrays(fitted, tmp_path):
-    path = tmp_path / "model.nld"
-    fitted.save_model(path)
-    with zipfile.ZipFile(path) as archive:
-        manifest = json.loads(archive.read("manifest.json"))
-    (entry,) = (
-        entry
-        for member, entry in manifest["arrays"].items()
-        if "discrete_transition_covariate_data" in member
-    )
-    assert entry["dtype"] == "<f8"
+def _task(n):
+    return np.where(np.arange(n) < n // 2, "run", "rest")
 
+
+@pytest.mark.parametrize(
+    "make_covariates",
+    [
+        lambda task: {"task": task},
+        lambda task: {"task": task.astype(object)},
+        lambda task: {"task": pd.Categorical(task, categories=["run", "rest"])},
+        lambda task: pd.DataFrame({"task": task}),
+        lambda task: pd.DataFrame(
+            {"task": pd.Categorical(task, categories=["run", "rest"], ordered=True)}
+        ),
+    ],
+    ids=["unicode", "object-strings", "categorical", "frame", "frame-categorical"],
+)
+def test_string_and_categorical_covariates_round_trip(
+    make_covariates, sorted_recording, tmp_path
+):
+    """Categories of a ``C(task)`` covariate keep their values, order and
+    type, so the reloaded design (whose reference level follows the category
+    order) and its decode are identical."""
+    time, position, spike_times = sorted_recording
+    detector = nld.NonLocalSortedSpikesDetector(
+        discrete_transition_type=nld.DiscreteNonStationaryDiagonal(
+            diagonal_values=np.full(4, 0.98), formula="1 + C(task)"
+        ),
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+    ).fit(
+        time,
+        position,
+        spike_times,
+        discrete_transition_covariate_data=make_covariates(_task(len(time))),
+    )
+    path = tmp_path / "model.nld"
+
+    detector.save_model(path)
+    loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+
+    assert_same_fitted_state(detector, loaded)
+    covariates = make_covariates(_task(300))
+    for a, b in zip(
+        decode(
+            loaded,
+            time,
+            position,
+            {"spike_times": spike_times},
+            discrete_transition_covariate_data=covariates,
+        ),
+        decode(
+            detector,
+            time,
+            position,
+            {"spike_times": spike_times},
+            discrete_transition_covariate_data=covariates,
+        ),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_covariates_that_are_not_numbers_or_strings_are_refused(fitted, tmp_path):
     fitted._discrete_transition_covariate_data_ = {
-        "speed": np.array(["fast", "slow"], dtype=object)
+        "speed": np.array([1.0, None], dtype=object)
     }
-    with pytest.raises(ValidationError, match="not numeric"):
+
+    with pytest.raises(ValidationError, match="object array"):
         fitted.save_model(tmp_path / "object.nld")

@@ -69,7 +69,8 @@ stored instead, since the training positions are not.
 
 patsy evaluates a covariate transition's formula as Python, so a stored
 formula is checked against the formula grammar before patsy sees it, and the
-covariates are stored only as numeric arrays. A file whose formula is outside
+covariates are stored only as numeric or string arrays (a categorical as its
+codes and categories). A file whose formula is outside
 the grammar loads for inspection only, as such a pickle does: `load_model`
 warns and does not rebuild the design (or the training-time
 `discrete_state_transitions_`), and decoding or saving it again is refused.
