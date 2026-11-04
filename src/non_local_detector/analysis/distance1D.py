@@ -13,6 +13,7 @@ from non_local_detector.environment import (
     find_environment_by_name,
 )
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.models.base import _DetectorBase
 
 __all__ = [
@@ -82,6 +83,22 @@ def _get_MAP_estimate_2d_position_edges(
         # Legacy attribute: the bin's position in track_graph.edges.
         segment_index = env.place_bin_center_ind_to_edge_id_  # type: ignore[attr-defined]  # legacy attribute; AttributeError fallback below
     except AttributeError:
+        missing = [
+            edge
+            for *edge, edge_id in track_graph.edges(data="edge_id")
+            if edge_id is None
+        ]
+        if missing:
+            msg = "track_graph edges are missing the 'edge_id' attribute"
+            raise ValidationError(
+                msg,
+                expected="the environment's track_graph, whose edges carry 'edge_id'",
+                got=f"{len(missing)} edge(s) without 'edge_id', e.g. {tuple(missing[0])}",
+                hint=(
+                    "Pass the decoder's environment track_graph, or build the graph "
+                    "with track_linearization.make_track_graph, which sets edge_id."
+                ),
+            ) from None
         edge_id = np.asarray(env.place_bin_centers_nodes_df_.edge_id)  # type: ignore[union-attr]
         segment_index = _segment_index_of_edge_id(track_graph, edge_id)
 

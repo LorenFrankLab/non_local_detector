@@ -12,6 +12,8 @@ and the ``n_time == 1`` and ``n_time == 2`` branches of ``get_map_speed``
 (not covered elsewhere).
 """
 
+from types import SimpleNamespace
+
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -24,6 +26,7 @@ from non_local_detector.analysis.distance1D import (
     get_map_speed,
     get_trajectory_data,
 )
+from non_local_detector.exceptions import ValidationError
 
 
 def _make_positioned_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
@@ -221,6 +224,25 @@ class TestGetTrajectoryData:
 
         np.testing.assert_allclose(mental_position_2d[0], [1.5, 0.0])
         np.testing.assert_array_equal(mental_position_edges[0], [1, 2])
+
+    def test_track_graph_without_edge_id_raises(self):
+        """The nodes-df path names the missing ``edge_id`` instead of a TypeError."""
+        track_graph = nx.path_graph(3)
+        env = SimpleNamespace(
+            is_track_interior_=np.ones(2, dtype=bool),
+            place_bin_centers_nodes_df_=pd.DataFrame(
+                {"x_position": [0.5, 1.5], "y_position": [0.0, 0.0], "edge_id": [0, 1]}
+            ),
+        )
+        with pytest.raises(ValidationError, match="edge_id"):
+            get_trajectory_data(
+                posterior=_one_hot_posterior(np.array([1]), n_bins=2),
+                track_graph=track_graph,
+                decoder=env,
+                actual_projected_position=np.array([[1.5, 0.0]]),
+                track_segment_id=np.array([1]),
+                actual_orientation=np.array([0.0]),
+            )
 
 
 @pytest.mark.unit
