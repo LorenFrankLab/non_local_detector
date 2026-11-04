@@ -182,6 +182,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clusterless algorithms are registered as `ClusterlessLikelihoodAlgorithm` records, which require `mark_reference_scale`; the run-time check for a missing one is gone. The private `_refit_mark_reference` keyword of `ClusterlessDetector.fit_encoding_model` is gone; posterior-weighted encoding updates keep the mark reference internally.
 - Likelihoods and posteriors are bit-identical for every algorithm.
 
+### Shared likelihood code split by responsibility
+
+- `non_local_detector.likelihoods.common` is a package of submodules (`numerics`, `validation`, `weights`, `padding`, `position`, `reductions`, `spike_rows`, `marks`, `poisson`, `kernel_density`) instead of one 3,400-line module. Every name it offered is still importable from `non_local_detector.likelihoods.common`, and detectors pickled with `non_local_detector.likelihoods.common.KDEModel` still load. Helpers that several likelihood modules shared under underscore names are public in the module that owns them (for example `SpikeTimeOrder`, `pad_rows`, `masked_logsumexp` and `full_to_local_index`, formerly `_full_to_local` in `sorted_spikes_diffusion`); the former `likelihoods.common` names remain as aliases, while the former underscore names in `clusterless_kde`, `sorted_spikes_diffusion`, `sorted_spikes_glm`, `clusterless_diffusion`, `diffusion`, `gmm` and `no_spike` are gone. Code is moved, not changed: likelihoods and posteriors are bit-identical.
+
 ### Artifacts stored by earlier versions
 
 - **Fixed:** `load_model` reads detectors pickled with JAX 0.4.30 or earlier, such as those that non_local_detector 0.6.0 installed with in 2024; they raised `TypeError: ShapedArray.__init__() got an unexpected keyword argument 'named_shape'`. JAX no longer has named shapes, and the stored (empty) one is dropped.
