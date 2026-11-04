@@ -3,7 +3,9 @@
 patsy cannot pickle its design, so the basis is rebuilt after unpickling. The
 rebuilt basis must give the same design matrix, bit for bit, as the one the
 encoding model was fitted with, including when the fit dropped spline columns
-without support on the environment.
+without support on the environment. A rebuild that differs from the fitted
+design (as a NumPy or patsy upgrade could make it) raises instead of decoding,
+and the inputs it is rebuilt from cannot be written to.
 """
 
 import copy
@@ -13,6 +15,8 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     make_spline_predict_matrix,
@@ -119,3 +123,70 @@ def test_rebuilt_basis_matches_the_fitted_basis(encoding, round_trip):
     actual = np.asarray(make_spline_predict_matrix(restored, positions))
     assert actual.dtype == expected.dtype
     assert np.array_equal(actual, expected, equal_nan=True)
+
+
+def _unpickled(basis):
+    return pickle.loads(pickle.dumps(basis))
+
+
+@pytest.mark.parametrize("relative_change", [1e-8, -1e-6])
+def test_rebuild_that_misses_the_fingerprint_raises(encoding, relative_change):
+    """A saved fingerprint the rebuilt design does not reproduce raises on use,
+    asking for a refit, instead of decoding with a different basis."""
+    model, environment, _ = encoding
+    restored = _unpickled(model["emission_design_info"])
+    object.__setattr__(
+        restored,
+        "design_fingerprint",
+        restored.design_fingerprint * (1.0 + relative_change),
+    )
+    with pytest.raises(ValidationError, match=r"NumPy or patsy version.*Refit"):
+        make_spline_predict_matrix(restored, _random_interior_positions(environment))
+
+
+def test_rebuild_from_shifted_knots_raises(encoding, monkeypatch):
+    """The fingerprint detects a rebuilt design whose knots moved by 1e-6 cm,
+    standing in for a version change in how patsy places them."""
+    model, environment, _ = encoding
+    restored = _unpickled(model["emission_design_info"])
+    build = sorted_spikes_glm.make_spline_design_matrix
+    monkeypatch.setattr(
+        sorted_spikes_glm,
+        "make_spline_design_matrix",
+        lambda position, *args, **kwargs: build(position + 1e-6, *args, **kwargs),
+    )
+    with pytest.raises(ValidationError, match="differs from the one it was fitted"):
+        make_spline_predict_matrix(restored, _random_interior_positions(environment))
+
+
+def test_rebuild_within_rounding_of_the_fingerprint_decodes(encoding):
+    """A fingerprint off by floating-point rounding still rebuilds the basis."""
+    model, environment, _ = encoding
+    basis = model["emission_design_info"]
+    restored = _unpickled(basis)
+    object.__setattr__(
+        restored, "design_fingerprint", restored.design_fingerprint * (1.0 + 1e-13)
+    )
+    positions = _random_interior_positions(environment)
+    assert np.array_equal(
+        np.asarray(make_spline_predict_matrix(restored, positions)),
+        np.asarray(make_spline_predict_matrix(basis, positions)),
+        equal_nan=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "round_trip",
+    [lambda basis: basis, _unpickled, copy.deepcopy],
+    ids=["fitted", "pickle", "deepcopy"],
+)
+def test_basis_inputs_are_read_only(encoding, round_trip):
+    """The arrays the design is rebuilt from cannot be changed in place, so a
+    basis and its pickle cannot disagree."""
+    basis = round_trip(encoding[0]["emission_design_info"])
+    arrays = [basis.basis_positions, basis.place_bin_edges, basis.design_fingerprint]
+    if basis.columns is not None:
+        arrays.append(basis.columns)
+    for array in arrays:
+        with pytest.raises(ValueError, match="read-only"):
+            array[(0,) * array.ndim] = 0

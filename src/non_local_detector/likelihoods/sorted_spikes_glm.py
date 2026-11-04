@@ -64,7 +64,7 @@ interpolation.
 
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import cached_property, partial
 from typing import Any, cast
 
@@ -253,6 +253,20 @@ def make_spline_design_matrix(
     return cast(np.ndarray, dmatrix(formula, data))
 
 
+# A rebuilt spline design must reproduce the fitted one's fingerprint to this
+# relative tolerance, plus this absolute tolerance per basis point: the
+# entries are at most about 1, and the centered columns sum to about 0.
+_SPLINE_REBUILD_RTOL = 1e-10
+_SPLINE_REBUILD_ATOL_PER_POINT = 1e-12
+
+
+def _read_only_copy(array: ArrayLike) -> np.ndarray:
+    """A copy of ``array`` that cannot be written to."""
+    copied = np.array(array)
+    copied.setflags(write=False)
+    return copied
+
+
 @dataclass(frozen=True, eq=False)
 class TensorSplineBasis:
     """Log-rate tensor-product cubic regression splines over position.
@@ -260,10 +274,11 @@ class TensorSplineBasis:
     The basis of a GLM fitted without a track graph, in 1-D or 2-D: the patsy
     design ``make_spline_design_matrix`` builds from ``basis_positions``,
     restricted to ``columns``. patsy cannot pickle its design, so this keeps the
-    inputs that define it instead, and builds the design from them on first use,
-    again after unpickling or copying. The rebuilt design is the one the
-    encoding model was fitted with: the knots and the centering constraint
-    depend only on these inputs.
+    inputs that define it instead (read-only copies), and rebuilds the design
+    from them on first use after unpickling or copying. The knots and the
+    centering constraint depend only on these inputs, but their arithmetic can
+    change with the NumPy or patsy version, so the rebuilt design must match a
+    fingerprint of the fitted one.
 
     Attributes
     ----------
@@ -277,36 +292,93 @@ class TensorSplineBasis:
     columns : np.ndarray, shape (n_used_columns,), optional
         Indices of the spline columns the fit uses, the intercept (column 0)
         first; by default None, every column.
+    design_fingerprint : np.ndarray, shape (2, n_spline_columns)
+        Of the design of every column at ``basis_positions``: its column sums
+        weighted by a ramp from 1 to 2 over the basis points, and its column
+        sums of squares. Set on construction.
     """
 
     basis_positions: np.ndarray
     place_bin_edges: np.ndarray
     knot_spacing: float
     columns: np.ndarray | None = None
+    design_fingerprint: np.ndarray = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "basis_positions", _read_only_copy(self.basis_positions)
+        )
+        object.__setattr__(
+            self, "place_bin_edges", _read_only_copy(self.place_bin_edges)
+        )
+        if self.columns is not None:
+            object.__setattr__(self, "columns", _read_only_copy(self.columns))
+        design_info, fingerprint = self._build_design()
+        object.__setattr__(self, "design_fingerprint", _read_only_copy(fingerprint))
+        self.__dict__["design_info"] = design_info
+
+    def _build_design(self) -> tuple[DesignInfo, np.ndarray]:
+        """The patsy design of every column, and its fingerprint."""
+        design = make_spline_design_matrix(
+            self.basis_positions, self.place_bin_edges, knot_spacing=self.knot_spacing
+        )
+        values = np.asarray(design, dtype=np.float64)
+        ramp = np.linspace(1.0, 2.0, len(values))
+        fingerprint = np.stack([ramp @ values, np.sum(values**2, axis=0)])
+        return cast(Any, design).design_info, fingerprint
 
     @cached_property
     def design_info(self) -> DesignInfo:
-        """The patsy design of every spline column, before ``columns`` selects."""
-        return cast(
-            Any,
-            make_spline_design_matrix(
-                self.basis_positions,
-                self.place_bin_edges,
-                knot_spacing=self.knot_spacing,
-            ),
-        ).design_info
+        """The patsy design of every spline column, before ``columns`` selects.
 
-    def _restricted_to(self, columns: np.ndarray) -> "TensorSplineBasis":
-        """This basis restricted to ``columns``, sharing its built patsy design."""
-        restricted = replace(self, columns=columns)
-        restricted.__dict__["design_info"] = self.design_info
-        return restricted
+        Built on construction; rebuilt on first use after unpickling or copying.
+
+        Raises
+        ------
+        ValidationError
+            If the rebuilt design does not match ``design_fingerprint``.
+        """
+        design_info, fingerprint = self._build_design()
+        expected = self.design_fingerprint
+        if fingerprint.shape != expected.shape or not np.allclose(
+            fingerprint,
+            expected,
+            rtol=_SPLINE_REBUILD_RTOL,
+            atol=_SPLINE_REBUILD_ATOL_PER_POINT * len(self.basis_positions),
+        ):
+            if fingerprint.shape == expected.shape:
+                largest = np.max(np.abs(fingerprint - expected))
+                difference = f"largest fingerprint difference {largest:.3g}"
+            else:
+                difference = (
+                    f"{fingerprint.shape[1]} columns instead of {expected.shape[1]}"
+                )
+            msg = (
+                "The GLM's spline basis, rebuilt from the saved encoding model, "
+                f"differs from the one it was fitted with ({difference}), "
+                "probably because the NumPy or patsy version changed since the "
+                "model was saved. Refit the model with the installed versions."
+            )
+            raise ValidationError(msg)
+        return design_info
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design, which cannot be pickled."""
         state = dict(self.__dict__)
         state.pop("design_info", None)
         return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the inputs as read-only arrays; the design is rebuilt on use."""
+        for name in (
+            "basis_positions",
+            "place_bin_edges",
+            "columns",
+            "design_fingerprint",
+        ):
+            if state.get(name) is not None:
+                state[name] = _read_only_copy(state[name])
+        self.__dict__.update(state)
 
 
 def _track_branches(graph: Any) -> list[list[tuple[Any, Any]]]:
@@ -679,7 +751,7 @@ def _select_supported_columns(
     )
     if columns.size == full.shape[1]:
         return basis
-    return basis._restricted_to(columns)
+    return replace(basis, columns=columns)
 
 
 # The fit sums counts and exposure over position cells this fraction of the knot
@@ -1281,11 +1353,11 @@ def _fit_rate_maps(
                 (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
             )[:, varying_dimensions]
             basis_positions = np.vstack((basis_positions, boundary_positions))
-        # Copies, so the basis stays the fitted one if the caller later changes
-        # the environment's arrays: it is rebuilt from these after unpickling.
+        # The basis keeps read-only copies, so it stays the fitted one if the
+        # caller later changes the environment's arrays.
         emission_design_info = TensorSplineBasis(
-            basis_positions=np.array(basis_positions),
-            place_bin_edges=np.array(place_bin_edges),
+            basis_positions=basis_positions,
+            place_bin_edges=place_bin_edges,
             knot_spacing=emission_knot_spacing,
         )
 
