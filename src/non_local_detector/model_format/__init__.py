@@ -9,25 +9,18 @@ through a registry of known types (see :func:`register_type`).
 What a file stores, and what loading rebuilds and checks, is described in the
 "Saving and loading models" documentation page.
 
-Functions
----------
-register_type
-    Let models holding a custom transition or detector subclass be saved.
-read_model_summary
-    Read a saved model's configuration, grids and place fields without
-    building it.
-convert_model
-    Rewrite a pickled model in the saved-model format.
-is_saved_model_format
-    Whether a file is in the saved-model format (as opposed to a pickle).
+It provides:
 
-Attributes
-----------
-FORMAT_VERSION : int
-    The format version this release writes and the newest it reads.
-MIGRATIONS : dict[int, callable]
-    ``MIGRATIONS[v]`` upgrades a stored model of format version ``v`` to
-    ``v + 1`` before it is read.
+- ``register_type``, to let models holding a custom transition or a detector
+  subclass be saved;
+- ``read_model_summary``, to read a saved model's configuration, grids and
+  place fields without building it;
+- ``convert_model``, to rewrite a pickled model in the saved-model format;
+- ``is_saved_model_format``, whether a file is in the saved-model format (as
+  opposed to a pickle);
+- ``FORMAT_VERSION``, the format version this release writes and the newest
+  it reads, and ``MIGRATIONS``, where ``MIGRATIONS[v]`` upgrades a stored
+  model of format version ``v`` to ``v + 1`` before it is read.
 """
 
 from pathlib import Path
