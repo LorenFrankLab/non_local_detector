@@ -63,6 +63,121 @@ def test_random_walk_with_directional_constraints(simple_1d_environment):
     )
 
 
+@pytest.mark.parametrize(
+    ("n_dims", "movement_mean", "movement_var", "exact"),
+    [
+        (1, 0.0, 6.0, True),
+        (1, 1.5, 0.01, True),
+        (2, 0.0, 6.0, True),
+        (2, np.array([1.0, -2.0]), np.array([2.0, 9.0]), True),
+        (2, 0.0, np.array([[3.0, 1.2], [1.2, 2.0]]), False),
+        (3, 0.0, np.diag([1.0, 4.0, 9.0]), True),
+    ],
+)
+def test_euclidean_random_walk_matches_scipy_row_by_row(
+    monkeypatch, n_dims, movement_mean, movement_var, exact
+):
+    """The blocked build equals scipy's density of each row: bit-identical for
+    a scalar or diagonal covariance, to float64 rounding for a full one. Saved
+    models compare rebuilt transitions with fingerprints of this build."""
+    from scipy.stats import multivariate_normal
+
+    from non_local_detector import continuous_state_transitions as cst
+
+    rng = np.random.default_rng(0)
+    centers = rng.uniform(0.0, 12.0, size=(23, n_dims))
+    env = set_place_grid(Environment(), place_bin_centers=centers)
+    expected = np.stack(
+        [
+            multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
+                centers
+            )
+            for center in centers
+        ]
+    )
+    # Blocks of 2 rows: several blocks and a ragged last one.
+    monkeypatch.setattr(cst, "_RANDOM_WALK_BLOCK_ENTRIES", 2 * len(centers))
+
+    actual = cst._euclidean_random_walk(env, movement_mean, movement_var)
+
+    if exact:
+        np.testing.assert_array_equal(actual, expected)
+    else:
+        np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=0.0)
+
+
+def test_euclidean_random_walk_accepts_flat_1d_centers():
+    """Bin centers of shape (n_bins,) are one-dimensional positions, as for
+    the per-row scipy build."""
+    from scipy.stats import multivariate_normal
+
+    from non_local_detector import continuous_state_transitions as cst
+
+    centers = np.linspace(0.0, 9.0, 10)
+    env = set_place_grid(Environment(), place_bin_centers=centers)
+    expected = np.stack(
+        [multivariate_normal(mean=c + 0.5, cov=2.0).pdf(centers) for c in centers]
+    )
+
+    actual = cst._euclidean_random_walk(env, 0.5, 2.0)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_random_walk_on_one_bin_grid_is_identity():
+    """A one-bin grid's Euclidean random walk is the (1, 1) matrix [[1]]:
+    ``make_state_transition`` masks and normalizes it as a square matrix."""
+    env = Environment(place_bin_size=100.0, position_range=((0.0, 30.0),))
+    env = env.fit_place_grid(np.linspace(0.0, 30.0, 11)[:, None])
+    assert env.place_bin_centers_.shape == (1, 1)
+
+    transition = RandomWalk().make_state_transition([env])
+
+    np.testing.assert_array_equal(transition, [[1.0]])
+
+
+@pytest.mark.parametrize(("movement_mean", "movement_var"), [(0.0, 6.0), (1.5, 0.5)])
+def test_track_graph_random_walk_matches_scipy_per_pair(
+    monkeypatch, movement_mean, movement_var
+):
+    """The blocked track-graph build is bit-identical to scipy's density at
+    each pair's graph distance, with 0 for bins off the track (the gaps that
+    edge_spacing leaves)."""
+    import networkx as nx
+    from scipy.stats import multivariate_normal
+
+    from non_local_detector import continuous_state_transitions as cst
+
+    positions = {0: (0.0, 0.0), 1: (0.0, 20.0), 2: (-15.0, 35.0), 3: (15.0, 35.0)}
+    edges = [(0, 1), (1, 2), (1, 3)]
+    graph = nx.Graph()
+    for node, position in positions.items():
+        graph.add_node(node, pos=position)
+    for edge_id, (node1, node2) in enumerate(edges):
+        length = np.linalg.norm(np.subtract(positions[node1], positions[node2]))
+        graph.add_edge(node1, node2, distance=float(length), edge_id=edge_id)
+    env = Environment(
+        place_bin_size=2.0, track_graph=graph, edge_order=edges, edge_spacing=5.0
+    ).fit_place_grid()
+    nodes = np.asarray(env.place_bin_centers_nodes_df_.node_id)
+    distances = env.distance_between_nodes_
+    assert np.any(nodes == -1)  # bins off the track
+    gaussian = multivariate_normal(mean=movement_mean, cov=movement_var)
+    expected = np.zeros((len(nodes), len(nodes)))
+    for i, node1 in enumerate(nodes):
+        for j, node2 in enumerate(nodes):
+            if node1 in distances and node2 in distances[node1]:
+                expected[i, j] = gaussian.pdf(distances[node1][node2])
+    # Blocks of 3 rows: several blocks and a ragged last one.
+    monkeypatch.setattr(cst, "_RANDOM_WALK_BLOCK_ENTRIES", 3 * len(nodes))
+
+    actual = cst._random_walk_on_track_graph(
+        env.place_bin_centers_, movement_mean, movement_var, nodes, distances
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_random_walk_invalid_direction_raises_at_construction():
     """An invalid direction is rejected when the RandomWalk is made, not
     only when its matrix is built."""

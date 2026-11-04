@@ -59,6 +59,20 @@ def _state(obj):
     return dict(getattr(obj, "__dict__", {}))
 
 
+def _assert_distance_dicts(a, b, where):
+    """Track-graph distances by content: the connected pairs and their values.
+
+    The key order of these dicts is the order a shortest-path solver
+    finalized the nodes in, and a distance's scalar type (``int`` 0 or a
+    NumPy or Python float) follows its arithmetic. Neither is state: every
+    reader looks a distance up by its pair of nodes.
+    """
+    assert isinstance(b, dict), where
+    assert a.keys() == b.keys(), where
+    for node, distances in a.items():
+        assert distances == b[node], (where, node)
+
+
 def assert_same(a, b, where="detector"):
     """Assert ``a`` and ``b`` hold the same values, recursively."""
     if isinstance(a, (np.ndarray, jax.Array)) and not hasattr(a, "design_info"):
@@ -76,7 +90,15 @@ def assert_same(a, b, where="detector"):
             assert_same(a._place_grid, b._place_grid, f"{where}.place_grid_")
     elif isinstance(a, PlaceGrid):
         for field in dataclasses.fields(PlaceGrid):
-            if field.name != "configuration":
+            if field.name == "distance_between_nodes" and isinstance(
+                a.distance_between_nodes, dict
+            ):
+                _assert_distance_dicts(
+                    a.distance_between_nodes,
+                    b.distance_between_nodes,
+                    f"{where}.{field.name}",
+                )
+            elif field.name != "configuration":
                 assert_same(
                     getattr(a, field.name),
                     getattr(b, field.name),

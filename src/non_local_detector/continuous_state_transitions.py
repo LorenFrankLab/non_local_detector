@@ -183,12 +183,19 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
     return np.cov(np.diff(position, axis=0), rowvar=False)
 
 
+# Entries of a random-walk transition evaluated per block of rows by
+# ``_random_walk_on_track_graph`` and ``_euclidean_random_walk``: each
+# temporary is 64 Ki float64 (512 KiB), so a block stays in cache and the
+# build's transient memory is a few megabytes.
+_RANDOM_WALK_BLOCK_ENTRIES = 2**16
+
+
 def _random_walk_on_track_graph(
     place_bin_centers: np.ndarray,
     movement_mean: float,
     movement_var: float,
     place_bin_center_ind_to_node: np.ndarray,
-    distance_between_nodes: dict[int, dict[int, float]] | LazyGraphDistances,
+    distance_between_nodes: dict[int, dict[int, float]],
 ) -> np.ndarray:
     """Estimate the random walk probabilities from the track graph topology.
 
@@ -211,20 +218,33 @@ def _random_walk_on_track_graph(
     -------
     random_walk : np.ndarray, shape (n_position_bins, n_position_bins)
         Transition probabilities between place bins based on graph distance.
+        Pairs without a distance (bins off the track, or nodes not connected)
+        are 0.
+
+    Notes
+    -----
+    The graph distances are gathered and their Gaussian density evaluated
+    in blocks of rows, with one ``scipy.stats.multivariate_normal``; the
+    result is bit-identical to evaluating its ``pdf`` at each distance.
     """
-    state_transition = np.zeros((place_bin_centers.size, place_bin_centers.size))
+    n_bins = place_bin_centers.size
+    nodes = list(place_bin_center_ind_to_node)
+    state_transition = np.zeros((n_bins, n_bins))
     gaussian = multivariate_normal(mean=movement_mean, cov=movement_var)
 
-    for bin_ind1, node1 in enumerate(place_bin_center_ind_to_node):
-        for bin_ind2, node2 in enumerate(place_bin_center_ind_to_node):
-            try:
-                state_transition[bin_ind1, bin_ind2] = gaussian.pdf(
-                    distance_between_nodes[node1][node2]
-                )
-            except KeyError:
-                # bins not on track interior will be -1 and not in distance
-                # between nodes
-                continue
+    rows_per_block = max(1, _RANDOM_WALK_BLOCK_ENTRIES // max(n_bins, 1))
+    for start in range(0, n_bins, rows_per_block):
+        block_nodes = nodes[start : start + rows_per_block]
+        distance = np.full((len(block_nodes), n_bins), np.nan)
+        for row, node in enumerate(block_nodes):
+            # Bins off the track (node -1) have no distances.
+            node_distances = distance_between_nodes.get(node)
+            if node_distances is not None:
+                distance[row] = [node_distances.get(other, np.nan) for other in nodes]
+        has_distance = ~np.isnan(distance)
+        if np.any(has_distance):
+            block = state_transition[start : start + len(block_nodes)]
+            block[has_distance] = gaussian.pdf(distance[has_distance])
 
     return state_transition
 
@@ -237,7 +257,8 @@ def _euclidean_random_walk(
     Parameters
     ----------
     environment : Environment
-        Environment whose ``place_bin_centers_`` define the bins.
+        Environment whose ``place_bin_centers_`` define the bins, shape
+        (n_position_bins, n_position_dims), or (n_position_bins,) for 1-D.
     movement_mean : float
         Mean displacement added to each bin center.
     movement_var : float
@@ -246,19 +267,65 @@ def _euclidean_random_walk(
     Returns
     -------
     transition : np.ndarray, shape (n_position_bins, n_position_bins)
+        Row ``i`` is the density of ``N(center_i + movement_mean,
+        movement_var)`` at every bin center. Square even for one bin, which
+        a row-by-row scipy build squeezed to shape (1,).
 
+    Notes
+    -----
+    The covariance is shared by every row, so it is validated and decomposed
+    once by ``scipy.stats.multivariate_normal``, and the log density
+    ``-0.5 * (rank * log(2 pi) + log_pdet + |d @ U|^2)`` of every
+    displacement ``d = center_j - (center_i + movement_mean)`` is evaluated
+    with scipy's whitening matrix ``U``, one coordinate at a time over blocks
+    of rows. With a scalar or diagonal covariance (``U`` diagonal, so the
+    products it skips are exact zeros) every operation rounds as scipy's
+    does, and the result is bit-identical to evaluating
+    ``multivariate_normal(center_i + movement_mean, movement_var).pdf`` row
+    by row; with a full covariance the whitening's sums of products round
+    differently from scipy's matrix product, a relative difference of about
+    ``eps * |d @ U|^2``.
     """
-    place_bin_centers = environment.place_bin_centers_
+    place_bin_centers = np.asarray(environment.place_bin_centers_, dtype=float)
+    if place_bin_centers.ndim == 1:
+        place_bin_centers = place_bin_centers[:, np.newaxis]
+    n_bins = len(place_bin_centers)
+    sources = place_bin_centers + movement_mean
+    n_dims = sources.shape[1]
+    covariance = multivariate_normal(mean=np.zeros(n_dims), cov=movement_var).cov_object
+    whitening = covariance.whiten(np.eye(n_dims))  # (n_dims, n_dims)
+    log_normalizer = covariance.rank * np.log(2 * np.pi) + covariance.log_pdet
+    destinations = [
+        np.ascontiguousarray(place_bin_centers[:, dim]) for dim in range(n_dims)
+    ]
 
-    return np.stack(
-        [
-            multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
-                place_bin_centers
-            )
-            for center in place_bin_centers
-        ],
-        axis=0,
-    )
+    transition = np.empty((n_bins, n_bins))
+    rows_per_block = max(1, _RANDOM_WALK_BLOCK_ENTRIES // max(n_bins, 1))
+    for start in range(0, n_bins, rows_per_block):
+        rows = slice(start, start + rows_per_block)
+        displacement = [
+            destinations[dim][np.newaxis] - sources[rows, dim, np.newaxis]
+            for dim in range(n_dims)
+        ]
+        block = transition[rows]  # a view: filled in place
+        for out_dim in range(n_dims):
+            # Zero entries of U add exact zeros to the sum; skip them.
+            terms = [
+                displacement[dim] * whitening[dim, out_dim]
+                for dim in range(n_dims)
+                if whitening[dim, out_dim] != 0
+            ]
+            whitened = terms[0]
+            for term in terms[1:]:
+                whitened += term
+            if out_dim == 0:
+                np.square(whitened, out=block)
+            else:
+                block += np.square(whitened, out=whitened)
+        block += log_normalizer
+        block *= -0.5
+        np.exp(block, out=block)
+    return transition
 
 
 class _DropsLegacyEnvironment:
@@ -554,10 +621,8 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
             self.movement_mean,
             self.movement_var,
             place_bin_center_ind_to_node,
-            cast(
-                dict[int, dict[int, float]] | LazyGraphDistances,
-                environment.distance_between_nodes_,
-            ),
+            # A track graph's distances are a dict of dicts (get_track_grid).
+            cast(dict[int, dict[int, float]], environment.distance_between_nodes_),
         )
 
 

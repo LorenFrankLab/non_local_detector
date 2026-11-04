@@ -60,6 +60,7 @@ import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
+from itertools import compress
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -75,6 +76,8 @@ if TYPE_CHECKING:
     import jax
 from scipy import ndimage
 from scipy.interpolate import interp1d
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import dijkstra
 from track_linearization import (  # type: ignore[import-untyped]
     get_linearized_position,
     plot_graph_as_1D,
@@ -2529,6 +2532,81 @@ def extract_bin_info_from_track_graph(
     )
 
 
+# Distances solved per block of source rows by ``_all_pairs_distances``:
+# 1 Mi float64 (8 MiB), so the dense block stays small beside the dicts.
+_DISTANCE_BLOCK_ENTRIES = 2**20
+
+
+def _all_pairs_distances(graph: nx.Graph) -> dict[Any, dict[Any, float]]:
+    """Shortest-path distance between every pair of connected nodes.
+
+    The values of ``networkx.all_pairs_dijkstra_path_length(graph,
+    weight="distance")``, computed by SciPy's compiled Dijkstra.
+
+    Parameters
+    ----------
+    graph : networkx.Graph
+        Graph whose edges have a ``distance`` attribute (1 if missing, as in
+        NetworkX). Of parallel edges, the shortest counts.
+
+    Returns
+    -------
+    distance_between_nodes : dict of dict
+        ``distance_between_nodes[node1][node2]`` is the distance from
+        ``node1`` to ``node2``; nodes that ``node1`` cannot reach are absent.
+
+    Notes
+    -----
+    Sources are solved in blocks of rows, each turned into dicts before the
+    next, so only one block of ``_DISTANCE_BLOCK_ENTRIES`` distances is
+    dense at a time.
+    """
+    nodes = list(graph.nodes)
+    n_nodes = len(nodes)
+    if n_nodes == 0:
+        return {}
+    index = {node: ind for ind, node in enumerate(nodes)}
+    edges = list(graph.edges(data="distance", default=1.0))
+    weights = np.asarray([edge[-1] for edge in edges], dtype=float)
+    sources = np.asarray([index[edge[0]] for edge in edges], dtype=np.intp)
+    targets = np.asarray([index[edge[1]] for edge in edges], dtype=np.intp)
+    if graph.is_multigraph():
+        # csr_matrix would add parallel edges; keep the shortest of each pair
+        # (in either orientation for an undirected graph).
+        if not graph.is_directed():
+            sources, targets = (
+                np.minimum(sources, targets),
+                np.maximum(sources, targets),
+            )
+        order = np.lexsort((weights, targets, sources))
+        sources, targets, weights = sources[order], targets[order], weights[order]
+        first = np.ones(len(weights), dtype=bool)
+        first[1:] = (sources[1:] != sources[:-1]) | (targets[1:] != targets[:-1])
+        sources, targets, weights = sources[first], targets[first], weights[first]
+    # Explicit zeros are kept: zero-distance edges join the original nodes to
+    # the added bin nodes.
+    adjacency = csr_matrix((weights, (sources, targets)), shape=(n_nodes, n_nodes))
+
+    distance_between_nodes = {}
+    rows_per_block = max(1, _DISTANCE_BLOCK_ENTRIES // n_nodes)
+    for start in range(0, n_nodes, rows_per_block):
+        block = dijkstra(
+            adjacency,
+            directed=graph.is_directed(),
+            indices=np.arange(start, min(start + rows_per_block, n_nodes)),
+        )
+        for node, row in zip(nodes[start : start + rows_per_block], block, strict=True):
+            reachable = np.isfinite(row)
+            distance_between_nodes[node] = dict(
+                zip(nodes, row.tolist(), strict=True)
+                if reachable.all()
+                else zip(
+                    compress(nodes, reachable), row[reachable].tolist(), strict=True
+                )
+            )
+    return distance_between_nodes
+
+
 def get_track_grid(
     track_graph: nx.Graph,
     edge_order: list[tuple[Any, ...]],
@@ -2623,11 +2701,7 @@ def get_track_grid(
     place_bin_centers = get_centers(place_bin_edges)
 
     # Compute distance between nodes
-    distance_between_nodes = dict(
-        nx.all_pairs_dijkstra_path_length(
-            track_graph_with_bin_centers_edges, weight="distance"
-        )
-    )
+    distance_between_nodes = _all_pairs_distances(track_graph_with_bin_centers_edges)
 
     # Figure out which points are on the track and not just gaps
     change_edge_ind = np.nonzero(
