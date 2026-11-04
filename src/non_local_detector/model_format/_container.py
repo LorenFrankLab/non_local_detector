@@ -72,13 +72,12 @@ class StoredModel:
             msg = f"The saved model refers to {member!r}, which its manifest does not list"
             raise DataError(msg, hint="The file is corrupt or was edited.")
         data = self._members.get(member)
-        if data is None:
-            assert self._read_member is not None
-            try:
+        if data is None and self._read_member is not None:
+            with contextlib.suppress(KeyError):
                 data = self._read_member(member)
-            except KeyError:
-                msg = f"The saved model is missing its array {member!r}"
-                raise DataError(msg, hint="The file is corrupt or truncated.") from None
+        if data is None:
+            msg = f"The saved model is missing its array {member!r}"
+            raise DataError(msg, hint="The file is corrupt or truncated.")
         if hashlib.sha256(data).hexdigest() != entry["sha256"]:
             msg = f"The array {member!r} of the saved model does not match its checksum"
             raise DataError(
