@@ -34,7 +34,7 @@ from non_local_detector.observation_models import ObservationModel
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
 # Fitted before rates were recorded in Hz: refused at decode.
-LEGACY_VERSIONS = ("v0.6.0", "v0.6.9", "main-84259d49")
+LEGACY_VERSIONS = ("v0.5.0", "v0.5.12", "v0.5.13", "v0.6.0", "v0.6.9", "main-84259d49")
 VERSIONS = (*LEGACY_VERSIONS, "main-66047901", "main-d5f85823")
 MODELS = [
     (version, path.name.removesuffix("_model.pkl"))
@@ -187,6 +187,14 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
             place_fields = np.asarray(model.encoding_model_[key]["place_fields"])
             order = np.argsort(np.nanargmax(place_fields, axis=1).squeeze())
             assert sorted(order) == list(range(place_fields.shape[0]))
+
+
+def test_random_walk_row_with_the_removed_diffusion_option_is_refused():
+    """Rows up to 0.5.12 store ``use_diffusion``; only its default rebuilds,
+    because the diffusion random walk it selected no longer exists."""
+    assert cst.RandomWalk(use_diffusion=False) == cst.RandomWalk()
+    with pytest.raises(ValidationError, match="use_diffusion"):
+        cst.RandomWalk(use_diffusion=True)
 
 
 @pytest.mark.parametrize(("version", "filename"), RESULTS)
