@@ -1817,6 +1817,8 @@ class _DetectorBase(
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
         self._invalidate_stored_log_likelihood()  # stale after a refit
+        # A refit replaces every structure a loaded detector rebuilt.
+        self.__dict__.pop("_rebuild_check_", None)
         self.initialize_environments(
             position=position,
             environment_labels=environment_labels,

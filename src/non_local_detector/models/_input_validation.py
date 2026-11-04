@@ -1027,6 +1027,10 @@ class _InputValidationMixin:
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."
             raise ValidationError(msg)
+        # A loaded detector's rebuilt structures must match the saved ones.
+        rebuild_check = self.__dict__.get("_rebuild_check_")
+        if rebuild_check is not None:
+            rebuild_check.verify(self)
         if (
             getattr(self, "time_contract_", None) != _TIME_CONTRACT
             or not hasattr(self, "transition_time_bin_width_")

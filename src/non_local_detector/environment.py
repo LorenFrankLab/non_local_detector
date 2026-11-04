@@ -69,7 +69,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 if TYPE_CHECKING:
     import jax
@@ -1229,6 +1229,97 @@ class Environment:
         self.clear_cache()
         return self
 
+    def fit_place_grid_from_edges(
+        self,
+        edges: Sequence[ArrayLike],
+        is_track_interior: ArrayLike | None = None,
+        *,
+        infer_track_interior: bool | None = False,
+        compute_all_pairs_distances: bool = True,
+        max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
+    ) -> "Environment":
+        """Fit the grid of an environment without a track graph from its bins.
+
+        Rebuilds the grid :meth:`fit_place_grid` fitted, from the bin edges
+        and interior mask it chose (``edges_`` and ``is_track_interior_``),
+        without the position data. A saved model stores these instead of the
+        grid; the bin centers, boundary, bin graph and distances follow from
+        them as they do in :meth:`fit_place_grid`.
+
+        Parameters
+        ----------
+        edges : sequence of array_like
+            Bin edges of each dimension, each strictly increasing, shape
+            (n_bins_d + 1,). For more than one dimension they include the
+            boundary bins, as ``edges_`` does.
+        is_track_interior : array_like of bool, shape (n_bins_1, ..., n_bins_d), optional
+            Which bins are part of the track interior; by default every bin.
+        infer_track_interior : bool or None, optional
+            Recorded as ``infer_track_interior_``, the argument the original
+            fit used; the mask is never inferred here. By default False.
+        compute_all_pairs_distances : bool, optional
+            See :meth:`fit_place_grid`. By default True.
+        max_dense_distance_bytes : int, optional
+            See :meth:`fit_place_grid`.
+
+        Returns
+        -------
+        self : Environment
+            The fitted environment, with a new ``place_grid_``.
+
+        Raises
+        ------
+        ValidationError
+            If the environment has a ``track_graph`` (whose grid
+            :meth:`fit_place_grid` builds from the graph alone), an edge array
+            is not one-dimensional, finite and strictly increasing, or the
+            mask is not boolean with one entry per bin.
+        """
+        if self.track_graph is not None:
+            msg = "fit_place_grid_from_edges needs an environment without a track_graph"
+            raise ValidationError(
+                msg,
+                hint="Call fit_place_grid() instead: a track graph defines its grid.",
+            )
+        bin_edges = [np.array(edge, dtype=float) for edge in edges]
+        for dim, edge in enumerate(bin_edges):
+            if (
+                edge.ndim != 1
+                or edge.size < 2
+                or not np.all(np.isfinite(edge))
+                or np.any(np.diff(edge) <= 0)
+            ):
+                msg = f"edges[{dim}] must be finite and strictly increasing"
+                raise ValidationError(
+                    msg,
+                    expected="a one-dimensional array of at least two edges",
+                    got=f"shape {edge.shape}",
+                )
+        place_bin_edges, place_bin_centers, centers_shape = _grid_from_edges(bin_edges)
+        if is_track_interior is None:
+            interior = np.ones(centers_shape, dtype=bool)
+        else:
+            interior = np.array(is_track_interior)
+            if interior.dtype != np.bool_ or interior.shape != centers_shape:
+                msg = "is_track_interior must be a boolean mask of the grid's shape"
+                raise ValidationError(
+                    msg,
+                    expected=f"bool, shape {centers_shape}",
+                    got=f"{interior.dtype}, shape {interior.shape}",
+                )
+        self._place_grid = self._cartesian_place_grid(
+            bin_edges,
+            place_bin_edges,
+            place_bin_centers,
+            centers_shape,
+            interior,
+            infer_track_interior=infer_track_interior,
+            compute_all_pairs_distances=compute_all_pairs_distances,
+            max_dense_distance_bytes=max_dense_distance_bytes,
+        )
+        self.clear_cache()
+        return self
+
     def _fit_cartesian_grid(
         self,
         position: np.ndarray,
@@ -1290,6 +1381,54 @@ class Environment:
         else:
             is_track_interior = np.ones(centers_shape, dtype=bool)
 
+        return self._cartesian_place_grid(
+            edges,
+            place_bin_edges,
+            place_bin_centers,
+            centers_shape,
+            is_track_interior,
+            infer_track_interior=infer_track_interior,
+            compute_all_pairs_distances=compute_all_pairs_distances,
+            max_dense_distance_bytes=max_dense_distance_bytes,
+        )
+
+    def _cartesian_place_grid(
+        self,
+        edges: Sequence[np.ndarray],
+        place_bin_edges: np.ndarray,
+        place_bin_centers: np.ndarray,
+        centers_shape: tuple[int, ...],
+        is_track_interior: np.ndarray,
+        *,
+        infer_track_interior: bool | None,
+        compute_all_pairs_distances: bool,
+        max_dense_distance_bytes: int,
+    ) -> PlaceGrid:
+        """Build the grid of an environment without a track graph from its bins.
+
+        Parameters
+        ----------
+        edges : sequence of np.ndarray
+            Bin edges of each dimension, each of shape (n_bins_d + 1,).
+        place_bin_edges : np.ndarray, shape (n_total_edges, n_dims)
+            Flattened bin edges of the grid.
+        place_bin_centers : np.ndarray, shape (n_bins, n_dims)
+            Flattened bin centers of the grid.
+        centers_shape : tuple[int, ...]
+            See :func:`get_grid`.
+        is_track_interior : np.ndarray of bool, shape ``centers_shape``
+            Which bins are part of the track interior.
+        infer_track_interior : bool or None
+            Recorded as ``infer_track_interior_``.
+        compute_all_pairs_distances : bool
+            See :meth:`fit_place_grid`.
+        max_dense_distance_bytes : int
+            See :meth:`fit_place_grid`.
+
+        Returns
+        -------
+        PlaceGrid
+        """
         is_track_boundary = (
             get_track_boundary(
                 is_track_interior,
@@ -2016,6 +2155,26 @@ def get_grid(
             )
             for edge in edges
         ]
+    return (edges, *_grid_from_edges(edges))
+
+
+def _grid_from_edges(
+    edges: Sequence[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
+    """Return the flattened bin edges and centers of the grid with these edges.
+
+    Parameters
+    ----------
+    edges : sequence of np.ndarray
+        Bin edges of each dimension, each of shape (n_bins_d + 1,).
+
+    Returns
+    -------
+    place_bin_edges : np.ndarray, shape (n_total_edges, n_position_dims)
+    place_bin_centers : np.ndarray, shape (n_total_bins, n_position_dims)
+    centers_shape : tuple[int, ...]
+        See :func:`get_grid`.
+    """
     mesh_edges = np.meshgrid(*edges, indexing="ij")
     place_bin_edges = np.stack([edge.ravel() for edge in mesh_edges], axis=1)
 
@@ -2023,7 +2182,7 @@ def get_grid(
     place_bin_centers = np.stack([center.ravel() for center in mesh_centers], axis=1)
     centers_shape = tuple([len(edge) - 1 for edge in edges])
 
-    return edges, place_bin_edges, place_bin_centers, centers_shape
+    return place_bin_edges, place_bin_centers, centers_shape
 
 
 def get_track_interior(

@@ -87,6 +87,16 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 - Name in `execution_settings` the fit parameters that only control how predict runs, such as block sizes, memory budgets and `disable_progress_bar`. The fit records them in the encoding model, and a detector passes predict the value its current algorithm params set, so they can change without refitting.
 - `tests/likelihoods/test_algorithm_contract.py` checks every registered algorithm against these rules.
 
+## Saved-model format
+
+`save_model` writes the format of `non_local_detector.model_format`, and every later release must read the files earlier ones wrote. The stored names are the format: the file names of the detector's fitted state (`_STORED` in `model_format/_detector.py`), the fields each saved class stores (`model_format/_builtins.py`) and the fixed `nld.` type names listed there.
+
+- Renaming or removing a stored name, or changing what a stored value means, needs a `FORMAT_VERSION` bump and an entry in `MIGRATIONS` that rewrites the stored documents and arrays of the previous version.
+- Adding an optional field needs no bump if the reader supplies its default when a file lacks it: give it in the type's `"defaults"` option in `model_format/_builtins.py` (or `state.get(name, default)` in a detector-state reader). A field missing without a default raises `DataError`.
+- Loading rebuilds environment grids, continuous transitions and covariate designs and requires them to match the saved fingerprints to a relative 1e-6. A change to that rebuilding code larger than 1e-6 relative locks out every saved model: it needs a format migration, or a changelog note that such models must be refit.
+- A new class that a detector's parameters or fitted state can hold must be listed in `model_format/_builtins.py` with its fields, or `save_model` refuses it. `tests/model_format` checks the listed fields against each dataclass.
+- Version 1 freezes at the first release that ships the format. Until then its schema may change without a migration. When it freezes, add one small golden file per detector family and format version to `tests/compat_data/`, with a test that loads and decodes each, as for the legacy pickles there.
+
 ## Changelog
 
 Add an entry under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for every user-visible change (new features, behavior changes, fixes, deprecations). Say what changed for users, and mark changes that alter results.

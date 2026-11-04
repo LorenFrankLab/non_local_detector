@@ -474,9 +474,10 @@ plt.show()
 # ## Save and load the results
 #
 # `save_results` writes the results to a netCDF file and `load_results` reads
-# them back, restoring `state_bins`. (The fitted decoder itself can be
-# pickled with `save_model` and `load_model`.) We use a temporary directory
-# here; in your analysis, use a path of your own.
+# them back, restoring `state_bins`. (The fitted decoder itself is saved
+# with `save_model` and `load_model`; see
+# [Saving and loading models](../../saving_models/).) We use a temporary
+# directory here; in your analysis, use a path of your own.
 
 # %%
 with tempfile.TemporaryDirectory() as directory:
