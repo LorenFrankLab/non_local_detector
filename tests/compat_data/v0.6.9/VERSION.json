@@ -1,0 +1,9 @@
+{
+ "non_local_detector": "0.6.9",
+ "python": "3.12.13",
+ "numpy": "2.1.3",
+ "pandas": "2.2.3",
+ "xarray": "2024.11.0",
+ "jax": "0.4.35",
+ "datajoint_round_trip": true
+}
