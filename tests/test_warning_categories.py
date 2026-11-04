@@ -46,29 +46,100 @@ def test_exported_from_the_package():
         assert category.__name__ in non_local_detector.__all__
 
 
+PACKAGE_CATEGORIES = {
+    "NonLocalDetectorWarning",
+    "DataQualityWarning",
+    "NumericalWarning",
+    "ParameterWarning",
+    "CompatibilityWarning",
+}
+
+
+def _warning_calls_without_package_category(source):
+    """Line numbers of warn calls whose category is not a package class.
+
+    Follows ``import warnings [as w]`` and ``from warnings import warn [as x]``,
+    for both ``warn`` and ``warn_explicit``. A missing category, or one that is
+    not a plain name or attribute of a package class, is flagged.
+    """
+    tree = ast.parse(source)
+    modules, functions = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules |= {a.asname or a.name for a in node.names if a.name == "warnings"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "warnings":
+            functions |= {
+                a.asname or a.name
+                for a in node.names
+                if a.name in {"warn", "warn_explicit"}
+            }
+    lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_warn = (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id in modules
+            and func.attr in {"warn", "warn_explicit"}
+        ) or (isinstance(func, ast.Name) and func.id in functions)
+        if not is_warn:
+            continue
+        category = node.args[1] if len(node.args) > 1 else None
+        for keyword in node.keywords:
+            if keyword.arg == "category":
+                category = keyword.value
+        name = (
+            category.id
+            if isinstance(category, ast.Name)
+            else category.attr
+            if isinstance(category, ast.Attribute)
+            else None
+        )
+        if name not in PACKAGE_CATEGORIES:
+            lines.append(node.lineno)
+    return lines
+
+
 def test_every_library_warning_has_a_package_category():
-    """No ``warnings.warn`` in ``src`` falls back to a builtin category."""
+    """No warning call in ``src`` uses a builtin or missing category."""
     source_dir = Path(non_local_detector.__file__).parent
-    builtin = {"UserWarning", "DeprecationWarning", "RuntimeWarning", None}
-    offenders = []
-    for path in source_dir.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "warn"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "warnings"
-            ):
-                continue
-            category = node.args[1] if len(node.args) > 1 else None
-            for keyword in node.keywords:
-                if keyword.arg == "category":
-                    category = keyword.value
-            name = category.id if isinstance(category, ast.Name) else None
-            if name in builtin:
-                offenders.append(f"{path.relative_to(source_dir)}:{node.lineno}")
+    offenders = [
+        f"{path.relative_to(source_dir)}:{line}"
+        for path in source_dir.rglob("*.py")
+        for line in _warning_calls_without_package_category(path.read_text())
+    ]
     assert not offenders, offenders
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "import warnings\nwarnings.warn('m')",
+        "import warnings\nwarnings.warn('m', UserWarning)",
+        "import warnings\nwarnings.warn('m', category=FutureWarning)",
+        "import warnings\nwarnings.warn('m', PendingDeprecationWarning)",
+        "import warnings\nwarnings.warn('m', ResourceWarning)",
+        "import warnings\nwarnings.warn('m', get_category())",
+        "from warnings import warn\nwarn('m', UserWarning)",
+        "from warnings import warn as w\nw('m')",
+        "import warnings as w\nw.warn('m', RuntimeWarning)",
+        "import warnings\nwarnings.warn_explicit('m', UserWarning, 'f', 1)",
+    ],
+)
+def test_category_scan_flags_non_package_categories(snippet):
+    assert _warning_calls_without_package_category(snippet) == [2]
+
+
+def test_category_scan_accepts_package_categories():
+    snippet = (
+        "import warnings as w\nfrom warnings import warn\n"
+        "w.warn('m', NumericalWarning)\n"
+        "warn('m', category=exceptions.DataQualityWarning)\n"
+        "w.warn_explicit('m', ParameterWarning, 'f', 1)\n"
+    )
+    assert _warning_calls_without_package_category(snippet) == []
 
 
 @pytest.fixture(scope="module")
