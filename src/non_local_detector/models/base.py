@@ -954,9 +954,12 @@ class _EMFinalEStep:
 
     With ``result_path``, ``stored`` is the lazily loaded store and the arrays
     are None; otherwise outputs that were not computed are None.
+    ``degenerate_indices`` lists the bins whose log likelihoods are ``-inf``
+    in every state bin, from the forward pass.
     """
 
     marginal_log_likelihood: float
+    degenerate_indices: np.ndarray
     stored: xr.Dataset | None = None
     acausal_posterior: Any = None
     acausal_state_probabilities: np.ndarray | None = None
@@ -3073,6 +3076,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
+        # Detectors saved after a prediction carry its degenerate bins, which
+        # decoding used to record on the detector; they describe that
+        # recording, not the model.
+        self.__dict__.pop("_degenerate_timesteps_", None)
         covariate_data = state.get("_discrete_transition_covariate_data_")
         if covariate_data is not None and (
             self.discrete_transition_design_matrix_ is None
@@ -4043,7 +4050,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             )
             _validate_covariate_time_length(predicted_transitions, time_centers)
         if inference_mode == "checkpointed":
-            return self._predict_checkpointed(
+            results, _ = self._predict_checkpointed(
                 time_edges=time_edges,
                 log_likelihood_args=(
                     position_time,
@@ -4061,6 +4068,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 max_read_bytes=max_read_bytes,
                 replay_cache_bytes=replay_cache_bytes,
             )
+            return results
 
         (
             acausal_posterior,
@@ -4366,6 +4374,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         causal_posterior : jax.Array, shape (n_time, n_state_bins)
         predictive_posterior : jax.Array, shape (n_time, n_state_bins)
         degenerate_indices : np.ndarray of int, shape (n_degenerate,)
+            Time indices whose log likelihoods are ``-inf`` in every state
+            bin. Found during the forward pass, so they are complete whether
+            or not the log likelihoods were cached.
 
         The three posteriors stay on the device: callers copy to the host only
         the ones they return or need there.
@@ -4452,12 +4463,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
                 host_outputs=False,
             )
-        # Degenerate (all-impossible) time indices are found during the
-        # forward pass, so they are reliable regardless of n_chunks/caching,
-        # unlike the returned log-likelihoods (which are None when uncached,
-        # e.g. for n_chunks > 1). Stored transiently for estimate_parameters
-        # to copy into the public degenerate_timesteps_ attribute.
-        self._degenerate_timesteps_ = np.asarray(result.degenerate_indices, dtype=int)
         return result
 
     def _checkpointed_likelihood(
@@ -4604,13 +4609,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         max_read_bytes: int,
         replay_cache_bytes: int | None,
         em_attrs: Callable[[float], dict[str, Any]] | None = None,
-    ) -> xr.Dataset:
+    ) -> tuple[xr.Dataset, np.ndarray]:
         """Decode with complete conditioning and bounded spatial working memory.
 
         ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
         ``em_attrs`` maps this pass's marginal log-likelihood to EM's
         attributes, which a result store keeps with the rest so that
         ``load_results`` returns them.
+
+        Returns
+        -------
+        results : xr.Dataset
+            The labelled results, lazily loaded from ``result_path`` when given.
+        degenerate_indices : np.ndarray of int, shape (n_degenerate,)
+            Recording rows whose log likelihoods are ``-inf`` in every state
+            bin, including rows outside ``selected_intervals``.
         """
         from non_local_detector.checkpointed_inference import (
             checkpointed_forward_backward,
@@ -4766,11 +4779,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             replay_cache_bytes=replay_cache_bytes,
             **transition_args,
         )
-        dataset = result.dataset
-        self._degenerate_timesteps_ = np.asarray(
+        degenerate_indices = np.asarray(
             result.diagnostics.get("degenerate_indices", []), dtype=int
         )
-        return label_checkpointed_result(dataset, metadata)
+        return label_checkpointed_result(result.dataset, metadata), degenerate_indices
 
     @contextmanager
     def _restore_state_on_error(self) -> Iterator[None]:
@@ -5192,12 +5204,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         final = self._em_final_e_step(settings, state)
         traces = state.traces(final.marginal_log_likelihood)
 
-        # The preceding final E-step's _predict recorded the degenerate
-        # (all-impossible) timesteps during its forward pass; expose them as a
-        # fitted attribute. Sourced from the forward-pass collector rather than
-        # the returned log-likelihoods, so it is reliable even when caching is
-        # disabled (n_chunks > 1), where the returned log-likelihoods are None.
-        self.degenerate_timesteps_ = self._degenerate_timesteps_
+        # The final E-step's degenerate (all-impossible) timesteps, from its
+        # forward pass rather than the returned log-likelihoods, so they are
+        # complete even when caching is disabled (n_chunks > 1), where the
+        # returned log-likelihoods are None.
+        self.degenerate_timesteps_ = final.degenerate_indices
 
         self._em_check_final_e_step(settings, state, traces["em_objectives"][-1])
 
@@ -5859,7 +5870,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         requested_outputs = settings.requested_outputs
         if settings.result_path is not None:
             em_attrs = settings.em_attrs
-            stored = self._predict_checkpointed(
+            stored, degenerate_indices = self._predict_checkpointed(
                 time_edges=settings.time_edges,
                 log_likelihood_args=settings.log_likelihood_args,
                 is_missing=settings.is_missing,
@@ -5878,6 +5889,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             )
             return _EMFinalEStep(
                 marginal_log_likelihood=float(stored.attrs["marginal_log_likelihood"]),
+                degenerate_indices=degenerate_indices,
                 stored=stored,
             )
         if settings.checkpointed:
@@ -5899,9 +5911,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 replay_cache_bytes=cast("int", settings.replay_cache_bytes),
             )
             values = {name: final.dataset[name].values for name in final.dataset}
-            self._degenerate_timesteps_ = final.diagnostics["degenerate_indices"]
             return _EMFinalEStep(
                 marginal_log_likelihood=final.marginal_log_likelihood,
+                degenerate_indices=final.diagnostics["degenerate_indices"],
                 acausal_posterior=values["acausal_posterior"],
                 acausal_state_probabilities=values["acausal_state_probabilities"],
                 causal_state_probabilities=values.get("causal_state_probabilities"),
@@ -5921,7 +5933,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             log_likelihood,
             causal_posterior,
             predictive_posterior,
-            _degenerate_indices,
+            degenerate_indices,
         ) = self._predict(
             time_edges=settings.time_edges,
             log_likelihood_args=settings.log_likelihood_args,
@@ -5940,6 +5952,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         )
         return _EMFinalEStep(
             marginal_log_likelihood=marginal_log_likelihood,
+            degenerate_indices=np.asarray(degenerate_indices, dtype=int),
             acausal_posterior=acausal_posterior,
             acausal_state_probabilities=acausal_state_probabilities,
             causal_state_probabilities=causal_state_probabilities,
