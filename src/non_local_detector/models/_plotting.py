@@ -23,6 +23,7 @@ from non_local_detector.discrete_state_transitions import (
     _refuse_untrusted_transition,
     centered_softmax_forward,
 )
+from non_local_detector.exceptions import ConfigurationError, ValidationError
 
 
 class _FittedDetector(Protocol):
@@ -77,7 +78,10 @@ class _PlottingMixin:
         ------
         ValidationError
             If the transition formula was read from a saved model file and
-            not trusted (see ``load_model``).
+            not trusted (see ``load_model``), or ``covariate_data`` is missing
+            for covariate-dependent transitions.
+        ConfigurationError
+            If the covariate-dependent transitions have no design matrix.
         """
         _refuse_untrusted_transition(
             self.discrete_transition_type, "plot the transitions"
@@ -146,14 +150,14 @@ class _PlottingMixin:
 
             if discrete_transition_design_matrix is None:
                 msg = "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
-                raise ValueError(msg)
+                raise ConfigurationError(msg)
 
             if covariate_data is None:
                 msg = (
                     "covariate_data is required to plot covariate-dependent "
                     "transitions, e.g. {'speed': np.linspace(0, 60, 100)}."
                 )
-                raise ValueError(msg)
+                raise ValidationError(msg)
             predict_matrix = _design_on(
                 discrete_transition_design_matrix, covariate_data
             )

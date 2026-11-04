@@ -10,6 +10,7 @@ import numpy as np
 import xarray as xr
 
 from non_local_detector._position_dims import get_position_dims
+from non_local_detector.exceptions import DataError
 from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
@@ -46,7 +47,7 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
 
     Raises
     ------
-    ValueError
+    DataError
         If no position dimension is present (``unstacked.sum([])`` would
         otherwise silently return the full per-bin array).
     """
@@ -58,7 +59,7 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
             f"acausal_posterior unstacked to dims {tuple(unstacked.dims)}. "
             "Expected a dim named 'position' or ending in '_position'."
         )
-        raise ValueError(msg)
+        raise DataError(msg)
     return cast("xr.DataArray", unstacked.sum(position_dims))
 
 

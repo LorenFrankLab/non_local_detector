@@ -169,9 +169,13 @@ def test_unknown_set_params_key_is_a_validation_error():
 
 @pytest.mark.unit
 def test_cont_frag_posterior_without_position_dim_is_a_data_error():
+    import pandas as pd
+
+    mindex = pd.MultiIndex.from_product([["a", "b"], [0, 1]], names=("state", "foo"))
+    mindex_coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
     results = xr.Dataset(
-        {"acausal_posterior": (("time", "state_bins"), np.ones((3, 2)) / 2)},
-        coords={"time": np.arange(3), "state_bins": np.arange(2)},
+        {"acausal_posterior": (("time", "state_bins"), np.full((3, 4), 0.25))},
+        coords={"time": np.arange(3), **mindex_coords},
     )
     with pytest.raises(DataError, match="no position dimension"):
         ContFragSortedSpikesClassifier.get_posterior(results)

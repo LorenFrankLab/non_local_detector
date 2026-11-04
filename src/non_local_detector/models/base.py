@@ -921,9 +921,8 @@ class _DetectorBase(
         Raises
         ------
         ValidationError
-            If the resulting parameters are invalid, as in the constructor.
-        ValueError
-            If a parameter name is not a constructor parameter.
+            If the resulting parameters are invalid, as in the constructor, or
+            a parameter name is not a constructor parameter.
         """
         if not params:
             return self
@@ -946,7 +945,7 @@ class _DetectorBase(
                 f"{type(self).__name__}. Valid parameters are: "
                 f"{sorted(current)!r}."
             )
-            raise ValueError(msg)
+            raise ValidationError(msg)
         if top_level:
             # Build a fresh detector first so a rejected value leaves ``self``
             # untouched.
@@ -2329,7 +2328,10 @@ class _DetectorBase(
                     "Cannot specify both return_outputs and deprecated "
                     "save_*_to_results flags. Use return_outputs only."
                 )
-                raise ValueError(msg)
+                raise ConfigurationError(
+                    msg,
+                    hint="Drop the save_*_to_results flags and pass return_outputs.",
+                )
             return_outputs = outputs_from_flags or None
 
         # Normalize return_outputs to canonical set

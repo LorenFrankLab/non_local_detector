@@ -540,7 +540,7 @@ def _normalize_frozen_discrete_transition_rows(
 
     Raises
     ------
-    ValueError
+    ValidationError
         If the input is an unknown string, has the wrong shape or dtype, or
         has out-of-range indices.
     """
@@ -551,7 +551,7 @@ def _normalize_frozen_discrete_transition_rows(
                 "frozen_discrete_transition_rows must be 'no_spike', row "
                 f"indices, a boolean mask or None, got {frozen_rows!r}"
             )
-            raise ValueError(msg)
+            raise ValidationError(msg)
         frozen_rows = np.asarray(is_no_spike_state, dtype=bool)
         return frozen_rows.copy() if frozen_rows.any() else None
     if frozen_rows is None:
@@ -565,26 +565,26 @@ def _normalize_frozen_discrete_transition_rows(
                 f"frozen_discrete_transition_rows boolean mask must have "
                 f"shape ({n_states},), got {arr.shape}"
             )
-            raise ValueError(msg)
+            raise ValidationError(msg)
         return arr.copy()
     if not np.issubdtype(arr.dtype, np.integer):
         msg = (
             f"frozen_discrete_transition_rows must be integer indices or "
             f"a boolean mask, got dtype {arr.dtype}"
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
     if arr.ndim != 1:
         msg = (
             f"frozen_discrete_transition_rows index array must be 1D, "
             f"got shape {arr.shape}"
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
     if np.any(arr < 0) or np.any(arr >= n_states):
         msg = (
             f"frozen_discrete_transition_rows indices must be in "
             f"[0, {n_states}), got {arr.tolist()}"
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
     mask = np.zeros(n_states, dtype=bool)
     mask[arr] = True
     return mask
@@ -604,7 +604,7 @@ def _validate_covariate_time_length(
 
     Raises
     ------
-    ValueError
+    ValidationError
         If the number of covariate time steps does not match decode time.
     """
     n_covariate_time = predicted_transitions.shape[0]
@@ -615,7 +615,7 @@ def _validate_covariate_time_length(
             f"decode time has {n_decode_time} time steps. "
             f"These must match."
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
 
 
 def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
