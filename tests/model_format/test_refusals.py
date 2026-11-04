@@ -230,3 +230,27 @@ def test_an_unchanged_rebuild_is_checked_once(saved, sorted_recording):
 
     assert check.verified
     assert loaded._rebuild_check_ is check
+
+
+def test_drift_in_any_transition_row_refuses_to_decode(
+    saved, sorted_recording, monkeypatch
+):
+    """Every source and destination bin of a block is fingerprinted: moving
+    the random walk of a single bin is refused."""
+    time, position, spike_times = sorted_recording
+    original = continuous_state_transitions._euclidean_random_walk
+
+    for row in range(2):
+
+        def drifted(environment, mean, var, row=row):
+            block = original(environment, mean, var).copy()
+            block[row] = np.roll(block[row], 5)
+            return block
+
+        monkeypatch.setattr(
+            continuous_state_transitions, "_euclidean_random_walk", drifted
+        )
+        loaded = nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+        with pytest.raises(ValidationError, match="continuous transition"):
+            decode(loaded, time, position, {"spike_times": spike_times})

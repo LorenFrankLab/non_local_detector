@@ -127,8 +127,6 @@ _REQUIRED = ("environments_", "encoding_model_", "continuous_state_transitions_"
 # platforms, but a changed formula does not pass.
 _REBUILD_RTOL = 1e-10
 _REBUILD_ATOL_PER_POINT = 1e-12
-# Source rows of each continuous transition block that are fingerprinted.
-_FINGERPRINT_ROWS = 8
 
 
 # --------------------------------------------------------------- fingerprints
@@ -160,33 +158,83 @@ def _environment_fingerprint(environment: Environment) -> np.ndarray:
     )
 
 
+def _fingerprint_weights(n: int) -> np.ndarray:
+    """Two fixed weight patterns over ``n`` bins, shape (n, 2): a ramp from 1
+    to 2 and the fractional parts of multiples of the golden ratio, plus 1.
+
+    The second is not a function of the first, so a change that keeps one
+    weighted sum cannot keep both.
+    """
+    index = np.arange(n, dtype=np.float64)
+    ramp = np.linspace(1.0, 2.0, n)
+    golden = 1.0 + np.mod(index * 0.6180339887498949, 1.0)
+    return np.stack([ramp, golden], axis=1)
+
+
+def _block_summary(block: Any, n_rows: int, n_columns: int) -> np.ndarray:
+    """Weighted sums over every row and every column of a transition block.
+
+    ``block @ W_columns`` (each row's two weighted sums) followed by
+    ``W_rows.T @ block`` (each column's), raveled. ``block`` is a dense array,
+    or a structured operator block whose ``forward``/``backward`` products
+    are evaluated in float64, so nothing larger than the block's own
+    operator is built.
+    """
+    row_weights = _fingerprint_weights(n_rows)
+    column_weights = _fingerprint_weights(n_columns)
+    if isinstance(block, np.ndarray):
+        values = np.asarray(block, dtype=np.float64)
+        by_row = values @ column_weights
+        by_column = row_weights.T @ values
+    else:
+        import jax
+        import jax.numpy as jnp
+
+        from non_local_detector.discrete_state_transitions import _float64_jax
+
+        with _float64_jax(), jax.default_matmul_precision("highest"):
+            by_row = np.stack(
+                [
+                    np.asarray(block.backward(jnp.asarray(column_weights[:, k])))
+                    for k in range(2)
+                ],
+                axis=1,
+            )
+            by_column = np.stack(
+                [
+                    np.asarray(block.forward(jnp.asarray(row_weights[:, k])))
+                    for k in range(2)
+                ]
+            )
+    return np.concatenate([by_row.ravel(), by_column.ravel()]).astype(np.float64)
+
+
 def _transition_fingerprints(
     detector: "_DetectorBase", stored_blocks: Mapping[tuple[int, int], Any]
 ) -> list[Any]:
     """``[from_state, to_state, summary]`` of each rebuilt continuous block.
 
-    The summary covers up to ``_FINGERPRINT_ROWS`` evenly spaced source rows of
-    the block: each row's ramp-weighted sum and sum of squares, read through
-    the transition's entries so a structured operator is covered without
-    building the dense matrix.
+    The summary (``_block_summary``) weights every row and every column, so
+    a change to any entry shows. It reads the dense matrix's block, or the
+    structured operator's block through its products.
     """
     transitions = detector.continuous_state_transitions_
+    operator = getattr(transitions, "operator", None)
     state_ind = np.asarray(detector.state_ind_)
     n_states = int(detector.n_discrete_states_)
     fingerprints = []
     for source in range(n_states):
         rows = np.flatnonzero(state_ind == source)
-        take = np.unique(
-            np.round(np.linspace(0, len(rows) - 1, min(_FINGERPRINT_ROWS, len(rows))))
-        ).astype(int)
-        rows = rows[take]
         for target in range(n_states):
             if (source, target) in stored_blocks:
                 continue
             columns = np.flatnonzero(state_ind == target)
-            block = np.asarray(transitions[np.ix_(rows, columns)], dtype=np.float64)
-            ramp = np.linspace(1.0, 2.0, len(columns))
-            summary = np.stack([block @ ramp, np.sum(block**2, axis=1)])
+            block = (
+                np.asarray(transitions[np.ix_(rows, columns)])
+                if operator is None
+                else operator.blocks[source][target]
+            )
+            summary = _block_summary(block, len(rows), len(columns))
             fingerprints.append([source, target, summary])
     return fingerprints
 
@@ -259,7 +307,7 @@ class _RebuildCheck:
             rebuilt["continuous_transitions"],
             strict=True,
         ):
-            why = _mismatch(before, after, np.asarray(before).size)
+            why = _mismatch(before, after, max(detector.bin_sizes_[[source, target]]))
             if why is not None:
                 problems.append(
                     f"continuous transition from state {source} to {target} ({why})"
