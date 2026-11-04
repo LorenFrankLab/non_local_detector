@@ -26,7 +26,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.likelihoods.common import resolve_row_slice
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
@@ -1032,10 +1032,18 @@ class _InputValidationMixin:
         Public decoding methods call this once, before any work. Subclasses
         extend it with their own fitted state (the clusterless mark
         reference); a detector without an encoding model must override it.
+
+        Raises
+        ------
+        NotFittedError
+            If the detector has no encoding model yet.
+        ValidationError
+            If the transition formula is untrusted, the encoding units are
+            unknown, or the saved model no longer rebuilds as saved.
         """
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."
-            raise ValidationError(msg)
+            raise NotFittedError(msg)
         _refuse_untrusted_transition(self.discrete_transition_type, "decode")
         # A loaded detector's rebuilt structures must match the saved ones.
         rebuild_check = self.__dict__.get("_rebuild_check_")

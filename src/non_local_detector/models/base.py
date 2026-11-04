@@ -67,7 +67,9 @@ from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import (
     CompatibilityWarning,
+    ConfigurationError,
     DataQualityWarning,
+    NotFittedError,
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
@@ -1696,9 +1698,10 @@ class _DetectorBase(
 
         Raises
         ------
-        ValueError
-            If the transitions do not depend on covariates, or were not
-            estimated by EM (no covariance yet).
+        ConfigurationError
+            If the transitions do not depend on covariates.
+        NotFittedError
+            If EM has not estimated the transitions (no covariance yet).
         ValidationError
             If the transition formula was read from a saved model file and
             not trusted (see ``load_model``).
@@ -1707,19 +1710,23 @@ class _DetectorBase(
             self.discrete_transition_type, "compute transition intervals"
         )
         if self.discrete_transition_design_matrix_ is None:
-            msg = (
-                "The discrete transitions do not depend on covariates; use a "
-                "DiscreteNonStationaryCustom or DiscreteNonStationaryDiagonal "
-                "transition type."
+            msg = "The discrete transitions do not depend on covariates."
+            raise ConfigurationError(
+                msg,
+                hint=(
+                    "Use a DiscreteNonStationaryCustom or "
+                    "DiscreteNonStationaryDiagonal transition type."
+                ),
             )
-            raise ValueError(msg)
         if self.discrete_transition_coefficient_covariance_ is None:
-            msg = (
-                "No transition covariance yet: it comes from an EM M-step, so "
-                "run estimate_parameters with estimate_discrete_transition=True "
-                "and max_iter >= 1."
+            msg = "No transition covariance yet: it comes from an EM M-step."
+            raise NotFittedError(
+                msg,
+                hint=(
+                    "Run estimate_parameters with "
+                    "estimate_discrete_transition=True and max_iter >= 1."
+                ),
             )
-            raise ValueError(msg)
         # The coefficients are set together with the design matrix.
         assert self.discrete_transition_coefficients_ is not None
         return _transition_intervals(
@@ -2358,7 +2365,14 @@ class _DetectorBase(
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
                 msg = "discrete_transition_coefficients_ is None but covariate data provided"
-                raise ValueError(msg)
+                raise ConfigurationError(
+                    msg,
+                    hint=(
+                        "The discrete transition does not depend on covariates; "
+                        "drop discrete_transition_covariate_data or use a "
+                        "covariate-dependent transition type."
+                    ),
+                )
             predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
