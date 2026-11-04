@@ -43,6 +43,7 @@ likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` calls it).
 """
 
 import warnings
+from collections.abc import Sequence
 from functools import partial
 from typing import Any, TypeAlias
 
@@ -69,6 +70,8 @@ from non_local_detector.exceptions import (
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     SpikeTimeOrder,
+    as_array,
+    as_arrays,
     environment_grid_fingerprint,
 )
 from non_local_detector.likelihoods.diffusion import (
@@ -827,11 +830,11 @@ class SortedSpikesMRFEncodingModel(SortedSpikesDiffusionEncodingModel):
 
 
 def fit_sorted_spikes_mrf_encoding_model(
-    position_time: np.ndarray,
-    position: np.ndarray,
-    spike_times: list[np.ndarray],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
     environment: Environment,
-    weights: np.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     rank: int | None = None,
     penalty: float | None = None,
@@ -857,15 +860,15 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     Parameters
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Sampling times for the position.
-    position : np.ndarray, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[np.ndarray]
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each neuron.
     environment : Environment
         The spatial environment (must be fitted).
-    weights : np.ndarray, shape (n_time_position,), optional
+    weights : array_like, shape (n_time_position,), optional
         Per-sample weights (e.g. posterior state probabilities during EM), by default
         None. If None, uniform weights are used.
     rank : int or None, optional
@@ -948,6 +951,8 @@ def fit_sorted_spikes_mrf_encoding_model(
         If the exposure is zero everywhere. Every place field is then
         ``RATE_EPS_HZ``.
     """
+    position_time = as_array(position_time)
+    spike_times = as_arrays(spike_times)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -1128,9 +1133,9 @@ def fit_sorted_spikes_mrf_encoding_model(
 
 @requires_time_edges
 def predict_sorted_spikes_mrf_log_likelihood(
-    position_time: np.ndarray,
-    position: np.ndarray,
-    spike_times: list[np.ndarray],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
     *,
     environment: Environment,
     occupancy: np.ndarray,
@@ -1172,11 +1177,13 @@ def predict_sorted_spikes_mrf_log_likelihood(
 
     Parameters
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Sampling times for the position.
-    position : np.ndarray, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[np.ndarray]
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each neuron.
     environment : Environment
         The spatial environment (must be fitted).

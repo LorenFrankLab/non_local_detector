@@ -13,6 +13,7 @@ electrode's expected count gains ``RATE_EPS_HZ``.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
 from typing import Any, cast
@@ -43,6 +44,7 @@ from non_local_detector.likelihoods.clusterless_spikes import (
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     SpikeTimeOrder,
+    as_arrays,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
@@ -53,6 +55,7 @@ from non_local_detector.likelihoods.common import (
     pad_rows,
     padded_spike_count,
     prepare_decode_rows,
+    require_position,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -598,12 +601,12 @@ class ClusterlessGMMEncodingModel(ClusterlessEncodingModel):
 
 
 def fit_clusterless_gmm_encoding_model(
-    position_time: jax.Array | np.ndarray,
-    position: jax.Array | np.ndarray,
-    spike_times: list[jax.Array],
-    spike_waveform_features: list[jax.Array],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     environment: Environment,
-    weights: jax.Array | np.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     gmm_components_occupancy: int = 32,
     gmm_components_joint: int = 64,
@@ -625,17 +628,17 @@ def fit_clusterless_gmm_encoding_model(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Time of each position sample, in seconds.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jax.Array]
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Encoding spike times per electrode.
-    spike_waveform_features : list[jax.Array]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Encoding spike waveform features per electrode.
     environment : Environment
         The spatial environment (must be fitted).
-    weights : jax.Array | None, shape (n_time_position,), default=None
+    weights : array_like, shape (n_time_position,), optional
         Per-sample weights (e.g. posterior state probabilities during EM). None means
         uniform. Weights the occupancy and joint (position+mark) GMMs (via
         ``sample_weight``), and the mean firing rate. GPI is the joint marginal.
@@ -707,6 +710,8 @@ def fit_clusterless_gmm_encoding_model(
         - encoding_exposure_seconds (weighted encoding occupancy time, seconds)
     """
     _validate_execution_settings(spike_block_size, bin_tile_size)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -919,10 +924,10 @@ def fit_clusterless_gmm_encoding_model(
 
 @requires_time_edges
 def predict_clusterless_gmm_log_likelihood(
-    position_time: jax.Array | np.ndarray,
-    position: jax.Array | np.ndarray,
-    spike_times: list[np.ndarray],
-    spike_waveform_features: list[jax.Array],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     *,
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
@@ -954,15 +959,17 @@ def predict_clusterless_gmm_log_likelihood(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Time of each position sample for the decoding period (used only by the
         local path; accepted for signature parity when ``is_local`` is False).
-    position : jax.Array, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Position samples during the decoding period (used only by the local
         path; accepted for signature parity when ``is_local`` is False).
-    spike_times : list[jax.Array]
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Decoding spike times per electrode.
-    spike_waveform_features : list[jax.Array]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Decoding spike waveform features per electrode.
     environment : Environment
         Fitted environment. Its grid must be the one the model was fit on
@@ -1054,6 +1061,8 @@ def predict_clusterless_gmm_log_likelihood(
     validate_encoding_contract(rate_units, environment, environment_grid)
     _validate_execution_settings(spike_block_size, bin_tile_size)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1083,6 +1092,9 @@ def predict_clusterless_gmm_log_likelihood(
     # the FULL-recording position on every call -- once per chunk under chunked
     # prediction -- for a non-local likelihood that never reads it.
     if is_local:
+        position_time, position = require_position(
+            position_time, position, "local clusterless GMM likelihood"
+        )
         local = compute_local_log_likelihood(
             time_edges=rows.time_edges,
             position_time=position_time,
@@ -1229,8 +1241,8 @@ def compute_local_log_likelihood(
     time_edges: np.ndarray,
     position_time: jax.Array | np.ndarray,
     position: jax.Array | np.ndarray,
-    spike_times: list[np.ndarray],
-    spike_waveform_features: list[jax.Array],
+    spike_times: Sequence[np.ndarray | jax.Array],
+    spike_waveform_features: Sequence[np.ndarray | jax.Array],
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
     gpi_models: list[GaussianMixtureModel | None],
@@ -1252,13 +1264,13 @@ def compute_local_log_likelihood(
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : np.ndarray or jax.Array, shape (n_time_position,)
         Timestamps for position samples.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+    position : np.ndarray or jax.Array, shape (n_time_position, n_position_dims)
         Position samples during decoding period.
-    spike_times : list[jax.Array]
+    spike_times : sequence of np.ndarray or jax.Array
         Spike times per electrode during decoding.
-    spike_waveform_features : list[jax.Array]
+    spike_waveform_features : sequence of np.ndarray or jax.Array
         Spike waveform features per electrode during decoding.
     environment : Environment
         Fitted environment; its track graph, if any, linearizes the position.

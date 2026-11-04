@@ -215,6 +215,38 @@ def test_registered_algorithm_meets_the_detector_contract(
         assert likelihood.shape == shape
 
 
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
+def test_predict_takes_no_position_when_not_local(monkeypatch, recording, algorithm):
+    """A detector that reads no position passes predict None for both position
+    arguments; the non-local likelihood needs neither, and the local one asks
+    for them by name."""
+    registry, _ = _registry(algorithm)
+    record = registry[algorithm]
+    decoder, spike_data = _fit(algorithm, recording)
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return record.predict(*args, **kwargs)
+
+    monkeypatch.setitem(registry, algorithm, replace(record, predict=spy))
+    time, *_ = recording
+    edges = time_edges_from_centers(time[_DECODE_SAMPLES])
+    decoder.predict(*spike_data, time_edges=edges, return_outputs="log_likelihood")
+
+    ((args, kwargs),) = calls
+    assert args[:2] == (None, None)
+    assert kwargs["is_local"] is False
+    with pytest.raises(ValidationError, match="position_time and position are None"):
+        record.predict(*args, **{**kwargs, "is_local": True})
+
+
 def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
     """A fit whose keys break each rule is caught, one message per rule."""
 

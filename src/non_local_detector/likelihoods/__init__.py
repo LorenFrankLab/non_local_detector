@@ -1,13 +1,16 @@
 """Likelihood algorithms and the registries that map algorithm names to them."""
 
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Generic, Protocol, TypeVar
 
+import jax
 import numpy as np
+from numpy.typing import ArrayLike
 
+from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     clusterless_diffusion,
@@ -35,7 +38,11 @@ from non_local_detector.likelihoods.clusterless_mark_glm import (
     fit_clusterless_mark_glm_encoding_model,
     predict_clusterless_mark_glm_log_likelihood,
 )
-from non_local_detector.likelihoods.encoding_model import EncodingModel
+from non_local_detector.likelihoods.encoding_model import (
+    ClusterlessEncodingModel,
+    EncodingModel,
+    SortedSpikesEncodingModel,
+)
 from non_local_detector.likelihoods.mark_reference import (
     fit_mark_references,
 )
@@ -64,18 +71,118 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
 )
 
 
+# The protocols type the data arguments a detector passes. The parameters after
+# them, the fit's own and, for predict, the encoding model's keys and the
+# detector's keywords, are left to mypy unchecked (``*args: Any, **kwargs:
+# Any``) and checked against each signature by the contract tests instead. A
+# detector passes predict its data positionally, and a fit's by keyword.
+class SortedSpikesFit(Protocol):
+    """The fit of a sorted-spikes algorithm, as a detector calls it.
+
+    A detector passes NumPy arrays and lists of them; a fit accepts any
+    array-likes.
+    """
+
+    def __call__(
+        self,
+        position_time: ArrayLike,
+        position: ArrayLike,
+        spike_times: Sequence[ArrayLike],
+        environment: Environment,
+        weights: ArrayLike | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> SortedSpikesEncodingModel:
+        """Call the fit; see the class docstring."""
+        ...
+
+
+class ClusterlessFit(Protocol):
+    """The fit of a clusterless algorithm, as a detector calls it.
+
+    A detector passes NumPy arrays and lists of them; a fit accepts any
+    array-likes.
+    """
+
+    def __call__(
+        self,
+        position_time: ArrayLike,
+        position: ArrayLike,
+        spike_times: Sequence[ArrayLike],
+        spike_waveform_features: Sequence[ArrayLike],
+        environment: Environment,
+        weights: ArrayLike | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> ClusterlessEncodingModel:
+        """Call the fit; see the class docstring."""
+        ...
+
+
+class SortedSpikesPredict(Protocol):
+    """The predict of a sorted-spikes algorithm, as a detector calls it.
+
+    ``position_time`` and ``position`` are None when no state reads position
+    (no Local state and no non-local position penalty); a detector then
+    calls predict with ``is_local=False`` only.
+    """
+
+    def __call__(
+        self,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
+        spike_times: Sequence[ArrayLike],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> jax.Array:
+        """Call the predict; see the class docstring."""
+        ...
+
+
+class ClusterlessPredict(Protocol):
+    """The predict of a clusterless algorithm, as a detector calls it.
+
+    ``position_time`` and ``position`` are None when no state reads position
+    (no Local state and no non-local position penalty); a detector then
+    calls predict with ``is_local=False`` only.
+    """
+
+    def __call__(
+        self,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
+        spike_times: Sequence[ArrayLike],
+        spike_waveform_features: Sequence[ArrayLike],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> jax.Array:
+        """Call the predict; see the class docstring."""
+        ...
+
+
+# A record's fit and predict protocols: ``SortedSpikesFit`` and
+# ``SortedSpikesPredict``, or ``ClusterlessFit`` and ``ClusterlessPredict``.
+FitT = TypeVar("FitT")
+PredictT = TypeVar("PredictT")
+
+
 @dataclass(frozen=True)
-class LikelihoodAlgorithm:
+class LikelihoodAlgorithm(Generic[FitT, PredictT]):
     """A registered likelihood algorithm: its fit, predict and defaults.
 
     Attributes
     ----------
-    fit : Callable[..., EncodingModel]
+    fit : SortedSpikesFit or ClusterlessFit
         Fits the encoding model and returns it as a dict of keyword arguments
         for ``predict``.
-    predict : Callable[..., jax.Array]
+    predict : SortedSpikesPredict or ClusterlessPredict
         Returns the log likelihood, float32 with shape
         ``(n_rows, n_interior_bins)``, or ``(n_rows, 1)`` when ``is_local``.
+        It must accept ``position_time=None`` and ``position=None`` when
+        ``is_local`` is False: a detector passes None for both when no state
+        reads position.
     encoding_model_type : type
         The ``TypedDict`` that annotates ``fit``'s return and describes the
         dict it returns. It derives from ``SortedSpikesEncodingModel`` or
@@ -103,13 +210,16 @@ class LikelihoodAlgorithm:
     with ``algorithm`` set to the registered name; must not hold a data or
     keyword name; must provide every named ``predict`` parameter the detector
     does not, so none is left at its default; and each of its keys must be a
-    ``predict`` parameter (predict takes no ``**kwargs``). Records pickle and
-    deep-copy. ``tests/likelihoods/test_algorithm_contract.py`` checks every
-    registered algorithm.
+    ``predict`` parameter (predict takes no ``**kwargs``). The data arguments
+    are NumPy arrays (lists of them for spike data), and a fit or predict
+    takes them as array-likes (see ``SortedSpikesFit`` and the other
+    protocols, which type them for mypy). Records pickle and deep-copy.
+    ``tests/likelihoods/test_algorithm_contract.py`` checks every registered
+    algorithm.
     """
 
-    fit: Callable[..., EncodingModel]
-    predict: Callable[..., Any]
+    fit: FitT
+    predict: PredictT
     encoding_model_type: type
     default_params: Mapping[str, Any] = field(default_factory=dict)
     execution_settings: frozenset[str] = frozenset({"disable_progress_bar"})
@@ -132,7 +242,9 @@ class LikelihoodAlgorithm:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClusterlessLikelihoodAlgorithm(LikelihoodAlgorithm):
+class ClusterlessLikelihoodAlgorithm(
+    LikelihoodAlgorithm[ClusterlessFit, ClusterlessPredict]
+):
     """A registered clusterless likelihood algorithm.
 
     Attributes
@@ -171,7 +283,9 @@ _ENCODING_MODEL_KEYS: frozenset[str] = frozenset(EncodingModel.__required_keys__
 
 # The algorithms a detector's ``*_algorithm`` names. Only sorted KDE has default
 # params; bandwidths come from the fits (position_std sqrt(12.5)).
-_SORTED_SPIKES_ALGORITHMS: dict[str, LikelihoodAlgorithm] = {
+_SORTED_SPIKES_ALGORITHMS: dict[
+    str, LikelihoodAlgorithm[SortedSpikesFit, SortedSpikesPredict]
+] = {
     "sorted_spikes_glm": LikelihoodAlgorithm(
         fit_sorted_spikes_glm_encoding_model,
         predict_sorted_spikes_glm_log_likelihood,
@@ -252,7 +366,7 @@ _DETECTOR_FIT_PARAMETERS: frozenset[str] = frozenset(
 
 
 def _resolve_fit_params(
-    algorithms: Mapping[str, LikelihoodAlgorithm],
+    algorithms: Mapping[str, LikelihoodAlgorithm[Any, Any]],
     algorithm: str,
     params: dict[str, Any] | None,
     params_name: str,
@@ -337,7 +451,7 @@ def _resolve_fit_params(
 
 
 def _execution_settings(
-    record: LikelihoodAlgorithm, params: dict[str, Any] | None
+    record: LikelihoodAlgorithm[Any, Any], params: dict[str, Any] | None
 ) -> dict[str, Any]:
     """Return the execution settings a detector's algorithm params set, for predict.
 

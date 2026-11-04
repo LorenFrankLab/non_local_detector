@@ -71,6 +71,8 @@ from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     KDEModel,
     SpikeTimeOrder,
+    as_array,
+    as_arrays,
     as_std_array,
     blocked_nonlocal_poisson_log_likelihood,
     concatenate_row_blocks,
@@ -86,6 +88,7 @@ from non_local_detector.likelihoods.common import (
     padded_sample_count,
     prepare_decode_rows,
     prepare_kde_local_inputs,
+    require_position,
     spike_counts_matrix,
     traced_block_kde,
     validate_bandwidth,
@@ -326,11 +329,11 @@ class SortedSpikesKDEEncodingModel(SortedSpikesEncodingModel):
 
 
 def fit_sorted_spikes_kde_encoding_model(
-    position_time: jax.Array | np.ndarray,
-    position: jax.Array | np.ndarray,
-    spike_times: list[jax.Array],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
     environment: Environment,
-    weights: jax.Array | np.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     position_std: float | jax.Array = np.sqrt(12.5),
     block_size: int = 100,
@@ -343,15 +346,15 @@ def fit_sorted_spikes_kde_encoding_model(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Sampling times for the position.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jax.Array]
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each neuron.
     environment : Environment
         The spatial environment.
-    weights : jax.Array, shape (n_time_position,), optional
+    weights : array_like, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
     position_std : float, optional
@@ -392,6 +395,8 @@ def fit_sorted_spikes_kde_encoding_model(
         - 'rate_units': ``"Hz"``
         - 'encoding_exposure_seconds': Weighted encoding occupancy time, seconds
     """
+    position_time = as_array(position_time)
+    spike_times = as_arrays(spike_times)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -518,9 +523,9 @@ def fit_sorted_spikes_kde_encoding_model(
 
 @requires_time_edges
 def predict_sorted_spikes_kde_log_likelihood(
-    position_time: jax.Array,
-    position: jax.Array,
-    spike_times: list[np.ndarray],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
     *,
     environment: Environment,
     marginal_models: list[KDEModel],
@@ -546,11 +551,13 @@ def predict_sorted_spikes_kde_log_likelihood(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Sampling times for the position.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[np.ndarray]
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each neuron.
     environment : Environment
         The spatial environment.
@@ -617,6 +624,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    spike_times = as_arrays(spike_times)
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
@@ -626,6 +634,9 @@ def predict_sorted_spikes_kde_log_likelihood(
     )
     durations = jnp.asarray(rows.durations())
     if is_local:
+        position_time, position = require_position(
+            position_time, position, "local sorted-spikes KDE likelihood"
+        )
         interpolated_position, log_occupancy = prepare_kde_local_inputs(
             occupancy_model,
             position_time,

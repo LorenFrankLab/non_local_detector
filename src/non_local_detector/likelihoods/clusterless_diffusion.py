@@ -63,7 +63,7 @@ half of ``memory_budget`` and otherwise in tiles of columns.
 
 import logging
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from typing import Any, cast
 
@@ -94,6 +94,8 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_RATE_EPS_HZ,
     SpikeTimeOrder,
+    as_array,
+    as_arrays,
     as_std_array,
     compute_log_mark_kernel_gemm,
     deterministic_row_sum,
@@ -111,6 +113,7 @@ from non_local_detector.likelihoods.common import (
     padded_spike_count,
     prepare_decode_rows,
     repair_flagged,
+    require_position,
     select_spike_rows,
     spike_row_ids,
     validate_encoding_contract,
@@ -296,12 +299,12 @@ class ClusterlessDiffusionEncodingModel(ClusterlessEncodingModel):
 
 
 def fit_clusterless_diffusion_encoding_model(
-    position_time: np.ndarray,
-    position: np.ndarray,
-    spike_times: list[jax.Array],
-    spike_waveform_features: list[jax.Array],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     environment: Environment,
-    weights: np.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     position_std: float = float(np.sqrt(12.5)),
     waveform_std: float | np.ndarray | jax.Array = DEFAULT_WAVEFORM_STD,
@@ -317,17 +320,17 @@ def fit_clusterless_diffusion_encoding_model(
 
     Parameters
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Time of each position sample.
-    position : np.ndarray, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jax.Array]
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each electrode.
-    spike_waveform_features : list[jax.Array]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Spike waveform features (marks) for each electrode.
     environment : Environment
         The spatial environment (must be fitted).
-    weights : np.ndarray, shape (n_time_position,), optional
+    weights : array_like, shape (n_time_position,), optional
         Per-sample EM weights, by default None (uniform). Weight the occupancy,
         per-electrode ground-process, mean rate, and the per-spike joint estimator.
     position_std : float, optional
@@ -384,6 +387,9 @@ def fit_clusterless_diffusion_encoding_model(
         encoding occupancy time in seconds), ``mark_dimensions`` (each
         electrode's waveform-feature count).
     """
+    position_time = as_array(position_time)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -1256,10 +1262,10 @@ def _add_electrode_diffusion_terms(
 
 @requires_time_edges
 def predict_clusterless_diffusion_log_likelihood(
-    position_time: np.ndarray,
-    position: np.ndarray,
-    spike_times: list[jax.Array],
-    spike_waveform_features: list[jax.Array],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     *,
     environment: Environment,
     occupancy: np.ndarray | jax.Array,
@@ -1293,15 +1299,17 @@ def predict_clusterless_diffusion_log_likelihood(
 
     Parameters
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Time of each position sample (used only by the local path; accepted for
         signature parity when ``is_local`` is False).
-    position : np.ndarray, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Position samples (used only by the local path; accepted for signature
         parity when ``is_local`` is False).
-    spike_times : list[jax.Array]
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Decode spike times for each electrode.
-    spike_waveform_features : list[jax.Array]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Decode spike waveform features (marks) for each electrode.
     environment : Environment
         The fitted environment.
@@ -1388,6 +1396,8 @@ def predict_clusterless_diffusion_log_likelihood(
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
     _validate_execution_settings(memory_budget, block_size)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     fitted_occupancy = occupancy
     occupancy = jnp.asarray(occupancy)
     summed_ground_process_intensity = jnp.asarray(
@@ -1464,8 +1474,12 @@ def predict_clusterless_diffusion_log_likelihood(
     if is_local:
         # The local path reads the animal's position; non-local ignores it and the
         # base API permits position=None (as clusterless_kde does), so position is
-        # only required and validated here.
-        validate_finite(position, "position")
+        # only required and validated here. add_electrode below reads these
+        # names on this path only.
+        local_position_time, local_position = require_position(
+            position_time, position, "local clusterless diffusion likelihood"
+        )
+        validate_finite(local_position, "position")
         # Reconstruct the interior-bin mapping from node_order (derived here at
         # predict, not stored) and evaluate the diffused column at the animal's nearest
         # interior bin instead of returning the whole column.
@@ -1473,8 +1487,8 @@ def predict_clusterless_diffusion_log_likelihood(
         full_to_local = full_to_local_index(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(
-            position_time,
-            position,
+            local_position_time,
+            local_position,
             decode_bin_centers(rows.time_edges, rows.start, rows.stop),
             environment,
         )
@@ -1553,8 +1567,8 @@ def predict_clusterless_diffusion_log_likelihood(
                     interior_bin_indices(
                         environment,
                         get_position_at_time(
-                            position_time,
-                            position,
+                            local_position_time,
+                            local_position,
                             select_spike_rows(spikes.times, spikes.selection),
                             environment,
                         ),

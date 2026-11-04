@@ -39,6 +39,8 @@ from non_local_detector.likelihoods.common import (
     RATE_REFERENCE_SECONDS,
     KDEModel,
     SpikeTimeOrder,
+    as_array,
+    as_arrays,
     as_std_array,
     compute_log_mark_kernel_gemm,
     deterministic_row_sum,
@@ -63,6 +65,7 @@ from non_local_detector.likelihoods.common import (
     prepare_decode_rows,
     prepare_kde_local_inputs,
     prepared_kde_log_density,
+    require_position,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -1630,12 +1633,12 @@ class ClusterlessKDEEncodingModel(ClusterlessEncodingModel):
 
 
 def fit_clusterless_kde_encoding_model(
-    position_time: jax.Array,
-    position: jax.Array | np.ndarray,
-    spike_times: list[jax.Array],
-    spike_waveform_features: list[jax.Array],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     environment: Environment,
-    weights: jax.Array | np.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     position_std: float | jax.Array = np.sqrt(12.5),
     waveform_std: float = DEFAULT_WAVEFORM_STD,
@@ -1652,17 +1655,17 @@ def fit_clusterless_kde_encoding_model(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Time of each position sample.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jax.Array]
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each electrode.
-    spike_waveform_features : list[jax.Array]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Spike waveform features for each electrode.
     environment : Environment
         The spatial environment.
-    weights : jax.Array | None, shape (n_time_position,), optional
+    weights : array_like, shape (n_time_position,), optional
         Per-position-sample weights (e.g. the EM posterior for this encoding
         group), by default None (uniform). They weight the occupancy KDE, the
         per-electrode ground-process KDE, and the mean rate, and are interpolated
@@ -1719,10 +1722,13 @@ def fit_clusterless_kde_encoding_model(
     _validate_execution_settings(
         block_size, enc_tile_size, pos_tile_size, use_streaming
     )
+    position_time = as_array(position_time)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
-        cast(np.ndarray | None, weights),
+        weights,
         encoding_time_range=encoding_time_range,
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
@@ -1855,10 +1861,10 @@ def fit_clusterless_kde_encoding_model(
 
 @requires_time_edges
 def predict_clusterless_kde_log_likelihood(
-    position_time: jax.Array,
-    position: jax.Array,
-    spike_times: list[jax.Array],
-    spike_waveform_features: list[jax.Array],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     *,
     occupancy: jax.Array,
     occupancy_model: KDEModel,
@@ -1893,15 +1899,17 @@ def predict_clusterless_kde_log_likelihood(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Time of each position sample (used only by the local path; accepted for
         signature parity when ``is_local`` is False).
-    position : jax.Array, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Position samples (used only by the local path; accepted for signature
         parity when ``is_local`` is False).
-    spike_times : list[jax.Array]
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each electrode.
-    spike_waveform_features : list[jax.Array]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Waveform features for each electrode.
     occupancy : jax.Array, shape (n_interior_bins,)
         Occupancy density at the interior place bins (the fit's
@@ -2014,6 +2022,8 @@ def predict_clusterless_kde_log_likelihood(
         kde_model_with_block_size(model, block_size, rows.spike_time_order)
         for model in gpi_models
     ]
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -2036,6 +2046,9 @@ def predict_clusterless_kde_log_likelihood(
     )
 
     if is_local:
+        position_time, position = require_position(
+            position_time, position, "local clusterless KDE likelihood"
+        )
         log_likelihood = compute_local_log_likelihood(
             rows.time_edges,
             position_time,
@@ -2179,10 +2192,10 @@ def predict_clusterless_kde_log_likelihood(
 
 def compute_local_log_likelihood(
     time_edges: np.ndarray,
-    position_time: jax.Array,
-    position: jax.Array,
-    spike_times: list[jax.Array],
-    spike_waveform_features: list[jax.Array],
+    position_time: np.ndarray | jax.Array,
+    position: np.ndarray | jax.Array,
+    spike_times: Sequence[np.ndarray | jax.Array],
+    spike_waveform_features: Sequence[np.ndarray | jax.Array],
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jax.Array],
@@ -2206,14 +2219,14 @@ def compute_local_log_likelihood(
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : np.ndarray or jax.Array, shape (n_time_position,)
         Time of each position sample.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+    position : np.ndarray or jax.Array, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jax.Array]
-        List of spike times for each electrode.
-    spike_waveform_features : list[jax.Array]
-        List of spike waveform features for each electrode.
+    spike_times : sequence of np.ndarray or jax.Array
+        Spike times for each electrode.
+    spike_waveform_features : sequence of np.ndarray or jax.Array
+        Spike waveform features for each electrode.
     occupancy_model : KDEModel
         KDE model for occupancy.
     gpi_models : list[KDEModel]

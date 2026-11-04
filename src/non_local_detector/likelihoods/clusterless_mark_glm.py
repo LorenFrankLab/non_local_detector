@@ -36,7 +36,7 @@ Limitations:
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, NamedTuple, TypeAlias, cast
@@ -65,6 +65,8 @@ from non_local_detector.likelihoods.clusterless_spikes import (
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     SpikeTimeOrder,
+    as_array,
+    as_arrays,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
@@ -73,6 +75,7 @@ from non_local_detector.likelihoods.common import (
     pad_rows,
     padded_spike_count,
     prepare_decode_rows,
+    require_position,
     select_spike_rows,
     snap_off_track_positions,
     spike_row_ids,
@@ -426,12 +429,12 @@ class ClusterlessMarkGLMEncodingModel(ClusterlessEncodingModel):
 
 
 def fit_clusterless_mark_glm_encoding_model(
-    position_time: np.ndarray,
-    position: np.ndarray,
-    spike_times: list[np.ndarray],
-    spike_waveform_features: list[np.ndarray],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     environment: Environment,
-    weights: np.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     n_mark_components: int = 32,
     mark_weight_concentration: float | None = None,
@@ -452,17 +455,17 @@ def fit_clusterless_mark_glm_encoding_model(
 
     Parameters
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Tracking timestamps in seconds.
-    position : np.ndarray, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Animal position at each tracking sample.
-    spike_times : list of np.ndarray, each shape (n_spikes,)
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Encoding spike times per electrode.
-    spike_waveform_features : list of np.ndarray, each shape (n_spikes, n_features)
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Encoding spike marks per electrode.
     environment : Environment
         The fitted spatial environment.
-    weights : np.ndarray, shape (n_time_position,), optional
+    weights : array_like, shape (n_time_position,), optional
         Per-sample weights (e.g. posterior state probabilities during EM), by
         default None (uniform). A spike counts by the weight interpolated at its
         time, in both the mark mixture and the rate maps.
@@ -537,6 +540,9 @@ def fit_clusterless_mark_glm_encoding_model(
             Weighted encoding occupancy time in seconds.
     """
     validate_positive_int("spike_block_size", spike_block_size)
+    position_time = as_array(position_time)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -955,10 +961,10 @@ def _device_marks(marks: np.ndarray, n_rows: int) -> jax.Array:
 
 @requires_time_edges
 def predict_clusterless_mark_glm_log_likelihood(
-    position_time: np.ndarray,
-    position: np.ndarray,
-    spike_times: list[np.ndarray],
-    spike_waveform_features: list[np.ndarray],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     *,
     environment: Environment,
     emission_design_info: TrackGraphBasis | TensorSplineBasis,
@@ -985,13 +991,15 @@ def predict_clusterless_mark_glm_log_likelihood(
 
     Parameters
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Tracking timestamps in seconds; read only for the local likelihood.
-    position : np.ndarray, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Animal position; read only for the local likelihood.
-    spike_times : list of np.ndarray, each shape (n_spikes,)
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Decoding spike times per electrode.
-    spike_waveform_features : list of np.ndarray, each shape (n_spikes, n_features)
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Decoding spike marks per electrode.
     environment : Environment
         The environment the model was fit on.
@@ -1049,6 +1057,8 @@ def predict_clusterless_mark_glm_log_likelihood(
     validate_encoding_contract(rate_units, environment, environment_grid)
     validate_positive_int("spike_block_size", spike_block_size)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1074,13 +1084,19 @@ def predict_clusterless_mark_glm_log_likelihood(
     n_rows = rows.stop - rows.start
     durations = jnp.asarray(rows.durations())
     if is_local:
-        position_time = np.asarray(position_time)
-        position = np.asarray(position)
-        position = position if position.ndim > 1 else position[:, None]
+        # Bound once here and read by add_electrode below, on this path only.
+        local_position_time, local_position = require_position(
+            position_time, position, "local clusterless mark GLM likelihood"
+        )
+        local_position_time = np.asarray(local_position_time)
+        local_position = np.asarray(local_position)
+        local_position = (
+            local_position if local_position.ndim > 1 else local_position[:, None]
+        )
         row_position = snap_off_track_positions(
             get_position_at_time(
-                position_time,
-                position,
+                local_position_time,
+                local_position,
                 decode_bin_centers(rows.time_edges, rows.start, rows.stop),
                 environment,
             ),
@@ -1143,8 +1159,8 @@ def predict_clusterless_mark_glm_log_likelihood(
             n_padded = padded_spike_count(spikes.n_spikes, spike_block_size)
             spike_position = snap_off_track_positions(
                 get_position_at_time(
-                    position_time,
-                    position,
+                    local_position_time,
+                    local_position,
                     select_spike_rows(spikes.times, spikes.selection),
                     environment,
                 ),
