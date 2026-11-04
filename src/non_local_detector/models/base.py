@@ -3104,15 +3104,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # Encoding models fitted before each recorded its algorithm.
         encoding_model = state.get("encoding_model_")
         if isinstance(encoding_model, Mapping):
-            is_clusterless = isinstance(self, ClusterlessDetector)
-            algorithms = (
-                _CLUSTERLESS_ALGORITHMS if is_clusterless else _SORTED_SPIKES_ALGORITHMS
-            )
-            configured = state.get(
-                "clusterless_algorithm" if is_clusterless else "sorted_spikes_algorithm"
-            )
             for entry in encoding_model.values():
-                _record_legacy_encoding_algorithm(entry, algorithms, configured)
+                _record_legacy_encoding_algorithm(entry)
 
     def _initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None = None

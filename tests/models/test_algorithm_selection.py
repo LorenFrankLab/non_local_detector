@@ -26,8 +26,8 @@ from non_local_detector import (
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
+    _PRE_ALGORITHM_ENCODING_KEYS,
     _SORTED_SPIKES_ALGORITHMS,
-    _record_legacy_encoding_algorithm,
 )
 from non_local_detector.observation_models import ObservationModel
 from tests.models._helpers import ALGORITHMS, _decoder
@@ -317,9 +317,8 @@ def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
     recorded = {
         key: entry[key] for key in ("algorithm", "mark_dimensions") if key in entry
     }
-    del entry["algorithm"]
-    if algorithm in _WITHOUT_MARK_DIMENSIONS:
-        del entry["mark_dimensions"]
+    for key in set(entry) - _PRE_ALGORITHM_ENCODING_KEYS[algorithm]:
+        del entry[key]
 
     restored = pickle.loads(pickle.dumps(detector))
 
@@ -344,21 +343,201 @@ def test_saved_encoding_model_of_no_registered_type_still_asks_for_a_refit():
         restored.predict(*args, **kwargs)
 
 
-@pytest.mark.parametrize(
-    ("configured", "recorded"),
-    [("first", "first"), ("second", "second"), ("other", None), (None, None)],
-)
-def test_encoding_model_matching_two_algorithms_takes_the_configured_one(
-    configured, recorded
-):
-    """Should two registered algorithms share the saved keys, the detector's
-    algorithm decides, and only if it is one of them."""
-    record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"]
-    entry = dict.fromkeys(set(record.encoding_model_type.__required_keys__))
-    del entry["algorithm"]
+# What main saved for each algorithm before encoding models recorded it, copied
+# from the 66047901 and d5f85823 pickles. Changing the registry's copy breaks
+# loading those pickles.
+_SAVED_BEFORE_ALGORITHMS_WERE_RECORDED = {
+    "sorted_spikes_glm": frozenset(
+        {
+            "coefficients",
+            "disable_progress_bar",
+            "emission_design_info",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "is_track_interior",
+            "no_spike_part_log_likelihood",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "sorted_spikes_kde": frozenset(
+        {
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "is_track_interior",
+            "log_occupancy",
+            "marginal_models",
+            "mean_rates",
+            "no_spike_part_log_likelihood",
+            "occupancy",
+            "occupancy_model",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "sorted_spikes_diffusion": frozenset(
+        {
+            "bin_sizes",
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "interior_log_place_fields",
+            "is_track_interior",
+            "local_interpolation",
+            "mean_rates",
+            "no_spike_part_log_likelihood",
+            "node_order",
+            "occupancy",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "sorted_spikes_mrf": frozenset(
+        {
+            "bin_sizes",
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "interior_log_place_fields",
+            "is_track_interior",
+            "local_interpolation",
+            "mean_rates",
+            "mrf_coefficients",
+            "mrf_converged",
+            "mrf_log_penalty_bounds",
+            "mrf_max_step",
+            "mrf_n_iter",
+            "mrf_penalty",
+            "mrf_penalty_selected_by_reml",
+            "mrf_penalty_weights",
+            "mrf_rank",
+            "mrf_reml_objective",
+            "no_spike_part_log_likelihood",
+            "node_order",
+            "occupancy",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "clusterless_kde": frozenset(
+        {
+            "block_size",
+            "disable_progress_bar",
+            "enc_tile_size",
+            "encoding_exposure_seconds",
+            "encoding_positions",
+            "encoding_spike_waveform_features",
+            "encoding_weights",
+            "environment",
+            "environment_grid",
+            "gpi_models",
+            "log_occupancy",
+            "mean_rates",
+            "occupancy",
+            "occupancy_model",
+            "pos_tile_size",
+            "position_std",
+            "rate_units",
+            "summed_ground_process_intensity",
+            "use_streaming",
+            "waveform_std",
+        }
+    ),
+    "clusterless_gmm": frozenset(
+        {
+            "bin_tile_size",
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "gmm_effective_components",
+            "gmm_requested_components",
+            "gpi_models",
+            "interior_place_bin_centers",
+            "joint_models",
+            "log_occupancy",
+            "mark_dimensions",
+            "mean_rates",
+            "occupancy_model",
+            "rate_units",
+            "spike_block_size",
+            "summed_ground_process_intensity",
+        }
+    ),
+    "clusterless_diffusion": frozenset(
+        {
+            "bin_sizes",
+            "block_size",
+            "disable_progress_bar",
+            "encoding_bin_indices",
+            "encoding_exposure_seconds",
+            "encoding_marks",
+            "encoding_weights",
+            "environment",
+            "environment_grid",
+            "mean_rates",
+            "memory_budget",
+            "node_order",
+            "occupancy",
+            "position_std",
+            "rate_units",
+            "resolved_rank",
+            "summed_ground_process_intensity",
+            "waveform_std",
+            "weight_total",
+        }
+    ),
+    "clusterless_mark_glm": frozenset(
+        {
+            "disable_progress_bar",
+            "emission_design_info",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "log_rate_maps",
+            "mark_dimensions",
+            "mark_mixtures",
+            "mean_rates",
+            "rate_coefficients",
+            "rate_units",
+            "spike_block_size",
+            "summed_ground_process_intensity",
+        }
+    ),
+}
 
-    _record_legacy_encoding_algorithm(
-        entry, {"first": record, "second": record}, configured
+
+def test_saved_key_sets_identify_one_algorithm_each():
+    """No two algorithms saved the same keys, so each is identified."""
+    saved = list(_PRE_ALGORITHM_ENCODING_KEYS.values())
+    assert len(set(saved)) == len(saved)
+
+
+def test_saved_key_sets_are_the_saved_history():
+    """The registry's key sets are what was saved, not the current types."""
+    assert _PRE_ALGORITHM_ENCODING_KEYS == _SAVED_BEFORE_ALGORITHMS_WERE_RECORDED, (
+        "These are the keys of models already saved; do not edit them."
     )
 
-    assert entry.get("algorithm") == recorded
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_current_encoding_models_add_only_known_keys_to_the_saved_ones(algorithm):
+    """A key added to an encoding-model type is missing from saved models.
+
+    Since they were saved, the types gained only ``algorithm`` and, for
+    clusterless KDE and diffusion, ``mark_dimensions``, both restored on
+    load. A further key needs a load-time default for saved models (and
+    listing here), not an edit of the saved key sets.
+    """
+    registry = {**_SORTED_SPIKES_ALGORITHMS, **_CLUSTERLESS_ALGORITHMS}
+    model_type = registry[algorithm].encoding_model_type
+    current = model_type.__required_keys__ | model_type.__optional_keys__
+    added = {"algorithm"}
+    if algorithm in _WITHOUT_MARK_DIMENSIONS:
+        added |= {"mark_dimensions"}
+    assert current - _PRE_ALGORITHM_ENCODING_KEYS[algorithm] == added

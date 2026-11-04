@@ -285,6 +285,176 @@ def _resolve_fit_params(
     return resolved
 
 
+# The keys of each algorithm's encoding model as main saved them before
+# encoding models recorded their algorithm (main at 66047901 and d5f85823,
+# 2026-11-03). History, not derived from the current types: a key added to a
+# type later must not be added here, or those saved models stop matching.
+# ``mark_dimensions`` was saved by clusterless_gmm and clusterless_mark_glm only.
+_PRE_ALGORITHM_ENCODING_KEYS: dict[str, frozenset[str]] = {
+    "sorted_spikes_glm": frozenset(
+        {
+            "coefficients",
+            "disable_progress_bar",
+            "emission_design_info",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "is_track_interior",
+            "no_spike_part_log_likelihood",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "sorted_spikes_kde": frozenset(
+        {
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "is_track_interior",
+            "log_occupancy",
+            "marginal_models",
+            "mean_rates",
+            "no_spike_part_log_likelihood",
+            "occupancy",
+            "occupancy_model",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "sorted_spikes_diffusion": frozenset(
+        {
+            "bin_sizes",
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "interior_log_place_fields",
+            "is_track_interior",
+            "local_interpolation",
+            "mean_rates",
+            "no_spike_part_log_likelihood",
+            "node_order",
+            "occupancy",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "sorted_spikes_mrf": frozenset(
+        {
+            "bin_sizes",
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "interior_log_place_fields",
+            "is_track_interior",
+            "local_interpolation",
+            "mean_rates",
+            "mrf_coefficients",
+            "mrf_converged",
+            "mrf_log_penalty_bounds",
+            "mrf_max_step",
+            "mrf_n_iter",
+            "mrf_penalty",
+            "mrf_penalty_selected_by_reml",
+            "mrf_penalty_weights",
+            "mrf_rank",
+            "mrf_reml_objective",
+            "no_spike_part_log_likelihood",
+            "node_order",
+            "occupancy",
+            "place_fields",
+            "rate_units",
+        }
+    ),
+    "clusterless_kde": frozenset(
+        {
+            "block_size",
+            "disable_progress_bar",
+            "enc_tile_size",
+            "encoding_exposure_seconds",
+            "encoding_positions",
+            "encoding_spike_waveform_features",
+            "encoding_weights",
+            "environment",
+            "environment_grid",
+            "gpi_models",
+            "log_occupancy",
+            "mean_rates",
+            "occupancy",
+            "occupancy_model",
+            "pos_tile_size",
+            "position_std",
+            "rate_units",
+            "summed_ground_process_intensity",
+            "use_streaming",
+            "waveform_std",
+        }
+    ),
+    "clusterless_gmm": frozenset(
+        {
+            "bin_tile_size",
+            "disable_progress_bar",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "gmm_effective_components",
+            "gmm_requested_components",
+            "gpi_models",
+            "interior_place_bin_centers",
+            "joint_models",
+            "log_occupancy",
+            "mark_dimensions",
+            "mean_rates",
+            "occupancy_model",
+            "rate_units",
+            "spike_block_size",
+            "summed_ground_process_intensity",
+        }
+    ),
+    "clusterless_diffusion": frozenset(
+        {
+            "bin_sizes",
+            "block_size",
+            "disable_progress_bar",
+            "encoding_bin_indices",
+            "encoding_exposure_seconds",
+            "encoding_marks",
+            "encoding_weights",
+            "environment",
+            "environment_grid",
+            "mean_rates",
+            "memory_budget",
+            "node_order",
+            "occupancy",
+            "position_std",
+            "rate_units",
+            "resolved_rank",
+            "summed_ground_process_intensity",
+            "waveform_std",
+            "weight_total",
+        }
+    ),
+    "clusterless_mark_glm": frozenset(
+        {
+            "disable_progress_bar",
+            "emission_design_info",
+            "encoding_exposure_seconds",
+            "environment",
+            "environment_grid",
+            "log_rate_maps",
+            "mark_dimensions",
+            "mark_mixtures",
+            "mean_rates",
+            "rate_coefficients",
+            "rate_units",
+            "spike_block_size",
+            "summed_ground_process_intensity",
+        }
+    ),
+}
+
 # Where the encoding models of the clusterless algorithms that did not record
 # ``mark_dimensions`` before they recorded their algorithm keep each
 # electrode's encoding waveform features, shape (n_spikes, n_features).
@@ -294,20 +464,14 @@ _LEGACY_ENCODING_MARKS: dict[str, str] = {
 }
 
 
-def _record_legacy_encoding_algorithm(
-    encoding_model: object,
-    algorithms: Mapping[str, LikelihoodAlgorithm],
-    configured: str | None,
-) -> None:
+def _record_legacy_encoding_algorithm(encoding_model: object) -> None:
     """Record the algorithm of an encoding model saved before models recorded it.
 
-    Such an encoding model holds exactly its type's keys except ``algorithm``
-    (and, for ``clusterless_kde`` and ``clusterless_diffusion``,
-    ``mark_dimensions``). The algorithm is the one in ``algorithms`` whose
-    type has those keys; the registered types differ, but should two match,
-    the detector's ``configured`` algorithm is chosen if it is one of them,
-    and otherwise nothing is recorded. ``mark_dimensions`` is derived from
-    the stored encoding waveform features. A model matching no type, such
+    The algorithm is the one whose saved keys
+    (``_PRE_ALGORITHM_ENCODING_KEYS``) are exactly the model's; no two
+    algorithms saved the same keys. ``mark_dimensions``, which
+    ``clusterless_kde`` and ``clusterless_diffusion`` did not save, is derived
+    from the stored encoding waveform features. A model matching none, such
     as one fitted by a 0.6 release, is left unchanged, so decoding with it
     asks for a refit. The model is updated in place.
 
@@ -315,24 +479,13 @@ def _record_legacy_encoding_algorithm(
     ----------
     encoding_model : object
         One entry of a detector's ``encoding_model_``.
-    algorithms : Mapping[str, LikelihoodAlgorithm]
-        The detector family's registry.
-    configured : str or None
-        The detector's ``*_algorithm`` parameter.
     """
     if not isinstance(encoding_model, dict) or "algorithm" in encoding_model:
         return
-    matches = []
-    for name, record in algorithms.items():
-        model_type: Any = record.encoding_model_type  # a TypedDict
-        saved_keys = model_type.__required_keys__ | model_type.__optional_keys__
-        saved_keys -= {"algorithm"}
-        if name in _LEGACY_ENCODING_MARKS:
-            saved_keys -= {"mark_dimensions"}
-        if set(encoding_model) == saved_keys:
-            matches.append(name)
-    if len(matches) > 1:
-        matches = [name for name in matches if name == configured]
+    keys = set(encoding_model)
+    matches = [
+        name for name, saved in _PRE_ALGORITHM_ENCODING_KEYS.items() if keys == saved
+    ]
     if len(matches) != 1:
         return
     (algorithm,) = matches
