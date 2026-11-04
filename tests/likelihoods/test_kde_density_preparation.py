@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import non_local_detector.likelihoods.clusterless_kde as clusterless_kde_module
 import non_local_detector.likelihoods.common.kernel_density as kde_module
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
@@ -168,3 +169,63 @@ def test_public_local_kde_paths_share_prediction_geometry(
     kwargs["_spike_time_order"] = common.SpikeTimeOrder()
     predict(*decode_args, **kwargs)
     assert len(interpolations) == 2
+
+
+@pytest.mark.parametrize("is_local", [True, False])
+def test_clusterless_prediction_evaluates_fitted_densities_in_its_block_size(
+    is_local, monkeypatch
+):
+    """A block size given at predict also blocks the fitted occupancy and
+    ground-process densities, without changing the stored models."""
+    rng = np.random.default_rng(0)
+    time = np.arange(0.0, 20.0, 0.01)
+    position = (10.0 + 9.0 * np.sin(time))[:, None]
+    environment = Environment(place_bin_size=1.0).fit_place_grid(position)
+    spike_times = [np.sort(rng.uniform(0.0, 20.0, 200))]
+    marks = [rng.normal(size=(200, 2))]
+    model = fit_clusterless_kde_encoding_model(
+        time,
+        position,
+        spike_times,
+        marks,
+        environment=environment,
+        position_std=1.0,
+        waveform_std=1.0,
+        block_size=10_000,
+        disable_progress_bar=True,
+    )
+    model["mark_reference"] = fit_mark_references(marks, kernel_scale=1.0)
+    if not is_local:
+        model["log_occupancy"] = None  # computed from the occupancy model
+    blocks = []
+    original = kde_module.kde_log_density
+
+    def record(density_model, points):
+        blocks.append(density_model.block_size)
+        return original(density_model, points)
+
+    monkeypatch.setattr(kde_module, "kde_log_density", record)
+    monkeypatch.setattr(clusterless_kde_module, "kde_log_density", record)
+    edges = np.arange(0.0, 20.0 + 1e-9, 0.02)
+
+    def predict(**settings):
+        return np.asarray(
+            predict_clusterless_kde_log_likelihood(
+                time,
+                position,
+                spike_times,
+                marks,
+                time_edges=edges,
+                is_local=is_local,
+                **{**model, **settings},
+            )
+        )
+
+    fitted = predict()
+    assert set(blocks) == {10_000}
+    blocks.clear()
+    blocked = predict(block_size=7)
+    assert set(blocks) == {7}
+    assert model["occupancy_model"].block_size == 10_000
+    assert {gpi.block_size for gpi in model["gpi_models"]} == {10_000}
+    np.testing.assert_allclose(blocked, fitted, rtol=1e-5, atol=1e-4)

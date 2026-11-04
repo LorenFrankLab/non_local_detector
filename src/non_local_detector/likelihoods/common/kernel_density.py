@@ -1,5 +1,6 @@
 """Weighted Gaussian kernel density estimation."""
 
+import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -1278,6 +1279,41 @@ def prepared_kde_log_density(
         (model, model.samples_, model.weights_, model.std, points),
         predict,
     )
+
+
+def kde_model_with_block_size(
+    model: KDEModel, block_size: int | None, spike_time_order: SpikeTimeOrder
+) -> KDEModel:
+    """``model`` evaluated in blocks of ``block_size`` points, without changing it.
+
+    A prediction may evaluate fitted models in other blocks than the fit did.
+    The copy is made once per prediction, so its cached densities are shared
+    across states and chunks; the model itself is returned when its block size
+    already matches.
+
+    Parameters
+    ----------
+    model : KDEModel
+        A fitted model.
+    block_size : int or None
+        Evaluation points per block; None evaluates all at once.
+    spike_time_order : SpikeTimeOrder
+        The prediction's preparation cache.
+
+    Returns
+    -------
+    model : KDEModel
+        ``model``, or a shallow copy with ``block_size`` set.
+    """
+    if model.block_size == block_size:
+        return model
+
+    def build() -> KDEModel:
+        blocked = copy.copy(model)
+        blocked.block_size = block_size
+        return blocked
+
+    return spike_time_order.memo(f"kde_block_size:{block_size}", (model,), build)
 
 
 def prepare_kde_local_inputs(

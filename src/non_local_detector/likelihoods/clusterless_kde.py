@@ -48,6 +48,7 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     kde_log_densities,
     kde_log_density,
+    kde_model_with_block_size,
     local_kde_log_ratio,
     log_bin_duration_evidence,
     log_density_intensity,
@@ -1971,6 +1972,14 @@ def predict_clusterless_kde_log_likelihood(
     validate_encoding_contract(rate_units, environment, environment_grid)
     _validate_tile_sizes(enc_tile_size, pos_tile_size)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    # The fitted density models are evaluated in the requested blocks.
+    occupancy_model = kde_model_with_block_size(
+        occupancy_model, block_size, rows.spike_time_order
+    )
+    gpi_models = [
+        kde_model_with_block_size(model, block_size, rows.spike_time_order)
+        for model in gpi_models
+    ]
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
