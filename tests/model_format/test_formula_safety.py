@@ -133,8 +133,20 @@ def _task(n):
         lambda task: pd.DataFrame(
             {"task": pd.Categorical(task, categories=["run", "rest"], ordered=True)}
         ),
+        lambda task: {"task": pd.Series(task, name="task")},
+        lambda task: {
+            "task": pd.Series(pd.Categorical(task, categories=["run", "rest"]))
+        },
     ],
-    ids=["unicode", "object-strings", "categorical", "frame", "frame-categorical"],
+    ids=[
+        "unicode",
+        "object-strings",
+        "categorical",
+        "frame",
+        "frame-categorical",
+        "series",
+        "series-categorical",
+    ],
 )
 def test_string_and_categorical_covariates_round_trip(
     make_covariates, sorted_recording, tmp_path

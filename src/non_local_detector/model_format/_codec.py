@@ -25,9 +25,10 @@ JSON object:
     that registered it, named if the type is not registered when loading.
 ``{"$environment": name}``
     The model's fitted environment of that name.
-``{"$graph": {...}}``, ``{"$dataframe": {...}}``, ``{"$categorical": {...}}``
-    A networkx graph; a pandas DataFrame, whose columns are arrays or
-    categoricals; a pandas Categorical, as integer codes, its categories and
+``{"$graph": {...}}``, ``{"$dataframe": {...}}``, ``{"$series": {...}}``,
+``{"$categorical": {...}}``
+    A networkx graph; a pandas DataFrame or Series, whose columns or values
+    are arrays or categoricals; a pandas Categorical, as integer codes, its categories and
     whether they are ordered (patsy takes a categorical's reference level
     from the category order).
 
@@ -218,6 +219,8 @@ class Encoder:
             return self._graph(value, where)
         if isinstance(value, pd.DataFrame):
             return self._dataframe(value, where)
+        if isinstance(value, pd.Series):
+            return self._series(value, where)
         if isinstance(value, pd.Categorical):
             return self._categorical(value, where)
         return self.encode_object(value, where)
@@ -366,25 +369,38 @@ class Encoder:
             }
         }
 
-    def _dataframe(self, frame: pd.DataFrame, where: str) -> JSON:
-        index = frame.index
-        encoded_index: JSON
+    def _index(self, index: pd.Index, where: str) -> JSON:
         if isinstance(index, pd.RangeIndex):
-            encoded_index = {"range": [index.start, index.stop, index.step]}
-        else:
-            encoded_index = {"values": self._array(index.to_numpy(), f"{where}/index")}
+            return {"range": [index.start, index.stop, index.step]}
+        return {"values": self._array(index.to_numpy(), f"{where}/index")}
+
+    def _column(self, column: pd.Series, where: str) -> JSON:
+        """The values of a Series or DataFrame column: an array, or a
+        categorical keeping its categories and their order."""
+        if isinstance(column.dtype, pd.CategoricalDtype):
+            return self._categorical(column.array, where)
+        return self._array(column.to_numpy(), where)
+
+    def _dataframe(self, frame: pd.DataFrame, where: str) -> JSON:
         return {
             "$dataframe": {
                 "columns": [
                     self.encode(name, f"{where}/columns") for name in frame.columns
                 ],
                 "values": [
-                    self._categorical(frame[name].array, f"{where}/{i}")
-                    if isinstance(frame[name].dtype, pd.CategoricalDtype)
-                    else self._array(frame[name].to_numpy(), f"{where}/{i}")
+                    self._column(frame[name], f"{where}/{i}")
                     for i, name in enumerate(frame.columns)
                 ],
-                "index": encoded_index,
+                "index": self._index(frame.index, where),
+            }
+        }
+
+    def _series(self, series: pd.Series, where: str) -> JSON:
+        return {
+            "$series": {
+                "name": self.encode(series.name, f"{where}/name"),
+                "values": self._column(series, where),
+                "index": self._index(series.index, where),
             }
         }
 
@@ -535,16 +551,27 @@ class Decoder:
         values = [self.decode(value) for value in content["values"]]
         if self.plain:
             return dict(zip(columns, values, strict=True))
-        encoded_index = content["index"]
-        index = (
-            pd.RangeIndex(*encoded_index["range"])
-            if "range" in encoded_index
-            else pd.Index(self.decode(encoded_index["values"]))
-        )
-        frame = pd.DataFrame(index=index)
+        frame = pd.DataFrame(index=self._index(content["index"]))
         for name, value in zip(columns, values, strict=True):
             frame[name] = value
         return frame
+
+    def _index(self, encoded: JSON) -> pd.Index:
+        if "range" in encoded:
+            return pd.RangeIndex(*encoded["range"])
+        return pd.Index(self.decode(encoded["values"]))
+
+    def _series(self, node: JSON) -> Any:
+        # Restored as a Series, with its index and name, as it was fitted.
+        content = node["$series"]
+        values = self.decode(content["values"])
+        if self.plain:
+            return values
+        return pd.Series(
+            values,
+            index=self._index(content["index"]),
+            name=self.decode(content["name"]),
+        )
 
     # The tags a file may use, each to its handler; nothing else is called.
     _HANDLERS: Mapping[str, Callable[["Decoder", JSON], Any]] = MappingProxyType(
@@ -562,5 +589,6 @@ class Decoder:
             "$graph": _graph,
             "$categorical": _categorical,
             "$dataframe": _dataframe,
+            "$series": _series,
         }
     )
