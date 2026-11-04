@@ -1,11 +1,9 @@
 """Grid preparation is per prediction; chunk workspace is per requested row."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
-from non_local_detector.core import row_slice_aware
+from non_local_detector.core import FilterSmootherResult
 from non_local_detector.exceptions import DataError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -76,35 +74,16 @@ def test_detector_chunk_callbacks_do_not_scan_the_complete_grid(
     if learned_clock:
         detector.transition_time_bin_width_ = 0.002
         detector._transition_time_bin_width_tolerance = 2e-6
-    original = detector.compute_log_likelihood
+    original = detector._log_likelihood_rows
     diff = np.diff
     full_scans = []
 
-    @row_slice_aware
-    def measured(
-        *args,
-        time_edges,
-        row_slice=None,
-        is_missing=None,
-        _time_grid=None,
-        _position_context=None,
-        _spike_time_order=None,
-    ):
+    def measured(context, row_slice, is_missing):
         def tracked_diff(values, *args, **kwargs):
             if np.shape(values) == edges.shape:
                 full_scans.append(np.size(values))
             return diff(values, *args, **kwargs)
 
-        keywords = {
-            "time_edges": time_edges,
-            "row_slice": row_slice,
-            "is_missing": is_missing,
-            "_spike_time_order": _spike_time_order,
-        }
-        if _time_grid is not None:
-            keywords["_time_grid"] = _time_grid
-        if _position_context is not None:
-            keywords["_position_context"] = _position_context
         with monkeypatch.context() as patch:
             from non_local_detector import time_edges as grid_module
             from non_local_detector.models import base
@@ -120,7 +99,7 @@ def test_detector_chunk_callbacks_do_not_scan_the_complete_grid(
             patch.setattr(np, "diff", tracked_diff)
             patch.setattr(grid_module, "_spacing_tolerance", unexpected_precision_scan)
             patch.setattr(base, "_missing_bins", unexpected_position_preparation)
-            result = original(*args, **keywords)
+            result = original(context, row_slice, is_missing)
         assert not full_scans, "Every requested chunk scanned the full recording grid"
         return result
 
@@ -130,11 +109,13 @@ def test_detector_chunk_callbacks_do_not_scan_the_complete_grid(
                 time[rows], *log_likelihood_args, row_slice=rows, is_missing=None
             )
             assert result.shape[0] == 20
-        return SimpleNamespace(degenerate_indices=np.empty(0, dtype=int))
+        return FilterSmootherResult(
+            *([None] * 8), degenerate_indices=np.empty(0, dtype=int)
+        )
 
     from non_local_detector.models import base
 
-    monkeypatch.setattr(detector, "compute_log_likelihood", measured)
+    monkeypatch.setattr(detector, "_log_likelihood_rows", measured)
     monkeypatch.setattr(base, "chunked_filter_smoother", request_chunks)
     detector._predict(edges, log_likelihood_args=(time, position, *args), n_chunks=3)
 

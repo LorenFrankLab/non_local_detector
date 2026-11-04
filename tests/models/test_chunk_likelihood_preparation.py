@@ -23,22 +23,24 @@ def test_prepared_no_spike_durations_match_exact_global_rows(row_aware):
     start of the prepared vector silently assigns the wrong exposure to a row.
     """
     from non_local_detector.likelihoods import predict_no_spike_log_likelihood
-    from non_local_detector.models.base import _prepare_likelihood_callback
+    from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
+    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = 1.7e9 + np.arange(5) * 0.002
+    durations = no_spike_time_bin_sizes(edges)  # prepared once, as decoding does
 
-    def likelihood(time_edges, *, row_slice=None, _no_spike_time_bin_sizes=None):
+    def likelihood(time_edges, *, row_slice=None):
         return predict_no_spike_log_likelihood(
             [[]],
             no_spike_rate=1.0,
             time_edges=time_edges,
             row_slice=row_slice,
-            _time_bin_sizes=_no_spike_time_bin_sizes,
+            _time_bin_sizes=durations,
         )
 
     if row_aware:
         row_slice_aware(likelihood)
-    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=True)
+    callback = _custom_likelihood_callback(likelihood, edges)
     full = callback(None)
     if not row_aware:
         np.testing.assert_array_equal(full[:, 0], -np.diff(edges).astype(np.float32))
@@ -53,14 +55,14 @@ def test_prepared_no_spike_durations_match_exact_global_rows(row_aware):
 @pytest.mark.unit
 def test_chunked_unmarked_callback_rejects_altered_physical_exposure():
     """An edges-only callback cannot express an open chunk closing boundary."""
-    from non_local_detector.models.base import _prepare_likelihood_callback
+    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = 1.7e9 + np.arange(5) * 0.002
 
     def likelihood(time_edges):
         return -np.diff(time_edges)[:, None]
 
-    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=False)
+    callback = _custom_likelihood_callback(likelihood, edges)
     np.testing.assert_array_equal(callback(None)[:, 0], -np.diff(edges))
     with pytest.raises(ValidationError, match="row_slice_aware"):
         callback(None, row_slice=slice(0, 1))
@@ -208,7 +210,9 @@ def test_no_spike_duration_prepared_once_per_prediction(
                 accumulate_log_likelihoods=True,
             )
 
-        np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(
+            result.log_likelihood, expected, rtol=1e-5, atol=1e-6
+        )
         assert len(durations) == 1
         np.testing.assert_array_equal(durations[0], np.diff(time))
         time *= 2
@@ -227,7 +231,7 @@ def test_cached_likelihood_skips_duration_preparation(fitted_detector, monkeypat
     monkeypatch.setattr(np, "median", unexpected_median)
     monkeypatch.setattr(SpikeTimeOrder, "get", unexpected_median)
     result = detector._predict(time, log_likelihoods=expected, n_chunks=3)
-    np.testing.assert_array_equal(result[5], expected)
+    np.testing.assert_array_equal(result.log_likelihood, expected)
 
 
 @pytest.mark.integration
@@ -252,7 +256,53 @@ def test_custom_likelihood_signature_remains_supported(fitted_detector, monkeypa
         n_chunks=3,
         accumulate_log_likelihoods=True,
     )
-    np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(result.log_likelihood, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.integration
+def test_likelihood_replaced_on_the_family_class_is_called(
+    fitted_detector, monkeypatch
+):
+    """A wrapper set on the detector family class (as profilers install)
+    replaces the package's likelihood for every decode, like one set on the
+    instance."""
+    from functools import wraps
+
+    from non_local_detector.models.base import (
+        ClusterlessDetector,
+        SortedSpikesDetector,
+    )
+
+    fitted, args = fitted_detector
+    # A fresh detector: monkeypatch restores an instance attribute it replaced
+    # (here, by earlier tests on the shared fixture) by setting the original
+    # bound method on the instance, which would hide a class-level wrapper.
+    detector = type(fitted)(environments=Environment(place_bin_size=5.0)).fit(*args)
+    family = (
+        ClusterlessDetector
+        if isinstance(detector, ClusterlessDetector)
+        else SortedSpikesDetector
+    )
+    original = family.__dict__["compute_log_likelihood"]
+    time = np.arange(31) * 0.002
+    expected = np.asarray(detector.compute_log_likelihood(*args, time_edges=time))
+    rows = []
+
+    @wraps(original)
+    def counted(self, *args, **kwargs):
+        rows.append(kwargs.get("row_slice"))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(family, "compute_log_likelihood", counted)
+    result = detector._predict(
+        time,
+        log_likelihood_args=args,
+        cache_likelihood=False,
+        n_chunks=3,
+        accumulate_log_likelihoods=True,
+    )
+    assert rows == [slice(0, 10), slice(10, 20), slice(20, 30)]
+    np.testing.assert_allclose(result.log_likelihood, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.integration
@@ -323,7 +373,9 @@ def test_spike_order_checked_once_per_prediction(
                 accumulate_log_likelihoods=True,
             )
         assert checks == [ascending]
-        np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(
+            result.log_likelihood, expected, rtol=1e-5, atol=1e-6
+        )
         order = np.random.default_rng(10).permutation(len(spikes))
         spikes[:] = spikes[order]
         if len(args) == 4:

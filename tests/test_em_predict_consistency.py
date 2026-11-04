@@ -14,6 +14,7 @@ from sklearn.base import clone
 from non_local_detector import (
     ClusterlessDecoder,
     ContFragClusterlessClassifier,
+    NonLocalClusterlessDetector,
     time_edges_from_centers,
 )
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
@@ -87,23 +88,21 @@ class TestEstimateParametersPredictConsistency:
 
 
 @pytest.mark.unit
-class TestEncodingModelDataCleanup:
-    """estimate_parameters must delete the cached _encoding_model_data attribute.
+class TestEstimationKeepsNoInputData:
+    """estimate_parameters keeps no reference to the recording's arrays.
 
-    The subclass ``estimate_parameters`` unconditionally sets
-    ``self._encoding_model_data`` (spike times, waveform features, position)
-    before delegating to the base EM loop, which deletes it on completion.
-    Cleaning up under the wrong attribute name would silently retain these
-    (potentially large) arrays for the lifetime of every fitted model. This
-    is a fast, isolated test so the cleanup contract is checked even when
-    slow/integration tests are deselected.
+    The encoding M-step refits from the spike times, waveform features and
+    position of the estimation. They are passed to it, not stored on the
+    detector, so a fitted model does not hold (potentially large) recording
+    arrays during or after EM. This is a fast, isolated test so the contract
+    is checked even when slow/integration tests are deselected.
     """
 
-    # max_iter=1 keeps this fast; the test checks cleanup, not convergence.
+    # max_iter=1 keeps this fast; the test checks references, not convergence.
     @pytest.mark.filterwarnings(
         "ignore:EM did not converge after max_iter=:UserWarning"
     )
-    def test_estimate_parameters_deletes_encoding_model_data(self):
+    def test_encoding_refit_data_is_not_stored_on_the_detector(self):
         sim = make_simulated_run_data(
             n_tetrodes=1,
             place_field_means=np.arange(0, 40, 20),  # 2 neurons on 1 tetrode
@@ -111,27 +110,73 @@ class TestEncodingModelDataCleanup:
             seed=0,
         )
 
-        decoder = ClusterlessDecoder()
+        def stored_on(detector, arrays):
+            # Attributes and the values of dictionary attributes.
+            stored = [
+                value
+                for attribute in vars(detector).values()
+                for value in (
+                    [attribute, *attribute.values()]
+                    if isinstance(attribute, dict)
+                    else [attribute]
+                )
+            ]
+            return [
+                name
+                for name, array in arrays.items()
+                if any(value is array for value in stored)
+            ]
 
-        # A freshly-constructed decoder has not cached anything yet.
-        assert not hasattr(decoder, "_encoding_model_data")
+        detector = NonLocalClusterlessDetector()
+        original_refit = detector._refit_encoding_model
+        refit_data = []
+        held_during_refit = []
 
-        decoder.estimate_parameters(
+        def refit(weights, encoding_fit_arguments):
+            arrays = {
+                name: value
+                for name, value in encoding_fit_arguments.items()
+                if value is not None
+            }
+            refit_data.append(arrays)
+            held_during_refit.extend(stored_on(detector, arrays))
+            return original_refit(weights, encoding_fit_arguments)
+
+        detector._refit_encoding_model = refit
+        detector.estimate_parameters(
             position_time=sim.position_time,
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
             time_edges=time_edges_from_centers(sim.position_time),
             max_iter=1,
-            estimate_encoding_model=False,
+            estimate_encoding_model=True,
+            min_encoding_local_mass=0.0,
+            min_encoding_local_ess=0.0,
         )
+        del detector._refit_encoding_model
 
-        # The attribute is always created during estimate_parameters, so its
-        # absence afterward shows the cleanup ran.
-        assert not hasattr(decoder, "_encoding_model_data"), (
-            "estimate_parameters must clean up the cached _encoding_model_data "
-            "attribute when EM completes; it is still present on the model."
+        assert len(refit_data) == 1
+        assert {"position_time", "spike_times"} <= refit_data[0].keys()
+        assert not held_during_refit, (
+            f"EM stored the refit's {held_during_refit} on the detector"
         )
+        held = stored_on(detector, refit_data[0])
+        assert not held, f"the fitted detector holds the refit's {held}"
+
+    def test_em_engine_refuses_an_encoding_update_without_its_data(self):
+        """The engine needs the refit data to update a local state's encoding."""
+        from non_local_detector.exceptions import ValidationError
+        from non_local_detector.models.base import _DetectorBase
+
+        detector = NonLocalClusterlessDetector()
+        with pytest.raises(ValidationError, match="encoding_fit_arguments"):
+            _DetectorBase._run_em(
+                detector,
+                time_edges=np.arange(11) * 0.002,
+                estimate_encoding_model=True,
+            )
+        assert not hasattr(detector, "converged_")
 
 
 USER_DISCRETE_INITIAL_CONDITIONS = np.array([0.7, 0.3])
