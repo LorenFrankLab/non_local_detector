@@ -32,7 +32,11 @@ An `Environment` discretizes space into position bins.
   consecutive edges (`edge_spacing`). Position is then 2-D `(x, y)`; the model
   linearizes it with [track_linearization](https://github.com/LorenFrankLab/track_linearization)
   and moves only along the track, so a trajectory cannot jump between arms
-  that happen to be adjacent in the 1-D layout.
+  that happen to be adjacent in the 1-D layout. `edge_id` can be any unique
+  integer label for each edge. If you also call
+  `track_linearization.get_linearized_position` yourself, number `edge_id` in
+  the order NetworkX lists the edges (`graph.edges`), as
+  `track_linearization.make_track_graph` does: that function assumes it.
 
 Pass environments to a model with `environments=[Environment(...)]`. Models
 with more than one environment, such as

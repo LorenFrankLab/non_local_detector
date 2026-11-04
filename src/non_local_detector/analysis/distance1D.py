@@ -8,8 +8,12 @@ import networkx as nx
 import numpy as np
 import xarray as xr
 
-from non_local_detector.environment import find_environment_by_name
+from non_local_detector.environment import (
+    _segment_index_of_edge_id,
+    find_environment_by_name,
+)
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.models.base import _DetectorBase
 
 __all__ = [
@@ -36,7 +40,7 @@ def _get_MAP_estimate_2d_position_edges(
     posterior : xr.DataArray, shape (n_time, n_position_bins)
         Decoded posterior probability distribution over position bins.
     track_graph : nx.Graph
-        Graph representation of the track environment with nodes and edges.
+        The environment's ``track_graph``, whose edges carry ``edge_id``.
     decoder : _DetectorBase
         Fitted decoder model containing environment information and place
         bin mappings.
@@ -76,11 +80,29 @@ def _get_MAP_estimate_2d_position_edges(
 
     # Figure out which track segment it belongs to
     try:
-        edge_id = env.place_bin_center_ind_to_edge_id_  # type: ignore[attr-defined]  # legacy attribute; AttributeError fallback below
+        # Legacy attribute: the bin's position in track_graph.edges.
+        segment_index = env.place_bin_center_ind_to_edge_id_  # type: ignore[attr-defined]  # legacy attribute; AttributeError fallback below
     except AttributeError:
+        missing = [
+            edge
+            for *edge, edge_id in track_graph.edges(data="edge_id")
+            if edge_id is None
+        ]
+        if missing:
+            msg = "track_graph edges are missing the 'edge_id' attribute"
+            raise ValidationError(
+                msg,
+                expected="the environment's track_graph, whose edges carry 'edge_id'",
+                got=f"{len(missing)} edge(s) without 'edge_id', e.g. {tuple(missing[0])}",
+                hint=(
+                    "Pass the decoder's environment track_graph, or build the graph "
+                    "with track_linearization.make_track_graph, which sets edge_id."
+                ),
+            ) from None
         edge_id = np.asarray(env.place_bin_centers_nodes_df_.edge_id)  # type: ignore[union-attr]
+        segment_index = _segment_index_of_edge_id(track_graph, edge_id)
 
-    track_segment_id = edge_id[map_position_ind]
+    track_segment_id = segment_index[map_position_ind]
     mental_position_edges = np.asarray(list(track_graph.edges))[track_segment_id]
 
     return mental_position_2d, mental_position_edges
@@ -326,7 +348,8 @@ def get_trajectory_data(
     posterior : xarray.DataArray, shape (n_time, n_position_bins)
         Decoded probability of position.
     track_graph : networkx.Graph
-        Graph representation of the environment.
+        The environment's ``track_graph``; the decoded position's edge is
+        found by its ``edge_id``.
     decoder : SortedSpikesDecoder, ClusterlessDecoder, SortedSpikesClassifier, or ClusterlessClassifier
         Model used to decode the data.
     actual_projected_position : numpy.ndarray, shape (n_time, 2)
