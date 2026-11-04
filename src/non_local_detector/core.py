@@ -499,7 +499,9 @@ class TransitionProducts(Protocol):
     passes see the transition model only through these products, so a
     structured operator never has to build ``T``. An operator is a registered
     JAX pytree whose methods are pure JAX. ``weight`` is None for a stationary
-    operator or the row's (n_states, n_states) discrete transition matrix.
+    operator or the row's (n_states, n_states) discrete transition matrix,
+    which scales ``T[i, j]`` by ``weight[s_i, s_j]`` (``s`` the discrete state
+    of each bin); the checkpointed driver checks the rows on that convention.
     Expected discrete transition counts need a :class:`TransitionOperator`.
     """
 
@@ -1584,6 +1586,143 @@ def _check_continuous_block_rows(
             hint="Each block of continuous_transition_matrix between the bins "
             "of two discrete states is a conditional transition: normalize its "
             "rows to 1, or leave them zero for bins nothing can leave.",
+        )
+
+
+@functools.partial(jax.jit, static_argnames=("n_bins", "dtype", "n_states"))
+def _operator_row_sums(
+    operator: TransitionProducts,
+    n_bins: int,
+    dtype: np.dtype[Any],
+    n_states: int | None,
+) -> jax.Array:
+    """Row sums ``T @ 1`` of an operator, or its per-target-state block sums.
+
+    Jitted: dispatching the products' operations one by one compiled each
+    of them, about 1 s for a 7,202-bin structured operator, against 0.1 s
+    for one compilation.
+
+    Parameters
+    ----------
+    operator : TransitionProducts
+        Transition operator.
+    n_bins : int
+        Number of state bins.
+    dtype : np.dtype
+        Dtype of the all-ones vector and the indicator weights.
+    n_states : int or None
+        Number of discrete states of per-row weights; None for a stationary
+        operator.
+
+    Returns
+    -------
+    sums : jax.Array, shape (n_bins,) or (n_bins, n_states)
+        ``operator.backward(1, None)`` for a stationary operator. With
+        weights, column ``k`` is the product with the weight whose column
+        ``k`` is one: ``R[i, k]``, the sum of ``T[i, j]`` over the bins ``j``
+        of state ``k``, for an operator that scales ``T[i, j]`` by
+        ``weight[s_i, s_j]``.
+    """
+    ones = jnp.ones(n_bins, dtype=dtype)
+    if n_states is None:
+        return operator.backward(ones, None)
+    indicator = jnp.zeros((n_states, n_states), dtype=dtype)
+    return jnp.stack(
+        [operator.backward(ones, indicator.at[:, k].set(1)) for k in range(n_states)],
+        axis=-1,
+    )
+
+
+def _check_operator_rows(
+    operator: TransitionProducts,
+    n_bins: int,
+    dtype: DTypeLike,
+    n_states: int | None = None,
+) -> None:
+    """Raise unless no row of ``operator``'s transition creates mass.
+
+    An operator exposes only its products, so its rows are checked through
+    their sums ``T @ 1 = operator.backward(1, weight)``, with the dense
+    checks' semantics: as :func:`_check_transition_rows` for a stationary
+    operator, and as :func:`_check_continuous_block_rows`, per target state,
+    for one given per-row discrete weights (``n_states``), which assumes the
+    operator scales ``T[i, j]`` by ``weight[s_i, s_j]`` as every operator in
+    the package does. A negative entry that its row's other entries
+    outweigh is not visible in the sums. The check costs one product
+    (``n_states`` with weights) and its compilation, measured at 0.2 ms and
+    0.1 s for a 7,202-bin structured operator, against seconds for the
+    checkpointed passes over 10,000 rows.
+
+    Parameters
+    ----------
+    operator : TransitionProducts
+        Transition operator, applied to all-ones vectors.
+    n_bins : int
+        Number of state bins.
+    dtype : dtype
+        Working dtype of the products.
+    n_states : int, optional
+        Number of discrete states of the per-row weights; None for a
+        stationary operator.
+
+    Raises
+    ------
+    ValidationError
+        If the operator cannot be applied to ``n_bins`` state bins, or its
+        row sums are not finite, are negative, or exceed 1 (per target state
+        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``.
+    """
+    name = "transition_operator"
+    try:
+        sums = np.asarray(
+            _operator_row_sums(operator, n_bins, np.dtype(dtype), n_states),
+            dtype=np.float64,
+        )
+        failure = None if sums.shape[:1] == (n_bins,) else f"shape {sums.shape[:1]}"
+    except (TypeError, ValueError) as error:
+        # A product of another size fails inside JAX's shape checks.
+        failure = f"{type(error).__name__}: {error}"
+    if failure is not None:
+        msg = f"{name} gives row sums of the wrong shape"
+        raise ValidationError(
+            msg,
+            expected=f"shape ({n_bins},), one sum per state bin",
+            got=failure,
+            hint="The operator's state bins must be those of "
+            "initial_distribution and state_ind.",
+        )
+    got = None
+    if not np.all(np.isfinite(sums)):
+        got = "non-finite row sums (nan or inf)"
+    elif sums.min() < 0:
+        where = np.unravel_index(int(np.argmin(sums)), sums.shape)
+        got = f"negative row sum {sums.min():.6g} at row {where[0]}"
+    else:
+        above = ~(sums <= 1 + PROBABILITY_SUM_TOLERANCE)
+        if above.any():
+            where = np.unravel_index(int(np.argmax(above)), above.shape)
+            got = (
+                f"{int(above.sum())} of {above.size} rows sum above 1 (row "
+                f"{where[0]} sums to {sums[where]:.6g})"
+                if n_states is None
+                else f"{int(above.sum())} of {above.size} (bin, target state) "
+                f"rows sum above 1 (bin {where[0]} to discrete state "
+                f"{where[1]} sums to {sums[where]:.6g})"
+            )
+    if got is not None:
+        msg = f"{name} rows must be probability distributions"
+        raise ValidationError(
+            msg,
+            expected="rows summing to at most 1 (within "
+            f"{PROBABILITY_SUM_TOLERANCE:g})"
+            + ("" if n_states is None else " over the bins of each discrete state")
+            + "; a row below 1 loses probability, as for a bin with no "
+            "outgoing transition",
+            got=got,
+            hint="Normalize the operator's conditional transitions so each "
+            "row sums to 1, leaving zero rows for bins nothing can leave. A "
+            "detector's operator holds its continuous transitions' blocks, "
+            "such as a custom transition's structured_block.",
         )
 
 

@@ -14,7 +14,12 @@ from non_local_detector.core import (
     _StationaryTransition,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.transition_operators import build_transition_operator
+from non_local_detector.exceptions import ValidationError
+from non_local_detector.transition_operators import (
+    BlockTransitionOperator,
+    DenseBlock,
+    build_transition_operator,
+)
 from tests.conftest import set_place_grid
 
 pytestmark = pytest.mark.unit
@@ -152,3 +157,146 @@ def test_checkpointed_rejects_an_operator_without_products():
         TypeError, match="TransitionProducts; ForwardOnly lacks backward"
     ):
         _checkpointed(ForwardOnly(_matrix()), lambda edges, **kw: None)
+
+
+def _bad_block_operator(matrix):
+    """One-state block operator over ``matrix``, bound to a unit discrete weight."""
+    return BlockTransitionOperator(
+        ((DenseBlock(np.asarray(matrix)),),), (N_BINS,)
+    ).bind_discrete(np.ones((1, 1)))
+
+
+# Operators whose joint rows all sum to 1.5: each would inflate the evidence.
+INFLATING_OPERATORS = {
+    "stationary": lambda: _StationaryTransition(1.5 * _matrix()),
+    "products_only": lambda: _ForwardBackwardOnly(1.5 * _matrix()),
+    "block": lambda: _bad_block_operator(1.5 * _matrix()),
+    "fused": lambda: _bad_block_operator(1.5 * _matrix()).fused(),
+}
+
+
+def _rejects_before_any_callback(operator, *pieces, **kwargs):
+    calls = []
+    with pytest.raises(ValidationError) as caught:
+        _checkpointed(
+            operator,
+            lambda edges, **kw: calls.append(1) or np.zeros((4, N_BINS)),
+            **kwargs,
+        )
+    message = str(caught.value)
+    for piece in pieces:
+        assert piece in message, message
+    assert "Hint:" in message, message
+    assert calls == []
+    return message
+
+
+@pytest.mark.parametrize("name", INFLATING_OPERATORS)
+def test_checkpointed_rejects_operator_rows_above_one(name):
+    """An operator's rows ``T @ 1`` are checked like a dense matrix's rows.
+
+    ``_StationaryTransition(1.5 * A)`` used to be accepted (raising the
+    marginal log likelihood) while ``transition_matrix=1.5 * A`` raised.
+    """
+    _rejects_before_any_callback(
+        INFLATING_OPERATORS[name](),
+        "transition_operator rows must be probability distributions",
+        "4 of 4 rows sum above 1 (row 0 sums to 1.5)",
+    )
+
+
+def test_checkpointed_rejects_nonfinite_operator_rows():
+    matrix = np.array(_matrix())
+    matrix[2, 1] = np.nan
+    _rejects_before_any_callback(
+        _StationaryTransition(jnp.asarray(matrix)),
+        "transition_operator rows must be probability distributions",
+        "non-finite row sums",
+    )
+
+
+def test_checkpointed_rejects_operator_of_another_size():
+    rng = np.random.default_rng(6)
+    matrix = rng.random((N_BINS + 1, N_BINS + 1), dtype=np.float32)
+    _rejects_before_any_callback(
+        _ForwardBackwardOnly(jnp.asarray(matrix / matrix.sum(1, keepdims=True))),
+        "transition_operator gives row sums of the wrong shape",
+        f"Expected: shape ({N_BINS},)",
+    )
+
+
+def test_checkpointed_accepts_substochastic_operator_rows():
+    """Rows below 1, such as bins nothing can leave, are valid as for a matrix."""
+    matrix = np.array(_matrix())
+    matrix[1] = 0
+    _checkpointed(
+        _StationaryTransition(jnp.asarray(matrix)),
+        lambda edges, **kw: np.zeros((4, N_BINS))[kw["row_slice"]],
+    )
+
+
+def _covariate_block_sums_above_one():
+    """Continuous transition whose bin 2 sums to 1.2 over discrete state 0's bins.
+
+    Its full rows sum to at most 1.2 * 0.5 + 0.8 * 0.5 = 1 under the
+    discrete rows of 0.5 used below, but a discrete row (1, 0) would make bin
+    2's joint row sum to 1.2, so the dense covariate drivers reject it.
+    """
+    continuous = np.full((N_BINS, N_BINS), 0.25, dtype=np.float32)
+    continuous[2] = [0.6, 0.6, 0.4, 0.4]
+    return continuous
+
+
+@pytest.mark.parametrize("name", ["covariate", "block", "fused"])
+def test_checkpointed_rejects_covariate_operator_block_rows_above_one(name):
+    """With per-row weights, each bin's row is checked per target state."""
+    continuous = _covariate_block_sums_above_one()
+    if name == "covariate":
+        operator = _CovariateTransition.create(jnp.asarray(continuous), STATE_IND, 2)
+    else:
+        blocks = tuple(
+            tuple(
+                DenseBlock(
+                    continuous[np.ix_(np.equal(STATE_IND, i), np.equal(STATE_IND, j))]
+                )
+                for j in range(2)
+            )
+            for i in range(2)
+        )
+        operator = BlockTransitionOperator(blocks, (2, 2))
+        operator = operator.fused() if name == "fused" else operator
+    _rejects_before_any_callback(
+        operator,
+        "transition_operator rows must be probability distributions",
+        "bin 2 to discrete state 0 sums to 1.2",
+        discrete_transition_matrix=np.full((4, 2, 2), 0.5),
+    )
+
+
+@pytest.mark.parametrize("name", OPERATORS)
+def test_checkpointed_accepts_valid_operators(name):
+    """The package's operators pass the check on both transition paths."""
+    operator = OPERATORS[name]()
+    if name in ("block", "fused"):
+        operator = _block_operator().bind_discrete(np.ones((1, 1)))
+        operator = operator.fused() if name == "fused" else operator
+        state_ind = np.zeros(N_BINS, dtype=int)
+    else:
+        state_ind = STATE_IND
+    weights = (
+        {}
+        if name == "stationary"
+        else {
+            "discrete_transition_matrix": np.full(
+                (4, state_ind.max() + 1, state_ind.max() + 1), 1 / (state_ind.max() + 1)
+            )
+        }
+    )
+    checkpointed_forward_backward(
+        np.arange(5) * 0.002,
+        np.full(N_BINS, 1 / N_BINS, dtype=np.float32),
+        lambda edges, **kw: np.zeros((4, N_BINS))[kw["row_slice"]],
+        transition_operator=operator,
+        state_ind=state_ind,
+        **weights,
+    )
