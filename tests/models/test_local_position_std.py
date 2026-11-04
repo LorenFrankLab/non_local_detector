@@ -86,14 +86,14 @@ class TestLocalPositionStdValidation:
 
 @pytest.mark.unit
 class TestMultiBinLocalStateIndex:
-    """Test initialize_state_index with multi-bin local."""
+    """Test _initialize_state_index with multi-bin local."""
 
     def test_legacy_local_gets_one_bin(self):
         """Legacy local_position_std=None gives local state 1 bin."""
         detector = NonLocalSortedSpikesDetector()
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         # Default NonLocal model: state 0 = Local (1 bin),
         # state 1 = No-Spike (1 bin), states 2,3 = Non-Local (spatial bins)
@@ -104,7 +104,7 @@ class TestMultiBinLocalStateIndex:
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         # Local state should now have the same number of bins as the non-local
         # states (states 2 and 3)
@@ -118,7 +118,7 @@ class TestMultiBinLocalStateIndex:
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         n_local_bins = detector.bin_sizes_[0]
         # First n_local_bins entries in state_ind_ should all be 0 (local state)
@@ -129,7 +129,7 @@ class TestMultiBinLocalStateIndex:
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         n_local_bins = detector.bin_sizes_[0]
         local_interior = detector.is_track_interior_state_bins_[:n_local_bins]
@@ -141,15 +141,15 @@ class TestMultiBinLocalStateIndex:
 
 @pytest.mark.unit
 class TestMultiBinLocalInitialConditions:
-    """Test initialize_initial_conditions with multi-bin local."""
+    """Test _initialize_initial_conditions with multi-bin local."""
 
     def test_legacy_local_initial_conditions_unchanged(self):
         """Legacy local_position_std=None gives the Local state initial condition [1.0]."""
         detector = NonLocalSortedSpikesDetector()
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
-        detector.initialize_initial_conditions()
+        detector._initialize_state_index()
+        detector._initialize_initial_conditions()
 
         # The single Local bin carries all of the Local state's mass.
         np.testing.assert_array_equal(
@@ -161,8 +161,8 @@ class TestMultiBinLocalInitialConditions:
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
-        detector.initialize_initial_conditions()
+        detector._initialize_state_index()
+        detector._initialize_initial_conditions()
 
         n_local_bins = detector.bin_sizes_[0]
         assert n_local_bins > 1
@@ -177,9 +177,9 @@ class TestMultiBinLocalInitialConditions:
 def _init_detector_transitions(detector, position):
     """Helper: initialize detector through continuous transitions."""
     detector.initialize_environments(position)
-    detector.initialize_state_index()
-    detector.initialize_initial_conditions()
-    detector.initialize_continuous_state_transition(
+    detector._initialize_state_index()
+    detector._initialize_initial_conditions()
+    detector._initialize_continuous_state_transition(
         detector.continuous_transition_types, position
     )
 
@@ -292,7 +292,7 @@ class TestComputeLocalPositionKernel:
         detector = NonLocalSortedSpikesDetector(local_position_std=local_position_std)
         position = np.linspace(0, 100, 50)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
         return detector, position
 
     def test_kernel_is_valid_log_probability(self):
@@ -458,7 +458,7 @@ class TestComputeLocalPositionKernel:
 
         detector = NonLocalSortedSpikesDetector(local_position_std=10.0)
         detector.environments = (env,)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         # Animal at position 50
         time = np.array([0.5])
@@ -500,7 +500,7 @@ class TestComputeLocalPositionKernel:
 
         detector = NonLocalSortedSpikesDetector(local_position_std=10.0)
         detector.environments = (env,)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         # Position exactly on the arm-A-end edge.
         is_interior = env.is_track_interior_.ravel()
@@ -563,7 +563,7 @@ class TestDeltaKernel:
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
         position = np.linspace(0, 100, 50)[:, np.newaxis]
         detector.initialize_environments(position)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
         return detector, detector.environments[0]
 
     def test_kernel_is_one_hot_at_animal_bin(self):
@@ -681,7 +681,7 @@ class TestDeltaKernel:
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
         detector.environments = (env,)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         is_interior = env.is_track_interior_.ravel()
         gap_bins = np.where(~is_interior)[0]
@@ -727,7 +727,7 @@ class TestDeltaKernel:
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
         detector.environments = (env,)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         # Use the exact arm-A-end edge value, as real linearized data can.
         is_interior = env.is_track_interior_.ravel()
@@ -779,7 +779,7 @@ class TestDeltaKernel:
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
         detector.environments = (env,)
-        detector.initialize_state_index()
+        detector._initialize_state_index()
 
         time = np.array([0.5])
         position_time = np.array([0.0, 1.0])

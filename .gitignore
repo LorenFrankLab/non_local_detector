@@ -157,12 +157,16 @@ _version.py
 *.pkl
 # Exception: commit golden regression data for version control
 !tests/golden_data/*.pkl
+# Exception: artifacts written by earlier versions, for compatibility tests
+!tests/compat_data/*.pkl
+!tests/compat_data/*/*.pkl
 *.png
 
 # Git worktrees
 .worktrees/
 *.parquet
 *.nc
+!tests/compat_data/*/*.nc
 /viewer_bundles
 
 # Local profiling evidence and diagnostic reports

@@ -23,7 +23,7 @@ from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
 )
-from non_local_detector.model_checking._clusterless_models import electrode_model
+from non_local_detector.model_checking._clusterless_models import DiffusionElectrode
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.time_edges import time_edges_from_centers
 from tests.likelihoods.conftest import training_mark_references
@@ -433,7 +433,7 @@ def test_diffusion_model_checking_follows_the_decoder_in_unresolved_bins():
     reached = unresolved & (np.abs(centers[:, 0] - 50.0) < 8.0)
     assert reached.sum() > 3
 
-    electrode = electrode_model(model, "clusterless_diffusion", 0)
+    electrode = DiffusionElectrode(model, 0)
     np.testing.assert_array_equal(electrode.ground_intensity(centers[reached]), 0.0)
     assert np.all(electrode.ground_intensity(centers[~unresolved]) >= 0.0)
 

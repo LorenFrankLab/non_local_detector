@@ -1,5 +1,7 @@
 """Grid preparation is per prediction; chunk workspace is per requested row."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -128,7 +130,7 @@ def test_detector_chunk_callbacks_do_not_scan_the_complete_grid(
                 time[rows], *log_likelihood_args, row_slice=rows, is_missing=None
             )
             assert result.shape[0] == 20
-        return ()
+        return SimpleNamespace(degenerate_indices=np.empty(0, dtype=int))
 
     from non_local_detector.models import base
 

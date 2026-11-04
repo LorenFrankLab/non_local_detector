@@ -52,6 +52,8 @@ from tests.conftest import assert_stochastic_matrix
 class _FixedTransition:
     """Continuous transition object with deterministic test matrix."""
 
+    environment_name = ""
+
     def __init__(self, transition_matrix: np.ndarray):
         self.transition_matrix = np.asarray(transition_matrix, dtype=float)
 
@@ -126,7 +128,13 @@ class _FixedLikelihoodDetector(_DetectorBase):
     def compute_log_likelihood(self, time_edges, *args, is_missing=None):
         return self._fixed_log_likelihoods
 
+    def _validate_time_contract(self):
+        """No encoding model, so no fitted encoding units to check."""
+
     def fit_encoding_model(self, *args, **kwargs):
+        return None
+
+    def _fit_encoding_model(self, *args, **kwargs):
         return None
 
 

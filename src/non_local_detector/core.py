@@ -11,11 +11,15 @@ Adapted from dynamax (https://github.com/probml/dynamax) with modifications.
 import functools
 import logging
 from collections.abc import Callable
-from typing import Any, NamedTuple, TypeAlias, cast
+from typing import Any, NamedTuple, Protocol, TypeAlias, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import DTypeLike
+
+from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
+from non_local_detector.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -282,19 +286,15 @@ def _degenerate_and_nan_masks_device(
 def _accumulate_chunk_degeneracy(
     log_likelihood_chunk: ArrayLike,
     time_inds: np.ndarray,
-    degenerate_indices_out: list[int] | None,
-) -> tuple[int, int]:
-    """Tally a chunk's degenerate/NaN steps at one host sync point.
+) -> tuple[np.ndarray, int]:
+    """Find a chunk's degenerate and NaN steps at one host sync point.
 
-    Returns ``(n_degenerate, n_nan)`` for the chunk and, when
-    ``degenerate_indices_out`` is provided, appends the *global* indices of the
-    chunk's all-``-inf`` steps (``time_inds`` maps chunk positions to global
-    time indices).
+    Returns the *global* indices of the chunk's all-``-inf`` steps
+    (``time_inds`` maps chunk positions to global time indices) and the
+    chunk's number of NaN steps.
     """
     degenerate_mask, nan_mask = _degenerate_and_nan_masks(log_likelihood_chunk)
-    if degenerate_indices_out is not None:
-        degenerate_indices_out.extend(np.asarray(time_inds)[degenerate_mask].tolist())
-    return int(degenerate_mask.sum()), int(nan_mask.sum())
+    return np.asarray(time_inds)[degenerate_mask], int(nan_mask.sum())
 
 
 # Per-algorithm phrasing for the degeneracy diagnostics. Filtering and Viterbi
@@ -480,14 +480,76 @@ _HMM_SCAN_UNROLL = 8
 
 ## Transition operators and the shared passes ##
 # Every HMM pass (filter, smoother, Viterbi) has one scan body below. The
-# transition model enters only through an operator: a registered JAX pytree
-# with ``forward(p, weight)`` (``p @ T``), ``backward(v, weight)``
-# (``T @ v``) and ``pair_products(filtered, ratio, weight)`` (the per
-# discrete-state-pair terms of ``filtered @ T * ratio``), where ``weight`` is
-# None or the row's (n_states, n_states) discrete transition matrix. Viterbi
-# uses the operator's ``log()`` twin, whose ``scores`` gives the max-plus
-# terms. The structured operators in ``transition_operators`` implement the
-# same ``forward``/``backward``/``pair_products`` methods.
+# transition model enters only through an operator: the filter and smoother
+# need ``TransitionProducts``, and the smoother's transition statistics need a
+# full ``TransitionOperator``. Viterbi uses the dense operators' ``log()``
+# twin, whose ``scores`` gives the max-plus terms.
+
+
+@runtime_checkable
+class TransitionProducts(Protocol):
+    """Products with a joint transition ``T`` between state bins.
+
+    The minimum interface of an operator for filtering and smoothing: the
+    passes see the transition model only through these products, so a
+    structured operator never has to build ``T``. An operator is a registered
+    JAX pytree whose methods are pure JAX. ``weight`` is None for a stationary
+    operator or the row's (n_states, n_states) discrete transition matrix.
+    Expected discrete transition counts need a :class:`TransitionOperator`.
+    """
+
+    def forward(
+        self, probabilities: jax.Array, weight: jax.Array | None, /
+    ) -> jax.Array:
+        """``probabilities @ T``, shape (n_state_bins,)."""
+        ...
+
+    def backward(self, values: jax.Array, weight: jax.Array | None, /) -> jax.Array:
+        """``T @ values``, shape (n_state_bins,)."""
+        ...
+
+
+@runtime_checkable
+class TransitionOperator(TransitionProducts, Protocol):
+    """Transition products plus the per-state-pair terms of EM's statistics.
+
+    The interface an operator needs when the smoother also returns expected
+    discrete transition counts. An implementer must define ``forward``,
+    ``backward`` and ``pair_products``. ``backward_and_pairs`` is inherited,
+    unfused, only by a class that subclasses this protocol; a class that
+    satisfies it structurally, without subclassing, must define it too. An
+    operator that shares work between the two products overrides it.
+
+    Implementers are the dense ``_StationaryTransition`` and
+    ``_CovariateTransition`` here and the structured
+    ``BlockTransitionOperator`` and ``FusedBlockTransition`` in
+    ``transition_operators``.
+    """
+
+    def pair_products(
+        self, filtered: jax.Array, ratio: jax.Array, weight: jax.Array | None, /
+    ) -> jax.Array:
+        """Per discrete-state-pair terms of ``filtered @ T * ratio``.
+
+        With a filtered row and the smoother ratio ``smoothed_{t+1} /
+        predicted_{t+1}`` these are one step's expected discrete transition
+        counts, shape (n_states, n_states).
+        """
+        ...
+
+    def backward_and_pairs(
+        self, values: jax.Array, filtered: jax.Array, weight: jax.Array | None, /
+    ) -> tuple[jax.Array, jax.Array]:
+        """``backward(values)`` and ``pair_products(filtered, values)``.
+
+        Returns
+        -------
+        backward : jax.Array, shape (n_state_bins,)
+        pairs : jax.Array, shape (n_states, n_states)
+        """
+        return self.backward(values, weight), self.pair_products(
+            filtered, values, weight
+        )
 
 
 def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jax.Array:
@@ -640,7 +702,7 @@ class _LogCovariateTransition(NamedTuple):
 
 
 @jax.tree_util.register_pytree_node_class
-class _StationaryTransition:
+class _StationaryTransition(TransitionOperator):
     """Time-invariant joint transition between state bins, ``T[i, j]``.
 
     Parameters
@@ -666,20 +728,22 @@ class _StationaryTransition:
     ) -> None:
         self.matrix, self.state_ind, self.n_states = matrix, state_ind, n_states
 
-    def forward(self, probabilities: jax.Array, weight: None = None) -> jax.Array:
+    def forward(
+        self, probabilities: jax.Array, weight: jax.Array | None = None
+    ) -> jax.Array:
         """``probabilities @ T``, shape (n_state_bins,)."""
         _reject_weight(weight)
         return jnp.matmul(
             probabilities, self.matrix, precision=jax.lax.Precision.HIGHEST
         )
 
-    def backward(self, values: jax.Array, weight: None = None) -> jax.Array:
+    def backward(self, values: jax.Array, weight: jax.Array | None = None) -> jax.Array:
         """``T @ values``, shape (n_state_bins,)."""
         _reject_weight(weight)
         return jnp.matmul(self.matrix, values, precision=jax.lax.Precision.HIGHEST)
 
     def pair_products(
-        self, filtered: jax.Array, ratio: jax.Array, weight: None = None
+        self, filtered: jax.Array, ratio: jax.Array, weight: jax.Array | None = None
     ) -> jax.Array:
         """Per-state-pair terms of ``filtered @ T * ratio``, (n_states, n_states)."""
         _reject_weight(weight)
@@ -718,8 +782,16 @@ def _reject_weight(weight: object) -> None:
         raise TypeError(msg)
 
 
+def _require_weight(weight: jax.Array | None) -> jax.Array:
+    """Trace-time guard: a covariate operator needs each row's discrete weights."""
+    if weight is None:
+        msg = "A covariate-dependent transition needs each row's discrete weights"
+        raise TypeError(msg)
+    return weight
+
+
 @jax.tree_util.register_pytree_node_class
-class _CovariateTransition:
+class _CovariateTransition(TransitionOperator):
     """Joint transition ``T[i, j] = C[i, j] * D_t[s_i, s_j]``, never built.
 
     Each product applies the row's discrete matrix ``D_t`` (the ``weight``)
@@ -753,20 +825,28 @@ class _CovariateTransition:
             _state_one_hot(state_ind, n_states, continuous.dtype),
         )
 
-    def forward(self, probabilities: jax.Array, weight: jax.Array) -> jax.Array:
+    def forward(self, probabilities: jax.Array, weight: jax.Array | None) -> jax.Array:
         """``probabilities @ T``, shape (n_state_bins,)."""
         return _covariate_forward_product(
-            probabilities, weight, self.continuous, self.state_ind, self.one_hot
+            probabilities,
+            _require_weight(weight),
+            self.continuous,
+            self.state_ind,
+            self.one_hot,
         )
 
-    def backward(self, values: jax.Array, weight: jax.Array) -> jax.Array:
+    def backward(self, values: jax.Array, weight: jax.Array | None) -> jax.Array:
         """``T @ values``, shape (n_state_bins,)."""
         return _covariate_backward_product(
-            values, weight, self.continuous, self.state_ind, self.one_hot
+            values,
+            _require_weight(weight),
+            self.continuous,
+            self.state_ind,
+            self.one_hot,
         )
 
     def pair_products(
-        self, filtered: jax.Array, ratio: jax.Array, weight: jax.Array
+        self, filtered: jax.Array, ratio: jax.Array, weight: jax.Array | None
     ) -> jax.Array:
         """Per-state-pair terms of ``filtered @ T * ratio``, (n_states, n_states).
 
@@ -777,7 +857,7 @@ class _CovariateTransition:
         per_source = jnp.matmul(
             self.one_hot * filtered, self.continuous, precision=precision
         )
-        return weight * jnp.matmul(
+        return _require_weight(weight) * jnp.matmul(
             per_source, (self.one_hot * ratio).T, precision=precision
         )
 
@@ -802,7 +882,7 @@ def _filter_scan(
     evidence: ArrayLike | float,
     log_likelihoods: ArrayLike,
     weights: ArrayLike | None,
-    operator: Any,
+    operator: TransitionProducts,
     *,
     keep_rows: bool,
     keep_predictive: bool,
@@ -820,8 +900,7 @@ def _filter_scan(
     weights : array, shape (n_rows, n_states, n_states), or None
         Per-row discrete transitions handed to ``operator`` (None for a
         stationary operator).
-    operator : transition operator
-        See the section comment above.
+    operator : TransitionProducts
     keep_rows, keep_predictive, keep_increments : bool
         Which per-row outputs to emit (static under jit).
 
@@ -862,7 +941,7 @@ def _filter_scan(
 def _smoother_scan(
     filtered: ArrayLike,
     weights: ArrayLike | None,
-    operator: Any,
+    operator: TransitionProducts,
     next_smoothed: ArrayLike,
     rows: ArrayLike,
     n_time: int,
@@ -875,7 +954,8 @@ def _smoother_scan(
     ----------
     filtered : array, shape (n_rows, n_state_bins)
     weights : array, shape (n_rows, n_states, n_states), or None
-    operator : transition operator
+    operator : TransitionProducts
+        A :class:`TransitionOperator` when ``pair_statistics`` is set.
     next_smoothed : array, shape (n_state_bins,)
         Smoothed row after the last row (any row of the right shape for the
         recording's final row, which is its own smoothed row).
@@ -886,7 +966,8 @@ def _smoother_scan(
     pair_statistics : bool
         Also return each row's expected discrete transition counts to the
         next row, ``operator.pair_products`` of the filtered row and
-        ``smoothed_{t+1} / predicted_{t+1}`` (zero on the terminal row).
+        ``smoothed_{t+1} / predicted_{t+1}`` (zero on the terminal row),
+        computed with ``operator.backward_and_pairs``.
 
     Returns
     -------
@@ -896,16 +977,24 @@ def _smoother_scan(
         (n_rows, n_states, n_states).
     """
 
+    paired: TransitionOperator | None = None
+    if pair_statistics:
+        if not isinstance(operator, TransitionOperator):
+            msg = (
+                "Transition statistics need a TransitionOperator; "
+                f"{type(operator).__name__} has only the transition products"
+            )
+            raise TypeError(msg)
+        paired = operator
+
     def step(following: jax.Array, args: tuple[Any, Any, Any]) -> Any:
         current, weight, row = args
         predicted = operator.forward(current, weight)
         ratio = _divide_safe(following, predicted)
-        if pair_statistics and hasattr(operator, "backward_and_pairs"):
-            backward, pairs = operator.backward_and_pairs(ratio, current, weight)
+        if paired is not None:
+            backward, pairs = paired.backward_and_pairs(ratio, current, weight)
         else:
             backward = operator.backward(ratio, weight)
-            if pair_statistics:
-                pairs = operator.pair_products(current, ratio, weight)
         smoothed = current * backward * (row < n_time - 1) + current * (
             row == n_time - 1
         )
@@ -1256,96 +1345,372 @@ def _require_row_slice_aware(
 
     Raises
     ------
-    ValueError
+    ValidationError
         If ``n_chunks > 1`` and the callback is not ``row_slice_aware``.
     """
     if n_chunks > 1 and not accepts_row_slice(log_likelihood_func):
         msg = (
             f"n_chunks={n_chunks} without cached log likelihoods evaluates the "
             "likelihood callback chunk by chunk, which needs a callback marked "
-            "with non_local_detector.core.row_slice_aware that bins against the "
-            "full time and returns the rows of row_slice. Mark the callback, "
-            "pass log_likelihoods or cache_log_likelihoods=True, or use "
-            "n_chunks=1."
+            "with non_local_detector.core.row_slice_aware"
         )
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected="a row_slice_aware callback that bins against the full "
+            "time and returns the rows of row_slice",
+            got=f"unmarked {type(log_likelihood_func).__name__}",
+            hint="Mark the callback, pass log_likelihoods or "
+            "cache_log_likelihoods=True, or use n_chunks=1.",
+        )
 
 
-def _check_shape(name: str, value: Any, expected: tuple[int, ...]) -> None:
-    """Raise ``ValueError`` unless ``value`` (an array) has shape ``expected``."""
+_SUPPORTED_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
+
+_CALLBACK_SHAPE_HINT = (
+    "log_likelihood_func must return one row per requested time bin and one "
+    "column per state bin (len(initial_distribution))."
+)
+
+
+def _check_shape(
+    name: str, value: Any, expected: tuple[int, ...], hint: str | None = None
+) -> None:
+    """Raise ``ValidationError`` unless ``value`` (an array) has shape ``expected``."""
     if np.shape(value) != expected:
-        msg = f"{name} must have shape {expected}, got {np.shape(value)}"
-        raise ValueError(msg)
+        msg = f"{name} has the wrong shape"
+        raise ValidationError(
+            msg,
+            expected=f"shape {expected}",
+            got=f"shape {np.shape(value)}",
+            hint=hint,
+        )
 
 
-def _check_driver_inputs(
+def _validate_dtype(dtype: DTypeLike) -> np.dtype[Any]:
+    """The working dtype: float32, or float64 with JAX's 64-bit mode on."""
+    dtype = np.dtype(dtype)
+    if dtype not in _SUPPORTED_DTYPES:
+        msg = "dtype must be float32 or float64"
+        raise ValidationError(
+            msg,
+            expected="float32 or float64",
+            got=str(dtype),
+            hint="Pass dtype=np.float32 (the default) or np.float64; other "
+            "dtypes are rejected, not converted.",
+        )
+    if dtype == np.float64 and not jax.config.x64_enabled:  # type: ignore[attr-defined]  # jax.config attributes are defined dynamically
+        msg = "float64 requires JAX's 64-bit mode; precision is not silently downgraded"
+        raise ValidationError(
+            msg,
+            expected="JAX_ENABLE_X64=1 for dtype=float64",
+            got="64-bit mode disabled",
+            hint="Set the environment variable JAX_ENABLE_X64=1 before "
+            "importing JAX, or call jax.config.update('jax_enable_x64', True) "
+            "at startup; otherwise pass dtype=np.float32.",
+        )
+    return dtype
+
+
+def _validate_time(time: Any) -> int:
+    """Number of time bins of a dense driver's nonempty ``time`` vector."""
+    if np.ndim(time) != 1 or np.shape(time)[0] == 0:
+        msg = "time must be a nonempty vector"
+        raise ValidationError(
+            msg,
+            expected="shape (n_time,) with n_time >= 1",
+            got=f"shape {np.shape(time)}",
+            hint="Pass the decoding time bin centers as a 1-D array.",
+        )
+    return int(np.shape(time)[0])
+
+
+def _bad_entries(
+    values: np.ndarray, sums: np.ndarray, describe: Callable[[tuple[int, ...]], str]
+) -> str | None:
+    """Describe a non-finite or negative entry of ``values``, or return None.
+
+    ``sums`` are the row sums already computed, which carry any infinity.
+    """
+    minimum = values.min()
+    if not (np.isfinite(minimum) and np.all(np.isfinite(sums))):
+        return "non-finite entries (nan or inf)"
+    if minimum < 0:
+        where = np.unravel_index(int(np.argmin(values)), values.shape)
+        return f"minimum entry {minimum:.6g} at {describe(tuple(map(int, where)))}"
+    return None
+
+
+def _check_distribution(name: str, values: np.ndarray) -> None:
+    """Raise unless ``values`` is nonnegative, finite and sums to 1."""
+    total = values.sum(dtype=np.float64)
+    got = _bad_entries(values, total, lambda where: f"state bin {where[0]}")
+    if got is None and not abs(total - 1) <= PROBABILITY_SUM_TOLERANCE:
+        got = f"sums to {total:.6g}"
+    if got is not None:
+        msg = f"{name} must be a probability distribution over state bins"
+        raise ValidationError(
+            msg,
+            expected="nonnegative, finite entries summing to 1 (within "
+            f"{PROBABILITY_SUM_TOLERANCE:g})",
+            got=got,
+            hint=f"Pass nonnegative probabilities normalized to sum to 1, e.g. "
+            f"{name} / {name}.sum().",
+        )
+
+
+def _check_transition_rows(name: str, matrix: np.ndarray) -> None:
+    """Raise unless no row of the joint transition ``matrix`` creates mass.
+
+    A row may sum to less than 1: the detectors build all-zero continuous
+    rows for bins nothing can leave, such as an ``EmpiricalMovement`` bin
+    never visited, so the joint row keeps only its other discrete states'
+    mass. Such a row lowers the evidence; a row above 1 would inflate it.
+    """
+    row_sums = matrix.sum(axis=1, dtype=np.float64)
+    got = _bad_entries(
+        matrix, row_sums, lambda where: f"row {where[0]}, column {where[1]}"
+    )
+    if got is None:
+        above = ~(row_sums <= 1 + PROBABILITY_SUM_TOLERANCE)
+        if above.any():
+            first = int(np.argmax(above))
+            got = (
+                f"{int(above.sum())} of {above.size} rows sum above 1 "
+                f"(row {first} sums to {row_sums[first]:.6g})"
+            )
+    if got is not None:
+        msg = f"{name} rows must be probability distributions"
+        raise ValidationError(
+            msg,
+            expected="nonnegative, finite entries with each row summing to at "
+            f"most 1 (within {PROBABILITY_SUM_TOLERANCE:g}); a row below 1 "
+            "loses probability, as for a bin with no outgoing transition",
+            got=got,
+            hint=f"Normalize each row: {name} / {name}.sum(axis=1, "
+            "keepdims=True), leaving all-zero rows for bins nothing can leave.",
+        )
+
+
+def _check_discrete_rows(discrete_transition_matrix: np.ndarray) -> None:
+    """Raise unless every row of every time bin is a probability distribution."""
+    name = "discrete_transition_matrix"
+    row_sums = discrete_transition_matrix.sum(axis=-1, dtype=np.float64)
+    got = _bad_entries(
+        discrete_transition_matrix,
+        row_sums,
+        lambda where: f"time {where[0]}, from state {where[1]} to state {where[2]}",
+    )
+    if got is None:
+        off = ~(np.abs(row_sums - 1) <= PROBABILITY_SUM_TOLERANCE)
+        if off.any():
+            time_ind, state = np.unravel_index(int(np.argmax(off)), off.shape)
+            got = (
+                f"{int(off.sum())} of {off.size} rows sum to other than 1 (time "
+                f"{time_ind}, from state {state}, sums to "
+                f"{row_sums[time_ind, state]:.6g})"
+            )
+    if got is not None:
+        msg = f"{name} rows must be probability distributions"
+        raise ValidationError(
+            msg,
+            expected="nonnegative, finite entries with each row of each time "
+            f"bin summing to 1 (within {PROBABILITY_SUM_TOLERANCE:g})",
+            got=got,
+            hint=f"Normalize each row: {name} / {name}.sum(axis=-1, keepdims=True).",
+        )
+
+
+def _check_continuous_block_rows(
+    continuous_transition_matrix: np.ndarray, state_ind: np.ndarray, n_states: int
+) -> None:
+    """Raise unless each bin's row sums to at most 1 within each target state.
+
+    The covariate-dependent joint transition is ``C[i, j] * D_t[s_i, s_j]``,
+    whose row ``i`` sums to ``sum_k D_t[s_i, k] * R[i, k]`` with ``R[i, k]``
+    the sum of ``C[i]`` over the bins of state ``k``. With every ``D_t`` row a
+    distribution, ``R <= 1`` is exactly what keeps every joint row at most 1
+    for every ``D_t``, without building a joint matrix.
+    """
+    name = "continuous_transition_matrix"
+    states = np.zeros(
+        (len(state_ind), n_states),
+        dtype=np.result_type(continuous_transition_matrix.dtype, np.float32),
+    )
+    states[np.arange(len(state_ind)), state_ind] = 1
+    block_sums = continuous_transition_matrix @ states
+    got = _bad_entries(
+        continuous_transition_matrix,
+        block_sums,
+        lambda where: f"row {where[0]}, column {where[1]}",
+    )
+    if got is None:
+        above = ~(block_sums <= 1 + PROBABILITY_SUM_TOLERANCE)
+        if above.any():
+            row, state = np.unravel_index(int(np.argmax(above)), above.shape)
+            got = (
+                f"{int(above.sum())} of {above.size} (bin, target state) rows "
+                f"sum above 1 (bin {row} to discrete state {state} sums to "
+                f"{block_sums[row, state]:.6g})"
+            )
+    if got is not None:
+        msg = f"{name} rows must be probability distributions"
+        raise ValidationError(
+            msg,
+            expected="nonnegative, finite entries with each bin's row summing "
+            f"to at most 1 (within {PROBABILITY_SUM_TOLERANCE:g}) over the bins "
+            "of each discrete state",
+            got=got,
+            hint="Each block of continuous_transition_matrix between the bins "
+            "of two discrete states is a conditional transition: normalize its "
+            "rows to 1, or leave them zero for bins nothing can leave.",
+        )
+
+
+def _validate_hmm_inputs(
     *,
-    time: Any,
+    n_time: int,
     initial_distribution: Any,
-    dtype: Any,
+    dtype: DTypeLike,
     state_ind: Any = None,
+    n_states: Any = None,
     transition_matrix: Any = None,
     discrete_transition_matrix: Any = None,
     continuous_transition_matrix: Any = None,
     is_missing: Any = None,
     log_likelihoods: Any = None,
-) -> None:
-    """Host-side shape and dtype checks at a public driver's entry.
+) -> tuple[np.dtype[Any], int | None]:
+    """Check the inputs of a forward-backward or Viterbi driver at its entry.
 
-    Reads only shapes and dtypes, plus the small ``state_ind`` vector, so it
-    adds no device work. Mismatched lengths otherwise surface deep inside a
-    scan or, for a short likelihood, as silently truncated outputs.
+    The one input contract of the dense and checkpointed drivers. It runs on
+    the host before any likelihood is evaluated, and reads each transition
+    once (a minimum and a float64 row sum), cheap next to the scans that
+    apply it every time bin.
+
+    Parameters
+    ----------
+    n_time : int
+        Number of decoding time bins.
+    initial_distribution : array_like, shape (n_state_bins,)
+        Nonnegative, summing to 1.
+    dtype : dtype
+        Working dtype; see :func:`_validate_dtype`.
+    state_ind : array_like of int, shape (n_state_bins,), optional
+        Nonnegative discrete state of each state bin.
+    n_states : int, optional
+        Number of discrete states; by default the last axis of
+        ``discrete_transition_matrix``, or one more than the largest
+        ``state_ind``.
+    transition_matrix : array_like, shape (n_state_bins, n_state_bins), optional
+        Stationary joint transition; rows sum to at most 1.
+    discrete_transition_matrix : array_like, shape (n_time, n_states, n_states), optional
+        Per-time discrete transitions; rows sum to 1. Needs ``state_ind``.
+    continuous_transition_matrix : array_like, shape (n_state_bins, n_state_bins), optional
+        Covariate-path continuous transition; each bin's row sums to at most
+        1 over the bins of each discrete state.
+    is_missing : array_like, shape (n_time,), optional
+    log_likelihoods : array_like, shape (n_time, n_state_bins), optional
+
+    Returns
+    -------
+    dtype : np.dtype
+        The validated working dtype.
+    n_states : int or None
+        The number of discrete states, or None without ``state_ind``.
 
     Raises
     ------
-    ValueError
-        If ``dtype`` is not float32 or float64, ``time`` is not a nonempty
-        vector, or any array does not match ``n_time = len(time)`` and
-        ``n_state_bins = len(initial_distribution)``.
+    ValidationError
+        If any input breaks the contract above.
     """
-    if np.dtype(dtype) not in (np.dtype(np.float32), np.dtype(np.float64)):
-        msg = f"dtype must be float32 or float64, got {np.dtype(dtype)}"
-        raise ValueError(msg)
-    if np.ndim(time) != 1 or np.shape(time)[0] == 0:
-        msg = f"time must be a nonempty vector, got shape {np.shape(time)}"
-        raise ValueError(msg)
-    if np.ndim(initial_distribution) != 1:
-        msg = (
-            "initial_distribution must be a vector over state bins, got shape "
-            f"{np.shape(initial_distribution)}"
+    dtype = _validate_dtype(dtype)
+    initial = np.asarray(initial_distribution)
+    if initial.ndim != 1 or initial.size == 0:
+        msg = "initial_distribution must be a nonempty vector over state bins"
+        raise ValidationError(
+            msg,
+            expected="shape (n_state_bins,) with n_state_bins >= 1",
+            got=f"shape {initial.shape}",
+            hint="Pass one initial probability per state bin.",
         )
-        raise ValueError(msg)
-    n_time, n_bins = np.shape(time)[0], np.shape(initial_distribution)[0]
-    for name, value in (
-        ("transition_matrix", transition_matrix),
-        ("continuous_transition_matrix", continuous_transition_matrix),
-    ):
-        if value is not None:
-            _check_shape(name, value, (n_bins, n_bins))
+    n_bins = initial.size
+    shape_hint = (
+        f"n_time = {n_time} decoding time bins and n_state_bins = {n_bins} "
+        "(len(initial_distribution)) set every input's shape."
+    )
+    _check_distribution("initial_distribution", initial)
     if is_missing is not None:
-        _check_shape("is_missing", is_missing, (n_time,))
+        _check_shape("is_missing", is_missing, (n_time,), shape_hint)
     if log_likelihoods is not None:
-        _check_shape("log_likelihoods", log_likelihoods, (n_time, n_bins))
+        _check_shape("log_likelihoods", log_likelihoods, (n_time, n_bins), shape_hint)
+    if transition_matrix is not None:
+        _check_shape(
+            "transition_matrix", transition_matrix, (n_bins, n_bins), shape_hint
+        )
+        _check_transition_rows("transition_matrix", np.asarray(transition_matrix))
+    if continuous_transition_matrix is not None:
+        _check_shape(
+            "continuous_transition_matrix",
+            continuous_transition_matrix,
+            (n_bins, n_bins),
+            shape_hint,
+        )
     if state_ind is None:
-        return
+        return dtype, None
+
     state_ind = np.asarray(state_ind)
-    _check_shape("state_ind", state_ind, (n_bins,))
-    if state_ind.dtype.kind not in "iu":
-        msg = f"state_ind must be integer, got dtype {state_ind.dtype}"
-        raise ValueError(msg)
+    _check_shape("state_ind", state_ind, (n_bins,), shape_hint)
+    if state_ind.dtype.kind not in "iu" or state_ind.min() < 0:
+        msg = "state_ind must hold nonnegative integers"
+        raise ValidationError(
+            msg,
+            expected="the integer discrete state of each state bin",
+            got=f"dtype {state_ind.dtype}"
+            if state_ind.dtype.kind not in "iu"
+            else f"minimum {state_ind.min()}",
+            hint="Pass state_ind as a nonnegative integer array, e.g. "
+            "np.asarray(state_ind, dtype=int).",
+        )
+    source = "n_states"
+    if n_states is None and discrete_transition_matrix is not None:
+        n_states, source = (
+            np.shape(discrete_transition_matrix)[-1],
+            "discrete_transition_matrix",
+        )
+    minimum_states = int(state_ind.max()) + 1
+    if n_states is None:
+        n_states = minimum_states
+    if isinstance(n_states, bool) or not isinstance(n_states, (int, np.integer)):
+        msg = "n_states must be an integer"
+        raise ValidationError(
+            msg,
+            expected=f"an integer of at least {minimum_states}",
+            got=repr(n_states),
+            hint="Pass the number of discrete states, or None to infer it.",
+        )
+    n_states = int(n_states)
+    if n_states < minimum_states:
+        msg = "state_ind refers to a discrete state the transitions do not have"
+        raise ValidationError(
+            msg,
+            expected=f"state_ind values below {n_states}",
+            got=f"discrete state {minimum_states - 1} with {source} of "
+            f"{n_states} states",
+            hint="Every state bin's discrete state needs a row and column of "
+            "the discrete transitions.",
+        )
     if discrete_transition_matrix is not None:
-        n_states = np.shape(discrete_transition_matrix)[-1]
         _check_shape(
             "discrete_transition_matrix",
             discrete_transition_matrix,
             (n_time, n_states, n_states),
+            shape_hint,
         )
-        if n_bins and int(state_ind.max()) >= n_states:
-            msg = (
-                f"state_ind refers to discrete state {int(state_ind.max())} "
-                f"but discrete_transition_matrix has {n_states} states"
+        _check_discrete_rows(np.asarray(discrete_transition_matrix))
+        if continuous_transition_matrix is not None:
+            _check_continuous_block_rows(
+                np.asarray(continuous_transition_matrix), state_ind, n_states
             )
-            raise ValueError(msg)
+    return dtype, n_states
 
 
 def _store_chunk_rows(
@@ -1413,8 +1778,8 @@ class FilterSmootherResult(NamedTuple):
     """Outputs of the chunked forward-backward drivers.
 
     Returned by :func:`chunked_filter_smoother` and
-    :func:`chunked_filter_smoother_covariate_dependent`. It unpacks like the
-    positional tuple those drivers returned before, in field order.
+    :func:`chunked_filter_smoother_covariate_dependent`. Its first eight
+    fields unpack like the positional tuple those drivers returned before.
 
     Attributes
     ----------
@@ -1436,6 +1801,10 @@ class FilterSmootherResult(NamedTuple):
     predictive_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
         One-step-ahead predicted state probabilities over state bins. A JAX
         array with ``host_outputs=False``.
+    degenerate_indices : np.ndarray of int, shape (n_degenerate,)
+        Increasing time indices whose log likelihoods are ``-inf`` in every
+        state bin. Found during the forward pass, so they are available even
+        when the log likelihoods are not cached (``log_likelihoods`` is None).
     """
 
     acausal_posterior: np.ndarray | jax.Array
@@ -1446,6 +1815,7 @@ class FilterSmootherResult(NamedTuple):
     log_likelihoods: np.ndarray | None
     causal_posterior: np.ndarray | jax.Array
     predictive_posterior: np.ndarray | jax.Array
+    degenerate_indices: np.ndarray
 
 
 def _chunked_filter_smoother(
@@ -1461,8 +1831,7 @@ def _chunked_filter_smoother(
     n_chunks: int,
     log_likelihoods: np.ndarray | None,
     cache_log_likelihoods: bool,
-    dtype: jnp.dtype,
-    degenerate_indices_out: list[int] | None,
+    dtype: DTypeLike,
     accumulate_log_likelihoods: bool,
     host_outputs: bool,
 ) -> FilterSmootherResult:
@@ -1498,17 +1867,19 @@ def _chunked_filter_smoother(
     # Device increments, summed in float64 after the loop so the host does not
     # wait for each chunk's filter.
     chunk_increments = []
-    n_degenerate_total = 0
+    degenerate_indices = []
     n_nan_total = 0
 
     n_time = len(time)
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
     if n_chunks > n_time:
-        msg = (
-            f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time}). "
-            f"Each chunk must contain at least one time point."
+        msg = f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time})"
+        raise ValidationError(
+            msg,
+            expected=f"1 <= n_chunks <= {n_time}",
+            got=f"n_chunks={n_chunks}",
+            hint="Each chunk must contain at least one time bin; use fewer chunks.",
         )
-        raise ValueError(msg)
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
     # Convert inputs to JAX arrays once at the top - keep data on device
@@ -1537,6 +1908,7 @@ def _chunked_filter_smoother(
             "log_likelihood_func output",
             log_likelihoods,
             (n_time, len(initial_distribution)),
+            _CALLBACK_SHAPE_HINT,
         )
     log_likelihoods_jax = (
         jnp.asarray(log_likelihoods, dtype=dtype)
@@ -1569,6 +1941,7 @@ def _chunked_filter_smoother(
                 "log_likelihood_func output",
                 log_likelihood_chunk,
                 (len(time_inds_np), len(initial_distribution)),
+                _CALLBACK_SHAPE_HINT,
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
@@ -1582,10 +1955,10 @@ def _chunked_filter_smoother(
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
         # before the array is donated to the JIT call. Accumulated across chunks
         # and reported once after the forward pass.
-        n_degen, n_nan = _accumulate_chunk_degeneracy(
-            log_likelihood_chunk, time_inds_np, degenerate_indices_out
+        chunk_degenerate, n_nan = _accumulate_chunk_degeneracy(
+            log_likelihood_chunk, time_inds_np
         )
-        n_degenerate_total += n_degen
+        degenerate_indices.append(chunk_degenerate)
         n_nan_total += n_nan
 
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
@@ -1622,8 +1995,9 @@ def _chunked_filter_smoother(
     for increments in chunk_increments:
         marginal_likelihood += _float64_evidence(increments)
     del chunk_increments
+    degenerate_time_indices = np.concatenate(degenerate_indices)
     _warn_degenerate_and_nan_timesteps(
-        n_degenerate_total,
+        len(degenerate_time_indices),
         n_nan_total,
         n_time,
         marginal_log_likelihood=float(marginal_likelihood),
@@ -1680,6 +2054,7 @@ def _chunked_filter_smoother(
         log_likelihoods=log_likelihoods,
         causal_posterior=spatial(causal_posterior_jax),
         predictive_posterior=spatial(predictive_posterior_jax),
+        degenerate_indices=degenerate_time_indices,
     )
 
 
@@ -1694,8 +2069,7 @@ def chunked_filter_smoother(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
-    dtype: jnp.dtype = jnp.float32,
-    degenerate_indices_out: list[int] | None = None,
+    dtype: DTypeLike = jnp.float32,
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
@@ -1710,9 +2084,12 @@ def chunked_filter_smoother(
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
-        Initial probability of each state bin.
+        Initial probability of each state bin: nonnegative, summing to 1
+        (within ``PROBABILITY_SUM_TOLERANCE``).
     transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
-        Stationary transition probability between state bins.
+        Stationary transition probability between state bins: nonnegative,
+        each row summing to at most 1. A row below 1 loses probability, as an
+        all-zero row does for a bin nothing can leave.
     log_likelihood_func : callable
         Called as ``log_likelihood_func(time, *log_likelihood_args,
         is_missing=...)`` with the FULL ``time``. Without cached or given log
@@ -1721,7 +2098,7 @@ def chunked_filter_smoother(
         chunk's ``is_missing`` rows, so each decoding spike is binned once
         against the whole timeline and lands in the row that owns it. An
         unmarked callable is called once for the whole timeline; with
-        ``n_chunks > 1`` and no cached likelihoods it raises ``ValueError``.
+        ``n_chunks > 1`` and no cached likelihoods it raises ``ValidationError``.
     log_likelihood_args : tuple
         Extra positional arguments passed to ``log_likelihood_func`` after
         ``time``.
@@ -1735,15 +2112,10 @@ def chunked_filter_smoother(
         instead of calling ``log_likelihood_func``. By default None.
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached, by default True.
-    dtype : jnp.dtype, optional
-        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
-        Use float64 for numerically challenging problems.
-        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
-    degenerate_indices_out : list | None, optional
-        If provided, the global time indices of all-``-inf`` (degenerate)
-        timesteps are appended to this list during the forward pass. This is
-        the only way to recover those indices when likelihoods are not cached
-        (the returned ``log_likelihoods`` is then ``None``). By default None.
+    dtype : dtype, optional
+        Working dtype, float32 (the default) or float64. Use float64 for
+        numerically challenging problems; it requires JAX's 64-bit mode
+        (``JAX_ENABLE_X64=1``) and raises ``ValidationError`` without it.
     accumulate_log_likelihoods : bool, optional, keyword-only
         If True and the log likelihoods are not cached, each chunk's rows are
         copied into a single preallocated host array so the returned
@@ -1764,18 +2136,20 @@ def chunked_filter_smoother(
         Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
         ``marginal_log_likelihood``, ``causal_state_probabilities``,
         ``predictive_state_probabilities``, ``log_likelihoods``,
-        ``causal_posterior`` and ``predictive_posterior``; see
-        :class:`FilterSmootherResult` for shapes.
+        ``causal_posterior``, ``predictive_posterior`` and
+        ``degenerate_indices``; see :class:`FilterSmootherResult` for shapes.
 
     Raises
     ------
-    ValueError
-        If ``dtype`` is not float32 or float64, an input's shape does not match
-        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
-        or ``log_likelihood_func`` returns the wrong shape.
+    ValidationError
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
+        ``n_state_bins = len(initial_distribution)``; an input breaks the
+        probability contract of its parameter description; or
+        ``log_likelihood_func`` returns the wrong shape.
     """
-    _check_driver_inputs(
-        time=time,
+    _validate_hmm_inputs(
+        n_time=_validate_time(time),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -1829,7 +2203,6 @@ def chunked_filter_smoother(
         log_likelihoods=log_likelihoods,
         cache_log_likelihoods=cache_log_likelihoods,
         dtype=dtype,
-        degenerate_indices_out=degenerate_indices_out,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
         host_outputs=host_outputs,
     )
@@ -1882,7 +2255,7 @@ def most_likely_sequence(
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
-    dtype: jnp.dtype = jnp.float32,
+    dtype: DTypeLike = jnp.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the most likely state sequence using the Viterbi algorithm.
 
@@ -1891,9 +2264,10 @@ def most_likely_sequence(
     time : np.ndarray, shape (n_time,)
         Time indices.
     initial_distribution : np.ndarray, shape (n_states,)
-        Initial state distribution.
+        Initial state distribution: nonnegative, summing to 1.
     transition_matrix : np.ndarray, shape (n_states, n_states)
-        State transition probability matrix.
+        State transition probability matrix: nonnegative, each row summing
+        to at most 1.
     log_likelihood_func : callable
         Function to compute log likelihoods.
     log_likelihood_args : tuple
@@ -1904,9 +2278,10 @@ def most_likely_sequence(
         Pre-computed log likelihoods, by default None.
     n_chunks : int, optional
         Number of chunks (not yet implemented for > 1), by default 1.
-    dtype : jnp.dtype, optional
-        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
-        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
+    dtype : dtype, optional
+        Working dtype, float32 (the default) or float64. float64 requires
+        JAX's 64-bit mode (``JAX_ENABLE_X64=1``) and raises
+        ``ValidationError`` without it.
 
     Returns
     -------
@@ -1917,16 +2292,18 @@ def most_likely_sequence(
 
     Raises
     ------
-    ValueError
-        If ``dtype`` is not float32 or float64, an input's shape does not match
-        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
-        or ``log_likelihood_func`` returns the wrong shape.
+    ValidationError
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
+        ``n_state_bins = len(initial_distribution)``; an input breaks the
+        probability contract of its parameter description; or
+        ``log_likelihood_func`` returns the wrong shape.
     """
     if n_chunks > 1:
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
-    _check_driver_inputs(
-        time=time,
+    _validate_hmm_inputs(
+        n_time=_validate_time(time),
         initial_distribution=initial_distribution,
         dtype=dtype,
         transition_matrix=transition_matrix,
@@ -1943,6 +2320,7 @@ def most_likely_sequence(
             "log_likelihood_func output",
             log_likelihoods,
             (len(time), len(initial_distribution)),
+            _CALLBACK_SHAPE_HINT,
         )
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
@@ -2151,8 +2529,7 @@ def chunked_filter_smoother_covariate_dependent(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
-    dtype: jnp.dtype = jnp.float32,
-    degenerate_indices_out: list[int] | None = None,
+    dtype: DTypeLike = jnp.float32,
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
@@ -2167,12 +2544,14 @@ def chunked_filter_smoother_covariate_dependent(
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
-        Initial probability of each state bin.
+        Initial probability of each state bin: nonnegative, summing to 1.
     discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
-        Discrete state transition probabilities at each time bin.
+        Discrete state transition probabilities at each time bin: nonnegative,
+        each row summing to 1.
     continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
         Transition probability between state bins within the continuous
-        state space.
+        state space: nonnegative, each bin's row summing to at most 1 over
+        the bins of each discrete state.
     log_likelihood_func : callable
         Called as ``log_likelihood_func(time, *log_likelihood_args,
         is_missing=...)`` with the FULL ``time``. Without cached or given log
@@ -2181,7 +2560,7 @@ def chunked_filter_smoother_covariate_dependent(
         chunk's ``is_missing`` rows, so each decoding spike is binned once
         against the whole timeline and lands in the row that owns it. An
         unmarked callable is called once for the whole timeline; with
-        ``n_chunks > 1`` and no cached likelihoods it raises ``ValueError``.
+        ``n_chunks > 1`` and no cached likelihoods it raises ``ValidationError``.
     log_likelihood_args : tuple
         Extra positional arguments passed to ``log_likelihood_func`` after
         ``time``.
@@ -2201,15 +2580,10 @@ def chunked_filter_smoother_covariate_dependent(
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached instead of recomputed for each
         chunk, by default True.
-    dtype : jnp.dtype, optional
-        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
-        Use float64 for numerically challenging problems.
-        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
-    degenerate_indices_out : list | None, optional
-        If provided, the global time indices of all-``-inf`` (degenerate)
-        timesteps are appended to this list during the forward pass. This is
-        the only way to recover those indices when likelihoods are not cached
-        (the returned ``log_likelihoods`` is then ``None``). By default None.
+    dtype : dtype, optional
+        Working dtype, float32 (the default) or float64. Use float64 for
+        numerically challenging problems; it requires JAX's 64-bit mode
+        (``JAX_ENABLE_X64=1``) and raises ``ValidationError`` without it.
     accumulate_log_likelihoods : bool, optional, keyword-only
         If True and the log likelihoods are not cached, each chunk's rows are
         copied into a single preallocated host array so the returned
@@ -2230,18 +2604,20 @@ def chunked_filter_smoother_covariate_dependent(
         Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
         ``marginal_log_likelihood``, ``causal_state_probabilities``,
         ``predictive_state_probabilities``, ``log_likelihoods``,
-        ``causal_posterior`` and ``predictive_posterior``; see
-        :class:`FilterSmootherResult` for shapes.
+        ``causal_posterior``, ``predictive_posterior`` and
+        ``degenerate_indices``; see :class:`FilterSmootherResult` for shapes.
 
     Raises
     ------
-    ValueError
-        If ``dtype`` is not float32 or float64, an input's shape does not match
-        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
-        or ``log_likelihood_func`` returns the wrong shape.
+    ValidationError
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
+        ``n_state_bins = len(initial_distribution)``; an input breaks the
+        probability contract of its parameter description; or
+        ``log_likelihood_func`` returns the wrong shape.
     """
-    _check_driver_inputs(
-        time=time,
+    _validate_hmm_inputs(
+        n_time=_validate_time(time),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -2312,7 +2688,6 @@ def chunked_filter_smoother_covariate_dependent(
         log_likelihoods=log_likelihoods,
         cache_log_likelihoods=cache_log_likelihoods,
         dtype=dtype,
-        degenerate_indices_out=degenerate_indices_out,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
         host_outputs=host_outputs,
     )
@@ -2384,7 +2759,7 @@ def most_likely_sequence_covariate_dependent(
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
-    dtype: jnp.dtype = jnp.float32,
+    dtype: DTypeLike = jnp.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the most likely state sequence with covariate dependent transitions.
 
@@ -2397,11 +2772,13 @@ def most_likely_sequence_covariate_dependent(
     state_ind : np.ndarray, shape (n_state_bins,)
         State indices connecting discrete states to state space bins.
     initial_distribution : np.ndarray, shape (n_state_bins,)
-        Initial state distribution.
+        Initial state distribution: nonnegative, summing to 1.
     discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
-        Time-varying discrete transition matrices.
+        Time-varying discrete transition matrices: nonnegative, each row
+        summing to 1.
     continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
-        Continuous transition matrix.
+        Continuous transition matrix: nonnegative, each bin's row summing to
+        at most 1 over the bins of each discrete state.
     log_likelihood_func : callable
         Function to compute log likelihoods.
     log_likelihood_args : tuple
@@ -2412,9 +2789,10 @@ def most_likely_sequence_covariate_dependent(
         Pre-computed log likelihoods, by default None.
     n_chunks : int, optional
         Number of chunks (not yet implemented for > 1), by default 1.
-    dtype : jnp.dtype, optional
-        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
-        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
+    dtype : dtype, optional
+        Working dtype, float32 (the default) or float64. float64 requires
+        JAX's 64-bit mode (``JAX_ENABLE_X64=1``) and raises
+        ``ValidationError`` without it.
 
     Returns
     -------
@@ -2425,16 +2803,18 @@ def most_likely_sequence_covariate_dependent(
 
     Raises
     ------
-    ValueError
-        If ``dtype`` is not float32 or float64, an input's shape does not match
-        ``n_time = len(time)`` and ``n_state_bins = len(initial_distribution)``,
-        or ``log_likelihood_func`` returns the wrong shape.
+    ValidationError
+        If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
+        on; an input's shape does not match ``n_time = len(time)`` and
+        ``n_state_bins = len(initial_distribution)``; an input breaks the
+        probability contract of its parameter description; or
+        ``log_likelihood_func`` returns the wrong shape.
     """
     if n_chunks > 1:
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
-    _check_driver_inputs(
-        time=time,
+    _validate_hmm_inputs(
+        n_time=_validate_time(time),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -2453,6 +2833,7 @@ def most_likely_sequence_covariate_dependent(
             "log_likelihood_func output",
             log_likelihoods,
             (len(time), len(initial_distribution)),
+            _CALLBACK_SHAPE_HINT,
         )
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a

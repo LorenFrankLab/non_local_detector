@@ -19,7 +19,7 @@ import pytest
 import scipy.linalg
 
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
+from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS, sorted_spikes_mrf
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
@@ -43,6 +43,7 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
     predict_sorted_spikes_mrf_log_likelihood,
     select_penalty_by_reml,
 )
+from non_local_detector.time_edges import time_edges_from_centers
 from tests.likelihoods._sorted_spikes_helpers import (
     dot_general_precisions,
     make_two_room_env,
@@ -998,15 +999,69 @@ def test_reported_rank_is_actual_basis_rank_when_capped(env_2d):
     assert encoding["mrf_rank"] == n_interior  # reported rank matches, not the request
 
 
-def test_registered_and_predict_shared_with_diffusion():
-    """sorted_spikes_mrf is registered and reuses the diffusion Poisson prediction."""
-    assert "sorted_spikes_mrf" in _SORTED_SPIKES_ALGORITHMS
+def test_mrf_predict_forwards_every_diffusion_key(env_2d, monkeypatch):
+    """Every non-diagnostic key reaches the diffusion predict unchanged.
+
+    A dropped forward would not show in the output: the diffusion predict
+    ignores ``bin_sizes`` and ``occupancy``, and a missing ``node_order``
+    falls back to the environment's graph order, which is the fit's. So the
+    forwarded arguments are compared directly.
+    """
+    time, position, spike_times = simulate_place_data(env_2d, n_neurons=2)
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        time, position, spike_times, env_2d, rank=20, penalty=1.0
+    )
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return predict_sorted_spikes_diffusion_log_likelihood(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sorted_spikes_mrf, "predict_sorted_spikes_diffusion_log_likelihood", spy
+    )
+    decode = {"time_edges": time_edges_from_centers(time[:20]), "is_local": True}
+    predict_sorted_spikes_mrf_log_likelihood(
+        time, position, spike_times, **encoding, **decode
+    )
+    (forwarded,) = calls
+    expected = {
+        key: value for key, value in encoding.items() if not key.startswith("mrf_")
+    }
+    defaults = {"row_slice": None, "_spike_time_order": None, "_time_grid": None}
+    assert forwarded.keys() == {**expected, **decode, **defaults}.keys()
+    for key, value in {**expected, **decode}.items():
+        assert forwarded[key] is value, key
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+def test_registered_and_predict_shared_with_diffusion(env_2d, is_local):
+    """sorted_spikes_mrf is registered and predicts as the diffusion model does.
+
+    The MRF predict takes the fit's diagnostics too, and passes the diffusion
+    keys to the diffusion predict unchanged.
+    """
     record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_mrf"]
-    fit_fn, predict_fn = record.fit, record.predict
-    assert fit_fn is fit_sorted_spikes_mrf_encoding_model
-    assert predict_fn is predict_sorted_spikes_mrf_log_likelihood
-    # The prediction is literally the diffusion predict (shared place-field contract).
-    assert (
-        predict_sorted_spikes_mrf_log_likelihood
-        is predict_sorted_spikes_diffusion_log_likelihood
+    assert record.fit is fit_sorted_spikes_mrf_encoding_model
+    assert record.predict is predict_sorted_spikes_mrf_log_likelihood
+
+    time, position, spike_times = simulate_place_data(env_2d, n_neurons=3)
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        time, position, spike_times, env_2d, rank=20, penalty=1.0
+    )
+    diffusion_keys = {
+        key: value for key, value in encoding.items() if not key.startswith("mrf_")
+    }
+    decode = {"time_edges": time_edges_from_centers(time[:50]), "is_local": is_local}
+    np.testing.assert_array_equal(
+        np.asarray(
+            predict_sorted_spikes_mrf_log_likelihood(
+                time, position, spike_times, **encoding, **decode
+            )
+        ),
+        np.asarray(
+            predict_sorted_spikes_diffusion_log_likelihood(
+                time, position, spike_times, **diffusion_keys, **decode
+            )
+        ),
     )

@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
@@ -55,6 +55,7 @@ from non_local_detector.likelihoods.common import (
     validate_spike_feature_pair,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.gmm import (
     CovType,
     GaussianMixtureModel,
@@ -533,6 +534,27 @@ def mark_reference_scale(
     return float(np.sqrt(gmm_reg_covar))
 
 
+class ClusterlessGMMEncodingModel(ClusterlessEncodingModel):
+    """The encoding model ``fit_clusterless_gmm_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_clusterless_gmm_log_likelihood``, documented there. The
+    component counts (``gmm_requested_components``,
+    ``gmm_effective_components``) are fit diagnostics that predict ignores.
+    """
+
+    occupancy_model: GaussianMixtureModel
+    interior_place_bin_centers: np.ndarray
+    log_occupancy: jax.Array
+    gpi_models: list[GaussianMixtureModel | None]
+    joint_models: list[GaussianMixtureModel | None]
+    summed_ground_process_intensity: jax.Array
+    spike_block_size: int
+    bin_tile_size: int | None
+    gmm_requested_components: dict[str, int]
+    gmm_effective_components: dict[str, int | list[int]]
+
+
 def fit_clusterless_gmm_encoding_model(
     position_time: jax.Array | np.ndarray,
     position: jax.Array | np.ndarray,
@@ -555,7 +577,7 @@ def fit_clusterless_gmm_encoding_model(
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> ClusterlessGMMEncodingModel:
     """
     Fit the clusterless encoding model using GMMs.
 
@@ -622,8 +644,9 @@ def fit_clusterless_gmm_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : ClusterlessGMMEncodingModel
         Dictionary containing the fitted encoding model with keys:
+        - algorithm ("clusterless_gmm")
         - environment
         - occupancy_model
         - interior_place_bin_centers
@@ -817,6 +840,7 @@ def fit_clusterless_gmm_encoding_model(
         )
 
     return {
+        "algorithm": "clusterless_gmm",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy_model": occupancy_model,
@@ -856,6 +880,7 @@ def predict_clusterless_gmm_log_likelihood(
     position: jax.Array | np.ndarray,
     spike_times: list[np.ndarray],
     spike_waveform_features: list[jax.Array],
+    *,
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
     interior_place_bin_centers: jax.Array,
@@ -869,16 +894,17 @@ def predict_clusterless_gmm_log_likelihood(
     bin_tile_size: int | None = None,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
-    *,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
+    gmm_requested_components: dict[str, Any] | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    gmm_effective_components: dict[str, Any] | None = None,  # noqa: ARG001 -- fit diagnostic, unused
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
     environment_grid: dict[str, Any] | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-    **kwargs: Any,  # noqa: ARG001 -- shared likelihood-algorithm signature
 ) -> jax.Array:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.
@@ -939,12 +965,18 @@ def predict_clusterless_gmm_log_likelihood(
         spatial workspaces scale with the requested rows and selected spikes.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).
     encoding_exposure_seconds : float, optional, keyword-only
         Weighted encoding occupancy time in seconds, recorded by the fit.
         Accepted so the encoding dictionary can be passed as keywords; unused.
+    gmm_requested_components, gmm_effective_components : dict, optional
+        The fit's requested and fitted component counts, kept in the encoding
+        model as diagnostics; unused.
     mark_dimensions : list[int], keyword-only
         Fitted waveform-feature count per electrode, taken from the encoding
         model. Predict rejects decode spikes whose feature dimension differs, so
@@ -968,9 +1000,6 @@ def predict_clusterless_gmm_log_likelihood(
     _time_grid : _DecodeTimeGrid, optional
         Internal prepared decode grid shared across a detector's states and
         chunks; direct callers omit it.
-    **kwargs : Any
-        Ignored. Accepted so the shared encoding-model dictionary of any
-        likelihood algorithm can be passed as keywords.
 
     Returns
     -------

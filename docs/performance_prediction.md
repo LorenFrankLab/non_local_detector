@@ -94,9 +94,9 @@ predictive state probabilities. `"predictive_posterior"`, `"log_likelihood"` and
 `"all"` require spatial mode. The full log evidence remains available as
 `results.attrs["marginal_log_likelihoods"]`.
 
-The string `"predictive"` also requests the spatial posterior in spatial mode.
-Lists/sets select named outputs individually: `["predictive"]` requests state
-probabilities and `["predictive_posterior"]` requests the spatial posterior.
+Each name requests only its own output, alone or in a list or set: `"predictive"`
+requests the state probabilities and `"predictive_posterior"` the spatial
+posterior.
 Checkpointed totals sum per-bin log-evidence increments in float64 on the host;
 posterior calculations keep their original precision. This avoids the existing
 hour-scale drift from repeatedly adding increments to a float32 total. The dense
@@ -178,18 +178,20 @@ optional position kernels request exact distances in bounded batches.
 
 Nonseparable covariance, graph/diffusion movement, directional movement,
 empirical movement and custom transitions require a dense fallback unless a
-specific proven operator applies. `transition_representation="auto"` permits
-that fallback under `max_dense_transition_bytes` (256 MiB by default). The budget
+specific proven operator applies; a custom transition provides one by
+implementing `transition_operators.SupportsStructuredBlock`.
+`transition_representation="auto"` permits that fallback under `max_dense_transition_bytes` (256 MiB by default). The budget
 covers the sum of retained fallback blocks plus the temporary dense graph
 distances that manifold `RandomWalk` fallbacks need. A fallback does not carry a
 structured-memory guarantee. Gaussian blocks whose structured product would
 underflow raise `UnsupportedTransitionError` with `"structured"` and use the
 budgeted dense fallback with `"auto"`; neither changes their probabilities.
 
-Opaque custom constructors require the dense representation, with eager
-all-pairs graph distances; auto mode rejects
-them when graph distances are deferred because their distance-access contract
-is unverified. A feasible explicit dense fit can still use them with checkpointed
+Opaque custom constructors (transitions that do not implement
+`SupportsStructuredBlock`, whose `graph_distance_environment` would declare
+the graph distances they read) require the dense representation, with eager all-pairs graph distances; auto mode
+rejects them when graph distances are deferred because their distance-access
+contract is unverified. A feasible explicit dense fit can still use them with checkpointed
 prediction, but does not avoid dense setup or bound arbitrary custom workspace.
 
 For structured models, `continuous_state_transitions_` is a read-only lazy dense

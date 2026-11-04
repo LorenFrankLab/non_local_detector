@@ -47,10 +47,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
+from patsy.design_info import DesignInfo
 from scipy.special import logsumexp
 from sklearn.mixture import BayesianGaussianMixture  # type: ignore[import-untyped]
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
@@ -84,6 +84,7 @@ from non_local_detector.likelihoods.common import (
     validate_spike_feature_pair,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.gmm import _estimate_log_gaussian_prob
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -405,6 +406,21 @@ def mark_reference_scale(
     return float(np.sqrt(mark_reg_covar))
 
 
+class ClusterlessMarkGLMEncodingModel(ClusterlessEncodingModel):
+    """The encoding model ``fit_clusterless_mark_glm_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_clusterless_mark_glm_log_likelihood``, documented there.
+    """
+
+    emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign
+    mark_mixtures: list[MarkMixture | None]
+    rate_coefficients: list[np.ndarray | jax.Array | None]
+    log_rate_maps: list[np.ndarray | None]
+    summed_ground_process_intensity: jax.Array
+    spike_block_size: int
+
+
 def fit_clusterless_mark_glm_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -427,7 +443,7 @@ def fit_clusterless_mark_glm_encoding_model(
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> ClusterlessMarkGLMEncodingModel:
     """Fit the clusterless mark-mixture GLM encoding model.
 
     Parameters
@@ -491,8 +507,9 @@ def fit_clusterless_mark_glm_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
-        Keys ``environment`` and ``environment_grid``, and:
+    encoding_model : ClusterlessMarkGLMEncodingModel
+        Keys ``algorithm`` (``"clusterless_mark_glm"``), ``environment`` and
+        ``environment_grid``, and:
 
         emission_design_info : TrackGraphBasis, SelectedColumnsDesign or DesignInfo
             The rate maps' spline basis.
@@ -635,6 +652,7 @@ def fit_clusterless_mark_glm_encoding_model(
     )
 
     return {
+        "algorithm": "clusterless_mark_glm",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "emission_design_info": emission_design_info,
@@ -916,6 +934,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     position: np.ndarray,
     spike_times: list[np.ndarray],
     spike_waveform_features: list[np.ndarray],
+    *,
     environment: Environment,
     emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign,
     mark_mixtures: list[MarkMixture | None],
@@ -927,8 +946,8 @@ def predict_clusterless_mark_glm_log_likelihood(
     spike_block_size: int = 1000,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
-    *,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
     rate_units: str = "Hz",
@@ -976,6 +995,9 @@ def predict_clusterless_mark_glm_log_likelihood(
         ``time_edges`` stay the FULL decoding edges.
     time_edges : np.ndarray, shape (n_bins + 1,), keyword-only
         Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
     mark_dimensions : list of int, keyword-only
         Mark dimension per electrode, from the fit.
     mark_reference : list of MarkReference or None, keyword-only

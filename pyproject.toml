@@ -161,10 +161,12 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 module = [
     "networkx.*",
     "pandas.*",
+    "patsy.*",
     "psutil.*",
     "scipy.*",
     "sortingview.*",
     "threadpoolctl.*",
+    "tqdm.*",
 ]
 ignore_missing_imports = true
 
@@ -215,6 +217,10 @@ filterwarnings = [
     # Most tests decode 1-D open fields on purpose;
     # test_position_dimensionality_validation checks the warning itself.
     "ignore:Position data appears to be 1D but no track_graph:UserWarning",
+    # The netCDF4 1.7.4 wheel for Python 3.10 on Linux was built against an
+    # older NumPy, so importing it warns that numpy.ndarray changed size;
+    # NumPy documents this warning as harmless. Python 3.11+ gets a newer wheel.
+    "ignore:numpy.ndarray size changed, may indicate binary incompatibility:RuntimeWarning",
     # matplotlib 3.10.0 (the floor) calls camelCase pyparsing names that
     # pyparsing 3.3 deprecates ("'oneOf' deprecated - use 'one_of'"). The
     # category is named by its base class: older pyparsing releases have
@@ -227,11 +233,9 @@ timeout = 900
 # Test markers for selective running
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "gpu: marks tests that require GPU",
     "integration: marks integration tests",
     "unit: marks unit tests",
     "property: marks property-based tests",
-    "snapshot: marks snapshot regression tests (update with --snapshot-update)",
 ]
 
 [tool.codespell]
@@ -250,6 +254,9 @@ test = [
     "hypothesis",
     # Benchmark scripts record memory with psutil; their smoke test runs in CI.
     "psutil",
+    # Reads the netCDF4 results Spyglass saves (tests/compat_data); without it
+    # xarray writes and reads only netCDF3.
+    "netCDF4",
 ]
 dev = [
     { include-group = "test" },

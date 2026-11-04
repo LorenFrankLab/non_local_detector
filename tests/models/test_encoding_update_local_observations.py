@@ -44,7 +44,7 @@ def test_encoding_update_uses_local_observation_posterior(
     encoding_weights = []
     original_predict = model._predict
     original_checkpointed_e_step = model._checkpointed_e_step
-    original_fit_encoding = model.fit_encoding_model
+    original_refit_encoding = model._refit_encoding_model
 
     def record_prediction(*args, **kwargs):
         result = original_predict(*args, **kwargs)
@@ -56,14 +56,13 @@ def test_encoding_update_uses_local_observation_posterior(
         posterior_rows.append(result.dataset.acausal_state_probabilities.values)
         return result
 
-    def record_encoding(*args, **kwargs):
-        if kwargs.get("weights") is not None:
-            encoding_weights.append(np.array(kwargs["weights"]))
-        return original_fit_encoding(*args, **kwargs)
+    def record_encoding(weights):
+        encoding_weights.append(np.array(weights))
+        return original_refit_encoding(weights)
 
     monkeypatch.setattr(model, "_predict", record_prediction)
     monkeypatch.setattr(model, "_checkpointed_e_step", record_checkpointed_e_step)
-    monkeypatch.setattr(model, "fit_encoding_model", record_encoding)
+    monkeypatch.setattr(model, "_refit_encoding_model", record_encoding)
     edges = predict_kwargs["time_edges"]
     model.estimate_parameters(
         **fit_kwargs,
@@ -99,14 +98,13 @@ def test_encoding_update_skips_models_without_local_observations(monkeypatch):
         infer_track_interior=False,
     )
     weights = []
-    original_fit_encoding = model.fit_encoding_model
+    original_refit_encoding = model._refit_encoding_model
 
-    def record_encoding(*args, **kwargs):
-        if kwargs.get("weights") is not None:
-            weights.append(kwargs["weights"])
-        return original_fit_encoding(*args, **kwargs)
+    def record_encoding(local_weights):
+        weights.append(local_weights)
+        return original_refit_encoding(local_weights)
 
-    monkeypatch.setattr(model, "fit_encoding_model", record_encoding)
+    monkeypatch.setattr(model, "_refit_encoding_model", record_encoding)
     model.estimate_parameters(
         position_time=time,
         position=np.linspace(1, 9, len(time)),

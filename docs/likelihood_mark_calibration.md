@@ -22,7 +22,6 @@ from non_local_detector.model_checking.clusterless import (
 encoding_model = detector.encoding_model_[("", 0)]
 u, v = ircm_transform(
     encoding_model,
-    detector.clusterless_algorithm,
     electrode,
     held_out_position_time,
     held_out_position,
@@ -61,8 +60,9 @@ at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
   `mean_rate * p_joint(x, m) / p_occupancy(x)`. The transforms test that process.
   Refit models trained before this correction to use a consistent process.
 
-`clusterless_mark_glm` is not supported: the transforms raise `ValueError` for
-it before reading the encoding model.
+The transforms read which algorithm fitted the encoding model from its
+`algorithm` entry. `clusterless_mark_glm` is not supported: the transforms raise
+`ValueError` for it before reading the rest of the encoding model.
 
 All intensities and CDFs come from the stored encoding model, in float64
 NumPy and log space. Mixture weights stay in log space while the mixture is

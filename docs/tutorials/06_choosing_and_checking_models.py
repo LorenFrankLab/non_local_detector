@@ -592,7 +592,6 @@ for name, (algorithm, params) in clusterless_configs.items():
         np.column_stack(
             ircm_transform(
                 encoding_model,
-                algorithm,
                 tetrode,
                 position_time[is_test_sample],
                 position[is_test_sample],

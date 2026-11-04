@@ -69,8 +69,13 @@ def test_fit_rejects_electrode_count_mismatch(sim, algorithm, detector_cls):
 
 @pytest.mark.unit
 def test_fit_rejects_removed_log_kde_name_with_a_hint(sim):
-    """The removed ``clusterless_kde_log`` name points to ``clusterless_kde``."""
-    detector = ClusterlessDecoder(clusterless_algorithm="clusterless_kde_log")
+    """The removed ``clusterless_kde_log`` name points to ``clusterless_kde``.
+
+    The detectors reject it at construction; fit rejects it assigned to the
+    attribute directly.
+    """
+    detector = ClusterlessDecoder()
+    detector.clusterless_algorithm = "clusterless_kde_log"
     with pytest.raises(ValidationError, match='Use "clusterless_kde"'):
         detector.fit(
             sim.position_time,

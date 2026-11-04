@@ -19,12 +19,14 @@ from numpy.typing import ArrayLike, DTypeLike, NDArray
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
+from non_local_detector.exceptions import NonLocalDetectorError
+
 DEFAULT_MAX_DENSE_DISTANCE_BYTES = 256 * 1024**2
 DEFAULT_DISTANCE_WORKSPACE_BYTES = 8 * 1024**2
 DEFAULT_DISTANCE_CACHE_BYTES = 64 * 1024**2
 
 
-class GraphDistanceBudgetError(MemoryError):
+class GraphDistanceBudgetError(NonLocalDetectorError, MemoryError):
     """A requested exact graph-distance allocation exceeds its byte budget."""
 
 
@@ -39,8 +41,11 @@ def _budget(nbytes: int, maximum: Any, description: str) -> None:
     if nbytes > maximum:
         msg = (
             f"{description} requires {nbytes:,} bytes, exceeding the {maximum:,}-byte "
-            "graph distance budget. Request fewer source/destination rows or explicitly "
-            "choose a feasible budget."
+            "graph distance budget. A detector sets this budget from "
+            "max_dense_transition_bytes: raise it, or use "
+            'transition_representation="dense", which computes all-pairs '
+            "distances when the environment is fitted. Otherwise request fewer "
+            "source/destination rows."
         )
         raise GraphDistanceBudgetError(msg)
 

@@ -9,6 +9,11 @@ from non_local_detector.exceptions import (
     NonLocalDetectorError,
     ValidationError,
 )
+from non_local_detector.graph_distances import GraphDistanceBudgetError
+from non_local_detector.transition_operators import (
+    DenseTransitionBudgetError,
+    UnsupportedTransitionError,
+)
 
 
 @pytest.mark.unit
@@ -32,6 +37,31 @@ class TestExceptionHierarchy:
             raise error
         with pytest.raises(NonLocalDetectorError, match="boom"):
             raise error
+
+    @pytest.mark.parametrize(
+        ("exc_cls", "builtin"),
+        [
+            (UnsupportedTransitionError, ValueError),
+            (DenseTransitionBudgetError, MemoryError),
+            (GraphDistanceBudgetError, MemoryError),
+        ],
+    )
+    def test_transition_errors_are_package_errors(self, exc_cls, builtin):
+        """Transition errors are caught by the package catch-all and keep
+        their builtin base."""
+        assert issubclass(exc_cls, NonLocalDetectorError)
+        assert issubclass(exc_cls, builtin)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("exc_cls", [ValidationError, ConfigurationError, DataError])
+def test_constructors_take_expected_got_hint_as_keywords(exc_cls):
+    """Every structured exception formats expected, got and hint the same way,
+    and takes them only as keywords."""
+    message = str(exc_cls("Problem", expected="a", got="b", hint="c"))
+    assert message == "Problem\n\nExpected: a\nGot: b\n\nHint: c"
+    with pytest.raises(TypeError):
+        exc_cls("Problem", "a")
 
 
 @pytest.mark.unit

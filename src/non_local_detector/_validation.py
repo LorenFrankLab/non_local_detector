@@ -13,6 +13,19 @@ from numpy.typing import ArrayLike
 
 from non_local_detector.exceptions import DataError, ValidationError
 
+# Absolute tolerance on the probability sums that transitions, initial
+# conditions and the HMM drivers check. Storing a
+# normalized row in float32 shifts its sum by at most eps32 / 2 = 6e-8, and
+# normalizing it in float32 with pairwise (NumPy) or tree (XLA) sums by about
+# 2e-7 at any row length; a sequential float32 sum drifts like sqrt(n) * eps32,
+# 2.4e-5 measured over a 50,000-bin row. 1e-4 admits all of these. The check
+# guards against gross errors, such as unnormalized inputs; it is not a
+# precision guarantee. A row excess within it inflates the log evidence by up
+# to about 1e-4 nats per time bin on the stationary path and 2e-4 on the
+# covariate path, where the discrete-row and continuous-block tolerances
+# compound.
+PROBABILITY_SUM_TOLERANCE = 1e-4
+
 
 def ensure_probability_distribution(
     arr: ArrayLike, name: str, tolerance: float = 1e-6
@@ -265,19 +278,30 @@ def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
         )
 
 
+def _bad_rows_description(row_sums: np.ndarray, bad_rows: np.ndarray) -> str:
+    """The first ten rows whose sums are out of range, and their sums."""
+    bad_indices = np.flatnonzero(bad_rows)
+    return (
+        f"{len(bad_indices)} row(s) with invalid sums: rows "
+        f"{bad_indices[:10].tolist()}, sums {row_sums[bad_indices[:10]].tolist()}"
+        f"{' (first 10)' if len(bad_indices) > 10 else ''}"
+    )
+
+
 def ensure_stochastic_matrix(
-    matrix: np.ndarray, name: str, tolerance: float = 1e-6
+    matrix: np.ndarray, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
 ) -> None:
     """Verify matrix is row-stochastic (each row sums to 1).
 
     Parameters
     ----------
-    matrix : np.ndarray
+    matrix : np.ndarray, shape (n_rows, n_columns)
         Matrix to check
     name : str
         Name of the matrix for error messages
     tolerance : float, optional
-        Tolerance for row sum check, by default 1e-6
+        Absolute tolerance for each row sum, by default
+        ``PROBABILITY_SUM_TOLERANCE``.
 
     Raises
     ------
@@ -291,18 +315,56 @@ def ensure_stochastic_matrix(
     >>> ensure_stochastic_matrix(bad_matrix, "transition_matrix")  # Raises
     """
     row_sums = np.sum(matrix, axis=1)
-    bad_rows = ~np.isclose(row_sums, 1.0, atol=tolerance)
+    bad_rows = np.abs(row_sums - 1.0) > tolerance
 
     if np.any(bad_rows):
-        bad_indices = np.where(bad_rows)[0]
-        bad_sums = row_sums[bad_rows]
         msg = f"{name} must be row-stochastic (each row sums to 1)"
         raise ValidationError(
             msg,
             expected="all row sums = 1.0",
-            got=f"{len(bad_indices)} row(s) with invalid sums: rows {bad_indices.tolist()}, sums {bad_sums.tolist()}",
+            got=_bad_rows_description(row_sums, bad_rows),
             hint=f"Normalize each row: {name} = {name} / {name}.sum(axis=1, keepdims=True)",
             example=f"    # Row 0 sums to {row_sums[0]:.6f}{'  ✓' if not bad_rows[0] else '  ✗'}",
+        )
+
+
+def ensure_substochastic_matrix(
+    matrix: np.ndarray, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
+) -> None:
+    """Verify each row of a non-negative matrix sums to at most 1.
+
+    A row's sum is the probability of leaving that row's bin; it is below 1
+    when probability leaves the modeled bins (for example an
+    ``EmpiricalMovement`` power through a bin the animal never left) and 0
+    for a bin nothing can leave.
+
+    Parameters
+    ----------
+    matrix : np.ndarray, shape (n_rows, n_columns)
+        Matrix to check; its entries are already known to be non-negative.
+    name : str
+        Name of the matrix for error messages
+    tolerance : float, optional
+        Absolute tolerance above 1 for each row sum, by default
+        ``PROBABILITY_SUM_TOLERANCE``.
+
+    Raises
+    ------
+    ValidationError
+        If any row sums to more than ``1 + tolerance``.
+    """
+    row_sums = np.sum(matrix, axis=1)
+    bad_rows = row_sums > 1.0 + tolerance
+    if np.any(bad_rows):
+        msg = f"{name} must have rows that sum to at most 1"
+        raise ValidationError(
+            msg,
+            expected="row sums in [0, 1]",
+            got=_bad_rows_description(row_sums, bad_rows),
+            hint=(
+                "Each row holds the probabilities of moving from one bin to "
+                "every bin, so its sum cannot exceed 1."
+            ),
         )
 
 

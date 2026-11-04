@@ -34,3 +34,18 @@ def test_observation_model_in_set_preserves_distinctions():
         ObservationModel("a", 1, is_local=False),
     }
     assert len(models) == 2
+
+
+def test_observation_model_is_immutable_and_round_trips():
+    """An observation model is a frozen value: it cannot change after it is
+    hashed, and pickling and ``type(obj)(**vars(obj))`` rebuild it."""
+    import dataclasses
+    import pickle
+
+    model = ObservationModel("track", 1, is_local=True)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        model.is_local = False
+    assert pickle.loads(pickle.dumps(model)) == model
+    assert ObservationModel(**vars(model)) == model
+    assert hash(ObservationModel(**vars(model))) == hash(model)
+    assert min(ObservationModel("b"), ObservationModel("a")).environment_name == "a"

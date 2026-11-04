@@ -19,7 +19,7 @@ import scipy.interpolate
 import scipy.spatial
 from jax.nn import logsumexp
 from numpy.typing import ArrayLike, NDArray
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm
 
 from non_local_detector._validation import validate_weights
 from non_local_detector.environment import Environment

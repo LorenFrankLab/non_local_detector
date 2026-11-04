@@ -351,20 +351,19 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
     detector = detector_cls()
     recorded = {"probabilities": [], "weights": []}
     original_predict = detector._predict
-    original_fit_encoding = detector.fit_encoding_model
+    original_refit_encoding = detector._refit_encoding_model
 
     def spy_predict(*args, **kwargs):
         result = original_predict(*args, **kwargs)
         recorded["probabilities"].append(np.asarray(result[1]))
         return result
 
-    def spy_fit_encoding(*args, weights=None, **kwargs):
-        if weights is not None:
-            recorded["weights"].append(np.asarray(weights))
-        return original_fit_encoding(*args, weights=weights, **kwargs)
+    def spy_refit_encoding(weights):
+        recorded["weights"].append(np.asarray(weights))
+        return original_refit_encoding(weights)
 
     monkeypatch.setattr(detector, "_predict", spy_predict)
-    monkeypatch.setattr(detector, "fit_encoding_model", spy_fit_encoding)
+    monkeypatch.setattr(detector, "_refit_encoding_model", spy_refit_encoding)
     detector.estimate_parameters(
         **fit_args,
         time_edges=edges,
@@ -530,14 +529,13 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
     edges = _coarse_edges(position_time, factor=4, n_bins=300)
     detector = detector_cls()
     weights = []
-    original = detector.fit_encoding_model
+    original = detector._refit_encoding_model
 
-    def spy(*args, **kwargs):
-        if kwargs.get("weights") is not None:
-            weights.append(np.asarray(kwargs["weights"]))
-        return original(*args, **kwargs)
+    def spy(local_weights):
+        weights.append(np.asarray(local_weights))
+        return original(local_weights)
 
-    monkeypatch.setattr(detector, "fit_encoding_model", spy)
+    monkeypatch.setattr(detector, "_refit_encoding_model", spy)
     detector.estimate_parameters(
         **fit_args,
         time_edges=edges,

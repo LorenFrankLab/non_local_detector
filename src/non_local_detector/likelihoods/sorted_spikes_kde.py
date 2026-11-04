@@ -55,7 +55,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
@@ -92,6 +92,7 @@ from non_local_detector.likelihoods.common import (
     validate_population_lengths,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
@@ -295,20 +296,36 @@ def _local_kde_log_likelihood(
     return jax.lax.scan(add, jnp.zeros((points.shape[0],)), terms)[0]
 
 
+class SortedSpikesKDEEncodingModel(SortedSpikesEncodingModel):
+    """The encoding model ``fit_sorted_spikes_kde_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_sorted_spikes_kde_log_likelihood``, documented there.
+    """
+
+    marginal_models: list[KDEModel]
+    occupancy_model: KDEModel
+    occupancy: jax.Array
+    log_occupancy: jax.Array
+    mean_rates: list[float]
+    no_spike_part_log_likelihood: jax.Array
+    is_track_interior: np.ndarray
+
+
 def fit_sorted_spikes_kde_encoding_model(
     position_time: jax.Array | np.ndarray,
     position: jax.Array | np.ndarray,
     spike_times: list[jax.Array],
     environment: Environment,
     weights: jax.Array | np.ndarray | None = None,
+    *,
     position_std: float | jax.Array = np.sqrt(12.5),
     block_size: int = 100,
     disable_progress_bar: bool = False,
-    *,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> SortedSpikesKDEEncodingModel:
     """Fit a KDE encoding model for sorted spikes.
 
     Parameters
@@ -346,8 +363,9 @@ def fit_sorted_spikes_kde_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : SortedSpikesKDEEncodingModel
         Dictionary containing fitted encoding model components:
+        - 'algorithm': ``"sorted_spikes_kde"``
         - 'environment': The spatial environment
         - 'marginal_models': KDE models for each neuron's spatial firing
         - 'occupancy_model': KDE model for spatial occupancy
@@ -470,6 +488,7 @@ def fit_sorted_spikes_kde_encoding_model(
         )
 
     return {
+        "algorithm": "sorted_spikes_kde",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "marginal_models": marginal_models,
@@ -491,6 +510,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     position_time: jax.Array,
     position: jax.Array,
     spike_times: list[np.ndarray],
+    *,
     environment: Environment,
     marginal_models: list[KDEModel],
     occupancy_model: KDEModel,
@@ -502,8 +522,8 @@ def predict_sorted_spikes_kde_log_likelihood(
     disable_progress_bar: bool = False,
     is_local: bool = False,
     row_slice: slice | None = None,
-    *,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     log_occupancy: jax.Array | None = None,
@@ -551,6 +571,9 @@ def predict_sorted_spikes_kde_log_likelihood(
         result equals the full-time result sliced by ``row_slice``.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).

@@ -91,21 +91,37 @@ Fitted firing rates are in Hz.
   `make_state_transition(environments, context=None)` returns the block of
   probabilities from each source bin to each destination bin, and `context`
   (a `TransitionContext`) holds the fit's position and labels. A custom
-  transition with this method can be used in the same place, with three
-  caveats. The method is not called for a block between a one-bin state
-  (No-Spike, or Local without `local_position_std`) and a spatial state: from the one-bin state the block
-  is uniform over the interior of the environment named by the
-  transition's `environment_name`, which it must have, and into it every
-  bin moves there with probability 1. A custom transition has no structured
-  operator, so `transition_representation="structured"` rejects it.
-  `"auto"` builds its dense block, except when an environment's graph
-  distances are deferred, as for an open-field grid fit with a non-dense
-  representation; use `"dense"` there.
+  transition with this method and an `environment_name` attribute (the
+  environment of its source bins, or `None` if it has no place bins) can be
+  used in the same place. The block it returns must have one row per bin of
+  the source state and one column per bin of the destination state, be
+  non-negative, and have rows that sum to at most 1 (to 1, or 0 for bins
+  nothing can leave); the detectors raise `ValidationError` otherwise. The
+  environments a transition names must be its states': `environment_name`
+  is the source state's environment and `environment2_name` (as on
+  `Uniform`), when set, the destination's, otherwise `environment_name` is
+  both. The method is not called for a block between a one-bin state
+  (No-Spike, or Local without `local_position_std`) and a spatial state:
+  from the one-bin state the block is uniform over the interior of the
+  destination environment (so `Discrete`, which names none, cannot be used
+  there), and into it every bin moves there with probability 1. A custom
+  transition has no structured operator unless it implements
+  `transition_operators.SupportsStructuredBlock` and defines
+  `structured_block` in its own class (a subclass of a package transition
+  that does not is treated as custom), so
+  `transition_representation="structured"` rejects it. `"auto"` builds its
+  dense block, except when an environment's graph distances are deferred,
+  as for an open-field grid fit with a non-dense representation; use
+  `"dense"` there.
 - **Discrete transitions** set how the states follow one another:
   `DiscreteStationaryDiagonal` and `DiscreteStationaryCustom` for fixed
   probabilities, and `DiscreteNonStationaryDiagonal` and
   `DiscreteNonStationaryCustom` for probabilities that depend on covariates
-  such as speed.
+  such as speed. Diagonal values must be in [0, 1] and custom matrices
+  row-stochastic, checked when the transition is made. Each is a
+  `DiscreteTransition` (`is_stationary`, `n_states`, `smoothness` and
+  `make_state_transition(covariate_data)`), so a class with these members
+  can be used instead.
 
 ## Time bins
 

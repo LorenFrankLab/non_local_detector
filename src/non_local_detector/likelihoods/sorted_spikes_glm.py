@@ -71,8 +71,8 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
-from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
-from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
+from patsy import build_design_matrices, dmatrix
+from patsy.design_info import DesignInfo
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
@@ -96,6 +96,7 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_population_lengths,
 )
+from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
 from non_local_detector.likelihoods.no_spike import _poisson_row_log_likelihood
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -1326,21 +1327,34 @@ def _fit_rate_maps(
     return emission_design_info, coefficients, interior_rates
 
 
+class SortedSpikesGLMEncodingModel(SortedSpikesEncodingModel):
+    """The encoding model ``fit_sorted_spikes_glm_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_sorted_spikes_glm_log_likelihood``, documented there.
+    """
+
+    coefficients: jax.Array
+    emission_design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign"
+    no_spike_part_log_likelihood: jax.Array
+    is_track_interior: np.ndarray
+
+
 def fit_sorted_spikes_glm_encoding_model(
     position_time: jax.Array | np.ndarray,
     position: jax.Array | np.ndarray,
     spike_times: list[jax.Array],
     environment: Environment,
     weights: np.ndarray | None = None,
+    *,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float | None = None,
     disable_progress_bar: bool = False,
-    *,
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> SortedSpikesGLMEncodingModel:
     """Fit a GLM encoding model.
 
     The Poisson likelihood depends on position only through the basis, so the
@@ -1402,10 +1416,12 @@ def fit_sorted_spikes_glm_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : SortedSpikesGLMEncodingModel
         Keyword arguments for ``predict_sorted_spikes_glm_log_likelihood``,
         with the entries below.
 
+        algorithm : str
+            ``"sorted_spikes_glm"``.
         coefficients : jax.Array, shape (n_neurons, n_coefficients)
             Fitted coefficients for each neuron.
         emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
@@ -1477,6 +1493,7 @@ def fit_sorted_spikes_glm_encoding_model(
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
 
     return {
+        "algorithm": "sorted_spikes_glm",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "coefficients": coefficients,
@@ -1495,17 +1512,18 @@ def predict_sorted_spikes_glm_log_likelihood(
     position_time: jax.Array,
     position: jax.Array,
     spike_times: list[np.ndarray],
+    *,
     environment: Environment,
     coefficients: jax.Array,
-    emission_design_info: DesignInfo,
+    emission_design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
     place_fields: jax.Array,
     no_spike_part_log_likelihood: jax.Array,
     is_track_interior: jax.Array,
     disable_progress_bar: bool = False,
     is_local: bool = False,
     row_slice: slice | None = None,
-    *,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
@@ -1558,6 +1576,9 @@ def predict_sorted_spikes_glm_log_likelihood(
         result equals the full-time result sliced by ``row_slice``.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).

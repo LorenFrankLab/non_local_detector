@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm
 
 from non_local_detector.encoding_time import (
     EncodingSupport,
@@ -67,6 +67,7 @@ from non_local_detector.likelihoods.common import (
     validate_population_lengths,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
@@ -1710,6 +1711,29 @@ def mark_reference_scale(
     return waveform_std
 
 
+class ClusterlessKDEEncodingModel(ClusterlessEncodingModel):
+    """The encoding model ``fit_clusterless_kde_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_clusterless_kde_log_likelihood``, documented there.
+    """
+
+    occupancy: jax.Array
+    log_occupancy: jax.Array
+    occupancy_model: KDEModel
+    gpi_models: list[KDEModel]
+    encoding_spike_waveform_features: list[np.ndarray]
+    encoding_positions: list[np.ndarray]
+    encoding_weights: list[jax.Array]
+    summed_ground_process_intensity: jax.Array
+    position_std: jax.Array
+    waveform_std: float
+    block_size: int
+    enc_tile_size: int | None
+    pos_tile_size: int | None
+    use_streaming: bool
+
+
 def fit_clusterless_kde_encoding_model(
     position_time: jax.Array,
     position: jax.Array | np.ndarray,
@@ -1717,6 +1741,7 @@ def fit_clusterless_kde_encoding_model(
     spike_waveform_features: list[jax.Array],
     environment: Environment,
     weights: jax.Array | np.ndarray | None = None,
+    *,
     position_std: float | jax.Array = np.sqrt(12.5),
     waveform_std: float = DEFAULT_WAVEFORM_STD,
     block_size: int = 10_000,
@@ -1724,11 +1749,10 @@ def fit_clusterless_kde_encoding_model(
     pos_tile_size: int | None = None,
     use_streaming: bool = False,
     disable_progress_bar: bool = False,
-    *,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
-) -> dict[str, Any]:
+) -> ClusterlessKDEEncodingModel:
     """Fit the clusterless KDE encoding model.
 
     Parameters
@@ -1784,10 +1808,12 @@ def fit_clusterless_kde_encoding_model(
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : ClusterlessKDEEncodingModel
         Keyword arguments for ``predict_clusterless_kde_log_likelihood``,
-        including ``rate_units`` (``"Hz"``) and ``encoding_exposure_seconds``
-        (weighted encoding occupancy time in seconds).
+        including ``algorithm`` (``"clusterless_kde"``), ``rate_units``
+        (``"Hz"``), ``encoding_exposure_seconds`` (weighted encoding occupancy
+        time in seconds) and ``mark_dimensions`` (each electrode's
+        waveform-feature count).
 
     Notes
     -----
@@ -1910,11 +1936,15 @@ def fit_clusterless_kde_encoding_model(
         )
 
     return {
+        "algorithm": "clusterless_kde",
         "occupancy": occupancy,
         "log_occupancy": log_occupancy,
         "occupancy_model": occupancy_model,
         "gpi_models": gpi_models,
         "encoding_spike_waveform_features": bounded_spike_waveform_features,
+        "mark_dimensions": [
+            int(np.shape(features)[1]) for features in bounded_spike_waveform_features
+        ],
         "encoding_positions": encoding_positions,
         "encoding_weights": encoding_weights,
         "environment": environment,
@@ -1939,6 +1969,7 @@ def predict_clusterless_kde_log_likelihood(
     position: jax.Array,
     spike_times: list[jax.Array],
     spike_waveform_features: list[jax.Array],
+    *,
     occupancy: jax.Array,
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
@@ -1957,8 +1988,9 @@ def predict_clusterless_kde_log_likelihood(
     use_streaming: bool = False,
     encoding_weights: list[jax.Array] | None = None,
     row_slice: slice | None = None,
-    *,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
+    mark_dimensions: list[int] | None = None,  # noqa: ARG001 -- read by the detector
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     log_occupancy: jax.Array | None = None,
@@ -2037,6 +2069,12 @@ def predict_clusterless_kde_log_likelihood(
         spatial workspaces scale with the requested rows and selected spikes.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
+    mark_dimensions : list of int, optional
+        Each electrode's fitted waveform-feature count, which the detector
+        checks the decoded features against; unused here.
     rate_units : str, default="Hz", keyword-only
         Rate units recorded by the encoding fit; anything other than ``"Hz"``
         raises ``ValidationError`` (refit legacy encoding models).

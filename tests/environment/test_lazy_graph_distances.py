@@ -316,3 +316,15 @@ def test_environment_routes_whole_recording_requests_through_cross_distances():
     )
     with pytest.raises(GraphDistanceBudgetError):
         lazy_env.distance_between_nodes_.to_dense()
+
+
+@pytest.mark.unit
+def test_budget_error_names_the_detector_settings():
+    """The graph-distance budget error names the detector settings that set
+    or avoid the budget."""
+    graph, _ = graph_fixture()
+    lazy = LazyGraphDistances.from_graph(graph, max_dense_bytes=64)
+    with pytest.raises(GraphDistanceBudgetError) as error:
+        np.asarray(lazy)
+    assert "max_dense_transition_bytes" in str(error.value)
+    assert 'transition_representation="dense"' in str(error.value)

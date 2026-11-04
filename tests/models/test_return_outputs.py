@@ -95,7 +95,11 @@ class TestReturnOutputsParameter:
         assert results.causal_state_probabilities.shape == (n_time, n_states)
 
     def test_return_predictive_string(self, simple_fitted_detector):
-        """Test return_outputs='predictive' returns both predictive distributions."""
+        """Test return_outputs='predictive' returns the predictive state probabilities.
+
+        The string means the same as the list ['predictive']: the
+        (n_time, n_state_bins) predictive posterior has its own name.
+        """
         detector, spike_times, time, position = simple_fitted_detector
 
         results = detector.predict(
@@ -109,28 +113,36 @@ class TestReturnOutputsParameter:
         # Should have smoother (always)
         assert "acausal_posterior" in results
 
-        # Should have both predictive outputs
         assert "predictive_state_probabilities" in results
-        assert "predictive_posterior" in results
+        assert "predictive_posterior" not in results
 
         # Should NOT have filter or log_likelihood
         assert "causal_posterior" not in results
         assert "log_likelihood" not in results
 
-        # Verify shapes
         n_time = len(time)
         n_states = results.acausal_state_probabilities.shape[1]
-        n_state_bins = results.acausal_posterior.shape[1]
-
         assert results.predictive_state_probabilities.shape == (n_time, n_states)
-        assert results.predictive_posterior.shape == (n_time, n_state_bins)
-
-        # Verify probabilities sum to 1 (both versions)
         predictive_sums = results.predictive_state_probabilities.sum(dim="states")
         assert np.allclose(predictive_sums.values, 1.0, atol=1e-10)
 
+    def test_return_both_predictive_outputs(self, simple_fitted_detector):
+        """Both predictive outputs are requested by name."""
+        detector, spike_times, time, position = simple_fitted_detector
+
+        results = detector.predict(
+            spike_times=spike_times,
+            time_edges=time_edges_from_centers(time),
+            position=position,
+            position_time=time,
+            return_outputs=["predictive", "predictive_posterior"],
+        )
+
+        n_state_bins = results.acausal_posterior.shape[1]
+        assert results.predictive_posterior.shape == (len(time), n_state_bins)
         predictive_posterior_sums = results.predictive_posterior.sum(dim="state_bins")
         assert np.allclose(predictive_posterior_sums.values, 1.0, atol=1e-10)
+        assert "predictive_state_probabilities" in results
 
     def test_return_predictive_posterior_string(self, simple_fitted_detector):
         """Test return_outputs='predictive_posterior' returns full predictive posterior."""
@@ -248,7 +260,7 @@ class TestReturnOutputsParameter:
         ("return_outputs", "exc", "match"),
         [
             ("invalid_option", ValueError, "Invalid return_outputs"),
-            ({"filter", "invalid_option"}, ValueError, "Invalid outputs"),
+            ({"filter", "invalid_option"}, ValueError, "Invalid return_outputs"),
             (123, TypeError, "return_outputs must be"),
         ],
         ids=["invalid-string", "invalid-set-element", "invalid-type"],
