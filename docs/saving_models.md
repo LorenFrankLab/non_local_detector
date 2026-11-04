@@ -99,12 +99,16 @@ lists of numbers, `np.pi`, the package's spline and transform functions
 `np.arctan`, `np.arctan2`, `np.minimum`, `np.maximum`) and `C()` with
 `levels=` and a contrast of patsy's `Treatment`, `Sum`, `Helmert`, `Poly` or
 `Diff` called with literal arguments, such as `C(arm, Treatment('b'))`.
-Integers computed from literals must stay within int64, and a formula may
-have at most 2,000 characters and nest at most 32 deep, so that evaluating it
-takes bounded time. Its design's size is bounded too: a spline's `df` and
+Integers computed from literals must stay within int64, a formula may have
+at most 2,000 characters and nest at most 32 deep, a spline's `df` and
 `n_knots` are integers from 1 to 1,000 and its `degree` from 0 to 10,
 `knots=` and `levels=` are lists of at most 1,000 entries, and a formula makes
 at most 32 calls.
+
+By default, loading never runs code from a `.nld` file. A crafted file can
+still make loading or decoding slow or memory-hungry, for example with a
+formula whose spline terms interact into a very large design, which these
+limits do not prevent. Load files from untrusted sources with care.
 
 A file whose formula is outside the grammar loads for inspection only:
 `load_model` warns, naming the formula, and does not call patsy, so the design

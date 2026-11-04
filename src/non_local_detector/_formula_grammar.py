@@ -24,8 +24,9 @@ accepted only if every node is one of
   most ``_MAX_DEPTH`` deep;
 - spline sizes ``df`` and ``n_knots`` integers from 1 to ``_MAX_SIZE``,
   ``degree`` from 0 to ``_MAX_DEGREE``, ``knots=`` and ``levels=`` lists of at
-  most ``_MAX_SIZE`` entries, and at most ``_MAX_CALLS`` calls in a formula,
-  so the design's size is bounded;
+  most ``_MAX_SIZE`` entries, and at most ``_MAX_CALLS`` calls in a formula
+  (limits on a design's arguments, not on its size: interactions can still
+  make it very large);
 - a list or tuple of numbers (e.g. ``knots=[1.0, 4.0]``);
 - ``np.pi``;
 - a call of one of the documented transforms (``_FUNCTIONS``) or elementwise

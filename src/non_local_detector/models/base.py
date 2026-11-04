@@ -6496,6 +6496,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ``ValidationError`` until the transition is given a formula of your
         own. A formula within the grammar is a ``LoadedFormula`` (a ``str``),
         checked again with the covariate names when a design is built from it.
+        By default loading never runs code from a ``.nld`` file, but a
+        crafted file can still make loading or decoding slow or
+        memory-hungry (e.g. very large spline interactions), so load files
+        from untrusted sources with care.
 
         A pickle saved by an earlier release loads for inspection, including
         one pickled with JAX 0.4.30 or earlier. Decoding with one fitted
