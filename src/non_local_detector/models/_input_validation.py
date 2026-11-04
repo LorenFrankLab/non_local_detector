@@ -515,6 +515,52 @@ def _validate_penalty_params(
         )
 
 
+def _validate_prior_weight(prior_weight: Any, n_states: int) -> None:
+    """Check ``discrete_transition_prior_weight`` against the number of states.
+
+    The accepted shapes are those of the EM M-step (``_row_prior_weights``):
+    one weight (a scalar or a one-element array) for every row, or one per
+    row.
+
+    Parameters
+    ----------
+    prior_weight : float or array_like, shape () or (n_states,)
+        Data-adaptive Dirichlet prior weight.
+    n_states : int
+        Number of discrete states.
+
+    Raises
+    ------
+    ValidationError
+        If it is not numeric, not one weight or ``n_states`` weights, or holds
+        a negative or non-finite weight.
+    """
+    hint = (
+        "Use 0.0 for the fixed-count prior, a finite weight >= 0 for every "
+        f"row, or an array of {n_states} such weights, one per row."
+    )
+    try:
+        weights = np.asarray(prior_weight, dtype=float)
+    except (TypeError, ValueError):
+        msg = "discrete_transition_prior_weight must be numeric"
+        raise ValidationError(
+            msg, expected="a float or an array of floats", got=repr(prior_weight)
+        ) from None
+    if weights.size != 1 and weights.shape != (n_states,):
+        msg = "discrete_transition_prior_weight must be one weight or one per state"
+        raise ValidationError(
+            msg,
+            expected=f"a scalar or shape ({n_states},)",
+            got=f"shape {weights.shape}",
+            hint=hint,
+        )
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+        msg = "discrete_transition_prior_weight must be finite and non-negative"
+        raise ValidationError(
+            msg, expected="finite weights >= 0", got=repr(prior_weight), hint=hint
+        )
+
+
 def _normalize_frozen_discrete_transition_rows(
     frozen_rows: FrozenTransitionRows,
     is_no_spike_state: np.ndarray,

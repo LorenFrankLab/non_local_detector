@@ -249,6 +249,57 @@ class TestValidateNumericalParameters:
 
 
 @pytest.mark.unit
+class TestValidatePriorWeight:
+    """``discrete_transition_prior_weight`` is checked by the constructor.
+
+    The EM M-step rejected bad values only at ``estimate_parameters``, and
+    accepted NaN and infinity.
+    """
+
+    @pytest.mark.parametrize(
+        "prior_weight",
+        [
+            -0.5,
+            float("nan"),
+            float("inf"),
+            np.array([0.5, -0.1]),
+            np.array([0.5, np.nan]),
+            np.array([0.5, 0.5, 0.5]),
+            np.ones((2, 2)),
+            "high",
+        ],
+        ids=[
+            "negative",
+            "nan",
+            "inf",
+            "negative-row",
+            "nan-row",
+            "wrong-length",
+            "matrix",
+            "string",
+        ],
+    )
+    def test_invalid_prior_weight_raises(self, two_state_environment, prior_weight):
+        with pytest.raises(ValidationError, match="discrete_transition_prior_weight"):
+            _two_state_decoder(
+                two_state_environment, discrete_transition_prior_weight=prior_weight
+            )
+
+    @pytest.mark.parametrize(
+        "prior_weight",
+        [0.0, 0.5, np.array(0.5), np.array([0.5]), [0.5, 0.0], np.array([0.0, 2.0])],
+        ids=["zero", "scalar", "0-d", "length-one", "list", "per-row"],
+    )
+    def test_valid_prior_weight_is_stored_as_given(
+        self, two_state_environment, prior_weight
+    ):
+        decoder = _two_state_decoder(
+            two_state_environment, discrete_transition_prior_weight=prior_weight
+        )
+        assert decoder.discrete_transition_prior_weight is prior_weight
+
+
+@pytest.mark.unit
 class TestValidateDiscreteTransitionType:
     """Test _validate_discrete_transition_type method."""
 

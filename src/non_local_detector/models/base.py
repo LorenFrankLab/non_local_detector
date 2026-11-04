@@ -120,6 +120,7 @@ from non_local_detector.models._input_validation import (
     _validate_covariate_time_length,
     _validate_inference_arguments,
     _validate_penalty_params,  # noqa: F401 -- imported from base by tests
+    _validate_prior_weight,
     _validate_transition_arguments,
 )
 from non_local_detector.models._persistence import (
@@ -743,9 +744,9 @@ class _DetectorBase(
             the Dirichlet prior pseudo-counts are scaled by expected transition
             counts, making regularization strength approximately invariant to
             temporal resolution. Can be a scalar (same weight for all rows) or
-            an array of shape ``(n_states,)`` for per-row control. When 0.0
-            (default), the fixed-count prior from concentration and stickiness
-            is used directly.
+            an array of shape ``(n_states,)`` for per-row control; each weight
+            must be finite and >= 0. When 0.0 (default), the fixed-count prior
+            from concentration and stickiness is used directly.
         frozen_discrete_transition_rows : {"no_spike"}, np.ndarray, list, tuple, or None, optional
             Rows of the discrete transition matrix to freeze during EM
             re-estimation. ``"no_spike"`` (default) freezes the rows of the
@@ -794,6 +795,9 @@ class _DetectorBase(
         )
         self._validate_discrete_transition_type(
             discrete_transition_type, len(discrete_initial_conditions)
+        )
+        _validate_prior_weight(
+            discrete_transition_prior_weight, len(discrete_initial_conditions)
         )
 
         # Initial conditions parameters
