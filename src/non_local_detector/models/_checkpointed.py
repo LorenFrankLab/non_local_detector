@@ -266,7 +266,9 @@ class _CheckpointedPredictionMixin:
         )
 
         edges, centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         interior = self.is_track_interior_state_bins_
         output_names = set(outputs)
@@ -345,7 +347,9 @@ class _CheckpointedPredictionMixin:
                 "'filter' and 'predictive', or use output_mode='spatial' with a result_path.",
             )
         edges, centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         interior = self.is_track_interior_state_bins_
         states = self.state_ind_[interior]

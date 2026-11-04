@@ -23,6 +23,7 @@ from non_local_detector.likelihoods import (
 )
 from non_local_detector.models import ClusterlessDecoder, SortedSpikesDecoder
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 pytestmark = pytest.mark.unit
 
@@ -71,6 +72,7 @@ def _sorted_decoder(algorithm, params=None):
         environments=[_environment()],
         sorted_spikes_algorithm=algorithm,
         sorted_spikes_algorithm_params=params,
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
     )
 
 
@@ -79,6 +81,7 @@ def _clusterless_decoder(algorithm, params=None):
         environments=[_environment()],
         clusterless_algorithm=algorithm,
         clusterless_algorithm_params=params,
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
     )
 
 

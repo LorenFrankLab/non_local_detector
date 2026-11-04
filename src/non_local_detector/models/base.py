@@ -117,6 +117,7 @@ from non_local_detector.models._input_validation import (
     _InputValidationMixin,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
+    _require_sampling_frequency_width,
     _sample_mask,
     _sample_times,
     _validate_covariate_time_length,
@@ -734,7 +735,8 @@ class _DetectorBase(
         state_names : StateNames, optional
             Names of the states, by default None.
         sampling_frequency : float, optional
-            Sampling frequency, by default 500.0.
+            Rate in Hz of the decode bins; decoding ``time_edges`` must be
+            ``1 / sampling_frequency`` wide. By default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
         discrete_transition_prior_weight : float or np.ndarray, optional
@@ -1989,7 +1991,10 @@ class _DetectorBase(
         self._validate_time_contract()
         decode = _DecodeInputs.from_arguments(position_time, position)
         time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width(), row_slice=row_slice
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
+            row_slice=row_slice,
         )
         self._check_decode_spike_data(time_edges, spike_data)
         self._validate_decode_position(decode.position)
@@ -2129,6 +2134,7 @@ class _DetectorBase(
         time_edges, row_time = _decode_time_edges(
             context.time_edges,
             *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
             _time_grid=context.time_grid,
             row_slice=row_slice,
         )
@@ -2309,7 +2315,9 @@ class _DetectorBase(
         position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         self._check_decode_spike_data(time_edges, spike_data)
         self._validate_decode_position(position)
@@ -2479,13 +2487,16 @@ class _DetectorBase(
             store_log_likelihood=store_log_likelihood,
             replay_cache_bytes=replay_cache_bytes,
         )
-        time_edges, _ = _validate_estimation_arguments(
+        time_edges, time_bin_width = _validate_estimation_arguments(
             time_edges,
             n_chunks,
             return_outputs,
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
+        )
+        _require_sampling_frequency_width(
+            time_edges, time_bin_width, self.sampling_frequency
         )
         inputs = _EncodingInputs.from_arguments(
             position_time,
@@ -2589,7 +2600,9 @@ class _DetectorBase(
         position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
         time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         self._check_decode_spike_data(time_edges, spike_data)
         self._validate_decode_position(position)
@@ -2677,7 +2690,9 @@ class _DetectorBase(
         # own fit. Kept as the engine's guard for direct calls.
         self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         # Disable caching when using multiple chunks (memory optimization)
         if n_chunks > 1 and cache_likelihood:
@@ -2960,7 +2975,9 @@ class _DetectorBase(
         # As in _predict, a guard for direct calls of the engine.
         self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         # Validate parameters
         if log_likelihood_args is None:
@@ -3150,7 +3167,8 @@ class ClusterlessDetector(_DetectorBase):
         state_names : StateNames, optional
             Names of the states, by default None.
         sampling_frequency : float, optional
-            Sampling frequency, by default 500.0.
+            Rate in Hz of the decode bins; decoding ``time_edges`` must be
+            ``1 / sampling_frequency`` wide. By default 500.0.
         no_spike_rate : float, optional
             No-Spike firing rate per electrode in Hz, by default 1e-10. Its
             spikes' marks are scored with the training-fitted reference
@@ -4259,7 +4277,8 @@ class SortedSpikesDetector(_DetectorBase):
         state_names : StateNames, optional
             Names of the states, by default None.
         sampling_frequency : float, optional
-            Sampling frequency, by default 500.0.
+            Rate in Hz of the decode bins; decoding ``time_edges`` must be
+            ``1 / sampling_frequency`` wide. By default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
         discrete_transition_prior_weight : float or np.ndarray, optional

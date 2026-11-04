@@ -375,6 +375,7 @@ def clusterless_log_likelihood(algorithm):
         environments=Environment(place_bin_size=0.5, position_range=((0, 8),)),
         infer_track_interior=False,
         clusterless_algorithm=algorithm,
+        sampling_frequency=10.0,  # decode edges are 0.1 s wide
     )
     model.fit(position_time, position, spikes, marks)
     decode_spikes = [np.sort(rng.uniform(0, 1.6, 51)) for _ in range(2)]

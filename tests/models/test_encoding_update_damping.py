@@ -20,6 +20,7 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.exceptions import ValidationError
+from tests.models._helpers import SORTED_SIM_RATE
 
 # Every nonzero value takes the same branch. A negative value and NaN are kept
 # because an ``x > 0`` style guard would let them through.
@@ -94,7 +95,9 @@ def test_nonzero_damping_is_rejected_before_mutation(request, family, damping):
 def test_zero_damping_is_accepted(sorted_inputs):
     """An explicit zero is accepted and matches EM run without the argument."""
     results = [
-        NonLocalSortedSpikesDetector().estimate_parameters(
+        NonLocalSortedSpikesDetector(
+            sampling_frequency=SORTED_SIM_RATE
+        ).estimate_parameters(
             **sorted_inputs, max_iter=1, estimate_encoding_model=True, **damping
         )
         for damping in ({"encoding_update_damping": 0.0}, {})

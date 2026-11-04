@@ -19,10 +19,17 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.simulate import clusterless_simulation, sorted_spikes_simulation
 
 # Every registered likelihood algorithm, so a new backend is covered without
 # editing this list.
 ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
+
+# Sample rates of the simulated recordings in ``tests/models/conftest.py``
+# (``sorted_sim`` and ``clusterless_sim``). A detector decoding one bin per
+# sample (``time_edges_from_centers(time)``) is constructed at this rate.
+SORTED_SIM_RATE = sorted_spikes_simulation.SAMPLING_FREQUENCY
+CLUSTERLESS_SIM_RATE = clusterless_simulation.SAMPLING_FREQUENCY
 
 
 def _snapshot(detector):
@@ -48,7 +55,7 @@ def _assert_unchanged(detector, snapshot):
             assert vars(env)[name] is value, (env.environment_name, name)
 
 
-def _decoder(algorithm, *, calibration=False):
+def _decoder(algorithm, *, calibration=False, sampling_frequency=500.0):
     """An unfitted one-state decoder with a Uniform transition.
 
     Parameters
@@ -58,6 +65,9 @@ def _decoder(algorithm, *, calibration=False):
     calibration : bool, optional
         If True, use 1-unit bins on ``(-1.5, 1.5)``; otherwise 5-unit bins on
         ``(40, 60)``.
+    sampling_frequency : float, optional
+        Decode bins per second, which the decode ``time_edges`` must match;
+        by default 500 (2 ms bins).
     """
     environment = Environment(
         place_bin_size=1 if calibration else 5,
@@ -67,6 +77,7 @@ def _decoder(algorithm, *, calibration=False):
         "environments": environment,
         "continuous_transition_types": [[Uniform()]],
         "infer_track_interior": False,
+        "sampling_frequency": sampling_frequency,
     }
     params = {"disable_progress_bar": True}
     if algorithm == "sorted_spikes_glm" and calibration:

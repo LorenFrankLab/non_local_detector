@@ -13,6 +13,7 @@ from non_local_detector.initial_conditions import (
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from tests.conftest import assert_probability_distribution, set_place_grid
+from tests.models._helpers import SORTED_SIM_RATE
 
 
 @pytest.mark.unit
@@ -118,7 +119,8 @@ def em_fit_with_unreachable_states():
     n_time = 4000
     time, position = time[:n_time], position[:n_time]
     detector = NonLocalSortedSpikesDetector(
-        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0])
+        sampling_frequency=SORTED_SIM_RATE,
+        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0]),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # max_iter=1 never converges

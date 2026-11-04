@@ -196,6 +196,8 @@ def test_no_spike_duration_prepared_once_per_prediction(
         return result
 
     for _ in range(2):
+        # The time array is rescaled each pass, so the detector's rate follows.
+        monkeypatch.setattr(detector, "sampling_frequency", 1 / (time[1] - time[0]))
         expected = np.asarray(detector.compute_log_likelihood(*args, time_edges=time))
         durations.clear()
 

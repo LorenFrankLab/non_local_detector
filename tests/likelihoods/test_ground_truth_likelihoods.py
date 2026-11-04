@@ -244,7 +244,9 @@ def _fit(algorithm, data, place_bin_size):
     environment = Environment(place_bin_size=place_bin_size)
     if algorithm in CLUSTERLESS:
         model = NonLocalClusterlessDetector(
-            environments=environment, clusterless_algorithm=algorithm
+            environments=environment,
+            clusterless_algorithm=algorithm,
+            sampling_frequency=1 / DECODE_BIN,
         )
         model.fit(
             data["time"],
@@ -254,7 +256,9 @@ def _fit(algorithm, data, place_bin_size):
         )
     else:
         model = NonLocalSortedSpikesDetector(
-            environments=environment, sorted_spikes_algorithm=algorithm
+            environments=environment,
+            sorted_spikes_algorithm=algorithm,
+            sampling_frequency=1 / DECODE_BIN,
         )
         model.fit(data["time"], data["position"], data["spike_times"])
     encoding = next(iter(model.encoding_model_.values()))

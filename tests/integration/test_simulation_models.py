@@ -50,6 +50,7 @@ def simulated_data():
 def nonlocal_detector(simulated_data):
     """NonLocalSortedSpikesDetector fitted on non-event periods; read-only."""
     return NonLocalSortedSpikesDetector(
+        sampling_frequency=simulated_data["sampling_frequency"],
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
@@ -118,6 +119,7 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
 
     # Fit classifier
     classifier = ContFragSortedSpikesClassifier(
+        sampling_frequency=simulated_data["sampling_frequency"],
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,
@@ -196,6 +198,7 @@ def test_sorted_spikes_decoder(simulated_data):
 
     # Fit decoder
     decoder = SortedSpikesDecoder(
+        sampling_frequency=simulated_data["sampling_frequency"],
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={
             "position_std": 6.0,

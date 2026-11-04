@@ -22,7 +22,7 @@ import non_local_detector as nld
 from non_local_detector import time_edges_from_centers
 from non_local_detector._formula_grammar import LoadedFormula, UntrustedFormula
 from non_local_detector.exceptions import ParameterWarning, ValidationError
-from tests.model_format.conftest import algorithm_params, decode
+from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 
 pytestmark = pytest.mark.integration
 
@@ -55,6 +55,7 @@ def _detector(formula="1 + speed"):
             diagonal_values=np.full(4, 0.98), formula=formula
         ),
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     )
 
 

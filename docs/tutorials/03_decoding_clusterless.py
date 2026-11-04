@@ -201,6 +201,7 @@ axes[1].set_xlim(0, 60)
 # %%
 decoder = ClusterlessDecoder(
     environments=Environment(place_bin_size=2.0),
+    sampling_frequency=sampling_frequency,  # one decode bin per position sample
     clusterless_algorithm="clusterless_kde",
     clusterless_algorithm_params={
         "position_std": np.sqrt(12.5),  # cm
@@ -362,6 +363,7 @@ ax.legend()
 # %%
 gmm_decoder = ClusterlessDecoder(
     environments=Environment(place_bin_size=2.0),
+    sampling_frequency=sampling_frequency,
     clusterless_algorithm="clusterless_gmm",
 )
 gmm_decoder.fit(

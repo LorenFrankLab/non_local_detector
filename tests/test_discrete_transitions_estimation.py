@@ -123,6 +123,8 @@ class _FixedLikelihoodDetector(_DetectorBase):
             ),
             infer_track_interior=False,
             state_names=["Source A", "Source B", "Target"],
+            # Every test decodes unit-width bins (one per second).
+            sampling_frequency=1.0,
         )
 
     def compute_log_likelihood(self, time_edges, *args, is_missing=None):

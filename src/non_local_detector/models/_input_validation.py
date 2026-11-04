@@ -556,11 +556,62 @@ class _DecodeInputs:
         return cls(times, position[:, np.newaxis] if position.ndim == 1 else position)
 
 
+def _require_sampling_frequency_width(
+    time_edges: np.ndarray,
+    width: float,
+    sampling_frequency: float,
+    *,
+    tolerance: float | None = None,
+) -> None:
+    """Require uniform ``time_edges`` to be ``1 / sampling_frequency`` wide.
+
+    The widths match within the tolerance that decides the edges are uniform
+    (``time_edges._uniformity_tolerance``: the larger of 4 ulp of the largest
+    edge and a thousandth of the width), so a grid accepted as uniform at a
+    rate is also accepted as that rate.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Edges already checked uniform.
+    width : float
+        Their bin width, in seconds.
+    sampling_frequency : float
+        The detector's bins per second.
+    tolerance : float or None, optional
+        The uniformity tolerance already computed for these edges, or None to
+        compute it.
+
+    Raises
+    ------
+    ValidationError
+        If the width differs from ``1 / sampling_frequency`` by more than the
+        tolerance.
+    """
+    expected = 1.0 / sampling_frequency
+    if tolerance is None:
+        tolerance = _uniformity_tolerance(time_edges, width)
+    if abs(width - expected) <= tolerance:
+        return
+    msg = "time_edges bin width differs from the detector's sampling_frequency"
+    raise ValidationError(
+        msg,
+        expected=f"bin width 1 / sampling_frequency = {expected!r} s "
+        f"(sampling_frequency={sampling_frequency!r} Hz)",
+        got=f"bin width {width!r} s ({1.0 / width:.6g} Hz)",
+        hint="The detector's transitions are per bin of 1 / sampling_frequency "
+        f"seconds. Construct it with sampling_frequency={1.0 / width:.6g} to "
+        "decode these edges, or build the edges at the detector's rate with "
+        "detector.calculate_time_edges(time_range).",
+    )
+
+
 def _decode_time_edges(
     time_edges: ArrayLike,
     transition_time_bin_width: float | None,
     transition_time_bin_width_tolerance: float = 0.0,
     *,
+    sampling_frequency: float | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
     row_slice: slice | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -568,7 +619,8 @@ def _decode_time_edges(
 
     Detector bins must be uniform because the HMM applies one transition per
     bin. When transitions were learned by ``estimate_parameters``, the grid
-    must also use the bin width they were learned at.
+    must also use the bin width they were learned at, and its width must be
+    ``1 / sampling_frequency`` (see ``_require_sampling_frequency_width``).
 
     Parameters
     ----------
@@ -580,6 +632,9 @@ def _decode_time_edges(
         Uniformity tolerance of the grid the width was learned on. The widths
         match when they differ by no more than the larger of the two grids'
         tolerances.
+    sampling_frequency : float or None, optional
+        The detector's ``sampling_frequency`` (bins per second), or None to
+        skip that comparison.
     row_slice : slice or None, optional
         Rows (bins) for which to return centers; None selects all bins.
 
@@ -593,7 +648,8 @@ def _decode_time_edges(
     ------
     ValidationError, DataError
         If the edges are invalid or not uniform, or their width differs from
-        ``transition_time_bin_width`` by more than the timestamp precision.
+        ``transition_time_bin_width`` by more than the timestamp precision or
+        from ``1 / sampling_frequency``.
     """
     prepared_uniform_grid = (
         isinstance(_time_grid, _DecodeTimeGrid)
@@ -649,6 +705,10 @@ def _decode_time_edges(
             hint="The discrete transitions were estimated per bin at that width "
             "and are not valid at another rate. Decode at the same bin width, "
             "or refit the detector for the new width.",
+        )
+    if sampling_frequency is not None:
+        _require_sampling_frequency_width(
+            time_edges, width, sampling_frequency, tolerance=uniform_tolerance
         )
     start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     return time_edges, decode_bin_centers(time_edges, start, stop)

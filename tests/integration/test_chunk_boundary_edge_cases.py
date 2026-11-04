@@ -49,6 +49,9 @@ PARITY_KWARGS = {"rtol": 1e-5, "atol": 1e-6}
 N_DECODE = 202
 CHUNK_COUNTS = (5, 6, 7)
 N_SINGLETON = 41
+# Rates of the simulated recordings; detectors must match the edges they decode.
+SORTED_SAMPLING_FREQUENCY = 1500.0
+CLUSTERLESS_SAMPLING_FREQUENCY = 1000.0
 
 
 def chunk_start_rows(n_bins: int, n_chunks: int) -> list[int]:
@@ -219,6 +222,7 @@ def sorted_detector(**detector_kwargs) -> NonLocalSortedSpikesDetector:
     return NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={"position_std": 6.0, "block_size": (2**12)},
+        sampling_frequency=SORTED_SAMPLING_FREQUENCY,
         **detector_kwargs,
     )
 
@@ -263,6 +267,7 @@ def clusterless_setup():
     encode_end = sim.position_time[n_encode]
 
     detector = NonLocalClusterlessDetector(
+        sampling_frequency=CLUSTERLESS_SAMPLING_FREQUENCY,
         clusterless_algorithm="clusterless_kde",
         clusterless_algorithm_params={
             "position_std": 6.0,

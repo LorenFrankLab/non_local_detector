@@ -24,6 +24,7 @@ from non_local_detector.models.cont_frag_model import (
     ContFragClusterlessClassifier,
     ContFragSortedSpikesClassifier,
 )
+from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE
 
 POSITION_FREE_ALGORITHMS = [
     "clusterless_gmm",
@@ -41,7 +42,9 @@ def _fit_clusterless(detector, sim):
 
 @pytest.fixture(scope="module", params=POSITION_FREE_ALGORITHMS)
 def fitted_decoder(request, clusterless_sim):
-    decoder = ClusterlessDecoder(clusterless_algorithm=request.param)
+    decoder = ClusterlessDecoder(
+        clusterless_algorithm=request.param, sampling_frequency=CLUSTERLESS_SIM_RATE
+    )
     return _fit_clusterless(decoder, clusterless_sim)
 
 
@@ -97,7 +100,9 @@ def test_direct_non_local_predict_without_position(fitted_decoder, clusterless_s
 def test_local_state_requires_position(clusterless_sim, sorted_sim):
     """A Local state still rejects a missing position with a package error."""
     sim = clusterless_sim
-    clusterless = _fit_clusterless(NonLocalClusterlessDetector(), sim)
+    clusterless = _fit_clusterless(
+        NonLocalClusterlessDetector(sampling_frequency=CLUSTERLESS_SIM_RATE), sim
+    )
     with pytest.raises(ValidationError, match="local observation models"):
         clusterless.predict(
             sim.spike_times,
@@ -106,7 +111,9 @@ def test_local_state_requires_position(clusterless_sim, sorted_sim):
         )
 
     time, position, spike_times = sorted_sim
-    sorted_detector = NonLocalSortedSpikesDetector().fit(time, position, spike_times)
+    sorted_detector = NonLocalSortedSpikesDetector(
+        sampling_frequency=SORTED_SIM_RATE
+    ).fit(time, position, spike_times)
     with pytest.raises(ValidationError, match="local observation models"):
         sorted_detector.predict(
             spike_times, time_edges=time_edges_from_centers(time[:N_DECODE])
@@ -121,7 +128,11 @@ def test_local_position_std_without_local_state_does_not_need_position(
     make position required."""
     sim = clusterless_sim
     clusterless = ClusterlessDetector(
-        **ContFragClusterlessClassifier().get_params(), local_position_std=5.0
+        **{
+            **ContFragClusterlessClassifier().get_params(),
+            "sampling_frequency": CLUSTERLESS_SIM_RATE,
+        },
+        local_position_std=5.0,
     )
     assert not any(obs.is_local for obs in clusterless.observation_models)
     _fit_clusterless(clusterless, sim)
@@ -134,7 +145,11 @@ def test_local_position_std_without_local_state_does_not_need_position(
 
     time, position, spike_times = sorted_sim
     sorted_detector = SortedSpikesDetector(
-        **ContFragSortedSpikesClassifier().get_params(), local_position_std=5.0
+        **{
+            **ContFragSortedSpikesClassifier().get_params(),
+            "sampling_frequency": SORTED_SIM_RATE,
+        },
+        local_position_std=5.0,
     )
     sorted_detector.fit(time, position, spike_times)
     results = sorted_detector.predict(
@@ -152,15 +167,19 @@ def test_non_local_position_penalty_requires_position(
     the missing-position error."""
     if family == "sorted":
         time, position, spike_times = sorted_sim
-        detector = NonLocalSortedSpikesDetector(non_local_position_penalty=1.0).fit(
-            time, position, spike_times
-        )
+        detector = NonLocalSortedSpikesDetector(
+            non_local_position_penalty=1.0, sampling_frequency=SORTED_SIM_RATE
+        ).fit(time, position, spike_times)
         predict_args = (spike_times,)
         decode_time = time[:N_DECODE]
     else:
         sim = clusterless_sim
         detector = _fit_clusterless(
-            NonLocalClusterlessDetector(non_local_position_penalty=1.0), sim
+            NonLocalClusterlessDetector(
+                non_local_position_penalty=1.0,
+                sampling_frequency=CLUSTERLESS_SIM_RATE,
+            ),
+            sim,
         )
         predict_args = (sim.spike_times, sim.spike_waveform_features)
         decode_time = sim.position_time[:N_DECODE]

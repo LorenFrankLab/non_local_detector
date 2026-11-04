@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
+from tests.models._helpers import SORTED_SIM_RATE
 
 
 @pytest.fixture(scope="module")
@@ -27,6 +28,7 @@ def simple_fitted_detector(sorted_sim):
             "position_std": 6.0,
             "block_size": (2**12),
         },
+        sampling_frequency=SORTED_SIM_RATE,
     ).fit(time, position, spike_times)
 
     return detector, spike_times, time, position
