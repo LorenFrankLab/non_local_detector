@@ -593,7 +593,7 @@ class ClusterlessGMMEncodingModel(ClusterlessEncodingModel):
     log_occupancy: jax.Array
     gpi_models: list[GaussianMixtureModel | None]
     joint_models: list[GaussianMixtureModel | None]
-    summed_ground_process_intensity: jax.Array
+    summed_ground_process_intensity: np.ndarray
     spike_block_size: int
     bin_tile_size: int | None
     gmm_requested_components: dict[str, int]
@@ -896,8 +896,8 @@ def fit_clusterless_gmm_encoding_model(
         "log_occupancy": log_occupancy,
         "gpi_models": gpi_models,
         "joint_models": joint_models,
-        "mean_rates": jnp.asarray(mean_rates),
-        "summed_ground_process_intensity": summed_ground_process_intensity,
+        "mean_rates": np.asarray(jnp.asarray(mean_rates)),
+        "summed_ground_process_intensity": np.asarray(summed_ground_process_intensity),
         "disable_progress_bar": disable_progress_bar,
         "spike_block_size": spike_block_size,
         "bin_tile_size": bin_tile_size,
@@ -935,8 +935,8 @@ def predict_clusterless_gmm_log_likelihood(
     log_occupancy: jax.Array,
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
-    mean_rates: jax.Array,
-    summed_ground_process_intensity: jax.Array,
+    mean_rates: ArrayLike,
+    summed_ground_process_intensity: ArrayLike,
     is_local: bool = False,
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
@@ -988,9 +988,9 @@ def predict_clusterless_gmm_log_likelihood(
         electrode.
     joint_models : list of GaussianMixtureModel or None, length n_electrodes
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
-    mean_rates : jax.Array, shape (n_electrodes,)
+    mean_rates : array_like, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
-    summed_ground_process_intensity : jax.Array, shape (n_interior_bins,)
+    summed_ground_process_intensity : array_like, shape (n_interior_bins,)
         Sum over electrodes of ``rate * p_gpi(x) / p_occ(x)`` at the interior
         bins, in Hz (without the background rate).
     is_local : bool, default=False
@@ -1063,6 +1063,10 @@ def predict_clusterless_gmm_log_likelihood(
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     spike_times = as_arrays(spike_times)
     spike_waveform_features = as_arrays(spike_waveform_features)
+    # The fit stores these as NumPy arrays; prediction reads the device arrays
+    # the fit stored before, so the arithmetic is unchanged.
+    mean_rates = jnp.asarray(mean_rates)
+    summed_ground_process_intensity = jnp.asarray(summed_ground_process_intensity)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,

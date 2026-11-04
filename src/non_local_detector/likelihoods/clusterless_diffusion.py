@@ -380,7 +380,7 @@ def fit_clusterless_diffusion_encoding_model(
         ``encoding_weights`` (list): one bin-sorted entry per encoding spike, or
         two when its bracketing tracking samples lie in different bins, each
         with its share of the spike's weight; ``weight_total`` (list of float),
-        ``mean_rates`` (list), ``resolved_rank`` (int), ``node_order``,
+        ``mean_rates`` (``(n_electrodes,)``), ``resolved_rank`` (int), ``node_order``,
         ``bin_sizes`` (dV per interior bin), ``position_std``, ``waveform_std``,
         ``block_size``, ``memory_budget``, ``disable_progress_bar``,
         ``rate_units`` (``"Hz"``), ``encoding_exposure_seconds`` (weighted
@@ -543,7 +543,7 @@ def fit_clusterless_diffusion_encoding_model(
         "mark_dimensions": [int(np.shape(marks)[1]) for marks in encoding_marks],
         "encoding_weights": encoding_weights,
         "weight_total": weight_total,
-        "mean_rates": mean_rates,
+        "mean_rates": np.asarray(mean_rates),
         "resolved_rank": resolved_rank,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
@@ -1274,7 +1274,7 @@ def predict_clusterless_diffusion_log_likelihood(
     encoding_marks: list[jax.Array],
     encoding_weights: list[jax.Array],
     weight_total: list[float],
-    mean_rates: list[float],
+    mean_rates: ArrayLike,
     resolved_rank: int,
     node_order: np.ndarray,
     bin_sizes: np.ndarray | jax.Array,
@@ -1326,7 +1326,7 @@ def predict_clusterless_diffusion_log_likelihood(
         Weight of each encoding entry.
     weight_total : list of float, length n_electrodes
         Total encoding weight of each electrode.
-    mean_rates : list of float, length n_electrodes
+    mean_rates : array_like, shape (n_electrodes,)
         Mean rate of each electrode in Hz.
     resolved_rank : int
         Eigenbasis rank of the heat kernel.
@@ -1398,6 +1398,9 @@ def predict_clusterless_diffusion_log_likelihood(
     _validate_execution_settings(memory_budget, block_size)
     spike_times = as_arrays(spike_times)
     spike_waveform_features = as_arrays(spike_waveform_features)
+    # One Python float per electrode, as the fit stored before it stored an
+    # array, so the arithmetic is unchanged.
+    electrode_mean_rates: list[float] = np.asarray(mean_rates).tolist()
     fitted_occupancy = occupancy
     occupancy = jnp.asarray(occupancy)
     summed_ground_process_intensity = jnp.asarray(
@@ -1419,7 +1422,7 @@ def predict_clusterless_diffusion_log_likelihood(
         encoding_marks=encoding_marks,
         encoding_weights=encoding_weights,
         weight_total=weight_total,
-        mean_rates=mean_rates,
+        mean_rates=electrode_mean_rates,
         mark_reference=mark_reference,
     )
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
@@ -1617,7 +1620,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 encoding_marks,
                 encoding_weights,
                 weight_total,
-                mean_rates,
+                electrode_mean_rates,
                 strict=True,
             )
         ),

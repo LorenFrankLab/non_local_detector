@@ -1616,14 +1616,14 @@ class ClusterlessKDEEncodingModel(ClusterlessEncodingModel):
     ``predict_clusterless_kde_log_likelihood``, documented there.
     """
 
-    occupancy: jax.Array
+    occupancy: np.ndarray
     log_occupancy: jax.Array
     occupancy_model: KDEModel
     gpi_models: list[KDEModel]
     encoding_spike_waveform_features: list[np.ndarray]
     encoding_positions: list[np.ndarray]
     encoding_weights: list[jax.Array]
-    summed_ground_process_intensity: jax.Array
+    summed_ground_process_intensity: np.ndarray
     position_std: jax.Array
     waveform_std: float
     block_size: int
@@ -1833,7 +1833,7 @@ def fit_clusterless_kde_encoding_model(
 
     return {
         "algorithm": "clusterless_kde",
-        "occupancy": occupancy,
+        "occupancy": np.asarray(occupancy),
         "log_occupancy": log_occupancy,
         "occupancy_model": occupancy_model,
         "gpi_models": gpi_models,
@@ -1845,8 +1845,8 @@ def fit_clusterless_kde_encoding_model(
         "encoding_weights": encoding_weights,
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
-        "mean_rates": mean_rates,
-        "summed_ground_process_intensity": summed_ground_process_intensity,
+        "mean_rates": np.asarray(mean_rates),
+        "summed_ground_process_intensity": np.asarray(summed_ground_process_intensity),
         "position_std": position_std,
         "waveform_std": waveform_std,
         "block_size": block_size,
@@ -1866,14 +1866,14 @@ def predict_clusterless_kde_log_likelihood(
     spike_times: Sequence[ArrayLike],
     spike_waveform_features: Sequence[ArrayLike],
     *,
-    occupancy: jax.Array,
+    occupancy: ArrayLike,
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jax.Array],
     encoding_positions: list[jax.Array],
     environment: Environment,
-    mean_rates: jax.Array,
-    summed_ground_process_intensity: jax.Array,
+    mean_rates: ArrayLike,
+    summed_ground_process_intensity: ArrayLike,
     position_std: jax.Array,
     waveform_std: jax.Array,
     is_local: bool = False,
@@ -1911,7 +1911,7 @@ def predict_clusterless_kde_log_likelihood(
         Spike times for each electrode.
     spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Waveform features for each electrode.
-    occupancy : jax.Array, shape (n_interior_bins,)
+    occupancy : array_like, shape (n_interior_bins,)
         Occupancy density at the interior place bins (the fit's
         ``exp(log_occupancy)``). The non-local path reads ``log_occupancy``
         instead and uses this only for the bin count; the local path ignores it.
@@ -1926,9 +1926,9 @@ def predict_clusterless_kde_log_likelihood(
         (n_encoding_spikes, n_position_dims).
     environment : Environment
         The spatial environment.
-    mean_rates : jax.Array, shape (n_electrodes,)
+    mean_rates : array_like, shape (n_electrodes,)
         Mean firing rate for each electrode.
-    summed_ground_process_intensity : jax.Array, shape (n_interior_bins,)
+    summed_ground_process_intensity : array_like, shape (n_interior_bins,)
         Summed ground process intensity of the encoding model at the interior
         bins, in Hz; predict adds each electrode's background rate.
     position_std : jax.Array
@@ -2013,6 +2013,12 @@ def predict_clusterless_kde_log_likelihood(
     _validate_execution_settings(
         block_size, enc_tile_size, pos_tile_size, use_streaming
     )
+    # The fit stores these as NumPy arrays. Prediction reads the device arrays
+    # and one Python float per electrode (weakly typed in compiled code) that
+    # the fit stored before, so the arithmetic is unchanged.
+    occupancy = jnp.asarray(occupancy)
+    summed_ground_process_intensity = jnp.asarray(summed_ground_process_intensity)
+    electrode_mean_rates: list[float] = np.asarray(mean_rates).tolist()
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     # The fitted density models are evaluated in the requested blocks.
     occupancy_model = kde_model_with_block_size(
@@ -2031,7 +2037,7 @@ def predict_clusterless_kde_log_likelihood(
         gpi_models=gpi_models,
         encoding_spike_waveform_features=encoding_spike_waveform_features,
         encoding_positions=encoding_positions,
-        mean_rates=mean_rates,
+        mean_rates=electrode_mean_rates,
         encoding_weights=encoding_weights,
         mark_reference=mark_reference,
     )
@@ -2060,7 +2066,7 @@ def predict_clusterless_kde_log_likelihood(
             encoding_spike_waveform_features,
             encoding_positions,
             environment,
-            mean_rates,
+            electrode_mean_rates,
             position_std,
             waveform_std,
             block_size,
@@ -2165,7 +2171,7 @@ def predict_clusterless_kde_log_likelihood(
                 zip(
                     encoding_spike_waveform_features,
                     encoding_positions,
-                    mean_rates,
+                    electrode_mean_rates,
                     per_electrode_weights,
                     strict=True,
                 )
@@ -2201,7 +2207,7 @@ def compute_local_log_likelihood(
     encoding_spike_waveform_features: list[jax.Array],
     encoding_positions: list[jax.Array],
     environment: Environment,
-    mean_rates: jax.Array,
+    mean_rates: Sequence[float],
     position_std: jax.Array,
     waveform_std: jax.Array,
     block_size: int = 10_000,
@@ -2238,7 +2244,7 @@ def compute_local_log_likelihood(
         (n_encoding_spikes, n_position_dims).
     environment : Environment
         The spatial environment.
-    mean_rates : jax.Array
+    mean_rates : sequence of float, length n_electrodes
         Mean firing rate for each electrode.
     position_std : jax.Array
         Gaussian smoothing standard deviation for position.

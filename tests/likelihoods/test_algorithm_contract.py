@@ -18,12 +18,14 @@ import typing
 from dataclasses import replace
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from non_local_detector import Environment, time_edges_from_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
+    _ARRAY_ENCODING_KEYS,
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_PREDICT_KEYWORDS,
     _ENCODING_MODEL_KEYS,
@@ -51,7 +53,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
-from tests.models._helpers import ALGORITHMS, _decoder
+from tests.models._helpers import ALGORITHMS, _decoder, type_violations
 
 pytestmark = pytest.mark.unit
 
@@ -304,6 +306,121 @@ def test_contract_check_reports_a_renamed_key(monkeypatch, recording):
         "optional predict parameters not supplied: ['interior_log_place_fields']",
         "keys predict does not accept: ['interior_log_place_field']",
     ]
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
+def test_encoding_model_values_have_their_declared_types(
+    tmp_path, recording, algorithm
+):
+    """Each value has its declared type, as fitted and as loaded from a pickle
+    or a saved model."""
+    record = _registry(algorithm)[0][algorithm]
+    decoder, _ = _fit(algorithm, recording)
+    decoder.save_model(tmp_path / "model.nld")
+    for detector in (
+        decoder,
+        pickle.loads(pickle.dumps(decoder)),
+        type(decoder).load_model(tmp_path / "model.nld"),
+    ):
+        (encoding_model,) = detector.encoding_model_.values()
+        assert type_violations(encoding_model, record.encoding_model_type) == []
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
+def test_values_saved_with_their_old_types_load_unified(tmp_path, recording, algorithm):
+    """Models saved before the shared keys held NumPy arrays (Python floats in
+    a list, or a JAX array) load with them as arrays of the same dtype and
+    values, and decode as the new fit does."""
+    decoder, spike_data = _fit(algorithm, recording)
+    time, position, *_ = recording
+    edges = time_edges_from_centers(time[_DECODE_SAMPLES])
+
+    def log_likelihood(detector):
+        return detector.predict(
+            *spike_data,
+            time_edges=edges,
+            position_time=time,
+            position=position,
+            return_outputs="log_likelihood",
+        ).log_likelihood.values
+
+    expected = log_likelihood(decoder)
+    (key,) = decoder.encoding_model_
+    fitted = decoder.encoding_model_[key]
+    shared = [name for name in _ARRAY_ENCODING_KEYS if name in fitted]
+    old = dict(fitted)
+    for name in shared:
+        value = fitted[name]
+        old[name] = value.tolist() if value.dtype == np.float64 else jnp.asarray(value)
+    decoder.encoding_model_ = {key: old}
+    decoder.save_model(tmp_path / "model.nld")
+    for loaded in (
+        pickle.loads(pickle.dumps(decoder)),
+        type(decoder).load_model(tmp_path / "model.nld"),
+    ):
+        (model,) = loaded.encoding_model_.values()
+        for name in shared:
+            assert type(model[name]) is np.ndarray, name
+            assert model[name].dtype == fitted[name].dtype, name
+            np.testing.assert_array_equal(model[name], fitted[name])
+        np.testing.assert_array_equal(log_likelihood(loaded), expected)
+
+
+def test_type_check_reports_a_wrong_value():
+    """A value of another type than declared is reported, element types too."""
+
+    class Model(typing.TypedDict):
+        rates: np.ndarray
+        counts: list[int]
+        scale: float | None
+
+    model = {"rates": [1.0], "counts": [1, 2.5], "scale": 3}
+    assert type_violations(model, Model) == [
+        "rates: declared <class 'numpy.ndarray'>, got list",
+        "counts: declared list[int], got list",
+    ]
+
+
+# Keys several algorithms store whose values mean different things, so each
+# algorithm declares its own type.
+_PER_ALGORITHM_KEY_TYPES = {
+    # Each algorithm's own fitted density model.
+    "gpi_models",
+    "occupancy_model",
+    # The fit's bandwidth parameters, whose accepted forms differ: the KDE
+    # stores position_std as a per-dimension vector, diffusion as a scalar
+    # (it rejects per-dimension values).
+    "position_std",
+    "waveform_std",
+}
+
+
+def test_shared_keys_have_one_declared_type():
+    """A key several algorithms store is declared with the same type in each."""
+    declared: dict[str, dict[str, object]] = {}
+    for algorithm in ALGORITHMS:
+        record = _registry(algorithm)[0][algorithm]
+        hints = typing.get_type_hints(record.encoding_model_type)
+        for key, annotation in hints.items():
+            declared.setdefault(key, {})[algorithm] = annotation
+    differing = {
+        key: by_algorithm
+        for key, by_algorithm in declared.items()
+        if len(set(map(str, by_algorithm.values()))) > 1
+    }
+    assert set(differing) == _PER_ALGORITHM_KEY_TYPES, differing
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)

@@ -321,9 +321,9 @@ class SortedSpikesKDEEncodingModel(SortedSpikesEncodingModel):
 
     marginal_models: list[KDEModel]
     occupancy_model: KDEModel
-    occupancy: jax.Array
+    occupancy: np.ndarray
     log_occupancy: jax.Array
-    mean_rates: list[float]
+    mean_rates: np.ndarray
     no_spike_part_log_likelihood: jax.Array
     is_track_interior: np.ndarray
 
@@ -509,9 +509,9 @@ def fit_sorted_spikes_kde_encoding_model(
         "environment_grid": environment_grid_fingerprint(environment),
         "marginal_models": marginal_models,
         "occupancy_model": occupancy_model,
-        "occupancy": occupancy,
+        "occupancy": np.asarray(occupancy),
         "log_occupancy": log_occupancy,
-        "mean_rates": mean_rates,
+        "mean_rates": np.asarray(mean_rates),
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
@@ -530,8 +530,8 @@ def predict_sorted_spikes_kde_log_likelihood(
     environment: Environment,
     marginal_models: list[KDEModel],
     occupancy_model: KDEModel,
-    occupancy: jax.Array,
-    mean_rates: jax.Array,
+    occupancy: ArrayLike,
+    mean_rates: np.ndarray,
     place_fields: jax.Array,
     no_spike_part_log_likelihood: jax.Array,
     is_track_interior: jax.Array,
@@ -565,11 +565,11 @@ def predict_sorted_spikes_kde_log_likelihood(
         Marginal models for each neuron.
     occupancy_model : KDEModel
         Occupancy model.
-    occupancy : jax.Array, shape (n_interior_bins,)
+    occupancy : array_like, shape (n_interior_bins,)
         Occupancy density at the interior bins, from the fit. Unused: the
         non-local path reads ``place_fields`` and the local path evaluates
         ``occupancy_model`` at the animal's position.
-    mean_rates : jax.Array, shape (n_neurons,)
+    mean_rates : np.ndarray, shape (n_neurons,)
         Mean firing rates in Hz for each neuron.
     place_fields : jax.Array, shape (n_neurons, n_place_bins)
         Spatial firing rates in Hz for each neuron.

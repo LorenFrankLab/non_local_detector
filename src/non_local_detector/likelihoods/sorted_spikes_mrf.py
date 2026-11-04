@@ -1107,7 +1107,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy_field,
-        "mean_rates": mean_rates,
+        "mean_rates": np.asarray(mean_rates),
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "interior_log_place_fields": interior_log_place_fields,
@@ -1139,7 +1139,7 @@ def predict_sorted_spikes_mrf_log_likelihood(
     *,
     environment: Environment,
     occupancy: np.ndarray,
-    mean_rates: list[float],
+    mean_rates: np.ndarray,
     place_fields: jax.Array,
     no_spike_part_log_likelihood: jax.Array,
     is_track_interior: np.ndarray,
@@ -1189,7 +1189,7 @@ def predict_sorted_spikes_mrf_log_likelihood(
         The spatial environment (must be fitted).
     occupancy : np.ndarray, shape (n_interior_bins,)
         The fit's exposure field; unused.
-    mean_rates : list[float]
+    mean_rates : np.ndarray, shape (n_neurons,)
         Mean firing rate in Hz per neuron.
     place_fields : jax.Array, shape (n_neurons, n_total_bins)
         Full-grid spatial firing rates in Hz.

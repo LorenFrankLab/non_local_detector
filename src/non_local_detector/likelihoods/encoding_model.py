@@ -73,13 +73,14 @@ class ClusterlessEncodingModel(EncodingModel):
 
     Attributes
     ----------
-    mean_rates : jax.Array or list of float, length n_electrodes
-        Each electrode's mean spike rate in Hz over the encoding exposure. The
-        detector checks the decoded electrode count against it.
+    mean_rates : np.ndarray, shape (n_electrodes,)
+        Each electrode's mean spike rate in Hz over the encoding exposure, in
+        the precision the fit computed it. The detector checks the decoded
+        electrode count against it.
     mark_dimensions : list of int, length n_electrodes
         The number of waveform features of each electrode's encoding spikes,
         which the detector checks the decoded waveform features against.
     """
 
-    mean_rates: jax.Array | np.ndarray | list[float]
+    mean_rates: np.ndarray
     mark_dimensions: list[int]

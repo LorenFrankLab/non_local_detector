@@ -694,3 +694,35 @@ def _record_legacy_encoding_algorithm(encoding_model: object) -> None:
             int(np.shape(features)[1])
             for features in encoding_model[_LEGACY_ENCODING_MARKS[algorithm]]
         ]
+
+
+# Keys several algorithms store, whose fits returned lists of floats or JAX
+# arrays before each became an ``np.ndarray`` (``EncodingModel`` and the
+# algorithms' types declare it).
+_ARRAY_ENCODING_KEYS: tuple[str, ...] = (
+    "mean_rates",
+    "occupancy",
+    "summed_ground_process_intensity",
+)
+
+
+def _unify_stored_encoding_values(encoding_model: object) -> None:
+    """Give a stored encoding model's shared keys the value type fits now return.
+
+    Each value of ``_ARRAY_ENCODING_KEYS`` that is not an ``np.ndarray`` (a list
+    of floats or a JAX array, as saved before) becomes ``np.asarray`` of it,
+    with the dtype it had (float64 for Python floats). The algorithms read the
+    values as before, so decoding is unchanged. The model is updated in place.
+
+    Parameters
+    ----------
+    encoding_model : object
+        One entry of a detector's ``encoding_model_``; anything but a dict is
+        left alone.
+    """
+    if not isinstance(encoding_model, dict):
+        return
+    for key in _ARRAY_ENCODING_KEYS:
+        value = encoding_model.get(key)
+        if value is not None and not isinstance(value, np.ndarray):
+            encoding_model[key] = np.asarray(value)

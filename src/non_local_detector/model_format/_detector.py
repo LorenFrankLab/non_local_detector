@@ -892,6 +892,11 @@ def detector_from_stored(
         ): decoder.decode(entry["model"])
         for entry in state["encoding_models"]
     }
+    # Files saved before the shared keys' values were NumPy arrays.
+    from non_local_detector.likelihoods import _unify_stored_encoding_values
+
+    for model in detector.encoding_model_.values():
+        _unify_stored_encoding_values(model)
     values = {
         name: decoder.decode(node)
         for name, node in state.items()

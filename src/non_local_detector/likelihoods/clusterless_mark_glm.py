@@ -424,7 +424,7 @@ class ClusterlessMarkGLMEncodingModel(ClusterlessEncodingModel):
     mark_mixtures: list[MarkMixture | None]
     rate_coefficients: list[np.ndarray | jax.Array | None]
     log_rate_maps: list[np.ndarray | None]
-    summed_ground_process_intensity: jax.Array
+    summed_ground_process_intensity: np.ndarray
     spike_block_size: int
 
 
@@ -670,8 +670,8 @@ def fit_clusterless_mark_glm_encoding_model(
         "mark_mixtures": mark_mixtures,
         "rate_coefficients": rate_coefficients,
         "log_rate_maps": log_rate_maps,
-        "summed_ground_process_intensity": summed_ground_process_intensity,
-        "mean_rates": jnp.asarray(mean_rates),
+        "summed_ground_process_intensity": np.asarray(summed_ground_process_intensity),
+        "mean_rates": np.asarray(jnp.asarray(mean_rates)),
         "mark_dimensions": mark_dimensions,
         "spike_block_size": spike_block_size,
         "disable_progress_bar": disable_progress_bar,
@@ -971,8 +971,8 @@ def predict_clusterless_mark_glm_log_likelihood(
     mark_mixtures: list[MarkMixture | None],
     rate_coefficients: list[np.ndarray | None],
     log_rate_maps: list[np.ndarray | None],
-    summed_ground_process_intensity: jax.Array,
-    mean_rates: jax.Array,
+    summed_ground_process_intensity: np.ndarray,
+    mean_rates: np.ndarray,
     is_local: bool = False,
     spike_block_size: int = 1000,
     disable_progress_bar: bool = False,
@@ -1011,9 +1011,9 @@ def predict_clusterless_mark_glm_log_likelihood(
         Per electrode, shape (n_components, n_coefficients), from the fit.
     log_rate_maps : list of np.ndarray or None
         Per electrode, shape (n_interior_bins, n_components), from the fit.
-    summed_ground_process_intensity : jax.Array, shape (n_interior_bins,)
+    summed_ground_process_intensity : np.ndarray, shape (n_interior_bins,)
         Summed component rates in Hz, from the fit.
-    mean_rates : jax.Array, shape (n_electrodes,)
+    mean_rates : np.ndarray, shape (n_electrodes,)
         Mean rate per electrode in Hz, from the fit (validated, not used).
     is_local : bool, optional
         If True, evaluate at the animal's position: the expected count at each
