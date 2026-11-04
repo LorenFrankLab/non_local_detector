@@ -5,11 +5,15 @@ classes needs a format migration, and ``tests/model_format`` checks that every
 dataclass listed here still has exactly these fields.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from non_local_detector.model_format._registry import read_fields
+
 # (stored name, class, stored fields, options); fields None means "not a
-# dataclass".
+# dataclass". Options may give "defaults" for optional fields (see
+# ``register_type``); a field added to one of these classes needs one, so
+# files written before it still load.
 BuiltinType = tuple[str, type, tuple[str, ...] | None, dict[str, Any]]
 
 ENVIRONMENT_FIELDS = (
@@ -28,7 +32,10 @@ ENVIRONMENT_FIELDS = (
 
 
 def _with_fitted_fields(
-    cls: type, init: tuple[str, ...], fitted: tuple[str, ...]
+    cls: type,
+    init: tuple[str, ...],
+    fitted: tuple[str, ...],
+    defaults: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Options of a dataclass built from ``init`` with ``fitted`` set after."""
 
@@ -36,15 +43,18 @@ def _with_fitted_fields(
         return {name: getattr(obj, name) for name in (*init, *fitted)}
 
     def from_state(state: dict[str, Any]) -> Any:
-        obj = cls(**{name: state[name] for name in init})
+        values = read_fields(state, (*init, *fitted), defaults or {}, cls)
+        obj = cls(**{name: values[name] for name in init})
         for name in fitted:
-            object.__setattr__(obj, name, state[name])
+            object.__setattr__(obj, name, values[name])
         return obj
 
     return {"to_state": to_state, "from_state": from_state}
 
 
-def _restored(cls: type, names: tuple[str, ...]) -> dict[str, Any]:
+def _restored(
+    cls: type, names: tuple[str, ...], defaults: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Options of a class restored through its ``__setstate__``."""
 
     def to_state(obj: Any) -> dict[str, Any]:
@@ -52,13 +62,15 @@ def _restored(cls: type, names: tuple[str, ...]) -> dict[str, Any]:
 
     def from_state(state: dict[str, Any]) -> Any:
         obj: Any = object.__new__(cls)
-        obj.__setstate__({name: state[name] for name in names})
+        obj.__setstate__(read_fields(state, names, defaults or {}, cls))
         return obj
 
     return {"to_state": to_state, "from_state": from_state}
 
 
-def _covariate_transition(cls: type, names: tuple[str, ...]) -> dict[str, Any]:
+def _covariate_transition(
+    cls: type, names: tuple[str, ...], defaults: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Options of a covariate-dependent discrete transition.
 
     A stored formula outside the formula grammar is kept for inspection: the
@@ -75,7 +87,7 @@ def _covariate_transition(cls: type, names: tuple[str, ...]) -> dict[str, Any]:
         return {name: getattr(obj, name) for name in names}
 
     def from_state(state: dict[str, Any]) -> Any:
-        values = {name: state[name] for name in names}
+        values = read_fields(state, names, defaults or {}, cls)
         try:
             check_formula(values["formula"])
         except ValidationError:

@@ -7,6 +7,7 @@ own types under fixed ``nld.`` names on first use; other packages register their
 with :func:`register_type`.
 """
 
+import copy
 import dataclasses
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -56,8 +57,42 @@ _BY_CLASS: dict[type, TypeSpec] = {}
 _BUILTINS_REGISTERED = False
 
 
+def read_fields(
+    state: Mapping[str, Any],
+    names: tuple[str, ...],
+    defaults: Mapping[str, Any],
+    cls: type,
+) -> dict[str, Any]:
+    """The ``names`` fields of a stored state, defaulting optional ones.
+
+    A field added to a type after files were written is absent from those
+    files; ``defaults`` gives its value then (a copy).
+
+    Raises
+    ------
+    DataError
+        If a field without a default is missing.
+    """
+    from non_local_detector.exceptions import DataError
+
+    values = {}
+    for name in names:
+        if name in state:
+            values[name] = state[name]
+        elif name in defaults:
+            values[name] = copy.deepcopy(defaults[name])
+        else:
+            msg = f"The saved {cls.__qualname__} has no field {name!r}"
+            raise DataError(
+                msg,
+                hint="The file is corrupt, or the field needs a default "
+                "(register_type's defaults) to read files written before it.",
+            )
+    return values
+
+
 def _dataclass_state(
-    cls: type, fields: tuple[str, ...] | None
+    cls: type, fields: tuple[str, ...] | None, defaults: Mapping[str, Any]
 ) -> tuple[ToState, FromState]:
     """``to_state`` and ``from_state`` of a dataclass built from ``fields``."""
     names = (
@@ -70,7 +105,7 @@ def _dataclass_state(
         return {name: getattr(obj, name) for name in names}
 
     def from_state(state: dict[str, Any]) -> Any:
-        return cls(**{name: state[name] for name in names})
+        return cls(**read_fields(state, names, defaults, cls))
 
     return to_state, from_state
 
@@ -100,6 +135,7 @@ def register_type(
     from_state: FromState | None = None,
     owner: str | None = None,
     block_needs_fit_data: bool = False,
+    defaults: Mapping[str, Any] | None = None,
 ) -> None:
     """Let ``save_model`` save, and ``load_model`` load, objects of ``cls``.
 
@@ -140,6 +176,11 @@ def register_type(
         saved. By default False: the block is rebuilt from the transition and
         the environments on load, and checked against a fingerprint before
         decoding.
+    defaults : Mapping[str, Any], optional
+        For a dataclass registered without ``to_state``/``from_state``: the
+        value of each optional field when a stored state lacks it, so a
+        field added later reads files written before it. Other fields
+        missing from a state raise ``DataError``.
 
     Raises
     ------
@@ -173,6 +214,7 @@ def register_type(
         from_state=from_state,
         owner=owner or cls.__module__.split(".")[0],
         block_needs_fit_data=block_needs_fit_data,
+        defaults=defaults,
     )
 
 
@@ -185,6 +227,7 @@ def _register(
     owner: str,
     block_needs_fit_data: bool = False,
     fields: tuple[str, ...] | None = None,
+    defaults: Mapping[str, Any] | None = None,
 ) -> None:
     from non_local_detector.models.base import _DetectorBase
 
@@ -200,7 +243,7 @@ def _register(
             raise ValidationError(
                 msg, hint="Pass to_state and from_state to register it."
             )
-        to_state, from_state = _dataclass_state(cls, fields)
+        to_state, from_state = _dataclass_state(cls, fields, defaults or {})
     elif to_state is None or from_state is None:
         msg = "Pass both to_state and from_state, or neither (for a dataclass)"
         raise ValidationError(msg)
@@ -296,4 +339,5 @@ def _register_builtins() -> None:
             owner=_PACKAGE,
             block_needs_fit_data=options.get("block_needs_fit_data", False),
             fields=fields,
+            defaults=options.get("defaults"),
         )

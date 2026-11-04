@@ -7,13 +7,15 @@ types store exactly the fields listed in ``model_format._builtins``.
 """
 
 import dataclasses
+import json
+import zipfile
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
 
 import non_local_detector as nld
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.model_format import _registry, register_type, registered_types
 from non_local_detector.model_format._builtins import builtin_types
 from tests.model_format._compare import assert_same_fitted_state
@@ -233,3 +235,42 @@ def test_every_ready_made_model_is_registered():
 
     registered = set(registered_types().values())
     assert {getattr(models, name) for name in models.__all__} <= registered
+
+
+def _without_field(path, field):
+    """Drop ``field`` from the stored transition, as in a file written before
+    the field existed."""
+    with zipfile.ZipFile(path) as source:
+        members = [(item, source.read(item.filename)) for item in source.infolist()]
+    with zipfile.ZipFile(path, "w") as target:
+        for item, data in members:
+            if item.filename == "config.json":
+                config = json.loads(data)
+                del config["continuous_transition_types"][0][0]["state"][field]
+                data = json.dumps(config).encode()
+            target.writestr(item, data)
+
+
+def test_an_optional_field_missing_from_a_file_takes_its_default(
+    sorted_recording, tmp_path
+):
+    register_type(FlatTransition, "testlab.FlatTransition", defaults={"weight": 1.0})
+    path = tmp_path / "model.nld"
+    _fit(
+        nld.SortedSpikesDecoder, FlatTransition(weight=0.5), sorted_recording
+    ).save_model(path)
+    _without_field(path, "weight")
+
+    loaded = nld.SortedSpikesDecoder.load_model(path)
+
+    assert loaded.continuous_transition_types[0][0] == FlatTransition(weight=1.0)
+
+
+def test_a_missing_field_without_a_default_is_refused(sorted_recording, tmp_path):
+    register_type(FlatTransition, "testlab.FlatTransition")
+    path = tmp_path / "model.nld"
+    _fit(nld.SortedSpikesDecoder, FlatTransition(), sorted_recording).save_model(path)
+    _without_field(path, "weight")
+
+    with pytest.raises(DataError, match="no field 'weight'"):
+        nld.SortedSpikesDecoder.load_model(path)
