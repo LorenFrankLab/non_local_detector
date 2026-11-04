@@ -157,6 +157,11 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
             }
             for entry in state["encoding_models"]
         ]
+        # Files saved before the shared keys' values were NumPy arrays.
+        from non_local_detector.likelihoods import _unify_stored_encoding_values
+
+        for model in summary["encoding_models"]:
+            _unify_stored_encoding_values(model)
         summary["discrete_state_transitions"] = (
             decoder.decode(state["discrete_state_transitions"])
             if "discrete_state_transitions" in state
