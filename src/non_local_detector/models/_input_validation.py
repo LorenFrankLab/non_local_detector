@@ -1350,8 +1350,9 @@ class _InputValidationMixin:
         NotFittedError
             If the detector has no encoding model yet.
         ValidationError
-            If the transition formula is untrusted, the encoding units are
-            unknown, or the saved model no longer rebuilds as saved.
+            If the transition formula is untrusted, the saved model no longer
+            rebuilds as saved, or it has a legacy or unknown time contract
+            (encoding units or transition clocks) and must be refit.
         """
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."

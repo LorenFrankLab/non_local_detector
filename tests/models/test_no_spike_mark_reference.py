@@ -17,7 +17,7 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
 )
@@ -362,7 +362,7 @@ def test_encoding_refit_keeps_training_reference(run_data):
 def test_saved_model_without_mark_reference_must_be_refit(run_data, fitted_detector):
     legacy = pickle.loads(pickle.dumps(fitted_detector))
     del legacy.mark_reference_
-    with pytest.raises(ValidationError, match="mark reference"):
+    with pytest.raises(NotFittedError, match="mark reference"):
         legacy.predict(
             run_data["test_spikes"],
             run_data["test_marks"],

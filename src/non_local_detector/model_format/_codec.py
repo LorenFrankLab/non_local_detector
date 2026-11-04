@@ -54,7 +54,11 @@ import numpy as np
 import pandas as pd
 
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    DataError,
+    NonLocalDetectorError,
+    ValidationError,
+)
 from non_local_detector.model_format._container import (
     array_digest,
     write_array_member,
@@ -463,22 +467,31 @@ class Decoder:
             raise ValidationError(msg, hint="Upgrade non_local_detector to read it.")
         try:
             return handler(self, node)
-        except (KeyError, IndexError, TypeError) as error:
+        except NonLocalDetectorError:
+            raise
+        except (KeyError, IndexError, TypeError, ValueError) as error:
             # A node missing a field, pointing at no stored array, or holding
             # the wrong kind of value, or a registered type refusing its
-            # state. Package errors raised below (ValidationError, DataError)
-            # are not caught here.
-            label = f"{tag} {node[tag]!r}" if isinstance(node[tag], str) else tag
-            msg = (
-                f"Cannot rebuild the saved model's {label} entry "
-                f"({type(error).__name__}: {error})"
-            )
-            raise DataError(
-                msg,
-                hint="The file is corrupt or was edited, or was written by a "
-                "version of the package or of a registered type whose state "
-                "this one does not read.",
-            ) from error
+            # state. Package errors (ValidationError, DataError, ...) are
+            # ValueErrors too and pass through unchanged.
+            if tag == "$type":
+                msg = (
+                    f"The registered type {node[tag]!r} could not be rebuilt "
+                    f"from its stored state ({type(error).__name__}: {error})"
+                )
+                hint = (
+                    "The file was edited, or the type's from_state does not "
+                    "read the state this file holds (for example it was saved "
+                    "with a different version of that type)."
+                )
+            else:
+                label = f"{tag} {node[tag]!r}" if isinstance(node[tag], str) else tag
+                msg = (
+                    f"Cannot rebuild the saved model's {label} entry "
+                    f"({type(error).__name__}: {error})"
+                )
+                hint = "The file is corrupt or was edited."
+            raise DataError(msg, hint=hint) from error
 
     def _as(self, array: np.ndarray, *, is_jax: bool) -> Any:
         return jnp.asarray(array) if is_jax else array
