@@ -2,7 +2,12 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment, find_environment_by_name
+from non_local_detector.environment import (
+    Environment,
+    _all_pairs_distances,
+    find_environment_by_name,
+    make_track_graph_with_bin_centers_edges,
+)
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
@@ -415,3 +420,48 @@ def test_find_environment_by_name():
         ValidationError, match=r"'missing'[\s\S]*\['track1', 'track2'\]"
     ):
         find_environment_by_name(envs, "missing")
+
+
+def _graphs_for_all_pairs_distances():
+    track = nx.Graph()
+    for node, pos in {0: (0.0, 0.0), 1: (0.0, 20.0), 2: (-15.0, 35.0)}.items():
+        track.add_node(node, pos=pos)
+    track.add_edge(0, 1, distance=20.0, edge_id=0)
+    track.add_edge(1, 2, distance=float(np.hypot(15.0, 15.0)), edge_id=1)
+    # A square loop has equal-length paths both ways around.
+    loop = nx.cycle_graph(4)
+    for node, pos in enumerate([(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)]):
+        loop.nodes[node]["pos"] = pos
+    nx.set_edge_attributes(loop, 5.0, "distance")
+    # Zero-distance and missing-distance edges, string nodes, two components
+    # and an isolated node.
+    mixed = nx.Graph()
+    mixed.add_edge("a", "b", distance=0.0)
+    mixed.add_edge("b", "c", distance=1.5)
+    mixed.add_edge("c", "d")
+    mixed.add_edge("x", "y", distance=2.0)
+    mixed.add_node("lonely")
+    directed = nx.DiGraph()
+    directed.add_edge(0, 1, distance=1.0)
+    directed.add_edge(1, 2, distance=2.0)
+    directed.add_edge(2, 0, distance=0.5)
+    return {
+        "track with bin nodes": make_track_graph_with_bin_centers_edges(track, 1.0),
+        "loop with bin nodes": make_track_graph_with_bin_centers_edges(loop, 0.7),
+        "mixed": mixed,
+        "directed": directed,
+    }
+
+
+@pytest.mark.parametrize("name", list(_graphs_for_all_pairs_distances()))
+def test_all_pairs_distances_match_networkx_dijkstra(name):
+    """The SciPy all-pairs distances of a track grid are those of NetworkX's
+    Dijkstra, bit for bit, with unreachable pairs absent."""
+    graph = _graphs_for_all_pairs_distances()[name]
+    expected = dict(nx.all_pairs_dijkstra_path_length(graph, weight="distance"))
+
+    actual = _all_pairs_distances(graph)
+
+    assert actual.keys() == expected.keys()
+    for node, distances in expected.items():
+        assert actual[node] == distances
