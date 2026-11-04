@@ -6,13 +6,9 @@ Event weights are dimensionless; integrated sample exposure is in seconds.
 """
 
 import warnings
-from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-
-if TYPE_CHECKING:
-    import jax
 
 from non_local_detector._validation import validate_weights
 from non_local_detector._warnings import user_stacklevel
@@ -391,7 +387,7 @@ class EncodingSupport:
 def prepare_encoding_support(
     position_time: ArrayLike,
     position: ArrayLike,
-    weights: "NDArray[Any] | jax.Array | None",
+    weights: ArrayLike | None,
     *,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
@@ -407,7 +403,7 @@ def prepare_encoding_support(
         Position sample times in seconds.
     position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
         Position at each sample.
-    weights : np.ndarray or jax.Array, shape (n_samples,), optional
+    weights : array_like, shape (n_samples,), or None
         Dimensionless weight of each sample, or None for all ones. Weights of
         samples with a non-finite position are set to zero.
     encoding_time_range : array_like, shape (2,), optional

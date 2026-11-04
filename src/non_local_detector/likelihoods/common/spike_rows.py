@@ -1,7 +1,7 @@
 """Spikes of a decode-row range: selection, per-row sums and counts."""
 
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
@@ -622,7 +622,7 @@ def get_spikecount_per_time_bin(
 
 
 def spike_counts_matrix(
-    spike_times: list[np.ndarray],
+    spike_times: Sequence[np.ndarray | jax.Array],
     time_edges: np.ndarray,
     desc: str,
     *,

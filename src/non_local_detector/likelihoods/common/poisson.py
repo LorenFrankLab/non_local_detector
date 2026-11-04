@@ -346,7 +346,7 @@ def concatenate_row_blocks(
 
 
 def blocked_nonlocal_poisson_log_likelihood(
-    spike_times: list[np.ndarray],
+    spike_times: Sequence[np.ndarray | jax.Array],
     time_edges: np.ndarray,
     row_start: int,
     row_stop: int,
@@ -361,7 +361,7 @@ def blocked_nonlocal_poisson_log_likelihood(
 
     Parameters
     ----------
-    spike_times : list of np.ndarray
+    spike_times : sequence of np.ndarray or jax.Array
         One spike-time array per neuron.
     time_edges : np.ndarray, shape (n_time_bins + 1,)
         The complete decode grid.

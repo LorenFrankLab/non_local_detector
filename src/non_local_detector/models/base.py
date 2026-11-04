@@ -78,7 +78,10 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
     ClusterlessLikelihoodAlgorithm,
+    ClusterlessPredict,
     LikelihoodAlgorithm,
+    SortedSpikesFit,
+    SortedSpikesPredict,
     _execution_settings,
     _resolve_fit_params,
 )
@@ -1945,7 +1948,7 @@ class _DetectorBase(
     _PREDICT_EXAMPLE: str = ""
     """Example ``predict`` call shown in validation errors."""
 
-    def _likelihood_predict_function(self) -> Callable[..., Any]:
+    def _likelihood_predict_function(self) -> SortedSpikesPredict | ClusterlessPredict:
         """Return the predict function of the detector's likelihood algorithm."""
         raise NotImplementedError
 
@@ -3582,7 +3585,7 @@ class ClusterlessDetector(_DetectorBase):
         "    )"
     )
 
-    def _likelihood_predict_function(self) -> Callable[..., Any]:
+    def _likelihood_predict_function(self) -> ClusterlessPredict:
         return self._clusterless_algorithm().predict
 
     def _likelihood_execution_settings(self) -> dict[str, Any]:
@@ -4300,7 +4303,9 @@ class SortedSpikesDetector(_DetectorBase):
             "sorted_spikes_algorithm_params",
         )
 
-    def _sorted_spikes_algorithm(self) -> LikelihoodAlgorithm:
+    def _sorted_spikes_algorithm(
+        self,
+    ) -> LikelihoodAlgorithm[SortedSpikesFit, SortedSpikesPredict]:
         """Return the registered record of ``sorted_spikes_algorithm``."""
         try:
             return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
@@ -4549,7 +4554,7 @@ class SortedSpikesDetector(_DetectorBase):
         "    )"
     )
 
-    def _likelihood_predict_function(self) -> Callable[..., Any]:
+    def _likelihood_predict_function(self) -> SortedSpikesPredict:
         return self._sorted_spikes_algorithm().predict
 
     def _likelihood_execution_settings(self) -> dict[str, Any]:

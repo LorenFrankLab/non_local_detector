@@ -7,6 +7,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+from numpy.typing import ArrayLike
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -157,6 +158,92 @@ def validate_finite(array: np.ndarray | jax.Array, name: str) -> None:
     if not all_finite:
         msg = f"{name} must contain only finite values"
         raise ValidationError(msg)
+
+
+def as_array(array: ArrayLike) -> np.ndarray | jax.Array:
+    """Return a JAX array as is and any other array-like as a NumPy array.
+
+    A detector passes NumPy arrays, returned as is. A JAX array stays on its
+    devices, so a sharded input is never gathered to the host.
+
+    Parameters
+    ----------
+    array : array_like
+        The array.
+
+    Returns
+    -------
+    array : np.ndarray or jax.Array
+        ``array`` if it is a JAX array, else ``np.asarray(array)``.
+    """
+    return array if isinstance(array, jax.Array) else np.asarray(array)
+
+
+def as_arrays(arrays: Sequence[ArrayLike]) -> list[np.ndarray | jax.Array]:
+    """Apply ``as_array`` to each array of a per-neuron or per-electrode sequence.
+
+    Parameters
+    ----------
+    arrays : sequence of array_like
+        One array per neuron or electrode.
+
+    Returns
+    -------
+    arrays : list of np.ndarray or jax.Array
+        The arrays, in order.
+    """
+    return [as_array(array) for array in arrays]
+
+
+def require_position(
+    position_time: ArrayLike | None, position: ArrayLike | None, likelihood: str
+) -> tuple[np.ndarray | jax.Array, np.ndarray | jax.Array]:
+    """Return the decode position samples a likelihood reads, through ``as_array``.
+
+    A detector passes None for both when no state reads position (no Local
+    state and no non-local position penalty), so only the non-local
+    likelihoods are evaluated without them.
+
+    Parameters
+    ----------
+    position_time : array_like, shape (n_time_position,), or None
+        Time of each position sample, in seconds.
+    position : array_like, shape (n_time_position, n_position_dims), or None
+        Position samples.
+    likelihood : str
+        Name of the likelihood that reads them, for the error message.
+
+    Returns
+    -------
+    position_time : np.ndarray or jax.Array, shape (n_time_position,)
+        ``as_array(position_time)``.
+    position : np.ndarray or jax.Array, shape (n_time_position, n_position_dims)
+        ``as_array(position)``.
+
+    Raises
+    ------
+    ValidationError
+        If ``position_time`` or ``position`` is None.
+    """
+    if position_time is None or position is None:
+        missing = [
+            name
+            for name, value in (
+                ("position_time", position_time),
+                ("position", position),
+            )
+            if value is None
+        ]
+        verb = "is" if len(missing) == 1 else "are"
+        msg = (
+            f"The {likelihood} reads position, but {' and '.join(missing)} {verb} None"
+        )
+        raise ValidationError(
+            msg,
+            hint="Pass the tracked position_time and position the local "
+            "likelihood is evaluated at.",
+        )
+    return as_array(position_time), as_array(position)
 
 
 def validate_population_lengths(unit_name: str, **populations: Sized | None) -> int:
