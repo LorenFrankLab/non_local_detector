@@ -23,6 +23,10 @@ from numpy.typing import ArrayLike, NDArray
 from xarray.backends import BackendArray
 from xarray.core import indexing
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # Largest single explicit read from a result store, in bytes.
 DEFAULT_MAX_READ_BYTES = 512 * 1024**2
 

@@ -26,6 +26,10 @@ from threadpoolctl import threadpool_limits
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.likelihoods.common import padded_sample_count
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # ---------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------

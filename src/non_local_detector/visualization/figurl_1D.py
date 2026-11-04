@@ -2,6 +2,11 @@
 
 from non_local_detector.visualization._optional import sortingview_available
 
+__all__ = [
+    "create_interactive_1D_decoding_figurl",
+]
+
+
 if sortingview_available():
     from typing import cast
 

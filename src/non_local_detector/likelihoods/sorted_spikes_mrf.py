@@ -81,6 +81,10 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
 )
 from non_local_detector.time_edges import _DecodeTimeGrid, requires_time_edges
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # The Newton/IRLS fit and REML score run in JAX (jit + GPU-ready), batched over
 # neurons. float32 is the package regime (core.py is float32-explicit, so no global
 # x64 is needed); rate error vs the float64 reference is ~1e-7, well within tests.

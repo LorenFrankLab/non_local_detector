@@ -34,6 +34,9 @@ from non_local_detector.time_edges import (
     decode_bin_centers,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
 
 @jax.jit
 def log_gaussian_pdf(x: jax.Array, mean: jax.Array, sigma: jax.Array) -> jax.Array:

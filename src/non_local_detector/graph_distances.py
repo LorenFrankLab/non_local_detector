@@ -21,6 +21,10 @@ from scipy.sparse.csgraph import dijkstra
 
 from non_local_detector.exceptions import NonLocalDetectorError
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 DEFAULT_MAX_DENSE_DISTANCE_BYTES = 256 * 1024**2
 DEFAULT_DISTANCE_WORKSPACE_BYTES = 8 * 1024**2
 DEFAULT_DISTANCE_CACHE_BYTES = 64 * 1024**2

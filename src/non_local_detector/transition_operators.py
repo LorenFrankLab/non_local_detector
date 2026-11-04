@@ -35,6 +35,10 @@ from non_local_detector.exceptions import NonLocalDetectorError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 DEFAULT_MAX_DENSE_BYTES = 256 * 1024**2
 
 _T = TypeVar("_T")

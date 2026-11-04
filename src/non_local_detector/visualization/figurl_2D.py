@@ -4,6 +4,11 @@ import numpy as np
 
 from non_local_detector.visualization._optional import sortingview_available
 
+__all__ = [
+    "create_interactive_2D_decoding_figurl",
+]
+
+
 _UINT16_MAX = int(np.iinfo(np.uint16).max)
 
 

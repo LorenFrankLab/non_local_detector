@@ -3,6 +3,9 @@
 import numpy as np
 from numpy.typing import ArrayLike
 
+# Internal module: no public API.
+__all__: list[str] = []
+
 
 def _octave_size(n: int, log2_sizes: int) -> int:
     """Smallest of ``2**log2_sizes`` sizes per octave at least ``n`` (``n >= 1``)."""

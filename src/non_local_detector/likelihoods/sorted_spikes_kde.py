@@ -98,6 +98,10 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # One group of stacked KDE leaves: samples, weights, standard deviations and
 # neuron indices.
 _LeafGroup: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]

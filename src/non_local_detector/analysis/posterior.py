@@ -9,6 +9,12 @@ from scipy.stats import rv_histogram
 
 from non_local_detector._position_dims import _is_position_dim
 
+__all__ = [
+    "get_spatial_posterior",
+    "maximum_a_posteriori_estimate",
+    "sample_posterior",
+]
+
 
 def get_spatial_posterior(
     posterior: xr.DataArray, states: Sequence[str] | None = None

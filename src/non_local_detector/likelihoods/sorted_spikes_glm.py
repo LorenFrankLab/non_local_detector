@@ -106,6 +106,9 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
 
 @jax.jit
 def glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:

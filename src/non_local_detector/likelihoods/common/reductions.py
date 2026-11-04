@@ -7,6 +7,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+# Internal module: no public API.
+__all__: list[str] = []
+
 
 def _segmented_inclusive_sum(starts: jax.Array, values: jax.Array) -> jax.Array:
     """Running sum of ``values`` that restarts at each ``starts`` position.

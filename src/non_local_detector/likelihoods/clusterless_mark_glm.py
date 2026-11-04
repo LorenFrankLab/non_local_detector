@@ -103,6 +103,10 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # Variational components supported by fewer weighted spikes than this are
 # dropped after the fit, and the remaining weights renormalized. A component the
 # marks do not use keeps about one spike of prior mass but almost no

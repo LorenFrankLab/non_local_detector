@@ -132,6 +132,12 @@ from non_local_detector.transition_operators import (
     _one_bin_block,
 )
 
+__all__ = [
+    "ClusterlessDetector",
+    "SortedSpikesDetector",
+]
+
+
 try:
     from non_local_detector._version import __version__ as _PACKAGE_VERSION
 except ImportError:

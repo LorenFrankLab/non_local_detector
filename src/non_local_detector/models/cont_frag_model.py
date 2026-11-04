@@ -29,6 +29,11 @@ from non_local_detector.types import (
     Stickiness,
 )
 
+__all__ = [
+    "ContFragClusterlessClassifier",
+    "ContFragSortedSpikesClassifier",
+]
+
 
 def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
     """Marginalize the acausal posterior over position to per-state probabilities.

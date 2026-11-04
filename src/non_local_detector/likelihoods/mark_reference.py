@@ -41,6 +41,10 @@ from non_local_detector.likelihoods.common import (
     validate_population_lengths,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # Degrees of freedom of each feature's Student-t: tails fall as |z|**-4, so
 # far from the training marks they outlast any Gaussian kernel, while the
 # variance stays finite.

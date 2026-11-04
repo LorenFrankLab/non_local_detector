@@ -8,6 +8,10 @@ be used for particular data segments.
 
 from dataclasses import dataclass
 
+__all__ = [
+    "ObservationModel",
+]
+
 
 @dataclass(frozen=True, order=True)
 class ObservationModel:

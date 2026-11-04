@@ -61,6 +61,14 @@ Examples
 ...     print(f"Package error: {e}")
 """
 
+__all__ = [
+    "ConfigurationError",
+    "DataError",
+    "NonLocalDetectorError",
+    "NotFittedError",
+    "ValidationError",
+]
+
 
 class NonLocalDetectorError(Exception):
     """Base exception for all non_local_detector errors.

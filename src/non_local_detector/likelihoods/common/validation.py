@@ -11,6 +11,9 @@ import numpy as np
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 
+# Internal module: no public API.
+__all__: list[str] = []
+
 
 def as_std_array(std: "jax.Array | np.ndarray | float | int", n_dims: int) -> jax.Array:
     """Broadcast a scalar kernel bandwidth to a per-dimension array.

@@ -5,6 +5,11 @@ import xarray as xr
 
 from non_local_detector._position_dims import get_position_dims
 
+__all__ = [
+    "get_HPD_spatial_coverage",
+    "get_highest_posterior_threshold",
+]
+
 
 def get_highest_posterior_threshold(
     posterior: xr.DataArray | np.ndarray, coverage: float = 0.95

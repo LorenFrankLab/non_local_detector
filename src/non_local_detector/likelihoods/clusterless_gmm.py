@@ -81,6 +81,10 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # Default covariance regularization, in squared feature units.
 DEFAULT_GMM_REG_COVAR = 1.0
 

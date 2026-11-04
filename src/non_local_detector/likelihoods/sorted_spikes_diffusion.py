@@ -72,6 +72,10 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
 

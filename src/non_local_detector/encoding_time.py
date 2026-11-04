@@ -19,6 +19,9 @@ from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.time_edges import uniform_time_bin_width, validate_time_edges
 
+# Internal module: no public API.
+__all__: list[str] = []
+
 
 class EncodingSupport:
     """Interpolation segments and integrals of their sample basis functions.

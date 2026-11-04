@@ -9,6 +9,10 @@ from numpy.typing import ArrayLike
 
 from non_local_detector.exceptions import ValidationError
 
+__all__ = [
+    "align_tracking_to_results",
+]
+
 
 def _finite_runs(indices: np.ndarray, finite: np.ndarray) -> Iterator[np.ndarray]:
     """Yield contiguous original sample rows, retaining missing sample breaks."""

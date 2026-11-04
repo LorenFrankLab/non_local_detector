@@ -21,6 +21,10 @@ from jax.typing import DTypeLike
 from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
 from non_local_detector.exceptions import ValidationError
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 logger = logging.getLogger(__name__)
 
 # Concrete array inputs: the functions below call array methods (``.sum``,

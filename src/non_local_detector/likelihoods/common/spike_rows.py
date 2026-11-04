@@ -24,6 +24,10 @@ from non_local_detector.time_edges import (
     validate_time_edges,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 # JAX exposes this exception only privately. Older supported releases predate
 # explicit sharding and may lack the type; an empty tuple catches nothing.
 try:

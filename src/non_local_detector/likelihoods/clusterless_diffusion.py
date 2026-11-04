@@ -141,6 +141,10 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+# Internal module: no public API.
+__all__: list[str] = []
+
+
 logger = logging.getLogger(__name__)
 
 # float32 working dtype for the diffusion matmul; its item size drives the memory
