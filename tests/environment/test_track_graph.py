@@ -445,11 +445,24 @@ def _graphs_for_all_pairs_distances():
     directed.add_edge(0, 1, distance=1.0)
     directed.add_edge(1, 2, distance=2.0)
     directed.add_edge(2, 0, distance=0.5)
+    # Parallel edges: the shortest one counts, as in NetworkX.
+    multi = nx.MultiGraph()
+    multi.add_edge(0, 1, distance=3.0)
+    multi.add_edge(1, 0, distance=1.0)
+    multi.add_edge(0, 1, distance=2.0)
+    multi.add_edge(1, 2, distance=0.5)
+    multi_directed = nx.MultiDiGraph()
+    multi_directed.add_edge(0, 1, distance=3.0)
+    multi_directed.add_edge(0, 1, distance=1.0)
+    multi_directed.add_edge(1, 0, distance=0.25)
     return {
         "track with bin nodes": make_track_graph_with_bin_centers_edges(track, 1.0),
         "loop with bin nodes": make_track_graph_with_bin_centers_edges(loop, 0.7),
         "mixed": mixed,
         "directed": directed,
+        "multigraph": multi,
+        "directed multigraph": multi_directed,
+        "empty": nx.Graph(),
     }
 
 
@@ -462,6 +475,29 @@ def test_all_pairs_distances_match_networkx_dijkstra(name):
 
     actual = _all_pairs_distances(graph)
 
+    assert actual.keys() == expected.keys()
+    for node, distances in expected.items():
+        assert actual[node] == distances
+
+
+def test_all_pairs_distances_in_row_blocks_match_networkx(monkeypatch):
+    """Rows solved a few sources at a time (a ragged last block) give the same
+    distances as one solve."""
+    from non_local_detector import environment
+
+    track = nx.Graph()
+    for node, pos in {0: (0.0, 0.0), 1: (0.0, 20.0), 2: (-15.0, 35.0)}.items():
+        track.add_node(node, pos=pos)
+    track.add_edge(0, 1, distance=20.0, edge_id=0)
+    track.add_edge(1, 2, distance=float(np.hypot(15.0, 15.0)), edge_id=1)
+    graph = make_track_graph_with_bin_centers_edges(track, 1.0)
+    expected = dict(nx.all_pairs_dijkstra_path_length(graph, weight="distance"))
+    # Three source rows per block.
+    monkeypatch.setattr(environment, "_DISTANCE_BLOCK_ENTRIES", 3 * len(graph))
+
+    actual = _all_pairs_distances(graph)
+
+    assert len(graph) % 3 != 0
     assert actual.keys() == expected.keys()
     for node, distances in expected.items():
         assert actual[node] == distances
