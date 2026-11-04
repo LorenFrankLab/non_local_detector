@@ -50,7 +50,13 @@ dynamic = ["version"]
 "Changelog" = "https://github.com/LorenFrankLab/non_local_detector/releases"
 
 [project.optional-dependencies]
-gpu = ["jax[cuda]"]
+# JAX recommends its CUDA 13 wheels (NVIDIA driver >= 580 on Linux), first
+# offered by JAX 0.7, which needs Python 3.11. On Python 3.10 the newest JAX
+# (0.6.2) ships only CUDA 12 wheels (driver >= 525).
+gpu = [
+    "jax[cuda13]>=0.7; python_version >= '3.11'",
+    "jax[cuda12]; python_version < '3.11'",
+]
 viz = ["sortingview"]
 
 [tool.hatch.version]
