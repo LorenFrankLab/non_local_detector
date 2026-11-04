@@ -142,6 +142,10 @@ def test_non_finite_spike_times_raise(fitted, method, family, bad_value):
 @pytest.mark.unit
 # max_iter=1 is a speed cap, so EM stops before convergence.
 @pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+# With no spikes in range the EM objective is about 0, so the relative
+# monotonicity slack is below float32 rounding and the final E-step can
+# "decrease" by an ulp on some platforms (2.4e-7 on Linux CI).
+@pytest.mark.filterwarnings("ignore:Final E-step penalized log-likelihood")
 @pytest.mark.parametrize("method", ["fit", "fit_encoding_model", "estimate_parameters"])
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 def test_spikes_all_outside_position_time_warn_at_fit(fitted, method, family):
