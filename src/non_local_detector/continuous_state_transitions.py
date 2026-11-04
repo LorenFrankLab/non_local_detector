@@ -9,7 +9,7 @@ data-driven transitions such as :class:`EmpiricalMovement` read.
 
 import inspect
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import networkx as nx
@@ -80,9 +80,12 @@ class ContinuousTransition(Protocol):
     modeled, 0 for bins nothing can leave). A block between a
     one-bin state (No-Spike, or Local without ``local_position_std``) and a
     spatial state is set without calling it: from the one-bin state it is
-    uniform over the interior bins of the environment named by the
-    transition's ``environment_name``; into the one-bin state every bin
-    moves there with probability 1.
+    uniform over the interior bins of the transition's destination
+    environment (``environment2_name`` when set, else ``environment_name``,
+    so ``Discrete`` cannot set it); into the one-bin state every bin moves
+    there with probability 1. The environments a transition declares must
+    be its states': the destination always, and the source
+    (``environment_name``) for a block between two spatial states.
 
     A transition has a structured operator only if it implements
     ``transition_operators.SupportsStructuredBlock``, as the package's
@@ -334,11 +337,16 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
         If using manifold distance on a 2D track, constrain movement direction
         relative to the track center (case-insensitive). Defaults to None (no
         constraint).
+    use_diffusion : bool, optional
+        Not stored. Releases up to 0.5.12 stored it, so their parameter sets
+        (for example Spyglass rows) rebuild with it; only False, the default,
+        is accepted, as the diffusion random walk it selected was removed.
 
     Raises
     ------
     ValidationError
-        If ``direction`` is not None, "inward" or "outward".
+        If ``direction`` is not None, "inward" or "outward", or
+        ``use_diffusion`` is True.
     """
 
     environment_name: str = ""
@@ -346,9 +354,30 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     movement_mean: float = 0.0
     use_manifold_distance: bool = False
     direction: str | None = None
+    use_diffusion: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, use_diffusion: bool) -> None:
+        if use_diffusion:
+            msg = "RandomWalk(use_diffusion=True) is no longer supported"
+            raise ValidationError(
+                msg,
+                hint="The diffusion random walk of releases up to 0.5.12 was "
+                "removed in 0.5.13. use_manifold_distance=True is the closest: "
+                "a Gaussian in distance along the environment, not diffusion.",
+            )
         _validate_direction(self.direction)
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the fields, including those of releases up to 0.5.12.
+
+        Those stored ``use_diffusion`` and neither ``use_manifold_distance``
+        nor ``direction``; ``use_diffusion=False`` was this Euclidean walk.
+        """
+        if state.get("use_diffusion") is False:
+            del state["use_diffusion"]
+            state.setdefault("use_manifold_distance", False)
+            state.setdefault("direction", None)
+        super().__setstate__(state)
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
         """Separable Gaussian block of a Euclidean random walk on a complete
@@ -1026,14 +1055,104 @@ def _check_continuous_transition(transition: object) -> None:
         )
 
 
+@runtime_checkable
+class _NamesDestinationEnvironment(Protocol):
+    """A transition into another environment, such as ``Uniform``."""
+
+    @property
+    def environment2_name(self) -> str | None:
+        """Name of the destination environment; None for the source's."""
+        ...
+
+
+def _declared_destination(transition: ContinuousTransition) -> str | None:
+    """The environment a transition moves into: its ``environment2_name``
+    when set, else its ``environment_name``."""
+    if (
+        isinstance(transition, _NamesDestinationEnvironment)
+        and transition.environment2_name is not None
+    ):
+        return transition.environment2_name
+    return transition.environment_name
+
+
+def _check_block_environments(
+    transition: ContinuousTransition,
+    environments: Sequence[Environment],
+    source_environment_name: str | None,
+    destination_environment_name: str | None,
+    source_size: int,
+    target_size: int,
+) -> None:
+    """Check the environments a transition declares against its block's states.
+
+    The dense and the structured constructors call this for every block, so
+    a mismatch raises the same error from both. A block into a one-bin state
+    (probability 1 into its single bin) and a transition without place bins
+    (``environment_name=None``, as ``Discrete``) are not checked here.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+    environments : sequence of Environment
+    source_environment_name, destination_environment_name : str or None
+        Environments of the block's source and destination states (their
+        observation models' ``environment_name``); None when unknown, which
+        skips that comparison.
+    source_size, target_size : int
+        Bins of the source and destination states.
+
+    Raises
+    ------
+    ValidationError
+        If a declared environment does not exist, the declared destination
+        (``environment2_name`` when set, else ``environment_name``) is not
+        the destination state's environment, or, between two spatial states,
+        the declared source (``environment_name``) is not the source state's.
+    """
+    if target_size == 1 or transition.environment_name is None:
+        return
+    declared_source = transition.environment_name
+    declared_destination = cast(str, _declared_destination(transition))
+    find_environment_by_name(environments, declared_source)
+    find_environment_by_name(environments, declared_destination)
+    checks = [("destination", declared_destination, destination_environment_name)]
+    if source_size > 1:
+        checks.insert(0, ("source", declared_source, source_environment_name))
+    for role, declared, state_environment in checks:
+        if state_environment is not None and declared != state_environment:
+            msg = (
+                f"{type(transition).__name__} declares {role} environment "
+                f"{declared!r}, but the {role} state is in environment "
+                f"{state_environment!r}"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"{role} environment {state_environment!r}",
+                got=f"{role} environment {declared!r}",
+                hint=(
+                    "Name the states' environments in the transition: "
+                    "environment_name is the source, and environment2_name "
+                    "(Uniform) the destination when it differs, e.g. "
+                    f"Uniform({declared_source!r}, {state_environment!r})."
+                    if role == "destination"
+                    else "Name the source state's environment in the "
+                    "transition's environment_name."
+                ),
+            )
+
+
 def _scalar_to_spatial_destination(
     transition: ContinuousTransition, environments: Sequence[Environment]
 ) -> np.ndarray:
     """Destination bins of a block from a state without place bins.
 
     A block from a single-bin state (such as Local or No-Spike) to a spatial
-    state is uniform over the interior bins of the environment named by the
-    transition's ``environment_name``, whatever the transition.
+    state is uniform over the interior bins of the transition's declared
+    destination environment (``environment2_name`` when set, else
+    ``environment_name``), whatever the transition;
+    ``_check_block_environments`` checks that this is the destination
+    state's environment.
 
     Parameters
     ----------
@@ -1048,9 +1167,11 @@ def _scalar_to_spatial_destination(
     Raises
     ------
     ValidationError
-        If the transition's ``environment_name`` is None.
+        If the transition's ``environment_name`` is None, or its declared
+        destination names no environment.
     """
-    if transition.environment_name is None:
+    destination = _declared_destination(transition)
+    if destination is None:
         # No fallback may broadcast a scalar block across the destination bins.
         msg = (
             f"{type(transition).__name__} has environment_name=None, so it "
@@ -1063,9 +1184,7 @@ def _scalar_to_spatial_destination(
                 "Uniform(environment_name=...)."
             ),
         )
-    return find_environment_by_name(
-        environments, transition.environment_name
-    ).is_track_interior_flat_
+    return find_environment_by_name(environments, destination).is_track_interior_flat_
 
 
 def _check_block_shape(
