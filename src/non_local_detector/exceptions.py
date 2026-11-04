@@ -266,13 +266,16 @@ class NotFittedError(ConfigurationError, AttributeError):
     """
 
 
-class NonLocalDetectorWarning(UserWarning):
+class NonLocalDetectorWarning(Warning):
     """Base class of every warning the package raises itself.
 
     Filter on it to silence or escalate all of the package's warnings at once,
-    or on one of its subclasses to pick a kind. It is a ``UserWarning``, so
-    filters on ``UserWarning`` keep working. Warnings raised by third-party
-    code (JAX, scikit-learn, ...) are not instances of it.
+    or on one of its subclasses to pick a kind. It is not itself a
+    ``UserWarning``: each subclass also derives from the builtin category that
+    fits it (``UserWarning``, or ``DeprecationWarning`` for
+    ``CompatibilityWarning``), so a ``UserWarning`` filter does not catch
+    deprecations. Warnings raised by third-party code (JAX, scikit-learn, ...)
+    are not instances of it.
 
     Examples
     --------
@@ -283,38 +286,39 @@ class NonLocalDetectorWarning(UserWarning):
     """
 
 
-class DataQualityWarning(NonLocalDetectorWarning):
+class DataQualityWarning(NonLocalDetectorWarning, UserWarning):
     """The data are sparse, missing or off the track.
 
     For example tracking that moves farther between samples than
     ``position_std``, positions snapped to the nearest bin, decode bins
     outside the tracked period, and encoding groups or electrodes with zero
-    exposure or no encoding spikes.
+    exposure or no encoding spikes. Also a ``UserWarning``.
     """
 
 
-class NumericalWarning(NonLocalDetectorWarning):
+class NumericalWarning(NonLocalDetectorWarning, UserWarning):
     """A fit did not converge or hit a degenerate numerical case.
 
     For example EM that did not converge or lowered its objective, a Poisson
     regression with a singular system, a Gaussian mixture with discarded
-    restarts, and a NaN kernel density.
+    restarts, and a NaN kernel density. Also a ``UserWarning``.
     """
 
 
-class ParameterWarning(NonLocalDetectorWarning):
+class ParameterWarning(NonLocalDetectorWarning, UserWarning):
     """A setting is adjusted or likely to give a poor or costly fit.
 
     For example ``position_std`` below the bin spacing, a basis rank or number
     of mixture components reduced to fit the data, and dense EM that may not fit
-    in memory.
+    in memory. Also a ``UserWarning``.
     """
 
 
 class CompatibilityWarning(NonLocalDetectorWarning, DeprecationWarning):
     """A deprecated argument or a legacy saved form was used.
 
-    Also a ``DeprecationWarning``, so Python's default filters (which hide
-    deprecations raised outside ``__main__``) and filters on
-    ``DeprecationWarning`` apply to it.
+    Also a ``DeprecationWarning`` and not a ``UserWarning``, so Python's
+    default filters (which hide deprecations raised outside ``__main__``) and
+    filters on ``DeprecationWarning`` apply to it, and filters on
+    ``UserWarning`` do not.
     """

@@ -32,11 +32,14 @@ SPECIFIC = [
 
 
 def test_hierarchy_keeps_replaced_builtin_categories():
-    assert issubclass(NonLocalDetectorWarning, UserWarning)
+    assert issubclass(NonLocalDetectorWarning, Warning)
+    assert not issubclass(NonLocalDetectorWarning, UserWarning)
     for category in SPECIFIC:
         assert issubclass(category, NonLocalDetectorWarning)
+    for category in (DataQualityWarning, NumericalWarning, ParameterWarning):
         assert issubclass(category, UserWarning)
     assert issubclass(CompatibilityWarning, DeprecationWarning)
+    assert not issubclass(CompatibilityWarning, UserWarning)
     for category in (DataQualityWarning, NumericalWarning, ParameterWarning):
         assert not issubclass(category, DeprecationWarning)
 
@@ -214,3 +217,29 @@ def test_package_base_class_filters_select_package_warnings():
         warnings.warn("ours", NumericalWarning, stacklevel=1)
         warnings.warn("theirs", UserWarning, stacklevel=1)
     assert [str(w.message) for w in caught] == ["theirs"]
+
+
+def test_user_warning_filter_does_not_catch_compatibility_warning():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.simplefilter("ignore", UserWarning)
+        warnings.warn("old", CompatibilityWarning, stacklevel=1)
+        warnings.warn("data", DataQualityWarning, stacklevel=1)
+    assert [str(w.message) for w in caught] == ["old"]
+
+
+def test_deprecation_warning_filter_catches_compatibility_warning():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.simplefilter("ignore", DeprecationWarning)
+        warnings.warn("old", CompatibilityWarning, stacklevel=1)
+    assert caught == []
+
+
+def test_base_filter_catches_every_package_category():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.simplefilter("ignore", NonLocalDetectorWarning)
+        for category in SPECIFIC:
+            warnings.warn("ours", category, stacklevel=1)
+    assert caught == []
