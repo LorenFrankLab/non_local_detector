@@ -18,7 +18,7 @@ import inspect
 import json
 import pickle
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -38,10 +38,8 @@ from patsy import DesignMatrix, build_design_matrices
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
-from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.checkpointed_inference import (
-    CheckpointedResult,
     _available_host_bytes,
     default_chunk_size,
     default_replay_cache_bytes,
@@ -107,6 +105,11 @@ from non_local_detector.likelihoods.no_spike import (
     no_spike_time_bin_sizes,
     predict_no_spike_log_likelihood,
 )
+from non_local_detector.models._checkpointed import (
+    _CheckpointedPredictionMixin,
+    _driver_outputs,
+    _PosteriorOutputs,
+)
 from non_local_detector.models._input_validation import (
     _OPTIONAL_OUTPUTS,  # noqa: F401 -- importable from base
     _TIME_CONTRACT,
@@ -131,7 +134,6 @@ from non_local_detector.models._results import (
     convert_seq_to_df,
     has_place_bins,
     label_checkpointed_result,
-    state_bin_positions,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -148,11 +150,6 @@ from non_local_detector.transition_operators import (
     DEFAULT_MAX_DENSE_BYTES,
     _one_bin_block,
 )
-
-try:
-    from non_local_detector._version import __version__ as _PACKAGE_VERSION
-except ImportError:
-    _PACKAGE_VERSION = "unknown"
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -881,118 +878,6 @@ class _EMEStep:
     transition_statistics: np.ndarray | None
 
 
-def _driver_outputs(requested_outputs: set[str], *, spatial: bool) -> set[str]:
-    """Forward-backward outputs to compute for canonical ``return_outputs``.
-
-    Always the smoothed state probabilities, and with ``spatial`` the
-    smoothed posterior over state bins too. ``spatial=False`` (compact
-    checkpointed output) computes the filtered state probabilities but not
-    the filtered posterior.
-
-    Parameters
-    ----------
-    requested_outputs : set of str
-        Names from ``_normalize_return_outputs``.
-    spatial : bool
-        Whether posteriors over state bins are computed.
-
-    Returns
-    -------
-    outputs : set of str
-        Field names of ``_PosteriorOutputs``, as the checkpointed driver's
-        ``return_outputs`` names them.
-    """
-    outputs = {"acausal_state_probabilities"}
-    if spatial:
-        outputs.add("acausal_posterior")
-    if "filter" in requested_outputs:
-        outputs.add("causal_state_probabilities")
-        if spatial:
-            outputs.add("causal_posterior")
-    if "predictive" in requested_outputs:
-        outputs.add("predictive_state_probabilities")
-    if "predictive_posterior" in requested_outputs:
-        outputs.add("predictive_posterior")
-    if "log_likelihood" in requested_outputs:
-        outputs.add("log_likelihood")
-    return outputs
-
-
-@dataclass(frozen=True)
-class _PosteriorOutputs:
-    """Outputs of one forward-backward pass over the decode bins.
-
-    Outputs the pass did not compute are None. Posteriors over state bins can
-    be device arrays: callers copy to the host only those they need there.
-
-    Attributes
-    ----------
-    marginal_log_likelihood : float
-    degenerate_indices : np.ndarray of int, shape (n_degenerate,)
-        Bins whose log likelihoods are ``-inf`` in every state bin. Found
-        during the forward pass, so they are complete whether or not the log
-        likelihoods were kept.
-    acausal_posterior : array, shape (n_time, n_state_bins), or None
-    acausal_state_probabilities : np.ndarray, shape (n_time, n_states), or None
-    causal_state_probabilities : np.ndarray, shape (n_time, n_states), or None
-    predictive_state_probabilities : np.ndarray, shape (n_time, n_states), or None
-    log_likelihood : np.ndarray, shape (n_time, n_state_bins), or None
-    causal_posterior : array, shape (n_time, n_state_bins), or None
-    predictive_posterior : array, shape (n_time, n_state_bins), or None
-    """
-
-    marginal_log_likelihood: float
-    degenerate_indices: np.ndarray
-    acausal_posterior: Any = None
-    acausal_state_probabilities: np.ndarray | None = None
-    causal_state_probabilities: np.ndarray | None = None
-    predictive_state_probabilities: np.ndarray | None = None
-    log_likelihood: np.ndarray | None = None
-    causal_posterior: Any = None
-    predictive_posterior: Any = None
-
-    def requested_results(self, requested_outputs: set[str]) -> dict[str, Any]:
-        """The optional ``convert_results_to_xarray`` arrays that were requested.
-
-        Parameters
-        ----------
-        requested_outputs : set of str
-            Names from ``_normalize_return_outputs``.
-
-        Returns
-        -------
-        arrays : dict
-            ``convert_results_to_xarray`` keyword arguments; outputs that were
-            not requested are None, posteriors are host arrays.
-        """
-        outputs = _driver_outputs(requested_outputs, spatial=True)
-        return {
-            "log_likelihood": (
-                self.log_likelihood if "log_likelihood" in outputs else None
-            ),
-            "causal_posterior": (
-                np.asarray(self.causal_posterior)
-                if "causal_posterior" in outputs
-                else None
-            ),
-            "causal_state_probabilities": (
-                self.causal_state_probabilities
-                if "causal_state_probabilities" in outputs
-                else None
-            ),
-            "predictive_state_probabilities": (
-                self.predictive_state_probabilities
-                if "predictive_state_probabilities" in outputs
-                else None
-            ),
-            "predictive_posterior": (
-                np.asarray(self.predictive_posterior)
-                if "predictive_posterior" in outputs
-                else None
-            ),
-        }
-
-
 @dataclass(frozen=True)
 class _EMFinalEStep:
     """The final E-step's outputs.
@@ -1317,7 +1202,12 @@ def _group_weights(
     return group_weights
 
 
-class _DetectorBase(_InputValidationMixin, BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is untyped (BaseEstimator is Any)
+class _DetectorBase(
+    _InputValidationMixin,
+    _CheckpointedPredictionMixin,
+    BaseEstimator,  # type: ignore[misc]  # sklearn is untyped (BaseEstimator is Any)
+    abc.ABC,
+):
     """Base class for detector objects.
 
     Attributes
@@ -3687,305 +3577,6 @@ class _DetectorBase(_InputValidationMixin, BaseEstimator, abc.ABC):  # type: ign
             causal_posterior=result.causal_posterior,
             predictive_posterior=result.predictive_posterior,
         )
-
-    def _checkpointed_likelihood(
-        self,
-        edges: np.ndarray,
-        centers: np.ndarray,
-        log_likelihood_args: tuple[Any, ...],
-    ) -> Callable[..., Any]:
-        """Row-slice likelihood callback for the checkpointed driver."""
-        prepared = self._decode_likelihood_callback(edges, log_likelihood_args)
-
-        def likelihood(
-            full_edges: np.ndarray,  # noqa: ARG001 -- likelihood callback signature
-            *,
-            row_slice: slice | None,
-            is_missing: np.ndarray | None,
-        ) -> Any:
-            return prepared(
-                centers,
-                *log_likelihood_args,
-                row_slice=row_slice,
-                is_missing=is_missing,
-            )
-
-        return likelihood
-
-    def _checkpointed_transition_args(
-        self, discrete: np.ndarray, n_rows: int
-    ) -> dict[str, Any]:
-        """Checkpointed-driver transition arguments over the interior state bins.
-
-        Structured fits pass the fused operator; dense fits pass the dense
-        interior matrices. Covariate transitions pass their per-row discrete
-        matrices separately and must have one row per decode bin.
-        """
-        if discrete.ndim == 3 and discrete.shape[0] != n_rows:
-            msg = "Predict covariate transitions must have one row per decode bin"
-            raise ValidationError(msg)
-        interior = self.is_track_interior_state_bins_
-        states = self.state_ind_[interior]
-        transition_args: dict[str, Any] = {}
-        operator = getattr(self, "_continuous_transition_operator_", None)
-        if operator is not None:
-            operator = operator.restricted(interior)
-            if discrete.ndim == 2:
-                operator = operator.bind_discrete(discrete)
-            else:
-                transition_args["discrete_transition_matrix"] = discrete
-            transition_args["transition_operator"] = operator.fused(
-                self._max_dense_transition_bytes_
-            )
-        else:
-            continuous = self.continuous_state_transitions_[np.ix_(interior, interior)]
-            if discrete.ndim == 2:
-                transition_args["transition_matrix"] = (
-                    continuous * discrete[np.ix_(states, states)]
-                )
-            else:
-                transition_args.update(
-                    continuous_transition_matrix=continuous,
-                    discrete_transition_matrix=discrete,
-                )
-        return transition_args
-
-    def _checkpointed_e_step(
-        self,
-        time_edges: np.ndarray,
-        log_likelihood_args: tuple[Any, ...],
-        is_missing: np.ndarray | None,
-        chunk_size: int,
-        *,
-        outputs: Iterable[str] = ("acausal_state_probabilities",),
-        transition_statistics: str | None = None,
-        replay_cache_bytes: int,
-    ) -> CheckpointedResult:
-        """One whole-recording E-step on the checkpointed driver.
-
-        Parameters
-        ----------
-        time_edges : np.ndarray, shape (n_time + 1,)
-        log_likelihood_args : tuple
-        is_missing : np.ndarray, shape (n_time,), or None
-        chunk_size : int
-            Rows per checkpoint chunk.
-        outputs : iterable of str
-            Driver outputs. Spatial outputs are held in memory.
-        transition_statistics : {None, "counts", "responses"}
-        replay_cache_bytes : int
-            Host bytes for forward-pass rows reused by the replay.
-
-        Returns
-        -------
-        result : CheckpointedResult
-        """
-        from non_local_detector.checkpointed_inference import (
-            _SPATIAL,
-            checkpointed_forward_backward,
-        )
-
-        edges, centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        interior = self.is_track_interior_state_bins_
-        output_names = set(outputs)
-        return checkpointed_forward_backward(
-            edges,
-            self.initial_conditions_[interior],
-            self._checkpointed_likelihood(edges, centers, log_likelihood_args),
-            state_ind=self.state_ind_[interior],
-            n_states=len(self.state_names),
-            is_missing=is_missing,
-            chunk_size=chunk_size,
-            output_mode="spatial" if output_names & _SPATIAL else "compact",
-            return_outputs=output_names,
-            dtype=np.float32,
-            transition_statistics=transition_statistics,
-            replay_cache_bytes=replay_cache_bytes,
-            **self._checkpointed_transition_args(
-                self.discrete_state_transitions_, len(centers)
-            ),
-        )
-
-    def _predict_checkpointed(
-        self,
-        *,
-        time_edges: np.ndarray,
-        log_likelihood_args: tuple[Any, ...],
-        is_missing: np.ndarray | None,
-        discrete_transitions: np.ndarray | None,
-        output_mode: OutputMode,
-        chunk_size: int | None,
-        result_path: str | Path | None,
-        checkpoint_dir: str | Path | None,
-        selected_intervals: np.ndarray | None,
-        requested_outputs: set[str],
-        max_read_bytes: int,
-        replay_cache_bytes: int | None,
-        em_attrs: Callable[[float], dict[str, Any]] | None = None,
-    ) -> tuple[xr.Dataset, np.ndarray]:
-        """Decode with complete conditioning and bounded spatial working memory.
-
-        ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
-        ``em_attrs`` maps this pass's marginal log-likelihood to EM's
-        attributes, which a result store keeps with the rest so that
-        ``load_results`` returns them.
-
-        Returns
-        -------
-        results : xr.Dataset
-            The labelled results, lazily loaded from ``result_path`` when given.
-        degenerate_indices : np.ndarray of int, shape (n_degenerate,)
-            Recording rows whose log likelihoods are ``-inf`` in every state
-            bin, including rows outside ``selected_intervals``.
-        """
-        from non_local_detector.checkpointed_inference import (
-            checkpointed_forward_backward,
-        )
-
-        if replay_cache_bytes is None:
-            replay_cache_bytes = default_replay_cache_bytes()
-
-        if output_mode == "spatial" and result_path is None:
-            msg = "Checkpointed spatial prediction requires result_path"
-            raise ValidationError(
-                msg,
-                hint="Pass a new directory as result_path, or use output_mode='compact'.",
-            )
-        if output_mode == "compact" and requested_outputs & {
-            "log_likelihood",
-            "predictive_posterior",
-        }:
-            msg = "Spatial outputs (including return_outputs='all') require output_mode='spatial'"
-            raise ValidationError(
-                msg,
-                got=f"return_outputs requesting {sorted(requested_outputs)}",
-                hint="Compact output holds state probabilities only; request "
-                "'filter' and 'predictive', or use output_mode='spatial' with a result_path.",
-            )
-        edges, centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        interior = self.is_track_interior_state_bins_
-        states = self.state_ind_[interior]
-        if chunk_size is None:
-            chunk_size = default_chunk_size(
-                cast("int", np.count_nonzero(interior)), np.float32
-            )
-        discrete = (
-            self.discrete_state_transitions_
-            if discrete_transitions is None
-            else discrete_transitions
-        )
-        transition_args = self._checkpointed_transition_args(discrete, len(centers))
-        likelihood = self._checkpointed_likelihood(edges, centers, log_likelihood_args)
-        selected: np.ndarray | None = None
-        if selected_intervals is not None:
-            intervals = np.asarray(selected_intervals, dtype=float)
-            if (
-                intervals.ndim != 2
-                or intervals.shape[1] != 2
-                or not np.isfinite(intervals).all()
-                or np.any(intervals[:, 0] >= intervals[:, 1])
-                or np.any(intervals[1:, 0] < intervals[:-1, 1])
-            ):
-                msg = "selected_intervals must be ordered non-overlapping start/stop pairs"
-                raise ValidationError(msg)
-            mask = np.zeros(len(centers), dtype=bool)
-            # The tolerances are under 1% of a bin width, so bins more than one
-            # bin outside an interval can never be selected; apply the rule only
-            # from one bin before each start to one bin after each stop.
-            firsts = np.maximum(np.searchsorted(edges[:-1], intervals[:, 0]) - 1, 0)
-            lasts = np.minimum(
-                np.searchsorted(edges[1:], intervals[:, 1], side="right") + 1,
-                len(centers),
-            )
-            for (start, stop), first, last in zip(
-                intervals, firsts, lasts, strict=True
-            ):
-                lower, upper = edges[first:last], edges[first + 1 : last + 1]
-                width = upper - lower
-                lower_tol = np.minimum(
-                    4 * np.maximum(np.spacing(abs(start)), np.spacing(abs(lower))),
-                    width * 0.01,
-                )
-                upper_tol = np.minimum(
-                    4 * np.maximum(np.spacing(abs(stop)), np.spacing(abs(upper))),
-                    width * 0.01,
-                )
-                mask[first:last] |= (lower >= start - lower_tol) & (
-                    upper <= stop + upper_tol
-                )
-            selected = np.flatnonzero(mask)
-            if selected.size == 0:
-                msg = "selected_intervals select no complete decode bins"
-                raise ValidationError(
-                    msg,
-                    got=f"{len(intervals)} interval(s)",
-                    hint=(
-                        "Intervals are in seconds and select bins whose start and "
-                        f"stop edges both lie inside one; the recording spans "
-                        f"[{edges[0]}, {edges[-1]}] in bins of {edges[1] - edges[0]}."
-                    ),
-                )
-        outputs = _driver_outputs(requested_outputs, spatial=output_mode == "spatial")
-        position = np.concatenate(state_bin_positions(self))
-        metadata: dict[str, Any] = {
-            "state_names": list(self.state_names),
-            "environment_names": [
-                obs.environment_name for obs in self.observation_models
-            ],
-            "encoding_groups": [
-                obs.encoding_group.item()
-                if isinstance(obs.encoding_group, np.generic)
-                else obs.encoding_group
-                for obs in self.observation_models
-            ],
-            "position": position.tolist(),
-            "position_names": get_position_dim_names(position.shape[1]),
-            "state_ind": self.state_ind_.tolist(),
-            "interior_mask": interior.tolist(),
-            "max_read_bytes": int(max_read_bytes),
-        }
-        attrs: dict[str, Any] = {
-            "non_local_detector_version": _PACKAGE_VERSION,
-            "time_units": "seconds",
-            "time_bin_convention": "left_closed_right_open_final_closed",
-            "conditioning": "whole_recording",
-            "_native_metadata": metadata,
-            "recording_rows": len(centers),
-            "transition_representation": getattr(
-                self, "_transition_representation_", "dense"
-            ),
-        }
-        result = checkpointed_forward_backward(
-            edges,
-            self.initial_conditions_[interior],
-            likelihood,
-            state_ind=states,
-            n_states=len(self.state_names),
-            is_missing=is_missing,
-            chunk_size=chunk_size,
-            output_mode=output_mode,
-            result_path=result_path,
-            checkpoint_dir=checkpoint_dir,
-            return_outputs=outputs,
-            selected_rows=selected,
-            dtype=np.float32,
-            max_read_bytes=max_read_bytes,
-            result_attrs=(
-                attrs
-                if em_attrs is None
-                else lambda marginal: {**attrs, **em_attrs(marginal)}
-            ),
-            replay_cache_bytes=replay_cache_bytes,
-            **transition_args,
-        )
-        degenerate_indices = np.asarray(
-            result.diagnostics.get("degenerate_indices", []), dtype=int
-        )
-        return label_checkpointed_result(result.dataset, metadata), degenerate_indices
 
     @contextmanager
     def _restore_state_on_error(self) -> Iterator[None]:
