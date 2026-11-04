@@ -644,12 +644,12 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
     """
     if return_outputs is None:
         return set()
-    if isinstance(return_outputs, str):
-        names: set[str] = {return_outputs}
-    elif isinstance(return_outputs, Collection) and not isinstance(
-        return_outputs, Mapping
-    ):
-        wrong = [name for name in return_outputs if not isinstance(name, str)]
+    # Checked at runtime: callers may pass anything.
+    value: object = return_outputs
+    if isinstance(value, str):
+        names: set[str] = {value}
+    elif isinstance(value, Collection) and not isinstance(value, Mapping):
+        wrong = [name for name in value if not isinstance(name, str)]
         if wrong:
             msg = "return_outputs entries must be strings"
             raise ValidationError(
@@ -657,12 +657,10 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
                 expected=f"names from {sorted(VALID_OUTPUTS)}",
                 got=f"entries of type {sorted({type(name).__name__ for name in wrong})}",
             )
-        names = set(return_outputs)
+        names = set(value)
     else:
         msg = "return_outputs must be a string, a collection of strings, or None"
-        raise ValidationError(  # type: ignore[unreachable]  # runtime validation of an unsupported type
-            msg, got=type(return_outputs).__name__
-        )
+        raise ValidationError(msg, got=type(value).__name__)
     invalid = names - VALID_OUTPUTS
     if invalid:
         msg = f"Invalid return_outputs: {sorted(invalid)}"
