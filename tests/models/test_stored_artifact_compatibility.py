@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.base import clone
 from track_linearization import make_track_graph
 
 import non_local_detector as nld
@@ -201,9 +202,11 @@ def test_saved_model_keeps_its_fitted_environments(version, artifact):
     """These versions kept a detector's fitted environments in its
     ``environments`` parameter. A loaded model keeps them there, where code
     that inspects old models reads them (``get_params()`` reports them, as it
-    always did), and ``environments_`` holds the same objects."""
+    always did), and ``environments_`` holds the same objects. Like every
+    detector's, ``environments`` is a tuple, so ``clone`` rebuilds it."""
     model = _load_model(version, artifact)
 
+    assert isinstance(model.environments, tuple)
     assert len(model.environments_) == len(model.environments) == 1
     for configured, fitted in zip(model.environments, model.environments_, strict=True):
         assert fitted is configured
@@ -212,6 +215,9 @@ def test_saved_model_keeps_its_fitted_environments(version, artifact):
         assert model._get_environment_by_name(obs.environment_name) in (
             model.environments_
         )
+    cloned = clone(model)
+    assert not hasattr(cloned, "environments_")
+    assert not cloned.environments[0]._is_fitted
 
 
 class _StoredState:

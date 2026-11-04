@@ -3123,12 +3123,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 )[0]
         # Detectors fitted before ``environments_`` existed kept the fitted
         # environments in ``environments``. They stay there, where code that
-        # inspects old models reads them, and ``environments_`` holds the same
-        # objects; only a new fit splits configuration from fitted copies.
+        # inspects old models reads them, and ``environments_`` is the same
+        # tuple; only a new fit splits configuration from fitted copies. Those
+        # releases stored a list, which the constructor (and so ``clone``)
+        # turns into a tuple.
         if "environments_" not in state and any(
             env._is_fitted for env in self.environments
         ):
-            self.environments_ = tuple(self.environments)
+            self.environments = tuple(self.environments)
+            self.environments_ = self.environments
         # Encoding models fitted before each recorded its algorithm.
         encoding_model = state.get("encoding_model_")
         if isinstance(encoding_model, Mapping):
