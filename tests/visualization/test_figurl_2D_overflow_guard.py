@@ -156,7 +156,9 @@ def test_default_posterior_has_no_false_peak_at_last_bin(monkeypatch):
         raise RuntimeError(msg)
 
     monkeypatch.setattr(figurl_2D, "create_2D_decode_view", fake_decode_view)
-    env = _types.SimpleNamespace(is_track_interior_=None, place_bin_centers_=None)
+    env = _types.SimpleNamespace(
+        is_track_interior_=np.ones(1, dtype=bool), place_bin_centers_=np.zeros((1, 2))
+    )
 
     with pytest.raises(RuntimeError, match="stop after"):
         figurl_2D.create_interactive_2D_decoding_figurl(

@@ -33,7 +33,7 @@ def _assert_unfitted_configuration(environments, originals):
     for environment, original in zip(environments, originals, strict=True):
         assert environment is original
         assert not environment._is_fitted
-        assert environment.place_bin_centers_ is None
+        assert not hasattr(environment, "place_bin_centers_")
 
 
 def test_fit_writes_environments_and_leaves_the_parameter(recording):

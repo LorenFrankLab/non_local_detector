@@ -718,9 +718,7 @@ def fit_clusterless_gmm_encoding_model(
             stacklevel=user_stacklevel(),
         )
 
-    interior_place_bin_centers = cast(np.ndarray, environment.place_bin_centers_)[
-        is_track_interior
-    ]
+    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     # Fit occupancy GMM and precompute per-bin terms
     occupancy_model = _fit_gmm_density(

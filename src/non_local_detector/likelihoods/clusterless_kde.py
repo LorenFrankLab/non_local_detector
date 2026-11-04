@@ -1830,13 +1830,6 @@ def fit_clusterless_kde_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    if environment.place_bin_centers_ is None:
-        msg = (
-            "Environment must be fitted with place_bin_centers_. "
-            "Call environment.fit_place_grid() first."
-        )
-        raise ValueError(msg)
-
     # Weighted occupancy time in seconds: each sample's weight times the
     # tracking time it covers (its integrated interpolation exposure). Gaps from
     # is_training / encoding-group masks carry weight 0 and are not charged as
@@ -1858,7 +1851,7 @@ def fit_clusterless_kde_encoding_model(
     for features in spike_waveform_features:
         validate_bandwidth(waveform_std, features.shape[1], "waveform_std")
 
-    is_track_interior = cast(np.ndarray, environment.is_track_interior_).ravel()
+    is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
@@ -2163,10 +2156,8 @@ def predict_clusterless_kde_log_likelihood(
             _time_grid=_time_grid,
         )
     else:
-        is_track_interior = cast(np.ndarray, environment.is_track_interior_).ravel()
-        interior_place_bin_centers = cast(np.ndarray, environment.place_bin_centers_)[
-            is_track_interior
-        ]
+        is_track_interior = environment.is_track_interior_.ravel()
+        interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
         if log_occupancy is None:
             log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 

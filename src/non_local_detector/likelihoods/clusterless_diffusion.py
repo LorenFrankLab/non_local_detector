@@ -403,13 +403,6 @@ def fit_clusterless_diffusion_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    if environment.place_bin_centers_ is None:
-        msg = (
-            "Environment must be fitted with place_bin_centers_. "
-            "Call environment.fit_place_grid() first."
-        )
-        raise ValueError(msg)
-
     n_time_position = position.shape[0]
     position_std = _validate_diffusion_params(
         position_std, waveform_std, heat_kernel_rank, memory_budget, block_size
@@ -423,7 +416,7 @@ def fit_clusterless_diffusion_encoding_model(
     check_smoothing_bandwidth(position_std, graph)
     bin_sizes = np.asarray(bin_sizes)
     n_interior = node_order.shape[0]
-    n_total_bins = cast(np.ndarray, environment.is_track_interior_).ravel().shape[0]
+    n_total_bins = environment.is_track_interior_.ravel().shape[0]
     full_to_local = _full_to_local(node_order, n_total_bins)
 
     # Resolve the eigenbasis ONCE and record its rank; predict retrieves the device
@@ -1471,7 +1464,7 @@ def predict_clusterless_diffusion_log_likelihood(
         # Reconstruct the interior-bin mapping from node_order (derived here at
         # predict, not stored) and evaluate the diffused column at the animal's nearest
         # interior bin instead of returning the whole column.
-        n_total_bins = cast(np.ndarray, environment.is_track_interior_).ravel().shape[0]
+        n_total_bins = environment.is_track_interior_.ravel().shape[0]
         full_to_local = _full_to_local(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(

@@ -168,15 +168,14 @@ def test_clusterless_kde_rejects_bandwidths_that_float32_cannot_hold(value):
         _fit_clusterless_kde(position_std=value)
 
 
-def test_clusterless_gmm_uses_every_bin_without_an_interior_mask():
-    """A grid without an interior mask treats every bin as interior."""
+def test_clusterless_gmm_uses_every_bin_of_an_all_interior_grid():
+    """A grid fit without inferring the interior has every bin interior."""
     rng = np.random.default_rng(0)
     time = np.arange(0.0, 20.0, 0.05)
     position = (5.0 + 4.0 * np.sin(time))[:, None]
     env = Environment(place_bin_size=1.0).fit_place_grid(
         position, infer_track_interior=False
     )
-    env.is_track_interior_ = None
     spike_times = np.sort(rng.uniform(0.0, 20.0, 200))
     model = fit_clusterless_gmm_encoding_model(
         time,

@@ -108,9 +108,6 @@ def _grid_axes(environment: Environment) -> tuple[np.ndarray, ...]:
     ``get_centers(edge)`` gives each dimension's bin centers directly; the full grid
     is their tensor product, so these equal ``np.unique(place_bin_centers_[:, d])``.
     """
-    if environment.edges_ is None:
-        msg = "environment must be fitted (edges_ is None)"
-        raise ValueError(msg)
     return tuple(get_centers(edge) for edge in environment.edges_)
 
 
@@ -150,9 +147,6 @@ def _linear_interpolation_safe_mask(
     axes: tuple[np.ndarray, ...],
 ) -> np.ndarray:
     """Rows where local interpolation cannot mix across invalid or disconnected bins."""
-    if environment.centers_shape_ is None:
-        return np.zeros((positions.shape[0],), dtype=bool)
-
     centers_shape = tuple(environment.centers_shape_)
     is_interior = np.asarray(is_track_interior, dtype=bool).ravel()
     if int(np.prod(centers_shape)) != is_interior.shape[0]:
@@ -330,7 +324,6 @@ def pixellate_interior_fields(
         weights,
         _encoding_support=encoding_support,
     )
-    assert environment.is_track_interior_ is not None
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
     n_interior = node_order.shape[0]
 
@@ -560,9 +553,6 @@ def fit_sorted_spikes_diffusion_encoding_model(
     else:
         eigvals, eigvecs = cached_eigenbasis(environment, rank)
 
-    # environment_graph raises if the environment is unfitted, so is_track_interior_
-    # is guaranteed set here (this also narrows the type for static checkers).
-    assert environment.is_track_interior_ is not None
     is_track_interior = environment.is_track_interior_.ravel()
     n_total_bins = is_track_interior.shape[0]
 

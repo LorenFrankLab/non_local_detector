@@ -123,7 +123,7 @@ def _unit_order(
     bin_centers = detector._get_environment_by_name(
         obs.environment_name
     ).place_bin_centers_
-    peak_position = bin_centers[np.nanargmax(place_fields, axis=1)].squeeze()  # type: ignore[index]  # set by fit; unfitted env fails at runtime
+    peak_position = bin_centers[np.nanargmax(place_fields, axis=1)].squeeze()
     return np.argsort(peak_position), "Neuron"
 
 
@@ -185,14 +185,14 @@ def plot_non_local_model(
         gridspec_kw={"height_ratios": [2, 1, 3, 1]},
     )
 
-    t, x = np.meshgrid(results_time, env.place_bin_centers_)  # type: ignore[arg-type]  # set by fit
+    t, x = np.meshgrid(results_time, env.place_bin_centers_)
 
     conditional_non_local_acausal_posterior = (
         detector.get_conditional_non_local_posterior(results.sel(time=time_slice))
         .values.reshape(len(results_time), -1)
         .copy()
     )
-    conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan  # type: ignore[operator]  # set by fit
+    conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
 
     new_spike_times = [
         spike_times[neuron_id][

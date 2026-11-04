@@ -14,6 +14,7 @@ Usage:
     from conftest import assert_probability_distribution
 """
 
+import dataclasses
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,7 +27,7 @@ import pytest
 import xarray as xr
 from hypothesis import settings
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, PlaceGrid
 
 # No per-example deadline: the first example of a test includes JAX compilation.
 # CI sets HYPOTHESIS_PROFILE=ci, which also derandomizes examples so a CI
@@ -89,6 +90,30 @@ def x64():
     """Enable float64 for the rest of the test."""
     with precision_mode(True):
         yield
+
+
+def set_place_grid(environment, **fields):
+    """Give ``environment`` a hand-built grid holding ``fields``.
+
+    For tests of code that reads a few fitted attributes: the given
+    ``PlaceGrid`` fields replace those of the current grid (if any), other
+    fields of a new grid are None, and the grid counts as fitted with the
+    environment's current configuration. The cache is cleared, as by a fit.
+
+    Returns
+    -------
+    environment : Environment
+    """
+    grid = environment._place_grid
+    values = (
+        dict.fromkeys(item.name for item in dataclasses.fields(PlaceGrid))
+        if grid is None
+        else {item.name: getattr(grid, item.name) for item in dataclasses.fields(grid)}
+    )
+    values.update(fields, configuration=environment._grid_configuration())
+    environment._place_grid = PlaceGrid(**values)
+    environment.clear_cache()
+    return environment
 
 
 def make_state_bins_results(

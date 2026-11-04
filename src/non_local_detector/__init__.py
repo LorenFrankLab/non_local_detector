@@ -28,6 +28,7 @@ from non_local_detector.exceptions import (
     ConfigurationError,
     DataError,
     NonLocalDetectorError,
+    NotFittedError,
     ValidationError,
 )
 from non_local_detector.initial_conditions import UniformInitialConditions
@@ -72,6 +73,7 @@ __all__ = [
     "NonLocalClusterlessDetector",
     "NonLocalDetectorError",
     "NonLocalSortedSpikesDetector",
+    "NotFittedError",
     "RandomWalk",
     "RandomWalkDirection1",
     "RandomWalkDirection2",

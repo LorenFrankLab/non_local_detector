@@ -19,6 +19,11 @@ Choose the appropriate exception type based on when and why the error occurs:
 - **DataError**: Data quality issues like NaN, Inf, or wrong structure. Use
   when the data values (not just shapes) are problematic.
 
+- **NotFittedError**: A fitted attribute was read before the fit that sets
+  it, or after the configuration it was fitted with changed. A
+  ConfigurationError and an ``AttributeError``, so ``hasattr`` is False and
+  ``getattr(obj, name, default)`` returns the default.
+
 All exceptions inherit from **NonLocalDetectorError**, allowing users to catch
 any package-specific error with a single except clause. ValidationError,
 ConfigurationError and DataError also inherit from ``ValueError``, so
@@ -224,3 +229,25 @@ class DataError(NonLocalDetectorError, ValueError):
         super().__init__(
             _structured_message(message, expected=expected, got=got, hint=hint)
         )
+
+
+class NotFittedError(ConfigurationError, AttributeError):
+    """Raised when a fitted attribute is read without a matching fit.
+
+    For example ``Environment.place_bin_centers_`` before
+    ``fit_place_grid``, or after a configuration field the grid depends on
+    (such as ``place_bin_size``) changed. Inherits from ConfigurationError (so
+    ``ValueError``) and from ``AttributeError``, so ``hasattr`` reports the
+    attribute as missing, as scikit-learn's fitted attributes are before fit.
+
+    Parameters
+    ----------
+    message : str
+        Description of what is missing.
+    expected : str, optional
+        The fit that was expected.
+    got : str, optional
+        What was found instead.
+    hint : str, optional
+        How to fit.
+    """

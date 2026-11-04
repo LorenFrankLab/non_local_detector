@@ -983,7 +983,6 @@ def fit_sorted_spikes_mrf_encoding_model(
             stacklevel=user_stacklevel(),
         )
 
-    assert environment.is_track_interior_ is not None
     is_track_interior = environment.is_track_interior_.ravel()
     n_total_bins = is_track_interior.shape[0]
 

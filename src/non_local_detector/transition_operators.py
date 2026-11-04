@@ -8,7 +8,6 @@ The host builder is outside JAX tracing; runtime products are pure JAX.
 
 import itertools
 from collections.abc import Sequence
-from copy import copy
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, Protocol, TypeAlias, TypeVar, cast, runtime_checkable
 
@@ -1867,11 +1866,12 @@ def build_transition_operator(
     fallback_environments = []
     for env in environments:
         if id(env) in distance_environments:
-            view = copy(env)
-            view.distance_between_nodes_ = cast(
-                LazyGraphDistances, env.distance_between_nodes_
-            ).to_dense(max_bytes=max_dense_bytes - fallback_bytes)
-            fallback_environments.append(view)
+            dense = cast(LazyGraphDistances, env.distance_between_nodes_).to_dense(
+                max_bytes=max_dense_bytes - fallback_bytes
+            )
+            fallback_environments.append(
+                env._replace_place_grid(distance_between_nodes=dense)
+            )
         else:
             fallback_environments.append(env)
     blocks: list[tuple[Block, ...]] = []

@@ -15,6 +15,7 @@ from non_local_detector.core import (
 )
 from non_local_detector.environment import Environment
 from non_local_detector.transition_operators import build_transition_operator
+from tests.conftest import set_place_grid
 
 pytestmark = pytest.mark.unit
 
@@ -23,10 +24,12 @@ N_BINS = STATE_IND.size
 
 
 def _block_operator():
-    env = Environment()
-    env.place_bin_centers_ = np.arange(N_BINS, dtype=float)[:, None]
-    env.centers_shape_ = (N_BINS,)
-    env.is_track_interior_ = np.ones((N_BINS,), dtype=bool)
+    env = set_place_grid(
+        Environment(),
+        place_bin_centers=np.arange(N_BINS, dtype=float)[:, None],
+        centers_shape=(N_BINS,),
+        is_track_interior=np.ones((N_BINS,), dtype=bool),
+    )
     return build_transition_operator([[Uniform()]], [env], (N_BINS,))
 
 

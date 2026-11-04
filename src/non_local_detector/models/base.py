@@ -2388,7 +2388,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
-        assert environment.is_track_interior_ is not None  # set by fit_place_grid
         n_bins = int(environment.is_track_interior_.sum())
         log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
 
@@ -2904,12 +2903,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 is_track_interior.append(np.ones(1, dtype=bool))
             else:
                 environment = self._get_environment_by_name(obs.environment_name)
-                if environment.place_bin_centers_ is not None:
-                    bin_sizes.append(environment.place_bin_centers_.shape[0])
-                    state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
-                else:
-                    msg = "Environment place_bin_centers_ cannot be None"
-                    raise ValueError(msg)
+                bin_sizes.append(environment.place_bin_centers_.shape[0])
+                state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
                 is_track_interior.append(environment.is_track_interior_flat_)
 
         self.state_ind_ = np.concatenate(state_ind)
@@ -3111,7 +3106,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # Detectors fitted before ``environments_`` existed kept the fitted
         # copies in ``environments``: move them, and leave the configuration.
         if "environments_" not in state and any(
-            env.place_bin_centers_ is not None for env in self.environments
+            env._is_fitted for env in self.environments
         ):
             self.environments_ = tuple(self.environments)
             self.environments = tuple(

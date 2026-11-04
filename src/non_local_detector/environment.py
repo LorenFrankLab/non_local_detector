@@ -37,10 +37,10 @@ The module supports two main types of environments:
       centers in pandas DataFrames (`original_nodes_df_`, etc.).
 
 The central component is the `Environment` dataclass, which holds the parameters
-defining the environment and stores the results of the fitting process (grid
-details, graphs, distances) as attributes. The primary method `fit_place_grid`
-is used to perform the discretization and graph construction based on the input
-parameters and optional position data.
+defining the environment. The primary method `fit_place_grid` performs the
+discretization and graph construction from those parameters and optional
+position data, and stores the result (grid details, graphs, distances) as one
+immutable `PlaceGrid`, read through attributes such as `place_bin_centers_`.
 
 Helper functions are provided for tasks like grid generation (`get_grid`),
 track interior inference (`get_track_interior`), graph construction
@@ -51,6 +51,8 @@ unfitted; `save_environment` and `load_environment` pickle a fitted one.
 """
 
 import contextlib
+import copy
+import dataclasses
 import hashlib
 import pickle
 import warnings
@@ -78,7 +80,11 @@ from track_linearization import (  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
 from non_local_detector._warnings import user_stacklevel
-from non_local_detector.exceptions import ConfigurationError, ValidationError
+from non_local_detector.exceptions import (
+    ConfigurationError,
+    NotFittedError,
+    ValidationError,
+)
 from non_local_detector.graph_distances import (
     DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     LazyGraphDistances,
@@ -141,24 +147,160 @@ def find_environment_by_name(
     )
 
 
-def _is_unfitted_value(value: Any, default: Any) -> bool:
-    """Whether a fitted attribute passed to the constructor holds no fitted value.
-
-    Saved parameter dictionaries may hold ``_is_fitted`` as a NumPy boolean.
-    """
-    if value is None or value is default:
-        return True
-    return isinstance(value, (bool, np.bool_)) and bool(value) == default
-
-
 # Bytes of cached track linearizations kept per environment. EM linearizes the
 # same position samples and spike positions in every E-step and encoding
 # M-step; a 23.6 min recording needs about 30 MB.
 _LINEAR_POSITION_CACHE_BYTES = 256 * 1024**2
 
 
-# Field metadata marking the attributes ``fit_place_grid`` sets.
-_FITTED = {"fitted": True}
+# Configuration fields the fitted grid depends on. ``environment_name`` and
+# ``infer_track_interior`` (overridden by the ``fit_place_grid`` argument) are
+# not among them.
+_GRID_CONFIGURATION = (
+    "place_bin_size",
+    "track_graph",
+    "edge_order",
+    "edge_spacing",
+    "is_track_interior",
+    "position_range",
+    "fill_holes",
+    "dilate",
+    "bin_count_threshold",
+)
+
+# The fitted attributes earlier releases stored on the environment itself (as
+# dataclass fields), mapped to the ``PlaceGrid`` field that now holds each.
+_LEGACY_FITTED_ATTRIBUTES = {
+    "edges_": "edges",
+    "place_bin_edges_": "place_bin_edges",
+    "place_bin_centers_": "place_bin_centers",
+    "centers_shape_": "centers_shape",
+    "is_track_interior_": "is_track_interior",
+    "infer_track_interior_": "infer_track_interior",
+    "is_track_boundary_": "is_track_boundary",
+    "track_graphDD": "track_graphDD",
+    "distance_between_nodes_": "distance_between_nodes",
+    "track_graph_with_bin_centers_edges_": "track_graph_with_bin_centers_edges",
+    "original_nodes_df_": "original_nodes_df",
+    "place_bin_edges_nodes_df_": "place_bin_edges_nodes_df",
+    "place_bin_centers_nodes_df_": "place_bin_centers_nodes_df",
+    "nodes_df_": "nodes_df",
+}
+
+
+def _same_configuration(current: Any, fitted: Any) -> bool:
+    """Whether a configuration value is the one a grid was fitted with.
+
+    Arrays and graphs are compared by identity (an in-place edit of either is
+    not detected); other values by equality, so assigning an equal value
+    keeps the fit.
+    """
+    if current is fitted:
+        return True
+    if isinstance(current, (np.ndarray, nx.Graph)) or isinstance(
+        fitted, (np.ndarray, nx.Graph)
+    ):
+        return False
+    try:
+        return bool(current == fitted)
+    except (TypeError, ValueError):
+        return False
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class PlaceGrid:
+    """The fitted geometry of an :class:`Environment`.
+
+    :meth:`Environment.fit_place_grid` builds one completely and assigns it in
+    a single step; the environment's fitted attributes (``place_bin_centers_``
+    and so on) read it. The fields cannot be reassigned. The arrays are shared
+    with the environment's attributes, so treat them as read-only.
+
+    Attributes
+    ----------
+    edges : tuple of np.ndarray
+        Bin edges of each dimension.
+    place_bin_edges : np.ndarray, shape (n_bins + 1, n_dims) or (n_total_bins + n_edges, n_dims)
+        Edges of the place bins (linearized or N-D).
+    place_bin_centers : np.ndarray, shape (n_bins, n_dims)
+        Center coordinates of each place bin.
+    centers_shape : tuple[int, ...]
+        Number of bins in each dimension.
+    is_track_interior : np.ndarray of bool, shape ``centers_shape``
+        Which bins are part of the track interior.
+    distance_between_nodes : dict, np.ndarray or LazyGraphDistances
+        Shortest-path distances between the nodes of the track graph: a
+        dict of dicts on a track graph, otherwise an
+        ``(n_bins, n_bins)`` array or a deferred view of one.
+    configuration : dict[str, Any]
+        The configuration fields the grid depends on, as they were when it
+        was fitted; the environment compares its fields with them.
+    infer_track_interior : bool or None
+        The ``infer_track_interior`` argument of the fit. None on a track
+        graph.
+    is_track_boundary : np.ndarray of bool or None
+        Boundary bins of an N-D grid with more than one dimension.
+    track_graphDD : networkx.Graph or None
+        Graph of the bin centers of an N-D grid.
+    track_graph_with_bin_centers_edges : networkx.Graph or None
+        The track graph with bin centers and edges as nodes (track graph only).
+    original_nodes_df, place_bin_edges_nodes_df, place_bin_centers_nodes_df, nodes_df : pd.DataFrame or None
+        The track graph's original, bin-edge, bin-center and all nodes
+        (track graph only).
+    """
+
+    edges: tuple[np.ndarray, ...]
+    place_bin_edges: np.ndarray
+    place_bin_centers: np.ndarray
+    centers_shape: tuple[int, ...]
+    is_track_interior: np.ndarray
+    distance_between_nodes: (
+        dict[int, dict[int, float]] | np.ndarray | LazyGraphDistances
+    )
+    configuration: dict[str, Any]
+    infer_track_interior: bool | None = None
+    is_track_boundary: np.ndarray | None = None
+    track_graphDD: nx.Graph | None = None
+    track_graph_with_bin_centers_edges: nx.Graph | None = None
+    original_nodes_df: pd.DataFrame | None = None
+    place_bin_edges_nodes_df: pd.DataFrame | None = None
+    place_bin_centers_nodes_df: pd.DataFrame | None = None
+    nodes_df: pd.DataFrame | None = None
+
+
+def _legacy_place_grid(
+    environment: "Environment", fitted: dict[str, Any]
+) -> PlaceGrid | None:
+    """The grid of an environment pickled when fitted attributes were fields.
+
+    Parameters
+    ----------
+    environment : Environment
+        The unpickled environment, with its configuration restored.
+    fitted : dict[str, Any]
+        Its stored fitted attributes, keyed by ``PlaceGrid`` field name.
+
+    Returns
+    -------
+    PlaceGrid or None
+        None if the environment was not fitted.
+    """
+    if fitted.get("place_bin_centers") is None:
+        return None
+    centers_shape = tuple(fitted["centers_shape"])
+    is_track_interior = fitted.get("is_track_interior")
+    if is_track_interior is None:
+        # Earlier releases treated a missing mask as all bins interior.
+        is_track_interior = np.ones(centers_shape, dtype=bool)
+    return PlaceGrid(
+        **{
+            **fitted,
+            "edges": tuple(fitted["edges"]),
+            "centers_shape": centers_shape,
+            "is_track_interior": is_track_interior,
+            "configuration": environment._grid_configuration(),
+        }
+    )
 
 
 @dataclass(eq=False, kw_only=True)
@@ -199,6 +341,12 @@ class Environment:
 
     Attributes
     ----------
+    place_grid_ : PlaceGrid
+        The fitted geometry; the attributes below read it. Every fitted
+        attribute raises ``NotFittedError`` before :meth:`fit_place_grid`, and
+        after a configuration field the grid depends on (all but
+        ``environment_name`` and ``infer_track_interior``) is given another
+        value, until :meth:`fit_place_grid` runs again.
     edges_ : tuple[np.ndarray, ...]
         Bin edges for each dimension.
     place_bin_edges_ : np.ndarray, shape (n_bins + 1, n_dims) or (n_total_bins + n_edges, n_dims)
@@ -238,12 +386,12 @@ class Environment:
 
     Notes
     -----
-    All arguments are keyword-only. The fitted attributes are set by
-    :meth:`fit_place_grid`; the constructor accepts them only as None (as in
-    parameter dictionaries saved by earlier releases) and raises
-    ``ValidationError`` otherwise. :meth:`get_params` returns the configuration
-    alone, so ``Environment(**environment.get_params())`` rebuilds an unfitted
-    environment with the same configuration.
+    All arguments are keyword-only, and are the configuration only: the
+    fitted attributes are set by :meth:`fit_place_grid`. :meth:`get_params`
+    returns the configuration, so ``Environment(**environment.get_params())``
+    rebuilds an unfitted environment with the same configuration. Environments
+    pickled by earlier releases, which stored the fitted attributes
+    themselves, unpickle into the same form.
     """
 
     environment_name: str = ""
@@ -258,35 +406,10 @@ class Environment:
     dilate: bool = False
     bin_count_threshold: int = 0
 
-    # Attributes set by fit_place_grid. They are keyword arguments only so that
-    # parameter dictionaries saved by earlier releases as ``vars(environment)``
-    # of an unfitted environment, which hold them as None, still construct;
-    # __post_init__ rejects any other value. ``get_params`` leaves them out.
-    edges_: Sequence[np.ndarray] | None = field(default=None, metadata=_FITTED)
-    place_bin_edges_: np.ndarray | None = field(default=None, metadata=_FITTED)
-    place_bin_centers_: np.ndarray | None = field(default=None, metadata=_FITTED)
-    centers_shape_: tuple[int, ...] | None = field(default=None, metadata=_FITTED)
-    is_track_interior_: np.ndarray | None = field(default=None, metadata=_FITTED)
-    infer_track_interior_: bool | None = field(default=None, metadata=_FITTED)
-    is_track_boundary_: np.ndarray | None = field(default=None, metadata=_FITTED)
-    track_graphDD: nx.Graph | None = field(  # For N-D case
-        default=None, metadata=_FITTED
+    # The fitted geometry, set whole by fit_place_grid; see ``place_grid_``.
+    _place_grid: PlaceGrid | None = field(
+        default=None, init=False, repr=False, compare=False
     )
-    distance_between_nodes_: (
-        dict[int, dict[int, float]] | np.ndarray | LazyGraphDistances | None
-    ) = field(default=None, metadata=_FITTED)
-    track_graph_with_bin_centers_edges_: nx.Graph | None = field(  # For 1D case
-        default=None, metadata=_FITTED
-    )
-    original_nodes_df_: pd.DataFrame | None = field(default=None, metadata=_FITTED)
-    place_bin_edges_nodes_df_: pd.DataFrame | None = field(
-        default=None, metadata=_FITTED
-    )
-    place_bin_centers_nodes_df_: pd.DataFrame | None = field(
-        default=None, metadata=_FITTED
-    )
-    nodes_df_: pd.DataFrame | None = field(default=None, metadata=_FITTED)
-    _is_fitted: bool = field(default=False, metadata=_FITTED)
     # Derived-data cache; see ``get_cached``.
     _cache: dict[str, tuple[Any, bool]] = field(
         default_factory=dict, init=False, repr=False, compare=False
@@ -295,7 +418,7 @@ class Environment:
     # ``Environment`` uses identity-based equality and hashing: the dataclass is
     # declared ``eq=False`` (above), so both ``__eq__`` and ``__hash__`` stay
     # inherited from ``object`` and no explicit ``__hash__`` is set here.
-    # Value-based equality is not viable — the post-fit numpy / networkx
+    # Value-based equality is not viable — the fitted numpy / networkx
     # attributes are not value-comparable (a dataclass ``__eq__`` would raise
     # ``ValueError`` on two fitted environments' array fields) and have no
     # meaningful value-hash. Identity semantics keep ``__eq__`` / ``__hash__``
@@ -309,26 +432,6 @@ class Environment:
 
     def __post_init__(self) -> None:
         """Validate Environment parameters after initialization."""
-        passed_fitted = [
-            item.name
-            for item in fields(self)
-            if item.metadata.get("fitted")
-            and not _is_unfitted_value(getattr(self, item.name), item.default)
-        ]
-        if passed_fitted:
-            msg = "Environment does not accept fitted attributes as arguments"
-            raise ValidationError(
-                msg,
-                expected="None for every fitted attribute (fit_place_grid sets them)",
-                got=f"values for {passed_fitted}",
-                hint=(
-                    "Construct from configuration only, for example "
-                    "Environment(**environment.get_params()), then call "
-                    "fit_place_grid. To keep a fitted environment, copy it with "
-                    "copy.deepcopy or pickle it."
-                ),
-            )
-
         # Validate place_bin_size
         if isinstance(self.place_bin_size, tuple):
             for i, size in enumerate(self.place_bin_size):
@@ -389,9 +492,7 @@ class Environment:
             Constructor keyword arguments, keyed by field name.
         """
         return {
-            item.name: getattr(self, item.name)
-            for item in fields(self)
-            if item.init and not item.metadata.get("fitted")
+            item.name: getattr(self, item.name) for item in fields(self) if item.init
         }
 
     def __getstate__(self) -> dict[str, Any]:
@@ -408,9 +509,147 @@ class Environment:
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore a pickled environment, including pickles made without a cache."""
+        """Restore a pickled environment.
+
+        Pickles made without a cache get an empty one. Pickles made when the
+        fitted attributes (``place_bin_centers_``, ...) were stored on the
+        environment get a ``PlaceGrid`` holding them, fitted with the stored
+        configuration.
+        """
+        state = dict(state)
+        legacy = {
+            grid_name: state.pop(name)
+            for name, grid_name in _LEGACY_FITTED_ATTRIBUTES.items()
+            if name in state
+        }
+        state.pop("_is_fitted", None)
         self.__dict__.update(state)
         self.__dict__.setdefault("_cache", {})
+        if "_place_grid" not in state:
+            self._place_grid = _legacy_place_grid(self, legacy)
+
+    def _grid_configuration(self) -> dict[str, Any]:
+        """The configuration fields the fitted grid depends on, by name."""
+        return {name: getattr(self, name) for name in _GRID_CONFIGURATION}
+
+    @property
+    def place_grid_(self) -> PlaceGrid:
+        """The fitted geometry (see the class docstring).
+
+        Returns
+        -------
+        PlaceGrid
+
+        Raises
+        ------
+        NotFittedError
+            Before :meth:`fit_place_grid`, or after a configuration field the
+            grid depends on changed.
+        """
+        grid = self._place_grid
+        if grid is None:
+            msg = "Environment has not been fitted"
+            raise NotFittedError(
+                msg,
+                hint="Call environment.fit_place_grid(position) first.",
+            )
+        changed = [
+            name
+            for name, value in grid.configuration.items()
+            if not _same_configuration(getattr(self, name), value)
+        ]
+        if changed:
+            msg = "Environment configuration changed since fit_place_grid"
+            raise NotFittedError(
+                msg,
+                got=f"new values for {changed}",
+                hint=(
+                    "Call fit_place_grid again to fit the grid of the new "
+                    "configuration."
+                ),
+            )
+        return grid
+
+    @property
+    def _is_fitted(self) -> bool:
+        """Whether the environment has a grid fitted with its configuration."""
+        try:
+            _ = self.place_grid_
+        except NotFittedError:
+            return False
+        return True
+
+    @property
+    def edges_(self) -> tuple[np.ndarray, ...]:
+        """Bin edges of each dimension (``PlaceGrid.edges``)."""
+        return self.place_grid_.edges
+
+    @property
+    def place_bin_edges_(self) -> np.ndarray:
+        """Edges of the place bins (``PlaceGrid.place_bin_edges``)."""
+        return self.place_grid_.place_bin_edges
+
+    @property
+    def place_bin_centers_(self) -> np.ndarray:
+        """Center of each place bin, shape (n_bins, n_dims)."""
+        return self.place_grid_.place_bin_centers
+
+    @property
+    def centers_shape_(self) -> tuple[int, ...]:
+        """Number of bins in each dimension."""
+        return self.place_grid_.centers_shape
+
+    @property
+    def is_track_interior_(self) -> np.ndarray:
+        """Which bins are part of the track interior, shape ``centers_shape_``."""
+        return self.place_grid_.is_track_interior
+
+    @property
+    def infer_track_interior_(self) -> bool | None:
+        """The ``infer_track_interior`` argument of the fit; None on a track graph."""
+        return self.place_grid_.infer_track_interior
+
+    @property
+    def is_track_boundary_(self) -> np.ndarray | None:
+        """Boundary bins of an N-D grid with more than one dimension, else None."""
+        return self.place_grid_.is_track_boundary
+
+    @property
+    def track_graphDD(self) -> nx.Graph | None:
+        """Graph of the bin centers of an N-D grid; None on a track graph."""
+        return self.place_grid_.track_graphDD
+
+    @property
+    def distance_between_nodes_(
+        self,
+    ) -> dict[int, dict[int, float]] | np.ndarray | LazyGraphDistances:
+        """Shortest-path distances between track-graph nodes (see ``PlaceGrid``)."""
+        return self.place_grid_.distance_between_nodes
+
+    @property
+    def track_graph_with_bin_centers_edges_(self) -> nx.Graph | None:
+        """The track graph with bin centers and edges as nodes, or None."""
+        return self.place_grid_.track_graph_with_bin_centers_edges
+
+    @property
+    def original_nodes_df_(self) -> pd.DataFrame | None:
+        """The track graph's original nodes, or None without a track graph."""
+        return self.place_grid_.original_nodes_df
+
+    @property
+    def place_bin_edges_nodes_df_(self) -> pd.DataFrame | None:
+        """The track graph's bin-edge nodes, or None without a track graph."""
+        return self.place_grid_.place_bin_edges_nodes_df
+
+    @property
+    def place_bin_centers_nodes_df_(self) -> pd.DataFrame | None:
+        """The track graph's bin-center nodes, or None without a track graph."""
+        return self.place_grid_.place_bin_centers_nodes_df
+
+    @property
+    def nodes_df_(self) -> pd.DataFrame | None:
+        """All nodes of the augmented track graph, or None without a track graph."""
+        return self.place_grid_.nodes_df
 
     def _unfitted_copy(self) -> "Environment":
         """A shallow copy holding this environment's configuration only.
@@ -423,15 +662,31 @@ class Environment:
         -------
         Environment
             Shares the configuration objects (``track_graph``, ...) with this
-            environment; the fitted attributes are unset and the cache empty.
+            environment; it has no grid and an empty cache.
         """
         unfitted = object.__new__(type(self))
         unfitted.__dict__.update(self.__dict__)
-        for item in fields(self):
-            if item.metadata.get("fitted"):
-                setattr(unfitted, item.name, item.default)
+        unfitted._place_grid = None
         unfitted._cache = {}
         return unfitted
+
+    def _replace_place_grid(self, **changes: Any) -> "Environment":
+        """A shallow copy whose grid has some fields replaced.
+
+        Parameters
+        ----------
+        **changes : Any
+            ``PlaceGrid`` fields and their new values.
+
+        Returns
+        -------
+        Environment
+            Shares the configuration and the other grid fields with this
+            environment, and a copy of its persistent cache entries.
+        """
+        view = copy.copy(self)
+        view._place_grid = dataclasses.replace(self.place_grid_, **changes)
+        return view
 
     def get_cached(self, key: str) -> Any:
         """Return the derived data cached under ``key``, or None.
@@ -556,7 +811,7 @@ class Environment:
 
     @property
     def is_track_interior_flat_(self) -> np.ndarray:
-        """Flattened interior-bin mask, all bins interior when none is set.
+        """Flattened interior-bin mask.
 
         Returns
         -------
@@ -566,15 +821,10 @@ class Environment:
 
         Raises
         ------
-        ValueError
-            If neither ``is_track_interior_`` nor ``place_bin_centers_`` is set.
+        NotFittedError
+            If the environment is not fitted.
         """
-        if self.is_track_interior_ is not None:
-            return np.asarray(self.is_track_interior_, dtype=bool).ravel()
-        if self.place_bin_centers_ is None:
-            msg = "place_bin_centers_ is required when is_track_interior_ is None"
-            raise ValueError(msg)
-        return np.ones(len(self.place_bin_centers_), dtype=bool)
+        return np.asarray(self.is_track_interior_, dtype=bool).ravel()
 
     def _validate_track_graph(self) -> None:
         """Validate track_graph and its required parameters.
@@ -772,8 +1022,10 @@ class Environment:
         Returns
         -------
         self : Environment
-            The fitted environment, with the fitted attributes (``edges_``,
-            ``place_bin_centers_``, ...) populated.
+            The fitted environment, with a new ``place_grid_``. The grid is
+            built completely before it is assigned: if the fit raises, the
+            environment keeps its previous grid (or stays unfitted) and its
+            cache. A new grid clears the cache.
         """
         # Validate position if provided
         if position is not None:
@@ -813,9 +1065,6 @@ class Environment:
             if position.ndim == 1:
                 position = position[:, np.newaxis]
 
-        # Cached derived data describes the grid that is about to be rebuilt.
-        self.clear_cache()
-
         if self.track_graph is None:
             if position is None:
                 msg = "position is required to fit a grid without a track_graph"
@@ -825,114 +1074,172 @@ class Environment:
                     got="position=None",
                     hint="Pass position, or give the Environment a track_graph",
                 )
-            (
-                self.edges_,
-                self.place_bin_edges_,
-                self.place_bin_centers_,
-                self.centers_shape_,
-            ) = get_grid(
+            grid = self._fit_cartesian_grid(
                 position,
-                self.place_bin_size,
-                self.position_range,
+                infer_track_interior,
+                compute_all_pairs_distances=compute_all_pairs_distances,
+                max_dense_distance_bytes=max_dense_distance_bytes,
             )
-
-            self.infer_track_interior_ = infer_track_interior
-
-            if self.is_track_interior is not None:
-                val.ensure_ndarray(self.is_track_interior, "is_track_interior")
-                if self.is_track_interior.dtype != np.bool_:
-                    msg = "is_track_interior must have boolean dtype"
-                    raise ValidationError(
-                        msg,
-                        expected="boolean array",
-                        got=f"dtype {self.is_track_interior.dtype}",
-                        hint="Provide a boolean mask of the Cartesian grid bins",
-                    )
-                if self.is_track_interior.shape != self.centers_shape_:
-                    msg = "is_track_interior shape must match the fitted grid"
-                    raise ValidationError(
-                        msg,
-                        expected=f"shape {self.centers_shape_}",
-                        got=f"shape {self.is_track_interior.shape}",
-                        hint="Include the grid's boundary bins in the mask",
-                    )
-                self.is_track_interior_ = self.is_track_interior.copy()
-            elif self.infer_track_interior_:
-                self.is_track_interior_ = get_track_interior(
-                    position,
-                    self.edges_,
-                    self.fill_holes,
-                    self.dilate,
-                    self.bin_count_threshold,
-                )
-            else:
-                self.is_track_interior_ = np.ones(self.centers_shape_, dtype=bool)
-
-            if (
-                self.edges_ is not None  # type: ignore[redundant-expr]  # kept as a guard; set by get_grid above
-                and len(self.edges_) > 1
-                and self.is_track_interior_ is not None
-            ):
-                self.is_track_boundary_ = get_track_boundary(
-                    self.is_track_interior_,
-                    n_position_dims=len(self.edges_),
-                    connectivity=1,
-                )
-            else:
-                self.is_track_boundary_ = None
-
-            self.track_graphDD = make_nD_track_graph_from_environment(self)
-            if compute_all_pairs_distances:
-                # Eager dense matrix, unbounded: max_dense_distance_bytes
-                # applies only to the lazy path.
-                n_nodes = len(self.track_graphDD)
-                self.distance_between_nodes_ = LazyGraphDistances.from_graph(
-                    self.track_graphDD
-                ).to_dense(max_bytes=8 * n_nodes**2)
-            else:
-                self.distance_between_nodes_ = LazyGraphDistances.from_graph(
-                    self.track_graphDD, max_dense_bytes=max_dense_distance_bytes
-                )
-
         else:
-            # Note: track_graph validation is done in __post_init__
-            # Track-graph path requires scalar place_bin_size.
-            if isinstance(self.place_bin_size, tuple):
-                msg = "place_bin_size must be a scalar when track_graph is provided"
+            grid = self._fit_track_graph_grid()
+
+        # Assigned whole, after every check: a fit that raises leaves the
+        # previous grid and the cache derived from it.
+        self._place_grid = grid
+        self.clear_cache()
+        return self
+
+    def _fit_cartesian_grid(
+        self,
+        position: np.ndarray,
+        infer_track_interior: bool,
+        *,
+        compute_all_pairs_distances: bool,
+        max_dense_distance_bytes: int,
+    ) -> PlaceGrid:
+        """The grid of an environment without a track graph.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time, n_dims)
+        infer_track_interior : bool
+        compute_all_pairs_distances : bool
+        max_dense_distance_bytes : int
+            See :meth:`fit_place_grid`.
+
+        Returns
+        -------
+        PlaceGrid
+        """
+        edges, place_bin_edges, place_bin_centers, centers_shape = get_grid(
+            position,
+            self.place_bin_size,
+            self.position_range,
+        )
+
+        if self.is_track_interior is not None:
+            val.ensure_ndarray(self.is_track_interior, "is_track_interior")
+            if self.is_track_interior.dtype != np.bool_:
+                msg = "is_track_interior must have boolean dtype"
                 raise ValidationError(
                     msg,
-                    expected="float",
-                    got=f"tuple {self.place_bin_size}",
-                    hint=(
-                        "Linearized track-graph environments use a single bin size "
-                        "along the manifold."
-                    ),
-                    example="place_bin_size=2.0",
+                    expected="boolean array",
+                    got=f"dtype {self.is_track_interior.dtype}",
+                    hint="Provide a boolean mask of the Cartesian grid bins",
                 )
-            assert self.edge_order is not None  # required by _validate_track_graph
-            assert self.edge_spacing is not None  # required by _validate_track_graph
-            (
-                self.place_bin_centers_,
-                self.place_bin_edges_,
-                self.is_track_interior_,
-                self.distance_between_nodes_,
-                self.centers_shape_,
-                self.edges_,
-                self.track_graph_with_bin_centers_edges_,
-                self.original_nodes_df_,
-                self.place_bin_edges_nodes_df_,
-                self.place_bin_centers_nodes_df_,
-                self.nodes_df_,
-            ) = get_track_grid(
-                self.track_graph,
-                self.edge_order,
-                self.edge_spacing,
-                self.place_bin_size,
+            if self.is_track_interior.shape != centers_shape:
+                msg = "is_track_interior shape must match the fitted grid"
+                raise ValidationError(
+                    msg,
+                    expected=f"shape {centers_shape}",
+                    got=f"shape {self.is_track_interior.shape}",
+                    hint="Include the grid's boundary bins in the mask",
+                )
+            is_track_interior = self.is_track_interior.copy()
+        elif infer_track_interior:
+            is_track_interior = get_track_interior(
+                position,
+                edges,
+                self.fill_holes,
+                self.dilate,
+                self.bin_count_threshold,
             )
-            self.is_track_boundary_ = None
+        else:
+            is_track_interior = np.ones(centers_shape, dtype=bool)
 
-        self._is_fitted = True
-        return self
+        is_track_boundary = (
+            get_track_boundary(
+                is_track_interior,
+                n_position_dims=len(edges),
+                connectivity=1,
+            )
+            if len(edges) > 1
+            else None
+        )
+
+        track_graph_dd = _make_nD_track_graph(
+            place_bin_centers, is_track_interior, centers_shape
+        )
+        distance_between_nodes: np.ndarray | LazyGraphDistances
+        if compute_all_pairs_distances:
+            # Eager dense matrix, unbounded: max_dense_distance_bytes
+            # applies only to the lazy path.
+            n_nodes = len(track_graph_dd)
+            distance_between_nodes = LazyGraphDistances.from_graph(
+                track_graph_dd
+            ).to_dense(max_bytes=8 * n_nodes**2)
+        else:
+            distance_between_nodes = LazyGraphDistances.from_graph(
+                track_graph_dd, max_dense_bytes=max_dense_distance_bytes
+            )
+        return PlaceGrid(
+            edges=tuple(edges),
+            place_bin_edges=place_bin_edges,
+            place_bin_centers=place_bin_centers,
+            centers_shape=centers_shape,
+            is_track_interior=is_track_interior,
+            distance_between_nodes=distance_between_nodes,
+            configuration=self._grid_configuration(),
+            infer_track_interior=infer_track_interior,
+            is_track_boundary=is_track_boundary,
+            track_graphDD=track_graph_dd,
+        )
+
+    def _fit_track_graph_grid(self) -> PlaceGrid:
+        """The grid of an environment with a track graph.
+
+        Returns
+        -------
+        PlaceGrid
+        """
+        # Note: track_graph validation is done in __post_init__
+        # Track-graph path requires scalar place_bin_size.
+        if isinstance(self.place_bin_size, tuple):
+            msg = "place_bin_size must be a scalar when track_graph is provided"
+            raise ValidationError(
+                msg,
+                expected="float",
+                got=f"tuple {self.place_bin_size}",
+                hint=(
+                    "Linearized track-graph environments use a single bin size "
+                    "along the manifold."
+                ),
+                example="place_bin_size=2.0",
+            )
+        assert self.edge_order is not None  # required by _validate_track_graph
+        assert self.edge_spacing is not None  # required by _validate_track_graph
+        (
+            place_bin_centers,
+            place_bin_edges,
+            is_track_interior,
+            distance_between_nodes,
+            centers_shape,
+            edges,
+            track_graph_with_bin_centers_edges,
+            original_nodes_df,
+            place_bin_edges_nodes_df,
+            place_bin_centers_nodes_df,
+            nodes_df,
+        ) = get_track_grid(
+            self.track_graph,
+            self.edge_order,
+            self.edge_spacing,
+            self.place_bin_size,
+        )
+        return PlaceGrid(
+            edges=tuple(edges),
+            place_bin_edges=place_bin_edges,
+            place_bin_centers=place_bin_centers,
+            centers_shape=centers_shape,
+            is_track_interior=is_track_interior,
+            distance_between_nodes=distance_between_nodes,
+            configuration=self._grid_configuration(),
+            track_graph_with_bin_centers_edges=track_graph_with_bin_centers_edges,
+            original_nodes_df=original_nodes_df,
+            place_bin_edges_nodes_df=place_bin_edges_nodes_df,
+            place_bin_centers_nodes_df=place_bin_centers_nodes_df,
+            nodes_df=nodes_df,
+        )
 
     def plot_grid(self, ax: mpl.axes.Axes | None = None) -> mpl.axes.Axes:
         """Plot the fitted spatial grid of the environment.
@@ -955,21 +1262,20 @@ class Environment:
                 self.track_graph, self.edge_order, self.edge_spacing, ax=ax
             )
             # Before fit_place_grid there are no bin edges to draw.
-            if self.edges_ is not None:
+            if self._is_fitted:
                 for edge in self.edges_[0]:
                     ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
             ax.set_ylim((0, 0.1))
-        elif self.edges_ is not None and len(self.edges_) == 1:
+        elif len(self.edges_) == 1:
             if ax is None:
                 _, ax = plt.subplots(figsize=(15, 2))
             edges = self.edges_[0]
-            if self.is_track_interior_ is not None:
-                ax.pcolormesh(
-                    edges,
-                    [0.0, 1.0],
-                    self.is_track_interior_[np.newaxis, :],
-                    cmap="bone_r",
-                )
+            ax.pcolormesh(
+                edges,
+                [0.0, 1.0],
+                self.is_track_interior_[np.newaxis, :],
+                cmap="bone_r",
+            )
             ax.vlines(edges, 0.0, 1.0, color="black", linewidth=0.5)
             ax.set_xlim(edges[0], edges[-1])
             ax.set_ylim((0, 1))
@@ -978,15 +1284,14 @@ class Environment:
         else:
             if ax is None:
                 _, ax = plt.subplots(figsize=(6, 7))
-            if self.is_track_interior_ is not None:
-                ax.pcolormesh(
-                    self.edges_[0],  # type: ignore[index]  # edges_ is set by fit_place_grid
-                    self.edges_[1],  # type: ignore[index]  # edges_ is set by fit_place_grid
-                    self.is_track_interior_.T,
-                    cmap="bone_r",
-                )
-            ax.set_xticks(self.edges_[0], minor=True)  # type: ignore[index]  # edges_ is set by fit_place_grid
-            ax.set_yticks(self.edges_[1], minor=True)  # type: ignore[index]  # edges_ is set by fit_place_grid
+            ax.pcolormesh(
+                self.edges_[0],
+                self.edges_[1],
+                self.is_track_interior_.T,
+                cmap="bone_r",
+            )
+            ax.set_xticks(self.edges_[0], minor=True)
+            ax.set_yticks(self.edges_[1], minor=True)
             ax.grid(visible=True, which="minor")
             ax.grid(visible=False, which="major")
 
@@ -1023,11 +1328,10 @@ class Environment:
     def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
         """Find the indices of the bins to which each value in input array belongs.
 
-        Uses the fitted grid edges (`self.edges_`). When
-        ``is_track_interior_`` is available, gap-bin assignments (positions
-        that would otherwise land in a structural non-interior bin, e.g. on
-        an arm-boundary edge of a linearized track) are snapped to the
-        nearest interior bin by raw position-coordinate distance.
+        Uses the fitted grid edges (`self.edges_`). Gap-bin assignments
+        (positions that would otherwise land in a structural non-interior
+        bin, e.g. on an arm-boundary edge of a linearized track) are snapped
+        to the nearest interior bin by raw position-coordinate distance.
 
         Parameters
         ----------
@@ -1037,9 +1341,13 @@ class Environment:
         Returns
         -------
         bin_inds : np.ndarray, shape (n_time,)
-            Flat index of the bin for each data point in `sample`. When
-            ``is_track_interior_`` is set, the returned index is always an
-            interior bin.
+            Flat index of the bin for each data point in `sample`, always an
+            interior bin unless the grid has none.
+
+        Raises
+        ------
+        NotFittedError
+            Without a fit of the current configuration.
 
         Notes
         -----
@@ -1051,21 +1359,11 @@ class Environment:
         Detecting out-of-bounds positions in that case would require a
         distance check on every call and is left as a follow-up.
         """
-        if not self._is_fitted:
-            msg = "Environment has not been fitted yet"
-            raise ConfigurationError(
-                msg,
-                hint="Call env.fit_place_grid(position=position) before this method",
-            )
-        if self.edges_ is None:
-            msg = "Environment edges not defined"
-            raise ConfigurationError(
-                msg,
-                hint="Edges are created during fit_place_grid(). Ensure the environment was fitted properly",
-            )
+        # Raises NotFittedError (a ConfigurationError) without a current fit.
+        grid = self.place_grid_
 
         # remove outer boundary edge
-        edges = [e[1:-1] for e in self.edges_]
+        edges = [e[1:-1] for e in grid.edges]
 
         try:
             # Sample is an ND-array.
@@ -1101,57 +1399,53 @@ class Environment:
         # position belongs in them: positions at an arm-boundary edge land
         # there via searchsorted(side="right") tie-breaking, and positions
         # truly off-track should snap to the closest real bin.
-        if self.is_track_interior_ is not None and self.place_bin_centers_ is not None:
-            is_interior = self.is_track_interior_.ravel()
-            needs_snap = ~is_interior[bin_inds]
-            if needs_snap.any():
-                interior_bin_indices = np.where(is_interior)[0]
-                # Degenerate environment with no interior bins: skip snap
-                # and return raw binning rather than crashing on argmin over
-                # an empty axis.
-                if len(interior_bin_indices) > 0:
-                    interior_centers = self.place_bin_centers_[interior_bin_indices]
-                    pos_to_snap = sample[needs_snap]
-                    # Broadcasted Euclidean distance:
-                    # (n_snap, n_interior, n_dim) -> (n_snap, n_interior)
-                    dists = np.linalg.norm(
-                        pos_to_snap[:, np.newaxis, :]
-                        - interior_centers[np.newaxis, :, :],
-                        axis=-1,
-                    )
-                    snap_distances = np.min(dists, axis=1)
-                    bin_inds[needs_snap] = interior_bin_indices[
-                        np.argmin(dists, axis=1)
-                    ]
+        is_interior = grid.is_track_interior.ravel()
+        needs_snap = ~is_interior[bin_inds]
+        if needs_snap.any():
+            interior_bin_indices = np.where(is_interior)[0]
+            # Degenerate environment with no interior bins: skip snap
+            # and return raw binning rather than crashing on argmin over
+            # an empty axis.
+            if len(interior_bin_indices) > 0:
+                interior_centers = grid.place_bin_centers[interior_bin_indices]
+                pos_to_snap = sample[needs_snap]
+                # Broadcasted Euclidean distance:
+                # (n_snap, n_interior, n_dim) -> (n_snap, n_interior)
+                dists = np.linalg.norm(
+                    pos_to_snap[:, np.newaxis, :] - interior_centers[np.newaxis, :, :],
+                    axis=-1,
+                )
+                snap_distances = np.min(dists, axis=1)
+                bin_inds[needs_snap] = interior_bin_indices[np.argmin(dists, axis=1)]
 
-                    # A small snap is expected (boundary tie-breaking, gap
-                    # bins). The threshold already allows snaps up to two
-                    # bin-widths plus the largest inter-arm gap, so exceeding
-                    # it usually means a tracking glitch or a position outside
-                    # the environment bounds — surface it. Non-finite snap
-                    # distances (a NaN/inf position) are handled explicitly:
-                    # np.max over them returns NaN, which compares False against
-                    # the threshold and would silently suppress the warning even
-                    # when a finite position in the same batch snapped far.
-                    finite = np.isfinite(snap_distances)
-                    max_snap = (
-                        float(np.max(snap_distances[finite])) if finite.any() else 0.0
+                # A small snap is expected (boundary tie-breaking, gap
+                # bins). The threshold already allows snaps up to two
+                # bin-widths plus the largest inter-arm gap, so exceeding
+                # it usually means a tracking glitch or a position outside
+                # the environment bounds — surface it. Non-finite snap
+                # distances (a NaN/inf position) are handled explicitly:
+                # np.max over them returns NaN, which compares False against
+                # the threshold and would silently suppress the warning even
+                # when a finite position in the same batch snapped far.
+                finite = np.isfinite(snap_distances)
+                max_snap = (
+                    float(np.max(snap_distances[finite])) if finite.any() else 0.0
+                )
+                n_nonfinite = int((~finite).sum())
+                threshold = self._snap_warn_threshold()
+                if max_snap > threshold or n_nonfinite > 0:
+                    warnings.warn(
+                        f"{int(needs_snap.sum())} position(s) snapped to the "
+                        f"nearest interior bin; max finite snap distance "
+                        f"{max_snap:.3f} vs threshold {threshold:.3f} (2x "
+                        f"place_bin_size plus the largest inter-arm gap on a "
+                        f"linearized track), {n_nonfinite} non-finite. A snap "
+                        f"beyond the threshold or a non-finite position "
+                        f"usually indicates a tracking glitch or an "
+                        f"out-of-bounds position.",
+                        UserWarning,
+                        stacklevel=user_stacklevel(),
                     )
-                    n_nonfinite = int((~finite).sum())
-                    threshold = self._snap_warn_threshold()
-                    if max_snap > threshold or n_nonfinite > 0:
-                        warnings.warn(
-                            f"{int(needs_snap.sum())} position(s) snapped to the "
-                            f"nearest interior bin; max finite snap distance "
-                            f"{max_snap:.3f} vs threshold {threshold:.3f} (2x "
-                            f"place_bin_size plus the largest inter-arm gap on a "
-                            f"linearized track), {n_nonfinite} non-finite. A snap "
-                            f"beyond the threshold or a non-finite position "
-                            f"usually indicates a tracking glitch or an "
-                            f"out-of-bounds position.",
-                            UserWarning,
-                            stacklevel=user_stacklevel(),
-                        )
 
         return bin_inds
 
@@ -1209,9 +1503,7 @@ class Environment:
         if not self._is_fitted:
             msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
             raise RuntimeError(msg)
-        if self.distance_between_nodes_ is None:
-            msg = "Distance between nodes has not been computed or stored."
-            raise ValueError(msg)
+        distance_between_nodes = self.distance_between_nodes_
 
         position1 = np.atleast_2d(position1)
         position2 = np.atleast_2d(position2)
@@ -1248,14 +1540,12 @@ class Environment:
                 if n1 == -1 or n2 == -1:
                     continue
                 try:
-                    distances[i] = self.distance_between_nodes_[n1][n2]
+                    distances[i] = distance_between_nodes[n1][n2]
                 except KeyError:
                     # No path between the nodes on the track graph.
                     continue
         else:
-            distances = cast("np.ndarray", self.distance_between_nodes_)[
-                bin_ind1, bin_ind2
-            ]
+            distances = cast("np.ndarray", distance_between_nodes)[bin_ind1, bin_ind2]
 
         return distances
 
@@ -1263,13 +1553,12 @@ class Environment:
         """Compute distances from each position to every interior bin center.
 
         Returns an ``(n_positions, n_interior_bins)`` matrix of distances
-        along the track manifold when a track graph is available
-        (uses a lazily-built dense bin-distance matrix, cached on the
-        environment, for efficient ``np.ix_`` lookup), or
-        Euclidean distances otherwise. Positions that would otherwise
-        land in gap bins are snapped to the nearest interior bin by
-        :meth:`get_bin_ind`, so no NaN rows are produced for envs with
-        ``is_track_interior_`` set.
+        along the track manifold: on a track graph from a lazily-built dense
+        bin-distance matrix, cached on the environment, for efficient
+        ``np.ix_`` lookup; otherwise from the grid's graph distances
+        (``distance_between_nodes_``). Positions that would otherwise land in
+        gap bins are snapped to the nearest interior bin by
+        :meth:`get_bin_ind`, so no NaN rows are produced.
 
         This is the all-pairs analogue of :meth:`get_manifold_distances`:
         rather than pairwise distances between matched position arrays,
@@ -1301,9 +1590,6 @@ class Environment:
         if not self._is_fitted:
             msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
             raise RuntimeError(msg)
-        if self.is_track_interior_ is None or self.place_bin_centers_ is None:
-            msg = "Environment must have is_track_interior_ and place_bin_centers_."
-            raise ValueError(msg)
 
         is_interior = self.is_track_interior_.ravel()
         interior_bin_indices = np.where(is_interior)[0]
@@ -1351,34 +1637,11 @@ class Environment:
                     position_bin_inds, interior_bin_indices
                 ),
             )
-        if self.distance_between_nodes_ is not None and not isinstance(
-            self.distance_between_nodes_, dict
-        ):
-            # N-D: distance_between_nodes_ is (n_nodes, n_nodes) array.
-            position_bin_inds = self.get_bin_ind(np.asarray(positions))
-            return cast(
-                "np.ndarray",
-                self.distance_between_nodes_[
-                    np.ix_(position_bin_inds, interior_bin_indices)
-                ],
-            )
-
-        # Fallback: Euclidean distances.
-        positions_arr = np.asarray(positions, dtype=float)
-        bin_centers = self.place_bin_centers_[interior_bin_indices]
-        if positions_arr.ndim == 1:
-            positions_arr = positions_arr[:, np.newaxis]
-        if bin_centers.ndim == 1:
-            bin_centers = bin_centers[:, np.newaxis]
+        # N-D: distance_between_nodes_ is an (n_nodes, n_nodes) array.
+        distances = cast("np.ndarray", self.distance_between_nodes_)
+        position_bin_inds = self.get_bin_ind(np.asarray(positions))
         return cast(
-            "np.ndarray",
-            np.sqrt(
-                np.sum(
-                    (positions_arr[:, np.newaxis, :] - bin_centers[np.newaxis, :, :])
-                    ** 2,
-                    axis=-1,
-                )
-            ),
+            "np.ndarray", distances[np.ix_(position_bin_inds, interior_bin_indices)]
         )
 
     def get_direction(
@@ -1425,7 +1688,7 @@ class Environment:
         if not self._is_fitted:
             msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
             raise RuntimeError(msg)
-        if self.track_graphDD is None or self.distance_between_nodes_ is None:
+        if self.track_graphDD is None:
             msg = "Direction finding requires a fitted N-D environment with a track graph ('track_graphDD') and precomputed distances."
             raise RuntimeError(msg)
 
@@ -2103,19 +2366,39 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         Graph with node attributes ``pos`` and ``is_track_interior`` and edge
         attributes ``distance`` and ``edge_id``.
     """
+    return _make_nD_track_graph(
+        environment.place_bin_centers_,
+        environment.is_track_interior_,
+        environment.centers_shape_,
+    )
+
+
+def _make_nD_track_graph(
+    place_bin_centers: np.ndarray,
+    is_track_interior: np.ndarray,
+    centers_shape: tuple[int, ...],
+) -> nx.Graph:
+    """Graph of an N-D grid's bin centers; see ``make_nD_track_graph_from_environment``.
+
+    Parameters
+    ----------
+    place_bin_centers : np.ndarray, shape (n_bins, n_dims)
+    is_track_interior : np.ndarray of bool, shape ``centers_shape``
+    centers_shape : tuple[int, ...]
+
+    Returns
+    -------
+    track_graph : networkx.Graph
+    """
     track_graph = nx.Graph()
     axis_offsets = [-1, 0, 1]
 
     # Enumerate over nodes
-    if environment.place_bin_centers_ is None:
-        msg = "place_bin_centers_ is required for track graph construction"
-        raise ValueError(msg)
-
-    interior_data = environment.is_track_interior_flat_
+    interior_data = np.asarray(is_track_interior, dtype=bool).ravel()
 
     for node_id, (node_position, is_interior) in enumerate(
         zip(
-            environment.place_bin_centers_,
+            place_bin_centers,
             interior_data,
             strict=False,
         )
@@ -2124,17 +2407,10 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
             node_id, pos=tuple(node_position), is_track_interior=is_interior
         )
 
-    if environment.is_track_interior_ is None:
-        msg = "is_track_interior_ is required for edge construction"
-        raise ValueError(msg)
-    if environment.centers_shape_ is None:
-        msg = "centers_shape_ is required for edge construction"
-        raise ValueError(msg)
-
     edges: Any = []  # becomes an (n_edges, 2) array after concatenation
     ind: Any
     # Enumerate over nodes in the track interior
-    for ind in zip(*np.nonzero(environment.is_track_interior_), strict=False):
+    for ind in zip(*np.nonzero(is_track_interior), strict=False):
         ind = np.array(ind)
         # Full 3**n_dims neighborhood block of grid indices (includes diagonals)
         adj_inds = np.meshgrid(*[axis_offsets + i for i in ind], indexing="ij")
@@ -2143,12 +2419,12 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         # sits on the grid boundary in a subset of dimensions (they end up with
         # different lengths and fail to broadcast).
         in_bounds = np.ones(adj_inds[0].shape, dtype=bool)
-        for inds, dim_size in zip(adj_inds, environment.centers_shape_, strict=False):
+        for inds, dim_size in zip(adj_inds, centers_shape, strict=False):
             in_bounds &= (inds >= 0) & (inds < dim_size)
         adj_coords = [inds[in_bounds] for inds in adj_inds]
 
         # Is the adjacent node on the track?
-        adj_on_track_inds = environment.is_track_interior_[tuple(adj_coords)]
+        adj_on_track_inds = is_track_interior[tuple(adj_coords)]
 
         # Remove the center node (offset (0, ..., 0) from ``ind``)
         is_center = np.all(
@@ -2158,12 +2434,12 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         adj_on_track_inds = adj_on_track_inds & ~is_center
 
         # Get the node ids of the center node
-        node_id = np.ravel_multi_index(ind, environment.centers_shape_)
+        node_id = np.ravel_multi_index(ind, centers_shape)
 
         # Get the node ids of the adjacent nodes on the track
         adj_node_ids = np.ravel_multi_index(
             [coord[adj_on_track_inds] for coord in adj_coords],
-            environment.centers_shape_,
+            centers_shape,
         )
 
         # Collect the edges for the graph

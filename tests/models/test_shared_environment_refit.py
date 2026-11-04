@@ -56,6 +56,6 @@ def test_detectors_sharing_an_environment_keep_their_own_grids():
     assert first.environments_[0] is not environment
     assert second.environments_[0] is not first.environments_[0]
     assert not environment._is_fitted
-    assert environment.place_bin_centers_ is None
+    assert not hasattr(environment, "place_bin_centers_")
     assert environment.get_cached("linear_position") is None
     assert environment.get_params() == Environment(place_bin_size=5).get_params()

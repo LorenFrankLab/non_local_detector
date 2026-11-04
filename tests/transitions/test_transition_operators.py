@@ -30,19 +30,21 @@ from non_local_detector.transition_operators import (
     UnsupportedTransitionError,
     build_transition_operator,
 )
-from tests.conftest import precision_mode
+from tests.conftest import precision_mode, set_place_grid
 
 
 def environment(shape=(5, 7), name="", holes=True):
-    env = Environment(environment_name=name)
     axes = [np.arange(n, dtype=float) for n in shape]
     mesh = np.meshgrid(*axes, indexing="ij")
-    env.place_bin_centers_ = np.stack([x.ravel() for x in mesh], axis=1)
-    env.centers_shape_ = shape
-    env.is_track_interior_ = np.ones(shape, dtype=bool)
+    is_track_interior = np.ones(shape, dtype=bool)
     if holes and np.prod(shape) > 6:
-        env.is_track_interior_.ravel()[[0, 3, -2]] = False
-    return env
+        is_track_interior.ravel()[[0, 3, -2]] = False
+    return set_place_grid(
+        Environment(environment_name=name),
+        place_bin_centers=np.stack([x.ravel() for x in mesh], axis=1),
+        centers_shape=shape,
+        is_track_interior=is_track_interior,
+    )
 
 
 @pytest.mark.unit
@@ -215,8 +217,10 @@ def test_slotted_custom_never_receives_a_temporary_dense_environment():
 
 @pytest.mark.unit
 def test_gaussian_forward_large_finite_input_with_disjoint_axis_mask():
-    env = environment((2, 2), holes=False)
-    env.is_track_interior_ = np.array([[False, True], [True, False]])
+    env = set_place_grid(
+        environment((2, 2), holes=False),
+        is_track_interior=np.array([[False, True], [True, False]]),
+    )
     transition = RandomWalk(movement_mean=15.0, movement_var=1.0)
     dense = transition.make_state_transition([env])
     operator = build_transition_operator([[transition]], [env], (4,))
@@ -229,8 +233,10 @@ def test_gaussian_forward_large_finite_input_with_disjoint_axis_mask():
 
 @pytest.mark.unit
 def test_gaussian_backward_tiny_finite_input_with_disjoint_axis_mask():
-    env = environment((2, 2), holes=False)
-    env.is_track_interior_ = np.array([[False, True], [True, False]])
+    env = set_place_grid(
+        environment((2, 2), holes=False),
+        is_track_interior=np.array([[False, True], [True, False]]),
+    )
     transition = RandomWalk(movement_mean=15.0, movement_var=1.0)
     dense = transition.make_state_transition([env])
     operator = build_transition_operator([[transition]], [env], (4,))
@@ -250,12 +256,15 @@ def test_scaled_subnormal_valid_terms_reject_before_their_row_sum_underflows():
     y[[0, -1]] = [4.5, 0.0]
     y_axis = np.sort(y)
     mesh = np.meshgrid(x, y_axis, indexing="ij")
-    env = Environment()
-    env.place_bin_centers_ = np.column_stack([axis.ravel() for axis in mesh])
-    env.centers_shape_ = (count, count)
-    env.is_track_interior_ = np.zeros((count, count), dtype=bool)
-    env.is_track_interior_[np.arange(count), np.searchsorted(y_axis, y)] = True
-    env.is_track_interior_[0, 0] = True
+    is_track_interior = np.zeros((count, count), dtype=bool)
+    is_track_interior[np.arange(count), np.searchsorted(y_axis, y)] = True
+    is_track_interior[0, 0] = True
+    env = set_place_grid(
+        Environment(),
+        place_bin_centers=np.column_stack([axis.ravel() for axis in mesh]),
+        centers_shape=(count, count),
+        is_track_interior=is_track_interior,
+    )
     with pytest.raises(UnsupportedTransitionError, match="float32"):
         build_transition_operator(
             [[RandomWalk(movement_mean=mean, movement_var=1.0)]], [env], (count**2,)
@@ -745,8 +754,8 @@ def test_subnormal_gaussian_normalization_is_explicitly_unsupported_or_budgeted(
 @pytest.mark.unit
 def test_fallback_receives_original_empirical_context_and_defaults():
     env = environment((5,), holes=False)
-    env.edges_ = [np.arange(6.0) - 0.5]
     env.position_range = ((-0.5, 4.5),)
+    set_place_grid(env, edges=(np.arange(6.0) - 0.5,))
     position = np.resize(np.arange(5.0), 30)[:, None]
     context = {
         "position": position,
@@ -785,7 +794,7 @@ def test_empirical_movement_scalar_blocks_match_dense_constructor(n_bins):
     env = environment((n_bins,))
     interior = env.is_track_interior_.ravel()
     assert interior.all() == (n_bins == 5)
-    env.edges_ = (np.arange(n_bins + 1.0) - 0.5,)
+    set_place_grid(env, edges=(np.arange(n_bins + 1.0) - 0.5,))
     position = np.resize(np.arange(float(n_bins)), 6 * n_bins)[:, None]
     transitions = [
         [Discrete(), EmpiricalMovement()],

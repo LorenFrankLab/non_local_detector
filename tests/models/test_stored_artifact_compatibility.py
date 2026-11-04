@@ -14,6 +14,7 @@ because its rates and transition clocks cannot be converted safely.
 """
 
 import copy
+import copyreg
 import pickle
 from pathlib import Path
 
@@ -29,7 +30,11 @@ from non_local_detector import discrete_state_transitions as dst
 from non_local_detector import initial_conditions as ic
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.models.base import ClusterlessDetector, SortedSpikesDetector
+from non_local_detector.models.base import (
+    ClusterlessDetector,
+    SortedSpikesDetector,
+    _ModelUnpickler,
+)
 from non_local_detector.observation_models import ObservationModel
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
@@ -201,7 +206,7 @@ def test_saved_model_moves_fitted_environments_to_environments_(version, artifac
     assert len(model.environments_) == len(model.environments) == 1
     for configured, fitted in zip(model.environments, model.environments_, strict=True):
         assert configured is not fitted
-        assert configured.place_bin_centers_ is None
+        assert not hasattr(configured, "place_bin_centers_")
         assert not configured._is_fitted
         assert configured.get_cached("bin_distance_matrix") is None
         assert fitted.place_bin_centers_ is not None
@@ -212,6 +217,83 @@ def test_saved_model_moves_fitted_environments_to_environments_(version, artifac
         assert model._get_environment_by_name(obs.environment_name) in (
             model.environments_
         )
+
+
+class _StoredState:
+    """An object unpickled without its class: keeps the pickled state."""
+
+    def __init__(self, *args):
+        self.args = args
+
+    def __setstate__(self, state):
+        self.state = state
+
+
+class _StoredStateUnpickler(_ModelUnpickler):
+    """Unpickle detectors and environments as their stored states."""
+
+    def find_class(self, module, name):
+        if module.startswith("non_local_detector.models") or (
+            module,
+            name,
+        ) == ("non_local_detector.environment", "Environment"):
+            return _StoredState
+        return super().find_class(module, name)
+
+
+class _LegacyEnvironmentPickle:
+    """Pickles as an ``Environment`` with the given instance ``__dict__``, as
+    earlier releases did: unpickling makes an ``Environment`` without calling
+    its constructor and passes the state to ``__setstate__``."""
+
+    def __init__(self, state):
+        self.state = state
+
+    def __reduce__(self):
+        return (copyreg._reconstructor, (Environment, object, None), self.state)
+
+
+def _stored_environment_states(version, artifact):
+    path = COMPAT_DATA / version / f"{artifact}_model.pkl"
+    with path.open("rb") as file:
+        detector = _StoredStateUnpickler(file).load()
+    return [environment.state for environment in detector.state["environments"]]
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
+    version, artifact, tmp_path
+):
+    """``save_environment`` files of these versions hold the fitted attributes
+    as instance fields. They load into the current form: the same values,
+    read through ``place_grid_``, fitted with the stored configuration."""
+    (state,) = _stored_environment_states(version, artifact)
+    path = tmp_path / "environment.pkl"
+    path.write_bytes(pickle.dumps(_LegacyEnvironmentPickle(state)))
+
+    environment = Environment.load_environment(str(path))
+
+    assert environment._is_fitted
+    assert "place_bin_centers_" not in vars(environment)
+    assert environment.get_params().keys() == Environment().get_params().keys()
+    for name, value in environment.get_params().items():
+        assert value is environment.place_grid_.configuration.get(name, value)
+    np.testing.assert_array_equal(
+        environment.place_bin_centers_, state["place_bin_centers_"]
+    )
+    np.testing.assert_array_equal(
+        environment.is_track_interior_, state["is_track_interior_"]
+    )
+    assert environment.centers_shape_ == tuple(state["centers_shape_"])
+    for edge, stored in zip(environment.edges_, state["edges_"], strict=True):
+        np.testing.assert_array_equal(edge, stored)
+    assert environment.distance_between_nodes_ is not None
+    centers = environment.place_bin_centers_[environment.is_track_interior_flat_]
+    assert environment.get_bin_ind(centers[:3]).shape == (3,)
+    restored = pickle.loads(pickle.dumps(environment))
+    np.testing.assert_array_equal(
+        restored.place_bin_centers_, environment.place_bin_centers_
+    )
 
 
 @pytest.mark.parametrize(("version", "filename"), RESULTS)
@@ -320,7 +402,7 @@ def test_stored_parameter_row_rebuilds_a_detector(version, preset, row_format, i
     assert (environment.track_graph is not None) == ("1d" in preset)
     assert environment.is_track_interior_.any()
     # The rebuilt detector's parameters stay configuration.
-    assert detector.environments[0].place_bin_centers_ is None
+    assert not detector.environments[0]._is_fitted
 
 
 @pytest.mark.parametrize(
