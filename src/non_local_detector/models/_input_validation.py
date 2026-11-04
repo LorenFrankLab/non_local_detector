@@ -12,7 +12,7 @@ Methods that read the detector's attributes annotate ``self`` as
 mixin.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args
@@ -27,7 +27,10 @@ from non_local_detector.discrete_state_transitions import (
     _refuse_untrusted_transition,
 )
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import resolve_row_slice
+from non_local_detector.likelihoods.common import (
+    resolve_row_slice,
+    validate_spike_feature_population,
+)
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
     _MAX_RELATIVE_SPACING_TOLERANCE,
@@ -277,6 +280,87 @@ def _sample_labels(
             hint=f"Each label is compared with {compared_with}.",
         )
     return labels
+
+
+def _validate_spike_structure(
+    spike_times: Sequence[Any],
+    spike_waveform_features: Sequence[Any] | None,
+    *,
+    clusterless: bool,
+) -> None:
+    """Require one 1-D spike-time array per unit, and features to match.
+
+    Reads only the arrays' shapes, so decoding repeats it for every chunk.
+
+    Parameters
+    ----------
+    spike_times : sequence of array_like, each shape (n_spikes,)
+        Spike times of each neuron (sorted) or electrode (clusterless).
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features), or None
+        Waveform features of each electrode; None for sorted spikes.
+    clusterless : bool
+        Whether the spikes are clusterless (electrodes with features).
+
+    Raises
+    ------
+    ValidationError
+        If a unit's spike times are not 1-D, or (clusterless) the features do
+        not have one row per spike of the same electrodes.
+    """
+    if clusterless:
+        validate_spike_feature_population(
+            spike_times,
+            spike_waveform_features,  # type: ignore[arg-type]  # a required argument of the clusterless methods
+        )
+        return
+    for neuron, times in enumerate(spike_times):
+        if len(np.shape(times)) != 1:
+            msg = f"spike_times for neuron {neuron} must be 1-D"
+            raise ValidationError(
+                msg,
+                expected="one array with shape (n_spikes,) per neuron",
+                got=f"shape {np.shape(times)}",
+                hint="Pass a list with one 1-D array of spike times (seconds) "
+                "per neuron, e.g. [spike_times] for a single neuron.",
+            )
+
+
+def _validate_spike_data(
+    spike_times: Sequence[Any],
+    spike_waveform_features: Sequence[Any] | None = None,
+    *,
+    clusterless: bool,
+) -> None:
+    """Check spike data where it enters a public fitting or decoding method.
+
+    Checks the structure (``_validate_spike_structure``) and that the
+    spike times are numeric.
+
+    Parameters
+    ----------
+    spike_times : sequence of array_like, each shape (n_spikes,)
+        Spike times of each neuron or electrode, in seconds.
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features), or None, optional
+        Waveform features of each electrode; None for sorted spikes.
+    clusterless : bool
+        Whether the spikes are clusterless (electrodes with features).
+
+    Raises
+    ------
+    ValidationError
+        If the structure is wrong or spike times are not numeric.
+    """
+    _validate_spike_structure(
+        spike_times, spike_waveform_features, clusterless=clusterless
+    )
+    unit = "electrode" if clusterless else "neuron"
+    arrays = [np.asarray(times) for times in spike_times]
+    for index, times in enumerate(arrays):
+        if times.dtype.kind not in "iuf":
+            msg = f"spike_times for {unit} {index} must be numeric"
+            raise ValidationError(
+                msg, expected="spike times in seconds", got=f"dtype {times.dtype}"
+            )
 
 
 @dataclass(frozen=True)

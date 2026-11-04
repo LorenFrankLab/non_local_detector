@@ -122,6 +122,8 @@ from non_local_detector.models._input_validation import (
     _validate_inference_arguments,
     _validate_penalty_params,  # noqa: F401 -- imported from base by tests
     _validate_prior_weight,
+    _validate_spike_data,
+    _validate_spike_structure,
     _validate_transition_arguments,
 )
 from non_local_detector.models._persistence import (
@@ -1883,17 +1885,9 @@ class _DetectorBase(
                 expected = f"{parameter}={fitted!r}"
                 got = f"{parameter}={current!r}"
             raise ValidationError(msg, expected=expected, got=got, hint=hint)
-        if is_clusterless:
-            validate_spike_feature_population(spike_times, spike_waveform_features)
-        else:
-            for neuron, times in enumerate(spike_times):
-                if len(np.shape(times)) != 1:
-                    msg = f"spike_times for neuron {neuron} must be 1-D"
-                    raise ValidationError(
-                        msg,
-                        expected="one array with shape (n_spikes,) per neuron",
-                        got=f"shape {np.shape(times)}",
-                    )
+        _validate_spike_structure(
+            spike_times, spike_waveform_features, clusterless=is_clusterless
+        )
         # The per-unit rates every fit of the family stores (see
         # ``SortedSpikesEncodingModel`` and ``ClusterlessEncodingModel``).
         field = "mean_rates" if is_clusterless else "place_fields"
@@ -1924,6 +1918,12 @@ class _DetectorBase(
                             hint="Use the same waveform-feature selection for encoding "
                             "and decoding, including when tracking is missing.",
                         )
+
+    def _check_spike_data(self, spike_data: tuple[Any, ...]) -> None:
+        """Check the spike arrays named by ``_SPIKE_DATA_NAMES`` (see ``_validate_spike_data``)."""
+        _validate_spike_data(
+            *spike_data, clusterless=isinstance(self, ClusterlessDetector)
+        )
 
     _SPIKE_DATA_NAMES: tuple[str, ...] = ()
     """Names of the spike-data arrays, in the order the decode methods take them."""
@@ -2476,6 +2476,7 @@ class _DetectorBase(
             environment_labels,
         )
         position_time, position = inputs.position_time, inputs.position
+        self._check_spike_data(spike_data)
         position = position[:, np.newaxis] if position.ndim == 1 else position
         # Mirror predict(): bins without tracked position are missing
         # observations in the E-step.
@@ -3289,8 +3290,8 @@ class ClusterlessDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
@@ -3331,6 +3332,7 @@ class ClusterlessDetector(_DetectorBase):
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
         """
+        self._check_spike_data((spike_times, spike_waveform_features))
         self._fit_encoding_model(
             position_time,
             position,
@@ -3479,8 +3481,8 @@ class ClusterlessDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
@@ -3520,7 +3522,6 @@ class ClusterlessDetector(_DetectorBase):
         ClusterlessDetector
             Fitted detector instance.
         """
-        validate_spike_feature_population(spike_times, spike_waveform_features)
         inputs = _EncodingInputs.from_arguments(
             position_time,
             position,
@@ -3528,6 +3529,8 @@ class ClusterlessDetector(_DetectorBase):
             encoding_group_labels,
             environment_labels,
         )
+        # Before ``_fit``; fit_encoding_model checks again.
+        self._check_spike_data((spike_times, spike_waveform_features))
         with self._restore_state_on_error():
             self._fit(
                 inputs.position,
@@ -3657,8 +3660,8 @@ class ClusterlessDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims), or None
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_missing : array_like of bool, shape (n_rows,), optional
@@ -3715,8 +3718,8 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         time_edges : array_like, shape (n_bins + 1,)
@@ -3934,8 +3937,8 @@ class ClusterlessDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         time_edges : array_like, shape (n_bins + 1,)
@@ -4127,8 +4130,8 @@ class ClusterlessDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims), optional
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         time_edges : array_like, shape (n_bins + 1,)
@@ -4315,8 +4318,8 @@ class SortedSpikesDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4345,6 +4348,7 @@ class SortedSpikesDetector(_DetectorBase):
             observation model configuration (environment, encoding group).
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
+        self._check_spike_data((spike_times,))
         self._fit_encoding_model(
             position_time,
             position,
@@ -4454,8 +4458,8 @@ class SortedSpikesDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4500,6 +4504,8 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_group_labels,
             environment_labels,
         )
+        # Before ``_fit``; fit_encoding_model checks again.
+        self._check_spike_data((spike_times,))
         with self._restore_state_on_error():
             self._fit(
                 inputs.position,
@@ -4592,8 +4598,8 @@ class SortedSpikesDetector(_DetectorBase):
             Time points for position data.
         position : array_like, shape (n_time_position, n_position_dims), or None
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds.
         is_missing : array_like of bool, shape (n_rows,), optional
             True (or 1) for the bins to decode as missing, one entry per
             requested decode bin, by default None.
@@ -4647,8 +4653,8 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
@@ -4786,7 +4792,7 @@ class SortedSpikesDetector(_DetectorBase):
         position : np.ndarray, shape (n_time_position, n_position_dims)
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
-            Each element of the list is an array of spike times for a neuron.
+            One 1-D array of spike times per neuron, in seconds.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
@@ -4977,7 +4983,7 @@ class SortedSpikesDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
-            Each element of the list is an array of spike times for a neuron.
+            One 1-D array of spike times per neuron, in seconds.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
