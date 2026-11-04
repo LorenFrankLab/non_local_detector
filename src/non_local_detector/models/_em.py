@@ -25,6 +25,7 @@ import numpy as np
 import xarray as xr
 from numpy.typing import ArrayLike
 
+import non_local_detector
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.checkpointed_inference import (
     _available_host_bytes,
@@ -58,7 +59,7 @@ from non_local_detector.time_edges import (
 from non_local_detector.types import ReturnOutputs, TransitionRepresentation
 
 if TYPE_CHECKING:
-    from non_local_detector.models.base import _DetectorBase
+    import non_local_detector.models.base
 
 # EM logs under the detector module's logger, as it did when it lived there.
 logger = getLogger("non_local_detector.models.base")
@@ -631,7 +632,7 @@ class _EMMixin:
     transition_time_bin_width_: float | None
 
     def _refit_encoding_model(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         weights: np.ndarray,
         encoding_fit_arguments: dict[str, Any],
     ) -> None:
@@ -648,7 +649,7 @@ class _EMMixin:
         self._fit_encoding_model(**encoding_fit_arguments, weights=weights)
 
     def _fit_em_model(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         fit: Callable[[str], Any],
         transition_representation: TransitionRepresentation,
         n_time: int,
@@ -691,7 +692,9 @@ class _EMMixin:
         if transition_representation == "auto" and not structured_required:
             self._choose_em_representation(n_time)
 
-    def _choose_em_representation(self: "_DetectorBase", n_time: int) -> None:  # type: ignore[misc]
+    def _choose_em_representation(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase", n_time: int
+    ) -> None:
         """Run EM dense when it is faster and fits; otherwise keep the operator.
 
         Called after an ``"auto"`` fit. Dense EM is chosen when the float32
@@ -748,7 +751,7 @@ class _EMMixin:
             self._transition_representation_ = "dense"
 
     def _run_em(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         time_edges: ArrayLike,
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
@@ -989,7 +992,7 @@ class _EMMixin:
         return self._em_results(settings, final.posterior, traces)
 
     def _em_settings(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         time_edges: ArrayLike,
         log_likelihood_args: tuple[Any, ...] | None,
         is_missing: np.ndarray | None,
@@ -1194,7 +1197,9 @@ class _EMMixin:
             encoding_fit_arguments=encoding_fit_arguments,
         )
 
-    def _em_reset_fitted_attributes(self: "_DetectorBase") -> None:  # type: ignore[misc]
+    def _em_reset_fitted_attributes(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+    ) -> None:
         """Start EM's result attributes and drop an earlier run's likelihood."""
         # Initialize the EM-result attributes together, after validation, so a
         # validation failure leaves NONE of them set (all-or-nothing).
@@ -1215,7 +1220,7 @@ class _EMMixin:
         self.discrete_initial_conditions_ = np.asarray(self.discrete_initial_conditions)
 
     def _em_transition_log_prior(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         settings: _EMSettings,
         statistics: np.ndarray,
         coefficients: np.ndarray | None = None,
@@ -1244,7 +1249,9 @@ class _EMMixin:
         )
 
     def _em_e_step(  # type: ignore[misc]
-        self: "_DetectorBase", settings: _EMSettings, state: _EMState
+        self: "non_local_detector.models.base._DetectorBase",
+        settings: _EMSettings,
+        state: _EMState,
     ) -> _EMEStep:
         """One in-loop E-step, dense or checkpointed.
 
@@ -1315,7 +1322,10 @@ class _EMMixin:
         )
 
     def _em_update_encoding_model(  # type: ignore[misc]
-        self: "_DetectorBase", settings: _EMSettings, state: _EMState, e_step: _EMEStep
+        self: "non_local_detector.models.base._DetectorBase",
+        settings: _EMSettings,
+        state: _EMState,
+        e_step: _EMEStep,
     ) -> None:
         """Run the encoding M-step: refit with the local observations' posterior.
 
@@ -1390,7 +1400,10 @@ class _EMMixin:
                 state.run_log_likelihoods = None
 
     def _em_update_discrete_transitions(  # type: ignore[misc]
-        self: "_DetectorBase", settings: _EMSettings, state: _EMState, e_step: _EMEStep
+        self: "non_local_detector.models.base._DetectorBase",
+        settings: _EMSettings,
+        state: _EMState,
+        e_step: _EMEStep,
     ) -> tuple[float, float]:
         """Discrete-transition M-step.
 
@@ -1468,7 +1481,9 @@ class _EMMixin:
             state.transition_change = float(np.max(np.abs(moved)))
         return log_prior_before, log_prior_after
 
-    def _em_update_initial_conditions(self: "_DetectorBase", e_step: _EMEStep) -> None:  # type: ignore[misc]
+    def _em_update_initial_conditions(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase", e_step: _EMEStep
+    ) -> None:
         """Initial-condition M-step: the first bin's smoothed posterior."""
         self.initial_conditions_[self.is_track_interior_state_bins_] = (
             e_step.first_smoothed
@@ -1487,7 +1502,7 @@ class _EMMixin:
         )
 
     def _em_record_iteration(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         settings: _EMSettings,
         state: _EMState,
         marginal_log_likelihood: float,
@@ -1582,7 +1597,9 @@ class _EMMixin:
         state.next_log_prior = log_prior_after
 
     def _em_update_transition_covariance(  # type: ignore[misc]
-        self: "_DetectorBase", settings: _EMSettings, state: _EMState
+        self: "non_local_detector.models.base._DetectorBase",
+        settings: _EMSettings,
+        state: _EMState,
     ) -> None:
         """Covariance of the covariate transition coefficients after EM."""
         # The last M-step's statistics and output (covariate transitions
@@ -1643,7 +1660,9 @@ class _EMMixin:
         )
 
     def _em_final_e_step(  # type: ignore[misc]
-        self: "_DetectorBase", settings: _EMSettings, state: _EMState
+        self: "non_local_detector.models.base._DetectorBase",
+        settings: _EMSettings,
+        state: _EMState,
     ) -> _EMFinalEStep:
         """E-step on the fitted parameters, with the requested outputs.
 
@@ -1731,7 +1750,7 @@ class _EMMixin:
         return _EMFinalEStep(posterior)
 
     def _em_check_final_e_step(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         settings: _EMSettings,
         state: _EMState,
         final_objective: float,
@@ -1766,7 +1785,7 @@ class _EMMixin:
         self.converged_ = bool(state.converged) and final_is_increasing
 
     def _em_results(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         settings: _EMSettings,
         final: _PosteriorOutputs,
         traces: dict[str, list[float]],

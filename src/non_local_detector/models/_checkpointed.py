@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import xarray as xr
 
+import non_local_detector
 from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.checkpointed_inference import (
     CheckpointedResult,
@@ -43,7 +44,7 @@ except ImportError:
     _PACKAGE_VERSION = "unknown"
 
 if TYPE_CHECKING:
-    from non_local_detector.models.base import _DetectorBase
+    import non_local_detector.models.base
 
 
 def _driver_outputs(requested_outputs: set[str], *, spatial: bool) -> set[str]:
@@ -162,7 +163,7 @@ class _CheckpointedPredictionMixin:
     """Checkpointed-prediction methods of ``_DetectorBase``."""
 
     def _checkpointed_likelihood(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         edges: np.ndarray,
         centers: np.ndarray,
         log_likelihood_args: tuple[Any, ...],
@@ -186,7 +187,9 @@ class _CheckpointedPredictionMixin:
         return likelihood
 
     def _checkpointed_transition_args(  # type: ignore[misc]
-        self: "_DetectorBase", discrete: np.ndarray, n_rows: int
+        self: "non_local_detector.models.base._DetectorBase",
+        discrete: np.ndarray,
+        n_rows: int,
     ) -> dict[str, Any]:
         """Checkpointed-driver transition arguments over the interior state bins.
 
@@ -224,7 +227,7 @@ class _CheckpointedPredictionMixin:
         return transition_args
 
     def _checkpointed_e_step(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         time_edges: np.ndarray,
         log_likelihood_args: tuple[Any, ...],
         is_missing: np.ndarray | None,
@@ -286,7 +289,7 @@ class _CheckpointedPredictionMixin:
         )
 
     def _predict_checkpointed(  # type: ignore[misc]
-        self: "_DetectorBase",
+        self: "non_local_detector.models.base._DetectorBase",
         *,
         time_edges: np.ndarray,
         log_likelihood_args: tuple[Any, ...],
