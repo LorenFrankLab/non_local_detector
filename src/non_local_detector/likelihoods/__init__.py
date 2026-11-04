@@ -84,6 +84,13 @@ class LikelihoodAlgorithm:
         The parameters ``fit`` receives when a detector's
         ``*_algorithm_params`` is None, beyond the fit's own defaults; a user
         dict replaces them. Stored as a read-only copy. By default empty.
+    execution_settings : frozenset of str
+        Fit parameters that set how ``predict`` runs (memory budgets, block
+        and tile sizes, progress bars) rather than what is fitted. The fit
+        records each in the encoding model, and a detector passes ``predict``
+        the value its ``*_algorithm_params`` sets now, if any, so these can
+        change without refitting (see ``_execution_settings``). By default
+        ``{"disable_progress_bar"}``.
 
     Notes
     -----
@@ -105,6 +112,7 @@ class LikelihoodAlgorithm:
     predict: Callable[..., Any]
     encoding_model_type: type
     default_params: Mapping[str, Any] = field(default_factory=dict)
+    execution_settings: frozenset[str] = frozenset({"disable_progress_bar"})
 
     def __post_init__(self) -> None:
         # A read-only copy, so a caller can mutate neither the registered
@@ -191,6 +199,15 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         fit_clusterless_kde_encoding_model,
         predict_clusterless_kde_log_likelihood,
         ClusterlessKDEEncodingModel,
+        execution_settings=frozenset(
+            {
+                "block_size",
+                "enc_tile_size",
+                "pos_tile_size",
+                "use_streaming",
+                "disable_progress_bar",
+            }
+        ),
         mark_reference_scale=clusterless_kde.mark_reference_scale,
         electrode_intensity="KDEElectrode",
     ),
@@ -198,6 +215,9 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         fit_clusterless_gmm_encoding_model,
         predict_clusterless_gmm_log_likelihood,
         ClusterlessGMMEncodingModel,
+        execution_settings=frozenset(
+            {"spike_block_size", "bin_tile_size", "disable_progress_bar"}
+        ),
         mark_reference_scale=clusterless_gmm.mark_reference_scale,
         electrode_intensity="GMMElectrode",
     ),
@@ -205,6 +225,9 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         fit_clusterless_diffusion_encoding_model,
         predict_clusterless_diffusion_log_likelihood,
         ClusterlessDiffusionEncodingModel,
+        execution_settings=frozenset(
+            {"block_size", "memory_budget", "disable_progress_bar"}
+        ),
         mark_reference_scale=clusterless_diffusion.mark_reference_scale,
         electrode_intensity="DiffusionElectrode",
     ),
@@ -213,6 +236,7 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         fit_clusterless_mark_glm_encoding_model,
         predict_clusterless_mark_glm_log_likelihood,
         ClusterlessMarkGLMEncodingModel,
+        execution_settings=frozenset({"spike_block_size", "disable_progress_bar"}),
         mark_reference_scale=clusterless_mark_glm.mark_reference_scale,
     ),
 }
@@ -283,6 +307,40 @@ def _resolve_fit_params(
             f"{algorithm}: each algorithm accepts only its own fit parameters.",
         )
     return resolved
+
+
+def _execution_settings(
+    record: LikelihoodAlgorithm, params: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The execution settings a detector's algorithm params set, for predict.
+
+    A detector passes these to ``predict`` in place of the values its encoding
+    model recorded at fit, so memory, tiling and progress options can change
+    after fitting. A setting the params do not name keeps its fitted value.
+    Other keys are left to the next fit, which validates them, so a detector
+    saved with keys its algorithm no longer accepts still decodes.
+
+    Parameters
+    ----------
+    record : LikelihoodAlgorithm
+        The detector's registered algorithm.
+    params : dict or None
+        The detector's current algorithm params; None (the defaults the fit
+        used) sets none.
+
+    Returns
+    -------
+    settings : dict
+        Each of the algorithm's ``execution_settings`` that ``params`` names,
+        with its value.
+    """
+    if params is None:
+        return {}
+    return {
+        name: value
+        for name, value in params.items()
+        if name in record.execution_settings
+    }
 
 
 # The keys of each algorithm's encoding model as main saved them before

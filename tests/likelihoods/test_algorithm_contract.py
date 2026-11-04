@@ -310,6 +310,88 @@ def test_model_parameters_are_keyword_only(algorithm):
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_execution_settings_are_recorded_fit_parameters_of_predict(algorithm):
+    """Each execution setting is a settable fit parameter the fit records and
+    predict reads, so a detector can pass predict its current value."""
+    record = _registry(algorithm)[0][algorithm]
+    assert "disable_progress_bar" in record.execution_settings
+    fit_parameters = inspect.signature(record.fit).parameters
+    predict_parameters = inspect.signature(record.predict).parameters
+    declared = _declared_keys(record.encoding_model_type)
+    for name in record.execution_settings:
+        assert fit_parameters[name].default is not inspect.Parameter.empty, name
+        assert name in declared, name
+        assert name in predict_parameters, name
+
+
+# Execution settings other than the fitted ones, chosen to change each
+# algorithm's blocking or tiling on the small recording.
+_CHANGED_SETTINGS = {
+    "clusterless_kde": {
+        "block_size": 7,
+        "enc_tile_size": 16,
+        "pos_tile_size": 2,
+        "use_streaming": True,
+    },
+    "clusterless_gmm": {"spike_block_size": 7, "bin_tile_size": 2},
+    "clusterless_diffusion": {"block_size": 7, "memory_budget": 1 << 14},
+    "clusterless_mark_glm": {"spike_block_size": 7},
+}
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
+def test_predict_reads_execution_settings_changed_after_fitting(
+    monkeypatch, recording, algorithm
+):
+    """Settings set in the algorithm params after fitting reach predict without a
+    refit; settings the params do not name keep their fitted values."""
+    registry, _ = _registry(algorithm)
+    record = registry[algorithm]
+    decoder, spike_data = _fit(algorithm, recording)
+    (encoding_model,) = decoder.encoding_model_.values()
+    fitted = {name: encoding_model[name] for name in record.execution_settings}
+    received = []
+
+    def spy(*args, **kwargs):
+        received.append({name: kwargs[name] for name in record.execution_settings})
+        return record.predict(*args, **kwargs)
+
+    monkeypatch.setitem(registry, algorithm, replace(record, predict=spy))
+    time, position, *_ = recording
+    edges = time_edges_from_centers(time[_DECODE_SAMPLES])
+
+    def log_likelihood():
+        return decoder.predict(
+            *spike_data,
+            time_edges=edges,
+            position_time=time,
+            position=position,
+            return_outputs="log_likelihood",
+        ).log_likelihood
+
+    before = log_likelihood()
+    assert received == [fitted]
+
+    changed = _CHANGED_SETTINGS.get(algorithm, {})
+    assert set(changed) <= record.execution_settings
+    name = (
+        "sorted_spikes_algorithm_params"
+        if algorithm in _SORTED_SPIKES_ALGORITHMS
+        else "clusterless_algorithm_params"
+    )
+    setattr(decoder, name, {**getattr(decoder, name), **changed})
+    after = log_likelihood()
+    assert received[-1] == {**fitted, **changed}
+    np.testing.assert_allclose(after, before, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_records_pickle_and_copy(algorithm):
     """Records survive pickling and deep copies, defaults still read-only."""
     record = _registry(algorithm)[0][algorithm]
