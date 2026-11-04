@@ -27,6 +27,11 @@ from non_local_detector.types import (
     Stickiness,
 )
 
+__all__ = [
+    "MultiEnvironmentClusterlessClassifier",
+    "MultiEnvironmentSortedSpikesClassifier",
+]
+
 
 class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
     """Classifier of which of two environments sorted spike data represents.

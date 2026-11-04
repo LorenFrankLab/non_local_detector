@@ -103,6 +103,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "ClusterlessMarkGLMEncodingModel",
+    "fit_clusterless_mark_glm_encoding_model",
+    "predict_clusterless_mark_glm_log_likelihood",
+]
+
+
 # Variational components supported by fewer weighted spikes than this are
 # dropped after the fit, and the remaining weights renormalized. A component the
 # marks do not use keeps about one spike of prior mass but almost no

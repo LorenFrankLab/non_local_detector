@@ -15,6 +15,11 @@ from non_local_detector.model_checking.highest_posterior_density import (
     get_highest_posterior_threshold,
 )
 
+__all__ = [
+    "posterior_consistency_hpd_overlap",
+    "posterior_consistency_kl_divergence",
+]
+
 
 def _validate_consistency_inputs(posterior: np.ndarray, likelihood: np.ndarray) -> None:
     """Validate the shared ``(n_time, n_position_bins)`` input contract.

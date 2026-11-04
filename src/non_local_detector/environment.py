@@ -92,6 +92,11 @@ from non_local_detector.graph_distances import (
     LazyGraphDistances,
 )
 
+__all__ = [
+    "Environment",
+    "PlaceGrid",
+]
+
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:
     """Return the center of each bin given the bin edges.

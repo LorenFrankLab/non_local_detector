@@ -141,6 +141,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "ClusterlessDiffusionEncodingModel",
+    "fit_clusterless_diffusion_encoding_model",
+    "predict_clusterless_diffusion_log_likelihood",
+]
+
+
 logger = logging.getLogger(__name__)
 
 # float32 working dtype for the diffusion matmul; its item size drives the memory

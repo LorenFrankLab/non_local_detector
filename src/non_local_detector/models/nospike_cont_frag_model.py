@@ -27,6 +27,11 @@ from non_local_detector.types import (
     Stickiness,
 )
 
+__all__ = [
+    "NoSpikeContFragClusterlessClassifier",
+    "NoSpikeContFragSortedSpikesClassifier",
+]
+
 
 class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
     """No-Spike, continuous and fragmented classifier for sorted spike data.

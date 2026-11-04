@@ -15,6 +15,12 @@ import numpy as np
 
 from non_local_detector.environment import Environment
 
+__all__ = [
+    "ClusterlessEncodingModel",
+    "EncodingModel",
+    "SortedSpikesEncodingModel",
+]
+
 
 class EncodingModel(TypedDict):
     """The keys every fit returns.

@@ -98,6 +98,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "SortedSpikesKDEEncodingModel",
+    "fit_sorted_spikes_kde_encoding_model",
+    "predict_sorted_spikes_kde_log_likelihood",
+]
+
+
 # One group of stacked KDE leaves: samples, weights, standard deviations and
 # neuron indices.
 _LeafGroup: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]

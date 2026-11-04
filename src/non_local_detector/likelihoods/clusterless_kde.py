@@ -89,6 +89,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "ClusterlessKDEEncodingModel",
+    "fit_clusterless_kde_encoding_model",
+    "predict_clusterless_kde_log_likelihood",
+]
+
+
 # Encoding rows per reduction tile. Each tile is one GEMM over the whole query
 # block, so temporaries scale with the tile rather than the encoding count.
 _LOG_REDUCTION_ENCODING_ROWS = 2048

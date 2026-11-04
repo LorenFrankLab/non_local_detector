@@ -43,6 +43,7 @@ from non_local_detector.exceptions import ValidationError
 if TYPE_CHECKING:
     from non_local_detector.environment import Environment
 
+
 # Defaults for heat_kernel_rank (bandwidth-aware auto-truncation): drop modes whose
 # heat-kernel weight exp(-t*lambda) is below _HEAT_KERNEL_RANK_TOL, and fall back to the
 # dense eigendecomposition once the resolved rank exceeds _HEAT_KERNEL_DENSE_FRACTION *
