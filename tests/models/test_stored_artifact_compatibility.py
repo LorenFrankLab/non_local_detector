@@ -177,7 +177,7 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
     assert isinstance(
         model, ClusterlessDetector if clusterless else SortedSpikesDetector
     )
-    environment = model.environments_[0]
+    environment = model.environments[0]
     assert (environment.track_graph is not None) == ("1d" in artifact)
     interior_centers = environment.place_bin_centers_[
         environment.is_track_interior_.ravel(order="C")
@@ -191,24 +191,17 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
 
 
 @pytest.mark.parametrize(("version", "artifact"), MODELS)
-def test_saved_model_moves_fitted_environments_to_environments_(version, artifact):
+def test_saved_model_keeps_its_fitted_environments(version, artifact):
     """These versions kept a detector's fitted environments in its
-    ``environments`` parameter. Loading moves them to ``environments_`` and
-    leaves unfitted copies of their configuration in ``environments``, as a
-    fit does now, so the parameters of a loaded model hold no fitted state."""
+    ``environments`` parameter. A loaded model keeps them there, where code
+    that inspects old models reads them (``get_params()`` reports them, as it
+    always did), and ``environments_`` holds the same objects."""
     model = _load_model(version, artifact)
 
-    assert isinstance(model.environments, tuple)
     assert len(model.environments_) == len(model.environments) == 1
     for configured, fitted in zip(model.environments, model.environments_, strict=True):
-        assert configured is not fitted
-        assert configured.place_bin_centers_ is None
-        assert not configured._is_fitted
-        assert configured.get_cached("bin_distance_matrix") is None
+        assert fitted is configured
         assert fitted.place_bin_centers_ is not None
-        fitted_params = fitted.get_params()
-        for name, value in configured.get_params().items():
-            assert value is fitted_params[name], name
     for obs in model.observation_models:
         assert model._get_environment_by_name(obs.environment_name) in (
             model.environments_
