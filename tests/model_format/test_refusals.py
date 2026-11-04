@@ -7,6 +7,7 @@ only decoding: the model still loads and its summary still reads.
 """
 
 import json
+import warnings
 import zipfile
 from dataclasses import dataclass
 
@@ -254,3 +255,58 @@ def test_drift_in_any_transition_row_refuses_to_decode(
 
         with pytest.raises(ValidationError, match="continuous transition"):
             decode(loaded, time, position, {"spike_times": spike_times})
+
+
+def _with_extra_member(path, name, data, *, compress=zipfile.ZIP_DEFLATED):
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr(zipfile.ZipInfo(name), data, compress_type=compress)
+
+
+@pytest.mark.parametrize(
+    "name", ["junk.bin", "arrays/../escape.npy", "/absolute.npy", "arrays\\x.npy"]
+)
+def test_a_member_the_manifest_does_not_list_is_refused(saved, name):
+    _with_extra_member(saved, name, b"\0" * 1000)
+
+    for read in (nld.NonLocalSortedSpikesDetector.load_model, read_model_summary):
+        with pytest.raises(DataError, match="member"):
+            read(saved)
+
+
+def test_a_duplicate_member_is_refused(saved):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # zipfile: duplicate name
+        _with_extra_member(saved, "state.json", b"{}")
+
+    with pytest.raises(DataError, match="more than once"):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+
+def test_a_member_larger_than_its_array_is_refused_before_decompressing(saved):
+    with zipfile.ZipFile(saved) as archive:
+        member = next(n for n in archive.namelist() if n.endswith("place_fields.npy"))
+
+    _rewrite(saved, member, lambda data: data + b"\0" * 50_000_000)
+
+    with pytest.raises(DataError, match="larger than"):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+
+def test_a_corrupt_member_raises_data_error(saved):
+    data = bytearray(saved.read_bytes())
+    with zipfile.ZipFile(saved) as archive:
+        info = archive.getinfo("state.json")
+    offset = info.header_offset + 30 + len(info.filename) + len(info.extra) + 20
+    data[offset] ^= 1
+    saved.write_bytes(bytes(data))
+
+    with pytest.raises(DataError):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+
+def test_a_file_that_is_not_a_zip_raises_data_error(tmp_path):
+    path = tmp_path / "model.nld"
+    path.write_bytes(b"PK\x03\x04 not really a zip")
+
+    with pytest.raises(DataError):
+        nld.NonLocalSortedSpikesDetector.load_model(path)

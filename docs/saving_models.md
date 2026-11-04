@@ -52,7 +52,9 @@ Objects such as transitions, environments and fitted mixtures appear in the
 JSON as `{"$type": "nld.RandomWalk", "state": {...}}`. Loading builds them
 only through a registry of known type names, and never imports a module named
 by the file. Each array is checked against its sha256 when read, so a
-corrupt or edited file raises `DataError`.
+corrupt or edited file raises `DataError`, as does a file holding a member the
+manifest does not list, one listed twice, or one declaring more bytes than its
+array can hold; such members are refused before they are decompressed.
 
 Only what cannot be rebuilt is stored. Loading rebuilds:
 
