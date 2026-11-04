@@ -11,6 +11,7 @@ original. Covariates are stored as numeric or string ``.npy`` arrays
 
 import json
 import pickle
+import time
 import zipfile
 
 import numpy as np
@@ -20,7 +21,7 @@ import pytest
 
 import non_local_detector as nld
 from non_local_detector import discrete_state_transitions as dst
-from non_local_detector._formula_grammar import UntrustedFormula
+from non_local_detector._formula_grammar import LoadedFormula, UntrustedFormula
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.model_format import read_model_summary
@@ -325,3 +326,39 @@ def test_an_unfitted_model_with_a_trusted_formula_loads_without_warning(
 
     _refit(loaded, sorted_recording)
     assert loaded.discrete_transition_type.formula == OUTSIDE_GRAMMAR
+
+
+def test_a_stored_spline_size_beyond_the_caps_is_not_evaluated(
+    fitted, sorted_recording, tmp_path, no_patsy
+):
+    """A file cannot ask for an unbounded design: a spline of ten million
+    columns is refused before patsy builds it."""
+    path = tmp_path / "model.nld"
+    fitted.save_model(path)
+    _with_formula(path, "1 + bs(speed, df=10**7)")
+
+    start = time.perf_counter()
+    with pytest.warns(UserWarning, match="trust_formulas=True"):
+        loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+
+    assert time.perf_counter() - start < 5.0
+    assert loaded.discrete_transition_type.formula == UntrustedFormula(
+        "1 + bs(speed, df=10**7)"
+    )
+    with pytest.raises(ValidationError, match="trust_formulas=True"):
+        _decode(loaded, sorted_recording)
+
+
+def test_a_stored_spline_within_the_caps_rebuilds(sorted_recording, tmp_path):
+    formula = "1 + quantile_bs(speed, n_knots=8)"
+    detector = _fit(sorted_recording, formula)
+    path = tmp_path / "model.nld"
+    detector.save_model(path)
+
+    loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+
+    assert isinstance(loaded.discrete_transition_type.formula, LoadedFormula)
+    np.testing.assert_array_equal(
+        loaded.discrete_transition_design_matrix_,
+        detector.discrete_transition_design_matrix_,
+    )

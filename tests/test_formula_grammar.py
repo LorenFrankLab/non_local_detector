@@ -290,8 +290,8 @@ def test_error_names_the_offending_element_and_the_allowed_set():
         "1 + exit",
         "1 + breakpoint",
         "1 + copyright + speed",
-        "1 + bs(speed, knots=knots)",
-        "1 + quantile_bs(speed, n_knots=covariate_data)",
+        "1 + bs(knots, df=4)",
+        "1 + quantile_bs(covariate_data, n_knots=4)",
         "1 + I(speed * velocity)",
         "1 + np.minimum(speed, cap)",
         "1 + C(arm, Treatment('a'))",
@@ -384,3 +384,68 @@ def test_bounded_formulas(formula, match):
 )
 def test_bounds_admit_reasonable_formulas(formula):
     check_formula(formula)
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 + bs(speed, df=10**7)",
+        "1 + bs(speed, 1001)",
+        "1 + bs(speed, df=0)",
+        "1 + bs(speed, df=5.5)",
+        "1 + bs(speed, df=5, degree=11)",
+        "1 + bs(speed, 5, None, 11)",
+        "1 + cr(speed, df=2000)",
+        "1 + quantile_bs(speed, n_knots=1001)",
+        "1 + quantile_bs(speed, 1001)",
+        "1 + quantile_bs(speed, n_knots=-1)",
+        "1 + cyclic_bs(phase, 0, 6, 5000)",
+        "1 + cyclic_bs(phase, lower=0, upper=6, degree=12)",
+        "1 + bs(speed, knots=[" + ", ".join(["1.0"] * 1001) + "])",
+        "1 + bs(speed, knots=speed)",
+        "1 + C(arm, levels=[" + ", ".join(["1"] * 1001) + "])",
+        "1 + bs(speed, 5, None, 3, False, 0, 1, 2)",
+        " + ".join(f"np.abs(speed + {i})" for i in range(33)),
+    ],
+    ids=[
+        "df-keyword",
+        "df-positional",
+        "df-zero",
+        "df-float",
+        "degree",
+        "degree-positional",
+        "cr-df",
+        "n-knots",
+        "n-knots-positional",
+        "n-knots-negative",
+        "cyclic-n-knots-positional",
+        "cyclic-degree",
+        "knots-length",
+        "knots-covariate",
+        "levels-length",
+        "too-many-arguments",
+        "too-many-calls",
+    ],
+)
+def test_sizes_are_capped(formula):
+    """Spline sizes, list lengths and the number of calls are bounded, so a
+    formula from a file cannot ask for an unbounded design."""
+    start = time.perf_counter()
+    with pytest.raises(ValidationError, match="not allowed"):
+        check_formula(formula, covariate_names=["speed", "phase", "arm"])
+    assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 + quantile_bs(speed, n_knots=8)",
+        "1 + quantile_bs(speed, 8, 3)",
+        "1 + bs(speed, df=1000, degree=10)",
+        "1 + bs(speed, df=None, knots=[1.0, 2.0], degree=0)",
+        "1 + cyclic_bs(phase, 0.0, 6.5, 8, 3)",
+        " + ".join(f"np.abs(speed + {i})" for i in range(32)),
+    ],
+)
+def test_sizes_within_the_caps_pass(formula):
+    check_formula(formula, covariate_names=["speed", "phase"])

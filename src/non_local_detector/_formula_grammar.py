@@ -22,6 +22,10 @@ accepted only if every node is one of
 - integers computed from literals alone (which Python evaluates exactly)
   within int64, at most ``_MAX_LENGTH`` characters and expressions nested at
   most ``_MAX_DEPTH`` deep;
+- spline sizes ``df`` and ``n_knots`` integers from 1 to ``_MAX_SIZE``,
+  ``degree`` from 0 to ``_MAX_DEGREE``, ``knots=`` and ``levels=`` lists of at
+  most ``_MAX_SIZE`` entries, and at most ``_MAX_CALLS`` calls in a formula,
+  so the design's size is bounded;
 - a list or tuple of numbers (e.g. ``knots=[1.0, 4.0]``);
 - ``np.pi``;
 - a call of one of the documented transforms (``_FUNCTIONS``) or elementwise
@@ -132,6 +136,34 @@ _MAX_EXPONENT = 10
 _INT_LIMIT = 2**63
 _MAX_LENGTH = 2000
 _MAX_DEPTH = 32
+# The design's size follows from these, so they are capped: spline sizes
+# (df, n_knots) and list lengths (knots, levels) at _MAX_SIZE, degree at
+# _MAX_DEGREE, and the calls of a formula at _MAX_CALLS.
+_MAX_SIZE = 1000
+_MAX_DEGREE = 10
+_MAX_CALLS = 32
+# Parameters of the spline transforms, in order, to read positional arguments.
+_SPLINE_PARAMETERS = {
+    "bs": (
+        "x",
+        "df",
+        "knots",
+        "degree",
+        "include_intercept",
+        "lower_bound",
+        "upper_bound",
+    ),
+    "cr": ("x", "df", "knots", "lower_bound", "upper_bound", "constraints"),
+    "cc": ("x", "df", "knots", "lower_bound", "upper_bound", "constraints"),
+    "quantile_bs": ("x", "n_knots", "degree", "lower_quantile", "upper_quantile"),
+    "cyclic_bs": ("x", "lower", "upper", "n_knots", "degree"),
+}
+# (smallest, largest) integer of each count-like spline argument.
+_COUNT_RANGES = {
+    "df": (1, _MAX_SIZE),
+    "n_knots": (1, _MAX_SIZE),
+    "degree": (0, _MAX_DEGREE),
+}
 
 _ALLOWED = (
     "covariate names (keys of the covariate data), numbers, True, False and "
@@ -254,16 +286,21 @@ def check_formula(
         ) from None
     if description.lhs_termlist:
         _refuse(formula, "a response (left of '~')")
-    for term in description.rhs_termlist:
-        for factor in term.factors:
-            _check_expression(factor.name(), formula, covariate_names)
+    # Terms share factors (speed:phase and speed), each evaluated once.
+    codes = sorted(
+        {factor.name() for term in description.rhs_termlist for factor in term.factors}
+    )
+    n_calls = sum(_check_expression(code, formula, covariate_names) for code in codes)
+    if n_calls > _MAX_CALLS:
+        _refuse(formula, f"{n_calls} calls, more than {_MAX_CALLS}")
 
 
 def _check_expression(
     code: str, formula: str, covariate_names: Collection[str] | None
-) -> None:
+) -> int:
     """Refuse a Python expression of ``formula`` outside the grammar, or one
-    naming a covariate missing from ``covariate_names``."""
+    naming a covariate missing from ``covariate_names``; return its number of
+    calls."""
     try:
         expression = ast.parse(code, mode="eval").body
     except SyntaxError:
@@ -273,8 +310,9 @@ def _check_expression(
     offending = _offending(expression) or _large_integer(expression)
     if offending is not None:
         _refuse(formula, offending)
+    n_calls = sum(isinstance(node, ast.Call) for node in ast.walk(expression))
     if covariate_names is None:
-        return
+        return n_calls
     available = set(covariate_names)
     for name in sorted(_names(expression)):
         if name not in available:
@@ -283,6 +321,7 @@ def _check_expression(
                 f"the name {name}, which is not a covariate (the covariates "
                 f"are {sorted(map(str, available))})",
             )
+    return n_calls
 
 
 def _offending(node: ast.AST) -> str | None:
@@ -349,6 +388,10 @@ def _offending_call(call: ast.Call) -> str | None:
             return f"the ** argument in {ast.unparse(call)}"
     if isinstance(function, ast.Name) and function.id == "C":
         return _offending_c(call)
+    if isinstance(function, ast.Name) and function.id in _SPLINE_PARAMETERS:
+        offending = _offending_spline(call, _SPLINE_PARAMETERS[function.id])
+        if offending is not None:
+            return offending
     for node in _arguments(call):
         offending = _offending(node)
         if offending is not None:
@@ -380,14 +423,55 @@ def _offending_c(call: ast.Call) -> str | None:
     levels = arguments.get("levels")
     if levels is not None and not (
         isinstance(levels, ast.List | ast.Tuple)
+        and len(levels.elts) <= _MAX_SIZE
         and all(_is_scalar_literal(element) for element in levels.elts)
     ):
         return (
             f"the levels {ast.unparse(levels)} in {ast.unparse(call)}, which "
-            "are not a list of literals"
+            f"are not a list of at most {_MAX_SIZE} literals"
         )
     data = arguments.get("data")
     return None if data is None else _offending(data)
+
+
+def _offending_spline(call: ast.Call, parameters: tuple[str, ...]) -> str | None:
+    """Description of a spline call's size outside its caps, or None.
+
+    ``df``, ``n_knots`` and ``degree`` must be integer literals in
+    ``_COUNT_RANGES`` (or None), and ``knots`` a list or tuple of at most
+    ``_MAX_SIZE`` entries (or None); the entries themselves are checked as
+    any argument.
+    """
+    if len(call.args) > len(parameters):
+        return f"the arguments of {ast.unparse(call)}"
+    arguments = dict(zip(parameters, call.args, strict=False))
+    for keyword in call.keywords:
+        if keyword.arg not in parameters or keyword.arg in arguments:
+            return f"the argument {keyword.arg}= in {ast.unparse(call)}"
+        arguments[keyword.arg] = keyword.value
+    for name, (lowest, highest) in _COUNT_RANGES.items():
+        node = arguments.get(name)
+        if node is None or (isinstance(node, ast.Constant) and node.value is None):
+            continue
+        value = node.value if isinstance(node, ast.Constant) else None
+        if not (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and lowest <= value <= highest
+        ):
+            return (
+                f"the {name} {ast.unparse(node)} in {ast.unparse(call)}, which "
+                f"is not an integer from {lowest} to {highest}"
+            )
+    knots = arguments.get("knots")
+    if knots is None or (isinstance(knots, ast.Constant) and knots.value is None):
+        return None
+    if not (isinstance(knots, ast.List | ast.Tuple) and len(knots.elts) <= _MAX_SIZE):
+        return (
+            f"the knots {ast.unparse(knots)} in {ast.unparse(call)}, which are "
+            f"not a list of at most {_MAX_SIZE} numbers"
+        )
+    return None
 
 
 def _is_contrast(node: ast.expr) -> bool:
