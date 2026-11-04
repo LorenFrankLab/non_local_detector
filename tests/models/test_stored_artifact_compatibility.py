@@ -30,6 +30,7 @@ from non_local_detector import discrete_state_transitions as dst
 from non_local_detector import initial_conditions as ic
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
@@ -293,6 +294,36 @@ def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     restored = pickle.loads(pickle.dumps(environment))
     np.testing.assert_array_equal(
         restored.place_bin_centers_, environment.place_bin_centers_
+    )
+
+
+@pytest.mark.parametrize(
+    ("version", "artifact"), [(v, a) for v, a in MODELS if "2d" in a]
+)
+def test_open_field_pickled_before_its_distances_were_stored_rebuilds_them(
+    version, artifact
+):
+    """Releases before 0.5.13 stored no ``distance_between_nodes_`` or
+    ``track_graphDD`` for an open field. Without them, the stored grid loads
+    with the graph and distances a fit of it gives, equal to those these
+    versions stored."""
+    (state,) = _stored_environment_states(version, artifact)
+    stored = pickle.loads(pickle.dumps(_LegacyEnvironmentPickle(state)))
+    stripped = {
+        name: value
+        for name, value in state.items()
+        if name not in ("distance_between_nodes_", "track_graphDD")
+    }
+
+    environment = pickle.loads(pickle.dumps(_LegacyEnvironmentPickle(stripped)))
+
+    expected = stored.distance_between_nodes_
+    if isinstance(expected, LazyGraphDistances):
+        expected = expected.to_dense()
+    np.testing.assert_array_equal(environment.distance_between_nodes_, expected)
+    assert set(environment.track_graphDD.edges) == set(stored.track_graphDD.edges)
+    assert environment.infer_track_interior_ == state.get(
+        "infer_track_interior_", state["infer_track_interior"]
     )
 
 

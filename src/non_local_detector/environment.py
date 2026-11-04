@@ -207,6 +207,38 @@ def _same_configuration(current: Any, fitted: Any) -> bool:
         return False
 
 
+def _graph_distances(
+    track_graph: nx.Graph,
+    *,
+    compute_all_pairs_distances: bool = True,
+    max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
+) -> np.ndarray | LazyGraphDistances:
+    """Shortest-path distances between the nodes of an N-D grid's graph.
+
+    Parameters
+    ----------
+    track_graph : networkx.Graph
+        Graph of the grid's bin centers (``_make_nD_track_graph``).
+    compute_all_pairs_distances : bool, optional
+    max_dense_distance_bytes : int, optional
+        See :meth:`Environment.fit_place_grid`.
+
+    Returns
+    -------
+    distance_between_nodes : np.ndarray, shape (n_bins, n_bins), or LazyGraphDistances
+    """
+    if compute_all_pairs_distances:
+        # Eager dense matrix, unbounded: max_dense_distance_bytes applies only
+        # to the lazy path.
+        n_nodes = len(track_graph)
+        return LazyGraphDistances.from_graph(track_graph).to_dense(
+            max_bytes=8 * n_nodes**2
+        )
+    return LazyGraphDistances.from_graph(
+        track_graph, max_dense_bytes=max_dense_distance_bytes
+    )
+
+
 @dataclass(frozen=True, eq=False, kw_only=True)
 class PlaceGrid:
     """The fitted geometry of an :class:`Environment`.
@@ -287,11 +319,33 @@ def _legacy_place_grid(
     """
     if fitted.get("place_bin_centers") is None:
         return None
+    fitted = {name: value for name, value in fitted.items() if value is not None}
     centers_shape = tuple(fitted["centers_shape"])
-    is_track_interior = fitted.get("is_track_interior")
-    if is_track_interior is None:
-        # Earlier releases treated a missing mask as all bins interior.
-        is_track_interior = np.ones(centers_shape, dtype=bool)
+    # Earlier releases treated a missing mask as all bins interior.
+    is_track_interior = fitted.get(
+        "is_track_interior", np.ones(centers_shape, dtype=bool)
+    )
+    if environment.track_graph is None:
+        # Releases before 0.5.13 stored no graph or distances for an N-D
+        # grid; rebuild them as fit_place_grid does (dense, its default).
+        if "track_graphDD" not in fitted:
+            fitted["track_graphDD"] = _make_nD_track_graph(
+                fitted["place_bin_centers"], is_track_interior, centers_shape
+            )
+        if "distance_between_nodes" not in fitted:
+            fitted["distance_between_nodes"] = _graph_distances(fitted["track_graphDD"])
+        # Released fits stored the infer_track_interior they used in the
+        # configuration field.
+        fitted.setdefault("infer_track_interior", environment.infer_track_interior)
+    elif "distance_between_nodes" not in fitted:
+        assert environment.edge_order is not None  # required with a track graph
+        assert environment.edge_spacing is not None
+        fitted["distance_between_nodes"] = get_track_grid(
+            environment.track_graph,
+            environment.edge_order,
+            environment.edge_spacing,
+            cast("float", environment.place_bin_size),
+        )[3]
     return PlaceGrid(
         **{
             **fitted,
@@ -1160,18 +1214,11 @@ class Environment:
         track_graph_dd = _make_nD_track_graph(
             place_bin_centers, is_track_interior, centers_shape
         )
-        distance_between_nodes: np.ndarray | LazyGraphDistances
-        if compute_all_pairs_distances:
-            # Eager dense matrix, unbounded: max_dense_distance_bytes
-            # applies only to the lazy path.
-            n_nodes = len(track_graph_dd)
-            distance_between_nodes = LazyGraphDistances.from_graph(
-                track_graph_dd
-            ).to_dense(max_bytes=8 * n_nodes**2)
-        else:
-            distance_between_nodes = LazyGraphDistances.from_graph(
-                track_graph_dd, max_dense_bytes=max_dense_distance_bytes
-            )
+        distance_between_nodes = _graph_distances(
+            track_graph_dd,
+            compute_all_pairs_distances=compute_all_pairs_distances,
+            max_dense_distance_bytes=max_dense_distance_bytes,
+        )
         return PlaceGrid(
             edges=tuple(edges),
             place_bin_edges=place_bin_edges,

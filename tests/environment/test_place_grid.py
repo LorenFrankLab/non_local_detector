@@ -8,6 +8,7 @@ depends on changes, until ``fit_place_grid`` runs again.
 """
 
 import copy
+import copyreg
 import dataclasses
 import pickle
 
@@ -167,3 +168,56 @@ def test_copies_keep_their_fit(fitted):
             copied.place_bin_centers_, fitted.place_bin_centers_
         )
         assert copied.place_grid_ is not fitted.place_grid_
+
+
+def _legacy_state(environment, *, drop=()):
+    """``vars()`` of ``environment`` as releases that stored the fitted
+    attributes as fields pickled it, without the attributes in ``drop``."""
+    state = {**environment.get_params(), "_cache": {}}
+    for name in FITTED_ATTRIBUTES:
+        if name not in drop:
+            state[name] = getattr(environment, name)
+    return state
+
+
+def _unpickle_legacy(state):
+    class _Legacy:
+        def __reduce__(self):
+            return (copyreg._reconstructor, (Environment, object, None), state)
+
+    return pickle.loads(pickle.dumps(_Legacy()))
+
+
+def test_legacy_open_field_without_distances_gets_those_of_a_fresh_fit(fitted):
+    """Releases before 0.5.13 stored no graph or distances for an open field;
+    loading rebuilds them as ``fit_place_grid`` does."""
+    loaded = _unpickle_legacy(
+        _legacy_state(fitted, drop=("distance_between_nodes_", "track_graphDD"))
+    )
+
+    np.testing.assert_array_equal(
+        loaded.distance_between_nodes_, fitted.distance_between_nodes_
+    )
+    assert nx.utils.graphs_equal(loaded.track_graphDD, fitted.track_graphDD)
+    centers = loaded.place_bin_centers_[loaded.is_track_interior_flat_]
+    np.testing.assert_array_equal(
+        loaded.get_manifold_distances(centers[:5], centers[5:10]),
+        fitted.get_manifold_distances(centers[:5], centers[5:10]),
+    )
+
+
+def test_legacy_infer_track_interior_comes_from_the_configuration(fitted):
+    """Released fits stored the ``infer_track_interior`` they used in the
+    configuration field, and no ``infer_track_interior_``."""
+    state = _legacy_state(fitted, drop=("infer_track_interior_",))
+    state["infer_track_interior"] = False
+    assert _unpickle_legacy(state).infer_track_interior_ is False
+
+
+def test_legacy_track_graph_grid_without_distances_gets_them():
+    """No stored grid loads without distances, so no reader needs a fallback."""
+    environment = _track_environment().fit_place_grid()
+    loaded = _unpickle_legacy(
+        _legacy_state(environment, drop=("distance_between_nodes_",))
+    )
+    assert loaded.distance_between_nodes_ == environment.distance_between_nodes_
