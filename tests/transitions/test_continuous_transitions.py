@@ -63,6 +63,49 @@ def test_random_walk_with_directional_constraints(simple_1d_environment):
     )
 
 
+@pytest.mark.parametrize(
+    ("n_dims", "movement_mean", "movement_var", "exact"),
+    [
+        (1, 0.0, 6.0, True),
+        (1, 1.5, 0.01, True),
+        (2, 0.0, 6.0, True),
+        (2, np.array([1.0, -2.0]), np.array([2.0, 9.0]), True),
+        (2, 0.0, np.array([[3.0, 1.2], [1.2, 2.0]]), False),
+        (3, 0.0, np.diag([1.0, 4.0, 9.0]), True),
+    ],
+)
+def test_euclidean_random_walk_matches_scipy_row_by_row(
+    monkeypatch, n_dims, movement_mean, movement_var, exact
+):
+    """The blocked build equals scipy's density of each row: bit-identical for
+    a scalar or diagonal covariance, to float64 rounding for a full one. Saved
+    models compare rebuilt transitions with fingerprints of this build."""
+    from scipy.stats import multivariate_normal
+
+    from non_local_detector import continuous_state_transitions as cst
+
+    rng = np.random.default_rng(0)
+    centers = rng.uniform(0.0, 12.0, size=(23, n_dims))
+    env = set_place_grid(Environment(), place_bin_centers=centers)
+    expected = np.stack(
+        [
+            multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
+                centers
+            )
+            for center in centers
+        ]
+    )
+    # Blocks of 2 rows: several blocks and a ragged last one.
+    monkeypatch.setattr(cst, "_RANDOM_WALK_BLOCK_ENTRIES", 2 * len(centers))
+
+    actual = cst._euclidean_random_walk(env, movement_mean, movement_var)
+
+    if exact:
+        np.testing.assert_array_equal(actual, expected)
+    else:
+        np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=0.0)
+
+
 def test_random_walk_invalid_direction_raises_at_construction():
     """An invalid direction is rejected when the RandomWalk is made, not
     only when its matrix is built."""

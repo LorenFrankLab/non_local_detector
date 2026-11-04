@@ -229,6 +229,12 @@ def _random_walk_on_track_graph(
     return state_transition
 
 
+# Entries of the transition evaluated per block of rows by
+# ``_euclidean_random_walk``: each temporary is 64 Ki float64 (512 KiB), so a
+# block stays in cache and the build's transient memory is a few megabytes.
+_RANDOM_WALK_BLOCK_ENTRIES = 2**16
+
+
 def _euclidean_random_walk(
     environment: Environment, movement_mean: float, movement_var: float
 ) -> np.ndarray:
@@ -246,19 +252,62 @@ def _euclidean_random_walk(
     Returns
     -------
     transition : np.ndarray, shape (n_position_bins, n_position_bins)
+        Row ``i`` is the density of ``N(center_i + movement_mean,
+        movement_var)`` at every bin center.
 
+    Notes
+    -----
+    The covariance is shared by every row, so it is validated and decomposed
+    once by ``scipy.stats.multivariate_normal``, and the log density
+    ``-0.5 * (rank * log(2 pi) + log_pdet + |d @ U|^2)`` of every
+    displacement ``d = center_j - (center_i + movement_mean)`` is evaluated
+    with scipy's whitening matrix ``U``, one coordinate at a time over blocks
+    of rows. With a scalar or diagonal covariance (``U`` diagonal, so the
+    products it skips are exact zeros) every operation rounds as scipy's
+    does, and the result is bit-identical to evaluating
+    ``multivariate_normal(center_i + movement_mean, movement_var).pdf`` row
+    by row; with a full covariance the whitening's sums of products round
+    differently from scipy's matrix product, a relative difference of about
+    ``eps * |d @ U|^2``.
     """
-    place_bin_centers = environment.place_bin_centers_
+    place_bin_centers = np.asarray(environment.place_bin_centers_, dtype=float)
+    n_bins = len(place_bin_centers)
+    sources = place_bin_centers + movement_mean
+    n_dims = sources.shape[1]
+    covariance = multivariate_normal(mean=np.zeros(n_dims), cov=movement_var).cov_object
+    whitening = covariance.whiten(np.eye(n_dims))  # (n_dims, n_dims)
+    log_normalizer = covariance.rank * np.log(2 * np.pi) + covariance.log_pdet
+    destinations = [
+        np.ascontiguousarray(place_bin_centers[:, dim]) for dim in range(n_dims)
+    ]
 
-    return np.stack(
-        [
-            multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
-                place_bin_centers
-            )
-            for center in place_bin_centers
-        ],
-        axis=0,
-    )
+    transition = np.empty((n_bins, n_bins))
+    rows_per_block = max(1, _RANDOM_WALK_BLOCK_ENTRIES // max(n_bins, 1))
+    for start in range(0, n_bins, rows_per_block):
+        rows = slice(start, start + rows_per_block)
+        displacement = [
+            destinations[dim][np.newaxis] - sources[rows, dim, np.newaxis]
+            for dim in range(n_dims)
+        ]
+        block = transition[rows]  # a view: filled in place
+        for out_dim in range(n_dims):
+            # Zero entries of U add exact zeros to the sum; skip them.
+            terms = [
+                displacement[dim] * whitening[dim, out_dim]
+                for dim in range(n_dims)
+                if whitening[dim, out_dim] != 0
+            ]
+            whitened = terms[0]
+            for term in terms[1:]:
+                whitened += term
+            if out_dim == 0:
+                np.square(whitened, out=block)
+            else:
+                block += np.square(whitened, out=whitened)
+        block += log_normalizer
+        block *= -0.5
+        np.exp(block, out=block)
+    return transition
 
 
 class _DropsLegacyEnvironment:
