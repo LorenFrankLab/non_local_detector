@@ -58,9 +58,10 @@ import hashlib
 import pickle
 import warnings
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import matplotlib as mpl
@@ -189,19 +190,36 @@ _LEGACY_FITTED_ATTRIBUTES = {
 }
 
 
-def _same_configuration(current: Any, fitted: Any) -> bool:
-    """Whether a configuration value is the one a grid was fitted with.
+def _configuration_snapshot(value: Any) -> Any:
+    """A copy of a configuration value to compare later values with.
 
-    Arrays and graphs are compared by identity (an in-place edit of either is
-    not detected); other values by equality, so assigning an equal value
-    keeps the fit.
+    The track graph is kept by reference (it is compared by identity); other
+    values are deep-copied, so an in-place edit of a list or array the
+    environment holds shows as a change.
+    """
+    return value if isinstance(value, nx.Graph) else copy.deepcopy(value)
+
+
+def _same_configuration(current: Any, fitted: Any) -> bool:
+    """Whether a configuration value equals the one a grid was fitted with.
+
+    Values are compared by value: sequences element by element whatever their
+    container (a list equals the tuple with the same items), arrays with
+    ``np.array_equal``. Graphs are compared by identity, so an in-place edit
+    of the track graph is not detected.
     """
     if current is fitted:
         return True
-    if isinstance(current, (np.ndarray, nx.Graph)) or isinstance(
-        fitted, (np.ndarray, nx.Graph)
-    ):
+    if isinstance(current, nx.Graph) or isinstance(fitted, nx.Graph):
         return False
+    if isinstance(current, np.ndarray) or isinstance(fitted, np.ndarray):
+        return bool(
+            np.shape(current) == np.shape(fitted) and np.array_equal(current, fitted)
+        )
+    if isinstance(current, (list, tuple)) and isinstance(fitted, (list, tuple)):
+        return len(current) == len(fitted) and all(
+            _same_configuration(a, b) for a, b in zip(current, fitted, strict=True)
+        )
     try:
         return bool(current == fitted)
     except (TypeError, ValueError):
@@ -265,9 +283,10 @@ class PlaceGrid:
         Shortest-path distances between the nodes of the track graph: a
         dict of dicts on a track graph, otherwise an
         ``(n_bins, n_bins)`` array or a deferred view of one.
-    configuration : dict[str, Any]
-        The configuration fields the grid depends on, as they were when it
-        was fitted; the environment compares its fields with them.
+    configuration : Mapping[str, Any]
+        Read-only copy of the configuration fields the grid depends on, as
+        they were when it was fitted; the environment compares its fields
+        with them.
     infer_track_interior : bool or None
         The ``infer_track_interior`` argument of the fit. None on a track
         graph.
@@ -290,7 +309,7 @@ class PlaceGrid:
     distance_between_nodes: (
         dict[int, dict[int, float]] | np.ndarray | LazyGraphDistances
     )
-    configuration: dict[str, Any]
+    configuration: Mapping[str, Any]
     infer_track_interior: bool | None = None
     is_track_boundary: np.ndarray | None = None
     track_graphDD: nx.Graph | None = None
@@ -299,6 +318,21 @@ class PlaceGrid:
     place_bin_edges_nodes_df: pd.DataFrame | None = None
     place_bin_centers_nodes_df: pd.DataFrame | None = None
     nodes_df: pd.DataFrame | None = None
+
+    def __post_init__(self) -> None:
+        """Make ``configuration`` a read-only view of its own copy."""
+        object.__setattr__(
+            self, "configuration", MappingProxyType(dict(self.configuration))
+        )
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Pickle the read-only configuration as a dict."""
+        return {**self.__dict__, "configuration": dict(self.configuration)}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore a pickled grid, with a read-only configuration."""
+        self.__dict__.update(state)
+        self.__post_init__()
 
 
 def _legacy_place_grid(
@@ -400,8 +434,10 @@ class Environment:
         The fitted geometry; the attributes below read it. Every fitted
         attribute raises ``NotFittedError`` before :meth:`fit_place_grid`, and
         after a configuration field the grid depends on (all but
-        ``environment_name`` and ``infer_track_interior``) is given another
-        value, until :meth:`fit_place_grid` runs again.
+        ``environment_name`` and ``infer_track_interior``) changes value,
+        until :meth:`fit_place_grid` runs again. Values are compared by value,
+        including in-place edits of lists and arrays; the track graph is
+        compared by identity.
     edges_ : tuple[np.ndarray, ...]
         Bin edges for each dimension.
     place_bin_edges_ : np.ndarray, shape (n_bins + 1, n_dims) or (n_total_bins + n_edges, n_dims)
@@ -586,8 +622,19 @@ class Environment:
             self._place_grid = _legacy_place_grid(self, legacy)
 
     def _grid_configuration(self) -> dict[str, Any]:
-        """The configuration fields the fitted grid depends on, by name."""
-        return {name: getattr(self, name) for name in _GRID_CONFIGURATION}
+        """Snapshots of the configuration fields the fitted grid depends on."""
+        return {
+            name: _configuration_snapshot(getattr(self, name))
+            for name in _GRID_CONFIGURATION
+        }
+
+    def _changed_configuration(self, grid: PlaceGrid) -> list[str]:
+        """The configuration fields that differ from those ``grid`` was fit with."""
+        return [
+            name
+            for name, value in grid.configuration.items()
+            if not _same_configuration(getattr(self, name), value)
+        ]
 
     @property
     def place_grid_(self) -> PlaceGrid:
@@ -610,11 +657,7 @@ class Environment:
                 msg,
                 hint="Call environment.fit_place_grid(position) first.",
             )
-        changed = [
-            name
-            for name, value in grid.configuration.items()
-            if not _same_configuration(getattr(self, name), value)
-        ]
+        changed = self._changed_configuration(grid)
         if changed:
             msg = "Environment configuration changed since fit_place_grid"
             raise NotFittedError(
@@ -757,7 +800,14 @@ class Environment:
         -------
         value : Any
             The cached value, or None if nothing is cached under ``key``.
+            Entries describe the fitted grid, so after a configuration field
+            the grid depends on changes the cache is cleared and None
+            returned.
         """
+        grid = self._place_grid
+        if grid is not None and self._changed_configuration(grid):
+            self.clear_cache()
+            return None
         entry = self._cache.get(key)
         return None if entry is None else entry[0]
 

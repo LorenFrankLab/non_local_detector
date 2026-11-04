@@ -277,8 +277,6 @@ def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     assert environment._is_fitted
     assert "place_bin_centers_" not in vars(environment)
     assert environment.get_params().keys() == Environment().get_params().keys()
-    for name, value in environment.get_params().items():
-        assert value is environment.place_grid_.configuration.get(name, value)
     np.testing.assert_array_equal(
         environment.place_bin_centers_, state["place_bin_centers_"]
     )

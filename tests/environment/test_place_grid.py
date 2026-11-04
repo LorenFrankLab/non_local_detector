@@ -233,3 +233,40 @@ def test_legacy_unset_fitted_arguments_are_dropped_with_a_warning():
     assert len(record) == 1
     assert "_is_fitted" in str(record[0].message)
     assert environment.get_params() == Environment(place_bin_size=3.0).get_params()
+
+
+def test_equal_configuration_in_another_container_keeps_the_fit():
+    environment = Environment(position_range=[(0.0, 20.0), (0.0, 20.0)])
+    environment.fit_place_grid(POSITION)
+    grid = environment.place_grid_
+    environment.position_range = ((0.0, 20.0), (0.0, 20.0))
+    assert environment.place_grid_ is grid
+
+
+def test_in_place_edits_of_configuration_are_detected():
+    shape = Environment().fit_place_grid(POSITION).centers_shape_
+    mask = np.ones(shape, dtype=bool)
+    position_range = [(0.0, 20.0), (0.0, 20.0)]
+    environment = Environment(is_track_interior=mask, position_range=position_range)
+    environment.fit_place_grid(POSITION)
+
+    mask[0, 0] = False
+    with pytest.raises(NotFittedError, match="is_track_interior"):
+        _ = environment.place_bin_centers_
+    mask[0, 0] = True
+    position_range[0] = (0.0, 30.0)
+    with pytest.raises(NotFittedError, match="position_range"):
+        _ = environment.place_bin_centers_
+
+
+def test_cache_is_dropped_when_the_configuration_changes(fitted):
+    fitted.place_bin_size = 5.0
+    assert fitted.get_cached("derived") is None
+
+
+def test_grid_configuration_is_read_only(fitted):
+    configuration = fitted.place_grid_.configuration
+    with pytest.raises(TypeError):
+        configuration["place_bin_size"] = 3.0  # type: ignore[index]
+    for copied in (copy.deepcopy(fitted), pickle.loads(pickle.dumps(fitted))):
+        assert copied.place_grid_.configuration["place_bin_size"] == 2.0
