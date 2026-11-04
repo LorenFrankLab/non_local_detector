@@ -44,10 +44,23 @@ patsy looks up a name it does not find in the covariates in the caller's
 namespace and Python's builtins (``breakpoint``, ``exit``, ...). Wherever the
 covariates are known, every covariate name of the formula must therefore be
 one of them (``covariate_names``).
+
+A formula read from a file is held as one of two types, so that copies,
+pickles and ``sklearn.clone`` of the loaded model carry its origin:
+
+- ``LoadedFormula``, a ``str`` within the grammar, checked again with the
+  covariate names whenever a design is built from it;
+- ``UntrustedFormula``, an inert object holding the text of a formula outside
+  the grammar. It is not a string, so patsy cannot evaluate it, and building a
+  design from it raises (``refuse_untrusted``).
+
+Setting a transition's formula to a plain string, the user's own code, clears
+either. These classes are pickled by reference to this module.
 """
 
 import ast
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import NoReturn
 
 from patsy import ModelDesc, PatsyError
@@ -134,11 +147,63 @@ _ALLOWED = (
     + " with literal arguments, e.g. C(arm, Treatment('b')); string literals "
     "are allowed only there)"
 )
+TRUST_HINT = (
+    "If you trust the file, load it with load_model(path, trust_formulas=True)."
+)
+
+
 _HINT = (
     "patsy evaluates a formula as Python, so a formula read from a saved "
-    "model file is limited to this grammar. If you trust the file, load it "
-    "with load_model(path, trust_formulas=True)."
+    f"model file is limited to this grammar. {TRUST_HINT}"
 )
+
+
+class LoadedFormula(str):
+    """A transition formula read from a saved model file, within the grammar.
+
+    A ``str``, which patsy evaluates as any formula; building a design from it
+    checks it again, with the names of the covariates it is evaluated on.
+    """
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class UntrustedFormula:
+    """A transition formula read from a saved model file and not evaluated.
+
+    It is outside the grammar and the file was not trusted. Not a string (and
+    without patsy's ``__patsy_get_model_desc__``), so patsy refuses it;
+    building a design from it raises ``ValidationError``.
+
+    Attributes
+    ----------
+    text : object
+        The formula as stored in the file, usually a str.
+    """
+
+    text: object
+
+
+def refuse_untrusted(formula: UntrustedFormula, action: str) -> NoReturn:
+    """Raise that ``action`` would evaluate the untrusted ``formula``.
+
+    Raises
+    ------
+    ValidationError
+        Always, naming the formula and ``trust_formulas``.
+    """
+    msg = (
+        f"Cannot {action}: the transition formula {formula.text!r} was read "
+        "from a saved model file, is outside the formula grammar and was not "
+        "trusted, so it is not evaluated (patsy evaluates formulas as Python). "
+        "The model can only be inspected."
+    )
+    raise ValidationError(
+        msg,
+        hint=f"{TRUST_HINT} Or give the transition a formula of your own, e.g. "
+        "detector.discrete_transition_type.formula = '1 + quantile_bs(speed)'.",
+    )
 
 
 def check_formula(

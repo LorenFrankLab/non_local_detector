@@ -38,6 +38,7 @@ from patsy import DesignMatrix
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
+from non_local_detector._formula_grammar import UntrustedFormula
 from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.checkpointed_inference import (
@@ -70,6 +71,7 @@ from non_local_detector.discrete_state_transitions import (
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
     _max_transition_change,
+    _refuse_untrusted_transition,
     _row_smoothness,
     _smoothness_matrix,
     _transition_intervals,
@@ -3207,8 +3209,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # nothing reads it now.
         self.__dict__.pop("_env_lookup_cache_", None)
         covariate_data = state.get("_discrete_transition_covariate_data_")
-        if covariate_data is not None and (
-            self.discrete_transition_design_matrix_ is None
+        # A formula a saved model file was not trusted with stays unevaluated:
+        # the copy is for inspection only, as the loaded model is.
+        untrusted = isinstance(
+            getattr(self.discrete_transition_type, "formula", None), UntrustedFormula
+        )
+        if (
+            covariate_data is not None
+            and self.discrete_transition_design_matrix_ is None
+            and not untrusted
         ):
             self.discrete_transition_design_matrix_ = (
                 self.discrete_transition_type.make_state_transition(
@@ -3369,7 +3378,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ValueError
             If the transitions do not depend on covariates, or were not
             estimated by EM (no covariance yet).
+        ValidationError
+            If the transition formula was read from a saved model file and
+            not trusted (see ``load_model``).
         """
+        _refuse_untrusted_transition(
+            self.discrete_transition_type, "compute transition intervals"
+        )
         if self.discrete_transition_design_matrix_ is None:
             msg = (
                 "The discrete transitions do not depend on covariates; use a "
@@ -3418,8 +3433,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         covariate_data : dict or pd.DataFrame, optional
             Dictionary or DataFrame of covariate data, by default None.
             Keys are covariate names and values are 1D arrays.
-        """
 
+        Raises
+        ------
+        ValidationError
+            If the transition formula was read from a saved model file and
+            not trusted (see ``load_model``).
+        """
+        _refuse_untrusted_transition(
+            self.discrete_transition_type, "plot the transitions"
+        )
         if self.discrete_state_transitions_.ndim == 2:
             if ax is None:
                 ax = plt.gca()
@@ -3708,12 +3731,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        # A refit replaces every structure a loaded detector rebuilt, but
-        # must not evaluate a formula the file was not trusted with.
-        rebuild_check = self.__dict__.get("_rebuild_check_")
-        if rebuild_check is not None:
-            rebuild_check.check_fit(self)
+        # Before anything changes, so a refused fit keeps the loaded model.
+        _refuse_untrusted_transition(self.discrete_transition_type, "fit")
         self._invalidate_stored_log_likelihood()  # stale after a refit
+        # A refit replaces every structure a loaded detector rebuilt.
         self.__dict__.pop("_rebuild_check_", None)
         self.initialize_environments(
             position=position,
@@ -3756,6 +3777,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."
             raise ValidationError(msg)
+        _refuse_untrusted_transition(self.discrete_transition_type, "decode")
         # A loaded detector's rebuilt structures must match the saved ones.
         rebuild_check = self.__dict__.get("_rebuild_check_")
         if rebuild_check is not None:
@@ -6467,9 +6489,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         numbers, arithmetic, the package's spline transforms, elementwise
         numpy functions such as ``np.log`` and ``np.sin``, and ``C()`` with
         patsy's contrasts) is not evaluated: the model loads for inspection
-        only, with a ``UserWarning`` naming the formula, and decoding raises
-        ``ValidationError``, as does fitting it until the transition is given
-        a formula of your own.
+        only, with a ``UserWarning`` naming the formula, and its transition's
+        ``formula`` is an inert ``UntrustedFormula`` that copies, pickles and
+        ``sklearn.clone`` carry. Decoding, fitting, transition intervals,
+        transition plots and ``save_model`` of the model or any copy raise
+        ``ValidationError`` until the transition is given a formula of your
+        own. A formula within the grammar is a ``LoadedFormula`` (a ``str``),
+        checked again with the covariate names when a design is built from it.
 
         A pickle saved by an earlier release loads for inspection, including
         one pickled with JAX 0.4.30 or earlier. Decoding with one fitted

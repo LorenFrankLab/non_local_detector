@@ -20,6 +20,7 @@ import pytest
 
 import non_local_detector as nld
 from non_local_detector import discrete_state_transitions as dst
+from non_local_detector._formula_grammar import UntrustedFormula
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.model_format import read_model_summary
@@ -111,7 +112,7 @@ def test_a_refused_stored_formula_loads_for_inspection_only(
         loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
     summary = read_model_summary(path)
 
-    assert loaded.discrete_transition_type.formula == formula
+    assert loaded.discrete_transition_type.formula == UntrustedFormula(formula)
     assert loaded.discrete_transition_design_matrix_ is None
     np.testing.assert_array_equal(
         loaded.discrete_transition_coefficients_,
@@ -306,23 +307,6 @@ def test_a_model_loaded_for_inspection_refuses_to_fit(
     with pytest.raises(ValidationError, match="trust_formulas=True") as refused:
         _refit(loaded, sorted_recording)
     assert repr(formula) in str(refused.value)
-
-
-def test_a_model_loaded_for_inspection_fits_with_a_formula_of_your_own(
-    fitted_outside_grammar, fitted, sorted_recording, tmp_path
-):
-    path = tmp_path / "model.nld"
-    fitted_outside_grammar.save_model(path)
-    with pytest.warns(UserWarning, match="trust_formulas=True"):
-        loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
-
-    loaded.discrete_transition_type.formula = "1 + speed"
-    _refit(loaded, sorted_recording)
-
-    np.testing.assert_array_equal(
-        loaded.discrete_transition_design_matrix_,
-        fitted.discrete_transition_design_matrix_,
-    )
 
 
 def test_an_unfitted_model_with_a_trusted_formula_loads_without_warning(

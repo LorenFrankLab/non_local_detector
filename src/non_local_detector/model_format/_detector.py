@@ -29,8 +29,11 @@ loaded detector first decodes, the rebuilt structures are compared with their
 fingerprints; a mismatch refuses to decode and asks for a refit.
 
 patsy evaluates a covariate transition's formula as Python, and the file may
-be someone else's, so unless ``trust_formulas`` is set a formula outside the
-formula grammar is not evaluated: the detector loads for inspection only.
+be someone else's, so unless ``trust_formulas`` is set the stored formula is
+marked as read from a file: a ``LoadedFormula`` within the formula grammar,
+checked again whenever a design is built from it, or an inert
+``UntrustedFormula`` outside it, which is never evaluated, so the detector and
+every copy of it are for inspection only.
 """
 
 import warnings
@@ -41,7 +44,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
-from non_local_detector._formula_grammar import check_formula
+from non_local_detector._formula_grammar import (
+    TRUST_HINT,
+    LoadedFormula,
+    UntrustedFormula,
+    check_formula,
+    refuse_untrusted,
+)
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
     _declared_destination,
@@ -295,10 +304,6 @@ class _RebuildCheck:
     """The fingerprints a loaded detector's rebuilt structures must match.
 
     ``verify`` runs before the first decode; once it passes it is not repeated.
-    ``check_fit`` runs before a refit. ``untrusted_formula`` is the
-    transition formula read from the file that was not evaluated (outside the
-    formula grammar and not trusted), or None; an unfitted detector loaded
-    with one carries a check without fingerprints, for ``check_fit``.
     """
 
     def __init__(
@@ -306,37 +311,11 @@ class _RebuildCheck:
         fingerprints: dict[str, Any],
         stored_blocks: Sequence[tuple[int, int]],
         package_version: str,
-        untrusted_formula: object = None,
     ) -> None:
         self.fingerprints = fingerprints
         self.stored_blocks = tuple(stored_blocks)
         self.package_version = package_version
-        self.untrusted_formula = untrusted_formula
         self.verified = False
-
-    def check_fit(self, detector: "_DetectorBase") -> None:
-        """Raise if fitting would evaluate the untrusted formula.
-
-        Raises
-        ------
-        ValidationError
-            If the detector's transition still has the formula read from
-            the file that was not evaluated.
-        """
-        formula = self.untrusted_formula
-        if formula is None or (
-            getattr(detector.discrete_transition_type, "formula", None) != formula
-        ):
-            return
-        msg = (
-            "The model loaded for inspection only: fitting would evaluate its "
-            f"transition formula {formula!r}, which was read from the file and "
-            "is outside the formula grammar."
-        )
-        raise ValidationError(
-            msg,
-            hint=f"{_TRUST_HINT} Or give the transition a formula of your own.",
-        )
 
     def mismatches(self, detector: "_DetectorBase") -> list[str]:
         """Each rebuilt structure that differs from its saved fingerprint."""
@@ -387,13 +366,6 @@ class _RebuildCheck:
         """
         if self.verified:
             return
-        if self.untrusted_formula is not None:
-            msg = (
-                "The saved model cannot decode: its transition formula "
-                f"{self.untrusted_formula!r} is outside the formula grammar and "
-                "was not evaluated. It loaded for inspection only."
-            )
-            raise ValidationError(msg, hint=_TRUST_HINT)
         problems = self.mismatches(detector)
         if problems:
             msg = (
@@ -707,7 +679,14 @@ def _manifest(spec: TypeSpec, writer: ArrayWriter) -> dict[str, Any]:
 
 
 def save_detector(detector: "_DetectorBase", path: str | Path) -> None:
-    """Write ``detector`` to ``path`` in the saved-model format."""
+    """Write ``detector`` to ``path`` in the saved-model format.
+
+    Refused for a transition formula a saved model file was not trusted with
+    (an ``UntrustedFormula``): saving it would turn it back into plain text.
+    """
+    formula = getattr(detector.discrete_transition_type, "formula", None)
+    if isinstance(formula, UntrustedFormula):
+        refuse_untrusted(formula, "save the model")
     with new_model_file(path) as archive:
         manifest, config, state = detector_documents(detector, ArrayWriter(archive))
         for name, document in (
@@ -718,21 +697,16 @@ def save_detector(detector: "_DetectorBase", path: str | Path) -> None:
             write_document(archive, name, document)
 
 
-_TRUST_HINT = (
-    "If you trust the file, load it with load_model(path, trust_formulas=True)."
-)
-
-
-def _untrusted_formula(
+def _mark_file_formula(
     detector: "_DetectorBase",
     covariate_data: "pd.DataFrame | Mapping[str, Any] | None",
-) -> object:
-    """The detector's transition formula, read from a file, if it is outside
-    the formula grammar (a stored formula may be of any type), or None.
+) -> None:
+    """Mark the detector's transition formula, read from a file, as such.
 
-    patsy evaluates a formula as Python, so a formula outside the grammar
-    could run any code. It is not evaluated: the detector loads for
-    inspection only, with a ``UserWarning``.
+    A formula within the formula grammar becomes a ``LoadedFormula``, checked
+    again with the covariates whenever a design is built from it; one outside
+    it becomes an inert ``UntrustedFormula``, with a ``UserWarning``, so
+    neither the detector nor any copy of it evaluates it.
 
     Parameters
     ----------
@@ -742,9 +716,12 @@ def _untrusted_formula(
         The stored covariates of a fitted detector, whose keys the formula's
         names must be; None for an unfitted detector.
     """
-    formula = getattr(detector.discrete_transition_type, "formula", None)
+    # A covariate transition of the package, or a registered one with a
+    # formula; one without a formula is left alone.
+    transition: Any = detector.discrete_transition_type
+    formula = getattr(transition, "formula", None)
     if formula is None:
-        return None
+        return
     try:
         check_formula(
             formula, None if covariate_data is None else list(covariate_data.keys())
@@ -756,18 +733,19 @@ def _untrusted_formula(
             f"The saved model's transition formula {formula!r} is outside the "
             "formula grammar for formulas read from a file, so it was not "
             f"evaluated (patsy evaluates formulas as Python): {reason} The "
-            "model loaded for inspection only and refuses to decode. "
-            f"{_TRUST_HINT}",
+            "model loaded for inspection only: decoding, fitting and saving it, "
+            f"or any copy of it, are refused. {TRUST_HINT}",
             UserWarning,
             stacklevel=user_stacklevel(),
         )
-        return formula
-    return None
+        transition.formula = UntrustedFormula(formula)
+        return
+    transition.formula = LoadedFormula(formula)
 
 
 def _rebuild_discrete(
     detector: "_DetectorBase", stored: dict[str, Any], *, trust_formulas: bool
-) -> object:
+) -> None:
     """Rebuild the discrete transition's design, penalties and transitions.
 
     Parameters
@@ -778,16 +756,9 @@ def _rebuild_discrete(
         The decoded stored state.
     trust_formulas : bool
         Evaluate the transition formula even if it is outside the formula
-        grammar.
-
-    Returns
-    -------
-    untrusted_formula : object
-        The formula, if the covariate design was not rebuilt because it is
-        outside the formula grammar and ``trust_formulas`` is False, else
-        None. The detector then loads for inspection only, without a design
-        or penalties, and without the training-time
-        ``discrete_state_transitions_``.
+        grammar. Otherwise one outside it is not evaluated: the detector
+        loads for inspection only, without a design or penalties, and
+        without the training-time ``discrete_state_transitions_``.
     """
     from non_local_detector.discrete_state_transitions import (
         _smoothness_matrix,
@@ -799,13 +770,16 @@ def _rebuild_discrete(
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         detector.discrete_state_transitions_ = stored["discrete_state_transitions"]
-        return None
-    untrusted = None if trust_formulas else _untrusted_formula(detector, covariate_data)
-    if untrusted is not None:
+        return
+    if not trust_formulas:
+        _mark_file_formula(detector, covariate_data)
+    if isinstance(
+        getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
+    ):
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         # The training-time transitions follow from the design: left unset.
-        return untrusted
+        return
     initial = detector.discrete_transition_type.make_state_transition(covariate_data)
     design = initial.design_matrix
     coefficients = detector.discrete_transition_coefficients_
@@ -824,7 +798,6 @@ def _rebuild_discrete(
         if np.array_equal(coefficients, initial.coefficients)
         else _transitions_on_design(design, coefficients)
     )
-    return None
 
 
 def _rebuild_continuous(
@@ -888,14 +861,9 @@ def detector_from_stored(
     params = Decoder(stored.read_array).decode(stored.config)
     detector = cast("_DetectorBase", spec.cls(**params))
     state = stored.state
-    package_version = manifest.get("package_version", "unknown")
     if not state["fitted"]:
-        untrusted = None if trust_formulas else _untrusted_formula(detector, None)
-        if untrusted is not None:
-            # Nothing was rebuilt; the check only refuses fitting.
-            detector._rebuild_check_ = _RebuildCheck(
-                {}, [], package_version, untrusted_formula=untrusted
-            )
+        if not trust_formulas:
+            _mark_file_formula(detector, None)
         return detector
 
     decoder = Decoder(stored.read_array)
@@ -920,7 +888,7 @@ def detector_from_stored(
         if name in values:
             setattr(detector, attribute, values[name])
     detector._initialize_state_index()
-    untrusted = _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
+    _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
     blocks = {
         (entry["from_state"], entry["to_state"]): np.asarray(entry["block"])
         for entry in values["stored_transition_blocks"]
@@ -929,8 +897,7 @@ def detector_from_stored(
     detector._rebuild_check_ = _RebuildCheck(
         values["fingerprints"],
         list(blocks),
-        package_version,
-        untrusted_formula=untrusted,
+        manifest.get("package_version", "unknown"),
     )
     return detector
 

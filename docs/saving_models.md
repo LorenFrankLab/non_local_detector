@@ -105,18 +105,25 @@ takes bounded time.
 
 A file whose formula is outside the grammar loads for inspection only:
 `load_model` warns, naming the formula, and does not call patsy, so the design
-(and the training-time `discrete_state_transitions_`) is not rebuilt, and
-decoding or saving the model again raises `ValidationError`. So does fitting
-it, which would evaluate the formula, until you give the transition a formula
-of your own; this applies to an unfitted saved model too. If you trust the
-file, for example because you saved it yourself, load it with
-`load_model(path, trust_formulas=True)`, which rebuilds any formula.
-`read_model_summary` never evaluates a formula, so it reads any file.
+(and the training-time `discrete_state_transitions_`) is not rebuilt. The
+transition's `formula` is an inert `UntrustedFormula`, whose `.text` is the
+stored formula; patsy cannot evaluate it. Copies, pickles and
+`sklearn.clone` of the model carry it, so decoding, fitting,
+`estimate_parameters`, `discrete_transition_intervals`,
+`plot_discrete_state_transition` and `save_model` on the model or any copy of
+it raise `ValidationError`, for a model saved fitted or unfitted, until you
+give the transition a formula of your own (a plain string). A formula within
+the grammar is a `LoadedFormula`, a string checked again, with the covariate
+names, whenever a design is built from it, for example when an unfitted saved
+model is fitted. If you trust the file, for example because you saved it
+yourself, load it with `load_model(path, trust_formulas=True)`: the formula is
+then a plain string and any formula is rebuilt. `read_model_summary` never
+evaluates a formula, so it reads any file.
 
 Formulas you write in your own session are your own code and are not checked:
-any patsy formula fits and decodes. Pickles are not checked either, and
-`trust_formulas` does not apply to them: unpickling can run arbitrary code
-anyway, so only load pickles you trust. `convert_model` writes the pickle's
+any patsy formula fits and decodes. Pickles from earlier releases are not
+checked either, and `trust_formulas` does not apply to them: unpickling can
+run arbitrary code anyway, so only load pickles you trust. `convert_model` writes the pickle's
 formula unchanged, so a converted model with a formula outside the grammar
 needs `trust_formulas=True` when loaded.
 

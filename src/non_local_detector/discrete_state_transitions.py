@@ -38,6 +38,12 @@ from scipy.special import expit, logit, softmax, xlogy
 from scipy.stats import norm
 
 from non_local_detector import _validation as val
+from non_local_detector._formula_grammar import (
+    LoadedFormula,
+    UntrustedFormula,
+    check_formula,
+    refuse_untrusted,
+)
 from non_local_detector.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
@@ -3267,6 +3273,13 @@ def _initial_nonstationary_transition(
     """
     n_states = len(discrete_transition)
 
+    # A formula read from a saved model file (see load_model's
+    # trust_formulas) is evaluated only within the grammar, naming only the
+    # covariates; patsy would resolve any other name in this frame.
+    if isinstance(formula, UntrustedFormula):
+        refuse_untrusted(formula, "build the transition design")
+    if isinstance(formula, LoadedFormula):
+        check_formula(formula, [] if covariate_data is None else list(covariate_data))
     # NA_action="raise" prevents patsy from silently dropping rows with NaN
     # covariates, which would misalign the design matrix (n_time) against the
     # full-length posteriors/responses in the M-step.
@@ -3500,6 +3513,26 @@ def _design_on(
     """
     design_info = discrete_transition_design_matrix.design_info
     return cast(DesignMatrix, build_design_matrices([design_info], covariate_data)[0])
+
+
+def _refuse_untrusted_transition(transition: object, action: str) -> None:
+    """Raise if ``transition``'s formula was read from a file and not trusted.
+
+    Parameters
+    ----------
+    transition : object
+        A discrete transition; one without a ``formula`` passes.
+    action : str
+        What would evaluate the formula, for the message.
+
+    Raises
+    ------
+    ValidationError
+        If the formula is an ``UntrustedFormula``.
+    """
+    formula = getattr(transition, "formula", None)
+    if isinstance(formula, UntrustedFormula):
+        refuse_untrusted(formula, action)
 
 
 def _transitions_on_design(
