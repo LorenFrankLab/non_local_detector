@@ -88,7 +88,8 @@ def test_saving_an_unregistered_transition_says_how_to_register_it(
 
 def test_loading_an_unknown_type_names_the_package_to_import(saved):
     def rename(config):
-        config["continuous_initial_conditions_types"][0]["$type"] = "mylab.Initial"
+        node = config["continuous_initial_conditions_types"][0]
+        node["$type"], node["owner"] = "mylab.Initial", "mylab"
 
     _edit_json(saved, "config.json", rename)
 

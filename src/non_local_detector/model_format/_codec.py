@@ -20,8 +20,9 @@ JSON object:
     A tuple; a dict whose keys are not all strings (or start with ``$``).
 ``{"$float": "nan" | "inf" | "-inf"}``, ``{"$scalar": value, "dtype": str}``
     A non-finite float; a NumPy scalar.
-``{"$type": name, "state": {...}}``
-    An object of a registered type (see ``register_type``).
+``{"$type": name, "owner": package, "state": {...}}``
+    An object of a registered type (see ``register_type``), and the package
+    that registered it, named if the type is not registered when loading.
 ``{"$environment": name}``
     The model's fitted environment of that name.
 ``{"$graph": {...}}``, ``{"$dataframe": {...}}``, ``{"$categorical": {...}}``
@@ -235,6 +236,7 @@ class Encoder:
         state = spec.to_state(value)
         return {
             "$type": spec.name,
+            "owner": spec.owner,
             "state": self._mapping(dict(state), where, plain_keys_only=True),
         }
 
@@ -485,7 +487,7 @@ class Decoder:
         state = self.decode(node["state"])
         if self.plain:
             return {"type": node["$type"], **state}
-        spec = spec_for_name(node["$type"])
+        spec = spec_for_name(node["$type"], node.get("owner"))
         if spec.from_state is None:
             msg = f"The saved model holds a detector ({spec.name!r}) inside its state"
             raise ValidationError(msg, hint="The file is corrupt or was edited.")

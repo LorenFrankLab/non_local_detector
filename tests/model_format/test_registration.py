@@ -125,7 +125,7 @@ def test_registered_detector_subclass_round_trips(sorted_recording, tmp_path):
 
 
 def test_loading_without_the_registration_names_its_owner(sorted_recording, tmp_path):
-    register_type(FlatTransition, "testlab.FlatTransition", owner="testlab")
+    register_type(FlatTransition, "testlab.FlatTransition", owner="labtools")
     path = tmp_path / "model.nld"
     _fit(nld.SortedSpikesDecoder, FlatTransition(), sorted_recording).save_model(path)
     del _registry._BY_NAME["testlab.FlatTransition"]
@@ -133,7 +133,8 @@ def test_loading_without_the_registration_names_its_owner(sorted_recording, tmp_
 
     with pytest.raises(ValidationError, match=r"'testlab\.FlatTransition'") as error:
         nld.SortedSpikesDecoder.load_model(path)
-    assert "('testlab')" in str(error.value)
+    # The package that registered it, recorded in the file, not the prefix.
+    assert "('labtools')" in str(error.value)
 
 
 @pytest.mark.parametrize(
