@@ -5,12 +5,16 @@ the predict of another algorithm either rejects the keys or reads keys that
 happen to share a name. Each encoding model records the algorithm that fitted
 it, and a detector whose algorithm parameter no longer names that algorithm
 refuses to decode. Unknown algorithm names are rejected at construction.
+Detectors saved before encoding models recorded their algorithm get it back
+on load.
 """
 
 import copy
+import pickle
 
 import numpy as np
 import pytest
+import xarray as xr
 
 from non_local_detector import (
     ClusterlessDecoder,
@@ -23,8 +27,10 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
+    _record_legacy_encoding_algorithm,
 )
 from non_local_detector.observation_models import ObservationModel
+from tests.models._helpers import ALGORITHMS, _decoder
 
 pytestmark = pytest.mark.unit
 
@@ -256,3 +262,94 @@ def test_em_refit_does_not_go_through_the_public_fit_encoding_model(
     )
     # The initial fit is public; the posterior-weighted refit is not.
     assert public_calls == [None]
+
+
+# Algorithms whose encoding models recorded no mark_dimensions until encoding
+# models recorded their algorithm.
+_WITHOUT_MARK_DIMENSIONS = ("clusterless_kde", "clusterless_diffusion")
+
+
+def _round_trip_fit(algorithm):
+    """A fitted one-state decoder, its decode, and the decode's arguments."""
+    time = np.arange(100) * 0.002
+    position = (50 + 8 * np.sin(time * 40))[:, None]
+    args = ([np.array([0.021, 0.067, 0.121, 0.167])],)
+    if algorithm.startswith("clusterless"):
+        args = (*args, [np.array([[0.1], [-0.1], [0.2], [-0.2]])])
+    detector = _decoder(algorithm).fit(time, position, *args)
+    kwargs = {
+        "time_edges": np.arange(81) * 0.002,
+        "position_time": time,
+        "position": position,
+        "return_outputs": "log_likelihood",
+    }
+    return detector, detector.predict(*args, **kwargs), args, kwargs
+
+
+@pytest.mark.filterwarnings(
+    r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
+)
+@pytest.mark.parametrize(
+    "algorithm",
+    # The GLMs' patsy spline basis (DesignInfo) cannot be pickled.
+    [
+        name
+        for name in ALGORITHMS
+        if name not in ("sorted_spikes_glm", "clusterless_mark_glm")
+    ],
+)
+def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
+    algorithm,
+):
+    """Loading identifies the algorithm from the encoding model's keys and
+    restores ``mark_dimensions``, so the detector decodes as before."""
+    detector, expected, args, kwargs = _round_trip_fit(algorithm)
+    (entry,) = detector.encoding_model_.values()
+    recorded = {
+        key: entry[key] for key in ("algorithm", "mark_dimensions") if key in entry
+    }
+    del entry["algorithm"]
+    if algorithm in _WITHOUT_MARK_DIMENSIONS:
+        del entry["mark_dimensions"]
+
+    restored = pickle.loads(pickle.dumps(detector))
+
+    (restored_entry,) = restored.encoding_model_.values()
+    assert {key: restored_entry[key] for key in recorded} == recorded
+    xr.testing.assert_identical(restored.predict(*args, **kwargs), expected)
+
+
+def test_saved_encoding_model_of_no_registered_type_still_asks_for_a_refit():
+    """An entry whose keys match no registered algorithm, such as one from a
+    0.6 release, is left without an algorithm."""
+    detector, _, args, kwargs = _round_trip_fit("sorted_spikes_kde")
+    (entry,) = detector.encoding_model_.values()
+    del entry["algorithm"]
+    entry["key_of_an_older_release"] = None
+
+    restored = pickle.loads(pickle.dumps(detector))
+
+    (restored_entry,) = restored.encoding_model_.values()
+    assert "algorithm" not in restored_entry
+    with pytest.raises(ValidationError, match="does not record the algorithm"):
+        restored.predict(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("configured", "recorded"),
+    [("first", "first"), ("second", "second"), ("other", None), (None, None)],
+)
+def test_encoding_model_matching_two_algorithms_takes_the_configured_one(
+    configured, recorded
+):
+    """Should two registered algorithms share the saved keys, the detector's
+    algorithm decides, and only if it is one of them."""
+    record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"]
+    entry = dict.fromkeys(set(record.encoding_model_type.__required_keys__))
+    del entry["algorithm"]
+
+    _record_legacy_encoding_algorithm(
+        entry, {"first": record, "second": record}, configured
+    )
+
+    assert entry.get("algorithm") == recorded
