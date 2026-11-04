@@ -19,7 +19,9 @@ DETECTOR_CLASSES = sorted(
         cls
         for module in (models, models.base)
         for name, cls in vars(module).items()
-        if inspect.isclass(cls)
+        # Not inspect.isclass: on Python 3.10 it is True for aliases such as
+        # list[Environment], which issubclass rejects.
+        if isinstance(cls, type)
         and not name.startswith("_")
         and issubclass(cls, models.base._DetectorBase)
     },
