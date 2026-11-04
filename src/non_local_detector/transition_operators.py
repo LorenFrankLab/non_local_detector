@@ -1655,14 +1655,15 @@ def _one_bin_block(
     environments: Sequence[Environment],
     source_size: int,
     target_size: int,
+    destination_environment_name: str | None,
 ) -> UniformBlock | None:
     """The block between a one-bin state and a spatial state, or None.
 
     From a one-bin state (No-Spike, or Local without ``local_position_std``)
-    the block is uniform over the interior bins of the environment named by
-    the transition's ``environment_name``; into one, every bin moves there
-    with probability 1. Both the dense and the structured transition use
-    this block, without calling ``make_state_transition``.
+    the block is uniform over the interior bins of the destination state's
+    environment; into one, every bin moves there with probability 1. Both
+    the dense and the structured transition use this block, without calling
+    ``make_state_transition``.
 
     Parameters
     ----------
@@ -1670,6 +1671,9 @@ def _one_bin_block(
     environments : sequence of Environment
     source_size, target_size : int
         Bins of the source and destination states.
+    destination_environment_name : str or None
+        Environment of the destination state; None takes the transition's
+        ``environment_name``.
 
     Returns
     -------
@@ -1677,7 +1681,9 @@ def _one_bin_block(
         None unless exactly one of the two states has one bin.
     """
     if source_size == 1 and target_size > 1:
-        destination = _scalar_to_spatial_destination(transition, environments)
+        destination = _scalar_to_spatial_destination(
+            transition, environments, destination_environment_name
+        )
         normalization = np.array(
             1.0 / destination.sum() if destination.any() else np.nan
         )
@@ -1694,8 +1700,15 @@ def _structured_block(
     environments: Sequence[Environment],
     source_size: int,
     target_size: int,
+    destination_environment_name: str | None,
 ) -> Block:
-    block = _one_bin_block(transition, environments, source_size, target_size)
+    block = _one_bin_block(
+        transition,
+        environments,
+        source_size,
+        target_size,
+        destination_environment_name,
+    )
     if block is not None:
         return block
     planned = _planned(transition)
@@ -1764,8 +1777,11 @@ def build_transition_operator(
     state_sizes : sequence of int
         Padded bins per discrete state.
     observation_models : sequence of ObservationModel, optional
-        With ``local_position_std``, turns Local ``Discrete`` blocks into
-        Uniform blocks over the Local environment.
+        Name each state's environment: a block from a one-bin state is
+        uniform over its destination state's environment (without them, the
+        transition's ``environment_name``). With ``local_position_std``, they
+        also turn Local ``Discrete`` blocks into Uniform blocks over the
+        Local environment.
     local_position_std : float, optional
         Multi-bin Local width; None keeps a single-bin Local state.
     allow_dense_fallback : bool, optional
@@ -1807,7 +1823,13 @@ def build_transition_operator(
                 )
             try:
                 block = _structured_block(
-                    transition, environments, sizes[source], sizes[target]
+                    transition,
+                    environments,
+                    sizes[source],
+                    sizes[target],
+                    None
+                    if observation_models is None
+                    else observation_models[target].environment_name,
                 )
                 _check_block_shape(
                     transition, block.shape, (sizes[source], sizes[target])

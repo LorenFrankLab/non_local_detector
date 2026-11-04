@@ -80,9 +80,9 @@ class ContinuousTransition(Protocol):
     modeled, 0 for bins nothing can leave). A block between a
     one-bin state (No-Spike, or Local without ``local_position_std``) and a
     spatial state is set without calling it: from the one-bin state it is
-    uniform over the interior bins of the environment named by the
-    transition's ``environment_name``; into the one-bin state every bin
-    moves there with probability 1.
+    uniform over the interior bins of the destination state's environment
+    (the transition must name an environment, so ``Discrete`` cannot set
+    it); into the one-bin state every bin moves there with probability 1.
 
     A transition has a structured operator only if it implements
     ``transition_operators.SupportsStructuredBlock``, as the package's
@@ -1027,18 +1027,25 @@ def _check_continuous_transition(transition: object) -> None:
 
 
 def _scalar_to_spatial_destination(
-    transition: ContinuousTransition, environments: Sequence[Environment]
+    transition: ContinuousTransition,
+    environments: Sequence[Environment],
+    destination_environment_name: str | None,
 ) -> np.ndarray:
     """Destination bins of a block from a state without place bins.
 
     A block from a single-bin state (such as Local or No-Spike) to a spatial
-    state is uniform over the interior bins of the environment named by the
-    transition's ``environment_name``, whatever the transition.
+    state is uniform over the interior bins of the destination state's
+    environment, whatever the transition, as long as the transition names an
+    environment.
 
     Parameters
     ----------
     transition : ContinuousTransition
     environments : sequence of Environment
+    destination_environment_name : str or None
+        Environment of the destination state (its observation model's
+        ``environment_name``); None takes the transition's
+        ``environment_name``.
 
     Returns
     -------
@@ -1048,7 +1055,8 @@ def _scalar_to_spatial_destination(
     Raises
     ------
     ValidationError
-        If the transition's ``environment_name`` is None.
+        If the transition's ``environment_name`` is None, or it or
+        ``destination_environment_name`` names no environment.
     """
     if transition.environment_name is None:
         # No fallback may broadcast a scalar block across the destination bins.
@@ -1063,8 +1071,13 @@ def _scalar_to_spatial_destination(
                 "Uniform(environment_name=...)."
             ),
         )
+    # The transition's own environment must exist even though the block's
+    # columns are the destination state's bins.
+    find_environment_by_name(environments, transition.environment_name)
+    if destination_environment_name is None:
+        destination_environment_name = transition.environment_name
     return find_environment_by_name(
-        environments, transition.environment_name
+        environments, destination_environment_name
     ).is_track_interior_flat_
 
 
