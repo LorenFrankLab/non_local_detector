@@ -260,7 +260,7 @@ _SPLINE_REBUILD_ATOL_PER_POINT = 1e-12
 
 
 def _read_only_copy(array: ArrayLike) -> np.ndarray:
-    """A copy of ``array`` that cannot be written to."""
+    """Return a copy of ``array`` that cannot be written to."""
     copied = np.array(array)
     copied.setflags(write=False)
     return copied
@@ -317,7 +317,7 @@ class TensorSplineBasis:
         self.__dict__["design_info"] = design_info
 
     def _build_design(self) -> tuple[DesignInfo, np.ndarray]:
-        """The patsy design of every column, and its fingerprint."""
+        """Return the patsy design of every column, and its fingerprint."""
         design = make_spline_design_matrix(
             self.basis_positions, self.place_bin_edges, knot_spacing=self.knot_spacing
         )

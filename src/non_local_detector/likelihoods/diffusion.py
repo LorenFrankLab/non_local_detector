@@ -352,7 +352,7 @@ def heat_kernel_rank(
     tol: float = _HEAT_KERNEL_RANK_TOL,
     dense_fraction: float = _HEAT_KERNEL_DENSE_FRACTION,
 ) -> int | None:
-    """Number of eigenmodes the heat kernel ``exp(-t L)`` needs at bandwidth ``sigma``.
+    """Return the number of eigenmodes the heat kernel ``exp(-t L)`` needs at bandwidth ``sigma``.
 
     :func:`diffuse` weights mode ``k`` by ``exp(-t λ_k)``, ``t = sigma**2 / 2``, so modes
     with ``exp(-t λ_k) < tol`` are negligible: dropping them changes the smoothed field
@@ -424,7 +424,7 @@ def connected_component_labels(graph: nx.Graph) -> np.ndarray:
 
 
 def n_connected_components(environment: "Environment") -> int:
-    """Number of connected components of the environment's interior-bin graph.
+    """Return the number of connected components of the environment's interior-bin graph.
 
     Each component contributes one Laplacian null (zero-eigenvalue) mode, so a truncated
     eigenbasis must keep **at least** this many modes (see :func:`diffusion_eigenbasis` /

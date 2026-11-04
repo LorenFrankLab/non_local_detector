@@ -117,7 +117,7 @@ class _PosteriorOutputs:
     predictive_posterior: Any = None
 
     def requested_results(self, requested_outputs: set[str]) -> dict[str, Any]:
-        """The optional ``convert_results_to_xarray`` arrays that were requested.
+        """Return the optional ``convert_results_to_xarray`` arrays that were requested.
 
         Parameters
         ----------

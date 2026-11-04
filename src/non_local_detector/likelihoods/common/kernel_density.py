@@ -284,7 +284,7 @@ def _kde_block_rows(
     std: jax.Array,
     weights: jax.Array | np.ndarray,
 ) -> int:
-    """Evaluation rows per block: ``block_size``, reduced to the kernel budget.
+    """Return the evaluation rows per block: ``block_size``, reduced to the kernel budget.
 
     Parameters
     ----------
@@ -819,7 +819,7 @@ def true_kde_log_density(
     weights: jax.Array,
     keys: jax.Array | None = None,
 ) -> jax.Array:
-    """True log density of fitted KDE leaves, outside jit.
+    """Return the true log density of fitted KDE leaves, outside jit.
 
     One compiled scaled pass (see :func:`_scaled_kde_log_density`), then the
     flagged points in log space. Without ``keys`` points are scaled by the
@@ -881,7 +881,7 @@ def _repair_in_log_space(
 def kde_log_densities(
     models: Sequence["KDEModel"], points: jax.Array | np.ndarray
 ) -> list[jax.Array]:
-    """True log densities of several fitted KDEs at the same points.
+    """Return the true log densities of several fitted KDEs at the same points.
 
     ``kde_log_density`` for each model, with fewer compiled kernels: models
     whose padded sample counts (four sizes per octave, zero-weight rows that
@@ -973,7 +973,7 @@ def log_space_kde_log_density(
     block_size: int,
     weights: jax.Array,
 ) -> jax.Array:
-    """True log density evaluated entirely in log space.
+    """Return the true log density evaluated entirely in log space.
 
     Re-evaluates the points a scaled pass flags; traced callers use it
     directly.
@@ -1081,7 +1081,7 @@ def _scaled_kde_log_density(
     weights: jax.Array,
     keys: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """True log density in one pass per block, each point scaled first.
+    """Return the true log density in one pass per block, each point scaled first.
 
     Each point's log kernels are shifted by :func:`_kde_log_scale` before
     exponentiating, then summed by a weighted product as the probability-space
@@ -1178,7 +1178,7 @@ def _compiled_scaled_kde_log_density(
     weights: jax.Array,
     keys: jax.Array | None,
 ) -> tuple[jax.Array, jax.Array]:
-    """The scaled pass for :func:`kde_log_density`, which repairs on the host."""
+    """Compute the scaled pass for :func:`kde_log_density`, which repairs on the host."""
     return _scaled_kde_log_density(points, samples, std, block_size, weights, keys)
 
 
@@ -1228,7 +1228,7 @@ def _compiled_batched_scaled_kde_log_density(
     *,
     batch_size: int,
 ) -> tuple[jax.Array, jax.Array]:
-    """The scaled pass for each of a stack of models, ``batch_size`` at a time.
+    """Compute the scaled pass for each of a stack of models, ``batch_size`` at a time.
 
     ``samples`` has shape ``(n_models, n_samples, n_dims)`` and ``weights``
     and ``keys`` (or None) ``(n_models, n_samples)``. Returns log densities and

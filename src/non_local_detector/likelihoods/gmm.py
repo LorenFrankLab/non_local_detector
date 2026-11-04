@@ -53,7 +53,7 @@ def as_floating(x: Any) -> Array:
 
 
 def _has_negative_or_nonfinite(arr: Array) -> bool:
-    """True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
+    """Return True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
 
     Used for initial mixture weights: a NaN/negative weight becomes
     ``jnp.log(w) = NaN`` in EM and is otherwise misreported as a singular covariance.
@@ -805,8 +805,7 @@ def _effective_weight_mask(
 def effective_sample_count(
     X: Array | np.ndarray, sample_weight: np.ndarray | None
 ) -> int:
-    """
-    Number of rows ``GaussianMixtureModel.fit`` trains on for this ``X``.
+    """Return the number of rows ``GaussianMixtureModel.fit`` trains on for ``X``.
 
     Callers that size ``n_components`` before fitting must count with the dtype
     of the array actually fitted, since the zero-weight cutoff depends on it.

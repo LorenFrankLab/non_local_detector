@@ -1297,7 +1297,7 @@ class _EMMixin:
     def _em_update_encoding_model(  # type: ignore[misc]
         self: "_DetectorBase", settings: _EMSettings, state: _EMState, e_step: _EMEStep
     ) -> None:
-        """Encoding M-step: refit with the local observations' posterior.
+        """Run the encoding M-step: refit with the local observations' posterior.
 
         Skipped without local observations, or when their posterior mass or
         effective sample size is below the thresholds.
@@ -1749,7 +1749,7 @@ class _EMMixin:
         final: _PosteriorOutputs,
         traces: dict[str, list[float]],
     ) -> xr.Dataset:
-        """The in-memory results of EM: the final E-step and EM's traces."""
+        """Return the in-memory results of EM: the final E-step and EM's traces."""
         # Every final E-step without a result_path returns them.
         assert final.acausal_state_probabilities is not None
         em_attrs = dict(settings.em_attrs)

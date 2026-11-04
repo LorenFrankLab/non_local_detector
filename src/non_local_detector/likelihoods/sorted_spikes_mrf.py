@@ -502,7 +502,7 @@ def mrf_penalized_poisson_fit(
 
 
 def _penalty_rank(penalty_weights: np.ndarray) -> int:
-    """Number of penalized directions (positive eigenvalues) for the REML df term."""
+    """Return the number of penalized directions (positive eigenvalues) for the REML df term."""
     largest = penalty_weights.max()
     if largest <= 0:
         return 0

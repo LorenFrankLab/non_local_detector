@@ -356,7 +356,7 @@ def convert_results_to_xarray(
 def convert_seq_to_df(
     detector: "_DetectorBase", sequence_ind: np.ndarray, time: np.ndarray
 ) -> pd.DataFrame:
-    """Converts the sequence indices to a DataFrame.
+    """Convert the sequence indices to a DataFrame.
 
     Parameters
     ----------

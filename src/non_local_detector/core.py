@@ -31,7 +31,7 @@ ArrayLike: TypeAlias = jax.Array | np.ndarray
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
 def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jax.Array, jax.Array]:
-    """Normalizes the values within the axis in a way that they sum up to 1.
+    """Normalize the values within the axis in a way that they sum up to 1.
 
     Divides by the exact sum so any positive total mass — down to the smallest
     normal value of the dtype — normalizes to one. A slice whose sum is exactly
@@ -165,7 +165,7 @@ def _condition_on_jvp(
     primals: tuple[jax.Array, jax.Array],
     tangents: tuple[jax.Array, jax.Array],
 ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array]]:
-    """Derivative rule for :func:`_condition_on`.
+    """Define the derivative rule for :func:`_condition_on`.
 
     With ``r = exp(ll) / Z`` and posterior ``q``, the tangent of the normalized
     weight ``w / Z`` (``Z`` held fixed) is ``r * d(probs) + q * d(ll)``. Its
@@ -1386,7 +1386,7 @@ def _check_shape(
 
 
 def _validate_dtype(dtype: DTypeLike) -> np.dtype[Any]:
-    """The working dtype: float32, or float64 with JAX's 64-bit mode on."""
+    """Return the working dtype: float32, or float64 with JAX's 64-bit mode on."""
     dtype = np.dtype(dtype)
     if dtype not in _SUPPORTED_DTYPES:
         msg = "dtype must be float32 or float64"
@@ -1411,7 +1411,7 @@ def _validate_dtype(dtype: DTypeLike) -> np.dtype[Any]:
 
 
 def _validate_time(time: Any) -> int:
-    """Number of time bins of a dense driver's nonempty ``time`` vector."""
+    """Return the number of time bins of a dense driver's nonempty ``time`` vector."""
     if np.ndim(time) != 1 or np.shape(time)[0] == 0:
         msg = "time must be a nonempty vector"
         raise ValidationError(
@@ -2395,7 +2395,7 @@ def filter_covariate_dependent(
     state_ind: ArrayLike,
     log_likelihoods: ArrayLike,
 ) -> tuple[tuple[float, jax.Array], tuple[jax.Array, jax.Array]]:
-    """Filtering step with covariate dependent transitions.
+    """Run a filtering step with covariate dependent transitions.
 
     Parameters
     ----------

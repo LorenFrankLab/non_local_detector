@@ -909,7 +909,7 @@ class Discrete:
         self,
         environments: Sequence[Environment] = (),  # noqa: ARG002 -- SupportsStructuredBlock signature
     ) -> "Block":
-        """The (1, 1) identity block."""
+        """Return the (1, 1) identity block."""
         from non_local_detector.transition_operators import IdentityBlock
 
         return IdentityBlock(np.ones(1, dtype=bool))
@@ -960,7 +960,7 @@ def _multi_bin_local_transition(
     to_observation: ObservationModel,
     local_position_std: float | None,
 ) -> ContinuousTransition:
-    """The transition to build for a block with a multi-bin Local state.
+    """Return the transition to build for a block with a multi-bin Local state.
 
     A multi-bin Local state (``local_position_std`` set) has place bins, so a
     ``Discrete`` block into or out of it becomes ``Uniform`` over the Local

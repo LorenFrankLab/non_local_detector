@@ -362,7 +362,7 @@ def _add_gmm_expected_counts(
 def _ground_process_intensity(
     mean_rate: jax.Array, gpi_logp: jax.Array, log_occupancy: jax.Array
 ) -> jax.Array:
-    """Expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
+    """Return expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
 
     Parameters
     ----------

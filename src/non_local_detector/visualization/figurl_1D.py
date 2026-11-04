@@ -93,7 +93,7 @@ if sortingview_available():
         linear_position: np.ndarray | None = None,
         ref_time_sec: float | None = None,
     ) -> vvf.DecodedLinearPositionData:
-        """Creates a view of an interactive heatmap of position vs. time.
+        """Create a view of an interactive heatmap of position vs. time.
 
         Parameters
         ----------

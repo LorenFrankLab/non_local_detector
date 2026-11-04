@@ -1604,7 +1604,7 @@ class SupportsStructuredBlock(Protocol):
     """
 
     def structured_block(self, environments: Sequence[Environment]) -> Block:
-        """The exact block between two spatial (or two one-bin) states.
+        """Return the exact block between two spatial (or two one-bin) states.
 
         Parameters
         ----------
@@ -1641,7 +1641,7 @@ class SupportsStructuredBlock(Protocol):
 
 
 def _planned(transition: object) -> SupportsStructuredBlock | None:
-    """The transition if its class plans its own blocks, else None.
+    """Return the transition if its class plans its own blocks, else None.
 
     Only a class that defines ``structured_block`` itself is trusted: a
     subclass inheriting it may change ``make_state_transition`` or any helper
@@ -1663,7 +1663,7 @@ def _one_bin_block(
     source_size: int,
     target_size: int,
 ) -> UniformBlock | None:
-    """The block between a one-bin state and a spatial state, or None.
+    """Return the block between a one-bin state and a spatial state, or None.
 
     From a one-bin state (No-Spike, or Local without ``local_position_std``)
     the block is uniform over the interior bins of the transition's

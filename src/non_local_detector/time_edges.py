@@ -82,7 +82,7 @@ def _spacing_tolerance(time_edges: np.ndarray) -> float:
 
 
 def _uniformity_tolerance(time_edges: np.ndarray, width: float) -> float:
-    """Allowed deviation of a bin width from ``width``, in seconds."""
+    """Return the allowed deviation of a bin width from ``width``, in seconds."""
     return max(_spacing_tolerance(time_edges), _UNIFORMITY_RELATIVE_FLOOR * width)
 
 

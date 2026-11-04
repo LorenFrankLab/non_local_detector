@@ -175,7 +175,7 @@ def _sample_positions(values: ArrayLike, n_time: int) -> np.ndarray:
 
 
 def _sample_mask(values: ArrayLike, n_time: int, name: str) -> np.ndarray:
-    """A boolean mask with one entry per position sample, shape (n_time,).
+    """Return a boolean mask with one entry per position sample, shape (n_time,).
 
     Integers equal to 0 or 1 are read as False or True. Any other integer, a
     float or another dtype is rejected rather than combined bitwise with the

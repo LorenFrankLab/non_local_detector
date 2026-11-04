@@ -191,7 +191,7 @@ _LEGACY_FITTED_ATTRIBUTES = {
 
 
 def _configuration_snapshot(value: Any) -> Any:
-    """A copy of a configuration value to compare later values with.
+    """Return a copy of a configuration value to compare later values with.
 
     The track graph is kept by reference (it is compared by identity); other
     values are deep-copied, so an in-place edit of a list or array the
@@ -340,7 +340,7 @@ def _legacy_nd_track_graph(
     is_track_interior: np.ndarray,
     edges: Sequence[np.ndarray],
 ) -> nx.Graph:
-    """The bin-center graph of an N-D grid stored by an earlier release.
+    """Return the bin-center graph of an N-D grid stored by an earlier release.
 
     Until 0.5.11 ``get_grid`` built the centers with ``np.meshgrid``'s default
     "xy" indexing, so they vary along the first axis fastest while
@@ -375,7 +375,7 @@ def _legacy_nd_track_graph(
 def _legacy_place_grid(
     environment: "Environment", fitted: dict[str, Any]
 ) -> PlaceGrid | None:
-    """The grid of an environment pickled when fitted attributes were fields.
+    """Return the grid of an environment pickled when fitted attributes were fields.
 
     Parameters
     ----------
@@ -669,7 +669,7 @@ class Environment:
         }
 
     def _changed_configuration(self, grid: PlaceGrid) -> list[str]:
-        """The configuration fields that differ from those ``grid`` was fit with."""
+        """Return the configuration fields that differ from those ``grid`` was fit with."""
         return [
             name
             for name, value in grid.configuration.items()
@@ -792,7 +792,7 @@ class Environment:
         return self.place_grid_.nodes_df
 
     def _replace_place_grid(self, **changes: Any) -> "Environment":
-        """A shallow copy whose grid has some fields replaced.
+        """Return a shallow copy whose grid has some fields replaced.
 
         Parameters
         ----------
@@ -1225,7 +1225,7 @@ class Environment:
         compute_all_pairs_distances: bool,
         max_dense_distance_bytes: int,
     ) -> PlaceGrid:
-        """The grid of an environment without a track graph.
+        """Return the grid of an environment without a track graph.
 
         Parameters
         ----------
@@ -1307,7 +1307,7 @@ class Environment:
         )
 
     def _fit_track_graph_grid(self) -> PlaceGrid:
-        """The grid of an environment with a track graph.
+        """Return the grid of an environment with a track graph.
 
         Returns
         -------
@@ -2130,7 +2130,7 @@ def _calculate_linear_position(
     edge_order: list[tuple[Any, ...]],
     edge_spacing: float | list[float],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Determines the linear position given a 2D position and a track graph.
+    """Determine the linear position given a 2D position and a track graph.
 
     Parameters
     ----------

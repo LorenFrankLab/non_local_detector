@@ -78,7 +78,7 @@ _CGROUP_UNLIMITED = 2**60
 
 
 def _read_cgroup_value(path: Path) -> int | None:
-    """An integer cgroup memory file, or None if absent, unlimited or unreadable."""
+    """Return a cgroup memory file as an int, or None if absent, unlimited or unreadable."""
     try:
         text = path.read_text().strip()
     except OSError:

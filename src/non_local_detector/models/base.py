@@ -1906,7 +1906,7 @@ class _DetectorBase(
     """Example ``predict`` call shown in validation errors."""
 
     def _likelihood_predict_function(self) -> Callable[..., Any]:
-        """The predict function of the detector's likelihood algorithm."""
+        """Return the predict function of the detector's likelihood algorithm."""
         raise NotImplementedError
 
     def _likelihood_predict_kwargs(self) -> dict[str, Any]:
@@ -1914,7 +1914,7 @@ class _DetectorBase(
         return {}
 
     def _likelihood_execution_settings(self) -> dict[str, Any]:
-        """Execution settings of the current algorithm params, over the fitted ones."""
+        """Return the execution settings of the current algorithm params, over the fitted ones."""
         return {}
 
     def _no_spike_mark_log_likelihood(
@@ -3175,7 +3175,7 @@ class ClusterlessDetector(_DetectorBase):
         )
 
     def _clusterless_algorithm(self) -> ClusterlessLikelihoodAlgorithm:
-        """The registered record of ``clusterless_algorithm``."""
+        """Return the registered record of ``clusterless_algorithm``."""
         try:
             return _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
         except KeyError:
@@ -4246,7 +4246,7 @@ class SortedSpikesDetector(_DetectorBase):
         )
 
     def _sorted_spikes_algorithm(self) -> LikelihoodAlgorithm:
-        """The registered record of ``sorted_spikes_algorithm``."""
+        """Return the registered record of ``sorted_spikes_algorithm``."""
         try:
             return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
         except KeyError:

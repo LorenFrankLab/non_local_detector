@@ -47,7 +47,7 @@ _Blocks: TypeAlias = list[tuple[jax.Array, jax.Array]]
 
 
 def _float64_jax() -> AbstractContextManager[Any]:
-    """A context in which JAX computes in float64.
+    """Provide a context in which JAX computes in float64.
 
     The scoped switch is ``jax.enable_x64`` in current JAX and
     ``jax.experimental.enable_x64`` in older releases such as 0.6.
@@ -137,7 +137,7 @@ def _n_states_from_state_ind(state_ind: np.ndarray) -> int:
 
 
 def _host_or_device(posterior: ArrayLike) -> np.ndarray | jax.Array:
-    """A posterior as an array, leaving a device array on the device.
+    """Return a posterior as an array, leaving a device array on the device.
 
     Converting a JAX array with ``np.asarray`` would copy it to the host only
     for the estimators to upload it again.
@@ -387,7 +387,7 @@ def _stationary_counts_block(
     state_ind: jax.Array,
     n_states: int,
 ) -> jax.Array:
-    """Expected discrete transition counts over a block of consecutive rows.
+    """Return expected discrete transition counts over a block of consecutive rows.
 
     A stationary transition factors out of the sum over rows:
     ``sum_t causal_t[i] T[i, j] ratio_{t+1}[j] = T[i, j] * pair_sum[i, j]``,
@@ -1180,7 +1180,7 @@ def _row_smoothness(
     smoothness_matrix: np.ndarray | None,
     n_states: int,
 ) -> tuple[np.ndarray, bool]:
-    """Validated per-row, per-term curvature-penalty strengths to start from.
+    """Return validated per-row, per-term curvature-penalty strengths to start from.
 
     Returns
     -------
@@ -2410,7 +2410,7 @@ def _discrete_transition_statistics(
     discrete_transition_coefficients: np.ndarray | None,
     discrete_transition_design_matrix: DesignMatrix | None,
 ) -> np.ndarray:
-    """Expected discrete transition statistics from the expanded posteriors.
+    """Return expected discrete transition statistics from the expanded posteriors.
 
     Parameters
     ----------
@@ -3045,7 +3045,7 @@ class DiscreteTransition(Protocol):
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None
     ) -> InitialDiscreteTransition:
-        """The transition EM starts from.
+        """Return the transition EM starts from.
 
         Parameters
         ----------
@@ -3272,7 +3272,7 @@ def _initial_nonstationary_transition(
     covariate_data: pd.DataFrame | dict[str, Any] | None,
     smoothness: float | str,
 ) -> InitialDiscreteTransition:
-    """Initial structures of a covariate-driven transition from its intercept matrix.
+    """Return the initial structures of a covariate-driven transition from its intercept matrix.
 
     Parameters
     ----------

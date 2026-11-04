@@ -279,7 +279,7 @@ def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
 
 
 def _bad_rows_description(row_sums: np.ndarray, bad_rows: np.ndarray) -> str:
-    """The first ten rows whose sums are out of range, and their sums."""
+    """Return the first ten rows whose sums are out of range, and their sums."""
     bad_indices = np.flatnonzero(bad_rows)
     return (
         f"{len(bad_indices)} row(s) with invalid sums: rows "

@@ -9,7 +9,7 @@ import numpy as np
 
 
 def _segmented_inclusive_sum(starts: jax.Array, values: jax.Array) -> jax.Array:
-    """Running sum of ``values`` that restarts at each ``starts`` position.
+    """Return the running sum of ``values`` that restarts at each ``starts`` position.
 
     A Hillis-Steele scan: step ``k`` adds the partial sum ``2**k`` rows back
     unless a segment start lies between. Its ``ceil(log2 n)`` steps run in a

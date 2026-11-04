@@ -169,7 +169,7 @@ def _spatial_posterior_for_movie(
 
 
 def _setup_single_env_figure() -> tuple[Figure, dict[str, Any]]:
-    """Setup figure for single environment movie."""
+    """Set up figure for single environment movie."""
     with plt.style.context("dark_background"):
         fig, axes_array = plt.subplots(
             2,

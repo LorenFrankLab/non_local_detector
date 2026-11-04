@@ -16,7 +16,7 @@ def _quarter_octave(n: int) -> int:
 
 
 def padded_sample_count(n_samples: int) -> int:
-    """Encoding samples per electrode: four sizes per octave, at most 25% padding."""
+    """Return the padded encoding sample count: four sizes per octave, <=25% padding."""
     return 16 if n_samples <= 16 else _quarter_octave(n_samples)
 
 
@@ -33,7 +33,7 @@ def padded_occupancy_count(n_samples: int) -> int:
 
 
 def padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
-    """Decoding spikes per electrode kernel call, from a few sizes.
+    """Return the padded decoding spike count per electrode kernel call.
 
     Up to one block: powers of two (at least 16), or with ``fine`` four sizes
     per octave (at most 25% padding) for kernels whose per-spike cost is

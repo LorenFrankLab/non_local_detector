@@ -611,7 +611,7 @@ def spatial_kernel_columns(
     position_std: float,
     sources: ArrayLike,
 ) -> jax.Array:
-    """The model's spatial kernel ``H[:, sources]``, for a fitted environment.
+    """Return the model's spatial kernel ``H[:, sources]``, for a fitted environment.
 
     Parameters
     ----------
@@ -823,7 +823,7 @@ def _electrode_layout(
     tile_budget: int,
     dense: bool = False,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, int]:
-    """Padded, bin-sorted encoding samples with their source layout, for one electrode.
+    """Return padded, bin-sorted encoding samples with their source layout, for one electrode.
 
     Models fitted before encoding spikes were stored bin-sorted are sorted here
     (stably). Padding samples take the dropped bin ``n_bins``, zero marks and
