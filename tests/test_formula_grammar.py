@@ -54,7 +54,8 @@ GRAMMAR_FORMULAS = [
     "speed * phase",
     "(speed + phase) ** 2",
     "speed / phase",
-    "1 + I(speed ** 2) + I(speed ^ phase) + I(-speed) + I(+speed)",
+    "1 + I(speed ** 2) + I(speed ** -2) + I(speed ** 0.5) + I(speed ** 10)",
+    "1 + I(-speed) + I(+speed)",
     "1 + I(speed / 10.0 - 2 * phase)",
     "1 + bs(speed, df=5, degree=3, include_intercept=False)",
     "1 + bs(speed, df=5, lower_bound=0, upper_bound=None)",
@@ -63,6 +64,7 @@ GRAMMAR_FORMULAS = [
     "1 + te(cr(speed, df=5), cc(phase, df=5))",
     "1 + center(speed) + standardize(phase)",
     "1 + C(arm)",
+    "1 + C(arm, levels=[1, 2, 3])",
     "1 + np.log(speed) + np.exp(speed) + np.sqrt(speed) + np.abs(speed)",
     # patsy reads a formula without a response the same with or without "~".
     "~ speed",
@@ -134,12 +136,35 @@ ATTACKS = [
     "I(speed // 2)",
     "I(speed @ phase)",
     "I(speed | phase)",
+    "I(speed ^ phase)",
     "speed | phase",
     "I(~speed)",
     "I(not speed)",
     "I(speed and phase)",
     "I(1j)",
     "I(...)",
+    # C() calls a contrast given as its second argument: a bare name can be
+    # any Python builtin, e.g. breakpoint, exit or copyright.
+    "1 + C(speed, breakpoint)",
+    "1 + C(speed, exit)",
+    "1 + C(speed, contrast=copyright)",
+    "1 + C(speed, Treatment)",
+    # Unbounded powers take unbounded time.
+    "1 + I(speed*0 + 10**10**7)",
+    "I(speed ** speed)",
+    "I(speed ** 11)",
+    "I(speed ** -11)",
+    "I(speed ** (2 + 1))",
+    "I((speed ** 2) ** 2)",
+    "I((10 ** 10) ** 10)",
+    # Lists hold numbers only.
+    "bs(speed, knots=[a, b])",
+    "bs(speed, knots=[np.log(2)])",
+    # Line continuations and other control characters.
+    "1 + \\\n speed",
+    "1 +\nspeed",
+    "1 + speed\r",
+    "1 + speed\x00",
     # A response is not part of a transition formula.
     "y ~ speed",
     "np.log(y) ~ speed",
@@ -178,6 +203,41 @@ def test_error_names_the_offending_element_and_the_allowed_set():
     assert "Hint:" in message
 
 
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 + exit",
+        "1 + breakpoint",
+        "1 + copyright + speed",
+        "1 + bs(speed, knots=knots)",
+        "1 + quantile_bs(speed, n_knots=covariate_data)",
+        "1 + I(speed * velocity)",
+    ],
+)
+def test_names_must_be_covariates(formula):
+    """patsy resolves a name it does not find in the data in the caller's
+    namespace and Python's builtins, so every name must be a covariate."""
+    with pytest.raises(ValidationError, match="not a covariate"):
+        check_formula(formula, covariate_names=["speed", "phase"])
+
+
+def test_covariate_names_pass():
+    check_formula(
+        "1 + quantile_bs(speed, n_knots=5) + I(speed * phase) + C(arm)",
+        covariate_names=["speed", "phase", "arm"],
+    )
+    # Function names and np.pi are not covariates.
+    check_formula(
+        "1 + np.log1p(speed) + cyclic_bs(phase, lower=0, upper=2 * np.pi)",
+        covariate_names=["speed", "phase"],
+    )
+
+
+def test_line_continuation_gives_a_validation_error():
+    with pytest.raises(ValidationError, match="line break or backslash"):
+        check_formula("1 + \\\n speed")
+
+
 def test_check_does_not_evaluate_the_formula(monkeypatch):
     """Checking parses the formula but never evaluates it."""
     calls = []
@@ -190,8 +250,38 @@ def test_check_does_not_evaluate_the_formula(monkeypatch):
 
 def test_design_info_of_an_allowed_formula_passes():
     speed = np.linspace(0.0, 10.0, 50)
-    design = dmatrix("1 + bs(speed, df=4) + np.log1p(speed)", {"speed": speed})
-    check_design_info(design.design_info)
+    design = dmatrix(
+        "1 + bs(speed, df=4) + center(speed) + np.log1p(speed)", {"speed": speed}
+    )
+    check_design_info(design.design_info, covariate_names=["speed"])
+
+
+def test_design_info_with_a_name_missing_from_the_covariates_fails():
+    design = dmatrix("1 + speed", {"speed": np.linspace(0.0, 10.0, 50)})
+    with pytest.raises(ValidationError, match="not a covariate"):
+        check_design_info(design.design_info, covariate_names=["velocity"])
+
+
+def _single_factor_state(design):
+    (factor,) = design.design_info.factor_infos
+    return design.design_info.factor_infos[factor].state
+
+
+def test_design_info_whose_eval_code_differs_from_its_code_fails():
+    """build_design_matrices evaluates the factor's stored ``eval_code``, not
+    its ``code``, so the stored code is checked against the code."""
+    design = dmatrix("1 + center(speed)", {"speed": np.linspace(0.0, 10.0, 50)})
+    state = _single_factor_state(design)
+    state["eval_code"] = "(open('f', 'w'), speed)[1]"
+    with pytest.raises(ValidationError, match="eval_code"):
+        check_design_info(design.design_info)
+
+
+def test_design_info_without_eval_code_fails():
+    design = dmatrix("1 + speed", {"speed": np.linspace(0.0, 10.0, 50)})
+    del _single_factor_state(design)["eval_code"]
+    with pytest.raises(ValidationError, match="eval_code"):
+        check_design_info(design.design_info)
 
 
 def test_design_info_whose_factor_code_is_refused_fails():

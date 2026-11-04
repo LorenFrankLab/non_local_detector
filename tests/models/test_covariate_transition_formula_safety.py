@@ -163,3 +163,42 @@ def test_intervals_and_plot_refuse_a_tampered_design(fitted, monkeypatch):
     with pytest.raises(ValidationError, match="not allowed"):
         model.plot_discrete_state_transition(covariate_data=covariates)
     plt.close("all")
+
+
+def test_builtin_contrast_is_refused_at_construction(no_patsy):
+    """``C(x, breakpoint)`` would call the builtin as a contrast."""
+    with pytest.raises(ValidationError, match="not allowed"):
+        DiscreteNonStationaryDiagonal(np.full(2, 0.9), "1 + C(speed, breakpoint)")
+
+
+def test_name_that_is_not_a_covariate_is_refused_at_fit(no_patsy):
+    """patsy would resolve ``exit`` to the Python builtin."""
+    transition = DiscreteNonStationaryDiagonal(np.full(2, 0.9), "1 + exit")
+    with pytest.raises(ValidationError, match="not a covariate"):
+        transition.make_state_transition({"speed": np.linspace(0, 3, 20)})
+
+
+def test_decode_refuses_covariates_missing_a_formula_name(fitted, no_patsy):
+    model, _, predict = fitted
+    n_decode = len(predict["time_edges"]) - 1
+    predict["discrete_transition_covariate_data"] = {"velocity": np.zeros(n_decode)}
+    with pytest.raises(ValidationError, match="not a covariate"):
+        model.predict(**predict)
+
+
+def test_predicting_transitions_refuses_a_tampered_eval_code(monkeypatch):
+    """build_design_matrices evaluates the stored ``eval_code``."""
+    transition = DiscreteNonStationaryDiagonal(np.full(3, 0.9), "1 + speed")
+    _, coefficients, design_matrix = transition.make_state_transition(
+        {"speed": np.linspace(0, 3, 20)}
+    )
+    design_info = design_matrix.design_info
+    (factor,) = design_info.factor_infos
+    design_info.factor_infos[factor].state["eval_code"] = (
+        "(open('formula-allow-list', 'w'), speed)[1]"
+    )
+    monkeypatch.setattr(dst, "build_design_matrices", _patsy_must_not_run)
+    with pytest.raises(ValidationError, match="eval_code"):
+        predict_discrete_state_transitions(
+            design_matrix, coefficients, {"speed": np.linspace(0, 3, 5)}
+        )
