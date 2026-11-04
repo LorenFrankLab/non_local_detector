@@ -932,12 +932,12 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     Warns
     -----
-    UserWarning
+    DataQualityWarning
         If some, but not all, connected components of the interior graph have
         exactly zero exposure. Their rates are unidentified, so spike counts binned
         there are ignored, their place fields are set to ``RATE_EPS_HZ`` and their
         modes' coefficients to zero.
-    UserWarning
+    DataQualityWarning
         If the exposure is zero everywhere. Every place field is then
         ``RATE_EPS_HZ``.
     """

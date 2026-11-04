@@ -1482,7 +1482,7 @@ class Environment:
 
         Notes
         -----
-        The large-snap ``UserWarning`` only covers positions that land in a
+        The large-snap ``DataQualityWarning`` only covers positions that land in a
         non-interior (gap) bin and are then snapped. In an all-interior
         environment (e.g. ``infer_track_interior=False``) an out-of-bounds
         position is clamped to the nearest edge bin by the histogram outlier

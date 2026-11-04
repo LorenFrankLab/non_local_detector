@@ -806,7 +806,7 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
 
     Warns
     -----
-    UserWarning
+    ParameterWarning
         If ``sigma`` is below the characteristic (median) bin spacing, indicating
         the smoother will barely spread beyond a single bin.
     """

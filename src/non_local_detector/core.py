@@ -329,7 +329,7 @@ def _warn_degenerate_and_nan_timesteps(
     These diagnostics use ``logger.warning`` (not ``warnings.warn``) because
     they are per-invocation decoding diagnostics — they should fire on every
     affected call rather than be deduplicated by the warnings filter. The
-    fit-time convergence diagnostics use ``warnings.warn(UserWarning)`` instead
+    fit-time convergence diagnostics use ``warnings.warn(NumericalWarning)`` instead
     (see ``models.base`` / the likelihood models).
 
     Parameters

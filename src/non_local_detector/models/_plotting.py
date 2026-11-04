@@ -4,9 +4,9 @@
 the discrete and continuous state transitions and of the initial
 conditions.
 
-Methods that read the detector's attributes annotate ``self`` as
-``_DetectorBase``, which mypy only accepts with ``type: ignore[misc]`` on a
-mixin.
+Methods that read the detector's attributes annotate ``self`` with the
+``_FittedDetector`` protocol, which names only the attributes they use and
+resolves at runtime, so ``typing.get_type_hints`` works on them.
 """
 
 from itertools import pairwise

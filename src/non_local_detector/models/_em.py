@@ -1540,7 +1540,7 @@ class _EMMixin:
             )
 
             if not state.is_increasing:
-                # Surfaced via warnings.warn(UserWarning) to match the
+                # Surfaced via warnings.warn(NumericalWarning) to match the
                 # other EM/GMM/GLM fit-quality diagnostics (decode-time
                 # degenerate-timestep warnings use logger.warning instead;
                 # see core._warn_degenerate_and_nan_timesteps).

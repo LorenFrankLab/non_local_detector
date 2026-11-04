@@ -408,7 +408,7 @@ def _missing_bins(
 
     Warns
     -----
-    UserWarning
+    DataQualityWarning
         If ``warn_outside_tracking`` and some bins extend outside the tracked
         period.
 
