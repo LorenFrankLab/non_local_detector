@@ -57,7 +57,7 @@ from non_local_detector.core import (
 )
 from non_local_detector.discrete_state_transitions import (
     _check_initial_discrete_transition,
-    _check_transition_formula,
+    _refuse_untrusted_transition,
     _row_smoothness,
     _smoothness_matrix,
     _transition_intervals,
@@ -1719,7 +1719,13 @@ class _DetectorBase(
         ValueError
             If the transitions do not depend on covariates, or were not
             estimated by EM (no covariance yet).
+        ValidationError
+            If the transition formula was read from a saved model file and
+            not trusted (see ``load_model``).
         """
+        _refuse_untrusted_transition(
+            self.discrete_transition_type, "compute transition intervals"
+        )
         if self.discrete_transition_design_matrix_ is None:
             msg = (
                 "The discrete transitions do not depend on covariates; use a "
@@ -1816,6 +1822,8 @@ class _DetectorBase(
                 )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
+        # Before anything changes, so a refused fit keeps the loaded model.
+        _refuse_untrusted_transition(self.discrete_transition_type, "fit")
         self._invalidate_stored_log_likelihood()  # stale after a refit
         # A refit replaces every structure a loaded detector rebuilt.
         self.__dict__.pop("_rebuild_check_", None)
@@ -2371,9 +2379,6 @@ class _DetectorBase(
             if self.discrete_transition_coefficients_ is None:
                 msg = "discrete_transition_coefficients_ is None but covariate data provided"
                 raise ValueError(msg)
-            # Also refuses a detector unpickled with a refused formula, whose
-            # design matrix was not rebuilt.
-            _check_transition_formula(self.discrete_transition_type)
             predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,

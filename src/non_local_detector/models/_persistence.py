@@ -12,7 +12,6 @@ pickles name, and every name moved here stays importable from there.
 
 import json
 import pickle
-import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -22,13 +21,11 @@ import numpy as np
 import xarray as xr
 
 import non_local_detector  # resolves load_model's return annotation
-from non_local_detector._warnings import user_stacklevel
+from non_local_detector._formula_grammar import UntrustedFormula
 from non_local_detector.discrete_state_transitions import (
-    _check_transition_formula,
     _row_smoothness,
     _smoothness_matrix,
 )
-from non_local_detector.exceptions import ParameterWarning, ValidationError
 from non_local_detector.likelihoods import _record_legacy_encoding_algorithm
 from non_local_detector.models._results import label_checkpointed_result
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -106,29 +103,21 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
     # nothing reads it now.
     detector.__dict__.pop("_env_lookup_cache_", None)
     covariate_data = state.get("_discrete_transition_covariate_data_")
-    if covariate_data is not None and (
-        detector.discrete_transition_design_matrix_ is None
+    # A formula a saved model file was not trusted with stays unevaluated:
+    # the copy is for inspection only, as the loaded model is.
+    untrusted = isinstance(
+        getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
+    )
+    if (
+        covariate_data is not None
+        and detector.discrete_transition_design_matrix_ is None
+        and not untrusted
     ):
-        try:
-            _check_transition_formula(detector.discrete_transition_type)
-        except ValidationError as error:
-            # Rebuilding the design would evaluate the formula. The
-            # detector still loads for inspection; predict checks the
-            # formula again and refuses to decode.
-            warnings.warn(
-                "The detector's transition formula is outside the allowed "
-                "formula grammar, so its design matrix was not rebuilt. It "
-                "can be inspected, but decoding with covariates is refused."
-                f"\n{error}",
-                ParameterWarning,
-                stacklevel=user_stacklevel(),
-            )
-        else:
-            detector.discrete_transition_design_matrix_ = (
-                detector.discrete_transition_type.make_state_transition(
-                    covariate_data
-                ).design_matrix
-            )
+        detector.discrete_transition_design_matrix_ = (
+            detector.discrete_transition_type.make_state_transition(
+                covariate_data
+            ).design_matrix
+        )
     # Detectors fitted before transition smoothing existed: no penalty
     # strengths and no covariance, so EM and intervals see an unsmoothed
     # fit that has not estimated its uncertainty.
@@ -208,6 +197,8 @@ class _PersistenceMixin:
     @staticmethod
     def load_model(
         filename: str | Path = "model.nld",
+        *,
+        trust_formulas: bool = False,
     ) -> "non_local_detector.models.base._DetectorBase":
         """
         Load a detector saved with ``save_model``, or pickled by earlier releases.
@@ -223,6 +214,24 @@ class _PersistenceMixin:
         model always works. A file written in a newer format version is
         refused, naming the version to upgrade to.
 
+        patsy evaluates a covariate transition's formula as Python, and a
+        saved file may be someone else's. Unless ``trust_formulas`` is True,
+        a formula outside the formula grammar for files (covariate names,
+        numbers, arithmetic, the package's spline transforms, elementwise
+        numpy functions such as ``np.log`` and ``np.sin``, and ``C()`` with
+        patsy's contrasts) is not evaluated: the model loads for inspection
+        only, with a ``ParameterWarning`` naming the formula, and its
+        transition's ``formula`` is an inert ``UntrustedFormula`` that
+        copies, pickles and ``sklearn.clone`` carry. Decoding, fitting,
+        transition intervals, transition plots and ``save_model`` of the
+        model or any copy raise ``ValidationError`` until the transition is
+        given a formula of your own. A formula within the grammar is a
+        ``LoadedFormula`` (a ``str``), checked again with the covariate names
+        when a design is built from it. By default loading never runs code
+        from a ``.nld`` file, but a crafted file can still make loading or
+        decoding slow or memory-hungry (e.g. very large spline
+        interactions), so load files from untrusted sources with care.
+
         A pickle saved by an earlier release loads for inspection, including
         one pickled with JAX 0.4.30 or earlier. Decoding with one fitted
         before rates were fitted in Hz (the 0.6 releases) raises
@@ -232,12 +241,17 @@ class _PersistenceMixin:
         .. warning::
 
             Only load pickles from trusted sources. Pickle files can execute
-            arbitrary code during deserialization.
+            arbitrary code during deserialization, so a pickle's formula is
+            not checked and ``trust_formulas`` does not apply to it.
 
         Parameters
         ----------
         filename : str or Path, optional
             Filename to load the model from, by default "model.nld".
+        trust_formulas : bool, optional
+            Evaluate a saved model's covariate transition formula even if it
+            is outside the formula grammar, by default False. Pass True only
+            for a file you trust, such as one you saved yourself.
 
         Returns
         -------
@@ -259,7 +273,7 @@ class _PersistenceMixin:
         if is_saved_model_format(filename):
             from non_local_detector.model_format._detector import load_detector
 
-            return load_detector(filename)
+            return load_detector(filename, trust_formulas=trust_formulas)
         with Path(filename).open("rb") as f:
             return cast("_DetectorBase", _ModelUnpickler(f).load())
 

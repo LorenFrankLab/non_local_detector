@@ -14,6 +14,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from non_local_detector._formula_grammar import LoadedFormula
 from non_local_detector.environment import Environment, PlaceGrid
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.transition_operators import (
@@ -115,6 +116,11 @@ def assert_same(a, b, where="detector"):
     elif isinstance(a, float) and math.isnan(a):
         assert isinstance(b, float), where
         assert math.isnan(b), where
+    elif isinstance(a, str) and isinstance(b, LoadedFormula):
+        # A transition formula loaded without trust_formulas is marked as
+        # read from a file.
+        assert type(a) is str, (where, type(a))
+        assert a == b, (where, a, b)
     elif isinstance(a, (str, int, float, bool, np.generic)) or a is None:
         assert type(a) is type(b), (where, type(a), type(b))
         assert a == b, (where, a, b)

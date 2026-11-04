@@ -68,37 +68,6 @@ def _restored(
     return {"to_state": to_state, "from_state": from_state}
 
 
-def _covariate_transition(
-    cls: type, names: tuple[str, ...], defaults: Mapping[str, Any] | None = None
-) -> dict[str, Any]:
-    """Options of a covariate-dependent discrete transition.
-
-    A stored formula outside the formula grammar is kept for inspection: the
-    transition is built with every other field checked, and the formula is
-    set after, without constructing (or evaluating) it. Rebuilding the
-    detector's design then refuses it (``make_state_transition`` checks the
-    formula), so the loaded detector cannot decode, as an unpickled one with
-    such a formula cannot.
-    """
-    from non_local_detector._formula_grammar import check_formula
-    from non_local_detector.exceptions import ValidationError
-
-    def to_state(obj: Any) -> dict[str, Any]:
-        return {name: getattr(obj, name) for name in names}
-
-    def from_state(state: dict[str, Any]) -> Any:
-        values = read_fields(state, names, defaults or {}, cls)
-        try:
-            check_formula(values["formula"])
-        except ValidationError:
-            obj = cls(**{**values, "formula": "1"})
-            obj.formula = values["formula"]
-            return obj
-        return cls(**values)
-
-    return {"to_state": to_state, "from_state": from_state}
-
-
 def _stateless(cls: type) -> dict[str, Callable[..., Any]]:
     return {"to_state": lambda obj: {}, "from_state": lambda state: cls()}  # noqa: ARG005 -- stateless
 
@@ -243,18 +212,9 @@ def builtin_types() -> list[BuiltinType]:
         (
             DiscreteNonStationaryDiagonal,
             ("diagonal_values", "formula", "smoothness"),
-            _covariate_transition(
-                DiscreteNonStationaryDiagonal,
-                ("diagonal_values", "formula", "smoothness"),
-            ),
+            {},
         ),
-        (
-            DiscreteNonStationaryCustom,
-            ("values", "formula", "smoothness"),
-            _covariate_transition(
-                DiscreteNonStationaryCustom, ("values", "formula", "smoothness")
-            ),
-        ),
+        (DiscreteNonStationaryCustom, ("values", "formula", "smoothness"), {}),
         (
             KDEModel,
             ("std", "block_size", "samples_", "weights_"),

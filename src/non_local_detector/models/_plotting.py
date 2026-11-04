@@ -20,6 +20,7 @@ from patsy import DesignMatrix
 
 from non_local_detector.discrete_state_transitions import (
     _design_on,
+    _refuse_untrusted_transition,
     centered_softmax_forward,
 )
 
@@ -34,6 +35,7 @@ class _FittedDetector(Protocol):
     state_names: list[str]
     n_discrete_states_: int
     state_ind_: np.ndarray
+    discrete_transition_type: Any
     bin_sizes_: np.ndarray
     initial_conditions_: np.ndarray
     discrete_state_transitions_: np.ndarray
@@ -70,7 +72,16 @@ class _PlottingMixin:
         covariate_data : dict or pd.DataFrame, optional
             Dictionary or DataFrame of covariate data, by default None.
             Keys are covariate names and values are 1D arrays.
+
+        Raises
+        ------
+        ValidationError
+            If the transition formula was read from a saved model file and
+            not trusted (see ``load_model``).
         """
+        _refuse_untrusted_transition(
+            self.discrete_transition_type, "plot the transitions"
+        )
         if self.discrete_state_transitions_.ndim == 2:
             if ax is None:
                 ax = plt.gca()

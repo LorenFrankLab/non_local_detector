@@ -27,6 +27,13 @@ operator), and, for covariate-dependent discrete transitions, the patsy design,
 its smoothness penalties and the training-time transition matrices. Before a
 loaded detector first decodes, the rebuilt structures are compared with their
 fingerprints; a mismatch refuses to decode and asks for a refit.
+
+patsy evaluates a covariate transition's formula as Python, and the file may
+be someone else's, so unless ``trust_formulas`` is set the stored formula is
+marked as read from a file: a ``LoadedFormula`` within the formula grammar,
+checked again whenever a design is built from it, or an inert
+``UntrustedFormula`` outside it, which is never evaluated, so the detector and
+every copy of it are for inspection only.
 """
 
 import warnings
@@ -37,6 +44,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from non_local_detector._formula_grammar import (
+    TRUST_HINT,
+    LoadedFormula,
+    UntrustedFormula,
+    check_formula,
+    refuse_untrusted,
+)
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
     _declared_destination,
@@ -72,6 +86,8 @@ from non_local_detector.model_format._registry import (
 )
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from non_local_detector.models.base import _DetectorBase
     from non_local_detector.types import TransitionRepresentation
 
@@ -305,12 +321,10 @@ class _RebuildCheck:
         fingerprints: dict[str, Any],
         stored_blocks: Sequence[tuple[int, int]],
         package_version: str,
-        refusals: Sequence[str] = (),
     ) -> None:
         self.fingerprints = fingerprints
         self.stored_blocks = tuple(stored_blocks)
         self.package_version = package_version
-        self.refusals = tuple(refusals)
         self.verified = False
 
     def mismatches(self, detector: "_DetectorBase") -> list[str]:
@@ -362,14 +376,6 @@ class _RebuildCheck:
         """
         if self.verified:
             return
-        if self.refusals:
-            msg = (
-                "The saved model cannot decode: "
-                f"{'; '.join(self.refusals)}. It loaded for inspection only."
-            )
-            raise ValidationError(
-                msg, hint="Refit the model with a formula the grammar allows."
-            )
         problems = self.mismatches(detector)
         if problems:
             msg = (
@@ -683,7 +689,14 @@ def _manifest(spec: TypeSpec, writer: ArrayWriter) -> dict[str, Any]:
 
 
 def save_detector(detector: "_DetectorBase", path: str | Path) -> None:
-    """Write ``detector`` to ``path`` in the saved-model format."""
+    """Write ``detector`` to ``path`` in the saved-model format.
+
+    Refused for a transition formula a saved model file was not trusted with
+    (an ``UntrustedFormula``): saving it would turn it back into plain text.
+    """
+    formula = getattr(detector.discrete_transition_type, "formula", None)
+    if isinstance(formula, UntrustedFormula):
+        refuse_untrusted(formula, "save the model")
     with new_model_file(path) as archive:
         manifest, config, state = detector_documents(detector, ArrayWriter(archive))
         for name, document in (
@@ -694,16 +707,68 @@ def save_detector(detector: "_DetectorBase", path: str | Path) -> None:
             write_document(archive, name, document)
 
 
-def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> str | None:
+def _mark_file_formula(
+    detector: "_DetectorBase",
+    covariate_data: "pd.DataFrame | Mapping[str, Any] | None",
+) -> None:
+    """Mark the detector's transition formula, read from a file, as such.
+
+    A formula within the formula grammar becomes a ``LoadedFormula``, checked
+    again with the covariates whenever a design is built from it; one outside
+    it becomes an inert ``UntrustedFormula``, with a ``ParameterWarning``, so
+    neither the detector nor any copy of it evaluates it.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        The detector being loaded.
+    covariate_data : pd.DataFrame or dict, optional
+        The stored covariates of a fitted detector, whose keys the formula's
+        names must be; None for an unfitted detector.
+    """
+    # A covariate transition of the package, or a registered one with a
+    # formula; one without a formula is left alone.
+    transition: Any = detector.discrete_transition_type
+    formula = getattr(transition, "formula", None)
+    if formula is None:
+        return
+    try:
+        check_formula(
+            formula, None if covariate_data is None else list(covariate_data.keys())
+        )
+    except ValidationError as error:
+        # The first line names what is outside the grammar.
+        reason = str(error).splitlines()[0]
+        warnings.warn(
+            f"The saved model's transition formula {formula!r} is outside the "
+            "formula grammar for formulas read from a file, so it was not "
+            f"evaluated (patsy evaluates formulas as Python): {reason} The "
+            "model loaded for inspection only: decoding, fitting and saving it, "
+            f"or any copy of it, are refused. {TRUST_HINT}",
+            ParameterWarning,
+            stacklevel=user_stacklevel(),
+        )
+        transition.formula = UntrustedFormula(formula)
+        return
+    transition.formula = LoadedFormula(formula)
+
+
+def _rebuild_discrete(
+    detector: "_DetectorBase", stored: dict[str, Any], *, trust_formulas: bool
+) -> None:
     """Rebuild the discrete transition's design, penalties and transitions.
 
-    Returns
-    -------
-    refusal : str or None
-        Why a covariate design was not rebuilt (its formula is outside the
-        formula grammar), or None. The detector then loads for inspection
-        only, without a design or penalties, and without the training-time
-        ``discrete_state_transitions_``.
+    Parameters
+    ----------
+    detector : _DetectorBase
+        The detector being loaded, with its stored fitted state set.
+    stored : dict
+        The decoded stored state.
+    trust_formulas : bool
+        Evaluate the transition formula even if it is outside the formula
+        grammar. Otherwise one outside it is not evaluated: the detector
+        loads for inspection only, without a design or penalties, and
+        without the training-time ``discrete_state_transitions_``.
     """
     from non_local_detector.discrete_state_transitions import (
         _smoothness_matrix,
@@ -715,24 +780,17 @@ def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> str 
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         detector.discrete_state_transitions_ = stored["discrete_state_transitions"]
-        return None
-    try:
-        # Checks the formula against the formula grammar before patsy sees it.
-        initial = detector.discrete_transition_type.make_state_transition(
-            covariate_data
-        )
-    except ValidationError as error:
+        return
+    if not trust_formulas:
+        _mark_file_formula(detector, covariate_data)
+    if isinstance(
+        getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
+    ):
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         # The training-time transitions follow from the design: left unset.
-        warnings.warn(
-            "The detector's transition formula is outside the allowed formula "
-            "grammar, so its design matrix was not rebuilt. It can be "
-            f"inspected, but decoding is refused.\n{error}",
-            ParameterWarning,
-            stacklevel=user_stacklevel(),
-        )
-        return f"its discrete transition formula was refused ({error.args[0]})"
+        return
+    initial = detector.discrete_transition_type.make_state_transition(covariate_data)
     design = initial.design_matrix
     coefficients = detector.discrete_transition_coefficients_
     # A covariate-dependent transition has a design and coefficients.
@@ -750,7 +808,6 @@ def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> str 
         if np.array_equal(coefficients, initial.coefficients)
         else _transitions_on_design(design, coefficients)
     )
-    return None
 
 
 def _rebuild_continuous(
@@ -794,8 +851,18 @@ def _rebuild_continuous(
         detector._transition_representation_ = "dense"
 
 
-def detector_from_stored(stored: StoredModel) -> "_DetectorBase":
+def detector_from_stored(
+    stored: StoredModel, *, trust_formulas: bool = False
+) -> "_DetectorBase":
     """Build the detector a saved model describes.
+
+    Parameters
+    ----------
+    stored : StoredModel
+        The open saved model.
+    trust_formulas : bool, optional
+        Evaluate a covariate transition formula outside the formula grammar
+        (see ``load_model``).
 
     Raises
     ------
@@ -808,6 +875,8 @@ def detector_from_stored(stored: StoredModel) -> "_DetectorBase":
     detector = cast("_DetectorBase", spec.cls(**params))
     state = stored.state
     if not state["fitted"]:
+        if not trust_formulas:
+            _mark_file_formula(detector, None)
         return detector
 
     decoder = Decoder(stored.read_array)
@@ -832,7 +901,7 @@ def detector_from_stored(stored: StoredModel) -> "_DetectorBase":
         if name in values:
             setattr(detector, attribute, values[name])
     detector._initialize_state_index()
-    refusal = _rebuild_discrete(detector, values)
+    _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
     blocks = {
         (entry["from_state"], entry["to_state"]): np.asarray(entry["block"])
         for entry in values["stored_transition_blocks"]
@@ -842,14 +911,16 @@ def detector_from_stored(stored: StoredModel) -> "_DetectorBase":
         values["fingerprints"],
         list(blocks),
         manifest.get("package_version", "unknown"),
-        refusals=[] if refusal is None else [refusal],
     )
     return detector
 
 
-def load_detector(path: str | Path) -> "_DetectorBase":
-    """Load the detector saved at ``path`` (the saved-model format)."""
+def load_detector(path: str | Path, *, trust_formulas: bool = False) -> "_DetectorBase":
+    """Load the detector saved at ``path`` (the saved-model format).
+
+    ``trust_formulas`` is as for ``load_model``.
+    """
     # Built while the file is open, each array read straight from its member;
     # the file is closed on return.
     with open_model(path) as stored:
-        return detector_from_stored(stored)
+        return detector_from_stored(stored, trust_formulas=trust_formulas)

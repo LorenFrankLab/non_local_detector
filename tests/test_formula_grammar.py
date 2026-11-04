@@ -1,16 +1,20 @@
-"""The allow-list of formula syntax that may reach patsy.
+"""The grammar a transition formula read from a saved model file must use.
 
-patsy evaluates each term of a formula as Python, so a transition formula is
-checked against a small grammar before patsy sees it. These tests pin which
-formulas pass (every formula the package, its tests, documentation and
-notebooks use) and that code-execution tricks are refused before evaluation.
+patsy evaluates each term of a formula as Python, so ``load_model`` checks a
+saved model's transition formula against a grammar before patsy sees it
+(unless the file is trusted). These tests pin which formulas pass (every
+formula the package, its tests, documentation and notebooks use, and common
+elementwise transforms and contrasts) and that code-execution tricks are
+refused before evaluation.
 """
+
+import time
 
 import numpy as np
 import pytest
 from patsy import dmatrix
 
-from non_local_detector._formula_grammar import check_design_info, check_formula
+from non_local_detector._formula_grammar import check_formula
 from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.unit
@@ -70,10 +74,53 @@ GRAMMAR_FORMULAS = [
     "~ speed",
 ]
 
+# Elementwise numpy functions and C() contrasts, each of which patsy builds.
+WIDENED_FORMULAS = [
+    "1 + np.sin(phase) + np.cos(phase) + np.tan(phase)",
+    "1 + np.arcsin(x) + np.arccos(x) + np.arctan(x) + np.arctan2(x, y)",
+    "1 + np.log2(speed) + np.log10(speed) + np.expm1(x) + np.square(x)",
+    "1 + np.sign(x) + np.floor(speed) + np.ceil(speed)",
+    "1 + np.minimum(speed, 10) + np.maximum(speed, 0.5) + np.maximum(x, y)",
+    "1 + C(arm, Treatment('b'))",
+    '1 + C(arm, Treatment("b"))',
+    "1 + C(arm, Treatment(reference='c'))",
+    "1 + C(arm, contrast=Treatment('b'))",
+    "1 + C(arm, Sum())",
+    "1 + C(arm, Sum(omit='a'))",
+    "1 + C(arm, Helmert())",
+    "1 + C(arm, Diff())",
+    "1 + C(arm, Poly())",
+    "1 + C(arm, Poly(scores=[1, 2, 4]))",
+    "1 + C(arm, levels=['c', 'b', 'a'])",
+    "1 + C(arm, levels=('c', 'b', 'a'))",
+    "1 + C(arm, Treatment('b'), levels=['c', 'b', 'a'])",
+    "1 + C(arm, Treatment('b'), ['c', 'b', 'a'])",
+    "1 + C(arm, Sum(), levels=['a', 'b', 'c']):np.sin(phase)",
+]
 
-@pytest.mark.parametrize("formula", DOCUMENTED_FORMULAS + GRAMMAR_FORMULAS)
+COVARIATES = {
+    "speed": np.linspace(1.0, 10.0, 6),
+    "phase": np.linspace(0.0, 2 * np.pi, 6),
+    "x": np.linspace(-0.9, 0.9, 6),
+    "y": np.linspace(0.5, 1.5, 6),
+    "arm": np.array(["a", "b", "c", "a", "b", "c"]),
+}
+
+
+@pytest.mark.parametrize(
+    "formula", DOCUMENTED_FORMULAS + GRAMMAR_FORMULAS + WIDENED_FORMULAS
+)
 def test_allowed_formulas_pass(formula):
     check_formula(formula)
+
+
+@pytest.mark.parametrize("formula", WIDENED_FORMULAS)
+def test_widened_formulas_are_valid_patsy(formula):
+    """Each added function and contrast is one patsy evaluates, and the check
+    counts only data keys as covariates (not contrasts or string literals)."""
+    check_formula(formula, covariate_names=COVARIATES)
+    design = dmatrix(formula, COVARIATES)
+    assert np.all(np.isfinite(design))
 
 
 ATTACKS = [
@@ -125,8 +172,12 @@ ATTACKS = [
     "I({'a': speed})",
     # Strings and format tricks.
     "'speed'",
-    "C(arm, Treatment('a'))",
     "cr(speed, constraints='center')",
+    "I('a')",
+    "np.sin('a')",
+    "bs(speed, knots=['a'])",
+    "Treatment('a')",
+    "1 + C('arm')",
     "I(f'{speed}')",
     "I('{0.__class__}'.format(speed))",
     "I(b'speed')",
@@ -149,6 +200,35 @@ ATTACKS = [
     "1 + C(speed, exit)",
     "1 + C(speed, contrast=copyright)",
     "1 + C(speed, Treatment)",
+    # A contrast is a call of a patsy contrast with literal arguments only.
+    "1 + C(arm, Treatment(breakpoint))",
+    "1 + C(arm, Treatment(reference=exit))",
+    "1 + C(arm, Treatment(open('f')))",
+    "1 + C(arm, Treatment(np.log(2)))",
+    "1 + C(arm, Treatment('a').__class__)",
+    "1 + C(arm, Treatment('a')(arm))",
+    "1 + C(arm, Treatment(*opts))",
+    "1 + C(arm, Treatment(**opts))",
+    "1 + C(arm, Treatment(f'{arm}'))",
+    "1 + C(arm, Treatment(b'a'))",
+    "1 + C(arm, Treatment([[1]]))",
+    "1 + C(arm, Treatment(1j))",
+    "1 + C(arm, np.log(arm))",
+    "1 + C(arm, ContrastMatrix([[1]], ['a']))",
+    "1 + C(arm, eval('1'))",
+    # levels are a list or tuple of literals.
+    "1 + C(arm, levels=[breakpoint])",
+    "1 + C(arm, levels=['a', open('f')])",
+    "1 + C(arm, levels='ab')",
+    "1 + C(arm, levels=[['a']])",
+    # C takes its data, a contrast and levels, nothing else.
+    "1 + C(arm, Treatment('a'), ['a'], ['b'])",
+    "1 + C(arm, Treatment('a'), contrast=Sum())",
+    "1 + C(arm, other='a')",
+    "1 + C(*arm)",
+    # Other numpy functions.
+    "np.sinh(speed)",
+    "np.where(speed, 1, 0)",
     # Unbounded powers take unbounded time.
     "1 + I(speed*0 + 10**10**7)",
     "I(speed ** speed)",
@@ -201,6 +281,7 @@ def test_error_names_the_offending_element_and_the_allowed_set():
     for name in ("quantile_bs", "cyclic_bs", "bs", "np.log1p", "np.pi"):
         assert name in message
     assert "Hint:" in message
+    assert "trust_formulas=True" in message
 
 
 @pytest.mark.parametrize(
@@ -209,9 +290,11 @@ def test_error_names_the_offending_element_and_the_allowed_set():
         "1 + exit",
         "1 + breakpoint",
         "1 + copyright + speed",
-        "1 + bs(speed, knots=knots)",
-        "1 + quantile_bs(speed, n_knots=covariate_data)",
+        "1 + bs(knots, df=4)",
+        "1 + quantile_bs(covariate_data, n_knots=4)",
         "1 + I(speed * velocity)",
+        "1 + np.minimum(speed, cap)",
+        "1 + C(arm, Treatment('a'))",
     ],
 )
 def test_names_must_be_covariates(formula):
@@ -231,6 +314,11 @@ def test_covariate_names_pass():
         "1 + np.log1p(speed) + cyclic_bs(phase, lower=0, upper=2 * np.pi)",
         covariate_names=["speed", "phase"],
     )
+    # Contrast names and string literals are not covariates either.
+    check_formula(
+        "1 + C(arm, Treatment('b'), levels=['a', 'b']) + np.sin(phase)",
+        covariate_names=["arm", "phase"],
+    )
 
 
 def test_line_continuation_gives_a_validation_error():
@@ -248,48 +336,116 @@ def test_check_does_not_evaluate_the_formula(monkeypatch):
     assert calls == []
 
 
-def test_design_info_of_an_allowed_formula_passes():
-    speed = np.linspace(0.0, 10.0, 50)
-    design = dmatrix(
-        "1 + bs(speed, df=4) + center(speed) + np.log1p(speed)", {"speed": speed}
-    )
-    check_design_info(design.design_info, covariate_names=["speed"])
+NESTED_SQUARES = (
+    "1 + speed + I(" + "np.square(" * 18 + "99999999999999999999" + ")" * 18 + ")"
+)
 
 
-def test_design_info_with_a_name_missing_from_the_covariates_fails():
-    design = dmatrix("1 + speed", {"speed": np.linspace(0.0, 10.0, 50)})
-    with pytest.raises(ValidationError, match="not a covariate"):
-        check_design_info(design.design_info, covariate_names=["velocity"])
+@pytest.mark.parametrize(
+    ("formula", "match"),
+    [
+        # Python ints are unbounded and numpy keeps one beyond int64 as an
+        # object, so each np.square would double its size.
+        (NESTED_SQUARES, "int64"),
+        ("1 + I(np.square(np.square(9999999999 * 9999999999)))", "int64"),
+        ("1 + I(speed * (3037000500 * 3037000500))", "int64"),
+        ("1 + bs(speed, knots=[9223372036854775808])", "int64"),
+        ("1 + I(-9223372036854775808 + speed)", "int64"),
+        ("1 + " + " + ".join(["speed"] * 400), "characters"),
+        ("1 + I(" + "np.abs(" * 40 + "speed" + ")" * 40 + ")", "nested"),
+    ],
+    ids=[
+        "nested-squares",
+        "literal-product",
+        "grouped-product",
+        "list",
+        "min",
+        "long",
+        "deep",
+    ],
+)
+def test_bounded_formulas(formula, match):
+    """A formula's evaluation time is bounded: integers stay within int64,
+    and its length and nesting are limited."""
+    start = time.perf_counter()
+    with pytest.raises(ValidationError, match=match):
+        check_formula(formula)
+    assert time.perf_counter() - start < 1.0
 
 
-def _single_factor_state(design):
-    (factor,) = design.design_info.factor_infos
-    return design.design_info.factor_infos[factor].state
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 + I(speed * 9223372036854775807)",
+        "1 + I(speed * 4611686018427387904 + 2**10)",
+        "1 + I(speed * 1e300 * 1e300)",
+        "1 + I(" + "np.abs(" * 20 + "speed" + ")" * 20 + ")",
+    ],
+)
+def test_bounds_admit_reasonable_formulas(formula):
+    check_formula(formula)
 
 
-def test_design_info_whose_eval_code_differs_from_its_code_fails():
-    """build_design_matrices evaluates the factor's stored ``eval_code``, not
-    its ``code``, so the stored code is checked against the code."""
-    design = dmatrix("1 + center(speed)", {"speed": np.linspace(0.0, 10.0, 50)})
-    state = _single_factor_state(design)
-    state["eval_code"] = "(open('f', 'w'), speed)[1]"
-    with pytest.raises(ValidationError, match="eval_code"):
-        check_design_info(design.design_info)
-
-
-def test_design_info_without_eval_code_fails():
-    design = dmatrix("1 + speed", {"speed": np.linspace(0.0, 10.0, 50)})
-    del _single_factor_state(design)["eval_code"]
-    with pytest.raises(ValidationError, match="eval_code"):
-        check_design_info(design.design_info)
-
-
-def test_design_info_whose_factor_code_is_refused_fails():
-    """A design whose stored factor code would run something else is refused
-    before it is evaluated on new covariates."""
-    speed = np.linspace(0.0, 10.0, 50)
-    design = dmatrix("1 + I(speed)", {"speed": speed})
-    (factor,) = (factor for factor in design.design_info.factor_infos)
-    factor.code = "__import__('os').system('x')"
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 + bs(speed, df=10**7)",
+        "1 + bs(speed, 1001)",
+        "1 + bs(speed, df=0)",
+        "1 + bs(speed, df=5.5)",
+        "1 + bs(speed, df=5, degree=11)",
+        "1 + bs(speed, 5, None, 11)",
+        "1 + cr(speed, df=2000)",
+        "1 + quantile_bs(speed, n_knots=1001)",
+        "1 + quantile_bs(speed, 1001)",
+        "1 + quantile_bs(speed, n_knots=-1)",
+        "1 + cyclic_bs(phase, 0, 6, 5000)",
+        "1 + cyclic_bs(phase, lower=0, upper=6, degree=12)",
+        "1 + bs(speed, knots=[" + ", ".join(["1.0"] * 1001) + "])",
+        "1 + bs(speed, knots=speed)",
+        "1 + C(arm, levels=[" + ", ".join(["1"] * 1001) + "])",
+        "1 + bs(speed, 5, None, 3, False, 0, 1, 2)",
+        " + ".join(f"np.abs(speed + {i})" for i in range(33)),
+    ],
+    ids=[
+        "df-keyword",
+        "df-positional",
+        "df-zero",
+        "df-float",
+        "degree",
+        "degree-positional",
+        "cr-df",
+        "n-knots",
+        "n-knots-positional",
+        "n-knots-negative",
+        "cyclic-n-knots-positional",
+        "cyclic-degree",
+        "knots-length",
+        "knots-covariate",
+        "levels-length",
+        "too-many-arguments",
+        "too-many-calls",
+    ],
+)
+def test_sizes_are_capped(formula):
+    """Spline sizes, list lengths and the number of calls are bounded, so a
+    formula from a file cannot ask for an unbounded design."""
+    start = time.perf_counter()
     with pytest.raises(ValidationError, match="not allowed"):
-        check_design_info(design.design_info)
+        check_formula(formula, covariate_names=["speed", "phase", "arm"])
+    assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 + quantile_bs(speed, n_knots=8)",
+        "1 + quantile_bs(speed, 8, 3)",
+        "1 + bs(speed, df=1000, degree=10)",
+        "1 + bs(speed, df=None, knots=[1.0, 2.0], degree=0)",
+        "1 + cyclic_bs(phase, 0.0, 6.5, 8, 3)",
+        " + ".join(f"np.abs(speed + {i})" for i in range(32)),
+    ],
+)
+def test_sizes_within_the_caps_pass(formula):
+    check_formula(formula, covariate_names=["speed", "phase"])
