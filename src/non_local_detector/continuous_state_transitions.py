@@ -80,9 +80,12 @@ class ContinuousTransition(Protocol):
     modeled, 0 for bins nothing can leave). A block between a
     one-bin state (No-Spike, or Local without ``local_position_std``) and a
     spatial state is set without calling it: from the one-bin state it is
-    uniform over the interior bins of the destination state's environment
-    (the transition must name an environment, so ``Discrete`` cannot set
-    it); into the one-bin state every bin moves there with probability 1.
+    uniform over the interior bins of the transition's destination
+    environment (``environment2_name`` when set, else ``environment_name``,
+    so ``Discrete`` cannot set it); into the one-bin state every bin moves
+    there with probability 1. The environments a transition declares must
+    be its states': the destination always, and the source
+    (``environment_name``) for a block between two spatial states.
 
     A transition has a structured operator only if it implements
     ``transition_operators.SupportsStructuredBlock``, as the package's
@@ -1026,26 +1029,109 @@ def _check_continuous_transition(transition: object) -> None:
         )
 
 
-def _scalar_to_spatial_destination(
+@runtime_checkable
+class _NamesDestinationEnvironment(Protocol):
+    """A transition into another environment, such as ``Uniform``."""
+
+    @property
+    def environment2_name(self) -> str | None:
+        """Name of the destination environment; None for the source's."""
+        ...
+
+
+def _declared_destination(transition: ContinuousTransition) -> str | None:
+    """The environment a transition moves into: its ``environment2_name``
+    when set, else its ``environment_name``."""
+    if (
+        isinstance(transition, _NamesDestinationEnvironment)
+        and transition.environment2_name is not None
+    ):
+        return transition.environment2_name
+    return transition.environment_name
+
+
+def _check_block_environments(
     transition: ContinuousTransition,
     environments: Sequence[Environment],
+    source_environment_name: str | None,
     destination_environment_name: str | None,
-) -> np.ndarray:
-    """Destination bins of a block from a state without place bins.
+    source_size: int,
+    target_size: int,
+) -> None:
+    """Check the environments a transition declares against its block's states.
 
-    A block from a single-bin state (such as Local or No-Spike) to a spatial
-    state is uniform over the interior bins of the destination state's
-    environment, whatever the transition, as long as the transition names an
-    environment.
+    The dense and the structured constructors call this for every block, so
+    a mismatch raises the same error from both. A block into a one-bin state
+    (probability 1 into its single bin) and a transition without place bins
+    (``environment_name=None``, as ``Discrete``) are not checked here.
 
     Parameters
     ----------
     transition : ContinuousTransition
     environments : sequence of Environment
-    destination_environment_name : str or None
-        Environment of the destination state (its observation model's
-        ``environment_name``); None takes the transition's
-        ``environment_name``.
+    source_environment_name, destination_environment_name : str or None
+        Environments of the block's source and destination states (their
+        observation models' ``environment_name``); None when unknown, which
+        skips that comparison.
+    source_size, target_size : int
+        Bins of the source and destination states.
+
+    Raises
+    ------
+    ValidationError
+        If a declared environment does not exist, the declared destination
+        (``environment2_name`` when set, else ``environment_name``) is not
+        the destination state's environment, or, between two spatial states,
+        the declared source (``environment_name``) is not the source state's.
+    """
+    if target_size == 1 or transition.environment_name is None:
+        return
+    declared_source = transition.environment_name
+    declared_destination = cast(str, _declared_destination(transition))
+    find_environment_by_name(environments, declared_source)
+    find_environment_by_name(environments, declared_destination)
+    checks = [("destination", declared_destination, destination_environment_name)]
+    if source_size > 1:
+        checks.insert(0, ("source", declared_source, source_environment_name))
+    for role, declared, state_environment in checks:
+        if state_environment is not None and declared != state_environment:
+            msg = (
+                f"{type(transition).__name__} declares {role} environment "
+                f"{declared!r}, but the {role} state is in environment "
+                f"{state_environment!r}"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"{role} environment {state_environment!r}",
+                got=f"{role} environment {declared!r}",
+                hint=(
+                    "Name the states' environments in the transition: "
+                    "environment_name is the source, and environment2_name "
+                    "(Uniform) the destination when it differs, e.g. "
+                    f"Uniform({declared_source!r}, {state_environment!r})."
+                    if role == "destination"
+                    else "Name the source state's environment in the "
+                    "transition's environment_name."
+                ),
+            )
+
+
+def _scalar_to_spatial_destination(
+    transition: ContinuousTransition, environments: Sequence[Environment]
+) -> np.ndarray:
+    """Destination bins of a block from a state without place bins.
+
+    A block from a single-bin state (such as Local or No-Spike) to a spatial
+    state is uniform over the interior bins of the transition's declared
+    destination environment (``environment2_name`` when set, else
+    ``environment_name``), whatever the transition;
+    ``_check_block_environments`` checks that this is the destination
+    state's environment.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+    environments : sequence of Environment
 
     Returns
     -------
@@ -1055,10 +1141,11 @@ def _scalar_to_spatial_destination(
     Raises
     ------
     ValidationError
-        If the transition's ``environment_name`` is None, or it or
-        ``destination_environment_name`` names no environment.
+        If the transition's ``environment_name`` is None, or its declared
+        destination names no environment.
     """
-    if transition.environment_name is None:
+    destination = _declared_destination(transition)
+    if destination is None:
         # No fallback may broadcast a scalar block across the destination bins.
         msg = (
             f"{type(transition).__name__} has environment_name=None, so it "
@@ -1071,14 +1158,7 @@ def _scalar_to_spatial_destination(
                 "Uniform(environment_name=...)."
             ),
         )
-    # The transition's own environment must exist even though the block's
-    # columns are the destination state's bins.
-    find_environment_by_name(environments, transition.environment_name)
-    if destination_environment_name is None:
-        destination_environment_name = transition.environment_name
-    return find_environment_by_name(
-        environments, destination_environment_name
-    ).is_track_interior_flat_
+    return find_environment_by_name(environments, destination).is_track_interior_flat_
 
 
 def _check_block_shape(

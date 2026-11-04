@@ -96,13 +96,17 @@ Fitted firing rates are in Hz.
   used in the same place. The block it returns must have one row per bin of
   the source state and one column per bin of the destination state, be
   non-negative, and have rows that sum to at most 1 (to 1, or 0 for bins
-  nothing can leave); the detectors raise `ValidationError` otherwise. The method is not
-  called for a block between a one-bin state (No-Spike, or Local without
-  `local_position_std`) and a spatial state: from the one-bin state the block
-  is uniform over the interior of the destination state's environment (the
-  transition must name an environment, so `Discrete` cannot be used there),
-  and into it every bin moves there with probability 1. A custom transition has no structured operator unless it
-  implements `transition_operators.SupportsStructuredBlock` and defines
+  nothing can leave); the detectors raise `ValidationError` otherwise. The
+  environments a transition names must be its states': `environment_name`
+  is the source state's environment and `environment2_name` (as on
+  `Uniform`), when set, the destination's, otherwise `environment_name` is
+  both. The method is not called for a block between a one-bin state
+  (No-Spike, or Local without `local_position_std`) and a spatial state:
+  from the one-bin state the block is uniform over the interior of the
+  destination environment (so `Discrete`, which names none, cannot be used
+  there), and into it every bin moves there with probability 1. A custom
+  transition has no structured operator unless it implements
+  `transition_operators.SupportsStructuredBlock` and defines
   `structured_block` in its own class (a subclass of a package transition
   that does not is treated as custom), so
   `transition_representation="structured"` rejects it. `"auto"` builds its
