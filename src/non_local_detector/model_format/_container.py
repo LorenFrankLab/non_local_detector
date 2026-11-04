@@ -267,14 +267,23 @@ def _check_version(manifest: dict[str, Any]) -> int:
         msg = f"The saved model has an invalid format_version {version!r}"
         raise DataError(msg)
     if version > FORMAT_VERSION:
-        writer = manifest.get("package_version", "a newer version")
+        writer = manifest.get("package_version")
+        newer = (
+            f"non_local_detector {writer}"
+            if isinstance(writer, str) and writer and writer != "unknown"
+            else "an unknown, newer non_local_detector"
+        )
         msg = (
             f"The model was saved in format version {version}, newer than the "
             f"{FORMAT_VERSION} this non_local_detector reads: it was written by "
-            f"non_local_detector {writer}"
+            f"{newer}"
         )
         raise ValidationError(
-            msg, hint=f"Upgrade to non_local_detector >= {writer} to read it."
+            msg,
+            hint=f"Upgrade to non_local_detector >= {writer} to read it."
+            if newer.startswith("non_local_detector ")
+            else "Upgrade non_local_detector to a release that reads format "
+            f"version {version}.",
         )
     return version
 

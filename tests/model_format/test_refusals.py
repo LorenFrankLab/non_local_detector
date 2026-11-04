@@ -311,3 +311,17 @@ def test_a_file_that_is_not_a_zip_raises_data_error(tmp_path):
 
     with pytest.raises(DataError):
         nld.NonLocalSortedSpikesDetector.load_model(path)
+
+
+def test_a_newer_format_version_without_a_writer_version_says_so(saved):
+    def newer(manifest):
+        manifest["format_version"] = FORMAT_VERSION + 1
+        del manifest["package_version"]
+
+    _edit_json(saved, "manifest.json", newer)
+
+    with pytest.raises(ValidationError) as error:
+        nld.NonLocalSortedSpikesDetector.load_model(saved)
+    message = str(error.value)
+    assert "an unknown, newer non_local_detector" in message
+    assert ">= " not in message
