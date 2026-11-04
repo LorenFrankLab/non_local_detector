@@ -16,6 +16,7 @@ import subprocess
 import sys
 import typing
 from dataclasses import replace
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -693,6 +694,18 @@ def test_model_checking_intensity_names_a_class(algorithm):
     name = _CLUSTERLESS_ALGORITHMS[algorithm].electrode_intensity
     if name is not None:
         assert isinstance(getattr(_clusterless_models, name), type)
+
+
+@pytest.mark.parametrize(
+    "document", ["README.md", "docs/getting-started/core-concepts.md"]
+)
+def test_user_docs_list_every_algorithm(document):
+    """The hand-written algorithm lists name every registered algorithm."""
+    path = Path(__file__).parents[2] / document
+    if not path.is_file():
+        pytest.skip(f"{document} is not part of this installation")
+    text = path.read_text()
+    assert [name for name in ALGORITHMS if f"`{name}`" not in text] == []
 
 
 def test_likelihoods_do_not_import_model_checking():
