@@ -41,6 +41,13 @@ MODELS = [
     for version in VERSIONS
     for path in sorted((COMPAT_DATA / version).glob("*_model.pkl"))
 ]
+# Every saved result file: netCDF4 as Spyglass saves it, and one netCDF3 file
+# per version as an environment without netCDF4 saves it.
+RESULTS = [
+    (version, path.name)
+    for version in VERSIONS
+    for path in sorted((COMPAT_DATA / version).glob("*_results*.nc"))
+]
 ROWS = [
     (version, preset, row_format)
     for version in VERSIONS
@@ -182,10 +189,13 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
             assert sorted(order) == list(range(place_fields.shape[0]))
 
 
-@pytest.mark.parametrize(("version", "artifact"), MODELS)
-def test_saved_results_support_spyglass_result_operations(version, artifact):
+@pytest.mark.parametrize(("version", "filename"), RESULTS)
+def test_saved_results_support_spyglass_result_operations(version, filename):
     """``fetch_results`` and the operations Spyglass applies to it."""
-    results = _load_results(version, artifact)
+    path = COMPAT_DATA / version / filename
+    netcdf3 = filename.endswith("_netcdf3.nc")
+    assert path.read_bytes().startswith(b"CDF" if netcdf3 else b"\x89HDF")
+    results = SortedSpikesDetector.load_results(path)
 
     in_range = results.sel(time=slice(-np.inf, np.inf))
     assert in_range.sizes["time"] == results.sizes["time"]
@@ -197,7 +207,7 @@ def test_saved_results_support_spyglass_result_operations(version, artifact):
         "Non-Local Continuous",
         "Non-Local Fragmented",
     ]
-    position_dims = ["x_position", "y_position"] if "2d" in artifact else ["position"]
+    position_dims = ["x_position", "y_position"] if "2d" in filename else ["position"]
     posterior = results.acausal_posterior.unstack("state_bins").sum("state")
     assert set(posterior.dims) == {"time", *position_dims}
     view = (
@@ -328,7 +338,7 @@ def test_decoding_with_a_detector_fitted_before_hz_rates_asks_for_a_refit(
     time = inputs["time"]
     time_edges = model.calculate_time_edges([time[0], time[-1]], trim=True)
 
-    with pytest.raises(ValidationError, match="refit before decoding"):
+    with pytest.raises(ValidationError, match="legacy or unknown time contract"):
         model.predict(
             **_spikes_in(spikes, time_edges),
             time_edges=time_edges,
@@ -356,12 +366,10 @@ def test_detector_saved_by_recent_main_decodes_as_it_did(version, artifact, inpu
     ).acausal_posterior.values
 
     reference_path = COMPAT_DATA / version / "predict_reference.pkl"
-    if reference_path.exists():
-        reference = pickle.loads(reference_path.read_bytes())[artifact]
-        # Measured: at most 3e-14 apart (JAX 0.12 saved, 0.9 loaded).
-        np.testing.assert_allclose(posterior, reference, rtol=0, atol=1e-10)
-    else:
-        np.testing.assert_allclose(np.nansum(posterior, axis=1), 1.0, atol=1e-6)
+    reference = pickle.loads(reference_path.read_bytes())[artifact]
+    # The golden-regression tolerances (test_golden_regression): float32
+    # posteriors decoded on another platform or XLA build differ by a few ulp.
+    np.testing.assert_allclose(posterior, reference, rtol=1e-6, atol=2e-6)
 
 
 def test_row_with_the_removed_kde_log_algorithm_rebuilds_but_does_not_fit(inputs):

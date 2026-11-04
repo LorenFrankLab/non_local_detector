@@ -474,11 +474,13 @@ class _ModelUnpickler(pickle.Unpickler):
         if (module, name) != ("jax._src.array", "_reconstruct_array"):
             return found
 
-        def reconstruct_array(
-            fun: Any, args: Any, arr_state: Any, aval_state: dict[str, Any]
-        ) -> jax.Array:
-            aval_state = {k: v for k, v in aval_state.items() if k != "named_shape"}
-            return cast("jax.Array", found(fun, args, arr_state, aval_state))
+        def reconstruct_array(*args: Any, **kwargs: Any) -> jax.Array:
+            # (fun, args, arr_state, aval_state) in the JAX releases so far;
+            # anything else passes through unchanged.
+            if len(args) == 4 and isinstance(args[3], dict):
+                aval_state = {k: v for k, v in args[3].items() if k != "named_shape"}
+                args = (*args[:3], aval_state)
+            return cast("jax.Array", found(*args, **kwargs))
 
         return reconstruct_array
 

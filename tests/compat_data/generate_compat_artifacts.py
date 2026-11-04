@@ -8,30 +8,40 @@ installed, from a directory outside any source tree, so that the old package
 is imported::
 
     uv venv -p 3.10 v060 && VIRTUAL_ENV=v060 uv pip install \
-        --exclude-newer 2024-06-10 non_local_detector==0.6.0 datajoint setuptools
+        --exclude-newer 2024-06-10 non_local_detector==0.6.0 \
+        datajoint setuptools netCDF4
     v060/bin/python -I generate_compat_artifacts.py OUT_DIR
 
-The fixtures in this directory were generated on 2026-11-03 (macOS, arm64):
+The fixtures in this directory were generated on 2026-11-03 and 2026-11-04
+(macOS, arm64), each with ``datajoint setuptools netCDF4`` added:
 
 ==============  ======  ===========================================  ======
-directory       Python  install (each plus ``datajoint setuptools``)  JAX
+directory       Python  install                                      JAX
 ==============  ======  ===========================================  ======
 v0.6.0          3.10    ``non_local_detector==0.6.0``                0.4.29
                         ``--exclude-newer 2024-06-10``
 v0.6.9          3.12    ``non_local_detector==0.6.9``                0.4.35
                         ``--exclude-newer 2024-11-30``
-main-84259d49   3.13    ``non_local_detector @ git+...@84259d49``    0.12.0
+main-84259d49   3.13    ``non_local_detector @ git+...@84259d49``    0.11.2
+                        ``--exclude-newer 2026-09-23 "pandas<3"``
 main-66047901   3.13    ``non_local_detector @ git+...@66047901``    0.12.0
+                        ``--exclude-newer 2026-11-03 "pandas<3"``
 main-d5f85823   3.13    ``non_local_detector @ git+...@d5f85823``    0.12.0
+                        ``--exclude-newer 2026-11-03 "pandas<3"``
 ==============  ======  ===========================================  ======
 
 The main environments pin ``pandas<3`` (2.3.3): pandas 2.3, the supported
-floor, cannot read the track-graph DataFrames pandas 3 pickles.
-``VERSION.json`` in each directory records the versions. 84259d49 is the last
-main before ``predict`` took ``time_edges``, and the only one here with the
+floor, cannot read the track-graph DataFrames pandas 3 pickles. Each
+directory's ``environment.txt`` lists every installed distribution and
+``VERSION.json`` the main ones. Results are saved as Spyglass saves them,
+with netCDF4 installed (netCDF4/HDF5 files), and once more with the netCDF
+writers hidden (``*_results_netcdf3.nc``), as an environment without them
+saves them; one netCDF3 file per version is kept. 84259d49 is the last main
+before ``predict`` took ``time_edges``, and the only one here with the
 since-removed ``clusterless_kde_log``; only its ``clusterless_kde_log``
 artifacts are kept. ``inputs.pkl`` is the same for every version and is kept
-once, at the top level, and ``predict_reference.pkl`` only for d5f85823.
+once, at the top level. ``predict_reference.pkl`` holds each main version's
+own decode of its saved models, for 66047901 and d5f85823.
 
 Rows are written the way the Spyglass of each era wrote them: as
 ``vars(model)`` (Spyglass ``master``, da36473c8) and, for versions with
@@ -56,15 +66,19 @@ The fits are tiny: 2 s of simulated tracking at 50 Hz, a 1-D track graph
 from __future__ import annotations
 
 import copy
+import importlib.metadata
 import inspect
 import json
 import pickle
 import sys
 from pathlib import Path
 
+import jax
 import numpy as np
+import pandas as pd
 import scipy.ndimage
 import xarray as xr
+from track_linearization import make_track_graph
 
 import non_local_detector as nld
 from non_local_detector.environment import Environment
@@ -216,8 +230,6 @@ def store(row: dict) -> dict:
 
 def restore(row: dict):
     """Rebuild the decoding parameters as that era's Spyglass ``make()`` did."""
-    from track_linearization import make_track_graph
-
     from non_local_detector import continuous_state_transitions as cst
     from non_local_detector import discrete_state_transitions as dst
     from non_local_detector import initial_conditions as ic
@@ -339,6 +351,21 @@ def predict_whole_recording(
     return np.asarray(results.acausal_posterior.values)
 
 
+def save_netcdf3(detector, results: xr.Dataset, path: Path) -> None:
+    """``save_results`` as without netCDF4 and h5netcdf: a netCDF3 file."""
+    hidden = {name: sys.modules.get(name) for name in ("netCDF4", "h5netcdf")}
+    sys.modules.update(dict.fromkeys(hidden))
+    try:
+        detector.save_results(results, path)
+    finally:
+        for name, module in hidden.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    assert path.read_bytes().startswith(b"CDF"), path
+
+
 def main(out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     version = nld.__version__
@@ -349,9 +376,7 @@ def main(out_dir: Path) -> None:
     track_env = Environment(
         environment_name="",
         place_bin_size=10.0,
-        track_graph=__import__("track_linearization").make_track_graph(
-            NODE_POSITIONS, EDGES
-        ),
+        track_graph=make_track_graph(NODE_POSITIONS, EDGES),
         edge_order=EDGES,
         edge_spacing=0.0,
     )
@@ -425,6 +450,7 @@ def main(out_dir: Path) -> None:
             restored = base(**restored)
         results = decode(restored, data, position, spikes, legacy_layout=legacy_layout)
         restored.save_results(results, out_dir / f"{name}_results.nc")
+        save_netcdf3(restored, results, out_dir / f"{name}_results_netcdf3.nc")
         restored.save_model(out_dir / f"{name}_model.pkl")
         if NEW_API:
             # This version's own decode of the whole recording with the saved
@@ -436,15 +462,26 @@ def main(out_dir: Path) -> None:
             pickle.dump(reference, f, protocol=4)
     with (out_dir / "inputs.pkl").open("wb") as f:
         pickle.dump(data, f, protocol=4)
+    (out_dir / "environment.txt").write_text(
+        "".join(
+            sorted(
+                {
+                    f"{dist.metadata['Name']}=={dist.version}\n"
+                    for dist in importlib.metadata.distributions()
+                },
+                key=str.lower,
+            )
+        )
+    )
     (out_dir / "VERSION.json").write_text(
         json.dumps(
             {
                 "non_local_detector": version,
                 "python": sys.version.split()[0],
                 "numpy": np.__version__,
-                "pandas": __import__("pandas").__version__,
+                "pandas": pd.__version__,
                 "xarray": xr.__version__,
-                "jax": __import__("jax").__version__,
+                "jax": jax.__version__,
                 "datajoint_round_trip": pack is not None,
             },
             indent=1,
