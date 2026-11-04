@@ -48,7 +48,7 @@ def test_encoding_update_uses_local_observation_posterior(
 
     def record_prediction(*args, **kwargs):
         result = original_predict(*args, **kwargs)
-        posterior_rows.append(result[1])
+        posterior_rows.append(result.acausal_state_probabilities)
         return result
 
     def record_checkpointed_e_step(*args, **kwargs):

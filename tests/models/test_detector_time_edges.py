@@ -355,7 +355,7 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
 
     def spy_predict(*args, **kwargs):
         result = original_predict(*args, **kwargs)
-        recorded["probabilities"].append(np.asarray(result[1]))
+        recorded["probabilities"].append(np.asarray(result.acausal_state_probabilities))
         return result
 
     def spy_refit_encoding(weights, encoding_fit_arguments):

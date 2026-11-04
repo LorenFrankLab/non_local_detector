@@ -940,19 +940,68 @@ class _EMEStep:
     transition_statistics: np.ndarray | None
 
 
-@dataclass(frozen=True)
-class _EMFinalEStep:
-    """The final E-step's outputs.
+def _driver_outputs(requested_outputs: set[str], *, spatial: bool) -> set[str]:
+    """Forward-backward outputs to compute for canonical ``return_outputs``.
 
-    With ``result_path``, ``stored`` is the lazily loaded store and the arrays
-    are None; otherwise outputs that were not computed are None.
-    ``degenerate_indices`` lists the bins whose log likelihoods are ``-inf``
-    in every state bin, from the forward pass.
+    Always the smoothed state probabilities, and with ``spatial`` the
+    smoothed posterior over state bins too. ``spatial=False`` (compact
+    checkpointed output) computes the filtered state probabilities but not
+    the filtered posterior.
+
+    Parameters
+    ----------
+    requested_outputs : set of str
+        Names from ``_normalize_return_outputs``.
+    spatial : bool
+        Whether posteriors over state bins are computed.
+
+    Returns
+    -------
+    outputs : set of str
+        Field names of ``_PosteriorOutputs``, as the checkpointed driver's
+        ``return_outputs`` names them.
+    """
+    outputs = {"acausal_state_probabilities"}
+    if spatial:
+        outputs.add("acausal_posterior")
+    if "filter" in requested_outputs:
+        outputs.add("causal_state_probabilities")
+        if spatial:
+            outputs.add("causal_posterior")
+    if "predictive" in requested_outputs:
+        outputs.add("predictive_state_probabilities")
+    if "predictive_posterior" in requested_outputs:
+        outputs.add("predictive_posterior")
+    if "log_likelihood" in requested_outputs:
+        outputs.add("log_likelihood")
+    return outputs
+
+
+@dataclass(frozen=True)
+class _PosteriorOutputs:
+    """Outputs of one forward-backward pass over the decode bins.
+
+    Outputs the pass did not compute are None. Posteriors over state bins can
+    be device arrays: callers copy to the host only those they need there.
+
+    Attributes
+    ----------
+    marginal_log_likelihood : float
+    degenerate_indices : np.ndarray of int, shape (n_degenerate,)
+        Bins whose log likelihoods are ``-inf`` in every state bin. Found
+        during the forward pass, so they are complete whether or not the log
+        likelihoods were kept.
+    acausal_posterior : array, shape (n_time, n_state_bins), or None
+    acausal_state_probabilities : np.ndarray, shape (n_time, n_states), or None
+    causal_state_probabilities : np.ndarray, shape (n_time, n_states), or None
+    predictive_state_probabilities : np.ndarray, shape (n_time, n_states), or None
+    log_likelihood : np.ndarray, shape (n_time, n_state_bins), or None
+    causal_posterior : array, shape (n_time, n_state_bins), or None
+    predictive_posterior : array, shape (n_time, n_state_bins), or None
     """
 
     marginal_log_likelihood: float
     degenerate_indices: np.ndarray
-    stored: xr.Dataset | None = None
     acausal_posterior: Any = None
     acausal_state_probabilities: np.ndarray | None = None
     causal_state_probabilities: np.ndarray | None = None
@@ -960,6 +1009,59 @@ class _EMFinalEStep:
     log_likelihood: np.ndarray | None = None
     causal_posterior: Any = None
     predictive_posterior: Any = None
+
+    def requested_results(self, requested_outputs: set[str]) -> dict[str, Any]:
+        """The optional ``convert_results_to_xarray`` arrays that were requested.
+
+        Parameters
+        ----------
+        requested_outputs : set of str
+            Names from ``_normalize_return_outputs``.
+
+        Returns
+        -------
+        arrays : dict
+            ``convert_results_to_xarray`` keyword arguments; outputs that were
+            not requested are None, posteriors are host arrays.
+        """
+        outputs = _driver_outputs(requested_outputs, spatial=True)
+        return {
+            "log_likelihood": (
+                self.log_likelihood if "log_likelihood" in outputs else None
+            ),
+            "causal_posterior": (
+                np.asarray(self.causal_posterior)
+                if "causal_posterior" in outputs
+                else None
+            ),
+            "causal_state_probabilities": (
+                self.causal_state_probabilities
+                if "causal_state_probabilities" in outputs
+                else None
+            ),
+            "predictive_state_probabilities": (
+                self.predictive_state_probabilities
+                if "predictive_state_probabilities" in outputs
+                else None
+            ),
+            "predictive_posterior": (
+                np.asarray(self.predictive_posterior)
+                if "predictive_posterior" in outputs
+                else None
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class _EMFinalEStep:
+    """The final E-step's outputs.
+
+    With ``result_path``, ``stored`` is the lazily loaded store and the
+    posterior holds only the marginal log-likelihood and degenerate bins.
+    """
+
+    posterior: _PosteriorOutputs
+    stored: xr.Dataset | None = None
 
 
 def _sample_times(values: ArrayLike) -> np.ndarray:
@@ -4169,17 +4271,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             )
             return results
 
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            log_likelihood,
-            causal_posterior,
-            predictive_posterior,
-            _degenerate_indices,
-        ) = self._predict(
+        posterior = self._predict(
             time_edges=time_edges,
             log_likelihood_args=(
                 position_time,
@@ -4196,30 +4288,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         return convert_results_to_xarray(
             self,
             time_centers,
-            np.asarray(acausal_posterior),
-            acausal_state_probabilities,
-            marginal_log_likelihood,
+            np.asarray(posterior.acausal_posterior),
+            cast("np.ndarray", posterior.acausal_state_probabilities),
+            posterior.marginal_log_likelihood,
             time_edges=time_edges,
             is_missing=is_missing,
-            log_likelihood=(
-                log_likelihood if "log_likelihood" in requested_outputs else None
-            ),
-            causal_posterior=(
-                np.asarray(causal_posterior) if "filter" in requested_outputs else None
-            ),
-            causal_state_probabilities=(
-                causal_state_probabilities if "filter" in requested_outputs else None
-            ),
-            predictive_state_probabilities=(
-                predictive_state_probabilities
-                if "predictive" in requested_outputs
-                else None
-            ),
-            predictive_posterior=(
-                np.asarray(predictive_posterior)
-                if "predictive_posterior" in requested_outputs
-                else None
-            ),
+            **posterior.requested_results(requested_outputs),
         )
 
     def _estimate_spike_parameters(
@@ -4417,17 +4491,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         n_chunks: int = 1,
         discrete_state_transitions: np.ndarray | None = None,
         accumulate_log_likelihoods: bool = False,
-    ) -> tuple[
-        jax.Array | np.ndarray,
-        np.ndarray,
-        float,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray | None,
-        jax.Array | np.ndarray,
-        jax.Array | np.ndarray,
-        np.ndarray,
-    ]:
+    ) -> _PosteriorOutputs:
         """
         Compute the posterior probabilities.
 
@@ -4460,21 +4524,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         Returns
         -------
-        acausal_posterior : jax.Array, shape (n_time, n_state_bins)
-        acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        marginal_log_likelihood : float
-        causal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
-        log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
-        causal_posterior : jax.Array, shape (n_time, n_state_bins)
-        predictive_posterior : jax.Array, shape (n_time, n_state_bins)
-        degenerate_indices : np.ndarray of int, shape (n_degenerate,)
-            Time indices whose log likelihoods are ``-inf`` in every state
-            bin. Found during the forward pass, so they are complete whether
-            or not the log likelihoods were cached.
-
-        The three posteriors stay on the device: callers copy to the host only
-        the ones they return or need there.
+        posterior : _PosteriorOutputs
+            Every output. ``log_likelihood`` is None when the log likelihoods
+            were neither given, cached nor accumulated. The three posteriors
+            over state bins stay on the device: callers copy to the host only
+            the ones they return or need there.
         """
         # The public methods have checked already; EM reaches here after its
         # own fit. Kept as the engine's guard for direct calls.
@@ -4552,7 +4606,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
                 host_outputs=False,
             )
-        return result
+        return _PosteriorOutputs(
+            marginal_log_likelihood=result.marginal_log_likelihood,
+            degenerate_indices=np.asarray(result.degenerate_indices, dtype=int),
+            acausal_posterior=result.acausal_posterior,
+            acausal_state_probabilities=result.acausal_state_probabilities,
+            causal_state_probabilities=result.causal_state_probabilities,
+            predictive_state_probabilities=result.predictive_state_probabilities,
+            log_likelihood=result.log_likelihoods,
+            causal_posterior=result.causal_posterior,
+            predictive_posterior=result.predictive_posterior,
+        )
 
     def _checkpointed_likelihood(
         self,
@@ -4795,19 +4859,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                         f"[{edges[0]}, {edges[-1]}] in bins of {edges[1] - edges[0]}."
                     ),
                 )
-        outputs = {"acausal_state_probabilities"}
-        if output_mode == "spatial":
-            outputs.add("acausal_posterior")
-        if "filter" in requested_outputs:
-            outputs.add("causal_state_probabilities")
-            if output_mode == "spatial":
-                outputs.add("causal_posterior")
-        if "predictive" in requested_outputs:
-            outputs.add("predictive_state_probabilities")
-        if "predictive_posterior" in requested_outputs:
-            outputs.add("predictive_posterior")
-        if "log_likelihood" in requested_outputs:
-            outputs.add("log_likelihood")
+        outputs = _driver_outputs(requested_outputs, spatial=output_mode == "spatial")
         position = np.concatenate(state_bin_positions(self))
         metadata: dict[str, Any] = {
             "state_names": list(self.state_names),
@@ -5295,24 +5347,24 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             self._em_warn_not_converged(settings, state)
 
         final = self._em_final_e_step(settings, state)
-        traces = state.traces(final.marginal_log_likelihood)
+        traces = state.traces(final.posterior.marginal_log_likelihood)
 
         # The final E-step's degenerate (all-impossible) timesteps, from its
         # forward pass rather than the returned log-likelihoods, so they are
         # complete even when caching is disabled (n_chunks > 1), where the
         # returned log-likelihoods are None.
-        self.degenerate_timesteps_ = final.degenerate_indices
+        self.degenerate_timesteps_ = final.posterior.degenerate_indices
 
         self._em_check_final_e_step(settings, state, traces["em_objectives"][-1])
 
         if settings.store_log_likelihood:
-            self.log_likelihood_ = final.log_likelihood
+            self.log_likelihood_ = final.posterior.log_likelihood
 
         if settings.result_path is not None:
             # The store already holds the EM attributes and traces.
             assert final.stored is not None
             return final.stored
-        return self._em_results(settings, final, traces)
+        return self._em_results(settings, final.posterior, traces)
 
     def _em_settings(
         self,
@@ -5579,20 +5631,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             transition_statistics = e_step.transition_statistics
         else:
             # Device arrays.
-            acausal_posterior: Any
-            causal_posterior: Any
-            predictive_posterior: Any
-            (
-                acausal_posterior,
-                acausal_state_probabilities,
-                marginal_log_likelihood,
-                _causal_state_probabilities,
-                _predictive_state_probabilities,
-                log_likelihood,
-                causal_posterior,
-                predictive_posterior,
-                _degenerate_indices,
-            ) = self._predict(
+            posterior = self._predict(
                 time_edges=settings.time_edges,
                 log_likelihood_args=settings.log_likelihood_args,
                 is_missing=settings.is_missing,
@@ -5600,15 +5639,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 log_likelihoods=state.run_log_likelihoods,
                 n_chunks=settings.n_chunks,
             )
-            first_smoothed = np.asarray(acausal_posterior[0])
+            acausal_state_probabilities = cast(
+                "np.ndarray", posterior.acausal_state_probabilities
+            )
+            marginal_log_likelihood = posterior.marginal_log_likelihood
+            log_likelihood = posterior.log_likelihood
+            first_smoothed = np.asarray(posterior.acausal_posterior[0])
             # The transition statistics need only these posteriors, so
             # take them now; the device arrays are released on return, before
             # the M-step (an encoding refit allocates on the device too).
             transition_statistics = (
                 _discrete_transition_statistics(
-                    causal_posterior,
-                    predictive_posterior,
-                    acausal_posterior,
+                    posterior.causal_posterior,
+                    posterior.predictive_posterior,
+                    posterior.acausal_posterior,
                     cast("np.ndarray", settings.interior_continuous_transition),
                     cast("np.ndarray", settings.interior_state_ind),
                     self.discrete_state_transitions_,
@@ -5987,20 +6031,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 em_attrs=lambda marginal: {**em_attrs, **state.traces(marginal)},
             )
             return _EMFinalEStep(
-                marginal_log_likelihood=float(stored.attrs["marginal_log_likelihood"]),
-                degenerate_indices=degenerate_indices,
+                _PosteriorOutputs(
+                    marginal_log_likelihood=float(
+                        stored.attrs["marginal_log_likelihood"]
+                    ),
+                    degenerate_indices=degenerate_indices,
+                ),
                 stored=stored,
             )
         if settings.checkpointed:
-            outputs = {"acausal_posterior", "acausal_state_probabilities"}
-            if "filter" in requested_outputs:
-                outputs |= {"causal_posterior", "causal_state_probabilities"}
-            if "predictive" in requested_outputs:
-                outputs.add("predictive_state_probabilities")
-            if "predictive_posterior" in requested_outputs:
-                outputs.add("predictive_posterior")
-            if settings.store_log_likelihood or "log_likelihood" in requested_outputs:
-                outputs.add("log_likelihood")
+            outputs = _driver_outputs(
+                requested_outputs
+                | ({"log_likelihood"} if settings.store_log_likelihood else set()),
+                spatial=True,
+            )
             final = self._checkpointed_e_step(
                 settings.time_edges,
                 settings.log_likelihood_args,
@@ -6011,29 +6055,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             )
             values = {name: final.dataset[name].values for name in final.dataset}
             return _EMFinalEStep(
-                marginal_log_likelihood=final.marginal_log_likelihood,
-                degenerate_indices=final.diagnostics["degenerate_indices"],
-                acausal_posterior=values["acausal_posterior"],
-                acausal_state_probabilities=values["acausal_state_probabilities"],
-                causal_state_probabilities=values.get("causal_state_probabilities"),
-                predictive_state_probabilities=values.get(
-                    "predictive_state_probabilities"
-                ),
-                log_likelihood=values.get("log_likelihood"),
-                causal_posterior=values.get("causal_posterior"),
-                predictive_posterior=values.get("predictive_posterior"),
+                _PosteriorOutputs(
+                    marginal_log_likelihood=final.marginal_log_likelihood,
+                    degenerate_indices=final.diagnostics["degenerate_indices"],
+                    acausal_posterior=values["acausal_posterior"],
+                    acausal_state_probabilities=values["acausal_state_probabilities"],
+                    causal_state_probabilities=values.get("causal_state_probabilities"),
+                    predictive_state_probabilities=values.get(
+                        "predictive_state_probabilities"
+                    ),
+                    log_likelihood=values.get("log_likelihood"),
+                    causal_posterior=values.get("causal_posterior"),
+                    predictive_posterior=values.get("predictive_posterior"),
+                )
             )
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            log_likelihood,
-            causal_posterior,
-            predictive_posterior,
-            degenerate_indices,
-        ) = self._predict(
+        posterior = self._predict(
             time_edges=settings.time_edges,
             log_likelihood_args=settings.log_likelihood_args,
             is_missing=settings.is_missing,
@@ -6049,17 +6085,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 settings.store_log_likelihood or "log_likelihood" in requested_outputs
             ),
         )
-        return _EMFinalEStep(
-            marginal_log_likelihood=marginal_log_likelihood,
-            degenerate_indices=np.asarray(degenerate_indices, dtype=int),
-            acausal_posterior=acausal_posterior,
-            acausal_state_probabilities=acausal_state_probabilities,
-            causal_state_probabilities=causal_state_probabilities,
-            predictive_state_probabilities=predictive_state_probabilities,
-            log_likelihood=log_likelihood,
-            causal_posterior=causal_posterior,
-            predictive_posterior=predictive_posterior,
-        )
+        return _EMFinalEStep(posterior)
 
     def _em_check_final_e_step(
         self, settings: _EMSettings, state: _EMState, final_objective: float
@@ -6096,11 +6122,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
     def _em_results(
         self,
         settings: _EMSettings,
-        final: _EMFinalEStep,
+        final: _PosteriorOutputs,
         traces: dict[str, list[float]],
     ) -> xr.Dataset:
         """The in-memory results of EM: the final E-step and EM's traces."""
-        requested_outputs = settings.requested_outputs
         # Every final E-step without a result_path returns them.
         assert final.acausal_state_probabilities is not None
         em_attrs = dict(settings.em_attrs)
@@ -6116,29 +6141,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             traces["marginal_log_likelihoods"],
             time_edges=settings.time_edges,
             is_missing=settings.is_missing,
-            log_likelihood=(
-                final.log_likelihood if "log_likelihood" in requested_outputs else None
-            ),
-            causal_posterior=(
-                np.asarray(final.causal_posterior)
-                if "filter" in requested_outputs
-                else None
-            ),
-            causal_state_probabilities=(
-                final.causal_state_probabilities
-                if "filter" in requested_outputs
-                else None
-            ),
-            predictive_state_probabilities=(
-                final.predictive_state_probabilities
-                if "predictive" in requested_outputs
-                else None
-            ),
-            predictive_posterior=(
-                np.asarray(final.predictive_posterior)
-                if "predictive_posterior" in requested_outputs
-                else None
-            ),
+            **final.requested_results(settings.requested_outputs),
         )
         results.attrs.update(em_attrs)
         return results

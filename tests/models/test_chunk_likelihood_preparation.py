@@ -210,7 +210,9 @@ def test_no_spike_duration_prepared_once_per_prediction(
                 accumulate_log_likelihoods=True,
             )
 
-        np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(
+            result.log_likelihood, expected, rtol=1e-5, atol=1e-6
+        )
         assert len(durations) == 1
         np.testing.assert_array_equal(durations[0], np.diff(time))
         time *= 2
@@ -229,7 +231,7 @@ def test_cached_likelihood_skips_duration_preparation(fitted_detector, monkeypat
     monkeypatch.setattr(np, "median", unexpected_median)
     monkeypatch.setattr(_SpikeTimeOrder, "get", unexpected_median)
     result = detector._predict(time, log_likelihoods=expected, n_chunks=3)
-    np.testing.assert_array_equal(result[5], expected)
+    np.testing.assert_array_equal(result.log_likelihood, expected)
 
 
 @pytest.mark.integration
@@ -254,7 +256,7 @@ def test_custom_likelihood_signature_remains_supported(fitted_detector, monkeypa
         n_chunks=3,
         accumulate_log_likelihoods=True,
     )
-    np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(result.log_likelihood, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.integration
@@ -325,7 +327,9 @@ def test_spike_order_checked_once_per_prediction(
                 accumulate_log_likelihoods=True,
             )
         assert checks == [ascending]
-        np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(
+            result.log_likelihood, expected, rtol=1e-5, atol=1e-6
+        )
         order = np.random.default_rng(10).permutation(len(spikes))
         spikes[:] = spikes[order]
         if len(args) == 4:

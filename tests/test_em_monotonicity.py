@@ -13,6 +13,7 @@ Tests cover:
   ``em_monotonicity_violations_``).
 """
 
+import dataclasses
 import inspect
 import itertools
 import warnings
@@ -78,8 +79,12 @@ def _shift_marginal(monkeypatch, model, shift):
     calls = itertools.count(1)
 
     def shifted(*args, **kwargs):
-        acausal, state_probabilities, marginal, *rest = original(*args, **kwargs)
-        return (acausal, state_probabilities, marginal + shift(next(calls)), *rest)
+        posterior = original(*args, **kwargs)
+        return dataclasses.replace(
+            posterior,
+            marginal_log_likelihood=posterior.marginal_log_likelihood
+            + shift(next(calls)),
+        )
 
     monkeypatch.setattr(model, "_predict", shifted)
 
