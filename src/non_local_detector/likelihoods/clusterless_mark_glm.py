@@ -55,7 +55,7 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataQualityWarning, ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
 from non_local_detector.likelihoods.clusterless_spikes import (
     ElectrodeSpikes,
@@ -587,7 +587,7 @@ def fit_clusterless_mark_glm_encoding_model(
                 "encoding spikes (empty or zero total weight); it is treated as "
                 "zero-rate -- its observed decode spikes are explained by the "
                 "background rate.",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             mark_mixtures.append(None)

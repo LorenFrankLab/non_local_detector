@@ -24,6 +24,7 @@ from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 from threadpoolctl import threadpool_limits
 
 from non_local_detector._warnings import user_stacklevel
+from non_local_detector.exceptions import NumericalWarning
 from non_local_detector.likelihoods.common import padded_sample_count
 
 # ---------------------------------------------------------------------
@@ -1346,7 +1347,7 @@ class GaussianMixtureModel:
                 f"{self.n_init - n_invalid}. Increase reg_covar, reduce "
                 f"n_components, or remove duplicate/degenerate samples so every "
                 f"restart is usable.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
 
@@ -1355,7 +1356,7 @@ class GaussianMixtureModel:
                 f"GaussianMixture did not converge within max_iter={self.max_iter} "
                 f"iterations (best restart ran {self.n_iter_}). Final lower-bound "
                 f"delta exceeded tol={self.tol:.3e}.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
 
@@ -1371,7 +1372,7 @@ class GaussianMixtureModel:
                 "1e-10 floor (a collapsed/near-singular component); its precision "
                 "was clamped rather than raised. Increase reg_covar or reduce "
                 "n_components.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
 

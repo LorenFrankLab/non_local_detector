@@ -83,7 +83,9 @@ from track_linearization import (  # type: ignore[import-untyped]
 from non_local_detector import _validation as val
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import (
+    CompatibilityWarning,
     ConfigurationError,
+    DataQualityWarning,
     NotFittedError,
     ValidationError,
 )
@@ -1564,7 +1566,7 @@ class Environment:
                         f"beyond the threshold or a non-finite position "
                         f"usually indicates a tracking glitch or an "
                         f"out-of-bounds position.",
-                        UserWarning,
+                        DataQualityWarning,
                         stacklevel=user_stacklevel(),
                     )
 
@@ -1882,7 +1884,7 @@ def _accept_unset_legacy_fitted_arguments(
                 "which parameter rows saved as vars(environment) hold; this "
                 "will raise TypeError in a future release. Pass the "
                 "configuration only (Environment().get_params() keys).",
-                DeprecationWarning,
+                CompatibilityWarning,
                 stacklevel=user_stacklevel(),
             )
 

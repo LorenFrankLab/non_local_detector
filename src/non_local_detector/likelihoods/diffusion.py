@@ -38,7 +38,11 @@ import scipy.sparse.csgraph
 import scipy.sparse.linalg
 
 from non_local_detector._warnings import user_stacklevel
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    NumericalWarning,
+    ParameterWarning,
+    ValidationError,
+)
 
 if TYPE_CHECKING:
     from non_local_detector.environment import Environment
@@ -171,7 +175,7 @@ def _block_eigenbasis(
             "Shift-invert eigsh failed; falling back to the no-shift-invert "
             "which='SM' solver, which may return a lower-quality eigenbasis. "
             "Consider a smaller rank or the full (rank=None) decomposition.",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM", v0=v0)
@@ -822,7 +826,7 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
                 f"({characteristic:g}); the diffusion smoother barely spreads beyond "
                 "one bin, so place fields will stay close to the raw spike counts. "
                 "Increase position_std or use a coarser grid.",
-                UserWarning,
+                ParameterWarning,
                 stacklevel=user_stacklevel(),
             )
 
