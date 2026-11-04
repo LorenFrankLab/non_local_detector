@@ -16,7 +16,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     SortedSpikesDecoder,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.models.base import (
     _normalize_return_outputs,
     _validate_inference_arguments,
@@ -266,7 +266,7 @@ def test_base_time_contract_check_fails_closed():
     """A subclass that does not override the hook still gets the encoding check."""
     from non_local_detector.models.base import _DetectorBase
 
-    with pytest.raises(ValidationError, match="not fitted"):
+    with pytest.raises(NotFittedError, match="not fitted"):
         _DetectorBase._validate_time_contract(_decoder())
     time, position, spike_times = _recording()
     detector = _decoder().fit(time, position, spike_times)

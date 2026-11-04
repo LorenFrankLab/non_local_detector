@@ -73,7 +73,7 @@ interior. State probabilities are float32 with JAX's default precision.
 | `log_likelihood` | `(time, state_bins)` | `"log_likelihood"` | No | Log likelihood of each bin's spikes at each state bin |
 
 The column "Added by `return_outputs`" lists the option that adds each
-variable, alone or in a list or set; `return_outputs="all"` adds every one.
+variable, alone or in any collection (list, tuple, set); `return_outputs="all"` adds every one.
 Checkpointed compact results accept only `"filter"` and `"predictive"`, and
 hold only the variables marked "Yes".
 For a single-state model, the `(time, states)` variables are `(time,)`.

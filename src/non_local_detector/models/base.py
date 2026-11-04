@@ -67,7 +67,9 @@ from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import (
     CompatibilityWarning,
+    ConfigurationError,
     DataQualityWarning,
+    NotFittedError,
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
@@ -919,9 +921,8 @@ class _DetectorBase(
         Raises
         ------
         ValidationError
-            If the resulting parameters are invalid, as in the constructor.
-        ValueError
-            If a parameter name is not a constructor parameter.
+            If the resulting parameters are invalid, as in the constructor, or
+            a parameter name is not a constructor parameter.
         """
         if not params:
             return self
@@ -944,7 +945,7 @@ class _DetectorBase(
                 f"{type(self).__name__}. Valid parameters are: "
                 f"{sorted(current)!r}."
             )
-            raise ValueError(msg)
+            raise ValidationError(msg)
         if top_level:
             # Build a fresh detector first so a rejected value leaves ``self``
             # untouched.
@@ -1696,9 +1697,10 @@ class _DetectorBase(
 
         Raises
         ------
-        ValueError
-            If the transitions do not depend on covariates, or were not
-            estimated by EM (no covariance yet).
+        ConfigurationError
+            If the transitions do not depend on covariates.
+        NotFittedError
+            If EM has not estimated the transitions (no covariance yet).
         ValidationError
             If the transition formula was read from a saved model file and
             not trusted (see ``load_model``).
@@ -1707,19 +1709,23 @@ class _DetectorBase(
             self.discrete_transition_type, "compute transition intervals"
         )
         if self.discrete_transition_design_matrix_ is None:
-            msg = (
-                "The discrete transitions do not depend on covariates; use a "
-                "DiscreteNonStationaryCustom or DiscreteNonStationaryDiagonal "
-                "transition type."
+            msg = "The discrete transitions do not depend on covariates."
+            raise ConfigurationError(
+                msg,
+                hint=(
+                    "Use a DiscreteNonStationaryCustom or "
+                    "DiscreteNonStationaryDiagonal transition type."
+                ),
             )
-            raise ValueError(msg)
         if self.discrete_transition_coefficient_covariance_ is None:
-            msg = (
-                "No transition covariance yet: it comes from an EM M-step, so "
-                "run estimate_parameters with estimate_discrete_transition=True "
-                "and max_iter >= 1."
+            msg = "No transition covariance yet: it comes from an EM M-step."
+            raise NotFittedError(
+                msg,
+                hint=(
+                    "Run estimate_parameters with "
+                    "estimate_discrete_transition=True and max_iter >= 1."
+                ),
             )
-            raise ValueError(msg)
         # The coefficients are set together with the design matrix.
         assert self.discrete_transition_coefficients_ is not None
         return _transition_intervals(
@@ -2322,7 +2328,10 @@ class _DetectorBase(
                     "Cannot specify both return_outputs and deprecated "
                     "save_*_to_results flags. Use return_outputs only."
                 )
-                raise ValueError(msg)
+                raise ConfigurationError(
+                    msg,
+                    hint="Drop the save_*_to_results flags and pass return_outputs.",
+                )
             return_outputs = outputs_from_flags or None
 
         # Normalize return_outputs to canonical set
@@ -2358,7 +2367,14 @@ class _DetectorBase(
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
                 msg = "discrete_transition_coefficients_ is None but covariate data provided"
-                raise ValueError(msg)
+                raise ConfigurationError(
+                    msg,
+                    hint=(
+                        "The discrete transition does not depend on covariates; "
+                        "drop discrete_transition_covariate_data or use a "
+                        "covariate-dependent transition type."
+                    ),
+                )
             predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
@@ -3735,7 +3751,7 @@ class ClusterlessDetector(_DetectorBase):
             chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned.
 
             Options:
@@ -3982,7 +3998,7 @@ class ClusterlessDetector(_DetectorBase):
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional
@@ -4662,7 +4678,7 @@ class SortedSpikesDetector(_DetectorBase):
             chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See ClusterlessDetector.predict
             for full documentation. By default None.
         save_log_likelihood_to_results : bool, optional
@@ -4829,7 +4845,7 @@ class SortedSpikesDetector(_DetectorBase):
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional

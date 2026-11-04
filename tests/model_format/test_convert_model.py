@@ -13,6 +13,7 @@ import pytest
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.model_format import convert_model, is_saved_model_format
+from non_local_detector.models import SortedSpikesDecoder
 from non_local_detector.models.base import SortedSpikesDetector
 from tests.model_format._compare import assert_same_fitted_state
 from tests.models.test_stored_artifact_compatibility import (
@@ -90,3 +91,13 @@ def test_a_saved_model_is_not_converted_again(tmp_path):
 
     with pytest.raises(ValidationError, match="already"):
         convert_model(path, tmp_path / "again.nld")
+
+
+def test_an_unfitted_pickle_is_not_converted(tmp_path):
+    pickle_path = tmp_path / "unfitted.pkl"
+    pickle_path.write_bytes(pickle.dumps(SortedSpikesDecoder()))
+    path = tmp_path / "converted.nld"
+
+    with pytest.raises(ValidationError, match="cannot decode"):
+        convert_model(pickle_path, path)
+    assert not path.exists()

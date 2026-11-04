@@ -203,10 +203,10 @@ def test_unknown_transition_clock_requires_refitting(recording, method):
     "method", ["predict", "most_likely_sequence", "compute_log_likelihood"]
 )
 def test_unfitted_decoder_explains_fit_requirement(method):
-    from non_local_detector.exceptions import ValidationError
+    from non_local_detector.exceptions import NotFittedError
 
     detector = SortedSpikesDecoder()
-    with pytest.raises(ValidationError, match="call fit"):
+    with pytest.raises(NotFittedError, match="call fit"):
         getattr(detector, method)(
             spike_times=[np.array([])],
             time_edges=np.array([0.0, 0.002]),

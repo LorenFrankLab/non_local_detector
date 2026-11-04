@@ -8,6 +8,7 @@ used in Hidden Markov Model-based neural decoding.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Literal
 
 import numpy as np
@@ -128,6 +129,7 @@ OutputName = Literal[
 ``"log_likelihood"`` the per-bin log likelihood, and ``"all"`` every one.
 """
 
-ReturnOutputs = OutputName | list[OutputName] | set[OutputName] | None
-"""A ``return_outputs`` value: one output name, a list or set of them, or
-None for the smoother only. A name means the same alone or in a collection."""
+ReturnOutputs = OutputName | Collection[OutputName] | None
+"""A ``return_outputs`` value: one output name, any non-string collection of
+them (list, tuple, set, frozenset), or None for the smoother only. A name
+means the same alone or in a collection."""

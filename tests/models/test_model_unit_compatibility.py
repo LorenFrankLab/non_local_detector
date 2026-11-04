@@ -17,7 +17,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
     Uniform,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -337,7 +337,7 @@ def test_missing_encoding_container_cannot_bypass_concrete_model_guard(
         )
     else:
         call = functools.partial(base._DetectorBase._run_viterbi, detector, edges)
-    with pytest.raises(ValidationError, match="fit"):
+    with pytest.raises(NotFittedError, match="fit"):
         call()
 
 

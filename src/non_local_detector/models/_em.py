@@ -42,6 +42,7 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.exceptions import (
     CompatibilityWarning,
+    ConfigurationError,
     DataError,
     NumericalWarning,
     ParameterWarning,
@@ -355,7 +356,7 @@ def _validate_estimation_arguments(
         Time bin edges; must be uniform.
     n_chunks : int
         Number of chunks the bins are split into; at most ``n_bins``.
-    return_outputs : str or list of str or set of str, optional
+    return_outputs : str, collection of str, or None, optional
         Requested outputs; cannot be combined with
         ``save_log_likelihood_to_results``.
     save_log_likelihood_to_results : bool, optional
@@ -376,10 +377,11 @@ def _validate_estimation_arguments(
     ValidationError, DataError
         If ``time_edges`` are invalid or not uniform (see
         :func:`~non_local_detector.time_edges.uniform_time_edges`).
-    ValueError
+    ValidationError
         If ``n_chunks`` exceeds the number of bins, ``return_outputs`` is
-        invalid or conflicts with ``save_log_likelihood_to_results``, or an
-        encoding-update threshold is negative.
+        invalid, or an encoding-update threshold is negative.
+    ConfigurationError
+        If ``return_outputs`` conflicts with ``save_log_likelihood_to_results``.
     """
     time_edges, time_bin_width = uniform_time_edges(time_edges)
     n_bins = len(time_edges) - 1
@@ -388,21 +390,28 @@ def _validate_estimation_arguments(
             f"n_chunks ({n_chunks}) cannot exceed n_bins ({n_bins}). "
             f"Each chunk must contain at least one time bin."
         )
-        raise ValueError(msg)
+        raise ValidationError(
+            msg,
+            expected=f"n_chunks <= {n_bins}",
+            got=str(n_chunks),
+            hint="Lower n_chunks or pass more time bins.",
+        )
     if save_log_likelihood_to_results and return_outputs is not None:
         msg = (
             "Cannot specify both return_outputs and deprecated "
             "save_log_likelihood_to_results flag. "
             "Use return_outputs only."
         )
-        raise ValueError(msg)
+        raise ConfigurationError(
+            msg, hint="Drop save_log_likelihood_to_results and pass return_outputs."
+        )
     _normalize_return_outputs(return_outputs)
     if min_encoding_local_mass < 0:
-        msg = f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
-        raise ValueError(msg)
+        msg = "min_encoding_local_mass must be >= 0"
+        raise ValidationError(msg, expected=">= 0", got=str(min_encoding_local_mass))
     if min_encoding_local_ess < 0:
-        msg = f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
-        raise ValueError(msg)
+        msg = "min_encoding_local_ess must be >= 0"
+        raise ValidationError(msg, expected=">= 0", got=str(min_encoding_local_ess))
     return time_edges, time_bin_width
 
 
@@ -827,7 +836,7 @@ class _EMMixin:
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned.
 
             Options:

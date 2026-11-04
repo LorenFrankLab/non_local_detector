@@ -12,7 +12,7 @@ Methods that read the detector's attributes annotate ``self`` as
 mixin.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args
@@ -26,7 +26,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.likelihoods.common import resolve_row_slice
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
@@ -540,7 +540,7 @@ def _normalize_frozen_discrete_transition_rows(
 
     Raises
     ------
-    ValueError
+    ValidationError
         If the input is an unknown string, has the wrong shape or dtype, or
         has out-of-range indices.
     """
@@ -551,7 +551,7 @@ def _normalize_frozen_discrete_transition_rows(
                 "frozen_discrete_transition_rows must be 'no_spike', row "
                 f"indices, a boolean mask or None, got {frozen_rows!r}"
             )
-            raise ValueError(msg)
+            raise ValidationError(msg)
         frozen_rows = np.asarray(is_no_spike_state, dtype=bool)
         return frozen_rows.copy() if frozen_rows.any() else None
     if frozen_rows is None:
@@ -565,26 +565,26 @@ def _normalize_frozen_discrete_transition_rows(
                 f"frozen_discrete_transition_rows boolean mask must have "
                 f"shape ({n_states},), got {arr.shape}"
             )
-            raise ValueError(msg)
+            raise ValidationError(msg)
         return arr.copy()
     if not np.issubdtype(arr.dtype, np.integer):
         msg = (
             f"frozen_discrete_transition_rows must be integer indices or "
             f"a boolean mask, got dtype {arr.dtype}"
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
     if arr.ndim != 1:
         msg = (
             f"frozen_discrete_transition_rows index array must be 1D, "
             f"got shape {arr.shape}"
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
     if np.any(arr < 0) or np.any(arr >= n_states):
         msg = (
             f"frozen_discrete_transition_rows indices must be in "
             f"[0, {n_states}), got {arr.tolist()}"
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
     mask = np.zeros(n_states, dtype=bool)
     mask[arr] = True
     return mask
@@ -604,7 +604,7 @@ def _validate_covariate_time_length(
 
     Raises
     ------
-    ValueError
+    ValidationError
         If the number of covariate time steps does not match decode time.
     """
     n_covariate_time = predicted_transitions.shape[0]
@@ -615,7 +615,7 @@ def _validate_covariate_time_length(
             f"decode time has {n_decode_time} time steps. "
             f"These must match."
         )
-        raise ValueError(msg)
+        raise ValidationError(msg)
 
 
 def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
@@ -626,8 +626,9 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
 
     Parameters
     ----------
-    return_outputs : str, list of str, set of str, or None
-        Output names from ``VALID_OUTPUTS``.
+    return_outputs : str, collection of str, or None
+        Output names from ``VALID_OUTPUTS``: one name, or any non-string
+        collection of names (list, tuple, set, frozenset).
 
     Returns
     -------
@@ -638,22 +639,28 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
     Raises
     ------
     ValidationError
-        If return_outputs contains invalid option names.
-    TypeError
-        If return_outputs is not str, list, set, or None.
+        If return_outputs is not a string, a collection of strings or None,
+        or contains invalid option names.
     """
     if return_outputs is None:
         return set()
-    if isinstance(return_outputs, str):
-        names: set[str] = {return_outputs}
-    elif isinstance(return_outputs, list | set):
-        names = set(return_outputs)
+    # Checked at runtime: callers may pass anything.
+    value: object = return_outputs
+    if isinstance(value, str):
+        names: set[str] = {value}
+    elif isinstance(value, Collection) and not isinstance(value, Mapping):
+        wrong = [name for name in value if not isinstance(name, str)]
+        if wrong:
+            msg = "return_outputs entries must be strings"
+            raise ValidationError(
+                msg,
+                expected=f"names from {sorted(VALID_OUTPUTS)}",
+                got=f"entries of type {sorted({type(name).__name__ for name in wrong})}",
+            )
+        names = set(value)
     else:
-        msg = (  # type: ignore[unreachable]  # runtime validation of an unsupported type
-            f"return_outputs must be str, list of str, set of str, or None. "
-            f"Got {type(return_outputs).__name__}"
-        )
-        raise TypeError(msg)
+        msg = "return_outputs must be a string, a collection of strings, or None"
+        raise ValidationError(msg, got=type(value).__name__)
     invalid = names - VALID_OUTPUTS
     if invalid:
         msg = f"Invalid return_outputs: {sorted(invalid)}"
@@ -1032,10 +1039,18 @@ class _InputValidationMixin:
         Public decoding methods call this once, before any work. Subclasses
         extend it with their own fitted state (the clusterless mark
         reference); a detector without an encoding model must override it.
+
+        Raises
+        ------
+        NotFittedError
+            If the detector has no encoding model yet.
+        ValidationError
+            If the transition formula is untrusted, the encoding units are
+            unknown, or the saved model no longer rebuilds as saved.
         """
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."
-            raise ValidationError(msg)
+            raise NotFittedError(msg)
         _refuse_untrusted_transition(self.discrete_transition_type, "decode")
         # A loaded detector's rebuilt structures must match the saved ones.
         rebuild_check = self.__dict__.get("_rebuild_check_")
