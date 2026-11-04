@@ -43,7 +43,7 @@ from non_local_detector.likelihoods.common import (
     log_nonnegative,
     pad_rows,
     padded_spike_count,
-    resolve_row_slice,
+    prepare_decode_rows,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -71,7 +71,6 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
@@ -1009,10 +1008,7 @@ def predict_clusterless_gmm_log_likelihood(
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1043,7 +1039,7 @@ def predict_clusterless_gmm_log_likelihood(
     # prediction -- for a non-local likelihood that never reads it.
     if is_local:
         local = compute_local_log_likelihood(
-            time_edges=time_edges,
+            time_edges=rows.time_edges,
             position_time=position_time,
             position=position,
             spike_times=spike_times,
@@ -1056,28 +1052,27 @@ def predict_clusterless_gmm_log_likelihood(
             mark_reference=mark_reference,
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
-            _spike_time_order=_spike_time_order,
-            _time_grid=_time_grid,
+            _spike_time_order=rows.spike_time_order,
+            _time_grid=rows.time_grid,
         )
 
         return (
             local
             + log_bin_duration_evidence(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 row_slice,
-                _spike_time_order,
-                _time_grid=_time_grid,
+                rows.spike_time_order,
+                _time_grid=rows.time_grid,
             )[:, None]
         )
 
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = interior_place_bin_centers.shape[0]
 
     # Start with the expected-counts (ground process) term, broadcast over time
-    log_likelihood = -jnp.asarray(_time_grid.durations(row_start, row_stop))[
-        :, None
-    ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
+    log_likelihood = -jnp.asarray(rows.durations())[:, None] * (
+        summed_ground_process_intensity + background_rate(len(spike_times))
+    )
 
     # Per-electrode contributions in log-space
     for electrode, (
@@ -1109,10 +1104,10 @@ def predict_clusterless_gmm_log_likelihood(
         # encoding de-weighted this electrode).
         selection = select_spikes_in_rows(
             elect_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
+            rows.start,
+            rows.stop,
+            time_edges=rows.time_edges,
+            _spike_time_order=rows.spike_time_order,
         )
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes == 0:
@@ -1195,7 +1190,11 @@ def predict_clusterless_gmm_log_likelihood(
     return (
         log_likelihood
         + log_bin_duration_evidence(
-            spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+            spike_times,
+            rows.time_edges,
+            row_slice,
+            rows.spike_time_order,
+            _time_grid=rows.time_grid,
         )[:, None]
     )
 
@@ -1280,12 +1279,8 @@ def compute_local_log_likelihood(
     position = position if position.ndim > 1 else position[:, None]
     working_dtype = _as_jnp(position[:0]).dtype
 
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    n_rows = row_stop - row_start
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    n_rows = rows.stop - rows.start
 
     # Interpolate position at the requested rows' bin times (use bin centers)
 
@@ -1293,7 +1288,7 @@ def compute_local_log_likelihood(
         get_position_at_time(
             position_time,
             position,
-            decode_bin_centers(time_edges, row_start, row_stop),
+            decode_bin_centers(rows.time_edges, rows.start, rows.stop),
             environment,
         ),
         environment,
@@ -1333,10 +1328,10 @@ def compute_local_log_likelihood(
         # observed spike is negative evidence, not "no data".
         selection = select_spikes_in_rows(
             elect_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
+            rows.start,
+            rows.stop,
+            time_edges=rows.time_edges,
+            _spike_time_order=rows.spike_time_order,
         )
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes:
@@ -1386,8 +1381,8 @@ def compute_local_log_likelihood(
             gpi_type=gpi_gmm.covariance_type,
         )
 
-    log_likelihood = log_likelihood - jnp.asarray(
-        _time_grid.durations(row_start, row_stop)
-    ) * (summed_expected_counts + background_rate(len(spike_times)))
+    log_likelihood = log_likelihood - jnp.asarray(rows.durations()) * (
+        summed_expected_counts + background_rate(len(spike_times))
+    )
 
     return log_likelihood[:, None]

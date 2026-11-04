@@ -18,6 +18,8 @@ from non_local_detector.likelihoods.common.padding import (
 )
 from non_local_detector.likelihoods.common.reductions import deterministic_row_sum
 from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
     requires_time_edges,
     validate_time_edges,
 )
@@ -148,6 +150,67 @@ class SpikeTimeOrder:
             self._entries[key] = (spike_times, values, _spikes_are_ascending(values))
         _, values, ascending = self._entries[key]
         return values, ascending
+
+
+@dataclass(frozen=True)
+class DecodeRows:
+    """The decode grid, requested rows and spike preparation of one predict call.
+
+    Attributes
+    ----------
+    time_grid : _DecodeTimeGrid
+        The FULL decoding grid.
+    spike_time_order : SpikeTimeOrder
+        The prediction's spike-time preparation, shared across states and chunks.
+    start, stop : int
+        The requested rows ``[start, stop)`` of the full grid.
+    """
+
+    time_grid: _DecodeTimeGrid
+    spike_time_order: SpikeTimeOrder
+    start: int
+    stop: int
+
+    @property
+    def time_edges(self) -> np.ndarray:
+        """The FULL decoding bin edges, shape (n_bins + 1,), in seconds."""
+        return self.time_grid.edges
+
+    def durations(self) -> np.ndarray:
+        """Durations of the requested rows, shape (stop - start,), in seconds."""
+        return self.time_grid.durations(self.start, self.stop)
+
+
+def prepare_decode_rows(
+    time_edges: ArrayLike,
+    row_slice: slice | None,
+    time_grid: _DecodeTimeGrid | None = None,
+    spike_time_order: SpikeTimeOrder | None = None,
+) -> DecodeRows:
+    """Resolve a predict call's decode grid, row range and spike preparation.
+
+    Parameters
+    ----------
+    time_edges : array_like, shape (n_bins + 1,)
+        FULL decoding bin edges, in seconds.
+    row_slice : slice | None
+        Contiguous range of decode bins to evaluate, or None for all bins.
+    time_grid : _DecodeTimeGrid, optional
+        A detector's prepared grid for these edges, reused when it matches;
+        otherwise the edges are validated here.
+    spike_time_order : SpikeTimeOrder, optional
+        A detector's spike preparation shared across states and chunks; None
+        starts a fresh one, which verifies spike ordering on this call.
+
+    Returns
+    -------
+    rows : DecodeRows
+    """
+    time_grid = _resolve_time_grid(time_edges, time_grid)
+    if spike_time_order is None:
+        spike_time_order = SpikeTimeOrder()
+    start, stop = resolve_row_slice(row_slice, time_grid.edges.shape[0] - 1)
+    return DecodeRows(time_grid, spike_time_order, start, stop)
 
 
 @dataclass(frozen=True)

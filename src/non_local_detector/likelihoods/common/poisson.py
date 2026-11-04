@@ -12,12 +12,11 @@ from tqdm.autonotebook import tqdm
 from non_local_detector.likelihoods.common.spike_rows import (
     SpikeTimeOrder,
     get_spikecount_per_time_bin,
-    resolve_row_slice,
+    prepare_decode_rows,
     spike_counts_matrix,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
 )
 
 
@@ -58,21 +57,17 @@ def log_bin_duration_evidence(
         ``N_bin * log(duration / intensity_time_scale)`` per requested bin, where
         ``N_bin`` is the number of spikes of all electrodes in the bin.
     """
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if spike_time_order is None:
-        spike_time_order = SpikeTimeOrder()
-    start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
-    counts = np.zeros(stop - start, dtype=int)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, spike_time_order)
+    counts = np.zeros(rows.stop - rows.start, dtype=int)
     for times in spike_times:
         counts += get_spikecount_per_time_bin(
             times,
-            time_edges=time_edges,
+            time_edges=rows.time_edges,
             row_slice=row_slice,
-            _spike_time_order=spike_time_order,
+            _spike_time_order=rows.spike_time_order,
         )
     return jnp.asarray(counts) * jnp.log(
-        jnp.asarray(_time_grid.durations(start, stop) / intensity_time_scale)
+        jnp.asarray(rows.durations() / intensity_time_scale)
     )
 
 

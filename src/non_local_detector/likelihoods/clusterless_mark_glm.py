@@ -71,7 +71,7 @@ from non_local_detector.likelihoods.common import (
     log_bin_duration_evidence,
     pad_rows,
     padded_spike_count,
-    resolve_row_slice,
+    prepare_decode_rows,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -101,7 +101,6 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
@@ -1022,10 +1021,7 @@ def predict_clusterless_mark_glm_log_likelihood(
         ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1048,9 +1044,8 @@ def predict_clusterless_mark_glm_log_likelihood(
                 hint="Use the same waveform feature representation at fit and predict.",
             )
 
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    n_rows = row_stop - row_start
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
+    n_rows = rows.stop - rows.start
+    durations = jnp.asarray(rows.durations())
     if is_local:
         position_time = np.asarray(position_time)
         position = np.asarray(position)
@@ -1059,7 +1054,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             get_position_at_time(
                 position_time,
                 position,
-                decode_bin_centers(time_edges, row_start, row_stop),
+                decode_bin_centers(rows.time_edges, rows.start, rows.stop),
                 environment,
             ),
             environment,
@@ -1112,10 +1107,10 @@ def predict_clusterless_mark_glm_log_likelihood(
                 ) @ is_component.astype(row_design.dtype)
         selection = select_spikes_in_rows(
             electrode_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
+            rows.start,
+            rows.stop,
+            time_edges=rows.time_edges,
+            _spike_time_order=rows.spike_time_order,
         )
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes == 0:
@@ -1188,7 +1183,11 @@ def predict_clusterless_mark_glm_log_likelihood(
         )
 
     duration_evidence = log_bin_duration_evidence(
-        spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+        spike_times,
+        rows.time_edges,
+        row_slice,
+        rows.spike_time_order,
+        _time_grid=rows.time_grid,
     )
     if is_local:
         log_likelihood = log_likelihood - durations * (

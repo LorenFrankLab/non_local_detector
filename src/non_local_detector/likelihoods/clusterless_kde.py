@@ -55,9 +55,9 @@ from non_local_detector.likelihoods.common import (
     padded_occupancy_count,
     padded_samples,
     padded_spike_count,
+    prepare_decode_rows,
     prepare_kde_local_inputs,
     prepared_kde_log_density,
-    resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -80,7 +80,6 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     requires_time_edges,
 )
 
@@ -1967,10 +1966,7 @@ def predict_clusterless_kde_log_likelihood(
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
     _validate_tile_sizes(enc_tile_size, pos_tile_size)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1982,7 +1978,6 @@ def predict_clusterless_kde_log_likelihood(
         encoding_weights=encoding_weights,
         mark_reference=mark_reference,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     # Uniform (None) weights per electrode when the caller passes none, so the loop
     # and the local path can zip a weight per electrode uniformly.
     per_electrode_weights: Sequence[jax.Array | None] = (
@@ -1995,7 +1990,7 @@ def predict_clusterless_kde_log_likelihood(
 
     if is_local:
         log_likelihood = compute_local_log_likelihood(
-            time_edges,
+            rows.time_edges,
             position_time,
             position,
             spike_times,
@@ -2013,8 +2008,8 @@ def predict_clusterless_kde_log_likelihood(
             per_electrode_weights,
             row_slice=row_slice,
             mark_reference=mark_reference,
-            _spike_time_order=_spike_time_order,
-            _time_grid=_time_grid,
+            _spike_time_order=rows.spike_time_order,
+            _time_grid=rows.time_grid,
         )
     else:
         is_track_interior = cast(np.ndarray, environment.is_track_interior_).ravel()
@@ -2024,9 +2019,9 @@ def predict_clusterless_kde_log_likelihood(
         if log_occupancy is None:
             log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
-        log_likelihood = -jnp.asarray(_time_grid.durations(row_start, row_stop))[
-            :, None
-        ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
+        log_likelihood = -jnp.asarray(rows.durations())[:, None] * (
+            summed_ground_process_intensity + background_rate(len(spike_times))
+        )
 
         for electrode, (
             electrode_encoding_spike_waveform_features,
@@ -2055,10 +2050,10 @@ def predict_clusterless_kde_log_likelihood(
         ):
             selection = select_spikes_in_rows(
                 electrode_spike_times,
-                row_start,
-                row_stop,
-                time_edges=time_edges,
-                _spike_time_order=_spike_time_order,
+                rows.start,
+                rows.stop,
+                time_edges=rows.time_edges,
+                _spike_time_order=rows.spike_time_order,
             )
             electrode_decoding_spike_waveform_features = select_decode_marks(
                 electrode_decoding_spike_waveform_features, selection, electrode
@@ -2078,12 +2073,12 @@ def predict_clusterless_kde_log_likelihood(
             # Padded spikes and zero-weight encoding samples let electrodes
             # and chunks with nearby sizes share one compiled kernel.
             padded_features, padded_weights = padded_samples(
-                _spike_time_order,
+                rows.spike_time_order,
                 electrode_encoding_spike_waveform_features,
                 electrode_encoding_weights,
             )
             padded_positions, _ = padded_samples(
-                _spike_time_order,
+                rows.spike_time_order,
                 electrode_encoding_positions,
                 electrode_encoding_weights,
             )
@@ -2151,11 +2146,11 @@ def predict_clusterless_kde_log_likelihood(
         log_likelihood
         + log_bin_duration_evidence(
             spike_times,
-            time_edges,
+            rows.time_edges,
             row_slice,
-            _spike_time_order,
+            rows.spike_time_order,
             intensity_time_scale=RATE_REFERENCE_SECONDS,
-            _time_grid=_time_grid,
+            _time_grid=rows.time_grid,
         )[:, None]
     )
 
@@ -2242,12 +2237,8 @@ def compute_local_log_likelihood(
     log_likelihood : jax.Array, shape (n_rows, 1)
         Log likelihood at the animal's position for each requested decoding bin.
     """
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    n_rows = row_stop - row_start
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    n_rows = rows.stop - rows.start
 
     # Normalize to a per-electrode list; None -> uniform weights for each electrode.
     if encoding_weights is None:
@@ -2259,10 +2250,10 @@ def compute_local_log_likelihood(
         position_time,
         position,
         environment,
-        _time_grid,
-        row_start,
-        row_stop,
-        _spike_time_order,
+        rows.time_grid,
+        rows.start,
+        rows.stop,
+        rows.spike_time_order,
     )
 
     log_likelihood = jnp.zeros((n_rows,))
@@ -2299,10 +2290,10 @@ def compute_local_log_likelihood(
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
+            rows.start,
+            rows.stop,
+            time_edges=rows.time_edges,
+            _spike_time_order=rows.spike_time_order,
         )
         position_at_spike_time = snap_off_track_positions(
             get_position_at_time(
@@ -2325,17 +2316,17 @@ def compute_local_log_likelihood(
         # logaddexp(log(rate * density / occupancy), log background).
         n_padded = padded_spike_count(position_at_spike_time.shape[0], block_size)
         padded_positions, padded_weights = padded_samples(
-            _spike_time_order,
+            rows.spike_time_order,
             electrode_encoding_positions,
             electrode_encoding_weights,
         )
         padded_features, _ = padded_samples(
-            _spike_time_order,
+            rows.spike_time_order,
             electrode_encoding_spike_waveform_features,
             electrode_encoding_weights,
         )
         occupancy_samples, occupancy_weights = padded_samples(
-            _spike_time_order,
+            rows.spike_time_order,
             cast(jax.Array, occupancy_model.samples_),
             occupancy_model.weights_,
             count=padded_occupancy_count,
@@ -2362,7 +2353,7 @@ def compute_local_log_likelihood(
                 occupancy_weights,
             ),
             prepared_kde_log_density(
-                electrode_gpi_model, interpolated_position, _spike_time_order
+                electrode_gpi_model, interpolated_position, rows.spike_time_order
             ),
             log_occupancy,
             electrode_mean_rate * RATE_REFERENCE_SECONDS,
@@ -2381,7 +2372,7 @@ def compute_local_log_likelihood(
             indices_are_sorted=selection.indices_are_sorted,
         )
 
-    log_likelihood -= jnp.asarray(_time_grid.durations(row_start, row_stop)) * (
+    log_likelihood -= jnp.asarray(rows.durations()) * (
         summed_expected_counts + background_rate(len(spike_times))
     )
     return log_likelihood[:, jnp.newaxis]

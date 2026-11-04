@@ -104,8 +104,8 @@ from non_local_detector.likelihoods.common import (
     pad_rows,
     padded_sample_count,
     padded_spike_count,
+    prepare_decode_rows,
     repair_flagged,
-    resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -135,7 +135,6 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
@@ -1406,11 +1405,7 @@ def predict_clusterless_diffusion_log_likelihood(
         mean_rates=mean_rates,
         mark_reference=mark_reference,
     )
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     n_bins = occupancy.shape[0]
 
     eigvals, eigvecs, labels, n_components = get_device_basis(
@@ -1426,7 +1421,7 @@ def predict_clusterless_diffusion_log_likelihood(
     }
     # One kernel per prediction, shared by every electrode, state and chunk.
     kernel = (
-        _spike_time_order.memo(
+        rows.spike_time_order.memo(
             f"diffusion_kernel:{position_std!r}:{every_bin_tile}",
             (eigvecs, labels),
             partial(
@@ -1443,7 +1438,7 @@ def predict_clusterless_diffusion_log_likelihood(
         else None
     )
     # Every bin's repair-gate bounds for a unit rate and weight, once per model.
-    kernel_gain, kernel_floor = _spike_time_order.memo(
+    kernel_gain, kernel_floor = rows.spike_time_order.memo(
         f"diffusion_kernel_bounds:{position_std!r}:{every_bin_tile}:{dense}",
         (eigvecs, labels, fitted_occupancy),
         lambda: _kernel_bounds(
@@ -1458,7 +1453,7 @@ def predict_clusterless_diffusion_log_likelihood(
         ),
     )
 
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
+    durations = jnp.asarray(rows.durations())
     if is_local:
         # The local path reads the animal's position; non-local ignores it and the
         # base API permits position=None (as clusterless_kde does), so position is
@@ -1473,7 +1468,7 @@ def predict_clusterless_diffusion_log_likelihood(
         interpolated_position = get_position_at_time(
             position_time,
             position,
-            decode_bin_centers(time_edges, row_start, row_stop),
+            decode_bin_centers(rows.time_edges, rows.start, rows.stop),
             environment,
         )
         animal_time_bins = interior_bin_indices(
@@ -1519,10 +1514,10 @@ def predict_clusterless_diffusion_log_likelihood(
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
+            rows.start,
+            rows.stop,
+            time_edges=rows.time_edges,
+            _spike_time_order=rows.spike_time_order,
         )
         # Select FIRST, convert after: converting the whole array would cost
         # every decoding spike in the recording on every chunk call.
@@ -1545,18 +1540,20 @@ def predict_clusterless_diffusion_log_likelihood(
             log_likelihood += background_sum if is_local else background_sum[:, None]
             continue
 
-        enc_marks, enc_weights, sources, source_index, tile = _spike_time_order.memo(
-            f"diffusion_electrode_layout:{n_bins}:{tile_budget}:{dense}",
-            (electrode_bins, electrode_marks, electrode_weights),
-            partial(
-                _electrode_layout,
-                electrode_bins,
-                electrode_marks,
-                electrode_weights,
-                n_bins,
-                tile_budget,
-                dense,
-            ),
+        enc_marks, enc_weights, sources, source_index, tile = (
+            rows.spike_time_order.memo(
+                f"diffusion_electrode_layout:{n_bins}:{tile_budget}:{dense}",
+                (electrode_bins, electrode_marks, electrode_weights),
+                partial(
+                    _electrode_layout,
+                    electrode_bins,
+                    electrode_marks,
+                    electrode_weights,
+                    n_bins,
+                    tile_budget,
+                    dense,
+                ),
+            )
         )
         effective_block = _effective_block(
             memory_budget, enc_marks.shape[0], sources.shape[0], n_bins, block_size
@@ -1622,7 +1619,11 @@ def predict_clusterless_diffusion_log_likelihood(
         )
 
     evidence = log_bin_duration_evidence(
-        spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+        spike_times,
+        rows.time_edges,
+        row_slice,
+        rows.spike_time_order,
+        _time_grid=rows.time_grid,
     )
     if is_local:
         return (log_likelihood + evidence)[:, None]

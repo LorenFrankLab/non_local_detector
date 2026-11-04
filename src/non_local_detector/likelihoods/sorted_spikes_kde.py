@@ -83,8 +83,8 @@ from non_local_detector.likelihoods.common import (
     pad_rows,
     padded_index,
     padded_sample_count,
+    prepare_decode_rows,
     prepare_kde_local_inputs,
-    resolve_row_slice,
     spike_counts_matrix,
     traced_block_kde,
     validate_bandwidth,
@@ -95,7 +95,6 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     requires_time_edges,
 )
 
@@ -605,10 +604,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         otherwise (n_rows, 1).
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
@@ -616,18 +612,17 @@ def predict_sorted_spikes_kde_log_likelihood(
         mean_rates=mean_rates,
         place_fields=place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
+    durations = jnp.asarray(rows.durations())
     if is_local:
         interpolated_position, log_occupancy = prepare_kde_local_inputs(
             occupancy_model,
             position_time,
             position,
             environment,
-            _time_grid,
-            row_start,
-            row_stop,
-            _spike_time_order,
+            rows.time_grid,
+            rows.start,
+            rows.stop,
+            rows.spike_time_order,
         )
         # The probability density is the exponential of the true log density;
         # a second KDE pass over every decode row is not needed.
@@ -650,41 +645,41 @@ def predict_sorted_spikes_kde_log_likelihood(
             points = points[:, None]
         log_occupancy = jnp.asarray(log_occupancy)
         host_log_occupancy = np.asarray(log_occupancy)
-        groups, block_sizes, order = _spike_time_order.memo(
+        groups, block_sizes, order = rows.spike_time_order.memo(
             f"kde_leaf_groups_{points.shape[1]}",
             tuple(marginal_models),
             lambda: _kde_leaf_groups(marginal_models, points.shape[1]),
         )
 
         def evaluate(start: int, stop: int) -> jax.Array:
-            rows = slice(start - row_start, stop - row_start)
+            block = slice(start - rows.start, stop - rows.start)
             counts = spike_counts_matrix(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 "Local Likelihood",
                 True,
                 slice(start, stop),
-                _spike_time_order=_spike_time_order,
+                _spike_time_order=rows.spike_time_order,
             )
             # Only rows in occupancy tails need log ratios; without any, the
             # kernel compiles no log-space evaluation.
-            tail = np.flatnonzero(host_log_occupancy[rows] < np.log(EPS))
+            tail = np.flatnonzero(host_log_occupancy[block] < np.log(EPS))
             return _local_kde_log_likelihood(  # type: ignore[no-any-return]  # jit-wrapped
-                points[rows],
-                occupancy[rows],
+                points[block],
+                occupancy[block],
                 jnp.asarray(counts),
                 jnp.asarray(mean_rates),
-                durations[rows],
+                durations[block],
                 groups,
                 order,
                 block_sizes=block_sizes,
-                log_occupancy=log_occupancy[rows],
+                log_occupancy=log_occupancy[block],
                 tail_rows=jnp.asarray(padded_index(tail)) if tail.size else None,
             )
 
         return concatenate_row_blocks(
-            row_start,
-            row_stop,
+            rows.start,
+            rows.stop,
             len(spike_times),
             evaluate,
             "Local Likelihood",
@@ -692,12 +687,12 @@ def predict_sorted_spikes_kde_log_likelihood(
         )[:, None]
     return blocked_nonlocal_poisson_log_likelihood(
         spike_times,
-        time_edges,
-        row_start,
-        row_stop,
+        rows.time_edges,
+        rows.start,
+        rows.stop,
         jnp.asarray(place_fields)[:, is_track_interior],
         durations,
         no_spike_part_log_likelihood[is_track_interior],
         disable_progress_bar=disable_progress_bar,
-        _spike_time_order=_spike_time_order,
+        _spike_time_order=rows.spike_time_order,
     )

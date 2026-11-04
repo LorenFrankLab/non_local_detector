@@ -23,12 +23,11 @@ from non_local_detector.likelihoods.common import (
     SpikeTimeOrder,
     concatenate_row_blocks,
     poisson_row_log_likelihood,
-    resolve_row_slice,
+    prepare_decode_rows,
     spike_counts_matrix,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     requires_time_edges,
 )
 
@@ -144,38 +143,34 @@ def predict_no_spike_log_likelihood(
     ):
         msg = "no_spike_rate must be a finite nonnegative scalar"
         raise ValidationError(msg)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     if _time_bin_sizes is None:
-        durations = _time_grid.durations(row_start, row_stop)
+        durations = rows.durations()
     else:
-        durations = _time_bin_sizes[row_start:row_stop]
+        durations = _time_bin_sizes[rows.start : rows.stop]
     no_spike_rates = no_spike_rate * jnp.asarray(durations)
 
     def evaluate(start: int, stop: int) -> jax.Array:
         """Return the log likelihood of rows ``start`` to ``stop`` (shape (stop - start, 1))."""
         counts = spike_counts_matrix(
             cast("list[np.ndarray]", spike_times),
-            time_edges,
+            rows.time_edges,
             "No Spike Likelihood",
             True,
             slice(start, stop),
-            _spike_time_order=_spike_time_order,
+            _spike_time_order=rows.spike_time_order,
         )
         return cast(
             jax.Array,
             poisson_row_log_likelihood(
                 jnp.asarray(counts),
-                no_spike_rates[start - row_start : stop - row_start, None],
+                no_spike_rates[start - rows.start : stop - rows.start, None],
             ),
         )
 
     return concatenate_row_blocks(
-        row_start,
-        row_stop,
+        rows.start,
+        rows.stop,
         len(spike_times),
         evaluate,
         "No Spike Likelihood",

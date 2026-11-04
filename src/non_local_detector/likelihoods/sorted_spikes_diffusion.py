@@ -48,7 +48,7 @@ from non_local_detector.likelihoods.common import (
     full_to_local_index,
     get_position_at_time,
     interior_bin_indices,
-    resolve_row_slice,
+    prepare_decode_rows,
     spike_counts_matrix,
     validate_encoding_contract,
     validate_population_lengths,
@@ -67,7 +67,6 @@ from non_local_detector.likelihoods.diffusion import (
 from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
@@ -720,10 +719,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = SpikeTimeOrder()
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     # Both paths broadcast or contract over neurons, so a population mismatch would
     # otherwise surface as a JAX shape error or, on the local path, broadcast one
     # neuron's rates across the observed spike trains.
@@ -734,13 +730,12 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         place_fields=place_fields,
         interior_log_place_fields=interior_log_place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
+    durations = jnp.asarray(rows.durations())
     if is_local:
         interpolated_position = get_position_at_time(
             position_time,
             position,
-            decode_bin_centers(time_edges, row_start, row_stop),
+            decode_bin_centers(rows.time_edges, rows.start, rows.stop),
             environment,
         )
         local_rates = _local_place_field_rates(
@@ -758,11 +753,11 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         spike_counts = jnp.asarray(
             spike_counts_matrix(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 "Local Likelihood",
                 disable_progress_bar,
                 row_slice=row_slice,
-                _spike_time_order=_spike_time_order,
+                _spike_time_order=rows.spike_time_order,
             ),
             dtype=local_rates.dtype,
         )
@@ -792,15 +787,15 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         spike_counts = jnp.asarray(
             spike_counts_matrix(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 "Position-Bin Likelihood",
                 True,
                 slice(start, stop),
-                _spike_time_order=_spike_time_order,
+                _spike_time_order=rows.spike_time_order,
             ),
             dtype=log_interior_fields.dtype,
         )
-        block_durations = durations[start - row_start : stop - row_start]
+        block_durations = durations[start - rows.start : stop - rows.start]
         log_likelihood = jnp.matmul(
             spike_counts, log_interior_fields, precision=jax.lax.Precision.HIGHEST
         )
@@ -810,13 +805,13 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         log_likelihood -= block_durations[:, None] * interior_summed_rates
         return log_likelihood
 
-    if row_start == row_stop:
-        return evaluate(row_start, row_stop)
+    if rows.start == rows.stop:
+        return evaluate(rows.start, rows.stop)
     # Bounded count blocks, so a full-grid request never builds the
     # rows-by-population count matrix.
     return concatenate_row_blocks(
-        row_start,
-        row_stop,
+        rows.start,
+        rows.stop,
         len(spike_times),
         evaluate,
         "Position-Bin Likelihood",
