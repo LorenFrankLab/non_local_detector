@@ -88,7 +88,22 @@ class StoredModel:
                 msg,
                 hint="The file is corrupt or was edited; save the model again.",
             )
-        return cast(np.ndarray, np.load(io.BytesIO(data), allow_pickle=False))
+        array = cast(np.ndarray, np.load(io.BytesIO(data), allow_pickle=False))
+        _check_against_manifest(array, entry, member)
+        return array
+
+
+def _check_against_manifest(
+    array: np.ndarray, entry: dict[str, Any], member: str
+) -> None:
+    """Refuse an array whose dtype or shape is not the manifest's."""
+    if array.dtype.str != entry["dtype"] or list(array.shape) != list(entry["shape"]):
+        msg = (
+            f"The array {member!r} of the saved model has dtype {array.dtype.str} "
+            f"and shape {list(array.shape)}, not the manifest's {entry['dtype']} "
+            f"and {list(entry['shape'])}"
+        )
+        raise DataError(msg, hint="The file is corrupt or was edited.")
 
 
 # MIGRATIONS[v] upgrades a StoredModel of format_version v to v + 1, in place.

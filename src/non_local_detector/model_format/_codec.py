@@ -117,7 +117,8 @@ class ArrayWriter:
                 got=f"dtype {array.dtype}",
             )
         buffer = io.BytesIO()
-        np.save(buffer, np.ascontiguousarray(array), allow_pickle=False)
+        # np.require keeps a 0-d array 0-d (np.ascontiguousarray makes it 1-d).
+        np.save(buffer, np.require(array, requirements="C"), allow_pickle=False)
         data = buffer.getvalue()
         digest = hashlib.sha256(data).hexdigest()
         if digest in self._by_digest:

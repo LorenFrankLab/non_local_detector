@@ -237,3 +237,24 @@ def test_encoding_groups(sorted_recording, tmp_path):
         detector, tmp_path, time, position, {"spike_times": spike_times}
     )
     assert set(loaded.encoding_model_) == {("", "first"), ("", "second")}
+
+
+def test_zero_dimensional_parameters_keep_their_shape(sorted_recording, tmp_path):
+    """A 0-d movement variance (a 2-D random walk reads its shape) and a 0-d
+    KDE bandwidth save and reload unchanged."""
+    time, linear, spike_times = sorted_recording
+    position = np.column_stack([linear, 14.0 + 10.0 * np.sin(time)])
+    detector = nld.SortedSpikesDecoder(
+        environments=Environment(place_bin_size=4.0),
+        continuous_transition_types=[[nld.RandomWalk(movement_var=np.array(6.0))]],
+        sorted_spikes_algorithm_params={
+            **algorithm_params("sorted_spikes_kde"),
+            "position_std": np.array(4.0),
+        },
+    )
+    detector.fit(time, position, spike_times)
+
+    loaded = _assert_round_trip(
+        detector, tmp_path, time, position, {"spike_times": spike_times}
+    )
+    assert loaded.continuous_transition_types[0][0].movement_var.shape == ()
