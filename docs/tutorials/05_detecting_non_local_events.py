@@ -839,9 +839,9 @@ axes[1].set(xlabel="Maximum distance from rat (cm)", ylabel="Number of events")
 #
 # `save_results` writes the decoding to a netCDF file and `load_results`
 # reads it back; `save_model` and `load_model` do the same for the fitted
-# detector (as a pickle: load only files you trust). The event table is a
-# plain DataFrame. A temporary directory stands in for your results folder
-# here.
+# detector (see [Saving and loading models](../../saving_models/)). The event
+# table is a plain DataFrame. A temporary directory stands in for your
+# results folder here.
 
 # %%
 with tempfile.TemporaryDirectory() as results_folder:
@@ -858,7 +858,7 @@ with tempfile.TemporaryDirectory() as results_folder:
     )
     loaded.close()
 
-    em_detector.save_model(Path(results_folder) / "detector.pkl")
+    em_detector.save_model(Path(results_folder) / "detector.nld")
     event_summary.to_csv(Path(results_folder) / "non_local_events.csv", index=False)
 
 # %% [markdown]

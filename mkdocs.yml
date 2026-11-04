@@ -139,6 +139,7 @@ nav:
   - Guides:
       - Time bins and rates: time_grid_migration.md
       - Result layout: result_layout.md
+      - Saving and loading models: saving_models.md
       - Checkpointed prediction: performance_prediction.md
       - Settings for your hardware: hardware_settings.md
       - Checking clusterless model fit: likelihood_mark_calibration.md
