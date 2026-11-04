@@ -192,3 +192,37 @@ def test_no_spikes_does_not_warn(fitted):
         warnings.filterwarnings("error", "None of the", DataQualityWarning)
         detector.fit(TIME, POSITION, empty)
         detector.predict(empty, time_edges=EDGES)
+
+
+def _column_container(family):
+    """One neuron's times as an (n_spikes, 1) array: n_spikes one-spike units."""
+    column = SPIKE_TIMES[0][:, np.newaxis]
+    if family == "sorted":
+        return (column,)
+    return column, [row[np.newaxis] for row in FEATURES[0]]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", FIT_METHODS + DECODE_METHODS)
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_numeric_2d_spike_times_container_raises(fitted, method, family):
+    """An (n_spikes, 1) array iterated as n_spikes units of one spike each,
+    which every per-unit check accepted."""
+    detector = fitted[family].copy()
+    snapshot = _snapshot(detector)
+    with pytest.raises(ValidationError, match="spike_times must be a list"):
+        _call(detector, method, _column_container(family))
+    _assert_unchanged(detector, snapshot)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "container",
+    [tuple, lambda times: np.array(times, dtype=object)],
+    ids=["tuple", "object_array"],
+)
+def test_sequence_and_object_array_containers_are_accepted(fitted, container):
+    detector = fitted["sorted"]
+    expected = detector.predict(SPIKE_TIMES, time_edges=EDGES).acausal_posterior
+    result = detector.predict(container(SPIKE_TIMES), time_edges=EDGES)
+    np.testing.assert_array_equal(result.acausal_posterior, expected)

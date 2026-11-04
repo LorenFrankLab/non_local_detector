@@ -311,9 +311,26 @@ def _validate_spike_structure(
     Raises
     ------
     ValidationError
-        If a unit's spike times are not 1-D, or (clusterless) the features do
-        not have one row per spike of the same electrodes.
+        If ``spike_times`` is a numeric array of two or more dimensions, a
+        unit's spike times are not 1-D, or (clusterless) the features do not
+        have one row per spike of the same electrodes.
     """
+    # Iterating a numeric (n_spikes, 1) array gives n_spikes units of one
+    # spike each, which every per-unit check accepts. Only array containers
+    # are inspected: converting a ragged list would fail.
+    container_shape = getattr(spike_times, "shape", ())
+    if len(container_shape) >= 2 and getattr(spike_times, "dtype", None) != np.dtype(
+        object
+    ):
+        unit = "electrode" if clusterless else "neuron"
+        msg = f"spike_times must be a list of 1-D arrays, one per {unit}"
+        raise ValidationError(
+            msg,
+            expected=f"a list or tuple of arrays with shape (n_spikes,), one per {unit}",
+            got=f"a numeric array of shape {tuple(container_shape)}",
+            hint=f"Pass [times.ravel()] for one {unit}'s spike times, or "
+            f"list(times) if each row is one {unit}'s spike times.",
+        )
     if clusterless:
         validate_spike_feature_population(
             spike_times,
