@@ -45,8 +45,11 @@ See [Settings for your hardware](../hardware_settings.md) for memory settings on
 
 | Extra | Installs | Needed for |
 | --- | --- | --- |
-| `gpu` | `jax[cuda]` | decoding on an NVIDIA GPU |
+| `gpu` | `jax[cuda13]` (`jax[cuda12]` on Python 3.10) | decoding on an NVIDIA GPU (Linux; NVIDIA driver 580 or newer, 525 for CUDA 12) |
 | `viz` | `sortingview` | interactive FigURL views in `non_local_detector.visualization` |
+
+CUDA 13 needs a GPU of compute capability 7.5 (Turing) or newer. On older
+GPUs (Pascal, Volta), install `jax[cuda12]` instead of the `gpu` extra.
 
 ## For development
 
