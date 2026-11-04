@@ -6,6 +6,7 @@ it raise ``NameError``.
 """
 
 import inspect
+import types
 import typing
 
 import pytest
@@ -19,9 +20,10 @@ DETECTOR_CLASSES = sorted(
         cls
         for module in (models, models.base)
         for name, cls in vars(module).items()
-        # Not inspect.isclass: on Python 3.10 it is True for aliases such as
-        # list[Environment], which issubclass rejects.
+        # On Python 3.10 aliases such as list[Environment] pass both
+        # inspect.isclass and isinstance(..., type), but issubclass rejects them.
         if isinstance(cls, type)
+        and not isinstance(cls, types.GenericAlias)
         and not name.startswith("_")
         and issubclass(cls, models.base._DetectorBase)
     },
