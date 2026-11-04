@@ -10,6 +10,12 @@ saving and loading models and results. ``SortedSpikesDetector`` and
 unsorted spike waveform features. The model classes in the other modules of
 ``non_local_detector.models`` configure these two with specific states and
 transitions.
+
+``_DetectorBase`` inherits its input validation, checkpointed prediction, EM,
+plotting, and saving and loading methods from mixins in the private modules
+``_input_validation``, ``_checkpointed``, ``_em``, ``_plotting`` and
+``_persistence``. The detector classes stay here: saved detectors name this
+module.
 """
 
 import abc

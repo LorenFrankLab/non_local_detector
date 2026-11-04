@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### API hygiene
 
+- Internal: `models/base.py` is split into private modules that `_DetectorBase` inherits as mixins (`_input_validation`, `_checkpointed`, `_em`, `_plotting`, `_persistence`); no behaviour change. The detector classes keep their `models.base` import paths, so saved detectors load as before, and every name defined in `models.base` stays importable from there.
 - **Removed:** `fit_predict` on the detectors, a stub that only raised `NotImplementedError`. Call `fit(...)` then `predict(...)`.
 - `decode_bin_centers` moved from `non_local_detector.likelihoods.common` to `non_local_detector.time_edges`, and `validate_weights` to `non_local_detector._validation`, removing a dependency of `checkpointed_inference` and `encoding_time` on the likelihood package. Neither is part of the documented public API; update imports that used the old location. The stale function-level "circular import" imports in `environment.py` and `models/base.py` are now top-level imports.
 - **Fixed:** `plot_non_local_model` finds sorted-spikes place fields through the detector's own observation model instead of the hard-coded `("", 0)` key, so it no longer silently falls back to electrode-group ordering when the environment is named or the encoding group is not 0.
