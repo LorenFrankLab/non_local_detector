@@ -57,6 +57,7 @@ from non_local_detector.core import (
 )
 from non_local_detector.discrete_state_transitions import (
     _check_initial_discrete_transition,
+    _check_transition_formula,
     _row_smoothness,
     _smoothness_matrix,
     _transition_intervals,
@@ -2368,6 +2369,9 @@ class _DetectorBase(
             if self.discrete_transition_coefficients_ is None:
                 msg = "discrete_transition_coefficients_ is None but covariate data provided"
                 raise ValueError(msg)
+            # Also refuses a detector unpickled with a refused formula, whose
+            # design matrix was not rebuilt.
+            _check_transition_formula(self.discrete_transition_type)
             predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,

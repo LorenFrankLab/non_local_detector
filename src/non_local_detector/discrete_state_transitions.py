@@ -38,6 +38,7 @@ from scipy.special import expit, logit, softmax, xlogy
 from scipy.stats import norm
 
 from non_local_detector import _validation as val
+from non_local_detector._formula_grammar import check_design_info, check_formula
 from non_local_detector.exceptions import ValidationError
 
 __all__ = [
@@ -3375,6 +3376,8 @@ def _initial_nonstationary_transition(
     """
     n_states = len(discrete_transition)
 
+    # patsy evaluates the formula as Python.
+    check_formula(formula, _covariate_names(covariate_data))
     # NA_action="raise" prevents patsy from silently dropping rows with NaN
     # covariates, which would misalign the design matrix (n_time) against the
     # full-length posteriors/responses in the M-step.
@@ -3422,7 +3425,15 @@ class DiscreteNonStationaryDiagonal:
         interior knots at quantiles of the fitted speeds
         (``quantile_bs``); speeds beyond the fitted range take the
         boundary's value. Pass explicit knots with e.g.
-        ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``.
+        ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``. patsy evaluates the
+        formula as Python, so only a small grammar is accepted: names of
+        the covariates, numbers, the operators ``+ - * / :``, ``**`` with a
+        numeric exponent of magnitude at most 10, lists of numbers,
+        ``np.pi``, and calls of ``bs``, ``cr``, ``cc``, ``te``,
+        ``quantile_bs``, ``cyclic_bs``, ``center``, ``standardize``,
+        ``C`` (without a contrast), ``I``, ``np.log``, ``np.log1p``,
+        ``np.exp``, ``np.sqrt`` and ``np.abs``; anything else raises
+        ``ValidationError``.
     smoothness : float or "reml", optional
         Strength of a penalty on the curvature of every ``quantile_bs`` and
         ``cyclic_bs`` term, ``integral f''(u)^2 du`` with the covariate
@@ -3444,6 +3455,7 @@ class DiscreteNonStationaryDiagonal:
             self.diagonal_values, "DiscreteNonStationaryDiagonal.diagonal_values"
         )
         _validate_smoothness(self.smoothness)
+        check_formula(self.formula)
 
     @property
     def is_stationary(self) -> bool:
@@ -3501,7 +3513,15 @@ class DiscreteNonStationaryCustom:
         interior knots at quantiles of the fitted speeds
         (``quantile_bs``); speeds beyond the fitted range take the
         boundary's value. Pass explicit knots with e.g.
-        ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``.
+        ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``. patsy evaluates the
+        formula as Python, so only a small grammar is accepted: names of
+        the covariates, numbers, the operators ``+ - * / :``, ``**`` with a
+        numeric exponent of magnitude at most 10, lists of numbers,
+        ``np.pi``, and calls of ``bs``, ``cr``, ``cc``, ``te``,
+        ``quantile_bs``, ``cyclic_bs``, ``center``, ``standardize``,
+        ``C`` (without a contrast), ``I``, ``np.log``, ``np.log1p``,
+        ``np.exp``, ``np.sqrt`` and ``np.abs``; anything else raises
+        ``ValidationError``.
     smoothness : float or "reml", optional
         Strength of a penalty on the curvature of every ``quantile_bs`` and
         ``cyclic_bs`` term, ``integral f''(u)^2 du`` with the covariate
@@ -3521,6 +3541,7 @@ class DiscreteNonStationaryCustom:
     def __post_init__(self) -> None:
         _validate_transition_values(self.values, "DiscreteNonStationaryCustom.values")
         _validate_smoothness(self.smoothness)
+        check_formula(self.formula)
 
     @property
     def is_stationary(self) -> bool:
@@ -3578,12 +3599,80 @@ def predict_discrete_state_transitions(
     -------
     discrete_state_transitions : np.ndarray, shape (n_new_time, n_states, n_states)
         Predicted transition matrices for the new covariate data.
+
+    Raises
+    ------
+    ValidationError
+        If the Python the design evaluates is outside the formula grammar,
+        or names a covariate missing from the covariate data.
     """
-    design_matrix = build_design_matrices(
-        [discrete_transition_design_matrix.design_info],
-        discrete_transition_covariate_data,
-    )[0]
+    design_matrix = _design_on(
+        discrete_transition_design_matrix, discrete_transition_covariate_data
+    )
     return _transitions_on_design(design_matrix, discrete_transition_coefficients)
+
+
+def _design_on(
+    discrete_transition_design_matrix: DesignMatrix,
+    covariate_data: pd.DataFrame | dict[str, Any],
+) -> DesignMatrix:
+    """Evaluate a fitted transition design on new covariates.
+
+    Parameters
+    ----------
+    discrete_transition_design_matrix : patsy.DesignMatrix
+        Design matrix used for fitting (contains design_info).
+    covariate_data : pd.DataFrame or dict
+        Covariates named in the design's formula, one row per time step.
+
+    Returns
+    -------
+    design_matrix : patsy.DesignMatrix, shape (n_new_time, n_coefficients)
+
+    Raises
+    ------
+    ValidationError
+        If the Python the design evaluates is outside the formula grammar,
+        or names a covariate missing from ``covariate_data``.
+    """
+    design_info = discrete_transition_design_matrix.design_info
+    # patsy re-evaluates the code of each factor on the new covariates.
+    check_design_info(design_info, _covariate_names(covariate_data))
+    return cast(DesignMatrix, build_design_matrices([design_info], covariate_data)[0])
+
+
+def _covariate_names(
+    covariate_data: pd.DataFrame | dict[str, Any] | None,
+) -> list[str]:
+    """Return the names of the covariates a formula may use.
+
+    They are the keys (or columns) of ``covariate_data``; none without
+    covariates.
+
+    patsy resolves any other name in the caller's namespace or Python's
+    builtins, so the formula checks refuse it.
+    """
+    return [] if covariate_data is None else list(covariate_data.keys())
+
+
+def _check_transition_formula(transition: DiscreteTransition) -> None:
+    """Refuse a transition whose ``formula`` is outside the formula grammar.
+
+    Parameters
+    ----------
+    transition : DiscreteTransition
+        A transition of the package has a ``formula`` when it depends on
+        covariates; a user-defined transition without one builds its own
+        design and is not checked.
+
+    Raises
+    ------
+    ValidationError
+        If the formula is outside the grammar.
+    """
+    formula = getattr(transition, "formula", None)
+    if formula is not None:
+        check_formula(formula)
 
 
 def _transitions_on_design(
@@ -3656,6 +3745,12 @@ def predict_discrete_state_transition_intervals(
         NaN for rows whose covariance is NaN: their coefficients are not
         identified (e.g. a state without expected transitions and with a flat
         prior), so their uncertainty is unknown.
+
+    Raises
+    ------
+    ValidationError
+        If the Python the design evaluates is outside the formula grammar,
+        or names a covariate missing from the covariate data.
     """
     _, lower, upper = _transition_intervals(
         discrete_transition_design_matrix,
@@ -3686,10 +3781,9 @@ def _transition_intervals(
         msg = f"coverage must be in (0, 1), got {coverage}."
         raise ValueError(msg)
     design_matrix = np.asarray(
-        build_design_matrices(
-            [discrete_transition_design_matrix.design_info],
-            discrete_transition_covariate_data,
-        )[0],
+        _design_on(
+            discrete_transition_design_matrix, discrete_transition_covariate_data
+        ),
         dtype=np.float64,
     )
     coefficients = np.asarray(discrete_transition_coefficients, dtype=np.float64)

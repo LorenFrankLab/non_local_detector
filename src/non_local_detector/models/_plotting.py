@@ -16,9 +16,12 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from patsy import DesignMatrix, build_design_matrices
+from patsy import DesignMatrix
 
-from non_local_detector.discrete_state_transitions import centered_softmax_forward
+from non_local_detector.discrete_state_transitions import (
+    _design_on,
+    centered_softmax_forward,
+)
 
 
 class _FittedDetector(Protocol):
@@ -134,17 +137,22 @@ class _PlottingMixin:
                 msg = "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
                 raise ValueError(msg)
 
-            predict_matrix = build_design_matrices(
-                [discrete_transition_design_matrix.design_info],
-                covariate_data,
-            )[0]
+            if covariate_data is None:
+                msg = (
+                    "covariate_data is required to plot covariate-dependent "
+                    "transitions, e.g. {'speed': np.linspace(0, 60, 100)}."
+                )
+                raise ValueError(msg)
+            predict_matrix = _design_on(
+                discrete_transition_design_matrix, covariate_data
+            )
 
             n_states = len(state_names)
 
             # The coefficients are set together with the design matrix.
             assert discrete_transition_coefficients is not None
 
-            for covariate in covariate_data:  # type: ignore[union-attr]
+            for covariate in covariate_data:
                 fig, axes = plt.subplots(
                     1, n_states, sharex=True, constrained_layout=True, figsize=(10, 5)
                 )
@@ -157,7 +165,7 @@ class _PlottingMixin:
                         @ discrete_transition_coefficients[:, from_state_ind]
                     )
 
-                    ax.plot(covariate_data[covariate], from_local_transition)  # type: ignore[index]  # covariate_data is required on this path
+                    ax.plot(covariate_data[covariate], from_local_transition)
                     ax.set_xlabel(covariate)
                     ax.set_ylabel("Prob.")
                     if from_state_ind == n_states - 1:

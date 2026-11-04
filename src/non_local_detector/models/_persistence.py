@@ -12,6 +12,7 @@ pickles name, and every name moved here stays importable from there.
 
 import json
 import pickle
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -21,10 +22,13 @@ import numpy as np
 import xarray as xr
 
 import non_local_detector  # resolves load_model's return annotation
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.discrete_state_transitions import (
+    _check_transition_formula,
     _row_smoothness,
     _smoothness_matrix,
 )
+from non_local_detector.exceptions import ParameterWarning, ValidationError
 from non_local_detector.likelihoods import _record_legacy_encoding_algorithm
 from non_local_detector.models._results import label_checkpointed_result
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -102,11 +106,26 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
     if covariate_data is not None and (
         detector.discrete_transition_design_matrix_ is None
     ):
-        detector.discrete_transition_design_matrix_ = (
-            detector.discrete_transition_type.make_state_transition(
-                covariate_data
-            ).design_matrix
-        )
+        try:
+            _check_transition_formula(detector.discrete_transition_type)
+        except ValidationError as error:
+            # Rebuilding the design would evaluate the formula. The
+            # detector still loads for inspection; predict checks the
+            # formula again and refuses to decode.
+            warnings.warn(
+                "The detector's transition formula is outside the allowed "
+                "formula grammar, so its design matrix was not rebuilt. It "
+                "can be inspected, but decoding with covariates is refused."
+                f"\n{error}",
+                ParameterWarning,
+                stacklevel=user_stacklevel(),
+            )
+        else:
+            detector.discrete_transition_design_matrix_ = (
+                detector.discrete_transition_type.make_state_transition(
+                    covariate_data
+                ).design_matrix
+            )
     # Detectors fitted before transition smoothing existed: no penalty
     # strengths and no covariance, so EM and intervals see an unsmoothed
     # fit that has not estimated its uncertainty.
