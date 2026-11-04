@@ -100,6 +100,10 @@ def _dataclass_state(
         if fields is None
         else fields
     )
+    unknown = sorted(set(defaults) - set(names))
+    if unknown:
+        msg = f"defaults names fields {cls.__qualname__} does not store: {unknown}"
+        raise ValidationError(msg, expected=f"keys among {list(names)}")
 
     def to_state(obj: Any) -> dict[str, Any]:
         return {name: getattr(obj, name) for name in names}
@@ -231,6 +235,11 @@ def _register(
 ) -> None:
     from non_local_detector.models.base import _DetectorBase
 
+    if defaults and (
+        issubclass(cls, _DetectorBase) or to_state is not None or from_state is not None
+    ):
+        msg = "defaults apply only to a dataclass registered without to_state or from_state"
+        raise ValidationError(msg, hint="Supply missing fields in from_state instead.")
     if issubclass(cls, _DetectorBase):
         if to_state is not None or from_state is not None:
             msg = "A detector class is registered without to_state or from_state"

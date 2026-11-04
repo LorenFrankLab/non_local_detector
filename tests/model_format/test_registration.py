@@ -274,3 +274,16 @@ def test_a_missing_field_without_a_default_is_refused(sorted_recording, tmp_path
 
     with pytest.raises(DataError, match="no field 'weight'"):
         nld.SortedSpikesDecoder.load_model(path)
+
+
+def test_register_type_refuses_defaults_for_unknown_fields():
+    with pytest.raises(ValidationError, match="'typo'"):
+        register_type(FlatTransition, "testlab.FlatTransition", defaults={"typo": 3})
+    with pytest.raises(ValidationError, match="defaults apply only"):
+        register_type(
+            PlainFlatTransition,
+            "testlab.Plain",
+            to_state=vars,
+            from_state=dict,
+            defaults={"weight": 1.0},
+        )
