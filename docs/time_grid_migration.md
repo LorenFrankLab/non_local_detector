@@ -111,8 +111,10 @@ occupancy is weighted in seconds; spikes carry their dimensionless interpolated
 weight once. Fitted `mean_rates`, `place_fields`, and ground-process intensities
 are now Hz, independently of tracking frequency. Predictions multiply those
 rates by each decode-bin duration. The unused `sampling_frequency` argument has
-been removed from encoding fit functions; the detector setting remains useful
-for grid construction. The GLM penalty now comes from a prior on log firing
+been removed from encoding fit functions. The detector's `sampling_frequency`
+is the width of its decode bins: `calculate_time_edges` builds edges at that
+rate, and decoding raises `ValidationError` for `time_edges` of another width
+(set it with `set_params(sampling_frequency=...)`, which keeps the fit). The GLM penalty now comes from a prior on log firing
 rate (`log_rate_prior_std`, 2 nats by default) and penalizes the total log
 likelihood, so it no longer grows with recording length.
 

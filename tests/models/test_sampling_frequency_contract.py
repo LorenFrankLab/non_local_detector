@@ -120,3 +120,39 @@ def test_detector_at_the_edges_rate_decodes_them():
     edges = np.arange(21) / 250.0
     detector = _decoder(sampling_frequency=250.0).fit(time, position, spike_times)
     detector.predict(spike_times, time_edges=edges)
+
+
+@pytest.mark.unit
+def test_rate_mismatch_hint_offers_set_params(fitted):
+    detector = fitted[0.0].copy()
+    with pytest.raises(ValidationError, match=r"set_params\(sampling_frequency=250"):
+        _decode(detector, "predict", np.arange(21) / 250.0)
+
+
+@pytest.mark.unit
+def test_set_params_rate_decodes_without_refitting(fitted):
+    """The fix the hint offers: set_params keeps the fitted state, and the
+    detector then decodes the other rate as one fitted at it."""
+    time, position, spike_times = _recording()
+    edges = np.arange(21) / 250.0
+    expected = (
+        _decoder(sampling_frequency=250.0)
+        .fit(time, position, spike_times)
+        .predict(spike_times, time_edges=edges)
+    )
+    detector = fitted[0.0].copy()
+    encoding_model = detector.encoding_model_
+    detector.set_params(sampling_frequency=250.0)
+    assert detector.encoding_model_ is encoding_model
+    result = detector.predict(spike_times, time_edges=edges)
+    np.testing.assert_array_equal(result.acausal_posterior, expected.acausal_posterior)
+
+
+@pytest.mark.unit
+def test_missing_time_edges_hint_names_the_detector_rate(fitted):
+    """The TypeError for the old one-row-per-sample call says the detector
+    must decode at the samples' rate."""
+    _, _, spike_times = _recording()
+    with pytest.raises(TypeError, match="sampling_frequency") as error:
+        fitted[0.0].predict(spike_times)
+    assert "calculate_time_edges" in str(error.value)

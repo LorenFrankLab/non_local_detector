@@ -73,8 +73,12 @@ def requires_time_edges(function: _F) -> _F:
                 "(n_bins + 1 bin boundaries). For uniformly spaced sample "
                 "timestamps, use time_edges=time_edges_from_centers(time). "
                 "This preserves row count but changes between-sample spike "
-                "ownership. See docs/time_grid_migration.md for irregular "
-                "tracking, masks, and independent sequences."
+                "ownership. A detector decodes only edges 1 / sampling_frequency "
+                "wide: construct it (or call set_params) with sampling_frequency "
+                "equal to the sample rate, or build the edges with "
+                "detector.calculate_time_edges(time_range). See "
+                "docs/time_grid_migration.md for irregular tracking, masks, and "
+                "independent sequences."
             )
             raise TypeError(msg)
         return function(*args, **kwargs)

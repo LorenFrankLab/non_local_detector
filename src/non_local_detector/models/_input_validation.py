@@ -647,7 +647,9 @@ def _require_sampling_frequency_width(
         got=f"bin width {width!r} s ({1.0 / width:.6g} Hz)",
         hint="The detector's transitions are per bin of 1 / sampling_frequency "
         f"seconds. Construct it with sampling_frequency={1.0 / width:.6g} to "
-        "decode these edges, or build the edges at the detector's rate with "
+        "decode these edges (a fitted or loaded detector keeps its fit with "
+        f"detector.set_params(sampling_frequency={1.0 / width:.6g})), or build "
+        "the edges at the detector's rate with "
         "detector.calculate_time_edges(time_range).",
     )
 
