@@ -142,6 +142,7 @@ nav:
       - Checkpointed prediction: performance_prediction.md
       - Settings for your hardware: hardware_settings.md
       - Checking clusterless model fit: likelihood_mark_calibration.md
+      - Warnings and how to filter them: warnings.md
   - Technical Notes:
       - Likelihood input validation: likelihood_input_validation.md
       - Clusterless log-KDE reduction: likelihood_kde_reductions.md
