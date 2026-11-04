@@ -99,6 +99,9 @@ lists of numbers, `np.pi`, the package's spline and transform functions
 `np.arctan`, `np.arctan2`, `np.minimum`, `np.maximum`) and `C()` with
 `levels=` and a contrast of patsy's `Treatment`, `Sum`, `Helmert`, `Poly` or
 `Diff` called with literal arguments, such as `C(arm, Treatment('b'))`.
+Integers computed from literals must stay within int64, and a formula may
+have at most 2,000 characters and nest at most 32 deep, so that evaluating it
+takes bounded time.
 
 A file whose formula is outside the grammar loads for inspection only:
 `load_model` warns, naming the formula, and does not call patsy, so the design

@@ -8,6 +8,8 @@ elementwise transforms and contrasts) and that code-execution tricks are
 refused before evaluation.
 """
 
+import time
+
 import numpy as np
 import pytest
 from patsy import dmatrix
@@ -332,3 +334,53 @@ def test_check_does_not_evaluate_the_formula(monkeypatch):
         check_formula("__import__('os').system('x')")
     check_formula("1 + quantile_bs(speed)")
     assert calls == []
+
+
+NESTED_SQUARES = (
+    "1 + speed + I(" + "np.square(" * 18 + "99999999999999999999" + ")" * 18 + ")"
+)
+
+
+@pytest.mark.parametrize(
+    ("formula", "match"),
+    [
+        # Python ints are unbounded and numpy keeps one beyond int64 as an
+        # object, so each np.square would double its size.
+        (NESTED_SQUARES, "int64"),
+        ("1 + I(np.square(np.square(9999999999 * 9999999999)))", "int64"),
+        ("1 + I(speed * (3037000500 * 3037000500))", "int64"),
+        ("1 + bs(speed, knots=[9223372036854775808])", "int64"),
+        ("1 + I(-9223372036854775808 + speed)", "int64"),
+        ("1 + " + " + ".join(["speed"] * 400), "characters"),
+        ("1 + I(" + "np.abs(" * 40 + "speed" + ")" * 40 + ")", "nested"),
+    ],
+    ids=[
+        "nested-squares",
+        "literal-product",
+        "grouped-product",
+        "list",
+        "min",
+        "long",
+        "deep",
+    ],
+)
+def test_bounded_formulas(formula, match):
+    """A formula's evaluation time is bounded: integers stay within int64,
+    and its length and nesting are limited."""
+    start = time.perf_counter()
+    with pytest.raises(ValidationError, match=match):
+        check_formula(formula)
+    assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 + I(speed * 9223372036854775807)",
+        "1 + I(speed * 4611686018427387904 + 2**10)",
+        "1 + I(speed * 1e300 * 1e300)",
+        "1 + I(" + "np.abs(" * 20 + "speed" + ")" * 20 + ")",
+    ],
+)
+def test_bounds_admit_reasonable_formulas(formula):
+    check_formula(formula)

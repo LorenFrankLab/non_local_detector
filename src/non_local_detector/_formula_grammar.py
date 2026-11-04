@@ -19,6 +19,9 @@ accepted only if every node is one of
 - the operators ``+ - * /`` and unary ``+`` and ``-``, and ``**`` with an
   exponent that is a number of magnitude at most ``_MAX_EXPONENT`` and a base
   without another ``**`` (so evaluation time stays bounded);
+- integers computed from literals alone (which Python evaluates exactly)
+  within int64, at most ``_MAX_LENGTH`` characters and expressions nested at
+  most ``_MAX_DEPTH`` deep;
 - a list or tuple of numbers (e.g. ``knots=[1.0, 4.0]``);
 - ``np.pi``;
 - a call of one of the documented transforms (``_FUNCTIONS``) or elementwise
@@ -110,6 +113,12 @@ _BINARY_OPERATORS: tuple[type[ast.operator], ...] = (
 _UNARY_OPERATORS: tuple[type[ast.unaryop], ...] = (ast.UAdd, ast.USub)
 # Largest magnitude of a ``**`` exponent.
 _MAX_EXPONENT = 10
+# Python ints are unbounded, and numpy keeps one beyond int64 as an object, so
+# every integer patsy would compute from literals must be within int64; with
+# the length and nesting limits this bounds evaluation time.
+_INT_LIMIT = 2**63
+_MAX_LENGTH = 2000
+_MAX_DEPTH = 32
 
 _ALLOWED = (
     "covariate names (keys of the covariate data), numbers, True, False and "
@@ -166,6 +175,8 @@ def check_formula(
     # continuations, and no formula needs one.
     if "\\" in formula or not formula.replace("\t", " ").isprintable():
         _refuse(formula, "a line break or backslash or another control character")
+    if len(formula) > _MAX_LENGTH:
+        _refuse(formula, f"more than {_MAX_LENGTH} characters")
     try:
         description = ModelDesc.from_formula(formula)
     except PatsyError as error:
@@ -192,7 +203,9 @@ def _check_expression(
         expression = ast.parse(code, mode="eval").body
     except SyntaxError:
         _refuse(formula, f"the invalid Python expression {code!r}")
-    offending = _offending(expression)
+    if _depth(expression) > _MAX_DEPTH:
+        _refuse(formula, f"expressions nested more than {_MAX_DEPTH} deep")
+    offending = _offending(expression) or _large_integer(expression)
     if offending is not None:
         _refuse(formula, offending)
     if covariate_names is None:
@@ -338,6 +351,51 @@ def _is_scalar_literal(node: ast.expr) -> bool:
     return isinstance(node, ast.Constant) and (
         node.value is None or isinstance(node.value, bool | str)
     )
+
+
+def _depth(node: ast.AST) -> int:
+    """Nesting depth of an expression's syntax tree."""
+    return 1 + max((_depth(child) for child in ast.iter_child_nodes(node)), default=0)
+
+
+def _large_integer(expression: ast.expr) -> str | None:
+    """Description of the first integer computed from literals in
+    ``expression`` whose magnitude may reach int64's limit, or None."""
+    for node in ast.walk(expression):
+        bound = _integer_bound(node)
+        if bound is not None and bound >= _INT_LIMIT:
+            return f"the integer {ast.unparse(node)}, whose magnitude may exceed int64"
+    return None
+
+
+def _integer_bound(node: ast.AST) -> int | None:
+    """An upper bound of the magnitude of ``node``, capped at ``_INT_LIMIT``,
+    if it is an integer computed from literals alone (which Python evaluates
+    exactly, however large), else None.
+
+    Run on expressions within the grammar, whose ``**`` exponents are at most
+    ``_MAX_EXPONENT``, so the capped arithmetic stays small.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int):  # bool included
+            return min(abs(node.value), _INT_LIMIT)
+        return None
+    if isinstance(node, ast.UnaryOp):
+        return _integer_bound(node.operand)
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, ast.Add | ast.Sub | ast.Mult | ast.Pow
+    ):
+        left, right = _integer_bound(node.left), _integer_bound(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add | ast.Sub):
+            bound = left + right
+        elif isinstance(node.op, ast.Mult):
+            bound = left * right
+        else:
+            bound = left**right
+        return min(bound, _INT_LIMIT)
+    return None
 
 
 def _number(node: ast.expr) -> float | None:
