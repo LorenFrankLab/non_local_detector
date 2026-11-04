@@ -983,7 +983,8 @@ _DENSE_GAUSSIAN_BLOCK_BYTES = 16 * 2**20
 def _small_gaussian_as_dense(block: Block, dense_budget: int) -> Block:
     """A Gaussian (or restricted Gaussian) block as a ``DenseBlock`` when its
     float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host
-    matrix fits ``dense_budget`` bytes; any other block as is."""
+    matrix fits ``dense_budget`` bytes; any other block as is.
+    """
     original = block.original if isinstance(block, RestrictedBlock) else block
     n_rows, n_columns = block.shape
     if (
@@ -1630,7 +1631,8 @@ class SupportsStructuredBlock(Protocol):
     ) -> Environment | None:
         """The environment whose graph distances ``make_state_transition``
         reads, or None. Deferred distances are densified for it within the
-        dense budget."""
+        dense budget.
+        """
         ...
 
 

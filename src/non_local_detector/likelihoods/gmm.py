@@ -209,7 +209,6 @@ def _estimate_gaussian_covariances_diag(
     covariances : Array, shape (n_components, n_features)
         Diagonal covariance for each component.
     """
-
     _, n_features = X.shape
 
     def add_dimension(d: Array, second_moment: Array) -> Array:

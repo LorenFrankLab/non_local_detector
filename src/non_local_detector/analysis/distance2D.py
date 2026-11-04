@@ -39,7 +39,6 @@ def make_2D_track_graph_from_environment(
         adjacent on-track bins carrying ``distance`` and ``edge_id``
         attributes.
     """
-
     return make_nD_track_graph_from_environment(environment)
 
 
@@ -419,7 +418,6 @@ def get_ahead_behind_distance2D(
         Signed distance (positive ahead of the head, negative behind), in the
         units of the position.
     """
-
     distance = get_2D_distance(
         head_position, map_position, track_graph, edges, precomputed_distance
     )

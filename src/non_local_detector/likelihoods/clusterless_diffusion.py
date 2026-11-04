@@ -700,7 +700,8 @@ def _dense_kernel(
 
 def _source_tile_size(memory_budget: int, n_bins: int, rank: int) -> int:
     """Kernel columns per tile, so a tile and its spectral temporaries fit half
-    of ``memory_budget`` (a power of two, for shared compiled kernels)."""
+    of ``memory_budget`` (a power of two, for shared compiled kernels).
+    """
     raw = max(memory_budget // (2 * _WORKING_ITEMSIZE * (3 * n_bins + rank)), 1)
     return 1 << (raw.bit_length() - 1)
 

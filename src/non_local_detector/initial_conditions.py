@@ -64,7 +64,6 @@ class UniformInitialConditions:
             If the observation model's environment is not fitted or has no
             interior bins.
         """
-
         if observation_model.is_local or observation_model.is_no_spike:
             return np.ones((1,), dtype=np.float32)
         environment = find_environment_by_name(

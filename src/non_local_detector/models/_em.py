@@ -1201,7 +1201,8 @@ class _EMMixin:
         coefficients: np.ndarray | None = None,
     ) -> float:
         """Log prior of the current transitions (or covariate
-        ``coefficients``) under one M-step's prior."""
+        ``coefficients``) under one M-step's prior.
+        """
         return _transition_log_prior(
             statistics,
             self.discrete_state_transitions_,

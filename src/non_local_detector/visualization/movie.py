@@ -76,7 +76,6 @@ def make_single_environment_movie(
     str
         Path to the output movie file.
     """
-
     position_name = (
         ["head_position_x", "head_position_y"]
         if position_name is None
@@ -241,7 +240,6 @@ def _render_single_env_frame(
     data: dict[str, Any],
 ) -> None:
     """Render a single frame for single environment movie."""
-
     # Update position
     axes["position_dot"].set_offsets(data["position"][frame_idx])
 

@@ -135,7 +135,6 @@ class TimeRescaling:
         uniform_rescaled_ISIs : ndarray, shape (n_spikes,)
             Rescaled ISIs, uniform on [0, 1] if the model fits well.
         """
-
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
         for trial in trial_IDs:

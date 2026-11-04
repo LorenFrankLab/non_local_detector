@@ -101,7 +101,8 @@ class ContinuousTransition(Protocol):
     @property
     def environment_name(self) -> str | None:
         """Name of the environment of the source bins; None for a transition
-        without place bins, such as ``Discrete``."""
+        without place bins, such as ``Discrete``.
+        """
         ...
 
     def make_state_transition(
@@ -272,7 +273,8 @@ class _EnvironmentBlock:
 
     def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:
         """``(n_bins, n_bins)`` of ``environment_name``, without building
-        the block."""
+        the block.
+        """
         environment = find_environment_by_name(environments, self.environment_name)
         n_bins = len(environment.place_bin_centers_)
         return (n_bins, n_bins)
@@ -396,7 +398,8 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
         self, environments: Sequence[Environment]
     ) -> Environment | None:
         """The environment whose graph distances a manifold-distance random
-        walk reads; None for a Euclidean one."""
+        walk reads; None for a Euclidean one.
+        """
         if not self.use_manifold_distance:
             return None
         return find_environment_by_name(environments, self.environment_name)
@@ -561,7 +564,8 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
         """Rank-one block from the interior of ``environment_name`` to the
-        interior of ``environment2_name`` (or the same environment)."""
+        interior of ``environment2_name`` (or the same environment).
+        """
         from non_local_detector.transition_operators import UniformBlock
 
         source = find_environment_by_name(
@@ -1040,7 +1044,8 @@ class _NamesDestinationEnvironment(Protocol):
 
 def _declared_destination(transition: ContinuousTransition) -> str | None:
     """The environment a transition moves into: its ``environment2_name``
-    when set, else its ``environment_name``."""
+    when set, else its ``environment_name``.
+    """
     if (
         isinstance(transition, _NamesDestinationEnvironment)
         and transition.environment2_name is not None

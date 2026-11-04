@@ -1805,7 +1805,6 @@ class Environment:
         ValueError
             If sampling frequency cannot be determined.
         """
-
         if not self._is_fitted:
             msg = "Environment has not been fitted yet. Call `fit_place_grid` first."
             raise RuntimeError(msg)
@@ -1895,7 +1894,8 @@ _LEGACY_FITTED_ARGUMENTS = (*_LEGACY_FITTED_ATTRIBUTES, "_is_fitted")
 
 def _is_unset(name: str, value: Any) -> bool:
     """Whether a legacy fitted argument holds no fitted value: None, or a
-    false ``_is_fitted`` (saved rows may hold it as a NumPy boolean)."""
+    false ``_is_fitted`` (saved rows may hold it as a NumPy boolean).
+    """
     if value is None:
         return True
     return name == "_is_fitted" and isinstance(value, (bool, np.bool_)) and not value

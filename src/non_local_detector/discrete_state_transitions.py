@@ -1131,7 +1131,8 @@ def _row_strengths(
     smoothness: float | np.ndarray, n_states: int, n_terms: int
 ) -> np.ndarray:
     """Curvature-penalty strengths as (n_states, n_terms): a scalar for every
-    row and term, shape (n_states,) per row, or (n_states, n_terms)."""
+    row and term, shape (n_states,) per row, or (n_states, n_terms).
+    """
     values = np.asarray(smoothness, dtype=np.float64)
     if values.ndim == 1:
         values = values[:, np.newaxis]
@@ -1140,7 +1141,8 @@ def _row_strengths(
 
 def _validate_smoothness(smoothness: float | np.ndarray | str) -> bool:
     """Check a smoothness value: strengths that are finite and >= 0, or
-    ``"reml"``. Returns whether REML estimates the strengths."""
+    ``"reml"``. Returns whether REML estimates the strengths.
+    """
     if isinstance(smoothness, str):
         if smoothness != "reml":
             msg = f'smoothness must be a float >= 0 or "reml", got {smoothness!r}.'
@@ -1156,7 +1158,8 @@ def _require_spline_term(
     smoothness: float | np.ndarray | str, smoothness_matrix: np.ndarray | None
 ) -> None:
     """Check that a smoothness penalty (REML, or a positive strength) has a
-    spline term to penalize."""
+    spline term to penalize.
+    """
     penalized = isinstance(smoothness, str) or np.any(np.asarray(smoothness) > 0.0)
     if penalized and (smoothness_matrix is None or not np.any(smoothness_matrix)):
         msg = (
@@ -1666,7 +1669,8 @@ def _reml_row(
     ) -> float:
         """The log10 strength ``x`` maximizing ``laml(point(x))``: a grid,
         strongest first with each fit starting from the next-stronger one,
-        then a bounded refinement within a decade of the best."""
+        then a bounded refinement within a decade of the best.
+        """
         scores: dict[float, tuple[float, ...]] = {}
 
         def score(x: float, start: np.ndarray) -> float:
@@ -2190,7 +2194,8 @@ def _blocked_loss_and_gradient(
     penalty: np.ndarray,
 ) -> tuple[float, np.ndarray]:
     """:func:`dirichlet_neg_log_likelihood` and its gradient over blocks of
-    transitions, for scipy. Call with JAX in float64."""
+    transitions, for scipy. Call with JAX in float64.
+    """
     coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
     device_coefficients = jnp.asarray(coefficients)
@@ -2215,7 +2220,8 @@ def _blocked_hessian(
     penalty: np.ndarray,
 ) -> np.ndarray:
     """:func:`dirichlet_neg_log_likelihood`'s Hessian over blocks of
-    transitions, for scipy. Call with JAX in float64."""
+    transitions, for scipy. Call with JAX in float64.
+    """
     coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
     device_coefficients = jnp.asarray(coefficients)
@@ -2861,7 +2867,8 @@ class _CyclicBSpline:
     def _extended(self) -> tuple[np.ndarray, float]:
         """Knots extended by ``degree`` periods' worth on each side, so the
         open B-spline basis over one period from the first knot can be
-        folded into the periodic one."""
+        folded into the periodic one.
+        """
         period, knots, degree = self._upper - self._lower, self._knots, self._degree
         extended = np.concatenate(
             [knots[-degree:] - period, knots, knots[: degree + 1] + period]
@@ -2870,7 +2877,8 @@ class _CyclicBSpline:
 
     def _fold(self, basis: np.ndarray) -> np.ndarray:
         """The periodic basis: open basis function ``j + n_knots`` is
-        function ``j`` one period later."""
+        function ``j`` one period later.
+        """
         periodic = basis[:, : self._n_knots].copy()
         periodic[:, : self._degree] += basis[:, self._n_knots :]
         return periodic
@@ -3012,7 +3020,8 @@ class DiscreteTransition(Protocol):
     @property
     def smoothness(self) -> float | str:
         """Curvature-penalty strength of covariate-dependent rows (or
-        ``"reml"``); 0.0 for a stationary transition."""
+        ``"reml"``); 0.0 for a stationary transition.
+        """
         ...
 
     def make_state_transition(

@@ -976,7 +976,6 @@ def _smoother_scan(
         Or ``(smoothed, pairs)`` with ``pair_statistics``, pairs of shape
         (n_rows, n_states, n_states).
     """
-
     paired: TransitionOperator | None = None
     if pair_statistics:
         if not isinstance(operator, TransitionOperator):

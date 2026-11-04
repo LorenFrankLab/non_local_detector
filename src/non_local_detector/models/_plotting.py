@@ -52,7 +52,6 @@ class _PlottingMixin:
             Dictionary or DataFrame of covariate data, by default None.
             Keys are covariate names and values are 1D arrays.
         """
-
         if self.discrete_state_transitions_.ndim == 2:
             if ax is None:
                 ax = plt.gca()
