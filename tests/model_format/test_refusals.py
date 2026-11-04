@@ -171,12 +171,12 @@ def test_an_attribute_the_format_does_not_hold_is_refused(fitted, tmp_path):
         fitted.save_model(tmp_path / "model.nld")
 
 
-def _perturbed_random_walk(monkeypatch):
+def _perturbed_random_walk(monkeypatch, factor=1.0 - 1e-4):
     original = continuous_state_transitions.RandomWalk.make_state_transition
 
     def changed(self, environments, context=None):
         block = original(self, environments, context)
-        return block * (1.0 - 1e-6)
+        return block * factor
 
     monkeypatch.setattr(
         continuous_state_transitions.RandomWalk, "make_state_transition", changed
@@ -185,7 +185,7 @@ def _perturbed_random_walk(monkeypatch):
 
 def _perturbed_bin_centers(monkeypatch):
     original = environment.get_centers
-    monkeypatch.setattr(environment, "get_centers", lambda e: original(e) + 1e-6)
+    monkeypatch.setattr(environment, "get_centers", lambda e: original(e) + 1e-3)
 
 
 @pytest.mark.parametrize(
@@ -325,3 +325,28 @@ def test_a_newer_format_version_without_a_writer_version_says_so(saved):
     message = str(error.value)
     assert "an unknown, newer non_local_detector" in message
     assert ">= " not in message
+
+
+def test_a_float32_rounding_level_rebuild_change_still_decodes(
+    saved, sorted_recording, monkeypatch
+):
+    """Rebuilt structures match within a relative 1e-6, so a rounding-level
+    change to the transition code (here 1e-7) does not lock models out."""
+    time, position, spike_times = sorted_recording
+    _perturbed_random_walk(monkeypatch, factor=1.0 + 1e-7)
+
+    loaded = nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+    decode(loaded, time, position, {"spike_times": spike_times})
+
+
+def test_an_all_zero_rebuilt_block_is_refused(saved, sorted_recording, monkeypatch):
+    time, position, spike_times = sorted_recording
+    _perturbed_random_walk(monkeypatch, factor=0.0)
+
+    loaded = nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+    with pytest.raises(
+        ValidationError, match="continuous transition from state 2 to 2"
+    ):
+        decode(loaded, time, position, {"spike_times": spike_times})

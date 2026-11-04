@@ -122,11 +122,15 @@ _NOT_SAVED = frozenset({"_rebuild_check_"})
 # Every fitted detector has these.
 _REQUIRED = ("environments_", "encoding_model_", "continuous_state_transitions_")
 
-# A rebuilt structure matches its fingerprint to this relative tolerance, plus
-# this absolute tolerance per summed point (as TensorSplineBasis checks its
-# spline design): a rebuild through exp/log differs in the last bits between
-# platforms, but a changed formula does not pass.
-_REBUILD_RTOL = 1e-10
+# A rebuilt structure (continuous transition blocks, environment grids and
+# their graph distances, a covariate design) matches its fingerprint to this
+# relative tolerance, float32-rounding level: rebuilds differ in the last bits
+# between platforms, and rounding-level changes to the rebuilding code (about
+# 1e-7) are accepted, but a changed model (the 0.02 shift of one bin's random
+# walk) is not. The absolute tolerance, per summed point, only covers
+# summaries that are zero or nearly so: entries are probabilities or
+# coordinates, so a saved summary of order 1 cannot match an all-zero rebuild.
+_REBUILD_RTOL = 1e-6
 _REBUILD_ATOL_PER_POINT = 1e-12
 
 
