@@ -345,7 +345,11 @@ def fit_clusterless_diffusion_encoding_model(
         Byte budget, by default 536_870_912 (512 MiB). It sets the decode-spike
         block size and the spatial kernel's tile size (at fit and predict), and
         whether predict builds the whole kernel once (when it fits half the
-        budget) or streams it in tiles.
+        budget) or streams it in tiles. At bins where the field is close to
+        its float32 resolution floor (kernel values near 4e-7 of the column's
+        peak), the log likelihood is set by rounding, so it can differ between
+        budgets, and between platforms, by about 1e-4 relative; posteriors
+        change by about 5e-6 or less.
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
