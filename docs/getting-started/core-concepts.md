@@ -140,7 +140,8 @@ Decoding takes bin **edges**, `time_edges` with shape `(n_bins + 1,)`, and
 returns one row per bin. Build them with `detector.calculate_time_edges([start, stop])`
 (bins of `1 / sampling_frequency` seconds) or with
 `time_edges_from_centers(position_time)` (one bin per position sample). Detector
-bins must be uniform. See [Time bins and rates](../time_grid_migration.md) for
+bins must be uniform and `1 / sampling_frequency` wide, so a detector decoding
+one bin per position sample is constructed with the position sampling rate. See [Time bins and rates](../time_grid_migration.md) for
 the details.
 
 ## Fit, estimate and predict
