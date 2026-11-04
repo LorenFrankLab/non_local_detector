@@ -84,6 +84,11 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale as mark_reference_scale,
 )
+from non_local_detector.likelihoods.clusterless_spikes import (
+    ElectrodeSpikes,
+    add_background_only,
+    add_electrode_spike_terms,
+)
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
@@ -106,11 +111,8 @@ from non_local_detector.likelihoods.common import (
     padded_spike_count,
     prepare_decode_rows,
     repair_flagged,
-    select_decode_marks,
     select_spike_rows,
-    select_spikes_in_rows,
     spike_row_ids,
-    sum_spikes_into_rows,
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
@@ -130,7 +132,6 @@ from non_local_detector.likelihoods.diffusion import (
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
-    background_log_intensity,
     background_rate,
 )
 from non_local_detector.time_edges import (
@@ -1485,60 +1486,24 @@ def predict_clusterless_diffusion_log_likelihood(
     # starting sum too lets every electrode reuse one executable.
     log_likelihood = cast(jax.Array, jax.device_put(log_likelihood, eigvecs.sharding))
 
-    for electrode, (
-        electrode_bins,
-        electrode_marks,
-        electrode_weights,
-        electrode_weight_total,
-        electrode_mean_rate,
-        electrode_decode_features,
-        electrode_spike_times,
-        electrode_mark_reference,
-    ) in enumerate(
-        zip(
-            tqdm(
-                encoding_bin_indices,
-                unit="electrode",
-                desc="Local Likelihood" if is_local else "Position-Bin Likelihood",
-                disable=disable_progress_bar,
-            ),
-            encoding_marks,
-            encoding_weights,
-            weight_total,
-            mean_rates,
-            spike_waveform_features,
-            spike_times,
-            mark_reference,
-            strict=True,
-        )
-    ):
-        selection = select_spikes_in_rows(
-            electrode_spike_times,
-            rows.start,
-            rows.stop,
-            time_edges=rows.time_edges,
-            _spike_time_order=rows.spike_time_order,
-        )
-        # Select FIRST, convert after: converting the whole array would cost
-        # every decoding spike in the recording on every chunk call.
-        decode_features = select_decode_marks(
-            electrode_decode_features, selection, electrode
-        )
-        n_decode = decode_features.shape[0]
-        if n_decode == 0:
-            continue
-        log_background = background_log_intensity(
-            electrode_mark_reference, decode_features, LOG_RATE_EPS_HZ
-        )
-
+    def add_electrode(
+        log_likelihood: jax.Array,
+        spikes: ElectrodeSpikes,
+        model: tuple[Any, Any, Any, Any, Any],
+    ) -> jax.Array:
+        (
+            electrode_bins,
+            electrode_marks,
+            electrode_weights,
+            electrode_weight_total,
+            electrode_mean_rate,
+        ) = model
         # Zero-rate electrode: the background explains every observed spike,
         # BEFORE any division (D_e == 0 and P_e / weight_total_e is 0/0). Its
         # contribution is identical across bins -- accumulate it per time bin
         # rather than materializing an (n_decode, n_bins) array.
         if electrode_weight_total == 0:
-            background_sum = sum_spikes_into_rows(log_background, selection)
-            log_likelihood += background_sum if is_local else background_sum[:, None]
-            continue
+            return add_background_only(log_likelihood, spikes)
 
         enc_marks, enc_weights, sources, source_index, tile = (
             rows.spike_time_order.memo(
@@ -1572,7 +1537,7 @@ def predict_clusterless_diffusion_log_likelihood(
         )
         # Padded spikes (dropped from the row sums) let chunks with nearby
         # spike counts share one compiled kernel.
-        n_padded = padded_spike_count(n_decode, effective_block)
+        n_padded = padded_spike_count(spikes.n_spikes, effective_block)
         spike_bins = None
         if is_local:
             # The animal's interior bin at each decode spike's own time
@@ -1584,7 +1549,7 @@ def predict_clusterless_diffusion_log_likelihood(
                         get_position_at_time(
                             position_time,
                             position,
-                            select_spike_rows(electrode_spike_times, selection),
+                            select_spike_rows(spikes.times, spikes.selection),
                             environment,
                         ),
                         full_to_local,
@@ -1593,30 +1558,55 @@ def predict_clusterless_diffusion_log_likelihood(
                 )
             )
         rate_offset = float(np.log(electrode_mean_rate / electrode_weight_total))
-        log_likelihood = _add_electrode_diffusion_terms(
-            log_likelihood,
-            jnp.asarray(pad_rows(decode_features, n_padded)),
-            jnp.asarray(spike_row_ids(selection, n_padded)),
-            spike_bins,
-            enc_marks,
-            enc_weights,
-            source_index,
-            sources,
-            as_std_array(waveform_std, enc_marks.shape[1]),
-            eigvals,
-            eigvecs,
-            labels,
-            kernel,
-            log_intensity_scale(
-                occupancy, bin_sizes, electrode_mean_rate, electrode_weight_total
+        return cast(
+            jax.Array,
+            _add_electrode_diffusion_terms(
+                log_likelihood,
+                jnp.asarray(pad_rows(spikes.marks, n_padded)),
+                jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
+                spike_bins,
+                enc_marks,
+                enc_weights,
+                source_index,
+                sources,
+                as_std_array(waveform_std, enc_marks.shape[1]),
+                eigvals,
+                eigvecs,
+                labels,
+                kernel,
+                log_intensity_scale(
+                    occupancy, bin_sizes, electrode_mean_rate, electrode_weight_total
+                ),
+                (kernel_gain[sources] + rate_offset, kernel_floor[sources]),
+                jnp.asarray(pad_rows(spikes.log_background, n_padded)),
+                tile=tile,
+                block_size=min(effective_block, n_padded),
+                indices_are_sorted=spikes.selection.indices_are_sorted,
+                **basis_static,
             ),
-            (kernel_gain[sources] + rate_offset, kernel_floor[sources]),
-            jnp.asarray(pad_rows(log_background, n_padded)),
-            tile=tile,
-            block_size=min(effective_block, n_padded),
-            indices_are_sorted=selection.indices_are_sorted,
-            **basis_static,
         )
+
+    log_likelihood = add_electrode_spike_terms(
+        log_likelihood,
+        spike_times,
+        spike_waveform_features,
+        mark_reference,
+        list(
+            zip(
+                encoding_bin_indices,
+                encoding_marks,
+                encoding_weights,
+                weight_total,
+                mean_rates,
+                strict=True,
+            )
+        ),
+        add_electrode,
+        rows=rows,
+        log_background_floor=LOG_RATE_EPS_HZ,
+        desc="Local Likelihood" if is_local else "Position-Bin Likelihood",
+        disable_progress_bar=disable_progress_bar,
+    )
 
     evidence = log_bin_duration_evidence(
         spike_times,

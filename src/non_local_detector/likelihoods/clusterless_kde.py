@@ -27,6 +27,10 @@ from non_local_detector.encoding_time import (
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods.clusterless_spikes import (
+    ElectrodeSpikes,
+    add_electrode_spike_terms,
+)
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
@@ -2019,93 +2023,48 @@ def predict_clusterless_kde_log_likelihood(
         if log_occupancy is None:
             log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
-        log_likelihood = -jnp.asarray(rows.durations())[:, None] * (
-            summed_ground_process_intensity + background_rate(len(spike_times))
-        )
-
-        for electrode, (
-            electrode_encoding_spike_waveform_features,
-            electrode_encoding_positions,
-            electrode_mean_rate,
-            electrode_decoding_spike_waveform_features,
-            electrode_spike_times,
-            electrode_encoding_weights,
-            electrode_mark_reference,
-        ) in enumerate(
-            zip(
-                tqdm(
-                    encoding_spike_waveform_features,
-                    unit="electrode",
-                    desc="Position-Bin Likelihood",
-                    disable=disable_progress_bar,
-                ),
-                encoding_positions,
-                mean_rates,
-                spike_waveform_features,
-                spike_times,
-                per_electrode_weights,
-                mark_reference,
-                strict=True,
-            )
-        ):
-            selection = select_spikes_in_rows(
-                electrode_spike_times,
-                rows.start,
-                rows.stop,
-                time_edges=rows.time_edges,
-                _spike_time_order=rows.spike_time_order,
-            )
-            electrode_decoding_spike_waveform_features = select_decode_marks(
-                electrode_decoding_spike_waveform_features, selection, electrode
-            )
-            log_background = background_log_intensity(
-                electrode_mark_reference,
-                np.asarray(electrode_decoding_spike_waveform_features),
-                LOG_EPS,  # log(RATE_EPS_HZ * RATE_REFERENCE_SECONDS)
-            )
+        def add_electrode(
+            log_likelihood: jax.Array,
+            spikes: ElectrodeSpikes,
+            model: tuple[jax.Array, jax.Array, Any, jax.Array | None],
+        ) -> jax.Array:
+            encoding_features, encoding_positions, mean_rate, encoding_weights = model
             # Expand waveform_std to match this electrode's feature count if scalar
-            n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-            electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
-
-            n_spikes = electrode_decoding_spike_waveform_features.shape[0]
-            if n_spikes == 0:
-                continue
+            electrode_waveform_std = as_std_array(
+                waveform_std, encoding_features.shape[1]
+            )
             # Padded spikes and zero-weight encoding samples let electrodes
             # and chunks with nearby sizes share one compiled kernel.
             padded_features, padded_weights = padded_samples(
-                rows.spike_time_order,
-                electrode_encoding_spike_waveform_features,
-                electrode_encoding_weights,
+                rows.spike_time_order, encoding_features, encoding_weights
             )
             padded_positions, _ = padded_samples(
-                rows.spike_time_order,
-                electrode_encoding_positions,
-                electrode_encoding_weights,
+                rows.spike_time_order, encoding_positions, encoding_weights
             )
             if not use_streaming and enc_tile_size is None:
-                n_padded = padded_spike_count(n_spikes, block_size)
-                log_likelihood = _add_electrode_log_mark_intensities(
-                    log_likelihood,
-                    jnp.asarray(
-                        _pad_with_last_row(
-                            electrode_decoding_spike_waveform_features, n_padded
-                        )
+                n_padded = padded_spike_count(spikes.n_spikes, block_size)
+                return cast(
+                    jax.Array,
+                    _add_electrode_log_mark_intensities(
+                        log_likelihood,
+                        jnp.asarray(_pad_with_last_row(spikes.marks, n_padded)),
+                        jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
+                        padded_features,
+                        padded_positions,
+                        padded_weights,
+                        electrode_waveform_std,
+                        jnp.asarray(position_std),
+                        interior_place_bin_centers,
+                        mean_rate * RATE_REFERENCE_SECONDS,
+                        log_occupancy,
+                        jnp.asarray(
+                            _pad_with_last_row(spikes.log_background, n_padded)
+                        ),
+                        block_size=min(block_size, n_padded),
+                        pos_tile_size=pos_tile_size,
+                        indices_are_sorted=spikes.selection.indices_are_sorted,
                     ),
-                    jnp.asarray(spike_row_ids(selection, n_padded)),
-                    padded_features,
-                    padded_positions,
-                    padded_weights,
-                    electrode_waveform_std,
-                    jnp.asarray(position_std),
-                    interior_place_bin_centers,
-                    electrode_mean_rate * RATE_REFERENCE_SECONDS,
-                    log_occupancy,
-                    jnp.asarray(_pad_with_last_row(log_background, n_padded)),
-                    block_size=min(block_size, n_padded),
-                    pos_tile_size=pos_tile_size,
-                    indices_are_sorted=selection.indices_are_sorted,
                 )
-                continue
 
             # Compute position kernel in log-space to prevent underflow
             # (Skip if using streaming mode - computed on-the-fly)
@@ -2118,13 +2077,13 @@ def predict_clusterless_kde_log_likelihood(
                     std=position_std,
                 )
 
-            log_likelihood += sum_spikes_into_rows(
+            return log_likelihood + sum_spikes_into_rows(
                 block_estimate_log_joint_mark_intensity(
-                    electrode_decoding_spike_waveform_features,
+                    spikes.marks,
                     padded_features,
                     electrode_waveform_std,
                     occupancy,
-                    electrode_mean_rate * RATE_REFERENCE_SECONDS,
+                    mean_rate * RATE_REFERENCE_SECONDS,
                     log_position_distance,
                     block_size=block_size,
                     enc_tile_size=enc_tile_size,
@@ -2137,10 +2096,32 @@ def predict_clusterless_kde_log_likelihood(
                     position_std=position_std if use_streaming else None,
                     encoding_weights=padded_weights,
                     log_occupancy=log_occupancy,
-                    log_background=log_background,
+                    log_background=spikes.log_background,
                 ),
-                selection,
+                spikes.selection,
             )
+
+        log_likelihood = add_electrode_spike_terms(
+            -jnp.asarray(rows.durations())[:, None]
+            * (summed_ground_process_intensity + background_rate(len(spike_times))),
+            spike_times,
+            spike_waveform_features,
+            mark_reference,
+            list(
+                zip(
+                    encoding_spike_waveform_features,
+                    encoding_positions,
+                    mean_rates,
+                    per_electrode_weights,
+                    strict=True,
+                )
+            ),
+            add_electrode,
+            rows=rows,
+            log_background_floor=LOG_EPS,  # log(RATE_EPS_HZ * RATE_REFERENCE_SECONDS)
+            desc="Position-Bin Likelihood",
+            disable_progress_bar=disable_progress_bar,
+        )
 
     return (
         log_likelihood
