@@ -750,22 +750,37 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         # xlogy(count_n, rate_n) - rate_n over neurons; vectorize as one elementwise
         # reduction. Local rates are floored at RATE_EPS_HZ, so xlogy equals
         # count * log(rate) here.
-        spike_counts = jnp.asarray(
-            spike_counts_matrix(
-                spike_times,
-                rows.time_edges,
-                "Local Likelihood",
-                disable_progress_bar,
-                row_slice=row_slice,
-                _spike_time_order=rows.spike_time_order,
-            ),
-            dtype=local_rates.dtype,
-        )
         local_rates = local_rates * durations[:, None]
-        log_likelihood = (
-            jax.scipy.special.xlogy(spike_counts, local_rates) - local_rates
-        ).sum(axis=1)
-        return jnp.expand_dims(log_likelihood, axis=1)
+
+        def evaluate_local(start: int, stop: int) -> jax.Array:
+            """Return the log likelihood of rows ``start`` to ``stop``, shape (stop - start,)."""
+            block_rates = local_rates[start - rows.start : stop - rows.start]
+            spike_counts = jnp.asarray(
+                spike_counts_matrix(
+                    spike_times,
+                    rows.time_edges,
+                    "Local Likelihood",
+                    True,
+                    slice(start, stop),
+                    _spike_time_order=rows.spike_time_order,
+                ),
+                dtype=block_rates.dtype,
+            )
+            return (
+                jax.scipy.special.xlogy(spike_counts, block_rates) - block_rates
+            ).sum(axis=1)
+
+        if rows.start == rows.stop:
+            return evaluate_local(rows.start, rows.stop)[:, None]
+        # Bounded count blocks, as on the non-local path.
+        return concatenate_row_blocks(
+            rows.start,
+            rows.stop,
+            len(spike_times),
+            evaluate_local,
+            "Local Likelihood",
+            disable_progress_bar,
+        )[:, None]
 
     # Slice all neurons' fields to interior bins once. Interior fields are floored at
     # RATE_EPS_HZ (see assemble_place_fields), so log is finite and
