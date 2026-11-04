@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clusterless algorithms are registered as `ClusterlessLikelihoodAlgorithm` records, which require `mark_reference_scale`; the run-time check for a missing one is gone. The private `_refit_mark_reference` keyword of `ClusterlessDetector.fit_encoding_model` is gone; posterior-weighted encoding updates keep the mark reference internally.
 - Likelihoods and posteriors are bit-identical for every algorithm.
 
+### Artifacts stored by earlier versions
+
+- **Fixed:** `load_model` reads detectors pickled with JAX 0.4.30 or earlier, such as those that non_local_detector 0.6.0 installed with in 2024; they raised `TypeError: ShapedArray.__init__() got an unexpected keyword argument 'named_shape'`. JAX no longer has named shapes, and the stored (empty) one is dropped.
+- `tests/compat_data` holds what Spyglass stored for a decode (its `DecodingParameters` rows, the `save_model` pickle and the `save_results` netCDF) as written by 0.6.0, 0.6.9 and main at 84259d49, 66047901 and d5f85823, with the script that generated them. `tests/models/test_stored_artifact_compatibility.py` checks that every model and result loads, that the attributes and result operations Spyglass uses work, that every row rebuilds a detector that fits and decodes, and that decoding with a model saved by main after rates were fitted in Hz gives what the saving version gave. Decoding with a model fitted before that (0.6 releases, main before 2026-10-05) still raises `ValidationError` asking for a refit, and results saved before decode bins were explicit carry no `time_bin_start`/`time_bin_end`, so `align_tracking_to_results` rejects them.
+
 ### Warnings point at the caller's code
 
 - Warnings raised anywhere in the library are attributed to the first caller outside it, whichever public method led there, including when the package is imported through a symlinked path. Before, fixed stack depths sent many of them to library files: the deprecated `save_*_to_results` warning to `time_edges.py`; "EM did not converge" and the 1-D position warning under `estimate_parameters`, and the encoding fits' warnings (zero training exposure, sparse tracking, fit diagnostics) to `models/base.py`. `warnings.filterwarnings(module=...)` and the reported location now name your script.

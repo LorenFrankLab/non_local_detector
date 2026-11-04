@@ -458,6 +458,31 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
 # Dataset attribute in which ``save_results`` records integer dtypes.
 _INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
 
+
+class _ModelUnpickler(pickle.Unpickler):
+    """Unpickle a detector, including one saved with JAX 0.4.30 or earlier.
+
+    Those JAX releases pickled each array's abstract value with a
+    ``named_shape`` entry, which later releases no longer accept, so the
+    detectors of the non_local_detector 0.6 releases that resolved to them
+    raised ``TypeError`` on load. The entry is dropped; JAX no longer has
+    named shapes.
+    """
+
+    def find_class(self, module: str, name: str) -> Any:
+        found = super().find_class(module, name)
+        if (module, name) != ("jax._src.array", "_reconstruct_array"):
+            return found
+
+        def reconstruct_array(
+            fun: Any, args: Any, arr_state: Any, aval_state: dict[str, Any]
+        ) -> jax.Array:
+            aval_state = {k: v for k, v in aval_state.items() if k != "named_shape"}
+            return cast("jax.Array", found(fun, args, arr_state, aval_state))
+
+        return reconstruct_array
+
+
 # EM with transition_representation="auto" runs dense EM up to this many bytes
 # of float32 interior transition. A dense step reads the whole matrix, so its
 # cost grows with this size; a structured step costs about the same at any
@@ -6149,6 +6174,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         Load the detector from a file.
 
+        Detectors saved by earlier versions load for inspection, including
+        those pickled with JAX 0.4.30 or earlier. Decoding with one fitted
+        before rates were fitted in Hz (the 0.6 releases) raises
+        ``ValidationError`` asking for a refit.
+
         .. warning::
 
             Only load models from trusted sources. Pickle files can execute
@@ -6165,7 +6195,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             Loaded detector instance
         """
         with Path(filename).open("rb") as f:
-            return cast("_DetectorBase", pickle.load(f))
+            return cast("_DetectorBase", _ModelUnpickler(f).load())
 
     @staticmethod
     def save_results(results: xr.Dataset, filename: str = "results.nc") -> None:
