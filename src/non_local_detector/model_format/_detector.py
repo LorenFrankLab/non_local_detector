@@ -29,6 +29,7 @@ loaded detector first decodes, the rebuilt structures are compared with their
 fingerprints; a mismatch refuses to decode and asks for a refit.
 """
 
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
     _declared_destination,
     _no_structured_block,
@@ -230,10 +232,12 @@ class _RebuildCheck:
         fingerprints: dict[str, Any],
         stored_blocks: Sequence[tuple[int, int]],
         package_version: str,
+        refusals: Sequence[str] = (),
     ) -> None:
         self.fingerprints = fingerprints
         self.stored_blocks = tuple(stored_blocks)
         self.package_version = package_version
+        self.refusals = tuple(refusals)
         self.verified = False
 
     def mismatches(self, detector: "_DetectorBase") -> list[str]:
@@ -285,6 +289,14 @@ class _RebuildCheck:
         """
         if self.verified:
             return
+        if self.refusals:
+            msg = (
+                "The saved model cannot decode: "
+                f"{'; '.join(self.refusals)}. It loaded for inspection only."
+            )
+            raise ValidationError(
+                msg, hint="Refit the model with a formula the grammar allows."
+            )
         problems = self.mismatches(detector)
         if problems:
             msg = (
@@ -541,7 +553,17 @@ def save_detector(detector: "_DetectorBase", path: str | Path) -> None:
     write_model(path, manifest, config, state, writer.members)
 
 
-def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> None:
+def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> str | None:
+    """Rebuild the discrete transition's design, penalties and transitions.
+
+    Returns
+    -------
+    refusal : str or None
+        Why a covariate design was not rebuilt (its formula is outside the
+        formula grammar), or None. The detector then loads for inspection
+        only, without a design or penalties, and without the training-time
+        ``discrete_state_transitions_``.
+    """
     from non_local_detector.discrete_state_transitions import (
         _smoothness_matrix,
         _transitions_on_design,
@@ -552,8 +574,24 @@ def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> None
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         detector.discrete_state_transitions_ = stored["discrete_state_transitions"]
-        return
-    initial = detector.discrete_transition_type.make_state_transition(covariate_data)
+        return None
+    try:
+        # Checks the formula against the formula grammar before patsy sees it.
+        initial = detector.discrete_transition_type.make_state_transition(
+            covariate_data
+        )
+    except ValidationError as error:
+        detector.discrete_transition_design_matrix_ = None
+        detector.discrete_transition_smoothness_matrix_ = None
+        # The training-time transitions follow from the design: left unset.
+        warnings.warn(
+            "The detector's transition formula is outside the allowed formula "
+            "grammar, so its design matrix was not rebuilt. It can be "
+            f"inspected, but decoding is refused.\n{error}",
+            UserWarning,
+            stacklevel=user_stacklevel(),
+        )
+        return f"its discrete transition formula was refused ({error.args[0]})"
     design = initial.design_matrix
     coefficients = detector.discrete_transition_coefficients_
     # A covariate-dependent transition has a design and coefficients.
@@ -571,6 +609,7 @@ def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> None
         if np.array_equal(coefficients, initial.coefficients)
         else _transitions_on_design(design, coefficients)
     )
+    return None
 
 
 def _rebuild_continuous(
@@ -649,14 +688,17 @@ def detector_from_stored(stored: StoredModel) -> "_DetectorBase":
         if name in values:
             setattr(detector, attribute, values[name])
     detector._initialize_state_index()
-    _rebuild_discrete(detector, values)
+    refusal = _rebuild_discrete(detector, values)
     blocks = {
         (entry["from_state"], entry["to_state"]): np.asarray(entry["block"])
         for entry in values["stored_transition_blocks"]
     }
     _rebuild_continuous(detector, blocks)
     detector._rebuild_check_ = _RebuildCheck(
-        values["fingerprints"], list(blocks), manifest.get("package_version", "unknown")
+        values["fingerprints"],
+        list(blocks),
+        manifest.get("package_version", "unknown"),
+        refusals=[] if refusal is None else [refusal],
     )
     return detector
 
