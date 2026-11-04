@@ -183,12 +183,19 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
     return np.cov(np.diff(position, axis=0), rowvar=False)
 
 
+# Entries of a random-walk transition evaluated per block of rows by
+# ``_random_walk_on_track_graph`` and ``_euclidean_random_walk``: each
+# temporary is 64 Ki float64 (512 KiB), so a block stays in cache and the
+# build's transient memory is a few megabytes.
+_RANDOM_WALK_BLOCK_ENTRIES = 2**16
+
+
 def _random_walk_on_track_graph(
     place_bin_centers: np.ndarray,
     movement_mean: float,
     movement_var: float,
     place_bin_center_ind_to_node: np.ndarray,
-    distance_between_nodes: dict[int, dict[int, float]] | LazyGraphDistances,
+    distance_between_nodes: dict[int, dict[int, float]],
 ) -> np.ndarray:
     """Estimate the random walk probabilities from the track graph topology.
 
@@ -211,28 +218,35 @@ def _random_walk_on_track_graph(
     -------
     random_walk : np.ndarray, shape (n_position_bins, n_position_bins)
         Transition probabilities between place bins based on graph distance.
+        Pairs without a distance (bins off the track, or nodes not connected)
+        are 0.
+
+    Notes
+    -----
+    The graph distances are gathered and their Gaussian density evaluated
+    in blocks of rows, with one ``scipy.stats.multivariate_normal``; the
+    result is bit-identical to evaluating its ``pdf`` at each distance.
     """
-    state_transition = np.zeros((place_bin_centers.size, place_bin_centers.size))
+    n_bins = place_bin_centers.size
+    nodes = list(place_bin_center_ind_to_node)
+    state_transition = np.zeros((n_bins, n_bins))
     gaussian = multivariate_normal(mean=movement_mean, cov=movement_var)
 
-    for bin_ind1, node1 in enumerate(place_bin_center_ind_to_node):
-        for bin_ind2, node2 in enumerate(place_bin_center_ind_to_node):
-            try:
-                state_transition[bin_ind1, bin_ind2] = gaussian.pdf(
-                    distance_between_nodes[node1][node2]
-                )
-            except KeyError:
-                # bins not on track interior will be -1 and not in distance
-                # between nodes
-                continue
+    rows_per_block = max(1, _RANDOM_WALK_BLOCK_ENTRIES // max(n_bins, 1))
+    for start in range(0, n_bins, rows_per_block):
+        block_nodes = nodes[start : start + rows_per_block]
+        distance = np.full((len(block_nodes), n_bins), np.nan)
+        for row, node in enumerate(block_nodes):
+            # Bins off the track (node -1) have no distances.
+            node_distances = distance_between_nodes.get(node)
+            if node_distances is not None:
+                distance[row] = [node_distances.get(other, np.nan) for other in nodes]
+        has_distance = ~np.isnan(distance)
+        if np.any(has_distance):
+            block = state_transition[start : start + len(block_nodes)]
+            block[has_distance] = gaussian.pdf(distance[has_distance])
 
     return state_transition
-
-
-# Entries of the transition evaluated per block of rows by
-# ``_euclidean_random_walk``: each temporary is 64 Ki float64 (512 KiB), so a
-# block stays in cache and the build's transient memory is a few megabytes.
-_RANDOM_WALK_BLOCK_ENTRIES = 2**16
 
 
 def _euclidean_random_walk(
@@ -603,10 +617,8 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
             self.movement_mean,
             self.movement_var,
             place_bin_center_ind_to_node,
-            cast(
-                dict[int, dict[int, float]] | LazyGraphDistances,
-                environment.distance_between_nodes_,
-            ),
+            # A track graph's distances are a dict of dicts (get_track_grid).
+            cast(dict[int, dict[int, float]], environment.distance_between_nodes_),
         )
 
 
