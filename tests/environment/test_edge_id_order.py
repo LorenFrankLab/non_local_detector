@@ -286,6 +286,7 @@ def test_decoding_is_independent_of_edge_id_labels(convention):
         is_training = time < time[-1] * 2 / 3
         decoder = SortedSpikesDecoder(
             environments=environment,
+            sampling_frequency=50.0,  # decodes every 5th sample of 250 Hz
             sorted_spikes_algorithm_params={"disable_progress_bar": True},
         ).fit(time, position, spike_times, is_training=is_training)
         test_time = time[~is_training][::5]
