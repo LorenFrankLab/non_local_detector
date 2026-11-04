@@ -2,8 +2,9 @@
 
 The open-field spline basis of ``sorted_spikes_glm`` and
 ``clusterless_mark_glm`` is a patsy design, which patsy cannot pickle. These
-tests save, pickle and deep-copy fitted 1-D (no graph) and 2-D detectors and
-require the copies to decode exactly as the original does.
+tests save, pickle and deep-copy fitted 1-D (no graph) and 2-D detectors,
+including a 2-D maze whose fit drops spline columns, and require the copies to
+decode exactly as the original does.
 """
 
 import copy
@@ -27,8 +28,30 @@ N_FIT = 10_000
 N_PREDICT = 1_000
 
 
-def _recording(n_dims, seed=0):
-    """Positions on a 0-60 cm range per dimension and Gaussian place cells.
+def _plus_maze_position(rng):
+    """Runs out each arm of a plus maze that fills a fifth of a 100 cm box,
+    with up to 4 cm of lateral jitter; shape (N_FIT, 2)."""
+    center = np.array([50.0, 50.0])
+    legs = []
+    for end in ([50.0, 0.0], [50.0, 100.0], [0.0, 50.0], [100.0, 50.0]):
+        out = np.linspace(center, np.array(end), N_FIT // 8)
+        legs += [out, out[::-1]]
+    position = np.concatenate(legs)
+    along_x = np.abs(position[:, 1] - 50.0) < 1e-9
+    jitter = rng.uniform(-4.0, 4.0, len(position))
+    position[:, 1] += np.where(along_x, jitter, 0.0)
+    position[:, 0] += np.where(along_x, 0.0, jitter)
+    return position
+
+
+def _recording(geometry, seed=0):
+    """Positions and Gaussian place cells.
+
+    Parameters
+    ----------
+    geometry : {"1d", "2d", "plus-maze"}
+        Runs over 0-60 cm in 1-D or in each of two dimensions, or a 2-D plus
+        maze.
 
     Returns
     -------
@@ -39,9 +62,13 @@ def _recording(n_dims, seed=0):
     """
     rng = np.random.default_rng(seed)
     time = np.arange(N_FIT) / SAMPLING_FREQUENCY
-    phase = 2 * np.pi * time[:, None] / np.array([7.0, 11.0])[:n_dims]
-    position = 30.0 + 28.0 * np.sin(phase + rng.uniform(0, 2 * np.pi, n_dims))
-    centers = rng.uniform(10.0, 50.0, size=(4, n_dims))
+    if geometry == "plus-maze":
+        position = _plus_maze_position(rng)
+    else:
+        n_dims = 1 if geometry == "1d" else 2
+        phase = 2 * np.pi * time[:, None] / np.array([7.0, 11.0])[:n_dims]
+        position = 30.0 + 28.0 * np.sin(phase + rng.uniform(0, 2 * np.pi, n_dims))
+    centers = position[rng.integers(len(position), size=4)]
     distance = np.sum((position[:, None, :] - centers[None]) ** 2, axis=-1)
     rate = 30.0 * np.exp(-distance / (2 * 8.0**2)) + 0.5  # Hz
     is_spike = rng.random(rate.shape) < rate / SAMPLING_FREQUENCY
@@ -52,17 +79,16 @@ def _recording(n_dims, seed=0):
 @pytest.fixture(
     scope="module",
     params=[
-        ("sorted_spikes_glm", 1),
-        ("sorted_spikes_glm", 2),
-        ("clusterless_mark_glm", 1),
-        ("clusterless_mark_glm", 2),
+        (algorithm, geometry)
+        for algorithm in ("sorted_spikes_glm", "clusterless_mark_glm")
+        for geometry in ("1d", "2d", "plus-maze")
     ],
-    ids=["sorted-1d", "sorted-2d", "clusterless-1d", "clusterless-2d"],
+    ids=lambda param: f"{param[0].split('_')[0]}-{param[1]}",
 )
 def fitted(request):
     """A fitted non-local detector, its spike data, and predict arguments."""
-    algorithm, n_dims = request.param
-    time, position, spike_times = _recording(n_dims)
+    algorithm, geometry = request.param
+    time, position, spike_times = _recording(geometry)
     environment = Environment(place_bin_size=5.0)
     if algorithm == "sorted_spikes_glm":
         detector = NonLocalSortedSpikesDetector(
@@ -90,6 +116,10 @@ def fitted(request):
         )
         spikes = ([electrode_times[order]], [features[order]])
     detector.fit(time, position, *spikes)
+    (encoding_model,) = detector.encoding_model_.values()
+    # The maze fills a small part of its box, so the fit drops spline columns.
+    dropped_columns = encoding_model["emission_design_info"].columns is not None
+    assert dropped_columns == (geometry == "plus-maze")
     end = time[N_PREDICT - 1]
     if algorithm == "sorted_spikes_glm":
         predict_spikes = ([times[times < end] for times in spikes[0]],)
