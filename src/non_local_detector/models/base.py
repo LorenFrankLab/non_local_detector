@@ -49,6 +49,7 @@ from non_local_detector.checkpointed_inference import (
 )
 from non_local_detector.continuous_state_transitions import (
     TransitionContext,
+    _check_block_environments,
     _check_continuous_transition,
     _make_transition_block,
     _multi_bin_local_transition,
@@ -3054,12 +3055,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
                 # Blocks between a one-bin and a spatial state follow the
                 # structured operator's rule, so both representations agree.
-                one_bin_block = _one_bin_block(
+                _check_block_environments(
                     transition,
                     self.environments,
+                    self.observation_models[from_state].environment_name,
+                    self.observation_models[to_state].environment_name,
                     n_row_bins,
                     n_col_bins,
-                    self.observation_models[to_state].environment_name,
+                )
+                one_bin_block = _one_bin_block(
+                    transition, self.environments, n_row_bins, n_col_bins
                 )
                 if one_bin_block is not None:
                     self.continuous_state_transitions_[inds] = one_bin_block.entries(

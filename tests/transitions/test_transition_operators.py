@@ -583,8 +583,11 @@ def test_rectangular_multienvironment_uniform_blocks():
         [Uniform("two", "one"), Identity("two")],
     ]
     sizes = (12, 15)
-    dense, _ = dense_reference(transitions, [env1, env2], sizes)
-    operator = build_transition_operator(transitions, [env1, env2], sizes)
+    observations = [ObservationModel("one"), ObservationModel("two")]
+    dense, _ = dense_reference(transitions, [env1, env2], sizes, observations)
+    operator = build_transition_operator(
+        transitions, [env1, env2], sizes, observation_models=observations
+    )
     assert_products(operator, dense, np.float32)
 
 
@@ -1493,3 +1496,106 @@ def test_discrete_from_a_one_bin_state_into_another_environment_is_rejected():
         build_transition_operator(
             transitions, envs, sizes, observation_models=observations
         )
+
+
+def _equal_size_environments():
+    """Environments A and B with four bins each and disjoint interiors."""
+    env_a, env_b = (
+        environment((4,), "A", holes=False),
+        environment((4,), "B", holes=False),
+    )
+    env_a.is_track_interior_[:] = [True, True, False, False]
+    env_b.is_track_interior_[:] = [False, False, True, True]
+    return [env_a, env_b]
+
+
+class _CustomInA:
+    environment_name = "A"
+
+    def make_state_transition(self, environments, context=None):
+        msg = "a one-bin block is not built by the transition"
+        raise AssertionError(msg)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "transition",
+    [
+        Uniform("A"),
+        Uniform("A", "A"),
+        Uniform("A", "typo"),
+        Uniform("B", "A"),
+        RandomWalk("A"),
+        EmpiricalMovement("A"),
+        _CustomInA(),
+    ],
+    ids=[
+        "uniform-source-only",
+        "uniform-a-to-a",
+        "uniform-typo",
+        "uniform-b-to-a",
+        "random-walk",
+        "empirical",
+        "custom",
+    ],
+)
+def test_one_bin_block_into_another_environment_must_declare_it(transition):
+    """From a one-bin state in A into a state in B, the transition must
+    declare B as its destination; dense and structured raise the same
+    error."""
+    envs = _equal_size_environments()
+    observations = [ObservationModel("A", is_local=True), ObservationModel("B")]
+    transitions = [[Discrete(), transition], [Discrete(), Identity("B")]]
+    with pytest.raises(ValidationError) as dense_error:
+        dense_reference(transitions, envs, (1, 4), observations)
+    with pytest.raises(ValidationError) as structured_error:
+        build_transition_operator(
+            transitions, envs, (1, 4), observation_models=observations
+        )
+    assert str(dense_error.value) == str(structured_error.value)
+
+
+@pytest.mark.unit
+def test_random_walk_into_a_smaller_environment_must_declare_it():
+    """RandomWalk("A") from a one-bin state into a 3-bin B state is rejected
+    by name, not built over B."""
+    envs = [environment((5,), "A"), environment((3,), "B", holes=False)]
+    observations = [ObservationModel("A", is_local=True), ObservationModel("B")]
+    transitions = [[Discrete(), RandomWalk("A")], [Discrete(), Identity("B")]]
+    match = r"RandomWalk declares destination environment 'A'[\s\S]*'B'"
+    with pytest.raises(ValidationError, match=match):
+        dense_reference(transitions, envs, (1, 3), observations)
+    with pytest.raises(ValidationError, match=match):
+        build_transition_operator(
+            transitions, envs, (1, 3), observation_models=observations
+        )
+
+
+@pytest.mark.unit
+def test_spatial_block_must_declare_its_source_environment():
+    """A spatial block between two B states built from A's environment is
+    rejected even when A and B have the same number of bins."""
+    envs = _equal_size_environments()
+    observations = [ObservationModel("B"), ObservationModel("B")]
+    transitions = [[Identity("A"), Uniform("B")], [Uniform("B"), Identity("B")]]
+    match = r"Identity declares source environment 'A'[\s\S]*'B'"
+    with pytest.raises(ValidationError, match=match):
+        dense_reference(transitions, envs, (4, 4), observations)
+    with pytest.raises(ValidationError, match=match):
+        build_transition_operator(
+            transitions, envs, (4, 4), observation_models=observations
+        )
+
+
+@pytest.mark.unit
+def test_one_bin_block_uses_the_declared_destination_without_observation_models():
+    """Called without observation models, build_transition_operator takes a
+    one-bin block's destination from the transition's declared destination,
+    as the dense constructor does with consistent observation models."""
+    envs = _equal_size_environments()
+    observations = [ObservationModel("A", is_local=True), ObservationModel("B")]
+    transitions = [[Discrete(), Uniform("A", "B")], [Discrete(), Identity("B")]]
+    dense, _ = dense_reference(transitions, envs, (1, 4), observations)
+    np.testing.assert_array_equal(dense[0, 1:], [0.0, 0.0, 0.5, 0.5])
+    operator = build_transition_operator(transitions, envs, (1, 4))
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
