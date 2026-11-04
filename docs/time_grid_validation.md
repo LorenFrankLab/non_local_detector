@@ -98,7 +98,8 @@ tolerances.
   contract versions, rejection before likelihood work through predict, Viterbi,
   likelihood and private cached paths, plus legacy-estimation recovery in both
   families. GLM unit/dispatch tests run in memory; its Patsy pickle defect is
-  deferred and documented publicly.
+  deferred and documented publicly. (Since fixed: open-field GLM models pickle
+  as of #182.)
 - Final focused support/rate/persistence/chunk run: 107 passed. The reviewed
   chunk/API suite passed 111. Selected physical-rate/API float64 run: 101 passed.
   The three core dtype cases skipped in the default environment passed during

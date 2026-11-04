@@ -31,8 +31,6 @@ Limitations:
   position-specific mark differences are attenuated.
 - Weights count as spikes in the mark mixture's prior: a fit whose weights sum
   to few spikes (a rarely occupied state in EM) supports fewer components.
-- Off a track graph the rate maps use a patsy spline basis, which cannot be
-  pickled, as for ``sorted_spikes_glm``.
 """
 
 from __future__ import annotations
