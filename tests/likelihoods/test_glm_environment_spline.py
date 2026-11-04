@@ -33,7 +33,7 @@ def _fit(env, time, position, spikes, **kwargs):
 def _spline_knots(model):
     return [
         transform._all_knots
-        for info in model["emission_design_info"].factor_infos.values()
+        for info in model["emission_design_info"].design_info.factor_infos.values()
         for transform in info.state["transforms"].values()
         if hasattr(transform, "_all_knots")
     ]

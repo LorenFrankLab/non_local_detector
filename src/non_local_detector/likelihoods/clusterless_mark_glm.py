@@ -31,8 +31,6 @@ Limitations:
   position-specific mark differences are attenuated.
 - Weights count as spikes in the mark mixture's prior: a fit whose weights sum
   to few spikes (a rarely occupied state in EM) supports fewer components.
-- Off a track graph the rate maps use a patsy spline basis, which cannot be
-  pickled, as for ``sorted_spikes_glm``.
 """
 
 from __future__ import annotations
@@ -47,7 +45,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from patsy.design_info import DesignInfo
 from scipy.special import logsumexp
 from sklearn.mixture import BayesianGaussianMixture  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm
@@ -93,7 +90,7 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     GLM_LOG_RATE_PRIOR_STD,
-    SelectedColumnsDesign,
+    TensorSplineBasis,
     TrackGraphBasis,
     _fit_rate_maps,
     _glm_rates,
@@ -413,7 +410,7 @@ class ClusterlessMarkGLMEncodingModel(ClusterlessEncodingModel):
     ``predict_clusterless_mark_glm_log_likelihood``, documented there.
     """
 
-    emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign
+    emission_design_info: TrackGraphBasis | TensorSplineBasis
     mark_mixtures: list[MarkMixture | None]
     rate_coefficients: list[np.ndarray | jax.Array | None]
     log_rate_maps: list[np.ndarray | None]
@@ -511,7 +508,7 @@ def fit_clusterless_mark_glm_encoding_model(
         Keys ``algorithm`` (``"clusterless_mark_glm"``), ``environment`` and
         ``environment_grid``, and:
 
-        emission_design_info : TrackGraphBasis, SelectedColumnsDesign or DesignInfo
+        emission_design_info : TrackGraphBasis or TensorSplineBasis
             The rate maps' spline basis.
         mark_mixtures : list of MarkMixture or None
             Per electrode; None for a zero-rate electrode (no positive-weight
@@ -936,7 +933,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     spike_waveform_features: list[np.ndarray],
     *,
     environment: Environment,
-    emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign,
+    emission_design_info: TrackGraphBasis | TensorSplineBasis,
     mark_mixtures: list[MarkMixture | None],
     rate_coefficients: list[np.ndarray | None],
     log_rate_maps: list[np.ndarray | None],
@@ -970,7 +967,7 @@ def predict_clusterless_mark_glm_log_likelihood(
         Decoding spike marks per electrode.
     environment : Environment
         The environment the model was fit on.
-    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+    emission_design_info : TrackGraphBasis or TensorSplineBasis
         The rate maps' spline basis, from the fit.
     mark_mixtures : list of MarkMixture or None
         Per electrode, from the fit; None for a zero-rate electrode.

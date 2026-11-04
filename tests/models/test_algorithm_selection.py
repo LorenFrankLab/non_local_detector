@@ -298,15 +298,7 @@ def _round_trip_fit(algorithm):
 @pytest.mark.filterwarnings(
     r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
 )
-@pytest.mark.parametrize(
-    "algorithm",
-    # The GLMs' patsy spline basis (DesignInfo) cannot be pickled.
-    [
-        name
-        for name in ALGORITHMS
-        if name not in ("sorted_spikes_glm", "clusterless_mark_glm")
-    ],
-)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
     algorithm,
 ):

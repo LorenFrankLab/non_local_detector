@@ -349,11 +349,11 @@ The public functions in `non_local_detector.core` operate on observation rows
 and do not validate decode edges. Detector prediction, estimation, and Viterbi
 enforce this time contract, including internal cached prediction paths.
 
-Seven backend families preserve model units and predictions through pickle
-save/load. GLM model pickling remains unsupported because Patsy `DesignInfo`
-cannot be serialized; this pre-existing defect is deferred. Refit GLM models
-from their original recording and configuration in the process that decodes
-them. Result datasets can still be saved independently.
+Every backend family preserves model units and predictions through pickle
+save/load. GLM models fitted on a track graph have pickled since #103; GLM
+models fitted without one (1-D with no graph, or 2-D) pickle since #182, which
+rebuilds their patsy spline basis on load. Result datasets can still be saved
+independently.
 
 Spyglass adapters must construct uniform decode grids, preserve original
 tracking support, align masks and covariates, and label actual result rows.

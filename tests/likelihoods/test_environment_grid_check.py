@@ -57,7 +57,7 @@ def _refit_grid(model, place_bin_size, position_range, position):
 
     The fitted model keeps its fit-time arrays and now references the refit
     environment, as when the fit's own environment is refit. Only the
-    environment is copied: patsy's GLM ``DesignInfo`` cannot be deep-copied.
+    environment is copied; the rest of the model is shared with ``model``.
     """
     environment = copy.deepcopy(model["environment"])
     model = {**model, "environment": environment}
@@ -106,15 +106,7 @@ def test_grid_refit_on_the_same_positions_keeps_the_model(fitted, encoding_data,
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    "name",
-    # Patsy DesignInfo serialization remains a separately tracked GLM defect.
-    [
-        name
-        for name in ALGORITHMS
-        if name not in ("sorted_spikes_glm", "clusterless_mark_glm")
-    ],
-)
+@pytest.mark.parametrize("name", ALGORITHMS)
 def test_grid_check_survives_pickling(fitted, encoding_data, name):
     """A pickled model predicts identically and still detects a changed grid."""
     predict, model, is_clusterless = fitted[name]
