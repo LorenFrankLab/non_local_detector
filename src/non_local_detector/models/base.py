@@ -21,7 +21,6 @@ import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from functools import partial
 from itertools import pairwise
 from logging import getLogger
 from pathlib import Path
@@ -172,13 +171,9 @@ VALID_OUTPUTS: frozenset[str] = _OPTIONAL_OUTPUTS | {"all"}
 class _LikelihoodPositionContext:
     """Tracking preparation shared only during one likelihood prediction."""
 
-    time_edges: np.ndarray
-    source_time: np.ndarray | None
-    source_position: np.ndarray | None
     position: np.ndarray | None
     is_missing: np.ndarray | None
     all_missing: bool
-    reads_position: bool
 
     @classmethod
     def prepare(
@@ -209,41 +204,66 @@ class _LikelihoodPositionContext:
             if np.any(finite) and not np.all(finite):
                 prepared = prepared.copy()
                 prepared[~finite] = prepared[finite][0]
-        return cls(
-            time_edges,
-            position_time,
-            position,
-            prepared,
-            missing,
-            all_missing,
-            reads_position,
+        return cls(prepared, missing, all_missing)
+
+
+@dataclass(frozen=True)
+class _DecodeContext:
+    """One likelihood evaluation's validated inputs and shared preparation.
+
+    A decoding method builds one per call, from its validated inputs, and
+    every row request of that call (each chunk, or the whole recording)
+    evaluates ``_DetectorBase._log_likelihood_rows`` with it. A direct
+    ``compute_log_likelihood`` call builds its own. Nothing in it is stored
+    on the detector or reused by a later call.
+
+    Attributes
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Validated, uniform decode bin edges.
+    time_grid : _DecodeTimeGrid
+        ``time_edges`` with their uniform width, so row requests do not
+        validate the full grid again.
+    position_time : np.ndarray, shape (n_time_position,), or None
+        Tracking times.
+    spike_data : tuple
+        The spike arrays named by ``_DetectorBase._SPIKE_DATA_NAMES``.
+    position_context : _LikelihoodPositionContext
+        Tracking positions prepared on ``time_edges``.
+    spike_time_order : _SpikeTimeOrder
+        Spike ordering shared across states and row requests.
+    no_spike_time_bin_sizes : np.ndarray, shape (n_bins,), or None
+        Bin durations shared by every No-Spike row request; None computes
+        them per request.
+    """
+
+    time_edges: np.ndarray
+    time_grid: _DecodeTimeGrid
+    position_time: np.ndarray | None
+    spike_data: tuple[Any, ...]
+    position_context: _LikelihoodPositionContext
+    spike_time_order: _SpikeTimeOrder
+    no_spike_time_bin_sizes: np.ndarray | None
+
+
+def _check_likelihood_rows(result: Any, n_rows: int) -> Any:
+    """Return ``result`` if it has one row per requested decode bin."""
+    if np.shape(result)[0] != n_rows:
+        msg = "log likelihood callback returned the wrong number of rows"
+        raise ValidationError(
+            msg,
+            expected=f"{n_rows} rows, one per requested decode bin",
+            got=f"{np.shape(result)[0]} rows",
+            hint="Likelihoods receive time_edges (n_bins + 1 edges) and "
+            "return one row per bin, not one per edge.",
         )
-
-    def matches(
-        self,
-        time_edges: np.ndarray,
-        position_time: np.ndarray | None,
-        position: np.ndarray | None,
-        reads_position: bool,
-    ) -> bool:
-        return (
-            self.time_edges is time_edges
-            and self.source_time is position_time
-            and self.source_position is position
-            and self.reads_position == reads_position
-        )
+    return result
 
 
-def _prepare_likelihood_callback(
-    callback: Callable[..., Any],
-    time_edges: np.ndarray,
-    *,
-    has_no_spike: bool,
-    log_likelihood_args: tuple[Any, ...] = (),
-    _time_grid: _DecodeTimeGrid | None = None,
-    reads_position: bool = True,
+def _custom_likelihood_callback(
+    callback: Callable[..., Any], time_edges: np.ndarray
 ) -> Callable[..., Any]:
-    """Adapt a detector likelihood to core's observation-row callback contract.
+    """Adapt a replaced ``compute_log_likelihood`` to core's row callback contract.
 
     Core indexes observations by row and hands the callback its row
     coordinates (the bin centers). Detector likelihoods bin spikes against the
@@ -263,30 +283,10 @@ def _prepare_likelihood_callback(
     chunk's row range rather than only its row coordinates, and both check
     that the callback returned one row per requested bin: a callback written
     for one row per timestamp would otherwise be silently misaligned with the
-    bins.
-
-    Declaring ``_spike_time_order`` or ``_no_spike_time_bin_sizes`` lets this
-    adapter bind shared preparation. ``reads_position`` is the detector's
-    decision whether its decode likelihood reads position; the bound position
-    context marks bins missing for NaN or untracked position only when it
-    does. Each call creates fresh preparation; nothing is stored on the
-    detector or reused by a later prediction. Callers with a precomputed
-    likelihood bypass this adapter entirely.
+    bins. The callback receives only ``compute_log_likelihood``'s public
+    arguments; it does its own preparation.
     """
     parameters = inspect.signature(callback).parameters
-    prepared: dict[str, object] = {}
-    if "_spike_time_order" in parameters:
-        prepared["_spike_time_order"] = _SpikeTimeOrder()
-    if "_time_grid" in parameters and _time_grid is not None:
-        prepared["_time_grid"] = _time_grid
-    if "_position_context" in parameters and len(log_likelihood_args) >= 2:
-        prepared["_position_context"] = _LikelihoodPositionContext.prepare(
-            time_edges, *log_likelihood_args[:2], reads_position=reads_position
-        )
-    if has_no_spike and "_no_spike_time_bin_sizes" in parameters:
-        prepared["_no_spike_time_bin_sizes"] = no_spike_time_bin_sizes(time_edges)
-    bound = partial(callback, **prepared) if prepared else callback
-
     n_bins = len(time_edges) - 1
     edges_are_keyword_only = (
         "time_edges" in parameters
@@ -295,20 +295,8 @@ def _prepare_likelihood_callback(
 
     def evaluate(edges: np.ndarray, *args: Any, **kwargs: Any) -> Any:
         if edges_are_keyword_only:
-            return bound(*args, time_edges=edges, **kwargs)
-        return bound(edges, *args, **kwargs)
-
-    def checked(result: Any, n_rows: int) -> Any:
-        if np.shape(result)[0] != n_rows:
-            msg = "log likelihood callback returned the wrong number of rows"
-            raise ValidationError(
-                msg,
-                expected=f"{n_rows} rows, one per requested decode bin",
-                got=f"{np.shape(result)[0]} rows",
-                hint="Likelihoods receive time_edges (n_bins + 1 edges) and "
-                "return one row per bin, not one per edge.",
-            )
-        return result
+            return callback(*args, time_edges=edges, **kwargs)
+        return callback(edges, *args, **kwargs)
 
     if accepts_row_slice(callback):
 
@@ -319,7 +307,7 @@ def _prepare_likelihood_callback(
             **kwargs: Any,
         ) -> Any:
             row_start, row_stop = resolve_row_slice(row_slice, n_bins)
-            return checked(
+            return _check_likelihood_rows(
                 evaluate(time_edges, *args, row_slice=row_slice, **kwargs),
                 row_stop - row_start,
             )
@@ -342,7 +330,7 @@ def _prepare_likelihood_callback(
                 "non_local_detector.core and forward row_slice with the full "
                 "time_edges. This preserves durations and counts boundary spikes once.",
             )
-        return checked(evaluate(time_edges, *args, **kwargs), n_bins)
+        return _check_likelihood_rows(evaluate(time_edges, *args, **kwargs), n_bins)
 
     row_slice_aware(chunk_callback)  # marks the function in place
     return chunk_callback
@@ -3760,57 +3748,164 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         row_slice: slice | None,
         *,
         time_edges: ArrayLike,
-        _no_spike_time_bin_sizes: np.ndarray | None,
-        _time_grid: _DecodeTimeGrid | None,
-        _position_context: _LikelihoodPositionContext | None,
-        _spike_time_order: _SpikeTimeOrder | None,
     ) -> jax.Array:
         """Body of the detectors' ``compute_log_likelihood``.
 
         ``spike_data`` holds the spike arrays named by ``_SPIKE_DATA_NAMES``,
-        and the other arguments are those of ``compute_log_likelihood``. The
-        decoding methods check the model and position once per call, then
-        reach this through ``_prepare_likelihood_callback`` with a prepared
-        ``_position_context``; a direct call has none and is checked here.
+        and the other arguments are those of ``compute_log_likelihood``. It
+        checks the model and inputs, as the public decoding methods do once
+        per call, then evaluates the requested rows.
         """
-        is_direct_call = _position_context is None
-        if is_direct_call:
-            self._validate_time_contract()
-            decode = _DecodeInputs.from_arguments(position_time, position)
-            position_time, position = decode.position_time, decode.position
-        else:
-            # A decoding method prepared the context from its coerced inputs.
-            position_time = cast("np.ndarray | None", position_time)
-            position = cast("np.ndarray | None", position)
-        time_edges, row_time = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            _time_grid=_time_grid,
-            row_slice=row_slice,
+        self._validate_time_contract()
+        decode = _DecodeInputs.from_arguments(position_time, position)
+        time_edges, _ = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width(), row_slice=row_slice
         )
-        _time_grid = _uniform_time_grid(time_edges, _time_grid)
-        if is_direct_call:
-            self._validate_decode_position(position)
-        needs_position = self._decode_reads_position()
-        if not isinstance(
-            _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(
-            time_edges, position_time, position, needs_position
-        ):
-            # Without a prepared context this is a direct call, so it warns
-            # like the other public decode entry points.
-            _position_context = _LikelihoodPositionContext.prepare(
+        self._validate_decode_position(decode.position)
+        context = self._decode_context(
+            time_edges,
+            (decode.position_time, decode.position, *spike_data),
+            # A direct call warns like the other public decode entry points.
+            warn_outside_tracking=True,
+            share_no_spike_bin_sizes=False,
+        )
+        return self._log_likelihood_rows(context, row_slice, is_missing)
+
+    def _decode_context(
+        self,
+        time_edges: np.ndarray,
+        log_likelihood_args: tuple[Any, ...],
+        *,
+        warn_outside_tracking: bool = False,
+        share_no_spike_bin_sizes: bool = True,
+    ) -> _DecodeContext:
+        """Prepare one likelihood evaluation over validated ``time_edges``.
+
+        Parameters
+        ----------
+        time_edges : np.ndarray, shape (n_bins + 1,)
+            Edges already validated by ``_decode_time_edges``.
+        log_likelihood_args : tuple
+            ``(position_time, position, *spike_data)``, position coerced by
+            ``_DecodeInputs``.
+        warn_outside_tracking : bool, optional
+            Warn about decode bins outside the tracked period, by default
+            False (the decoding methods warned when they marked them missing).
+        share_no_spike_bin_sizes : bool, optional
+            Compute the No-Spike bin durations once for every row request, by
+            default True.
+
+        Returns
+        -------
+        context : _DecodeContext
+        """
+        position_time, position, *spike_data = log_likelihood_args
+        has_no_spike = any(obs.is_no_spike for obs in self.observation_models)
+        return _DecodeContext(
+            time_edges=time_edges,
+            time_grid=_uniform_time_grid(time_edges),
+            position_time=position_time,
+            spike_data=tuple(spike_data),
+            position_context=_LikelihoodPositionContext.prepare(
                 time_edges,
                 position_time,
                 position,
-                reads_position=needs_position,
-                warn_outside_tracking=is_direct_call,
+                reads_position=self._decode_reads_position(),
+                warn_outside_tracking=warn_outside_tracking,
+            ),
+            spike_time_order=_SpikeTimeOrder(),
+            no_spike_time_bin_sizes=(
+                no_spike_time_bin_sizes(time_edges)
+                if share_no_spike_bin_sizes and has_no_spike
+                else None
+            ),
+        )
+
+    def _replaced_log_likelihood(self) -> Callable[..., Any] | None:
+        """``compute_log_likelihood`` when a subclass or the instance replaced it.
+
+        None when it is the detector family's own, which decoding evaluates
+        through ``_log_likelihood_rows`` with its prepared context.
+        """
+        callback = self.compute_log_likelihood
+        if getattr(callback, "__func__", None) in (
+            ClusterlessDetector.compute_log_likelihood,
+            SortedSpikesDetector.compute_log_likelihood,
+        ):
+            return None
+        return callback
+
+    def _decode_likelihood_callback(
+        self, time_edges: np.ndarray, log_likelihood_args: tuple[Any, ...]
+    ) -> Callable[..., Any]:
+        """Core's observation-row likelihood callback for one decoding call.
+
+        The callback is ``row_slice_aware`` and checks that each request
+        returns one row per requested bin. The detector's own likelihood
+        evaluates the rows with one ``_DecodeContext`` prepared here; a
+        replaced ``compute_log_likelihood`` is called with its public
+        arguments and prepares its own (see ``_custom_likelihood_callback``).
+
+        Parameters
+        ----------
+        time_edges : np.ndarray, shape (n_bins + 1,)
+            Edges already validated by ``_decode_time_edges``.
+        log_likelihood_args : tuple
+            ``(position_time, position, *spike_data)``, as core passes them to
+            the callback.
+        """
+        replaced = self._replaced_log_likelihood()
+        if replaced is not None:
+            return _custom_likelihood_callback(replaced, time_edges)
+        context = self._decode_context(time_edges, log_likelihood_args)
+        n_bins = len(time_edges) - 1
+
+        @row_slice_aware
+        def row_callback(
+            row_time: Any,  # noqa: ARG001 -- likelihood callback signature
+            *args: Any,  # noqa: ARG001 -- the context holds them
+            row_slice: slice | None = None,
+            is_missing: np.ndarray | None = None,
+        ) -> Any:
+            row_start, row_stop = resolve_row_slice(row_slice, n_bins)
+            return _check_likelihood_rows(
+                self._log_likelihood_rows(context, row_slice, is_missing),
+                row_stop - row_start,
             )
+
+        return row_callback
+
+    def _log_likelihood_rows(
+        self,
+        context: _DecodeContext,
+        row_slice: slice | None,
+        is_missing: np.ndarray | None,
+    ) -> jax.Array:
+        """Log likelihood of the requested decode bins.
+
+        Parameters
+        ----------
+        context : _DecodeContext
+            The decoding call's inputs and preparation.
+        row_slice : slice or None
+            Contiguous rows of the full-time likelihood; None requests all.
+        is_missing : np.ndarray of bool, shape (n_rows,), or None
+            Missing bins among the requested rows.
+
+        Returns
+        -------
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
+        """
+        time_edges, row_time = _decode_time_edges(
+            context.time_edges,
+            *self._learned_transition_time_bin_width(),
+            _time_grid=context.time_grid,
+            row_slice=row_slice,
+        )
+        position_time, spike_data = context.position_time, context.spike_data
         self._validate_decode_population(*spike_data)
-        position_missing = _position_context.is_missing
+        position_missing = context.position_context.is_missing
         logger.info("Computing log likelihood...")
-        if _spike_time_order is None:
-            _spike_time_order = _SpikeTimeOrder()
         non_local_penalty = self._non_local_position_penalty()
 
         row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
@@ -3827,9 +3922,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 raise ValidationError(msg)
         if position_missing is not None:
             is_missing = is_missing | position_missing[row_start:row_stop]
-        if _position_context.all_missing:
+        if context.position_context.all_missing:
             return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
-        position = _position_context.position
+        position = context.position_context.position
 
         likelihood_func = self._likelihood_predict_function()
 
@@ -3868,12 +3963,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     disable_progress_bar=self.encoding_model_.get(
                         likelihood_name[:2], {}
                     ).get("disable_progress_bar", False),
-                    _time_bin_sizes=_no_spike_time_bin_sizes,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
+                    _time_bin_sizes=context.no_spike_time_bin_sizes,
+                    _spike_time_order=context.spike_time_order,
+                    _time_grid=context.time_grid,
                 )
                 mark_log_likelihood = self._no_spike_mark_log_likelihood(
-                    spike_data, time_edges, row_slice, _spike_time_order
+                    spike_data, time_edges, row_slice, context.spike_time_order
                 )
                 likelihood_results[state_id] = (
                     no_spike_log_likelihood
@@ -3890,8 +3985,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     **self._likelihood_predict_kwargs(),
                     is_local=effective_is_local,
                     row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
+                    _spike_time_order=context.spike_time_order,
+                    _time_grid=context.time_grid,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
@@ -4417,14 +4512,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         log_likelihood_func = self.compute_log_likelihood
         if log_likelihoods is None:
-            time_grid = _uniform_time_grid(time_edges)
-            log_likelihood_func = _prepare_likelihood_callback(
-                log_likelihood_func,
-                time_edges,
-                has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
-                log_likelihood_args=log_likelihood_args,
-                reads_position=self._decode_reads_position(),
-                _time_grid=time_grid,
+            log_likelihood_func = self._decode_likelihood_callback(
+                time_edges, log_likelihood_args
             )
 
         if discrete_transitions.ndim == 2:
@@ -4472,15 +4561,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         log_likelihood_args: tuple[Any, ...],
     ) -> Callable[..., Any]:
         """Row-slice likelihood callback for the checkpointed driver."""
-        time_grid = _uniform_time_grid(edges)
-        prepared = _prepare_likelihood_callback(
-            self.compute_log_likelihood,
-            edges,
-            has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
-            log_likelihood_args=log_likelihood_args,
-            reads_position=self._decode_reads_position(),
-            _time_grid=time_grid,
-        )
+        prepared = self._decode_likelihood_callback(edges, log_likelihood_args)
 
         def likelihood(
             full_edges: np.ndarray,  # noqa: ARG001 -- likelihood callback signature
@@ -6114,13 +6195,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 hint="Viterbi uses the fitted covariate transitions. Fit or estimate with covariates aligned to this grid; predict(..., discrete_transition_covariate_data=...) accepts new aligned prediction covariates.",
             )
 
-        log_likelihood_func = _prepare_likelihood_callback(
-            self.compute_log_likelihood,
-            time_edges,
-            has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
-            log_likelihood_args=log_likelihood_args,
-            reads_position=self._decode_reads_position(),
-            _time_grid=_uniform_time_grid(time_edges),
+        log_likelihood_func = self._decode_likelihood_callback(
+            time_edges, log_likelihood_args
         )
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
@@ -6947,10 +7023,6 @@ class ClusterlessDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
-        _no_spike_time_bin_sizes: np.ndarray | None = None,
-        _time_grid: _DecodeTimeGrid | None = None,
-        _position_context: _LikelihoodPositionContext | None = None,
-        _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -7007,18 +7079,6 @@ class ClusterlessDetector(_DetectorBase):
             so a decoding spike is owned by its global row no matter how the
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
-        _no_spike_time_bin_sizes : np.ndarray | None, optional
-            Internal full-timeline array of bin durations, prepared once by ``_predict``
-            and reused for No-Spike in every chunk. None computes it on demand.
-        _time_grid : _DecodeTimeGrid | None, optional
-            Internal validated time edges shared within one prediction. None
-            validates ``time_edges`` for this likelihood call.
-        _position_context : _LikelihoodPositionContext | None, optional
-            Internal tracking preparation shared within one prediction. None
-            prepares it for this likelihood call.
-        _spike_time_order : _SpikeTimeOrder | None, optional
-            Internal ordering preparation shared across states and chunks. None
-            creates fresh preparation for this likelihood call.
 
         Returns
         -------
@@ -7032,10 +7092,6 @@ class ClusterlessDetector(_DetectorBase):
             is_missing,
             row_slice,
             time_edges=time_edges,
-            _no_spike_time_bin_sizes=_no_spike_time_bin_sizes,
-            _time_grid=_time_grid,
-            _position_context=_position_context,
-            _spike_time_order=_spike_time_order,
         )
 
     @requires_time_edges
@@ -7916,10 +7972,6 @@ class SortedSpikesDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
-        _no_spike_time_bin_sizes: np.ndarray | None = None,
-        _time_grid: _DecodeTimeGrid | None = None,
-        _position_context: _LikelihoodPositionContext | None = None,
-        _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -7974,18 +8026,6 @@ class SortedSpikesDetector(_DetectorBase):
             so a decoding spike is owned by its global row no matter how the
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
-        _no_spike_time_bin_sizes : np.ndarray | None, optional
-            Internal full-timeline array of bin durations, prepared once by ``_predict``
-            and reused for No-Spike in every chunk. None computes it on demand.
-        _time_grid : _DecodeTimeGrid | None, optional
-            Internal validated time edges shared within one prediction. None
-            validates ``time_edges`` for this likelihood call.
-        _position_context : _LikelihoodPositionContext | None, optional
-            Internal tracking preparation shared within one prediction. None
-            prepares it for this likelihood call.
-        _spike_time_order : _SpikeTimeOrder | None, optional
-            Internal ordering preparation shared across states and chunks. None
-            creates fresh preparation for this likelihood call.
 
         Returns
         -------
@@ -7999,10 +8039,6 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing,
             row_slice,
             time_edges=time_edges,
-            _no_spike_time_bin_sizes=_no_spike_time_bin_sizes,
-            _time_grid=_time_grid,
-            _position_context=_position_context,
-            _spike_time_order=_spike_time_order,
         )
 
     @requires_time_edges

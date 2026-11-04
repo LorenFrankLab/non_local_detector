@@ -753,7 +753,7 @@ def test_row_aware_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
     times' precision: float32 edges with float64 spikes just below an edge."""
     from non_local_detector.core import accepts_row_slice, row_slice_aware
     from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
-    from non_local_detector.models.base import _prepare_likelihood_callback
+    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = np.array([0.0, 1.0, 2.0], dtype=edge_dtype)
     spikes = np.array([0.99999999, 1.0])
@@ -764,7 +764,7 @@ def test_row_aware_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
             spike_times, time_edges=time_edges, row_slice=row_slice
         )[:, None]
 
-    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=False)
+    callback = _custom_likelihood_callback(likelihood, edges)
     # The adapter takes the chunk's global row range from core, like a marked
     # callback, so it never has to recover it from the row coordinates.
     assert accepts_row_slice(callback)

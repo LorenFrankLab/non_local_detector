@@ -70,22 +70,11 @@ def output_dtypes(result: Any) -> dict[str, str]:
 
 def _prepare_reference_likelihood(model: Any, predict: dict) -> Callable:
     """Bind the same global-edge preparation used by native prediction."""
-    from non_local_detector.models.base import _prepare_likelihood_callback
-    from non_local_detector.time_edges import _DecodeTimeGrid
-
     edges = predict["time_edges"]
     args = (predict["position_time"], predict["position"], predict["spike_times"])
     if "spike_waveform_features" in predict:
         args += (predict["spike_waveform_features"],)
-    prepared = _prepare_likelihood_callback(
-        model.compute_log_likelihood,
-        edges,
-        has_no_spike=any(obs.is_no_spike for obs in model.observation_models),
-        log_likelihood_args=args,
-        _time_grid=_DecodeTimeGrid.from_validated_edges(
-            edges, uniform_width=(edges[-1] - edges[0]) / (len(edges) - 1)
-        ),
-    )
+    prepared = model._decode_likelihood_callback(edges, args)
     centers = (edges[:-1] + edges[1:]) / 2
 
     def likelihood(

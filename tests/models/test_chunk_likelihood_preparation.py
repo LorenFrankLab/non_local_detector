@@ -23,22 +23,24 @@ def test_prepared_no_spike_durations_match_exact_global_rows(row_aware):
     start of the prepared vector silently assigns the wrong exposure to a row.
     """
     from non_local_detector.likelihoods import predict_no_spike_log_likelihood
-    from non_local_detector.models.base import _prepare_likelihood_callback
+    from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
+    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = 1.7e9 + np.arange(5) * 0.002
+    durations = no_spike_time_bin_sizes(edges)  # prepared once, as decoding does
 
-    def likelihood(time_edges, *, row_slice=None, _no_spike_time_bin_sizes=None):
+    def likelihood(time_edges, *, row_slice=None):
         return predict_no_spike_log_likelihood(
             [[]],
             no_spike_rate=1.0,
             time_edges=time_edges,
             row_slice=row_slice,
-            _time_bin_sizes=_no_spike_time_bin_sizes,
+            _time_bin_sizes=durations,
         )
 
     if row_aware:
         row_slice_aware(likelihood)
-    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=True)
+    callback = _custom_likelihood_callback(likelihood, edges)
     full = callback(None)
     if not row_aware:
         np.testing.assert_array_equal(full[:, 0], -np.diff(edges).astype(np.float32))
@@ -53,14 +55,14 @@ def test_prepared_no_spike_durations_match_exact_global_rows(row_aware):
 @pytest.mark.unit
 def test_chunked_unmarked_callback_rejects_altered_physical_exposure():
     """An edges-only callback cannot express an open chunk closing boundary."""
-    from non_local_detector.models.base import _prepare_likelihood_callback
+    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = 1.7e9 + np.arange(5) * 0.002
 
     def likelihood(time_edges):
         return -np.diff(time_edges)[:, None]
 
-    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=False)
+    callback = _custom_likelihood_callback(likelihood, edges)
     np.testing.assert_array_equal(callback(None)[:, 0], -np.diff(edges))
     with pytest.raises(ValidationError, match="row_slice_aware"):
         callback(None, row_slice=slice(0, 1))
