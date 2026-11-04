@@ -179,22 +179,54 @@ def _sample_positions(values: ArrayLike, n_time: int) -> np.ndarray:
     return position
 
 
-def _sample_mask(values: ArrayLike, n_time: int, name: str) -> np.ndarray:
-    """Return a boolean mask with one entry per position sample, shape (n_time,).
+def _sample_mask(
+    values: ArrayLike,
+    n_time: int,
+    name: str,
+    *,
+    entry: str = "position sample",
+    example: str | None = "speed > 4",
+) -> np.ndarray:
+    """Return a boolean mask with one entry per sample or bin, shape (n_time,).
 
     Integers equal to 0 or 1 are read as False or True. Any other integer, a
     float or another dtype is rejected rather than combined bitwise with the
-    label masks, where ``2 & True`` is 0.
+    label masks, where ``2 & True`` is 0, or cast to bool, where 0.5, 2 and
+    NaN are True.
+
+    Parameters
+    ----------
+    values : array_like, shape (n_time,)
+        The mask.
+    n_time : int
+        Number of entries required.
+    name : str
+        Argument name for the error messages.
+    entry : str, optional
+        What one entry describes, for the error messages, by default
+        "position sample".
+    example : str or None, optional
+        Example expression for the mask in the error message, or None.
+
+    Returns
+    -------
+    mask : np.ndarray of bool, shape (n_time,)
+
+    Raises
+    ------
+    ValidationError
+        If the mask does not have shape ``(n_time,)`` or is neither boolean nor
+        integers 0 and 1.
     """
     mask = np.asarray(values)
     if mask.shape != (n_time,):
-        msg = f"{name} must have one entry per position sample"
+        msg = f"{name} must have one entry per {entry}"
         raise ValidationError(
             msg,
             expected=f"shape ({n_time},)",
             got=f"shape {mask.shape}",
-            hint="A shorter or single-entry mask is not broadcast to every "
-            f"sample; pass a 1-D array (e.g. {name}.ravel() for a column).",
+            hint=f"A shorter or single-entry mask is not broadcast to every "
+            f"{entry}; pass a 1-D array (e.g. {name}.ravel() for a column).",
         )
     if mask.dtype.kind in "iu" and np.isin(mask, (0, 1)).all():
         return mask.astype(bool)
@@ -209,8 +241,9 @@ def _sample_mask(values: ArrayLike, n_time: int, name: str) -> np.ndarray:
                 if mask.dtype.kind in "iu"
                 else ""
             ),
-            hint="Pass True/False per position sample, e.g. "
-            f"{name}=speed > 4; other integers and floats are not read as a mask.",
+            hint=f"Pass True/False per {entry}"
+            + ("" if example is None else f", e.g. {name}={example}")
+            + "; other integers and floats are not read as a mask.",
         )
     return mask
 

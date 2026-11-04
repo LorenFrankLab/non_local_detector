@@ -117,6 +117,7 @@ from non_local_detector.models._input_validation import (
     _InputValidationMixin,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
+    _sample_mask,
     _validate_covariate_time_length,
     _validate_inference_arguments,
     _validate_penalty_params,  # noqa: F401 -- imported from base by tests
@@ -409,15 +410,9 @@ def _missing_bins(
     """
     n_bins = len(time_edges) - 1
     if is_missing is not None:
-        is_missing = np.asarray(is_missing, dtype=bool)
-        if is_missing.shape != (n_bins,):
-            msg = "is_missing must have one entry per decode bin"
-            raise ValidationError(
-                msg,
-                expected=f"shape ({n_bins},)",
-                got=f"shape {is_missing.shape}",
-                hint="time_edges has n_bins + 1 entries; is_missing has n_bins.",
-            )
+        is_missing = _sample_mask(
+            is_missing, n_bins, "is_missing", entry="decode bin", example=None
+        )
     if position is None or position_time is None:
         return is_missing
     position = np.asarray(position)
@@ -2133,10 +2128,13 @@ class _DetectorBase(
         if is_missing is None:
             is_missing = np.zeros(n_rows, dtype=bool)
         else:
-            is_missing = np.asarray(is_missing, dtype=bool)
-            if is_missing.shape != (n_rows,):
-                msg = "is_missing must have one entry per requested decode bin"
-                raise ValidationError(msg)
+            is_missing = _sample_mask(
+                is_missing,
+                n_rows,
+                "is_missing",
+                entry="requested decode bin",
+                example=None,
+            )
         if position_missing is not None:
             is_missing = is_missing | position_missing[row_start:row_stop]
         if context.position_context.all_missing:
@@ -3663,9 +3661,9 @@ class ClusterlessDetector(_DetectorBase):
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
-        is_missing : np.ndarray, shape (n_rows,), optional
-            Boolean array indicating missing data for the requested rows, by
-            default None.
+        is_missing : array_like of bool, shape (n_rows,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            requested decode bin, by default None.
         row_slice : slice | None, optional
             Contiguous range of rows of the full-time likelihood to compute, by
             default None (all rows). ``time_edges`` stay the FULL decoding edges,
@@ -3728,8 +3726,9 @@ class ClusterlessDetector(_DetectorBase):
             Position data, by default None.
         position_time : array_like, shape (n_time_position,), optional
             Time points for position data, by default None.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
@@ -3942,8 +3941,9 @@ class ClusterlessDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4134,8 +4134,9 @@ class ClusterlessDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
 
@@ -4593,9 +4594,9 @@ class SortedSpikesDetector(_DetectorBase):
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
-        is_missing : np.ndarray, shape (n_rows,), optional
-            Boolean array indicating missing data for the requested rows, by
-            default None.
+        is_missing : array_like of bool, shape (n_rows,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            requested decode bin, by default None.
         row_slice : slice | None, optional
             Contiguous range of rows of the full-time likelihood to compute, by
             default None (all rows). ``time_edges`` stay the FULL decoding edges,
@@ -4655,8 +4656,9 @@ class SortedSpikesDetector(_DetectorBase):
             Position data, by default None.
         position_time : array_like, shape (n_time_position,), optional
             Time points for position data, by default None.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
@@ -4788,8 +4790,9 @@ class SortedSpikesDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Denote missing samples, None includes all samples, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4978,8 +4981,9 @@ class SortedSpikesDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Denote missing samples, None includes all samples, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
         n_chunks : int, optional
             Number of chunks for processing, by default 1.
 
