@@ -756,6 +756,13 @@ class KDEModel:
         return jnp.where(jnp.sum(self.weights_) > 0.0, values, -jnp.inf)
 
 
+# Pickles name a class by its module. Detectors saved before likelihoods.common
+# became a package name ``non_local_detector.likelihoods.common.KDEModel``;
+# keeping that name lets releases before the split load detectors saved now.
+# The package re-exports the class, so the name resolves here too.
+KDEModel.__module__ = "non_local_detector.likelihoods.common"
+
+
 def kde_log_density(model: KDEModel, points: jax.Array | np.ndarray) -> jax.Array:
     """Compute the true log density, with zero total fitted weight as zero mass.
 
