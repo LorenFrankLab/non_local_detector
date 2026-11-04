@@ -620,6 +620,59 @@ def test_public_passes_check_initial_distribution(name):
     )
 
 
+@pytest.mark.parametrize("covariate", [False, True])
+def test_public_filter_chains_through_a_lossy_prediction(covariate):
+    """A filter's final prediction is a valid next initial distribution.
+
+    With a bin nothing can leave (an all-zero continuous row), the
+    prediction sums below 1. Passing it on to the next call must give the
+    marginal of one call over the whole recording, as the chunked drivers
+    do by carrying it across chunks.
+    """
+    inputs = _inputs()
+    continuous = inputs["continuous_transition_matrix"].copy()
+    continuous[2] = 0.0
+    if covariate:
+        pass_ = core.filter_covariate_dependent
+        transitions = [
+            inputs["discrete_transition_matrix"],
+            continuous,
+            inputs["state_ind"],
+        ]
+    else:
+        pass_ = core.filter
+        transitions = [continuous]
+    ll = inputs["log_likelihoods"]
+    split = N_TIME // 2
+
+    def run(initial, rows):
+        sliced = [t[rows] if t.ndim == 3 else t for t in map(np.asarray, transitions)]
+        return pass_(initial, *sliced, ll[rows])
+
+    (whole, _), _ = run(inputs["initial_distribution"], slice(None))
+    (first, prediction), _ = run(inputs["initial_distribution"], slice(split))
+    assert float(np.sum(prediction)) < 1 - 1e-3
+    (second, _), _ = run(prediction, slice(split, None))
+    np.testing.assert_allclose(float(first) + float(second), float(whole), rtol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        name
+        for name in PUBLIC_PASSES
+        if "initial_distribution" in PUBLIC_PASSES[name][1]
+    ],
+)
+def test_public_passes_reject_initial_negative_entries(name):
+    _public_raises(
+        name,
+        "initial_distribution must be a probability distribution",
+        "minimum entry -0.1",
+        initial_distribution=np.array([0.5, 0.6, -0.1]),
+    )
+
+
 @pytest.mark.parametrize("name", ["filter", "smoother", "viterbi"])
 def test_public_stationary_passes_check_transition_rows(name):
     _public_raises(
