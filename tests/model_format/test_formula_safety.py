@@ -3,7 +3,8 @@
 A file whose stored formula was edited to one outside the formula grammar
 loads for inspection only, as an unpickled detector with such a formula does:
 ``load_model`` warns, never calls patsy, and the loaded detector refuses to
-decode; ``read_model_summary`` still reads it.
+decode; ``read_model_summary`` still reads it. Covariates are stored only as
+numeric ``.npy`` arrays.
 """
 
 import json
@@ -114,3 +115,22 @@ def test_an_allowed_stored_formula_rebuilds_the_design(fitted, tmp_path):
         loaded.discrete_transition_design_matrix_,
         fitted.discrete_transition_design_matrix_,
     )
+
+
+def test_covariates_are_stored_as_numeric_arrays(fitted, tmp_path):
+    path = tmp_path / "model.nld"
+    fitted.save_model(path)
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    (entry,) = (
+        entry
+        for member, entry in manifest["arrays"].items()
+        if "discrete_transition_covariate_data" in member
+    )
+    assert entry["dtype"] == "<f8"
+
+    fitted._discrete_transition_covariate_data_ = {
+        "speed": np.array(["fast", "slow"], dtype=object)
+    }
+    with pytest.raises(ValidationError, match="not numeric"):
+        fitted.save_model(tmp_path / "object.nld")

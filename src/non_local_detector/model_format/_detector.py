@@ -459,6 +459,34 @@ def _fitted_attributes(
     return set(vars(detector)) - set(constructed) - _NOT_SAVED
 
 
+def _check_numeric_covariates(covariate_data: Any) -> None:
+    """Require covariates that are numeric or boolean arrays.
+
+    They are stored as ``.npy`` arrays and evaluated by the transition
+    formula on load, so only plain numbers are kept.
+
+    Raises
+    ------
+    ValidationError
+        If a covariate is not a numeric or boolean array (or DataFrame
+        column).
+    """
+    if covariate_data is None:
+        return
+    for name in covariate_data:
+        values = covariate_data[name]
+        if hasattr(values, "to_numpy"):
+            values = values.to_numpy()
+        if not isinstance(values, np.ndarray) or values.dtype.kind not in "biuf":
+            msg = f"Cannot save the transition covariate {name!r}: it is not numeric"
+            raise ValidationError(
+                msg,
+                expected="a numeric or boolean array",
+                got=f"{type(values).__name__} of dtype {getattr(values, 'dtype', None)}",
+                hint="Encode categories as numbers before fitting.",
+            )
+
+
 def detector_documents(
     detector: "_DetectorBase",
 ) -> tuple[dict[str, Any], JSON, dict[str, Any], ArrayWriter]:
@@ -496,6 +524,9 @@ def detector_documents(
     check = vars(detector).get("_rebuild_check_")
     if check is not None:
         check.verify(detector)
+    _check_numeric_covariates(
+        getattr(detector, "_discrete_transition_covariate_data_", None)
+    )
 
     environments = detector.environments_
     names = {id(env): env.environment_name for env in environments}

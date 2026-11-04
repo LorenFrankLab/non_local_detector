@@ -24,8 +24,8 @@ JSON object:
     An object of a registered type (see ``register_type``).
 ``{"$environment": name}``
     The model's fitted environment of that name.
-``{"$graph": {...}}``, ``{"$dataframe": {...}}``, ``{"$categorical": {...}}``
-    A networkx graph, a pandas DataFrame and a categorical column.
+``{"$graph": {...}}``, ``{"$dataframe": {...}}``
+    A networkx graph; a pandas DataFrame, whose columns are arrays.
 
 Nothing in a file names a module or a class except through ``$type`` names,
 which only the registry resolves.
@@ -333,22 +333,6 @@ class Encoder:
             }
         }
 
-    def _column(self, column: pd.Series, where: str) -> JSON:
-        if isinstance(column.dtype, pd.CategoricalDtype):
-            return {
-                "$categorical": {
-                    "codes": self._array(column.cat.codes.to_numpy(), f"{where}/codes"),
-                    "categories": self.encode(
-                        column.cat.categories.to_numpy(), f"{where}/categories"
-                    ),
-                    "ordered": bool(column.cat.ordered),
-                }
-            }
-        values = column.to_numpy()
-        if values.dtype.hasobject and all(isinstance(v, str) for v in values):
-            values = values.astype(str)
-        return self._array(values, where)
-
     def _dataframe(self, frame: pd.DataFrame, where: str) -> JSON:
         index = frame.index
         encoded_index: JSON
@@ -362,7 +346,7 @@ class Encoder:
                     self.encode(name, f"{where}/columns") for name in frame.columns
                 ],
                 "values": [
-                    self._column(frame[name], f"{where}/{i}")
+                    self._array(frame[name].to_numpy(), f"{where}/{i}")
                     for i, name in enumerate(frame.columns)
                 ],
                 "index": encoded_index,
@@ -492,14 +476,6 @@ class Decoder:
         graph.add_nodes_from(nodes)
         graph.add_edges_from(edges)
         return graph
-
-    def _categorical(self, node: JSON) -> Any:
-        content = node["$categorical"]
-        return pd.Categorical.from_codes(
-            np.asarray(self.decode(content["codes"])),
-            categories=self.decode(content["categories"]),
-            ordered=content["ordered"],
-        )
 
     def _dataframe(self, node: JSON) -> Any:
         content = node["$dataframe"]
