@@ -2152,13 +2152,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             Position array to validate.
         context : str, optional
             Name of the calling context (``"fit"`` or ``"predict"``)
-            for error messages.
+            for error messages. ``fit`` checks the configured
+            ``environments``, which it is about to fit; ``predict`` checks
+            the fitted ``environments_``, which it decodes on.
         """
         is_1d = position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1)
         if not is_1d:
             return
 
-        has_track_graph = any(env.track_graph is not None for env in self.environments)
+        environments = self.environments if context == "fit" else self.environments_
+        has_track_graph = any(env.track_graph is not None for env in environments)
         if has_track_graph:
             msg = (
                 "Environment has a track_graph but position is 1D "

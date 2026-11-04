@@ -9,6 +9,7 @@ was constructed with, before and after fitting, predicting and EM.
 import numpy as np
 import pytest
 from sklearn.base import clone
+from track_linearization import make_track_graph
 
 from non_local_detector import (
     Environment,
@@ -82,3 +83,30 @@ def test_predict_and_em_leave_the_parameter(recording):
 
     _assert_unfitted_configuration(detector.environments, (environment,))
     assert detector.environments_ is fitted
+
+
+def test_predict_checks_position_against_the_fitted_environments(recording):
+    """``set_params(environments=...)`` without a refit leaves the fit, so
+    predict validates position against ``environments_``: a 1-D position the
+    fitted open field accepts is not rejected because the new configuration
+    has a track graph."""
+    time, position, spike_times = recording
+    detector = NonLocalSortedSpikesDetector(
+        environments=Environment(place_bin_size=5.0)
+    )
+    detector.fit(time, position, spike_times)
+    graph = make_track_graph([(0.0, 0.0), (100.0, 0.0)], [(0, 1)])
+    detector.set_params(
+        environments=Environment(
+            track_graph=graph, edge_order=[(0, 1)], edge_spacing=0.0
+        )
+    )
+    time_edges = detector.calculate_time_edges([time[0], time[-1]], trim=True)
+
+    results = detector.predict(
+        spike_times=spike_times,
+        time_edges=time_edges,
+        position_time=time,
+        position=position,
+    )
+    assert np.isfinite(results.acausal_state_probabilities).all()
