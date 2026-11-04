@@ -257,7 +257,8 @@ def _euclidean_random_walk(
     Parameters
     ----------
     environment : Environment
-        Environment whose ``place_bin_centers_`` define the bins.
+        Environment whose ``place_bin_centers_`` define the bins, shape
+        (n_position_bins, n_position_dims), or (n_position_bins,) for 1-D.
     movement_mean : float
         Mean displacement added to each bin center.
     movement_var : float
@@ -267,7 +268,8 @@ def _euclidean_random_walk(
     -------
     transition : np.ndarray, shape (n_position_bins, n_position_bins)
         Row ``i`` is the density of ``N(center_i + movement_mean,
-        movement_var)`` at every bin center.
+        movement_var)`` at every bin center. Square even for one bin, which
+        a row-by-row scipy build squeezed to shape (1,).
 
     Notes
     -----
@@ -285,6 +287,8 @@ def _euclidean_random_walk(
     ``eps * |d @ U|^2``.
     """
     place_bin_centers = np.asarray(environment.place_bin_centers_, dtype=float)
+    if place_bin_centers.ndim == 1:
+        place_bin_centers = place_bin_centers[:, np.newaxis]
     n_bins = len(place_bin_centers)
     sources = place_bin_centers + movement_mean
     n_dims = sources.shape[1]

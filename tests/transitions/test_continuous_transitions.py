@@ -106,6 +106,36 @@ def test_euclidean_random_walk_matches_scipy_row_by_row(
         np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=0.0)
 
 
+def test_euclidean_random_walk_accepts_flat_1d_centers():
+    """Bin centers of shape (n_bins,) are one-dimensional positions, as for
+    the per-row scipy build."""
+    from scipy.stats import multivariate_normal
+
+    from non_local_detector import continuous_state_transitions as cst
+
+    centers = np.linspace(0.0, 9.0, 10)
+    env = set_place_grid(Environment(), place_bin_centers=centers)
+    expected = np.stack(
+        [multivariate_normal(mean=c + 0.5, cov=2.0).pdf(centers) for c in centers]
+    )
+
+    actual = cst._euclidean_random_walk(env, 0.5, 2.0)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_random_walk_on_one_bin_grid_is_identity():
+    """A one-bin grid's Euclidean random walk is the (1, 1) matrix [[1]]:
+    ``make_state_transition`` masks and normalizes it as a square matrix."""
+    env = Environment(place_bin_size=100.0, position_range=((0.0, 30.0),))
+    env = env.fit_place_grid(np.linspace(0.0, 30.0, 11)[:, None])
+    assert env.place_bin_centers_.shape == (1, 1)
+
+    transition = RandomWalk().make_state_transition([env])
+
+    np.testing.assert_array_equal(transition, [[1.0]])
+
+
 @pytest.mark.parametrize(("movement_mean", "movement_var"), [(0.0, 6.0), (1.5, 0.5)])
 def test_track_graph_random_walk_matches_scipy_per_pair(
     monkeypatch, movement_mean, movement_var
