@@ -1870,6 +1870,13 @@ def _accept_unset_legacy_fitted_arguments(
                     "Environment(**environment.get_params())"
                 )
                 raise TypeError(msg)
+            kwargs = {
+                name: value for name, value in kwargs.items() if name not in legacy
+            }
+        # Construct first, so an unknown or invalid argument raises its own
+        # error rather than the deprecation (an error under -W error).
+        init(self, **kwargs)
+        if legacy:
             warnings.warn(
                 f"Environment() ignores the unset fitted attributes {legacy}, "
                 "which parameter rows saved as vars(environment) hold; this "
@@ -1878,10 +1885,6 @@ def _accept_unset_legacy_fitted_arguments(
                 DeprecationWarning,
                 stacklevel=user_stacklevel(),
             )
-            kwargs = {
-                name: value for name, value in kwargs.items() if name not in legacy
-            }
-        init(self, **kwargs)
 
     return __init__
 

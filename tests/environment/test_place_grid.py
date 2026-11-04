@@ -11,6 +11,7 @@ import copy
 import copyreg
 import dataclasses
 import pickle
+import warnings
 
 import networkx as nx
 import numpy as np
@@ -315,3 +316,13 @@ def test_legacy_open_field_with_x_fastest_centers_gets_its_own_bin_graph():
         step = np.abs(x_fastest[u] - x_fastest[v]) / bin_size
         assert np.all(step <= 1 + 1e-9), (u, v)
     assert graph.number_of_edges() == fitted.track_graphDD.number_of_edges()
+
+
+def test_an_invalid_argument_raises_before_the_legacy_warning():
+    """Under warnings-as-errors the real error must show, not the warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(TypeError, match="bogus"):
+            Environment(bogus=1, place_bin_centers_=None)
+        with pytest.raises(ValidationError, match="place_bin_size"):
+            Environment(place_bin_size=-1.0, place_bin_centers_=None)
