@@ -43,6 +43,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     SpikeTimeOrder,
+    blocked_nonlocal_poisson_log_likelihood,
     concatenate_row_blocks,
     environment_grid_fingerprint,
     full_to_local_index,
@@ -379,8 +380,8 @@ def assemble_place_fields(
         Sum of Hz rates across neurons; multiply by duration before scoring.
     interior_log_place_fields : jax.Array, shape (n_neurons, n_interior)
         ``log`` of the interior place fields, in ``node_order`` (== interior-flat-bin)
-        order -- exactly the quantity the non-local likelihood needs. Precomputed once so
-        repeated non-local decoding of the same encoding does not recompute the log.
+        order. Stored in the encoding model; prediction takes the log of
+        ``place_fields`` itself and checks only this array's length.
     """
     clipped_interior = np.clip(
         rate_interior.T, RATE_EPS_HZ, None
@@ -488,8 +489,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
         - 'place_fields': FULL-GRID place fields, shape (n_neurons, n_total_bins)
         - 'no_spike_part_log_likelihood': summed place fields, shape (n_total_bins,)
         - 'interior_log_place_fields': log of interior place fields, shape
-          (n_neurons, n_interior) -- precomputed so repeated non-local decoding of this
-          encoding reuses it instead of recomputing the log
+          (n_neurons, n_interior)
         - 'is_track_interior': interior-bin mask, shape (n_total_bins,)
         - 'node_order': interior flat-bin indices in graph order, shape (n_interior,)
         - 'bin_sizes': per-interior-bin volume, shape (n_interior,)
@@ -679,10 +679,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     is_local : bool, optional
         Compute the likelihood at the animal's position, by default False.
     interior_log_place_fields : jax.Array, shape (n_neurons, n_interior), optional
-        Precomputed ``log`` of the interior place fields, supplied by the encoding dict
-        (both the diffusion and MRF fits produce it), by default None. The non-local
-        likelihood uses it directly as the matmul's log-fields, so the ``log`` is not
-        recomputed per call.
+        ``log`` of the interior place fields, supplied by the encoding dict (both
+        the diffusion and MRF fits produce it), by default None. Only its length is
+        checked: the non-local emission takes the log of ``place_fields`` itself.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
@@ -782,53 +781,17 @@ def predict_sorted_spikes_diffusion_log_likelihood(
             disable_progress_bar,
         )[:, None]
 
-    # Slice all neurons' fields to interior bins once. Interior fields are floored at
-    # RATE_EPS_HZ (see assemble_place_fields), so log is finite and
-    # xlogy(count, field) reduces to count * log(field). The per-neuron loop
-    # accumulated sum_n count_n[:, None] * log(field_n)[None, :]; vectorize it as a
-    # (n_block_rows, n_neurons) @ (n_neurons, n_interior_bins) matmul per row block
-    # instead of N terms.
-    # The fit precomputes the interior log fields (in node_order == is_track_interior
-    # order), so the non-local likelihood is a count-matrix @ log-fields matmul.
-    log_interior_fields = (
-        jnp.log(jnp.asarray(place_fields)[:, is_track_interior])
-        if interior_log_place_fields is None
-        else jnp.asarray(interior_log_place_fields)
-    )
-    interior_summed_rates = no_spike_part_log_likelihood[is_track_interior]
-
-    def evaluate(start: int, stop: int) -> jax.Array:
-        """Return the log likelihood of rows ``start`` to ``stop``, shape (stop - start, n_interior_bins)."""
-        spike_counts = jnp.asarray(
-            spike_counts_matrix(
-                spike_times,
-                rows.time_edges,
-                "Position-Bin Likelihood",
-                True,
-                slice(start, stop),
-                _spike_time_order=rows.spike_time_order,
-            ),
-            dtype=log_interior_fields.dtype,
-        )
-        block_durations = durations[start - rows.start : stop - rows.start]
-        log_likelihood = jnp.matmul(
-            spike_counts, log_interior_fields, precision=jax.lax.Precision.HIGHEST
-        )
-        log_likelihood += (
-            spike_counts.sum(axis=1)[:, None] * jnp.log(block_durations)[:, None]
-        )
-        log_likelihood -= block_durations[:, None] * interior_summed_rates
-        return log_likelihood
-
-    if rows.start == rows.stop:
-        return evaluate(rows.start, rows.stop)
-    # Bounded count blocks, so a full-grid request never builds the
-    # rows-by-population count matrix.
-    return concatenate_row_blocks(
+    # The shared non-local emission, as for the sorted KDE and GLM: interior
+    # fields are floored at RATE_EPS_HZ (see assemble_place_fields), so it takes
+    # its count-matrix @ log-fields product in fixed 64-row blocks.
+    return blocked_nonlocal_poisson_log_likelihood(
+        spike_times,
+        rows.time_edges,
         rows.start,
         rows.stop,
-        len(spike_times),
-        evaluate,
-        "Position-Bin Likelihood",
-        disable_progress_bar,
+        jnp.asarray(place_fields)[:, is_track_interior],
+        durations,
+        no_spike_part_log_likelihood[is_track_interior],
+        disable_progress_bar=disable_progress_bar,
+        _spike_time_order=rows.spike_time_order,
     )
