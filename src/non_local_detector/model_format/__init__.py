@@ -26,7 +26,7 @@ It provides:
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.model_format._codec import Decoder
 from non_local_detector.model_format._container import (
     FORMAT_VERSION,
@@ -188,7 +188,7 @@ def _refuse_undecodable(detector: "_DetectorBase", path: str | Path) -> None:
         )
     try:
         detector._validate_time_contract()
-    except ValidationError as error:
+    except (NotFittedError, ValidationError) as error:
         msg = f"Cannot convert {path}: the model cannot decode ({error.args[0]})"
         raise ValidationError(
             msg,
