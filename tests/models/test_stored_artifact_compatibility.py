@@ -176,7 +176,7 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
     assert isinstance(
         model, ClusterlessDetector if clusterless else SortedSpikesDetector
     )
-    environment = model.environments[0]
+    environment = model.environments_[0]
     assert (environment.track_graph is not None) == ("1d" in artifact)
     interior_centers = environment.place_bin_centers_[
         environment.is_track_interior_.ravel(order="C")
@@ -187,6 +187,31 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
             place_fields = np.asarray(model.encoding_model_[key]["place_fields"])
             order = np.argsort(np.nanargmax(place_fields, axis=1).squeeze())
             assert sorted(order) == list(range(place_fields.shape[0]))
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_saved_model_moves_fitted_environments_to_environments_(version, artifact):
+    """These versions kept a detector's fitted environments in its
+    ``environments`` parameter. Loading moves them to ``environments_`` and
+    leaves unfitted copies of their configuration in ``environments``, as a
+    fit does now, so the parameters of a loaded model hold no fitted state."""
+    model = _load_model(version, artifact)
+
+    assert isinstance(model.environments, tuple)
+    assert len(model.environments_) == len(model.environments) == 1
+    for configured, fitted in zip(model.environments, model.environments_, strict=True):
+        assert configured is not fitted
+        assert configured.place_bin_centers_ is None
+        assert not configured._is_fitted
+        assert configured.get_cached("bin_distance_matrix") is None
+        assert fitted.place_bin_centers_ is not None
+        fitted_params = fitted.get_params()
+        for name, value in configured.get_params().items():
+            assert value is fitted_params[name], name
+    for obs in model.observation_models:
+        assert model._get_environment_by_name(obs.environment_name) in (
+            model.environments_
+        )
 
 
 @pytest.mark.parametrize(("version", "filename"), RESULTS)
@@ -285,15 +310,17 @@ def test_results_without_bin_bounds_cannot_be_aligned_to_tracking(
 def test_stored_parameter_row_rebuilds_a_detector(version, preset, row_format, inputs):
     """``DecodingParameters.fetch1`` and ``fetch_environments``: the row
     rebuilds a detector under the current validation, and its environments
-    initialize from the recording."""
+    initialize from the recording into ``environments_``."""
     detector = _spyglass_restore(_row(version, preset, row_format))
 
     position, _ = _recording(inputs, "clusterless" in preset)
     detector.initialize_environments(position=position)
 
-    environment = detector.environments[0]
+    environment = detector.environments_[0]
     assert (environment.track_graph is not None) == ("1d" in preset)
     assert environment.is_track_interior_.any()
+    # The rebuilt detector's parameters stay configuration.
+    assert detector.environments[0].place_bin_centers_ is None
 
 
 @pytest.mark.parametrize(

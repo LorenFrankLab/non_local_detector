@@ -283,7 +283,7 @@ def dense_reference(
     observations = observations or [ObservationModel() for _ in sizes]
     model = SimpleNamespace(
         state_ind_=np.repeat(np.arange(len(sizes)), sizes),
-        environments=tuple(envs),
+        environments_=tuple(envs),
         observation_models=observations,
         local_position_std=local_std,
     )

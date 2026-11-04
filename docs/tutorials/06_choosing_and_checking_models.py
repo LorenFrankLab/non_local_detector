@@ -220,7 +220,7 @@ fits = {
 # bin, `encoding_model_[...]["place_fields"]`, shape `(n_cells, n_bins)`.
 
 # %%
-environment = fits["sorted_spikes_kde"][0].environments[0]
+environment = fits["sorted_spikes_kde"][0].environments_[0]
 is_interior = environment.is_track_interior_.ravel()
 bin_centers = environment.place_bin_centers_[is_interior, 0]  # cm
 bin_edges = environment.place_bin_edges_.ravel()  # cm

@@ -57,13 +57,19 @@ class TestSetParams:
         detector.fit(time, position, spike_times)
         assert detector.environments[0].place_bin_size == 5.0
 
-    def test_environment_lookup_cache_is_invalidated(self):
-        detector = NonLocalSortedSpikesDetector()
+    def test_environment_lookup_follows_refit(self):
+        time, position, spike_times = _simulated_data()
+        detector = NonLocalSortedSpikesDetector().fit(time, position, spike_times)
         old = detector._get_environment_by_name("")
         new_env = Environment(environment_name="", place_bin_size=5.0)
         detector.set_params(environments=new_env)
-        assert detector._get_environment_by_name("") is new_env
-        assert detector._get_environment_by_name("") is not old
+        # set_params leaves the fit, so the lookup returns the old fit until refit.
+        assert detector._get_environment_by_name("") is old
+        detector.fit(time, position, spike_times)
+        refit = detector._get_environment_by_name("")
+        assert refit is detector.environments_[0]
+        assert refit is not new_env
+        assert refit.place_bin_size == 5.0
 
     @pytest.mark.parametrize("sampling_frequency", [-1, 0.0, float("nan")])
     def test_invalid_value_raises_and_leaves_params(self, sampling_frequency):

@@ -167,7 +167,7 @@ def plot_non_local_model(
     if time_slice is None:
         time_slice = slice(results.time.values[0], results.time.values[-1])
 
-    env = detector.environments[0]
+    env = detector.environments_[0]
     neuron_sort_ind, cell_label = _unit_order(detector, len(spike_times))
 
     state_names = detector.state_names

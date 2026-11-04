@@ -160,5 +160,5 @@ def test_detector_environments_keep_the_caller_configuration():
         infer_track_interior=False,
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
     ).fit(time, position, [np.array([0.021, 0.067, 0.121])])
-    assert decoder.environments[0].get_params() == environment.get_params()
-    assert decoder.environments[0].infer_track_interior_ is False
+    assert decoder.environments_[0].get_params() == environment.get_params()
+    assert decoder.environments_[0].infer_track_interior_ is False

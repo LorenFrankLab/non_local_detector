@@ -2047,9 +2047,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         tuples, ``state_names=None`` becomes generated names) and validation are
         exactly those of ``__init__``. The new values are applied only if the
         constructor accepts them; on error the detector is unchanged. Fitted
-        attributes are not touched. Changing ``environments``,
-        ``state_names``, ``observation_models`` or any other parameter a fit
-        depends on after fitting therefore requires refitting.
+        attributes, including the fitted environments in ``environments_``,
+        are not touched. Changing ``environments``, ``state_names``,
+        ``observation_models`` or any other parameter a fit depends on after
+        fitting therefore requires refitting.
 
         As with the constructor, parameters that must agree (for example
         ``discrete_initial_conditions``, ``observation_models``,
@@ -2818,7 +2819,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Each environment is rebuilt from its configuration
         (``Environment.get_params``) and the copy is fitted, so the
         environments passed to the model, which other models may share, are
-        never changed. ``self.environments`` holds the fitted copies afterwards.
+        never changed. ``self.environments`` keeps the configuration and
+        ``self.environments_`` holds the fitted copies afterwards.
 
         Parameters
         ----------
@@ -2863,7 +2865,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 **distance_options,
             )
             fitted_environments.append(environment)
-        self.environments = tuple(fitted_environments)
+        self.environments_ = tuple(fitted_environments)
 
     def _initialize_state_index(self) -> None:
         """Initialize indices and parameters related to the combined state space.
@@ -2939,7 +2941,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             if obs.is_local and self.local_position_std is not None:
                 effective_obs = replace(obs, is_local=False)
             ic_parts.append(
-                cont_ic.make_initial_conditions(effective_obs, self.environments)
+                cont_ic.make_initial_conditions(effective_obs, self.environments_)
             )
         self.continuous_initial_conditions_ = np.concatenate(ic_parts)
         self.initial_conditions_ = (
@@ -3011,7 +3013,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
             operator = build_transition_operator(
                 self.continuous_transition_types,
-                self.environments,
+                self.environments_,
                 self.bin_sizes_,  # type: ignore[arg-type]  # typed Sequence[int] in transition_operators; an ndarray works
                 observation_models=self.observation_models,
                 local_position_std=self.local_position_std,
@@ -3048,7 +3050,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 # Blocks between a one-bin and a spatial state follow the
                 # structured operator's rule, so both representations agree.
                 one_bin_block = _one_bin_block(
-                    transition, self.environments, n_row_bins, n_col_bins
+                    transition, self.environments_, n_row_bins, n_col_bins
                 )
                 if one_bin_block is not None:
                     self.continuous_state_transitions_[inds] = one_bin_block.entries(
@@ -3058,7 +3060,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 else:
                     self.continuous_state_transitions_[inds] = _make_transition_block(
                         transition,
-                        self.environments,
+                        self.environments_,
                         context,
                         (n_row_bins, n_col_bins),
                     )
@@ -3106,6 +3108,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     penalties,
                     self.discrete_transition_coefficients_.shape[1],
                 )[0]
+        # Detectors fitted before ``environments_`` existed kept the fitted
+        # copies in ``environments``: move them, and leave the configuration.
+        if "environments_" not in state and any(
+            env.place_bin_centers_ is not None for env in self.environments
+        ):
+            self.environments_ = tuple(self.environments)
+            self.environments = tuple(
+                env._unfitted_copy() for env in self.environments_
+            )
         # Encoding models fitted before each recorded its algorithm.
         encoding_model = state.get("encoding_model_")
         if isinstance(encoding_model, Mapping):
@@ -6329,7 +6340,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def _get_environment_by_name(self, environment_name: str) -> Environment:
         """
-        Get one of this model's environments by name.
+        Get one of this model's fitted environments by name.
 
         Parameters
         ----------
@@ -6339,16 +6350,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Returns
         -------
         Environment
-            The environment object.
+            The fitted copy in ``environments_``.
 
         Raises
         ------
         ValidationError
             If environment not found.
         """
-        # Looked up in ``self.environments`` on every call: each fit replaces
+        # Looked up in ``self.environments_`` on every call: each fit replaces
         # them with new fitted copies, so a stored lookup would go stale.
-        return find_environment_by_name(self.environments, environment_name)
+        return find_environment_by_name(self.environments_, environment_name)
 
 
 class ClusterlessDetector(_DetectorBase):

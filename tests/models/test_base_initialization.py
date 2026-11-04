@@ -339,8 +339,8 @@ class TestInitializeEnvironmentsFitting:
         decoder.initialize_environments(position)
 
         # Assert
-        assert decoder.environments[0].place_bin_centers_ is not None
-        assert decoder.environments[0].place_bin_centers_.shape[0] > 0
+        assert decoder.environments_[0].place_bin_centers_ is not None
+        assert decoder.environments_[0].place_bin_centers_.shape[0] > 0
 
     def test_initialize_environments_with_multiple_environments(
         self, simple_1d_environment
@@ -372,8 +372,8 @@ class TestInitializeEnvironmentsFitting:
         decoder.initialize_environments(position, environment_labels=environment_labels)
 
         # Assert
-        assert decoder.environments[0].place_bin_centers_ is not None
-        assert decoder.environments[1].place_bin_centers_ is not None
+        assert decoder.environments_[0].place_bin_centers_ is not None
+        assert decoder.environments_[1].place_bin_centers_ is not None
 
     def test_initialize_environments_linearizes_2d_position_with_track_graph(
         self, monkeypatch
@@ -433,7 +433,7 @@ class TestInitializeEnvironmentsFitting:
         assert len(received) == 1
         assert received[0].squeeze().ndim == 1
         np.testing.assert_allclose(received[0].squeeze(), position_2d[:, 0])
-        assert decoder.environments[0].place_bin_centers_.shape[1] == 1
+        assert decoder.environments_[0].place_bin_centers_.shape[1] == 1
 
 
 def _n_state_decoder(environment, discrete_initial_conditions):

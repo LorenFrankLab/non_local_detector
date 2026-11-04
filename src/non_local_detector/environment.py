@@ -412,6 +412,27 @@ class Environment:
         self.__dict__.update(state)
         self.__dict__.setdefault("_cache", {})
 
+    def _unfitted_copy(self) -> "Environment":
+        """A shallow copy holding this environment's configuration only.
+
+        Unlike ``Environment(**self.get_params())`` it does not run the
+        constructor's validation, so it also copies configurations stored by
+        earlier releases that the current validation would reject.
+
+        Returns
+        -------
+        Environment
+            Shares the configuration objects (``track_graph``, ...) with this
+            environment; the fitted attributes are unset and the cache empty.
+        """
+        unfitted = object.__new__(type(self))
+        unfitted.__dict__.update(self.__dict__)
+        for item in fields(self):
+            if item.metadata.get("fitted"):
+                setattr(unfitted, item.name, item.default)
+        unfitted._cache = {}
+        return unfitted
+
     def get_cached(self, key: str) -> Any:
         """Return the derived data cached under ``key``, or None.
 

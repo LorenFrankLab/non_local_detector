@@ -142,7 +142,7 @@ def test_pickles_from_earlier_releases_drop_stored_environments(data):
 
     # The state earlier releases pickled: make_state_transition stored the
     # environment it was built on.
-    environment = decoder.environments[0]
+    environment = decoder.environments_[0]
     for row in decoder.continuous_transition_types:
         for transition in row:
             if isinstance(transition, Uniform):

@@ -209,7 +209,7 @@ def test_movie_map_position_is_nan_without_spatial_mass(monkeypatch):
         }
     )
     classifier = SimpleNamespace(
-        environments=[SimpleNamespace(is_track_interior_=np.ones((3, 2), dtype=bool))]
+        environments_=[SimpleNamespace(is_track_interior_=np.ones((3, 2), dtype=bool))]
     )
     position_info = pd.DataFrame(
         {

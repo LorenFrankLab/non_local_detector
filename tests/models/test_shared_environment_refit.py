@@ -31,7 +31,7 @@ def test_detectors_sharing_an_environment_keep_their_own_grids():
 
     first = _decoder(environment).fit(time, position, spikes)
     expected = first.predict(spikes, time_edges=edges, return_outputs="log_likelihood")
-    first_centers = first.environments[0].place_bin_centers_.copy()
+    first_centers = first.environments_[0].place_bin_centers_.copy()
 
     # 37 cm further along the track: a different grid.
     second = _decoder(environment).fit(time, position + 37.0, spikes)
@@ -40,19 +40,21 @@ def test_detectors_sharing_an_environment_keep_their_own_grids():
     )
     assert np.isfinite(second_result.log_likelihood.values).all()
     np.testing.assert_allclose(
-        second.environments[0].place_bin_centers_, first_centers + 37.0
+        second.environments_[0].place_bin_centers_, first_centers + 37.0
     )
 
     # The first detector's grid and decodes are unchanged.
     np.testing.assert_array_equal(
-        first.environments[0].place_bin_centers_, first_centers
+        first.environments_[0].place_bin_centers_, first_centers
     )
     actual = first.predict(spikes, time_edges=edges, return_outputs="log_likelihood")
     np.testing.assert_array_equal(actual.log_likelihood, expected.log_likelihood)
 
-    # Each detector holds its own fitted copy; the caller's object stays unfitted.
-    assert first.environments[0] is not environment
-    assert second.environments[0] is not first.environments[0]
+    # Each detector holds its own fitted copy; the caller's object stays unfitted
+    # and remains each detector's configuration.
+    assert first.environments == second.environments == (environment,)
+    assert first.environments_[0] is not environment
+    assert second.environments_[0] is not first.environments_[0]
     assert not environment._is_fitted
     assert environment.place_bin_centers_ is None
     assert environment.get_cached("linear_position") is None
