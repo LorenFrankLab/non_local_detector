@@ -14,6 +14,7 @@ because its rates and transition clocks cannot be converted safely.
 """
 
 import copy
+import dataclasses
 import pickle
 from pathlib import Path
 
@@ -187,6 +188,23 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
             place_fields = np.asarray(model.encoding_model_[key]["place_fields"])
             order = np.argsort(np.nanargmax(place_fields, axis=1).squeeze())
             assert sorted(order) == list(range(place_fields.shape[0]))
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_saved_model_can_be_displayed_and_its_parts_rebuilt(version, artifact):
+    """A loaded detector prints (as in a notebook), reports its parameters,
+    copies, and its transitions rebuild from their stored attributes."""
+    model = _load_model(version, artifact)
+
+    repr(model)
+    params = model.get_params(deep=False)
+    copy.deepcopy(model)
+    for transition in [t for row in model.continuous_transition_types for t in row]:
+        if dataclasses.is_dataclass(transition):
+            assert type(transition)(**vars(transition)) == transition
+    if version.startswith("v"):  # releases, saved before these parameters
+        assert params["discrete_transition_prior_weight"] == 0.0
+        assert params["frozen_discrete_transition_rows"] is None
 
 
 def test_random_walk_row_with_the_removed_diffusion_option_is_refused():
