@@ -3,15 +3,19 @@
 The dense drivers (``chunked_filter_smoother``, ``most_likely_sequence`` and
 their covariate-dependent variants) and ``checkpointed_forward_backward`` share
 one validator: the same shapes, dtype rule and probability constraints, raised
-as ``ValidationError`` before any likelihood is evaluated.
+as ``ValidationError`` before any likelihood is evaluated. The jit-composable
+passes (``filter``, ``smoother``, ``viterbi`` and their covariate-dependent
+variants) apply its shape and probability checks to concrete inputs.
 """
 
 import re
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector import core
 from non_local_detector.checkpointed_inference import checkpointed_forward_backward
 from non_local_detector.core import (
     PROBABILITY_SUM_TOLERANCE,
@@ -527,3 +531,162 @@ def test_checkpointed_spatial_without_state_ind_names_the_discrete_matrix():
         output_mode="spatial",
     )
     assert "Pass state_ind" in message
+
+
+def _filtered():
+    return np.full((N_TIME, N_BINS), 1 / N_BINS)
+
+
+# Each public pass with its inputs, in its positional order.
+PUBLIC_PASSES = {
+    "filter": (
+        core.filter,
+        ("initial_distribution", "transition_matrix", "log_likelihoods"),
+    ),
+    "smoother": (core.smoother, ("transition_matrix", "filtered_probs")),
+    "viterbi": (
+        core.viterbi,
+        ("initial_distribution", "transition_matrix", "log_likelihoods"),
+    ),
+    "filter_covariate": (
+        core.filter_covariate_dependent,
+        (
+            "initial_distribution",
+            "discrete_transition_matrix",
+            "continuous_transition_matrix",
+            "state_ind",
+            "log_likelihoods",
+        ),
+    ),
+    "smoother_covariate": (
+        core.smoother_covariate_dependent,
+        (
+            "discrete_transition_matrix",
+            "continuous_transition_matrix",
+            "state_ind",
+            "filtered_probs",
+        ),
+    ),
+    "viterbi_covariate": (
+        core.viterbi_covariate_dependent,
+        (
+            "initial_distribution",
+            "discrete_transition_matrix",
+            "continuous_transition_matrix",
+            "state_ind",
+            "log_likelihoods",
+        ),
+    ),
+}
+
+
+def _public_args(name, **overrides):
+    inputs = {**_inputs(), "filtered_probs": _filtered(), **overrides}
+    return [
+        jnp.asarray(inputs[key], jnp.int32 if key == "state_ind" else jnp.float32)
+        for key in PUBLIC_PASSES[name][1]
+    ]
+
+
+def _public_raises(name, *pieces, **overrides):
+    with pytest.raises(ValidationError) as caught:
+        PUBLIC_PASSES[name][0](*_public_args(name, **overrides))
+    message = str(caught.value)
+    for piece in pieces:
+        assert piece in message, message
+    assert "Hint:" in message, message
+
+
+@pytest.mark.parametrize("name", PUBLIC_PASSES)
+def test_public_passes_accept_valid_inputs(name):
+    PUBLIC_PASSES[name][0](*_public_args(name))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        name
+        for name in PUBLIC_PASSES
+        if "initial_distribution" in PUBLIC_PASSES[name][1]
+    ],
+)
+def test_public_passes_check_initial_distribution(name):
+    """``filter(3 * p0, 1.5 * A, ll)`` returned a marginal of 17.82, not 9.02."""
+    _public_raises(
+        name,
+        "initial_distribution must be a probability distribution",
+        "sums to 3",
+        initial_distribution=np.full(N_BINS, 1.0),
+    )
+
+
+@pytest.mark.parametrize("name", ["filter", "smoother", "viterbi"])
+def test_public_stationary_passes_check_transition_rows(name):
+    _public_raises(
+        name,
+        "transition_matrix rows must be probability distributions",
+        "row 0 sums to 1.5",
+        transition_matrix=np.full((N_BINS, N_BINS), 1.5 / N_BINS),
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["filter_covariate", "smoother_covariate", "viterbi_covariate"]
+)
+def test_public_covariate_passes_check_transitions(name):
+    discrete = np.full((N_TIME, N_STATES, N_STATES), 0.5)
+    discrete[3, 1] = 1.0
+    _public_raises(
+        name,
+        "discrete_transition_matrix rows must be probability distributions",
+        "time 3",
+        discrete_transition_matrix=discrete,
+    )
+    continuous = np.full((N_BINS, N_BINS), 0.5)
+    continuous[2, :2] = 0.6
+    _public_raises(
+        name,
+        "continuous_transition_matrix rows must be probability distributions",
+        "bin 2 to discrete state 0 sums to 1.2",
+        continuous_transition_matrix=continuous,
+    )
+
+
+@pytest.mark.parametrize("name", PUBLIC_PASSES)
+def test_public_passes_check_transition_shape(name):
+    key = PUBLIC_PASSES[name][1][1 if name != "smoother" else 0]
+    if key == "discrete_transition_matrix":
+        key = "continuous_transition_matrix"
+    _public_raises(
+        name,
+        f"{key} has the wrong shape",
+        f"Expected: shape ({N_BINS}, {N_BINS})",
+        **{key: np.eye(N_BINS + 1)},
+    )
+
+
+@pytest.mark.parametrize("name", PUBLIC_PASSES)
+def test_public_passes_skip_checks_under_jit(name):
+    """Traced inputs are not checked, so the passes compose with ``jax.jit``.
+
+    The jitted pass of valid inputs equals the checked call, and the jitted
+    pass of invalid inputs runs without a host transfer of its traced
+    arguments.
+    """
+    function = PUBLIC_PASSES[name][0]
+    args = _public_args(name)
+    jitted = jax.jit(function)
+    for expected, actual in zip(
+        jax.tree_util.tree_leaves(function(*args)),
+        jax.tree_util.tree_leaves(jitted(*args)),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    bad = _public_args(
+        name,
+        initial_distribution=np.full(N_BINS, 1.0),
+        transition_matrix=np.full((N_BINS, N_BINS), 1.5 / N_BINS),
+        discrete_transition_matrix=np.ones((N_TIME, N_STATES, N_STATES)),
+    )
+    with jax.transfer_guard_device_to_host("disallow"):
+        jax.block_until_ready(jitted(*bad))

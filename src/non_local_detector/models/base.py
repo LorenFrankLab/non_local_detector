@@ -73,6 +73,7 @@ from non_local_detector.exceptions import (
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
+from non_local_detector.initial_conditions import _check_state_initial_conditions
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -1427,10 +1428,12 @@ class _DetectorBase(
         from dataclasses import replace
 
         ic_parts = []
-        for obs, cont_ic in zip(
-            self.observation_models,
-            self.continuous_initial_conditions_types,
-            strict=False,
+        for state, (obs, cont_ic) in enumerate(
+            zip(
+                self.observation_models,
+                self.continuous_initial_conditions_types,
+                strict=False,
+            )
         ):
             # Multi-bin local uses full spatial initial conditions
             effective_obs = obs
@@ -1438,6 +1441,14 @@ class _DetectorBase(
                 effective_obs = replace(obs, is_local=False)
             ic_parts.append(
                 cont_ic.make_initial_conditions(effective_obs, self.environments_)
+            )
+            _check_state_initial_conditions(
+                ic_parts[-1],
+                state_name=self.state_names[state],
+                initial_conditions=cont_ic,
+                is_interior=self.is_track_interior_state_bins_[
+                    self.state_ind_ == state
+                ],
             )
         self.continuous_initial_conditions_ = np.concatenate(ic_parts)
         self.initial_conditions_ = (

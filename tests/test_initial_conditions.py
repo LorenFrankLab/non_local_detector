@@ -174,3 +174,64 @@ class TestContinuousICUpdate:
                 1.0,
                 rtol=1e-5,
             )
+
+
+@pytest.fixture(scope="module")
+def short_recording():
+    _, position, spike_times, time, _, _, _, _ = make_simulated_data(
+        seed=42, n_neurons=5
+    )
+    n_time = 2000
+    time, position = time[:n_time], position[:n_time]
+    return time, position, [times[times <= time[-1]] for times in spike_times]
+
+
+def _scaled(scale=1.0, shift=0.0, extra_bins=0):
+    """Initial-condition class whose spatial output is changed as given."""
+
+    class CustomInitialConditions(UniformInitialConditions):
+        def make_initial_conditions(self, observation_model, environments):
+            values = super().make_initial_conditions(observation_model, environments)
+            if values.size == 1:
+                return values
+            values = scale * values
+            values[np.argmax(values)] += shift
+            return np.concatenate([values, np.zeros(extra_bins)])
+
+    return CustomInitialConditions()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("initial_conditions", "got"),
+    [
+        (_scaled(scale=2.0), "sums to 2 over its"),
+        (_scaled(shift=-1.0), "minimum entry"),
+        (_scaled(shift=np.nan), "non-finite entries"),
+        (_scaled(extra_bins=3), "shape"),
+    ],
+)
+def test_fit_names_the_state_of_an_invalid_initial_condition(
+    short_recording, initial_conditions, got
+):
+    """A custom initial condition is checked per state, at fit.
+
+    It used to surface at predict as an error on the joint
+    ``initial_distribution`` that named neither the state nor the class.
+    """
+    time, position, spike_times = short_recording
+    detector = NonLocalSortedSpikesDetector(
+        continuous_initial_conditions_types=[
+            UniformInitialConditions(),
+            UniformInitialConditions(),
+            initial_conditions,
+            UniformInitialConditions(),
+        ]
+    )
+    with pytest.raises(ValidationError) as caught:
+        detector.fit(time, position, spike_times)
+    message = str(caught.value)
+    assert "'Non-Local Continuous'" in message, message
+    assert "CustomInitialConditions" in message, message
+    assert got in message, message
+    assert "Hint:" in message, message

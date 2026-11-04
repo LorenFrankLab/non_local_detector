@@ -390,6 +390,15 @@ def _warn_degenerate_and_nan_timesteps(
         )
 
 
+def _is_traced(*values: object) -> bool:
+    """Whether any value is a JAX tracer (inside ``jit``, ``vmap`` or ``grad``).
+
+    Host-side checks and diagnostics need concrete values, so they skip
+    traced inputs, keeping the public passes JAX-transformable.
+    """
+    return any(isinstance(value, jax.core.Tracer) for value in values)
+
+
 def _warn_if_degenerate_timesteps(
     log_likelihoods: ArrayLike,
     *,
@@ -418,7 +427,7 @@ def _warn_if_degenerate_timesteps(
     computation still runs.
     """
     ll_array = jnp.asarray(log_likelihoods)
-    if isinstance(ll_array, jax.core.Tracer):
+    if _is_traced(ll_array):
         return
     n_total = int(np.prod(ll_array.shape[:-1])) if ll_array.ndim > 1 else 1
     degenerate_mask, nan_mask = _degenerate_and_nan_masks(ll_array)
@@ -499,7 +508,9 @@ class TransitionProducts(Protocol):
     passes see the transition model only through these products, so a
     structured operator never has to build ``T``. An operator is a registered
     JAX pytree whose methods are pure JAX. ``weight`` is None for a stationary
-    operator or the row's (n_states, n_states) discrete transition matrix.
+    operator or the row's (n_states, n_states) discrete transition matrix,
+    which scales ``T[i, j]`` by ``weight[s_i, s_j]`` (``s`` the discrete state
+    of each bin); the checkpointed driver checks the rows on that convention.
     Expected discrete transition counts need a :class:`TransitionOperator`.
     """
 
@@ -1073,9 +1084,14 @@ def _viterbi_scan(
         return best_next_score, best_next_state
 
     num_timesteps, num_states = log_likelihoods.shape
+    # The terminal cost takes the scores' dtype. A default-dtype zeros carry
+    # is float64 under x64, which promoted every step of a float32 scan.
+    score_dtype = jnp.result_type(
+        log_likelihoods, *jax.tree_util.tree_leaves((log_operator, log_weights))
+    )
     best_second_score, best_next_states = jax.lax.scan(
         _backward_step,
-        jnp.zeros(num_states),
+        jnp.zeros(num_states, dtype=score_dtype),
         (
             jnp.arange(num_timesteps - 1),
             None if log_weights is None else log_weights[:-1],
@@ -1174,9 +1190,11 @@ def filter(
     Parameters
     ----------
     initial_distribution : jax.Array, shape (n_states,)
-        Probability distribution of the initial state, P(z_1).
+        Probability distribution of the initial state, P(z_1): nonnegative,
+        summing to 1.
     transition_matrix : jax.Array, shape (n_states, n_states)
-        State transition probability matrix, P(z_t | z_{t-1}).
+        State transition probability matrix, P(z_t | z_{t-1}): nonnegative,
+        each row summing to at most 1.
     log_likelihoods : jax.Array, shape (n_time, n_states)
         Log likelihood of the observations for each state at each time step,
         log P(x_t | z_t).
@@ -1198,8 +1216,19 @@ def filter(
                 for t=1...T. Note that `predicted_probs[0]` is equivalent
                 to `initial_distribution`.
 
+    Raises
+    ------
+    ValidationError
+        If the inputs are concrete and their shapes disagree or they break
+        the probability contract above.
+
     Notes
     -----
+    The inputs are checked only when all of them are concrete arrays. Under
+    ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
+    skipped so the pass stays composable with no host transfer; check such
+    inputs before the transformation.
+
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
     falls back to the predicted distribution at that step. A ``NaN`` at a
     timestep is left to propagate (it signals a likelihood-computation bug, not
@@ -1215,6 +1244,13 @@ def filter(
     log-likelihood is ``-inf`` but no step was all-``-inf``, an additional
     ``logger.warning`` is emitted.
     """
+    if not _is_traced(initial_distribution, transition_matrix, log_likelihoods):
+        _check_hmm_arrays(
+            n_time=np.shape(log_likelihoods)[0],
+            initial_distribution=initial_distribution,
+            transition_matrix=transition_matrix,
+            log_likelihoods=log_likelihoods,
+        )
     (marginal, predicted_probs_next), (filtered, predicted, _) = _filter_jit(
         initial_distribution, transition_matrix, log_likelihoods
     )
@@ -1271,8 +1307,63 @@ def _smoother_impl(
     )
 
 
-# Apply JIT without donation - tests reuse inputs
-smoother = jax.jit(_smoother_impl)
+# JIT-compiled non-donating implementation (safe to reuse inputs across calls)
+_smoother_jit = jax.jit(_smoother_impl)
+
+
+def smoother(
+    transition_matrix: ArrayLike,
+    filtered_probs: ArrayLike,
+    initial: ArrayLike | None = None,
+    ind: ArrayLike | None = None,
+    n_time: int | None = None,
+) -> jax.Array:
+    """Perform the backward pass of the forward-backward algorithm (smoothing).
+
+    Parameters
+    ----------
+    transition_matrix : jax.Array, shape (n_states, n_states)
+        State transition probability matrix: nonnegative, each row summing
+        to at most 1.
+    filtered_probs : jax.Array, shape (n_time, n_states)
+        Filtered state probabilities.
+    initial : jax.Array, shape (n_states,), optional
+        Smoothed row after the last row; by default the last filtered row.
+    ind : jax.Array, shape (n_time,), optional
+        Row indices of the recording; by default ``arange(n_time)``.
+    n_time : int, optional
+        Rows in the whole recording; by default the length of
+        ``filtered_probs``.
+
+    Returns
+    -------
+    smoothed_probs : jax.Array, shape (n_time, n_states)
+        Smoothed state probabilities.
+
+    Raises
+    ------
+    ValidationError
+        If ``transition_matrix`` and ``filtered_probs`` are concrete and the
+        matrix does not have shape (n_states, n_states) or breaks the
+        probability contract above.
+
+    Notes
+    -----
+    The inputs are checked only when they are concrete arrays. Under
+    ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
+    skipped so the pass stays composable with no host transfer; check such
+    inputs before the transformation.
+    """
+    if not _is_traced(transition_matrix, filtered_probs):
+        _check_hmm_arrays(
+            n_time=np.shape(filtered_probs)[0],
+            n_bins=np.shape(filtered_probs)[-1],
+            transition_matrix=transition_matrix,
+        )
+    return cast(
+        jax.Array,
+        _smoother_jit(transition_matrix, filtered_probs, initial, ind, n_time),
+    )
 
 
 # Internal version with buffer donation for use in chunked drivers
@@ -1587,6 +1678,143 @@ def _check_continuous_block_rows(
         )
 
 
+@functools.partial(jax.jit, static_argnames=("n_bins", "dtype", "n_states"))
+def _operator_row_sums(
+    operator: TransitionProducts,
+    n_bins: int,
+    dtype: np.dtype[Any],
+    n_states: int | None,
+) -> jax.Array:
+    """Row sums ``T @ 1`` of an operator, or its per-target-state block sums.
+
+    Jitted: dispatching the products' operations one by one compiled each
+    of them, about 1 s for a 7,202-bin structured operator, against 0.1 s
+    for one compilation.
+
+    Parameters
+    ----------
+    operator : TransitionProducts
+        Transition operator.
+    n_bins : int
+        Number of state bins.
+    dtype : np.dtype
+        Dtype of the all-ones vector and the indicator weights.
+    n_states : int or None
+        Number of discrete states of per-row weights; None for a stationary
+        operator.
+
+    Returns
+    -------
+    sums : jax.Array, shape (n_bins,) or (n_bins, n_states)
+        ``operator.backward(1, None)`` for a stationary operator. With
+        weights, column ``k`` is the product with the weight whose column
+        ``k`` is one: ``R[i, k]``, the sum of ``T[i, j]`` over the bins ``j``
+        of state ``k``, for an operator that scales ``T[i, j]`` by
+        ``weight[s_i, s_j]``.
+    """
+    ones = jnp.ones(n_bins, dtype=dtype)
+    if n_states is None:
+        return operator.backward(ones, None)
+    indicator = jnp.zeros((n_states, n_states), dtype=dtype)
+    return jnp.stack(
+        [operator.backward(ones, indicator.at[:, k].set(1)) for k in range(n_states)],
+        axis=-1,
+    )
+
+
+def _check_operator_rows(
+    operator: TransitionProducts,
+    n_bins: int,
+    dtype: DTypeLike,
+    n_states: int | None = None,
+) -> None:
+    """Raise unless no row of ``operator``'s transition creates mass.
+
+    An operator exposes only its products, so its rows are checked through
+    their sums ``T @ 1 = operator.backward(1, weight)``, with the dense
+    checks' semantics: as :func:`_check_transition_rows` for a stationary
+    operator, and as :func:`_check_continuous_block_rows`, per target state,
+    for one given per-row discrete weights (``n_states``), which assumes the
+    operator scales ``T[i, j]`` by ``weight[s_i, s_j]`` as every operator in
+    the package does. A negative entry that its row's other entries
+    outweigh is not visible in the sums. The check costs one product
+    (``n_states`` with weights) and its compilation, measured at 0.2 ms and
+    0.1 s for a 7,202-bin structured operator, against seconds for the
+    checkpointed passes over 10,000 rows.
+
+    Parameters
+    ----------
+    operator : TransitionProducts
+        Transition operator, applied to all-ones vectors.
+    n_bins : int
+        Number of state bins.
+    dtype : dtype
+        Working dtype of the products.
+    n_states : int, optional
+        Number of discrete states of the per-row weights; None for a
+        stationary operator.
+
+    Raises
+    ------
+    ValidationError
+        If the operator cannot be applied to ``n_bins`` state bins, or its
+        row sums are not finite, are negative, or exceed 1 (per target state
+        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``.
+    """
+    name = "transition_operator"
+    try:
+        sums = np.asarray(
+            _operator_row_sums(operator, n_bins, np.dtype(dtype), n_states),
+            dtype=np.float64,
+        )
+        failure = None if sums.shape[:1] == (n_bins,) else f"shape {sums.shape[:1]}"
+    except (TypeError, ValueError) as error:
+        # A product of another size fails inside JAX's shape checks.
+        failure = f"{type(error).__name__}: {error}"
+    if failure is not None:
+        msg = f"{name} gives row sums of the wrong shape"
+        raise ValidationError(
+            msg,
+            expected=f"shape ({n_bins},), one sum per state bin",
+            got=failure,
+            hint="The operator's state bins must be those of "
+            "initial_distribution and state_ind.",
+        )
+    got = None
+    if not np.all(np.isfinite(sums)):
+        got = "non-finite row sums (nan or inf)"
+    elif sums.min() < 0:
+        where = np.unravel_index(int(np.argmin(sums)), sums.shape)
+        got = f"negative row sum {sums.min():.6g} at row {where[0]}"
+    else:
+        above = ~(sums <= 1 + PROBABILITY_SUM_TOLERANCE)
+        if above.any():
+            where = np.unravel_index(int(np.argmax(above)), above.shape)
+            got = (
+                f"{int(above.sum())} of {above.size} rows sum above 1 (row "
+                f"{where[0]} sums to {sums[where]:.6g})"
+                if n_states is None
+                else f"{int(above.sum())} of {above.size} (bin, target state) "
+                f"rows sum above 1 (bin {where[0]} to discrete state "
+                f"{where[1]} sums to {sums[where]:.6g})"
+            )
+    if got is not None:
+        msg = f"{name} rows must be probability distributions"
+        raise ValidationError(
+            msg,
+            expected="rows summing to at most 1 (within "
+            f"{PROBABILITY_SUM_TOLERANCE:g})"
+            + ("" if n_states is None else " over the bins of each discrete state")
+            + "; a row below 1 loses probability, as for a bin with no "
+            "outgoing transition",
+            got=got,
+            hint="Normalize the operator's conditional transitions so each "
+            "row sums to 1, leaving zero rows for bins nothing can leave. A "
+            "detector's operator holds its continuous transitions' blocks, "
+            "such as a custom transition's structured_block.",
+        )
+
+
 def _validate_hmm_inputs(
     *,
     n_time: int,
@@ -1646,21 +1874,78 @@ def _validate_hmm_inputs(
         If any input breaks the contract above.
     """
     dtype = _validate_dtype(dtype)
-    initial = np.asarray(initial_distribution)
-    if initial.ndim != 1 or initial.size == 0:
-        msg = "initial_distribution must be a nonempty vector over state bins"
-        raise ValidationError(
-            msg,
-            expected="shape (n_state_bins,) with n_state_bins >= 1",
-            got=f"shape {initial.shape}",
-            hint="Pass one initial probability per state bin.",
-        )
-    n_bins = initial.size
+    return dtype, _check_hmm_arrays(
+        n_time=n_time,
+        initial_distribution=initial_distribution,
+        state_ind=state_ind,
+        n_states=n_states,
+        transition_matrix=transition_matrix,
+        discrete_transition_matrix=discrete_transition_matrix,
+        continuous_transition_matrix=continuous_transition_matrix,
+        is_missing=is_missing,
+        log_likelihoods=log_likelihoods,
+    )
+
+
+def _check_hmm_arrays(
+    *,
+    n_time: int,
+    initial_distribution: Any = None,
+    n_bins: int | None = None,
+    state_ind: Any = None,
+    n_states: Any = None,
+    transition_matrix: Any = None,
+    discrete_transition_matrix: Any = None,
+    continuous_transition_matrix: Any = None,
+    is_missing: Any = None,
+    log_likelihoods: Any = None,
+) -> int | None:
+    """Check the shapes and probabilities of :func:`_validate_hmm_inputs`.
+
+    Everything that function checks except the dtype, for the passes that
+    compute in their inputs' dtype. The smoothers have no
+    ``initial_distribution`` and pass ``n_bins`` instead.
+
+    Parameters
+    ----------
+    n_time : int
+        Number of time bins.
+    initial_distribution : array_like, shape (n_state_bins,), optional
+        Nonnegative, summing to 1; sets ``n_state_bins``.
+    n_bins : int, optional
+        Number of state bins, without ``initial_distribution``.
+    state_ind, n_states, transition_matrix, discrete_transition_matrix, continuous_transition_matrix, is_missing, log_likelihoods : optional
+        As in :func:`_validate_hmm_inputs`.
+
+    Returns
+    -------
+    n_states : int or None
+        The number of discrete states, or None without ``state_ind``.
+
+    Raises
+    ------
+    ValidationError
+        If any input breaks the contract of :func:`_validate_hmm_inputs`.
+    """
+    if initial_distribution is None:
+        bins_source = "filtered_probs.shape[1]"
+    else:
+        initial = np.asarray(initial_distribution)
+        if initial.ndim != 1 or initial.size == 0:
+            msg = "initial_distribution must be a nonempty vector over state bins"
+            raise ValidationError(
+                msg,
+                expected="shape (n_state_bins,) with n_state_bins >= 1",
+                got=f"shape {initial.shape}",
+                hint="Pass one initial probability per state bin.",
+            )
+        n_bins, bins_source = initial.size, "len(initial_distribution)"
+        _check_distribution("initial_distribution", initial)
+    assert n_bins is not None  # given directly or by initial_distribution
     shape_hint = (
         f"n_time = {n_time} decoding time bins and n_state_bins = {n_bins} "
-        "(len(initial_distribution)) set every input's shape."
+        f"({bins_source}) set every input's shape."
     )
-    _check_distribution("initial_distribution", initial)
     if is_missing is not None:
         _check_shape("is_missing", is_missing, (n_time,), shape_hint)
     if log_likelihoods is not None:
@@ -1678,7 +1963,7 @@ def _validate_hmm_inputs(
             shape_hint,
         )
     if state_ind is None:
-        return dtype, None
+        return None
 
     state_ind = np.asarray(state_ind)
     _check_shape("state_ind", state_ind, (n_bins,), shape_hint)
@@ -1733,7 +2018,7 @@ def _validate_hmm_inputs(
             _check_continuous_block_rows(
                 np.asarray(continuous_transition_matrix), state_ind, n_states
             )
-    return dtype, n_states
+    return cast(int, n_states)
 
 
 def _store_chunk_rows(
@@ -2296,8 +2581,56 @@ def _viterbi_impl(
     )
 
 
-# Apply JIT without donation - tests reuse inputs
-viterbi = jax.jit(_viterbi_impl)
+# JIT-compiled non-donating implementation (safe to reuse inputs across calls)
+_viterbi_jit = jax.jit(_viterbi_impl)
+
+
+def viterbi(
+    initial_distribution: ArrayLike,
+    transition_matrix: ArrayLike,
+    log_likelihoods: ArrayLike,
+) -> jax.Array:
+    """Compute the most likely state sequence with the Viterbi algorithm.
+
+    Parameters
+    ----------
+    initial_distribution : jax.Array, shape (n_states,)
+        Initial state distribution: nonnegative, summing to 1.
+    transition_matrix : jax.Array, shape (n_states, n_states)
+        State transition probability matrix: nonnegative, each row summing
+        to at most 1.
+    log_likelihoods : jax.Array, shape (n_time, n_states)
+        Log likelihoods for each state at each time point.
+
+    Returns
+    -------
+    most_likely_state_sequence : jax.Array, shape (n_time,)
+        Most likely state sequence.
+
+    Raises
+    ------
+    ValidationError
+        If the inputs are concrete and their shapes disagree or they break
+        the probability contract above.
+
+    Notes
+    -----
+    The inputs are checked only when all of them are concrete arrays. Under
+    ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
+    skipped so the pass stays composable with no host transfer; check such
+    inputs before the transformation.
+    """
+    if not _is_traced(initial_distribution, transition_matrix, log_likelihoods):
+        _check_hmm_arrays(
+            n_time=np.shape(log_likelihoods)[0],
+            initial_distribution=initial_distribution,
+            transition_matrix=transition_matrix,
+            log_likelihoods=log_likelihoods,
+        )
+    return cast(
+        jax.Array,
+        _viterbi_jit(initial_distribution, transition_matrix, log_likelihoods),
+    )
 
 
 def most_likely_sequence(
@@ -2389,7 +2722,7 @@ def most_likely_sequence(
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
     log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
-    most_likely_states = viterbi(
+    most_likely_states = _viterbi_jit(
         initial_distribution=initial_distribution_jax,
         transition_matrix=transition_matrix_jax,
         log_likelihoods=log_likelihoods_jax,
@@ -2455,12 +2788,14 @@ def filter_covariate_dependent(
     Parameters
     ----------
     initial_distribution : jax.Array, shape (n_state_bins,)
-        Initial probability of each state bin.
+        Initial probability of each state bin: nonnegative, summing to 1.
     discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
-        Discrete state transition probabilities at each time bin.
+        Discrete state transition probabilities at each time bin:
+        nonnegative, each row summing to 1.
     continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         Transition probability between state bins within the continuous
-        state space.
+        state space: nonnegative, each bin's row summing to at most 1 over
+        the bins of each discrete state.
     state_ind : jax.Array, shape (n_state_bins,)
         Connects the discrete states to the state space.
     log_likelihoods : jax.Array, shape (n_time, n_state_bins)
@@ -2471,14 +2806,25 @@ def filter_covariate_dependent(
     marginal_likelihood : float
         Log marginal likelihood of the observations.
     predicted_probs_next : jax.Array, shape (n_state_bins,)
-        Next one-step-ahead predicted state probabilities
+        Next one-step-ahead predicted state probabilities.
     causal_posterior : jax.Array, shape (n_time, n_state_bins)
-        Filtered state probabilities
+        Filtered state probabilities.
     predicted_probs : jax.Array, shape (n_time, n_state_bins)
-        One-step-ahead predicted state probabilities
+        One-step-ahead predicted state probabilities.
+
+    Raises
+    ------
+    ValidationError
+        If the inputs are concrete and their shapes disagree or they break
+        the probability contract above.
 
     Notes
     -----
+    The inputs are checked only when all of them are concrete arrays. Under
+    ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
+    skipped so the pass stays composable with no host transfer; check such
+    inputs before the transformation.
+
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
     falls back to the predicted distribution at that step. A ``NaN`` at a
     timestep is left to propagate (it signals a likelihood-computation bug, not
@@ -2494,6 +2840,21 @@ def filter_covariate_dependent(
     log-likelihood is ``-inf`` but no step was all-``-inf``, an additional
     ``logger.warning`` is emitted.
     """
+    if not _is_traced(
+        initial_distribution,
+        discrete_transition_matrix,
+        continuous_transition_matrix,
+        state_ind,
+        log_likelihoods,
+    ):
+        _check_hmm_arrays(
+            n_time=np.shape(log_likelihoods)[0],
+            initial_distribution=initial_distribution,
+            state_ind=state_ind,
+            discrete_transition_matrix=discrete_transition_matrix,
+            continuous_transition_matrix=continuous_transition_matrix,
+            log_likelihoods=log_likelihoods,
+        )
     (marginal, predicted_probs_next), (filtered, predicted, _) = (
         _filter_covariate_dependent_jit(
             initial_distribution,
@@ -2565,8 +2926,84 @@ def _smoother_covariate_dependent_impl(
     )
 
 
-# Apply JIT without donation - tests reuse inputs
-smoother_covariate_dependent = jax.jit(_smoother_covariate_dependent_impl)
+# JIT-compiled non-donating implementation (safe to reuse inputs across calls)
+_smoother_covariate_dependent_jit = jax.jit(_smoother_covariate_dependent_impl)
+
+
+def smoother_covariate_dependent(
+    discrete_transition_matrix: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    filtered_probs: ArrayLike,
+    initial: ArrayLike | None = None,
+    ind: ArrayLike | None = None,
+    n_time: int | None = None,
+) -> jax.Array:
+    """Run the smoother with covariate dependent transitions.
+
+    Parameters
+    ----------
+    discrete_transition_matrix : jax.Array, shape (n_rows, n_states, n_states)
+        Discrete transition matrix of each row of ``filtered_probs``:
+        nonnegative, each row summing to 1.
+    continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix: nonnegative, each bin's row summing to
+        at most 1 over the bins of each discrete state.
+    state_ind : jax.Array, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
+    filtered_probs : jax.Array, shape (n_rows, n_state_bins)
+        Filtered distribution of each time bin.
+    initial : jax.Array, shape (n_state_bins,), optional
+        Smoothed row after the last row; by default the last filtered row.
+    ind : jax.Array, shape (n_rows,), optional
+        Row indices of the recording; by default ``arange(n_rows)``.
+    n_time : int, optional
+        Rows in the whole recording; by default the length of
+        ``filtered_probs``.
+
+    Returns
+    -------
+    smoothed_probs : jax.Array, shape (n_rows, n_state_bins)
+        Smoothed state probabilities.
+
+    Raises
+    ------
+    ValidationError
+        If the inputs are concrete and their shapes disagree or they break
+        the probability contract above.
+
+    Notes
+    -----
+    The inputs are checked only when all of them are concrete arrays. Under
+    ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
+    skipped so the pass stays composable with no host transfer; check such
+    inputs before the transformation.
+    """
+    if not _is_traced(
+        discrete_transition_matrix,
+        continuous_transition_matrix,
+        state_ind,
+        filtered_probs,
+    ):
+        _check_hmm_arrays(
+            n_time=np.shape(filtered_probs)[0],
+            n_bins=np.shape(filtered_probs)[-1],
+            state_ind=state_ind,
+            discrete_transition_matrix=discrete_transition_matrix,
+            continuous_transition_matrix=continuous_transition_matrix,
+        )
+    return cast(
+        jax.Array,
+        _smoother_covariate_dependent_jit(
+            discrete_transition_matrix,
+            continuous_transition_matrix,
+            state_ind,
+            filtered_probs,
+            initial,
+            ind,
+            n_time,
+        ),
+    )
 
 
 # Internal version with buffer donation for use in chunked drivers
@@ -2806,8 +3243,77 @@ def _viterbi_covariate_dependent_impl(
     )
 
 
-# Apply JIT without donation - tests reuse inputs
-viterbi_covariate_dependent = jax.jit(_viterbi_covariate_dependent_impl)
+# JIT-compiled non-donating implementation (safe to reuse inputs across calls)
+_viterbi_covariate_dependent_jit = jax.jit(_viterbi_covariate_dependent_impl)
+
+
+def viterbi_covariate_dependent(
+    initial_distribution: ArrayLike,
+    discrete_transition_matrix: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    log_likelihoods: ArrayLike,
+) -> jax.Array:
+    """Compute the most likely state sequence with covariate dependent transitions.
+
+    Parameters
+    ----------
+    initial_distribution : jax.Array, shape (n_state_bins,)
+        Initial state distribution: nonnegative, summing to 1.
+    discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
+        Time-varying discrete transition matrices: nonnegative, each row
+        summing to 1.
+    continuous_transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix: nonnegative, each bin's row summing to
+        at most 1 over the bins of each discrete state.
+    state_ind : jax.Array, shape (n_state_bins,)
+        State indices connecting discrete states to state space bins.
+    log_likelihoods : jax.Array, shape (n_time, n_state_bins)
+        Log likelihoods for each state bin at each time point.
+
+    Returns
+    -------
+    most_likely_state_sequence : jax.Array, shape (n_time,)
+        Most likely state sequence.
+
+    Raises
+    ------
+    ValidationError
+        If the inputs are concrete and their shapes disagree or they break
+        the probability contract above.
+
+    Notes
+    -----
+    The inputs are checked only when all of them are concrete arrays. Under
+    ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
+    skipped so the pass stays composable with no host transfer; check such
+    inputs before the transformation.
+    """
+    if not _is_traced(
+        initial_distribution,
+        discrete_transition_matrix,
+        continuous_transition_matrix,
+        state_ind,
+        log_likelihoods,
+    ):
+        _check_hmm_arrays(
+            n_time=np.shape(log_likelihoods)[0],
+            initial_distribution=initial_distribution,
+            state_ind=state_ind,
+            discrete_transition_matrix=discrete_transition_matrix,
+            continuous_transition_matrix=continuous_transition_matrix,
+            log_likelihoods=log_likelihoods,
+        )
+    return cast(
+        jax.Array,
+        _viterbi_covariate_dependent_jit(
+            initial_distribution,
+            discrete_transition_matrix,
+            continuous_transition_matrix,
+            state_ind,
+            log_likelihoods,
+        ),
+    )
 
 
 def most_likely_sequence_covariate_dependent(
@@ -2916,7 +3422,7 @@ def most_likely_sequence_covariate_dependent(
     state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
     log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
-    most_likely_states = viterbi_covariate_dependent(
+    most_likely_states = _viterbi_covariate_dependent_jit(
         initial_distribution=initial_distribution_jax,
         discrete_transition_matrix=discrete_transition_matrix_jax,
         continuous_transition_matrix=continuous_transition_matrix_jax,
