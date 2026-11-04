@@ -164,6 +164,20 @@ class TestEstimationKeepsNoInputData:
         held = stored_on(detector, refit_data[0])
         assert not held, f"the fitted detector holds the refit's {held}"
 
+    def test_em_engine_refuses_an_encoding_update_without_its_data(self):
+        """The engine needs the refit data to update a local state's encoding."""
+        from non_local_detector.exceptions import ValidationError
+        from non_local_detector.models.base import _DetectorBase
+
+        detector = NonLocalClusterlessDetector()
+        with pytest.raises(ValidationError, match="encoding_fit_arguments"):
+            _DetectorBase._run_em(
+                detector,
+                time_edges=np.arange(11) * 0.002,
+                estimate_encoding_model=True,
+            )
+        assert not hasattr(detector, "converged_")
+
 
 USER_DISCRETE_INITIAL_CONDITIONS = np.array([0.7, 0.3])
 

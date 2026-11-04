@@ -5324,8 +5324,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         encoding_fit_arguments : dict, optional
             Keyword arguments of ``_fit_encoding_model``, except ``weights``,
             that the encoding M-step refits with. Required with
-            ``estimate_encoding_model=True``; the detectors'
-            ``estimate_parameters`` pass their data. By default None.
+            ``estimate_encoding_model=True`` when a state is local (raises
+            ``ValidationError`` before any attribute is set otherwise); the
+            detectors' ``estimate_parameters`` pass their data. By default
+            None.
 
         Returns
         -------
@@ -5470,6 +5472,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             min_encoding_local_mass,
             min_encoding_local_ess,
         )
+        if (
+            estimate_encoding_model
+            and encoding_fit_arguments is None
+            and any(obs.is_local for obs in self.observation_models)
+        ):
+            msg = "estimate_encoding_model=True needs encoding_fit_arguments"
+            raise ValidationError(
+                msg,
+                expected="the _fit_encoding_model arguments the encoding M-step refits with",
+                got="encoding_fit_arguments=None",
+                hint="Call estimate_parameters, which passes its data, or pass "
+                "estimate_encoding_model=False.",
+            )
         checkpointed = (
             getattr(self, "_continuous_transition_operator_", None) is not None
         )
@@ -5754,8 +5769,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ]
 
         if local_state_indices:
-            # The detectors' estimate_parameters always pass their data.
-            assert settings.encoding_fit_arguments is not None
+            # _em_settings requires them whenever a local state is refit.
+            encoding_fit_arguments = cast(
+                "dict[str, Any]", settings.encoding_fit_arguments
+            )
             logger.info("Estimating encoding model...")
             local_state_weights = e_step.acausal_state_probabilities[
                 :, local_state_indices
@@ -5765,7 +5782,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             # centers even when the counts match: equal lengths do not
             # mean equal coordinates. Samples outside the decoded edges
             # have no posterior and get no weight.
-            position_time = settings.encoding_fit_arguments.get("position_time")
+            position_time = encoding_fit_arguments.get("position_time")
             if position_time is not None:
                 position_time = np.asarray(position_time)
                 local_state_weights = np.where(
@@ -5804,9 +5821,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 # expected complete-data log-likelihood and can break the
                 # EM monotonicity guarantee. The monotonicity-violation /
                 # final-E-step warnings now surface this when it occurs.
-                self._refit_encoding_model(
-                    local_state_weights, settings.encoding_fit_arguments
-                )
+                self._refit_encoding_model(local_state_weights, encoding_fit_arguments)
 
                 # The encoding model changed, so the likelihood
                 # computed from the previous one is stale.
