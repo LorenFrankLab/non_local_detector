@@ -3751,7 +3751,7 @@ class ClusterlessDetector(_DetectorBase):
             chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned.
 
             Options:
@@ -3998,7 +3998,7 @@ class ClusterlessDetector(_DetectorBase):
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional
@@ -4678,7 +4678,7 @@ class SortedSpikesDetector(_DetectorBase):
             chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See ClusterlessDetector.predict
             for full documentation. By default None.
         save_log_likelihood_to_results : bool, optional
@@ -4845,7 +4845,7 @@ class SortedSpikesDetector(_DetectorBase):
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional

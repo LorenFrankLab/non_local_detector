@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
+from non_local_detector.exceptions import ValidationError
 
 
 @pytest.fixture(scope="module")
@@ -261,7 +262,7 @@ class TestReturnOutputsParameter:
         [
             ("invalid_option", ValueError, "Invalid return_outputs"),
             ({"filter", "invalid_option"}, ValueError, "Invalid return_outputs"),
-            (123, TypeError, "return_outputs must be"),
+            (123, ValidationError, "return_outputs must be"),
         ],
         ids=["invalid-string", "invalid-set-element", "invalid-type"],
     )

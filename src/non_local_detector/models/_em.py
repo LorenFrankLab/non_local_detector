@@ -356,7 +356,7 @@ def _validate_estimation_arguments(
         Time bin edges; must be uniform.
     n_chunks : int
         Number of chunks the bins are split into; at most ``n_bins``.
-    return_outputs : str or list of str or set of str, optional
+    return_outputs : str, collection of str, or None, optional
         Requested outputs; cannot be combined with
         ``save_log_likelihood_to_results``.
     save_log_likelihood_to_results : bool, optional
@@ -836,7 +836,7 @@ class _EMMixin:
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned.
 
             Options:

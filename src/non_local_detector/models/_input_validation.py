@@ -12,7 +12,7 @@ Methods that read the detector's attributes annotate ``self`` as
 mixin.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args
@@ -626,8 +626,9 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
 
     Parameters
     ----------
-    return_outputs : str, list of str, set of str, or None
-        Output names from ``VALID_OUTPUTS``.
+    return_outputs : str, collection of str, or None
+        Output names from ``VALID_OUTPUTS``: one name, or any non-string
+        collection of names (list, tuple, set, frozenset).
 
     Returns
     -------
@@ -638,22 +639,30 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
     Raises
     ------
     ValidationError
-        If return_outputs contains invalid option names.
-    TypeError
-        If return_outputs is not str, list, set, or None.
+        If return_outputs is not a string, a collection of strings or None,
+        or contains invalid option names.
     """
     if return_outputs is None:
         return set()
     if isinstance(return_outputs, str):
         names: set[str] = {return_outputs}
-    elif isinstance(return_outputs, list | set):
+    elif isinstance(return_outputs, Collection) and not isinstance(
+        return_outputs, Mapping
+    ):
+        wrong = [name for name in return_outputs if not isinstance(name, str)]
+        if wrong:
+            msg = "return_outputs entries must be strings"
+            raise ValidationError(
+                msg,
+                expected=f"names from {sorted(VALID_OUTPUTS)}",
+                got=f"entries of type {sorted({type(name).__name__ for name in wrong})}",
+            )
         names = set(return_outputs)
     else:
-        msg = (  # type: ignore[unreachable]  # runtime validation of an unsupported type
-            f"return_outputs must be str, list of str, set of str, or None. "
-            f"Got {type(return_outputs).__name__}"
+        msg = "return_outputs must be a string, a collection of strings, or None"
+        raise ValidationError(  # type: ignore[unreachable]  # runtime validation of an unsupported type
+            msg, got=type(return_outputs).__name__
         )
-        raise TypeError(msg)
     invalid = names - VALID_OUTPUTS
     if invalid:
         msg = f"Invalid return_outputs: {sorted(invalid)}"
