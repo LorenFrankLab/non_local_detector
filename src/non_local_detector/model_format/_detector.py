@@ -55,8 +55,9 @@ from non_local_detector.model_format._container import (
     FORMAT_NAME,
     FORMAT_VERSION,
     StoredModel,
-    read_model,
-    write_model,
+    new_model_file,
+    open_model,
+    write_document,
 )
 from non_local_detector.model_format._registry import (
     TypeSpec,
@@ -575,8 +576,8 @@ def _fitted_attributes(
 
 
 def detector_documents(
-    detector: "_DetectorBase",
-) -> tuple[dict[str, Any], JSON, dict[str, Any], ArrayWriter]:
+    detector: "_DetectorBase", writer: ArrayWriter
+) -> tuple[dict[str, Any], JSON, dict[str, Any]]:
     """The manifest, config and state documents and the arrays of a detector.
 
     Raises
@@ -590,7 +591,6 @@ def detector_documents(
     """
     spec = _detector_spec(detector)
     params = detector.get_params(deep=False)
-    writer = ArrayWriter()
     config = Encoder(writer).encode(params, "config")
     fitted = _fitted_attributes(detector, params)
     stored_names = {attribute for _, attribute in _STORED}
@@ -603,7 +603,7 @@ def detector_documents(
         )
     state: dict[str, Any] = {"fitted": bool(fitted)}
     if not fitted:
-        return _manifest(spec, writer), config, state, writer
+        return _manifest(spec, writer), config, state
     missing = [name for name in _REQUIRED if name not in fitted]
     if missing:
         msg = f"Cannot save a partly fitted detector (it has no {missing})"
@@ -648,7 +648,7 @@ def detector_documents(
     state["fingerprints"] = encoder.encode(
         _structure_fingerprints(detector, blocks), "fingerprints"
     )
-    return _manifest(spec, writer), config, state, writer
+    return _manifest(spec, writer), config, state
 
 
 def _manifest(spec: TypeSpec, writer: ArrayWriter) -> dict[str, Any]:
@@ -664,8 +664,14 @@ def _manifest(spec: TypeSpec, writer: ArrayWriter) -> dict[str, Any]:
 
 def save_detector(detector: "_DetectorBase", path: str | Path) -> None:
     """Write ``detector`` to ``path`` in the saved-model format."""
-    manifest, config, state, writer = detector_documents(detector)
-    write_model(path, manifest, config, state, writer.members)
+    with new_model_file(path) as archive:
+        manifest, config, state = detector_documents(detector, ArrayWriter(archive))
+        for name, document in (
+            ("config.json", config),
+            ("state.json", state),
+            ("manifest.json", manifest),
+        ):
+            write_document(archive, name, document)
 
 
 def _rebuild_discrete(detector: "_DetectorBase", stored: dict[str, Any]) -> str | None:
@@ -820,4 +826,7 @@ def detector_from_stored(stored: StoredModel) -> "_DetectorBase":
 
 def load_detector(path: str | Path) -> "_DetectorBase":
     """Load the detector saved at ``path`` (the saved-model format)."""
-    return detector_from_stored(read_model(path))
+    # Built while the file is open, each array read straight from its member;
+    # the file is closed on return.
+    with open_model(path) as stored:
+        return detector_from_stored(stored)

@@ -18,7 +18,7 @@ import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import IO, Any
 
 import numpy as np
 
@@ -34,6 +34,8 @@ _DOCUMENTS = ("manifest.json", "config.json", "state.json")
 # array member its data's size plus this much for the .npy header.
 _MAX_DOCUMENT_BYTES = 256 * 2**20
 _NPY_HEADER_BYTES = 64 * 2**10
+# Arrays are hashed and written in chunks of this many bytes.
+_CHUNK_BYTES = 2**20
 # Fixed member timestamps, so saving the same model twice writes the same bytes.
 _TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
@@ -58,16 +60,19 @@ class StoredModel:
     config: Any
     state: dict[str, Any]
     arrays: dict[str, np.ndarray] = field(default_factory=dict)
-    _read_member: Callable[[str], bytes] | None = field(default=None, repr=False)
+    _open_member: Callable[[str], IO[bytes]] | None = field(default=None, repr=False)
 
     def read_array(self, member: str) -> np.ndarray:
         """The array stored as ``member``, after checking its sha256.
 
+        The member is decompressed straight into the array, hashing as it
+        reads, so reading takes about the array's own memory.
+
         Raises
         ------
         DataError
-            If the member is missing, not in the manifest, or its bytes do not
-            match the manifest's sha256.
+            If the member is missing, not in the manifest, corrupt, or its
+            bytes, dtype or shape do not match the manifest.
         """
         if member in self.arrays:
             return self.arrays[member]
@@ -75,22 +80,47 @@ class StoredModel:
         if entry is None:
             msg = f"The saved model refers to {member!r}, which its manifest does not list"
             raise DataError(msg, hint="The file is corrupt or was edited.")
-        data = None
-        if self._read_member is not None:
-            with contextlib.suppress(KeyError):
-                data = self._read_member(member)
-        if data is None:
+        if self._open_member is None:
+            msg = f"The saved model is closed; cannot read its array {member!r}"
+            raise DataError(msg)
+        try:
+            stream = self._open_member(member)
+        except KeyError:
             msg = f"The saved model is missing its array member {member!r}"
-            raise DataError(msg, hint="The file is corrupt or truncated.")
-        if hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            raise DataError(msg, hint="The file is corrupt or truncated.") from None
+        reader = _HashingReader(stream)
+        try:
+            with stream:
+                array = np.lib.format.read_array(reader, allow_pickle=False)
+                # Read to the end: the zip checks a member's CRC there.
+                trailing = reader.read()
+        except (zipfile.BadZipFile, zlib.error, EOFError, ValueError) as error:
+            msg = f"The array member {member!r} of the saved model is corrupt ({error})"
+            raise DataError(msg, hint="Save the model again.") from None
+        if trailing or reader.hexdigest() != entry["sha256"]:
             msg = f"The array {member!r} of the saved model does not match its checksum"
             raise DataError(
                 msg,
                 hint="The file is corrupt or was edited; save the model again.",
             )
-        array = cast(np.ndarray, np.load(io.BytesIO(data), allow_pickle=False))
         _check_against_manifest(array, entry, member)
         return array
+
+
+class _HashingReader:
+    """A read-only stream that hashes what it reads (SHA-256)."""
+
+    def __init__(self, stream: IO[bytes]) -> None:
+        self._stream = stream
+        self._digest = hashlib.sha256()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._stream.read(size)
+        self._digest.update(data)
+        return data
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
 
 
 def _check_against_manifest(
@@ -126,45 +156,91 @@ def is_saved_model_format(path: str | Path) -> bool:
         return file.read(len(_ZIP_MAGIC)) == _ZIP_MAGIC
 
 
-def write_model(
-    path: str | Path,
-    manifest: dict[str, Any],
-    config: Any,
-    state: dict[str, Any],
-    members: dict[str, bytes],
-) -> None:
-    """Write a saved model to ``path``, replacing any file there.
+def _npy_header(array: np.ndarray) -> bytes:
+    """The ``.npy`` header of ``array``: version 1.0, or 2.0 if it needs it."""
+    header = io.BytesIO()
+    fields = np.lib.format.header_data_from_array_1_0(array)
+    try:
+        np.lib.format.write_array_header_1_0(header, fields)
+    except ValueError:
+        header = io.BytesIO()
+        np.lib.format.write_array_header_2_0(header, fields)
+    return header.getvalue()
 
-    The file is written beside ``path`` and moved into place, so a failed save
-    leaves an existing file unchanged.
+
+def _npy_chunks(array: np.ndarray) -> Iterator[memoryview]:
+    """The bytes of a C-contiguous ``array``'s ``.npy`` member, in chunks that
+    view the array's memory rather than copy it."""
+    yield memoryview(_npy_header(array))
+    data = array.reshape(-1).view(np.uint8)
+    for start in range(0, data.size, _CHUNK_BYTES):
+        yield memoryview(data[start : start + _CHUNK_BYTES])
+
+
+def array_digest(array: np.ndarray) -> str:
+    """The sha256 of a C-contiguous ``array``'s ``.npy`` member, without
+    building the member."""
+    digest = hashlib.sha256()
+    for chunk in _npy_chunks(array):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _member_info(name: str, size: int) -> zipfile.ZipInfo:
+    """A member of fixed timestamp, deflated if over ``DEFLATE_THRESHOLD``."""
+    info = zipfile.ZipInfo(name, date_time=_TIMESTAMP)
+    if size > DEFLATE_THRESHOLD:
+        info.compress_type = zipfile.ZIP_DEFLATED
+        # Called compress_level from Python 3.13, _compresslevel before.
+        name_of_level = (
+            "compress_level" if hasattr(info, "compress_level") else "_compresslevel"
+        )
+        setattr(info, name_of_level, DEFLATE_LEVEL)
+    else:
+        info.compress_type = zipfile.ZIP_STORED
+    return info
+
+
+def write_array_member(archive: zipfile.ZipFile, name: str, array: np.ndarray) -> None:
+    """Write a C-contiguous ``array`` as the ``.npy`` member ``name``,
+    streaming it in, so no copy of it is built."""
+    size = array.nbytes + _NPY_HEADER_BYTES
+    with archive.open(
+        _member_info(name, size), "w", force_zip64=size > 2**31 - 1
+    ) as member:
+        for chunk in _npy_chunks(array):
+            member.write(chunk)
+
+
+def write_document(archive: zipfile.ZipFile, name: str, document: Any) -> None:
+    """Write ``document`` as the JSON member ``name``."""
+    data = json.dumps(document, allow_nan=False, indent=1).encode()
+    info = _member_info(name, len(data))
+    if info.compress_type == zipfile.ZIP_DEFLATED:
+        archive.writestr(info, data, compresslevel=DEFLATE_LEVEL)
+    else:
+        archive.writestr(info, data)
+
+
+@contextlib.contextmanager
+def new_model_file(path: str | Path) -> Iterator[zipfile.ZipFile]:
+    """A zip to write a saved model into, moved to ``path`` once complete.
+
+    The file is written beside ``path`` and replaces it only if the ``with``
+    block completes, so a failed save leaves an existing file unchanged.
+
+    Yields
+    ------
+    zipfile.ZipFile
     """
     path = Path(path)
-    documents = {
-        "manifest.json": manifest,
-        "config.json": config,
-        "state.json": state,
-    }
     partial = path.with_name(path.name + ".partial")
     try:
         with zipfile.ZipFile(partial, "w") as archive:
-            for name, document in documents.items():
-                text = json.dumps(document, allow_nan=False, indent=1)
-                _write_member(archive, name, text.encode())
-            for name, data in members.items():
-                _write_member(archive, name, data)
+            yield archive
         partial.replace(path)
     finally:
         partial.unlink(missing_ok=True)
-
-
-def _write_member(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
-    info = zipfile.ZipInfo(name, date_time=_TIMESTAMP)
-    if len(data) > DEFLATE_THRESHOLD:
-        info.compress_type = zipfile.ZIP_DEFLATED
-        archive.writestr(info, data, compresslevel=DEFLATE_LEVEL)
-    else:
-        info.compress_type = zipfile.ZIP_STORED
-        archive.writestr(info, data)
 
 
 class _Archive:
@@ -229,16 +305,15 @@ class _Archive:
             msg = f"The saved model has members its manifest does not list: {unlisted}"
             raise DataError(msg, hint="The file is corrupt or was edited.")
 
-    def read(self, name: str) -> bytes:
-        """The uncompressed bytes of member ``name``.
+    def open(self, name: str) -> IO[bytes]:
+        """A stream of the uncompressed bytes of member ``name``.
 
         Raises
         ------
         KeyError
             If there is no such member.
         DataError
-            If it declares more bytes than its limit, or fails to decompress
-            or its CRC check.
+            If it declares more bytes than its limit, or cannot be opened.
         """
         info = self.infos[name]
         limit = self.limits.get(name)
@@ -249,7 +324,16 @@ class _Archive:
             )
             raise DataError(msg, hint="The file is corrupt or was edited.")
         try:
-            return self.archive.read(info)
+            return self.archive.open(info)
+        except (zipfile.BadZipFile, zlib.error, EOFError) as error:
+            msg = f"The member {name!r} of the saved model is corrupt ({error})"
+            raise DataError(msg, hint="Save the model again.") from None
+
+    def read(self, name: str) -> bytes:
+        """The uncompressed bytes of member ``name`` (see :meth:`open`)."""
+        try:
+            with self.open(name) as stream:
+                return stream.read()
         except (zipfile.BadZipFile, zlib.error, EOFError) as error:
             msg = f"The member {name!r} of the saved model is corrupt ({error})"
             raise DataError(msg, hint="Save the model again.") from None
@@ -270,7 +354,7 @@ def _open(archive: zipfile.ZipFile) -> tuple[StoredModel, int]:
     version = _check_version(manifest)
     checked.list_arrays(manifest)
     config, state = checked.document("config.json"), checked.document("state.json")
-    return StoredModel(manifest, config, state, _read_member=checked.read), version
+    return StoredModel(manifest, config, state, _open_member=checked.open), version
 
 
 def _check_version(manifest: dict[str, Any]) -> int:
@@ -311,49 +395,28 @@ def _migrated(stored: StoredModel, version: int) -> StoredModel:
     return stored
 
 
-def read_model(path: str | Path) -> StoredModel:
-    """Read a whole saved model into memory, migrated to ``FORMAT_VERSION``.
+@contextlib.contextmanager
+def open_model(path: str | Path) -> Iterator[StoredModel]:
+    """Open a saved model, migrated to ``FORMAT_VERSION``, for the ``with`` block.
 
-    The file is closed before this returns.
+    Arrays are read from the file on request (``StoredModel.read_array``);
+    the file is closed when the block ends, after which no array can be read.
 
-    Parameters
-    ----------
-    path : str or Path
-
-    Returns
-    -------
+    Yields
+    ------
     StoredModel
 
     Raises
     ------
     DataError
-        If the file is not a saved model.
+        If the file is not a saved model, or a member breaks the rules of
+        ``_Archive``.
     ValidationError
         If it was written in a newer format version.
     """
-    data = Path(path).read_bytes()
-    with _zip(io.BytesIO(data)) as archive:
-        stored, version = _open(archive)
-        members = {
-            name: stored._read_member(name)  # type: ignore[misc]  # set by _open
-            for name in stored.manifest.get("arrays", {})
-            if name in archive.namelist()
-        }
-    stored._read_member = members.__getitem__
-    return _migrated(stored, version)
-
-
-@contextlib.contextmanager
-def open_model(path: str | Path) -> Iterator[StoredModel]:
-    """Open a saved model, reading arrays only on request.
-
-    Like :func:`read_model`, but the arrays are read from the file, which
-    stays open for the ``with`` block.
-
-    Yields
-    ------
-    StoredModel
-    """
     with _zip(path) as archive:
         stored, version = _open(archive)
-        yield _migrated(stored, version)
+        try:
+            yield _migrated(stored, version)
+        finally:
+            stored._open_member = None

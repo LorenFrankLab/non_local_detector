@@ -39,11 +39,10 @@ Nothing in a file names a module or a class except through ``$type`` names,
 which only the registry resolves.
 """
 
-import hashlib
-import io
 import itertools
 import math
 import re
+import zipfile
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any
@@ -56,6 +55,10 @@ import pandas as pd
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.model_format._container import (
+    array_digest,
+    write_array_member,
+)
 from non_local_detector.model_format._registry import (
     spec_for_name,
     spec_for_object,
@@ -90,13 +93,20 @@ def _member_name(where: str) -> str:
 
 
 class ArrayWriter:
-    """The ``.npy`` members of a file and their manifest index.
+    """Writes a saved model's ``.npy`` members and keeps their manifest index.
 
-    Arrays with the same dtype, shape and bytes are stored once.
+    Each array is streamed into its member of ``archive`` as it is encoded,
+    so saving holds no second copy of it. Arrays with the same dtype, shape
+    and bytes are stored once.
+
+    Parameters
+    ----------
+    archive : zipfile.ZipFile
+        Open for writing.
     """
 
-    def __init__(self) -> None:
-        self.members: dict[str, bytes] = {}
+    def __init__(self, archive: zipfile.ZipFile) -> None:
+        self.archive = archive
         self.index: dict[str, dict[str, Any]] = {}
         self._by_digest: dict[str, str] = {}
 
@@ -116,18 +126,16 @@ class ArrayWriter:
                 expected="a numeric, boolean or string array",
                 got=f"dtype {array.dtype}",
             )
-        buffer = io.BytesIO()
         # np.require keeps a 0-d array 0-d (np.ascontiguousarray makes it 1-d).
-        np.save(buffer, np.require(array, requirements="C"), allow_pickle=False)
-        data = buffer.getvalue()
-        digest = hashlib.sha256(data).hexdigest()
+        array = np.require(array, requirements="C")
+        digest = array_digest(array)
         if digest in self._by_digest:
             return self._by_digest[digest]
         base = _member_name(where)
         path, suffix = f"{base}.npy", 2
-        while path in self.members:
+        while path in self.index:
             path, suffix = f"{base}~{suffix}.npy", suffix + 1
-        self.members[path] = data
+        write_array_member(self.archive, path, array)
         name = where.rsplit("/", 1)[-1]
         dims = _DIMS.get(name)
         self.index[path] = {

@@ -6464,8 +6464,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Load a detector saved with ``save_model``, or pickled by earlier releases.
 
         The format is detected from the file's first bytes, not its suffix.
-        A file in the saved-model format is read whole and closed, without
-        running code from it. Its environment grids, continuous transition and
+        A file in the saved-model format is read without running code from
+        it, each array decompressed straight into place, and is closed before
+        this returns. Its environment grids, continuous transition and
         covariate design are rebuilt; before the loaded detector first
         decodes, they are compared with fingerprints saved with the model,
         and if they differ (because the code that rebuilds them changed)
