@@ -32,6 +32,11 @@ from non_local_detector.types import (
     Stickiness,
 )
 
+__all__ = [
+    "NonLocalClusterlessDetector",
+    "NonLocalSortedSpikesDetector",
+]
+
 
 def _get_conditional_non_local_posterior(
     results: xr.Dataset,

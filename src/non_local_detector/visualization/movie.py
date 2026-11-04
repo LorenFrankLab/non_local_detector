@@ -27,6 +27,11 @@ if TYPE_CHECKING:
 
     from non_local_detector.models.base import _DetectorBase
 
+__all__ = [
+    "make_single_environment_movie",
+]
+
+
 logger = logging.getLogger(__name__)
 
 

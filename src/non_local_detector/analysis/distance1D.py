@@ -12,6 +12,12 @@ from non_local_detector.environment import find_environment_by_name
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
 from non_local_detector.models.base import _DetectorBase
 
+__all__ = [
+    "get_ahead_behind_distance",
+    "get_map_speed",
+    "get_trajectory_data",
+]
+
 
 def _get_MAP_estimate_2d_position_edges(
     posterior: xr.DataArray,

@@ -85,6 +85,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "ClusterlessGMMEncodingModel",
+    "fit_clusterless_gmm_encoding_model",
+    "predict_clusterless_gmm_log_likelihood",
+]
+
+
 # Default covariance regularization, in squared feature units.
 DEFAULT_GMM_REG_COVAR = 1.0
 

@@ -19,6 +19,16 @@ from scipy import integrate
 from scipy.signal import correlate
 from scipy.stats import expon, norm
 
+__all__ = [
+    "TimeRescaling",
+    "ks_statistic",
+    "plot_ks",
+    "plot_qq",
+    "plot_rescaled_ISI_autocorrelation",
+    "point_process_residuals",
+    "uniform_rescaled_ISIs",
+]
+
 
 class TimeRescaling:
     """Evaluate the goodness of fit of a point process model.

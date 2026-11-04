@@ -14,6 +14,10 @@ from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.observation_models import ObservationModel
 
+__all__ = [
+    "UniformInitialConditions",
+]
+
 
 @dataclass
 class UniformInitialConditions:

@@ -72,6 +72,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "SortedSpikesDiffusionEncodingModel",
+    "fit_sorted_spikes_diffusion_encoding_model",
+    "predict_sorted_spikes_diffusion_log_likelihood",
+]
+
+
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
 

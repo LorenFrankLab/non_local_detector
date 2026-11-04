@@ -181,6 +181,11 @@ from non_local_detector.types import (
     TransitionRepresentation,
 )
 
+__all__ = [
+    "ClusterlessDetector",
+    "SortedSpikesDetector",
+]
+
 logger = getLogger(__name__)
 
 

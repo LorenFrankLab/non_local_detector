@@ -106,6 +106,12 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "SortedSpikesGLMEncodingModel",
+    "fit_sorted_spikes_glm_encoding_model",
+    "predict_sorted_spikes_glm_log_likelihood",
+]
+
 
 @jax.jit
 def glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:

@@ -21,6 +21,11 @@ from jax.typing import DTypeLike
 from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
 from non_local_detector.exceptions import ValidationError
 
+# Internal module; only the decorator custom likelihoods use is public
+# (docs/time_grid_migration.md).
+__all__ = ["row_slice_aware"]
+
+
 logger = logging.getLogger(__name__)
 
 # Concrete array inputs: the functions below call array methods (``.sum``,

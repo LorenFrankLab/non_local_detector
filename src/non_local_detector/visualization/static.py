@@ -15,6 +15,11 @@ from non_local_detector.models import (
 )
 from non_local_detector.models.base import SortedSpikesDetector
 
+__all__ = [
+    "get_multiunit_firing_rate",
+    "plot_non_local_model",
+]
+
 
 def get_multiunit_firing_rate(
     spike_times: list[np.ndarray], time: np.ndarray, smoothing_sigma: float = 0.015
