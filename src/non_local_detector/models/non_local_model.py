@@ -15,10 +15,10 @@ from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
 )
+from non_local_detector.models._input_validation import _validate_penalty_params
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
-    _validate_penalty_params,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
