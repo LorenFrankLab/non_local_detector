@@ -478,6 +478,64 @@ def test_clusterless_record_requires_a_mark_scale():
         )
 
 
+def mark_scale_default_mismatches(record: ClusterlessLikelihoodAlgorithm) -> list[str]:
+    """Each ``mark_reference_scale`` default that differs from its fit's.
+
+    A detector whose params leave the mark bandwidth unset calls the scale
+    without it, while the fit uses its own default, so the two must agree or
+    the mark reference is built for a kernel the fit does not use.
+    """
+    fit_parameters = inspect.signature(record.fit).parameters
+    mismatches = []
+    for name, parameter in inspect.signature(
+        record.mark_reference_scale
+    ).parameters.items():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            continue
+        if name not in fit_parameters:
+            mismatches.append(f"{name}: not a fit parameter")
+        elif not np.array_equal(parameter.default, fit_parameters[name].default):
+            mismatches.append(
+                f"{name}: scale default {parameter.default!r}, "
+                f"fit default {fit_parameters[name].default!r}"
+            )
+    return mismatches
+
+
+@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+def test_mark_reference_scale_defaults_match_the_fit(algorithm):
+    """With no params, the mark reference uses the fit's own mark bandwidth."""
+    record = _CLUSTERLESS_ALGORITHMS[algorithm]
+    assert mark_scale_default_mismatches(record) == []
+    fit_defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(record.fit).parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+    }
+    np.testing.assert_array_equal(
+        record.mark_reference_scale(), record.mark_reference_scale(**fit_defaults)
+    )
+
+
+def test_mark_scale_check_reports_a_changed_default():
+    """A scale default that drifted from the fit's, or that names no fit
+    parameter, is caught."""
+
+    def drifted(waveform_std=12.0, **_fit_params):
+        return waveform_std
+
+    def misnamed(mark_std=24.0, **_fit_params):
+        return mark_std
+
+    record = _CLUSTERLESS_ALGORITHMS["clusterless_kde"]
+    assert mark_scale_default_mismatches(
+        replace(record, mark_reference_scale=drifted)
+    ) == ["waveform_std: scale default 12.0, fit default 24.0"]
+    assert mark_scale_default_mismatches(
+        replace(record, mark_reference_scale=misnamed)
+    ) == ["mark_std: not a fit parameter"]
+
+
 @pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
 def test_model_checking_intensity_names_a_class(algorithm):
     """A record's model-checking intensity names a class model checking has."""
