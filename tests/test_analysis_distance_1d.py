@@ -29,9 +29,10 @@ from non_local_detector.analysis.distance1D import (
 def _make_positioned_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
     """Linear chain track graph with 2D node positions along the x-axis.
 
-    Adds both ``distance`` edge attributes and ``pos`` node attributes so the
-    distance utilities (which project positions and compute node-to-node
-    distances) can operate on it.
+    Adds ``distance`` and ``edge_id`` edge attributes and ``pos`` node
+    attributes, as an environment's track graph has, so the distance utilities
+    (which project positions, compute node-to-node distances and look up edges
+    by ``edge_id``) can operate on it.
 
     Parameters
     ----------
@@ -44,14 +45,15 @@ def _make_positioned_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
     Returns
     -------
     networkx.Graph
-        Path graph with ``pos`` node attributes and ``distance`` edge
-        attributes.
+        Path graph with ``pos`` node attributes and ``distance`` and
+        ``edge_id`` edge attributes.
     """
     graph = nx.path_graph(n_nodes)
     for node in graph.nodes():
         graph.nodes[node]["pos"] = np.array([float(node) * edge_length, 0.0])
-    for u, v in graph.edges():
+    for edge_id, (u, v) in enumerate(graph.edges()):
         graph[u][v]["distance"] = edge_length
+        graph[u][v]["edge_id"] = edge_id
     return graph
 
 

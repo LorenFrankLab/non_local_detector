@@ -902,7 +902,7 @@ class Environment:
         # outside the bytes counted below.
         result = get_linearized_position(
             points,
-            self.track_graph,
+            _with_edge_ids_in_edges_order(self.track_graph),
             edge_order=self.edge_order,
             edge_spacing=self.edge_spacing,
         ).linear_position.to_numpy(copy=True)
@@ -2266,6 +2266,64 @@ def get_track_segments_from_graph(track_graph: nx.Graph) -> np.ndarray:
     )
 
 
+def _segment_index_of_edge_id(track_graph: nx.Graph, edge_id: np.ndarray) -> np.ndarray:
+    """Position in ``track_graph.edges`` of the edge carrying each ``edge_id``.
+
+    ``edge_id`` is an edge label; the track segments
+    (`get_track_segments_from_graph`) are in ``track_graph.edges`` order, which
+    need not be the order of the labels.
+
+    Parameters
+    ----------
+    track_graph : networkx.Graph
+        Track graph whose edges have unique ``edge_id`` attributes.
+    edge_id : np.ndarray, shape (n,), int
+        Edge labels, each one of the graph's ``edge_id`` values.
+
+    Returns
+    -------
+    segment_index : np.ndarray, shape (n,), int
+    """
+    graph_edge_ids = np.asarray(
+        [graph_edge_id for _, _, graph_edge_id in track_graph.edges(data="edge_id")]
+    )
+    sorter = np.argsort(graph_edge_ids)
+    return cast(
+        "np.ndarray",
+        sorter[np.searchsorted(graph_edge_ids, edge_id, sorter=sorter)],
+    )
+
+
+def _with_edge_ids_in_edges_order(track_graph: nx.Graph) -> nx.Graph:
+    """``track_graph``, or a copy whose ``edge_id`` is the position in ``graph.edges``.
+
+    ``track_linearization.get_linearized_position`` numbers the segment of
+    each position by its place in ``graph.edges`` and then looks that number
+    up as an ``edge_id``, so it is right only when the two agree (as in graphs
+    from ``track_linearization.make_track_graph``). Its linear position does
+    not otherwise depend on ``edge_id``.
+
+    Parameters
+    ----------
+    track_graph : networkx.Graph
+        Track graph whose edges have unique ``edge_id`` attributes.
+
+    Returns
+    -------
+    track_graph : networkx.Graph
+        ``track_graph`` itself if its ``edge_id`` values already are
+        ``0, 1, ...`` in ``graph.edges`` order, else a relabeled copy.
+    """
+    edge_ids = [edge_id for _, _, edge_id in track_graph.edges(data="edge_id")]
+    if edge_ids == list(range(len(edge_ids))):
+        return track_graph
+    # Graph.copy keeps the order of graph.edges.
+    relabeled = track_graph.copy()
+    for index, edge in enumerate(relabeled.edges):
+        relabeled.edges[edge]["edge_id"] = index
+    return relabeled
+
+
 def project_points_to_segment(
     track_segments: np.ndarray, position: np.ndarray
 ) -> np.ndarray:
@@ -2315,8 +2373,8 @@ def _calculate_linear_position(
     position : np.ndarray, shape (n_time, n_position_dims)
         Position of the animal.
     track_segment_id : np.ndarray, shape (n_time,)
-        Index of the track segment each position is assigned to; NaN is
-        treated as segment 0.
+        ``edge_id`` of the edge each position is assigned to; NaN is treated
+        as ``edge_id`` 0.
     edge_order : list of 2-tuples
         Order in which the edges are laid out in 1D.
     edge_spacing : float or list, len n_edges - 1
@@ -2339,7 +2397,7 @@ def _calculate_linear_position(
     projected_track_positions = project_points_to_segment(track_segments, position)
     n_time = projected_track_positions.shape[0]
     projected_track_positions = projected_track_positions[
-        (np.arange(n_time), track_segment_id)
+        (np.arange(n_time), _segment_index_of_edge_id(track_graph, track_segment_id))
     ]
 
     n_edges = len(edge_order)
