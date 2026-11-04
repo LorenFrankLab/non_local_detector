@@ -21,7 +21,9 @@ Key functionalities include:
     - `make_spline_design_matrix`: Creates the spline basis using `patsy`
       natural cubic regression splines (`cr`) with the specified knot spacing.
       The fit defines it on the environment (interior bin centers plus the
-      track ends), not on the tracked positions.
+      track ends), not on the tracked positions, and stores it as a
+      `TensorSplineBasis`, which keeps the inputs that define it so that a
+      fitted model can be pickled.
     - `make_track_graph_basis`: On a track graph, cubic splines along each
       branch of the track (a path between leaves or junctions), sharing their
       values at junctions (`TrackGraphBasis`). A spline over linear position
@@ -62,8 +64,8 @@ interpolation.
 
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, replace
+from functools import cached_property, partial
 from typing import Any, cast
 
 import jax
@@ -173,27 +175,22 @@ def _spline_inner_knots(
     return varying_dimensions, inner_knots
 
 
-def _narrowest_knot_interval(
-    design_info: "DesignInfo | TrackGraphBasis",
-    basis_positions: np.ndarray | None,
-    place_bin_edges: np.ndarray,
-    knot_spacing: float,
-) -> float:
+def _narrowest_knot_interval(basis: "TensorSplineBasis | TrackGraphBasis") -> float:
     """Narrowest interval between adjacent knots of a spline basis.
 
     The knots are those the basis was built with: along each branch of a
-    ``TrackGraphBasis``, or, for a tensor spline, each dimension's inner knots
-    and its boundary knots at the range of ``basis_positions``. An
-    intercept-only basis returns ``knot_spacing``.
+    ``TrackGraphBasis``, or, for a ``TensorSplineBasis``, each dimension's
+    inner knots and its boundary knots at the range of its ``basis_positions``.
+    An intercept-only basis returns its ``knot_spacing``.
     """
-    if isinstance(design_info, TrackGraphBasis):
-        return float(min(np.diff(knots).min() for knots in design_info.branch_knots))
-    assert basis_positions is not None  # only the track-graph basis has none
+    if isinstance(basis, TrackGraphBasis):
+        return float(min(np.diff(knots).min() for knots in basis.branch_knots))
+    basis_positions = basis.basis_positions
     varying_dimensions, inner_knots = _spline_inner_knots(
-        basis_positions, place_bin_edges, knot_spacing
+        basis_positions, basis.place_bin_edges, basis.knot_spacing
     )
     if not len(varying_dimensions):
-        return float(knot_spacing)
+        return float(basis.knot_spacing)
     return float(
         min(
             np.diff(
@@ -254,6 +251,62 @@ def make_spline_design_matrix(
 
     formula += 'constraints="center")'
     return cast(np.ndarray, dmatrix(formula, data))
+
+
+@dataclass(frozen=True, eq=False)
+class TensorSplineBasis:
+    """Log-rate tensor-product cubic regression splines over position.
+
+    The basis of a GLM fitted without a track graph, in 1-D or 2-D: the patsy
+    design ``make_spline_design_matrix`` builds from ``basis_positions``,
+    restricted to ``columns``. patsy cannot pickle its design, so this keeps the
+    inputs that define it instead, and builds the design from them on first use,
+    again after unpickling or copying. The rebuilt design is the one the
+    encoding model was fitted with: the knots and the centering constraint
+    depend only on these inputs.
+
+    Attributes
+    ----------
+    basis_positions : np.ndarray, shape (n_basis_points, n_position_dims)
+        Positions that define the spline: the environment's interior bin
+        centers plus each varying dimension's extent along it.
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+        Place-bin edge coordinates (``Environment.place_bin_edges_``).
+    knot_spacing : float
+        Spacing of the spline knots, in coordinate units.
+    columns : np.ndarray, shape (n_used_columns,), optional
+        Indices of the spline columns the fit uses, the intercept (column 0)
+        first; by default None, every column.
+    """
+
+    basis_positions: np.ndarray
+    place_bin_edges: np.ndarray
+    knot_spacing: float
+    columns: np.ndarray | None = None
+
+    @cached_property
+    def design_info(self) -> DesignInfo:
+        """The patsy design of every spline column, before ``columns`` selects."""
+        return cast(
+            Any,
+            make_spline_design_matrix(
+                self.basis_positions,
+                self.place_bin_edges,
+                knot_spacing=self.knot_spacing,
+            ),
+        ).design_info
+
+    def _restricted_to(self, columns: np.ndarray) -> "TensorSplineBasis":
+        """This basis restricted to ``columns``, sharing its built patsy design."""
+        restricted = replace(self, columns=columns)
+        restricted.__dict__["design_info"] = self.design_info
+        return restricted
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Pickle without the patsy design, which cannot be pickled."""
+        state = dict(self.__dict__)
+        state.pop("design_info", None)
+        return state
 
 
 def _track_branches(graph: Any) -> list[list[tuple[Any, Any]]]:
@@ -594,25 +647,9 @@ def make_track_graph_basis(
 _GLM_COLUMN_SUPPORT_TOL = 1e-2
 
 
-@dataclass(frozen=True, eq=False)
-class SelectedColumnsDesign:
-    """A patsy spline design restricted to the columns used by the fit.
-
-    Attributes
-    ----------
-    design_info : patsy.design_info.DesignInfo
-        The full spline design.
-    columns : np.ndarray, shape (n_used_columns,)
-        Indices of the used columns, the intercept (column 0) first.
-    """
-
-    design_info: DesignInfo
-    columns: np.ndarray
-
-
 def _select_supported_columns(
-    design_info: DesignInfo, positions: np.ndarray
-) -> "DesignInfo | SelectedColumnsDesign":
+    basis: TensorSplineBasis, positions: np.ndarray
+) -> TensorSplineBasis:
     """Drop spline columns with almost no support at ``positions``.
 
     The fit passes the interior bin centers, where place fields are reported,
@@ -623,10 +660,17 @@ def _select_supported_columns(
 
     Parameters
     ----------
-    design_info : patsy.design_info.DesignInfo
+    basis : TensorSplineBasis
+        A basis with every column.
     positions : np.ndarray, shape (n_points, n_position_dims)
+
+    Returns
+    -------
+    basis : TensorSplineBasis
+        ``basis`` itself if every column has support, otherwise ``basis``
+        restricted to the supported columns.
     """
-    full = np.asarray(make_spline_predict_matrix(design_info, positions))
+    full = np.asarray(make_spline_predict_matrix(basis, positions))
     support = (
         np.max(np.abs(full[:, 1:]), axis=0) if len(full) else np.ones(full.shape[1] - 1)
     )
@@ -634,8 +678,8 @@ def _select_supported_columns(
         [[0], 1 + np.flatnonzero(support > _GLM_COLUMN_SUPPORT_TOL)]
     )
     if columns.size == full.shape[1]:
-        return design_info
-    return SelectedColumnsDesign(design_info=design_info, columns=columns)
+        return basis
+    return basis._restricted_to(columns)
 
 
 # The fit sums counts and exposure over position cells this fraction of the knot
@@ -717,16 +761,17 @@ def _aggregate_by_position_cell(
 
 
 def make_spline_predict_matrix(
-    design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
+    design_info: "DesignInfo | TrackGraphBasis | TensorSplineBasis",
     position: jax.Array | np.ndarray,
 ) -> jax.Array:
     """Create a prediction matrix for a spline basis.
 
     Parameters
     ----------
-    design_info : patsy.design_info.DesignInfo, TrackGraphBasis or SelectedColumnsDesign
-        Description of the fitted basis, as stored in the encoding model's
-        ``emission_design_info``.
+    design_info : patsy.design_info.DesignInfo, TrackGraphBasis or TensorSplineBasis
+        Description of the basis: the encoding model's ``emission_design_info``
+        (a ``TrackGraphBasis`` or ``TensorSplineBasis``), or the design of a
+        ``make_spline_design_matrix`` result.
     position : jax.Array, shape (n_position_bins, n_position_dims)
         Positions; linear positions, shape ``(n_position_bins, 1)``, for a
         ``TrackGraphBasis``.
@@ -736,8 +781,10 @@ def make_spline_predict_matrix(
     predict_matrix : jax.Array, shape (n_position_bins, n_spline_basis)
         Basis evaluated at ``position``; rows with a NaN position are NaN.
     """
-    if isinstance(design_info, SelectedColumnsDesign):
+    if isinstance(design_info, TensorSplineBasis):
         full = make_spline_predict_matrix(design_info.design_info, position)
+        if design_info.columns is None:
+            return full
         return full[:, jnp.asarray(design_info.columns)]
     if isinstance(design_info, TrackGraphBasis):
         # Choose each position's edge before any float32 conversion: with no
@@ -1173,9 +1220,7 @@ def _fit_rate_maps(
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     l2_penalty: float | None = None,
     n_maps: int | None = None,
-) -> tuple[
-    "DesignInfo | TrackGraphBasis | SelectedColumnsDesign", jax.Array, jax.Array
-]:
+) -> tuple["TrackGraphBasis | TensorSplineBasis", jax.Array, jax.Array]:
     """Penalized Poisson GLM rate maps on the environment's spline basis.
 
     Shared by the sorted-spikes GLM (one map per neuron) and the clusterless
@@ -1210,7 +1255,7 @@ def _fit_rate_maps(
 
     Returns
     -------
-    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+    emission_design_info : TrackGraphBasis or TensorSplineBasis
     coefficients : jax.Array, shape (n_maps, n_coefficients)
     interior_rates : jax.Array, shape (n_interior_bins, n_maps)
         Floored rates in Hz at the interior bin centers.
@@ -1224,10 +1269,9 @@ def _fit_rate_maps(
     if environment.track_graph is not None:
         # Splines along the track's branches: one spline over linear position
         # would join segments that are only neighbors in edge_order.
-        emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign = (
+        emission_design_info: TrackGraphBasis | TensorSplineBasis = (
             make_track_graph_basis(environment, knot_spacing=emission_knot_spacing)
         )
-        basis_positions = None
     else:
         basis_positions = np.asarray(interior_place_bin_centers)
         varying_dimensions = np.ptp(basis_positions, axis=0) > 0
@@ -1237,12 +1281,13 @@ def _fit_rate_maps(
                 (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
             )[:, varying_dimensions]
             basis_positions = np.vstack((basis_positions, boundary_positions))
-        emission_design_info = cast(
-            Any,
-            make_spline_design_matrix(
-                basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
-            ),
-        ).design_info
+        # Copies, so the basis stays the fitted one if the caller later changes
+        # the environment's arrays: it is rebuilt from these after unpickling.
+        emission_design_info = TensorSplineBasis(
+            basis_positions=np.array(basis_positions),
+            place_bin_edges=np.array(place_bin_edges),
+            knot_spacing=emission_knot_spacing,
+        )
 
     if n_maps is None:
         n_maps = cast(np.ndarray, event_counts).shape[0]
@@ -1255,12 +1300,7 @@ def _fit_rate_maps(
         # together than the requested spacing (an environment narrower than it).
         cell_size = _GLM_FIT_CELL_FRACTION * min(
             emission_knot_spacing,
-            _narrowest_knot_interval(
-                emission_design_info,
-                basis_positions,
-                place_bin_edges,
-                emission_knot_spacing,
-            ),
+            _narrowest_knot_interval(emission_design_info),
         )
         if isinstance(emission_design_info, TrackGraphBasis):
             linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
@@ -1335,7 +1375,7 @@ class SortedSpikesGLMEncodingModel(SortedSpikesEncodingModel):
     """
 
     coefficients: jax.Array
-    emission_design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign"
+    emission_design_info: "TrackGraphBasis | TensorSplineBasis"
     no_spike_part_log_likelihood: jax.Array
     is_track_interior: np.ndarray
 
@@ -1424,7 +1464,7 @@ def fit_sorted_spikes_glm_encoding_model(
             ``"sorted_spikes_glm"``.
         coefficients : jax.Array, shape (n_neurons, n_coefficients)
             Fitted coefficients for each neuron.
-        emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+        emission_design_info : TrackGraphBasis or TensorSplineBasis
             The spline basis, or on a track graph the basis along the track.
         place_fields : jax.Array, shape (n_neurons, n_bins)
             Spatial firing rates in Hz for each neuron.
@@ -1515,7 +1555,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     *,
     environment: Environment,
     coefficients: jax.Array,
-    emission_design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
+    emission_design_info: "TrackGraphBasis | TensorSplineBasis",
     place_fields: jax.Array,
     no_spike_part_log_likelihood: jax.Array,
     is_track_interior: jax.Array,
@@ -1548,9 +1588,9 @@ def predict_sorted_spikes_glm_log_likelihood(
         The spatial environment object containing track geometry information.
     coefficients : jax.Array, shape (n_neurons, n_coefficients)
         Fitted GLM coefficients for each neuron.
-    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
-        The encoding fit's basis (a patsy DesignInfo, or a ``TrackGraphBasis``
-        on a track graph), needed for prediction.
+    emission_design_info : TrackGraphBasis or TensorSplineBasis
+        The encoding fit's basis (a ``TensorSplineBasis``, or a
+        ``TrackGraphBasis`` on a track graph), needed for prediction.
     place_fields : jax.Array, shape (n_neurons, n_position_bins)
         Expected firing rate in Hz for each neuron in each position bin, derived
         from the fitted GLM (`exp(predict_matrix @ coefficients)`).

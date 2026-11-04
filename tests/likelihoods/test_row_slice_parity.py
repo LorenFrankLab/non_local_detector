@@ -219,7 +219,9 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
         centers, decode_data["position_time"], decode_data["position"][:, 0]
     ).astype(working_dtype)
     design = np.asarray(
-        build_design_matrices([model["emission_design_info"]], {"x0": position})[0],
+        build_design_matrices(
+            [model["emission_design_info"].design_info], {"x0": position}
+        )[0],
         dtype=working_dtype,
     )
     coefficients = np.asarray(model["coefficients"], dtype=np.float64)
