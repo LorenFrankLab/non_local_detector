@@ -48,6 +48,16 @@ def _assert_graphs(a, b, where):
     assert_same(dict(a.graph), dict(b.graph), f"{where}.graph")
 
 
+def _state(obj):
+    """What pickle saves of ``obj``: its class's own ``__getstate__`` if it
+    defines one, else its ``__dict__``. (``object.__getstate__``, which gives
+    the same on Python 3.11+, does not exist on 3.10.)"""
+    own = getattr(type(obj), "__getstate__", None)
+    if own is not None and own is not getattr(object, "__getstate__", None):
+        return dict(obj.__getstate__() or {})
+    return dict(getattr(obj, "__dict__", {}))
+
+
 def assert_same(a, b, where="detector"):
     """Assert ``a`` and ``b`` hold the same values, recursively."""
     if isinstance(a, (np.ndarray, jax.Array)) and not hasattr(a, "design_info"):
@@ -110,8 +120,7 @@ def assert_same(a, b, where="detector"):
         assert a == b, (where, a, b)
     else:
         assert type(a) is type(b), (where, type(a), type(b))
-        state_a = dict(a.__getstate__() or {})
-        state_b = dict(b.__getstate__() or {})
+        state_a, state_b = _state(a), _state(b)
         # A TensorSplineBasis caches its rebuilt patsy design.
         state_a.pop("design_info", None)
         state_b.pop("design_info", None)
