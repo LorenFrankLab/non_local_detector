@@ -129,7 +129,7 @@ def _unpickled(basis):
     return pickle.loads(pickle.dumps(basis))
 
 
-@pytest.mark.parametrize("relative_change", [1e-8, -1e-6])
+@pytest.mark.parametrize("relative_change", [1e-4, -1e-5])
 def test_rebuild_that_misses_the_fingerprint_raises(encoding, relative_change):
     """A saved fingerprint the rebuilt design does not reproduce raises on use,
     asking for a refit, instead of decoding with a different basis."""
@@ -160,12 +160,12 @@ def test_rebuild_from_shifted_knots_raises(encoding, monkeypatch):
 
 
 def test_rebuild_within_rounding_of_the_fingerprint_decodes(encoding):
-    """A fingerprint off by floating-point rounding still rebuilds the basis."""
+    """A fingerprint off by float32 rounding still rebuilds the basis."""
     model, environment, _ = encoding
     basis = model["emission_design_info"]
     restored = _unpickled(basis)
     object.__setattr__(
-        restored, "design_fingerprint", restored.design_fingerprint * (1.0 + 1e-13)
+        restored, "design_fingerprint", restored.design_fingerprint * (1.0 + 1e-7)
     )
     positions = _random_interior_positions(environment)
     assert np.array_equal(

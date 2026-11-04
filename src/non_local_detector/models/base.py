@@ -3210,6 +3210,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # decoding used to record on the detector; they describe that
         # recording, not the model.
         self.__dict__.pop("_degenerate_timesteps_", None)
+        # Earlier versions cached the environment lookup on the detector;
+        # nothing reads it now.
+        self.__dict__.pop("_env_lookup_cache_", None)
         covariate_data = state.get("_discrete_transition_covariate_data_")
         if covariate_data is not None and (
             self.discrete_transition_design_matrix_ is None
@@ -3728,6 +3731,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
         self._invalidate_stored_log_likelihood()  # stale after a refit
+        # A refit replaces every structure a loaded detector rebuilt.
+        self.__dict__.pop("_rebuild_check_", None)
         self.initialize_environments(
             position=position,
             environment_labels=environment_labels,
@@ -3769,6 +3774,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if not hasattr(self, "encoding_model_"):
             msg = "Detector is not fitted; call fit(...) before decoding."
             raise ValidationError(msg)
+        # A loaded detector's rebuilt structures must match the saved ones.
+        rebuild_check = self.__dict__.get("_rebuild_check_")
+        if rebuild_check is not None:
+            rebuild_check.verify(self)
         if (
             getattr(self, "time_contract_", None) != _TIME_CONTRACT
             or not hasattr(self, "transition_time_bin_width_")
@@ -6421,43 +6430,93 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """
         return calculate_time_edges(time_range, self.sampling_frequency, trim=trim)
 
-    def save_model(self, filename: str = "model.pkl") -> None:
+    def save_model(self, filename: str | Path = "model.nld") -> None:
         """
-        Save the detector to a pickled file.
+        Save the detector to a file.
+
+        The file is a zip of JSON documents (the configuration and the
+        fitted state) and ``.npy`` arrays, which ``load_model`` reads in this
+        and every later version of non_local_detector, and which can be read
+        without it (see the "Saving and loading models" documentation). It
+        stores what the fit learned, and the inputs of the structures it
+        rebuilds on load (environment grids, the continuous transition and
+        any covariate design), not the structures themselves. ``.nld`` is the
+        conventional suffix.
 
         Parameters
         ----------
-        filename : str, optional
-            Filename to save the model, by default "model.pkl".
+        filename : str or Path, optional
+            Where to write the model, by default "model.nld". An existing file
+            is replaced.
+
+        Raises
+        ------
+        ValidationError
+            If the detector, or an object its parameters hold (a custom
+            transition, for example), is of a type that is not registered for
+            saving (see ``non_local_detector.model_format.register_type``), or
+            it is a loaded detector whose rebuilt structures no longer match
+            the saved ones.
+        NotFittedError
+            If the detector is only partly fitted.
         """
-        with Path(filename).open("wb") as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+        from non_local_detector.model_format._detector import save_detector
+
+        save_detector(self, filename)
 
     @staticmethod
-    def load_model(filename: str = "model.pkl") -> "_DetectorBase":
+    def load_model(filename: str | Path = "model.nld") -> "_DetectorBase":
         """
-        Load the detector from a file.
+        Load a detector saved with ``save_model``, or pickled by earlier releases.
 
-        Detectors saved by earlier versions load for inspection, including
-        those pickled with JAX 0.4.30 or earlier. Decoding with one fitted
+        The format is detected from the file's first bytes, not its suffix.
+        A file in the saved-model format is read without running code from
+        it, each array decompressed straight into place, and is closed before
+        this returns. Its environment grids, continuous transition and
+        covariate design are rebuilt; before the loaded detector first
+        decodes, they are compared with fingerprints saved with the model,
+        and if they differ (because the code that rebuilds them changed)
+        decoding raises ``ValidationError`` asking for a refit. Inspecting the
+        model always works. A file written in a newer format version is
+        refused, naming the version to upgrade to.
+
+        A pickle saved by an earlier release loads for inspection, including
+        one pickled with JAX 0.4.30 or earlier. Decoding with one fitted
         before rates were fitted in Hz (the 0.6 releases) raises
-        ``ValidationError`` asking for a refit.
+        ``ValidationError`` asking for a refit. ``convert_model`` rewrites a
+        pickle that can decode in the saved-model format.
 
         .. warning::
 
-            Only load models from trusted sources. Pickle files can execute
+            Only load pickles from trusted sources. Pickle files can execute
             arbitrary code during deserialization.
 
         Parameters
         ----------
-        filename : str, optional
-            Filename to load the model from, by default "model.pkl".
+        filename : str or Path, optional
+            Filename to load the model from, by default "model.nld".
 
         Returns
         -------
         _DetectorBase
             Loaded detector instance
+
+        Raises
+        ------
+        ValidationError
+            If the file names a type not registered in this session (import
+            the package that registers it first), or was written in a newer
+            format version.
+        DataError
+            If an array of the file does not match its checksum (a corrupt or
+            edited file).
         """
+        from non_local_detector.model_format._container import is_saved_model_format
+
+        if is_saved_model_format(filename):
+            from non_local_detector.model_format._detector import load_detector
+
+            return load_detector(filename)
         with Path(filename).open("rb") as f:
             return cast("_DetectorBase", _ModelUnpickler(f).load())
 
