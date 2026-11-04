@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### GPU install
+
+- **Changed:** the `gpu` extra installs `jax[cuda13]` (JAX's recommended CUDA 13 wheels; Linux NVIDIA driver 580 or newer) on Python 3.11 and later, and `jax[cuda12]` on Python 3.10, whose newest JAX (0.6.2) has no CUDA 13 wheels. It installed the unversioned `jax[cuda]`, which JAX's install guide no longer lists and which resolved to CUDA 12.
+
 ### API hygiene
 
 - **Removed:** `fit_predict` on the detectors, a stub that only raised `NotImplementedError`. Call `fit(...)` then `predict(...)`.
