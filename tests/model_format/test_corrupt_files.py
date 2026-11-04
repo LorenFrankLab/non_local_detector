@@ -129,3 +129,41 @@ def test_edited_documents_are_data_errors(saved, document, edit):
 
     with pytest.raises(DataError, match="corrupt or was edited"):
         nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+
+def test_dataframe_with_mismatched_columns_is_a_data_error():
+    node = {"$dataframe": {"columns": ["a", "b"], "values": [[1]], "index": {}}}
+
+    with pytest.raises(DataError, match="corrupt or was edited") as info:
+        Decoder(lambda member: np.zeros(1), plain=True).decode(node)
+    assert isinstance(info.value.__cause__, ValueError)
+
+
+def test_a_package_error_inside_a_node_is_not_rewrapped():
+    with pytest.raises(ValidationError, match="Unknown tag"):
+        Decoder(lambda member: np.zeros(1)).decode({"$tuple": [{"$bogus": 1}]})
+
+
+def test_a_user_from_state_reading_a_missing_key_names_the_type():
+    class Keyed:
+        def __init__(self, weight):
+            self.weight = weight
+
+    register_type(
+        Keyed,
+        "testlab.Keyed",
+        to_state=lambda obj: {"weight": obj.weight},
+        from_state=lambda state: Keyed(state["weight"]),
+    )
+    try:
+        node = {"$type": "testlab.Keyed", "state": {}}
+        with pytest.raises(DataError) as info:
+            Decoder(lambda member: np.zeros(1)).decode(node)
+        text = str(info.value)
+        assert "testlab.Keyed" in text
+        assert "from_state" in text
+        assert "stored state" in text
+        assert isinstance(info.value.__cause__, KeyError)
+    finally:
+        _registry._BY_NAME.pop("testlab.Keyed", None)
+        _registry._BY_CLASS.pop(Keyed, None)
