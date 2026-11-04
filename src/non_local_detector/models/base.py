@@ -6125,7 +6125,10 @@ class ClusterlessDetector(_DetectorBase):
             local_position_std=local_position_std,
         )
         self.clusterless_algorithm = clusterless_algorithm
-        self._clusterless_algorithm()  # rejects an unregistered name
+        # A removed name that stored parameter sets, such as Spyglass rows,
+        # still hold: they construct, for inspection, and fitting raises.
+        if clusterless_algorithm != "clusterless_kde_log":
+            self._clusterless_algorithm()  # rejects an unregistered name
         # Stored as-is to keep sklearn's clone() contract intact; the dict
         # copy + default resolution happens lazily in
         # ``_resolve_clusterless_algorithm_params`` at fit time.

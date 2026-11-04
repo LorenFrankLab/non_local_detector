@@ -64,10 +64,19 @@ def test_unknown_algorithm_is_rejected_at_construction(
         assert name in str(error.value)
 
 
-def test_removed_log_kde_name_is_rejected_at_construction_with_a_hint():
-    """The removed ``clusterless_kde_log`` name points to ``clusterless_kde``."""
+def test_removed_log_kde_name_constructs_and_fitting_points_to_clusterless_kde(
+    clusterless_sim,
+):
+    """Stored parameter sets with the removed ``clusterless_kde_log`` still
+    build a detector, to inspect; fitting it points to ``clusterless_kde``."""
+    detector = ClusterlessDecoder(clusterless_algorithm="clusterless_kde_log")
     with pytest.raises(ValidationError, match='Use "clusterless_kde"'):
-        ClusterlessDecoder(clusterless_algorithm="clusterless_kde_log")
+        detector.fit(
+            clusterless_sim.position_time,
+            clusterless_sim.position,
+            clusterless_sim.spike_times,
+            clusterless_sim.spike_waveform_features,
+        )
 
 
 def _fit_sorted(algorithm, sorted_sim):
