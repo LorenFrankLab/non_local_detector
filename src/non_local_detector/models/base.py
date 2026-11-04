@@ -3606,7 +3606,7 @@ class ClusterlessDetector(_DetectorBase):
             msg = (
                 "Saved clusterless model has no mark reference; refit before decoding."
             )
-            raise ValidationError(
+            raise NotFittedError(
                 msg,
                 hint="Clusterless states score waveform marks against a reference "
                 "density fitted from training spikes. Call fit(...) with the "
