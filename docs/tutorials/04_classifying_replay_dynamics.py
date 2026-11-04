@@ -285,7 +285,7 @@ classifier.fit(
 # %%
 state_ind = classifier.state_ind_  # (n_state_bins,) state of each bin
 transitions = classifier.continuous_state_transitions_
-bin_edges = classifier.environments[0].place_bin_edges_[:, 0]  # cm
+bin_edges = classifier.environments_[0].place_bin_edges_[:, 0]  # cm
 spatial_states = ["Continuous", "Fragmented"]
 
 fig, axes = plt.subplots(

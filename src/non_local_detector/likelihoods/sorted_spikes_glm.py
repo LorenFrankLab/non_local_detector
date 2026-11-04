@@ -1455,7 +1455,7 @@ def fit_sorted_spikes_glm_encoding_model(
 
     is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
-        cast(np.ndarray, environment.place_bin_centers_)[is_track_interior]
+        environment.place_bin_centers_[is_track_interior]
     )
 
     # The spline is defined on the track's 1-D bin edges, as the KDE fits and
@@ -1476,7 +1476,7 @@ def fit_sorted_spikes_glm_encoding_model(
         exposure = np.zeros(0)
     emission_design_info, coefficients, interior_rates = _fit_rate_maps(
         environment,
-        cast(np.ndarray, environment.place_bin_edges_),
+        environment.place_bin_edges_,
         interior_place_bin_centers,
         encoding_positions,
         event_counts,

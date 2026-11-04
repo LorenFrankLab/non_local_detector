@@ -300,23 +300,13 @@ def environment_grid_fingerprint(environment: Environment) -> dict[str, Any]:
         a copy of every bin, and holds only Python values, so it pickles with
         the encoding model.
     """
-    centers_shape = tuple(
-        int(n) for n in cast(tuple[int, ...], environment.centers_shape_)
-    )
-    # A grid without an interior mask treats every bin as interior.
-    is_track_interior = (
-        np.ones(centers_shape, dtype=bool)
-        if environment.is_track_interior_ is None
-        else np.asarray(environment.is_track_interior_, dtype=bool)
-    )
+    centers_shape = tuple(int(n) for n in environment.centers_shape_)
+    is_track_interior = np.asarray(environment.is_track_interior_, dtype=bool)
     digest = hashlib.sha256()
     for array in (
         np.asarray(environment.place_bin_centers_, dtype="<f8"),
         is_track_interior,
-        *(
-            np.asarray(edge, dtype="<f8")
-            for edge in cast(tuple[NDArray[Any], ...], environment.edges_)
-        ),
+        *(np.asarray(edge, dtype="<f8") for edge in environment.edges_),
     ):
         digest.update(repr(array.shape).encode())
         digest.update(np.ascontiguousarray(array).tobytes())
@@ -933,7 +923,7 @@ def snap_off_track_positions(
     points = position if position.ndim > 1 else position[:, np.newaxis]
     if points.shape[0] == 0:
         return position
-    edges = cast(tuple[NDArray[Any], ...], environment.edges_)
+    edges = environment.edges_
     n_bins = [len(dimension_edges) - 1 for dimension_edges in edges]
     is_interior = environment.is_track_interior_flat_
     finite = np.all(np.isfinite(points), axis=1)

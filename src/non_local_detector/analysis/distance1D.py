@@ -47,7 +47,7 @@ def _get_MAP_estimate_2d_position_edges(
 
     """
     try:
-        environments = decoder.environments
+        environments = decoder.environments_
         env = find_environment_by_name(environments, environment_name)
     except AttributeError:
         try:

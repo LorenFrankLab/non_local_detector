@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import NotFittedError
 
 pytestmark = pytest.mark.unit
 
@@ -25,17 +26,8 @@ def test_flattens_fitted_mask(open_field):
     assert not mask.all()  # the fixture's grid has exterior bins
 
 
-def test_all_interior_when_mask_unset(open_field):
-    open_field.is_track_interior_ = None
-
-    mask = open_field.is_track_interior_flat_
-
-    np.testing.assert_array_equal(mask, np.ones(len(open_field.place_bin_centers_)))
-    assert mask.dtype == bool
-
-
 def test_unfitted_environment_raises():
-    with pytest.raises(ValueError, match="place_bin_centers_ is required"):
+    with pytest.raises(NotFittedError, match="fit_place_grid"):
         Environment().is_track_interior_flat_  # noqa: B018
 
 

@@ -1,7 +1,5 @@
 """``Environment`` configuration: ``get_params`` round trips and saved parameter rows."""
 
-from dataclasses import fields
-
 import networkx as nx
 import numpy as np
 import pytest
@@ -9,7 +7,6 @@ from sklearn.base import clone
 
 from non_local_detector import SortedSpikesDecoder, Uniform
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.unit
 
@@ -27,6 +24,23 @@ CONFIG_NAMES = {
     "bin_count_threshold",
 }
 POSITION = np.random.default_rng(0).uniform(0.0, 20.0, size=(500, 2))
+# Fitted attributes that environments of earlier releases stored as fields.
+LEGACY_FITTED_NAMES = (
+    "edges_",
+    "place_bin_edges_",
+    "place_bin_centers_",
+    "centers_shape_",
+    "is_track_interior_",
+    "infer_track_interior_",
+    "is_track_boundary_",
+    "track_graphDD",
+    "distance_between_nodes_",
+    "track_graph_with_bin_centers_edges_",
+    "original_nodes_df_",
+    "place_bin_edges_nodes_df_",
+    "place_bin_centers_nodes_df_",
+    "nodes_df_",
+)
 
 
 def _track_environment() -> Environment:
@@ -65,7 +79,7 @@ def test_get_params_round_trips_the_configuration(make, fitted):
 
     rebuilt = Environment(**params)
     assert not rebuilt._is_fitted
-    assert rebuilt.place_bin_centers_ is None
+    assert not hasattr(rebuilt, "place_bin_centers_")
     for name, value in params.items():
         assert getattr(rebuilt, name) is value, name
 
@@ -81,17 +95,19 @@ def test_get_params_keeps_the_track_graph_a_graph():
 
 @pytest.mark.parametrize("is_fitted", [False, np.False_])
 def test_legacy_rows_with_unset_fitted_keys_construct(is_fitted):
-    """Rows saved as ``vars(environment)`` by earlier releases still load."""
-    row = _grid_environment().get_params()
-    row.update(
-        {
-            item.name: None
-            for item in fields(Environment)
-            if item.metadata.get("fitted") and item.name != "_is_fitted"
-        }
-    )
-    row["_is_fitted"] = is_fitted
-    environment = Environment(**row)
+    """Rows saved as ``vars(environment)`` by earlier releases hold the fitted
+    attributes too, None when unfitted. The constructor drops them and warns
+    once, naming them."""
+    row = {
+        **_grid_environment().get_params(),
+        **dict.fromkeys(LEGACY_FITTED_NAMES),
+        "_is_fitted": is_fitted,
+    }
+    with pytest.warns(DeprecationWarning, match="get_params") as record:
+        environment = Environment(**row)
+    assert len(record) == 1
+    for name in (*LEGACY_FITTED_NAMES, "_is_fitted"):
+        assert name in str(record[0].message)
     assert environment.get_params() == _grid_environment().get_params()
     np.testing.assert_array_equal(
         _fit(environment).place_bin_centers_,
@@ -102,16 +118,14 @@ def test_legacy_rows_with_unset_fitted_keys_construct(is_fitted):
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("place_bin_centers_", np.zeros((3, 1))),
-        ("is_track_interior_", np.ones(3, dtype=bool)),
-        ("track_graphDD", nx.Graph()),
+        *((name, np.zeros((3, 1))) for name in LEGACY_FITTED_NAMES),
         ("_is_fitted", True),
+        ("_place_grid", None),
     ],
 )
 def test_fitted_values_in_the_constructor_raise(name, value):
-    with pytest.raises(ValidationError, match=name) as error:
+    with pytest.raises(TypeError, match=name):
         Environment(**{name: value})
-    assert "get_params" in str(error.value)
 
 
 def test_arguments_are_keyword_only():
@@ -160,5 +174,5 @@ def test_detector_environments_keep_the_caller_configuration():
         infer_track_interior=False,
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
     ).fit(time, position, [np.array([0.021, 0.067, 0.121])])
-    assert decoder.environments[0].get_params() == environment.get_params()
-    assert decoder.environments[0].infer_track_interior_ is False
+    assert decoder.environments_[0].get_params() == environment.get_params()
+    assert decoder.environments_[0].infer_track_interior_ is False

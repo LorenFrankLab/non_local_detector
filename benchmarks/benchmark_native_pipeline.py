@@ -366,7 +366,7 @@ def main():
             "padded_hidden": model.n_state_bins_,
             "interior_hidden": int(model.is_track_interior_state_bins_.sum()),
             "grid_shapes": [
-                environment.centers_shape_ for environment in model.environments
+                environment.centers_shape_ for environment in model.environments_
             ],
             "states": model.state_names,
             "encoding_spikes": [len(times) for times in fit["spike_times"]],

@@ -2058,9 +2058,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         tuples, ``state_names=None`` becomes generated names) and validation are
         exactly those of ``__init__``. The new values are applied only if the
         constructor accepts them; on error the detector is unchanged. Fitted
-        attributes are not touched. Changing ``environments``,
-        ``state_names``, ``observation_models`` or any other parameter a fit
-        depends on after fitting therefore requires refitting.
+        attributes, including the fitted environments in ``environments_``,
+        are not touched. Changing ``environments``, ``state_names``,
+        ``observation_models`` or any other parameter a fit depends on after
+        fitting therefore requires refitting.
 
         As with the constructor, parameters that must agree (for example
         ``discrete_initial_conditions``, ``observation_models``,
@@ -2162,13 +2163,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             Position array to validate.
         context : str, optional
             Name of the calling context (``"fit"`` or ``"predict"``)
-            for error messages.
+            for error messages. ``fit`` checks the configured
+            ``environments``, which it is about to fit; ``predict`` checks
+            the fitted ``environments_``, which it decodes on.
         """
         is_1d = position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1)
         if not is_1d:
             return
 
-        has_track_graph = any(env.track_graph is not None for env in self.environments)
+        environments = self.environments if context == "fit" else self.environments_
+        has_track_graph = any(env.track_graph is not None for env in environments)
         if has_track_graph:
             msg = (
                 "Environment has a track_graph but position is 1D "
@@ -2398,7 +2402,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
-        assert environment.is_track_interior_ is not None  # set by fit_place_grid
         n_bins = int(environment.is_track_interior_.sum())
         log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
 
@@ -2677,13 +2680,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Returns
         -------
         tuple[Environment, ...]
-            Initialized environments as a tuple.
+            Initialized environments as a tuple. A tuple is returned as is, so
+            the parameter round-trips through scikit-learn's ``clone``.
         """
         normalized: Any = environments
         if normalized is None:
             normalized = (Environment(),)
         if not hasattr(normalized, "__iter__"):
             normalized = (normalized,)
+        if not isinstance(normalized, tuple):
+            normalized = tuple(normalized)
         return cast("tuple[Environment, ...]", normalized)
 
     def _initialize_observation_models(
@@ -2826,7 +2832,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Each environment is rebuilt from its configuration
         (``Environment.get_params``) and the copy is fitted, so the
         environments passed to the model, which other models may share, are
-        never changed. ``self.environments`` holds the fitted copies afterwards.
+        never changed. ``self.environments`` keeps the configuration and
+        ``self.environments_`` holds the fitted copies afterwards.
 
         Parameters
         ----------
@@ -2871,7 +2878,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 **distance_options,
             )
             fitted_environments.append(environment)
-        self.environments = tuple(fitted_environments)
+        self.environments_ = tuple(fitted_environments)
 
     def _initialize_state_index(self) -> None:
         """Initialize indices and parameters related to the combined state space.
@@ -2910,12 +2917,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 is_track_interior.append(np.ones(1, dtype=bool))
             else:
                 environment = self._get_environment_by_name(obs.environment_name)
-                if environment.place_bin_centers_ is not None:
-                    bin_sizes.append(environment.place_bin_centers_.shape[0])
-                    state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
-                else:
-                    msg = "Environment place_bin_centers_ cannot be None"
-                    raise ValueError(msg)
+                bin_sizes.append(environment.place_bin_centers_.shape[0])
+                state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
                 is_track_interior.append(environment.is_track_interior_flat_)
 
         self.state_ind_ = np.concatenate(state_ind)
@@ -2947,7 +2950,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             if obs.is_local and self.local_position_std is not None:
                 effective_obs = replace(obs, is_local=False)
             ic_parts.append(
-                cont_ic.make_initial_conditions(effective_obs, self.environments)
+                cont_ic.make_initial_conditions(effective_obs, self.environments_)
             )
         self.continuous_initial_conditions_ = np.concatenate(ic_parts)
         self.initial_conditions_ = (
@@ -3019,7 +3022,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
             operator = build_transition_operator(
                 self.continuous_transition_types,
-                self.environments,
+                self.environments_,
                 self.bin_sizes_,  # type: ignore[arg-type]  # typed Sequence[int] in transition_operators; an ndarray works
                 observation_models=self.observation_models,
                 local_position_std=self.local_position_std,
@@ -3064,7 +3067,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     n_col_bins,
                 )
                 one_bin_block = _one_bin_block(
-                    transition, self.environments, n_row_bins, n_col_bins
+                    transition, self.environments_, n_row_bins, n_col_bins
                 )
                 if one_bin_block is not None:
                     self.continuous_state_transitions_[inds] = one_bin_block.entries(
@@ -3074,7 +3077,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 else:
                     self.continuous_state_transitions_[inds] = _make_transition_block(
                         transition,
-                        self.environments,
+                        self.environments_,
                         context,
                         (n_row_bins, n_col_bins),
                     )
@@ -3127,6 +3130,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     penalties,
                     self.discrete_transition_coefficients_.shape[1],
                 )[0]
+        # Detectors fitted before ``environments_`` existed kept the fitted
+        # environments in ``environments``. They stay there, where code that
+        # inspects old models reads them, and ``environments_`` is the same
+        # tuple; only a new fit splits configuration from fitted copies. Those
+        # releases stored a list, which the constructor (and so ``clone``)
+        # turns into a tuple.
+        if "environments_" not in state and any(
+            env._is_fitted for env in self.environments
+        ):
+            self.environments = tuple(self.environments)
+            self.environments_ = self.environments
         # Encoding models fitted before each recorded its algorithm.
         encoding_model = state.get("encoding_model_")
         if isinstance(encoding_model, Mapping):
@@ -6350,7 +6364,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def _get_environment_by_name(self, environment_name: str) -> Environment:
         """
-        Get one of this model's environments by name.
+        Get one of this model's fitted environments by name.
 
         Parameters
         ----------
@@ -6360,16 +6374,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Returns
         -------
         Environment
-            The environment object.
+            The fitted copy in ``environments_``.
 
         Raises
         ------
         ValidationError
             If environment not found.
         """
-        # Looked up in ``self.environments`` on every call: each fit replaces
+        # Looked up in ``self.environments_`` on every call: each fit replaces
         # them with new fitted copies, so a stored lookup would go stale.
-        return find_environment_by_name(self.environments, environment_name)
+        return find_environment_by_name(self.environments_, environment_name)
 
 
 class ClusterlessDetector(_DetectorBase):

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
+from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.initial_conditions import (
     UniformInitialConditions,
@@ -11,7 +12,7 @@ from non_local_detector.initial_conditions import (
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
-from tests.conftest import assert_probability_distribution
+from tests.conftest import assert_probability_distribution, set_place_grid
 
 
 @pytest.mark.unit
@@ -43,7 +44,7 @@ def test_uniform_initial_conditions_nonlocal_with_mask(simple_1d_environment):
     # Mask out last two bins
     mask = np.ones(env.centers_shape_, dtype=bool)
     mask[-2:] = False
-    env.is_track_interior_ = mask
+    set_place_grid(env, is_track_interior=mask)
     envs = (env,)
     ic = UniformInitialConditions()
     obs = ObservationModel(environment_name=env.environment_name, is_local=False)
@@ -69,8 +70,7 @@ def test_estimate_initial_conditions_returns_first_row():
 def test_uniform_initial_conditions_unfitted_environment_raises(simple_1d_environment):
     """An environment without a fitted track interior is an error, not a
     one-bin distribution."""
-    env = simple_1d_environment
-    env.is_track_interior_ = None
+    env = Environment(environment_name=simple_1d_environment.environment_name)
     obs = ObservationModel(environment_name=env.environment_name, is_local=False)
     with pytest.raises(ValidationError, match="not fitted"):
         UniformInitialConditions().make_initial_conditions(obs, (env,))
@@ -83,7 +83,7 @@ def test_uniform_initial_conditions_without_interior_bins_raises(
     """An environment with no interior bins is an error, not a uniform
     distribution over its exterior bins."""
     env = simple_1d_environment
-    env.is_track_interior_ = np.zeros(env.centers_shape_, dtype=bool)
+    set_place_grid(env, is_track_interior=np.zeros(env.centers_shape_, dtype=bool))
     obs = ObservationModel(environment_name=env.environment_name, is_local=False)
     with pytest.raises(ValidationError, match="no interior bins"):
         UniformInitialConditions().make_initial_conditions(obs, (env,))

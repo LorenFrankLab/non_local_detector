@@ -179,7 +179,7 @@ decoder = SortedSpikesDecoder(environments=[Environment(place_bin_size=2.0)]).fi
 # %%
 encoding_model = decoder.encoding_model_[("", 0)]
 fitted_place_fields = np.asarray(encoding_model["place_fields"])  # Hz
-environment = decoder.environments[0]
+environment = decoder.environments_[0]
 bin_centers = environment.place_bin_centers_[:, 0]  # cm
 true_place_fields = place_field_rate(
     bin_centers, field_centers, field_widths, peak_rates
@@ -771,7 +771,7 @@ summed.plot(
     cbar_kwargs={"label": "Summed posterior (s)"},
 )
 axes[0].set_title("Posterior summed over time")
-x_edges, y_edges = box_decoder.environments[0].edges_
+x_edges, y_edges = box_decoder.environments_[0].edges_
 occupancy, _, _ = np.histogram2d(
     box_position[:, 0], box_position[:, 1], bins=[x_edges, y_edges]
 )
@@ -785,7 +785,7 @@ for ax in axes:
 plt.show()
 
 # %%
-environment_2d = box_decoder.environments[0]
+environment_2d = box_decoder.environments_[0]
 bin_xy = environment_2d.place_bin_centers_.reshape(*environment_2d.centers_shape_, 2)
 distance_to_wall = np.minimum(bin_xy, box_size - bin_xy).min(axis=-1)
 near_wall = (distance_to_wall < 8.0) & environment_2d.is_track_interior_

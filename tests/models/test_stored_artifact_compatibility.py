@@ -14,6 +14,7 @@ because its rates and transition clocks cannot be converted safely.
 """
 
 import copy
+import copyreg
 import dataclasses
 import pickle
 from pathlib import Path
@@ -21,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.base import clone
 from track_linearization import make_track_graph
 
 import non_local_detector as nld
@@ -30,7 +32,12 @@ from non_local_detector import discrete_state_transitions as dst
 from non_local_detector import initial_conditions as ic
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.models.base import ClusterlessDetector, SortedSpikesDetector
+from non_local_detector.graph_distances import LazyGraphDistances
+from non_local_detector.models.base import (
+    ClusterlessDetector,
+    SortedSpikesDetector,
+    _ModelUnpickler,
+)
 from non_local_detector.observation_models import ObservationModel
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
@@ -191,6 +198,180 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
 
 
 @pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_saved_model_keeps_its_fitted_environments(version, artifact):
+    """These versions kept a detector's fitted environments in its
+    ``environments`` parameter. A loaded model keeps them there, where code
+    that inspects old models reads them (``get_params()`` reports them, as it
+    always did), and ``environments_`` holds the same objects. Like every
+    detector's, ``environments`` is a tuple, so ``clone`` rebuilds it."""
+    model = _load_model(version, artifact)
+
+    assert isinstance(model.environments, tuple)
+    assert len(model.environments_) == len(model.environments) == 1
+    for configured, fitted in zip(model.environments, model.environments_, strict=True):
+        assert fitted is configured
+        assert fitted.place_bin_centers_ is not None
+    for obs in model.observation_models:
+        assert model._get_environment_by_name(obs.environment_name) in (
+            model.environments_
+        )
+    cloned = clone(model)
+    assert not hasattr(cloned, "environments_")
+    assert not cloned.environments[0]._is_fitted
+
+
+class _StoredState:
+    """An object unpickled without its class: keeps the pickled state."""
+
+    def __init__(self, *args):
+        self.args = args
+
+    def __setstate__(self, state):
+        self.state = state
+
+
+class _StoredStateUnpickler(_ModelUnpickler):
+    """Unpickle detectors and environments as their stored states."""
+
+    def find_class(self, module, name):
+        if module.startswith("non_local_detector.models") or (
+            module,
+            name,
+        ) == ("non_local_detector.environment", "Environment"):
+            return _StoredState
+        return super().find_class(module, name)
+
+
+class _LegacyEnvironmentPickle:
+    """Pickles as an ``Environment`` with the given instance ``__dict__``, as
+    earlier releases did: unpickling makes an ``Environment`` without calling
+    its constructor and passes the state to ``__setstate__``."""
+
+    def __init__(self, state):
+        self.state = state
+
+    def __reduce__(self):
+        return (copyreg._reconstructor, (Environment, object, None), self.state)
+
+
+def _stored_environment_states(version, artifact):
+    path = COMPAT_DATA / version / f"{artifact}_model.pkl"
+    with path.open("rb") as file:
+        detector = _StoredStateUnpickler(file).load()
+    return [environment.state for environment in detector.state["environments"]]
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
+    version, artifact, tmp_path
+):
+    """``save_environment`` files of these versions hold the fitted attributes
+    as instance fields. They load into the current form: the same values,
+    read through ``place_grid_``, fitted with the stored configuration."""
+    (state,) = _stored_environment_states(version, artifact)
+    path = tmp_path / "environment.pkl"
+    path.write_bytes(pickle.dumps(_LegacyEnvironmentPickle(state)))
+
+    environment = Environment.load_environment(str(path))
+
+    assert environment._is_fitted
+    assert "place_bin_centers_" not in vars(environment)
+    assert environment.get_params().keys() == Environment().get_params().keys()
+    np.testing.assert_array_equal(
+        environment.place_bin_centers_, state["place_bin_centers_"]
+    )
+    np.testing.assert_array_equal(
+        environment.is_track_interior_, state["is_track_interior_"]
+    )
+    assert environment.centers_shape_ == tuple(state["centers_shape_"])
+    for edge, stored in zip(environment.edges_, state["edges_"], strict=True):
+        np.testing.assert_array_equal(edge, stored)
+    assert environment.distance_between_nodes_ is not None
+    centers = environment.place_bin_centers_[environment.is_track_interior_flat_]
+    assert environment.get_bin_ind(centers[:3]).shape == (3,)
+    restored = pickle.loads(pickle.dumps(environment))
+    np.testing.assert_array_equal(
+        restored.place_bin_centers_, environment.place_bin_centers_
+    )
+
+
+@pytest.mark.parametrize(
+    ("version", "artifact"), [(v, a) for v, a in MODELS if "2d" in a]
+)
+def test_open_field_pickled_before_its_distances_were_stored_rebuilds_them(
+    version, artifact
+):
+    """Releases before 0.5.13 stored no ``distance_between_nodes_`` or
+    ``track_graphDD`` for an open field. Without them, the stored grid loads
+    with the graph and distances a fit of it gives, equal to those these
+    versions stored."""
+    (state,) = _stored_environment_states(version, artifact)
+    stored = pickle.loads(pickle.dumps(_LegacyEnvironmentPickle(state)))
+    stripped = {
+        name: value
+        for name, value in state.items()
+        if name not in ("distance_between_nodes_", "track_graphDD")
+    }
+
+    environment = pickle.loads(pickle.dumps(_LegacyEnvironmentPickle(stripped)))
+
+    expected = stored.distance_between_nodes_
+    if isinstance(expected, LazyGraphDistances):
+        expected = expected.to_dense()
+    np.testing.assert_array_equal(environment.distance_between_nodes_, expected)
+    assert set(environment.track_graphDD.edges) == set(stored.track_graphDD.edges)
+    assert environment.infer_track_interior_ == state.get(
+        "infer_track_interior_", state["infer_track_interior"]
+    )
+
+
+def test_open_field_saved_by_0_5_12_gets_the_distances_of_a_fresh_fit(inputs):
+    """0.5.12 stored no graph or distances for an open field (0.5.13 was the
+    first to). The rebuilt ones equal those of fitting the stored
+    configuration on the recording, and those 0.5.13 stored for it."""
+    environment = _load_model("v0.5.12", "nonlocal_clusterless_2d").environments[0]
+    (state,) = _stored_environment_states("v0.5.12", "nonlocal_clusterless_2d")
+    assert "distance_between_nodes_" not in state
+    fresh = Environment(**environment.get_params()).fit_place_grid(
+        inputs["field_position"],
+        infer_track_interior=environment.infer_track_interior_,
+    )
+    stored_by_0_5_13 = _load_model("v0.5.13", "nonlocal_clusterless_2d").environments[0]
+
+    np.testing.assert_array_equal(
+        environment.place_bin_centers_, fresh.place_bin_centers_
+    )
+    for expected in (fresh, stored_by_0_5_13):
+        np.testing.assert_array_equal(
+            environment.distance_between_nodes_, expected.distance_between_nodes_
+        )
+
+
+UNFILTERED_ROWS = [row for row in ROWS if row[0] in ("main-84259d49", "main-66047901")]
+
+
+@pytest.mark.parametrize(("version", "preset", "row_format"), UNFILTERED_ROWS)
+def test_environment_rows_holding_unset_fitted_keys_construct_unfiltered(
+    version, preset, row_format
+):
+    """Rows of main (2025-10 to 2026-10) hold every fitted attribute as None,
+    and Spyglass ``master`` passes them to ``Environment`` unfiltered: they
+    construct, with a deprecation warning naming the dropped keys."""
+    config = Environment().get_params().keys()
+    for stored in _row(version, preset, row_format)["environments"]:
+        stored = dict(stored)
+        if stored.get("track_graph") is not None:
+            stored["track_graph"] = make_track_graph(**stored["track_graph"])
+
+        with pytest.warns(DeprecationWarning, match="place_bin_centers_"):
+            environment = Environment(**stored)
+
+        assert not environment._is_fitted
+        assert environment.get_params().keys() == config
+        assert environment.environment_name == stored["environment_name"]
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
 def test_saved_model_can_be_displayed_and_its_parts_rebuilt(version, artifact):
     """A loaded detector prints (as in a notebook), reports its parameters,
     copies, and its transitions rebuild from their stored attributes."""
@@ -311,15 +492,17 @@ def test_results_without_bin_bounds_cannot_be_aligned_to_tracking(
 def test_stored_parameter_row_rebuilds_a_detector(version, preset, row_format, inputs):
     """``DecodingParameters.fetch1`` and ``fetch_environments``: the row
     rebuilds a detector under the current validation, and its environments
-    initialize from the recording."""
+    initialize from the recording into ``environments_``."""
     detector = _spyglass_restore(_row(version, preset, row_format))
 
     position, _ = _recording(inputs, "clusterless" in preset)
     detector.initialize_environments(position=position)
 
-    environment = detector.environments[0]
+    environment = detector.environments_[0]
     assert (environment.track_graph is not None) == ("1d" in preset)
     assert environment.is_track_interior_.any()
+    # The rebuilt detector's parameters stay configuration.
+    assert not detector.environments[0]._is_fitted
 
 
 @pytest.mark.parametrize(

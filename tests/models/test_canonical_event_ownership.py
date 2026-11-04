@@ -296,7 +296,7 @@ def test_clusterless_exposure_uses_full_timeline_mask(
         position=sim.position[is_training],
         spike_times=[t[:0] for t in sim.spike_times],
         spike_waveform_features=[f[:0] for f in sim.spike_waveform_features],
-        environment=detector.environments[0],
+        environment=detector.environments_[0],
         valid_position_intervals=valid_position_intervals,
         **detector._resolve_clusterless_algorithm_params(),
     )

@@ -235,7 +235,7 @@ def test_fitted_hz_rates_feed_physical_time_checkers(algorithm, frequency):
     if "mean_rates" in model:
         rate = np.asarray(model["mean_rates"])[0]
     else:
-        environment = detector.environments[0]
+        environment = detector.environments_[0]
         center = np.flatnonzero(
             environment.place_bin_centers_[environment.is_track_interior_.ravel(), 0]
             == 0

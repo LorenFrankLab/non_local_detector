@@ -247,7 +247,6 @@ def test_structured_local_kernel_and_holes_match_dense(
     mask = np.ones((7, 7), dtype=bool)
     mask[2, 3] = mask[4, 4] = False
     model.environments[0].is_track_interior = mask
-    model.environments[0].is_track_interior_ = mask
     model.local_position_std = local_std
     model.fit(**fit)
     reference = model.predict(**predict)

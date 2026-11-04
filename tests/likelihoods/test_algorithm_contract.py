@@ -200,7 +200,7 @@ def test_registered_algorithm_meets_the_detector_contract(
     assert set(kwargs) == set(encoding_model) | keywords
 
     n_rows = len(edges) - 1
-    is_interior = decoder.environments[0].is_track_interior_flat_
+    is_interior = decoder.environments_[0].is_track_interior_flat_
     n_interior_bins = int(is_interior.sum())
     assert 0 < n_interior_bins < is_interior.size
     local_kwargs = {**kwargs, "is_local": True}

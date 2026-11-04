@@ -552,7 +552,7 @@ def fit_clusterless_mark_glm_encoding_model(
 
     is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
-        cast(np.ndarray, environment.place_bin_centers_)[is_track_interior]
+        environment.place_bin_centers_[is_track_interior]
     )
     encoding_positions = environment.decoding_position(position[support.indices])
 
@@ -622,7 +622,7 @@ def fit_clusterless_mark_glm_encoding_model(
 
     emission_design_info, coefficients, interior_rates = _fit_rate_maps(
         environment,
-        cast(np.ndarray, environment.place_bin_edges_),
+        environment.place_bin_edges_,
         interior_place_bin_centers,
         encoding_positions,
         _soft_cell_counts(spike_events),

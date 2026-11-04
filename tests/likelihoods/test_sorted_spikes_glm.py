@@ -1036,7 +1036,7 @@ def test_detector_fits_glm_on_a_track_graph():
 
     encoding = next(iter(detector.encoding_model_.values()))
     place_fields = np.asarray(encoding["place_fields"])
-    linear_centers = detector.environments[0].place_bin_centers_.ravel()
+    linear_centers = detector.environments_[0].place_bin_centers_.ravel()
     assert np.all(np.isfinite(place_fields))
     for center, field in zip(place_centers, place_fields, strict=True):
         assert abs(linear_centers[np.argmax(field)] - center) < 2.0

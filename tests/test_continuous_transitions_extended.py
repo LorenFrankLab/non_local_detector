@@ -12,6 +12,7 @@ from non_local_detector.continuous_state_transitions import (
     _normalize_row_probability,
     estimate_movement_var,
 )
+from non_local_detector.exceptions import NotFittedError
 
 pytestmark = pytest.mark.unit
 
@@ -178,7 +179,7 @@ class TestRandomWalkErrorHandling:
     """Test RandomWalk error handling for missing place bin centers."""
 
     def test_random_walk_error_without_place_bin_centers(self):
-        """Test that RandomWalk raises error when environment lacks place bin centers."""
+        """Test that RandomWalk raises NotFittedError when the environment is not fitted."""
         from non_local_detector.continuous_state_transitions import RandomWalk
         from non_local_detector.environment import Environment
 
@@ -187,7 +188,7 @@ class TestRandomWalkErrorHandling:
 
         rw = RandomWalk(environment_name="test", movement_var=1.0)
 
-        with pytest.raises(ValueError, match="must have defined place bin centers"):
+        with pytest.raises(NotFittedError, match="has not been fitted"):
             rw.make_state_transition(envs)
 
 
@@ -196,7 +197,7 @@ class TestUniformComprehensive:
     """Comprehensive tests for Uniform transition class."""
 
     def test_uniform_error_without_place_bin_centers(self):
-        """Test that Uniform raises error when environment lacks place bin centers."""
+        """Test that Uniform raises NotFittedError when the environment is not fitted."""
         from non_local_detector.continuous_state_transitions import Uniform
         from non_local_detector.environment import Environment
 
@@ -205,11 +206,11 @@ class TestUniformComprehensive:
 
         uniform = Uniform(environment_name="test")
 
-        with pytest.raises(ValueError, match="must have defined place bin centers"):
+        with pytest.raises(NotFittedError, match="has not been fitted"):
             uniform.make_state_transition(envs)
 
-    def test_uniform_with_no_track_interior(self):
-        """Test Uniform when environment has no track interior mask."""
+    def test_uniform_with_every_bin_interior(self):
+        """Test Uniform when every bin is interior."""
         from non_local_detector.continuous_state_transitions import Uniform
         from non_local_detector.environment import Environment
 
@@ -219,7 +220,6 @@ class TestUniformComprehensive:
         pos = np.linspace(0.0, 5.0, 6)[:, None]
         env = env.fit_place_grid(position=pos, infer_track_interior=False)
         n_bins = env.place_bin_centers_.shape[0]
-        env.is_track_interior_ = None
         envs = (env,)
 
         uniform = Uniform(environment_name="test")
@@ -234,7 +234,7 @@ class TestIdentityComprehensive:
     """Comprehensive tests for Identity transition class."""
 
     def test_identity_error_without_place_bin_centers(self):
-        """Test that Identity raises error when environment lacks place bin centers."""
+        """Test that Identity raises NotFittedError when the environment is not fitted."""
         from non_local_detector.continuous_state_transitions import Identity
         from non_local_detector.environment import Environment
 
@@ -243,11 +243,11 @@ class TestIdentityComprehensive:
 
         identity = Identity(environment_name="test")
 
-        with pytest.raises(ValueError, match="must have defined place bin centers"):
+        with pytest.raises(NotFittedError, match="has not been fitted"):
             identity.make_state_transition(envs)
 
-    def test_identity_with_no_track_interior(self):
-        """Test Identity when environment has no track interior mask."""
+    def test_identity_with_every_bin_interior(self):
+        """Test Identity when every bin is interior."""
         from non_local_detector.continuous_state_transitions import Identity
         from non_local_detector.environment import Environment
 
@@ -257,7 +257,6 @@ class TestIdentityComprehensive:
         pos = np.linspace(0.0, 5.0, 6)[:, None]
         env = env.fit_place_grid(position=pos, infer_track_interior=False)
         n_bins = env.place_bin_centers_.shape[0]
-        env.is_track_interior_ = None
         envs = (env,)
 
         identity = Identity(environment_name="test")
@@ -272,7 +271,7 @@ class TestRandomWalkDirection1Comprehensive:
     """Comprehensive tests for RandomWalkDirection1 transition class."""
 
     def test_random_walk_direction1_error_without_place_bin_centers(self):
-        """Test that RandomWalkDirection1 raises error when environment lacks place bin centers."""
+        """Test that RandomWalkDirection1 raises NotFittedError when the environment is not fitted."""
         from non_local_detector.continuous_state_transitions import RandomWalkDirection1
         from non_local_detector.environment import Environment
 
@@ -281,7 +280,7 @@ class TestRandomWalkDirection1Comprehensive:
 
         rwd1 = RandomWalkDirection1(environment_name="test", movement_var=1.0)
 
-        with pytest.raises(ValueError, match="must have defined place bin centers"):
+        with pytest.raises(NotFittedError, match="has not been fitted"):
             rwd1.make_state_transition(envs)
 
 
@@ -290,7 +289,7 @@ class TestRandomWalkDirection2Comprehensive:
     """Comprehensive tests for RandomWalkDirection2 transition class."""
 
     def test_random_walk_direction2_error_without_place_bin_centers(self):
-        """Test that RandomWalkDirection2 raises error when environment lacks place bin centers."""
+        """Test that RandomWalkDirection2 raises NotFittedError when the environment is not fitted."""
         from non_local_detector.continuous_state_transitions import RandomWalkDirection2
         from non_local_detector.environment import Environment
 
@@ -299,7 +298,7 @@ class TestRandomWalkDirection2Comprehensive:
 
         rwd2 = RandomWalkDirection2(environment_name="test", movement_var=1.0)
 
-        with pytest.raises(ValueError, match="must have defined place bin centers"):
+        with pytest.raises(NotFittedError, match="has not been fitted"):
             rwd2.make_state_transition(envs)
 
 

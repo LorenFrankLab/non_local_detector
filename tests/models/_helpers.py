@@ -29,7 +29,10 @@ def _snapshot(detector):
     """Attribute identities of the detector and of each of its environments."""
     return (
         dict(vars(detector)),
-        [(env, dict(vars(env))) for env in detector.environments],
+        [
+            (env, dict(vars(env)))
+            for env in (*detector.environments, *getattr(detector, "environments_", ()))
+        ],
     )
 
 

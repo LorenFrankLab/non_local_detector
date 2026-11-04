@@ -395,9 +395,7 @@ def fit_sorted_spikes_kde_encoding_model(
     )
 
     is_track_interior = environment.is_track_interior_flat_
-    interior_place_bin_centers = cast(np.ndarray, environment.place_bin_centers_)[
-        is_track_interior
-    ]
+    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
     occupancy_samples, occupancy_weights = drop_zero_weight_samples(
         position, exposure_weights
     )
