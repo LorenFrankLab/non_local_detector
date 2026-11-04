@@ -43,6 +43,7 @@ import itertools
 import math
 import re
 from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Any
 
 import jax
@@ -426,11 +427,11 @@ class Decoder:
         if not tags:
             return {k: self.decode(v) for k, v in node.items()}
         tag = tags[0]
-        handler = getattr(self, "_" + tag[1:], None)
+        handler = self._HANDLERS.get(tag)
         if handler is None:
             msg = f"Unknown tag {tag!r} in the saved model"
             raise ValidationError(msg, hint="Upgrade non_local_detector to read it.")
-        return handler(node)
+        return handler(self, node)
 
     def _as(self, array: np.ndarray, is_jax: bool) -> Any:
         return jnp.asarray(array) if is_jax else array
@@ -542,3 +543,22 @@ class Decoder:
         for name, value in zip(columns, values, strict=True):
             frame[name] = value
         return frame
+
+    # The tags a file may use, each to its handler; nothing else is called.
+    _HANDLERS: Mapping[str, Callable[["Decoder", JSON], Any]] = MappingProxyType(
+        {
+            "$array": _array,
+            "$fill": _fill,
+            "$ragged": _ragged,
+            "$item": _item,
+            "$tuple": _tuple,
+            "$dict": _dict,
+            "$float": _float,
+            "$scalar": _scalar,
+            "$type": _type,
+            "$environment": _environment,
+            "$graph": _graph,
+            "$categorical": _categorical,
+            "$dataframe": _dataframe,
+        }
+    )
