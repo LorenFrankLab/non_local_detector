@@ -140,7 +140,9 @@ def _column_summary(values: Any) -> np.ndarray:
         values = values[:, np.newaxis]
     values = values.reshape(values.shape[0], int(np.prod(values.shape[1:])))
     ramp = np.linspace(1.0, 2.0, len(values))
-    return np.stack([ramp @ values, np.sum(values**2, axis=0)])
+    # See _block_summary: spurious BLAS floating-point flags.
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        return np.stack([ramp @ values, np.sum(values**2, axis=0)])
 
 
 def _environment_fingerprint(environment: Environment) -> np.ndarray:
@@ -189,8 +191,12 @@ def _block_summary(block: Any, n_rows: int, n_columns: int) -> np.ndarray:
     column_weights = _fingerprint_weights(n_columns)
     if isinstance(block, np.ndarray):
         values = np.asarray(block, dtype=np.float64)
-        by_row = values @ column_weights
-        by_column = row_weights.T @ values
+        # Finite probabilities times weights in [1, 2] cannot divide by zero
+        # or overflow; some BLAS builds (NumPy 2.2 on Accelerate) still raise
+        # spurious floating-point flags from matmul.
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            by_row = values @ column_weights
+            by_column = row_weights.T @ values
     else:
         import jax
         import jax.numpy as jnp
