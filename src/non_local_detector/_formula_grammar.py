@@ -19,17 +19,21 @@ accepted only if every node is one of
   without another ``**`` (so evaluation time stays bounded);
 - a list or tuple of numbers (e.g. ``knots=[1.0, 4.0]``);
 - ``np.pi``;
-- a call of one of the documented transforms (``_FUNCTIONS``) or numpy
-  functions (``_NUMPY_FUNCTIONS``), with arguments, and keyword arguments,
-  that are themselves allowed. ``C`` takes only its data and ``levels``:
-  patsy calls a contrast given to it.
+- a call of one of the documented transforms (``_FUNCTIONS``) or elementwise
+  numpy functions (``_NUMPY_FUNCTIONS``), with arguments, and keyword
+  arguments, that are themselves allowed;
+- ``C(data, contrast, levels)``, whose contrast (which patsy calls) must be a
+  call of one of patsy's contrasts (``_CONTRASTS``) with literal arguments,
+  e.g. ``C(arm, Treatment('b'))``, and whose levels are a list or tuple of
+  literals, e.g. ``levels=['a', 'b']``. These are the only places a string
+  literal may appear.
 
-Everything else is refused: other attribute access, subscripts, strings,
-lambdas, comprehensions, conditionals, comparisons, bitwise operators, line
-breaks and backslashes, and calls of anything else. Validating the factor
-code patsy itself extracted means the check sees exactly the Python that
-patsy would evaluate, so a string cannot be split one way for the check and
-another way for evaluation.
+Everything else is refused: other attribute access, subscripts, strings
+elsewhere, lambdas, comprehensions, conditionals, comparisons, bitwise
+operators, line breaks and backslashes, and calls of anything else. Validating
+the factor code patsy itself extracted means the check sees exactly the Python
+that patsy would evaluate, so a string cannot be split one way for the check
+and another way for evaluation.
 
 patsy looks up a name it does not find in the covariates in the caller's
 namespace and Python's builtins (``breakpoint``, ``exit``, ...). Wherever the
@@ -64,8 +68,36 @@ _FUNCTIONS = frozenset(
         "te",
     }
 )
-# Called as ``np.<name>(...)``.
-_NUMPY_FUNCTIONS = frozenset({"abs", "exp", "log", "log1p", "sqrt"})
+# Called as ``np.<name>(...)``: elementwise functions of their arguments.
+_NUMPY_FUNCTIONS = frozenset(
+    {
+        "abs",
+        "arccos",
+        "arcsin",
+        "arctan",
+        "arctan2",
+        "ceil",
+        "cos",
+        "exp",
+        "expm1",
+        "floor",
+        "log",
+        "log10",
+        "log1p",
+        "log2",
+        "maximum",
+        "minimum",
+        "sign",
+        "sin",
+        "sqrt",
+        "square",
+        "tan",
+    }
+)
+# patsy's contrasts, called with literal arguments as the contrast of C().
+_CONTRASTS = frozenset({"Diff", "Helmert", "Poly", "Sum", "Treatment"})
+# The parameters of patsy's C, in order.
+_C_PARAMETERS = ("data", "contrast", "levels")
 # Read as ``np.<name>``, e.g. ``upper=2 * np.pi``.
 _NUMPY_CONSTANTS = frozenset({"pi"})
 _BINARY_OPERATORS: tuple[type[ast.operator], ...] = (
@@ -87,7 +119,11 @@ _ALLOWED = (
     + ", ".join(sorted(_FUNCTIONS, key=str.lower))
     + ", "
     + ", ".join(f"np.{name}" for name in sorted(_NUMPY_FUNCTIONS))
-    + " (C takes only its data and levels=)"
+    + " (C takes its data, levels= as a list of literals, and as contrast a "
+    "call of "
+    + ", ".join(sorted(_CONTRASTS))
+    + " with literal arguments, e.g. C(arm, Treatment('b')); string literals "
+    "are allowed only there)"
 )
 _HINT = (
     "patsy evaluates a formula as Python, so transition formulas are limited "
@@ -295,18 +331,75 @@ def _offending_call(call: ast.Call) -> str | None:
     for keyword in call.keywords:
         if keyword.arg is None:
             return f"the ** argument in {ast.unparse(call)}"
-    # patsy calls C's contrast (its second argument).
-    is_c = isinstance(function, ast.Name) and function.id == "C"
-    if is_c and (
-        len(call.args) > 1
-        or any(keyword.arg == "contrast" for keyword in call.keywords)
-    ):
-        return f"the contrast in {ast.unparse(call)}"
+    if isinstance(function, ast.Name) and function.id == "C":
+        return _offending_c(call)
     for node in _arguments(call):
         offending = _offending(node)
         if offending is not None:
             return offending
     return None
+
+
+def _offending_c(call: ast.Call) -> str | None:
+    """Description of what a call of patsy's ``C`` does outside the grammar,
+    or None.
+
+    patsy calls the contrast, so it must be a call of one of ``_CONTRASTS``
+    with literal arguments; the levels must be a list or tuple of literals.
+    """
+    if len(call.args) > len(_C_PARAMETERS):
+        return f"the arguments of {ast.unparse(call)}"
+    arguments = dict(zip(_C_PARAMETERS, call.args, strict=False))
+    for keyword in call.keywords:
+        if keyword.arg not in _C_PARAMETERS or keyword.arg in arguments:
+            return f"the argument {keyword.arg}= in {ast.unparse(call)}"
+        arguments[keyword.arg] = keyword.value
+    contrast = arguments.get("contrast")
+    if contrast is not None and not _is_contrast(contrast):
+        return (
+            f"the contrast {ast.unparse(contrast)} in {ast.unparse(call)}, which "
+            "is not a call of " + ", ".join(sorted(_CONTRASTS)) + " with literal "
+            "arguments"
+        )
+    levels = arguments.get("levels")
+    if levels is not None and not (
+        isinstance(levels, ast.List | ast.Tuple)
+        and all(_is_scalar_literal(element) for element in levels.elts)
+    ):
+        return (
+            f"the levels {ast.unparse(levels)} in {ast.unparse(call)}, which "
+            "are not a list of literals"
+        )
+    data = arguments.get("data")
+    return None if data is None else _offending(data)
+
+
+def _is_contrast(node: ast.expr) -> bool:
+    """Whether ``node`` is a call of one of patsy's contrasts whose arguments
+    are literals (or lists or tuples of literals)."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _CONTRASTS
+        and all(keyword.arg is not None for keyword in node.keywords)
+        and all(_is_literal(argument) for argument in _arguments(node))
+    )
+
+
+def _is_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is a scalar literal or a list or tuple of them."""
+    if isinstance(node, ast.List | ast.Tuple):
+        return all(_is_scalar_literal(element) for element in node.elts)
+    return _is_scalar_literal(node)
+
+
+def _is_scalar_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is a (signed) number, a string, True, False or None."""
+    if _number(node) is not None:
+        return True
+    return isinstance(node, ast.Constant) and (
+        node.value is None or isinstance(node.value, bool | str)
+    )
 
 
 def _number(node: ast.expr) -> float | None:

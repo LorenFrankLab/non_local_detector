@@ -3,7 +3,8 @@
 patsy evaluates each term of a formula as Python, so a transition formula is
 checked against a small grammar before patsy sees it. These tests pin which
 formulas pass (every formula the package, its tests, documentation and
-notebooks use) and that code-execution tricks are refused before evaluation.
+notebooks use, and common elementwise transforms and contrasts) and that
+code-execution tricks are refused before evaluation.
 """
 
 import numpy as np
@@ -70,10 +71,53 @@ GRAMMAR_FORMULAS = [
     "~ speed",
 ]
 
+# Elementwise numpy functions and C() contrasts, each of which patsy builds.
+WIDENED_FORMULAS = [
+    "1 + np.sin(phase) + np.cos(phase) + np.tan(phase)",
+    "1 + np.arcsin(x) + np.arccos(x) + np.arctan(x) + np.arctan2(x, y)",
+    "1 + np.log2(speed) + np.log10(speed) + np.expm1(x) + np.square(x)",
+    "1 + np.sign(x) + np.floor(speed) + np.ceil(speed)",
+    "1 + np.minimum(speed, 10) + np.maximum(speed, 0.5) + np.maximum(x, y)",
+    "1 + C(arm, Treatment('b'))",
+    '1 + C(arm, Treatment("b"))',
+    "1 + C(arm, Treatment(reference='c'))",
+    "1 + C(arm, contrast=Treatment('b'))",
+    "1 + C(arm, Sum())",
+    "1 + C(arm, Sum(omit='a'))",
+    "1 + C(arm, Helmert())",
+    "1 + C(arm, Diff())",
+    "1 + C(arm, Poly())",
+    "1 + C(arm, Poly(scores=[1, 2, 4]))",
+    "1 + C(arm, levels=['c', 'b', 'a'])",
+    "1 + C(arm, levels=('c', 'b', 'a'))",
+    "1 + C(arm, Treatment('b'), levels=['c', 'b', 'a'])",
+    "1 + C(arm, Treatment('b'), ['c', 'b', 'a'])",
+    "1 + C(arm, Sum(), levels=['a', 'b', 'c']):np.sin(phase)",
+]
 
-@pytest.mark.parametrize("formula", DOCUMENTED_FORMULAS + GRAMMAR_FORMULAS)
+COVARIATES = {
+    "speed": np.linspace(1.0, 10.0, 6),
+    "phase": np.linspace(0.0, 2 * np.pi, 6),
+    "x": np.linspace(-0.9, 0.9, 6),
+    "y": np.linspace(0.5, 1.5, 6),
+    "arm": np.array(["a", "b", "c", "a", "b", "c"]),
+}
+
+
+@pytest.mark.parametrize(
+    "formula", DOCUMENTED_FORMULAS + GRAMMAR_FORMULAS + WIDENED_FORMULAS
+)
 def test_allowed_formulas_pass(formula):
     check_formula(formula)
+
+
+@pytest.mark.parametrize("formula", WIDENED_FORMULAS)
+def test_widened_formulas_are_valid_patsy(formula):
+    """Each added function and contrast is one patsy evaluates, and the check
+    counts only data keys as covariates (not contrasts or string literals)."""
+    check_formula(formula, covariate_names=COVARIATES)
+    design = dmatrix(formula, COVARIATES)
+    assert np.all(np.isfinite(design))
 
 
 ATTACKS = [
@@ -125,8 +169,12 @@ ATTACKS = [
     "I({'a': speed})",
     # Strings and format tricks.
     "'speed'",
-    "C(arm, Treatment('a'))",
     "cr(speed, constraints='center')",
+    "I('a')",
+    "np.sin('a')",
+    "bs(speed, knots=['a'])",
+    "Treatment('a')",
+    "1 + C('arm')",
     "I(f'{speed}')",
     "I('{0.__class__}'.format(speed))",
     "I(b'speed')",
@@ -149,6 +197,35 @@ ATTACKS = [
     "1 + C(speed, exit)",
     "1 + C(speed, contrast=copyright)",
     "1 + C(speed, Treatment)",
+    # A contrast is a call of a patsy contrast with literal arguments only.
+    "1 + C(arm, Treatment(breakpoint))",
+    "1 + C(arm, Treatment(reference=exit))",
+    "1 + C(arm, Treatment(open('f')))",
+    "1 + C(arm, Treatment(np.log(2)))",
+    "1 + C(arm, Treatment('a').__class__)",
+    "1 + C(arm, Treatment('a')(arm))",
+    "1 + C(arm, Treatment(*opts))",
+    "1 + C(arm, Treatment(**opts))",
+    "1 + C(arm, Treatment(f'{arm}'))",
+    "1 + C(arm, Treatment(b'a'))",
+    "1 + C(arm, Treatment([[1]]))",
+    "1 + C(arm, Treatment(1j))",
+    "1 + C(arm, np.log(arm))",
+    "1 + C(arm, ContrastMatrix([[1]], ['a']))",
+    "1 + C(arm, eval('1'))",
+    # levels are a list or tuple of literals.
+    "1 + C(arm, levels=[breakpoint])",
+    "1 + C(arm, levels=['a', open('f')])",
+    "1 + C(arm, levels='ab')",
+    "1 + C(arm, levels=[['a']])",
+    # C takes its data, a contrast and levels, nothing else.
+    "1 + C(arm, Treatment('a'), ['a'], ['b'])",
+    "1 + C(arm, Treatment('a'), contrast=Sum())",
+    "1 + C(arm, other='a')",
+    "1 + C(*arm)",
+    # Other numpy functions.
+    "np.sinh(speed)",
+    "np.where(speed, 1, 0)",
     # Unbounded powers take unbounded time.
     "1 + I(speed*0 + 10**10**7)",
     "I(speed ** speed)",
@@ -212,6 +289,8 @@ def test_error_names_the_offending_element_and_the_allowed_set():
         "1 + bs(speed, knots=knots)",
         "1 + quantile_bs(speed, n_knots=covariate_data)",
         "1 + I(speed * velocity)",
+        "1 + np.minimum(speed, cap)",
+        "1 + C(arm, Treatment('a'))",
     ],
 )
 def test_names_must_be_covariates(formula):
@@ -230,6 +309,11 @@ def test_covariate_names_pass():
     check_formula(
         "1 + np.log1p(speed) + cyclic_bs(phase, lower=0, upper=2 * np.pi)",
         covariate_names=["speed", "phase"],
+    )
+    # Contrast names and string literals are not covariates either.
+    check_formula(
+        "1 + C(arm, Treatment('b'), levels=['a', 'b']) + np.sin(phase)",
+        covariate_names=["arm", "phase"],
     )
 
 
