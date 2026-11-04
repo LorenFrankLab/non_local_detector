@@ -9,6 +9,7 @@ from non_local_detector.likelihoods import clusterless_diffusion
 from non_local_detector.likelihoods.clusterless_diffusion import (
     _dense_kernel_fits,
     _electrode_layout,
+    _kernel_column_bytes,
     _source_tile_size,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
@@ -122,8 +123,8 @@ def test_a_smaller_memory_budget_only_changes_the_tiling(
         time_edges,
     ) = nearby_sizes_recording
     n_bins = encoding["occupancy"].shape[0]
-    small_budget = 2 * 4 * 4 * (3 * n_bins + encoding["resolved_rank"])
-    assert _source_tile_size(small_budget, n_bins, encoding["resolved_rank"]) == 4
+    small_budget = 2 * _kernel_column_bytes(n_bins, encoding["resolved_rank"])
+    assert _source_tile_size(small_budget, n_bins, encoding["resolved_rank"]) == 1
     assert _dense_kernel_fits(n_bins, encoding["memory_budget"])
     assert not _dense_kernel_fits(n_bins, small_budget)
     default, small = (

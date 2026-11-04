@@ -58,7 +58,9 @@ Per block of decode spikes, each spike's mark kernels are combined per source bi
 in log space and applied through ``H`` relative to the spike's strongest source;
 a spike whose weaker sources could underflow there yet reach its background is
 recomputed exactly in log space. ``H`` is built once per prediction when it fits
-half of ``memory_budget`` and otherwise in tiles of columns.
+half of ``memory_budget`` and otherwise in tiles of columns; its columns
+come from an exact float32 product (:func:`_exact_product`), so the tiling
+changes the likelihood only by float32 rounding.
 """
 
 import logging
@@ -127,7 +129,6 @@ from non_local_detector.likelihoods.diffusion import (
     check_smoothing_bandwidth,
     environment_graph,
     get_device_basis,
-    heat_kernel_apply,
     resolved_occupancy,
 )
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
@@ -345,7 +346,9 @@ def fit_clusterless_diffusion_encoding_model(
         Byte budget, by default 536_870_912 (512 MiB). It sets the decode-spike
         block size and the spatial kernel's tile size (at fit and predict), and
         whether predict builds the whole kernel once (when it fits half the
-        budget) or streams it in tiles.
+        budget) or streams it in tiles. It changes results only by float32
+        rounding: kernel columns come from an exact product, the same for every
+        tile width and platform.
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
@@ -559,8 +562,134 @@ def _pad_sources(sources: ArrayLike, n_padded: int) -> NDArray[np.int32]:
 # entries; a product below float32's smallest normal number may flush to zero.
 _LOG_TINY = float(np.log(np.finfo(np.float32).tiny))
 
+# Kernel columns are float32 products whose entries far from the source sit near
+# the product's rounding floor (~4e-7 of the column's peak), where the log
+# intensity amplifies any change in rounding. The products are therefore formed
+# exactly (see _exact_product): operands are split into slices of integers, the
+# first of magnitude at most 2**_SLICE_BITS and the rest at most half that. An
+# order of slice products (those with equal i + j) has at most _N_SLICES pairs,
+# two with a first slice, so each of its terms is at most
+# 2 * 2**15 + (_N_SLICES - 2) * 2**14 = 3 * 2**15, and _EXACT_CHUNK of them sum
+# to an integer below 2**24: exact in float32 whatever the summation order,
+# blocking or matrix-product algorithm. Four slices keep every bit of entries
+# down to 2**-8 of the row's or column's largest, so entries near the floor
+# are as accurate as the float32 operands allow.
+_SLICE_BITS = 8
+_N_SLICES = 4
+_EXACT_CHUNK = 128  # 128 * 3 * 2**15 < 2**24
 
-@partial(jax.jit, static_argnames=("position_std", "n_components"))
+
+def _power_of_two(exponent: jax.Array) -> jax.Array:
+    """Exactly ``2.0**exponent`` in float32, for exponents of normal numbers."""
+    return jax.lax.bitcast_convert_type(
+        (exponent + 127) << np.finfo(np.float32).nmant, jnp.float32
+    )
+
+
+def _scale_exponent(values: jax.Array, axis: int) -> jax.Array:
+    """Exponent of the power of two just above ``max |values|`` along ``axis``.
+
+    Returns
+    -------
+    exponent : jax.Array of int32
+        ``values``' shape with ``axis`` of length one.
+    """
+    # Not max(abs(values)): XLA's CPU backend materializes abs(values) for it.
+    largest = jnp.maximum(
+        jnp.max(values, axis=axis, keepdims=True),
+        -jnp.min(values, axis=axis, keepdims=True),
+    )
+    return jnp.frexp(largest)[1]
+
+
+def _integer_slices(values: jax.Array, exponent: jax.Array) -> list[jax.Array]:
+    """Split float32 ``values`` into ``_N_SLICES`` slices of integers.
+
+    ``values == 2**exponent * sum_i slices[i] * 2**(-_SLICE_BITS * (i + 1))``,
+    to ``2**(exponent - _SLICE_BITS * _N_SLICES - 1)``; ``2**exponent`` must
+    bound ``|values|`` (:func:`_scale_exponent`). The first slice holds
+    integers of magnitude at most ``2**_SLICE_BITS``, the others at most half
+    that. Every step is an exact float32 operation.
+    """
+    remainder = values * _power_of_two(-exponent)  # magnitude below one
+    slices = []
+    for _ in range(_N_SLICES):
+        remainder = remainder * float(2**_SLICE_BITS)
+        whole = jnp.round(remainder)
+        slices.append(whole)
+        remainder = remainder - whole
+    return slices
+
+
+def _exact_product(left: jax.Array, right: jax.Array) -> jax.Array:
+    """``left @ right`` whose rounding is independent of the operands' shapes.
+
+    Each element depends only on its own row of ``left`` and column of
+    ``right``, bit for bit, on every platform and for any tile width. Each
+    chunk of ``_EXACT_CHUNK`` terms is split into integer slices
+    (:func:`_integer_slices`, scaled by the whole row's or column's largest
+    value); the products of slices ``i`` and ``j`` with equal ``i + j`` are
+    summed over the chunk by one exact float32 matrix product, and these are
+    combined in a fixed order. Orders past ``_N_SLICES - 1`` (0-based) are
+    dropped. The error is at most about ``k * 2**-24`` of the row and column
+    scales, and near-floor entries come out as accurate as the float32
+    operands allow (4-5x closer to a float64 product than a float32 matrix
+    product's, on 2-D heat kernels). Costs the arithmetic of ten matrix
+    products instead of one.
+
+    Parameters
+    ----------
+    left : jax.Array, shape (n, k)
+        Float32 left operand.
+    right : jax.Array, shape (k, m)
+        Float32 right operand.
+
+    Returns
+    -------
+    product : jax.Array, shape (n, m)
+    """
+    left_exponent = _scale_exponent(left, axis=1)
+    right_exponent = _scale_exponent(right, axis=0)
+    step = float(2.0**-_SLICE_BITS)
+
+    def chunk_product(left_chunk: jax.Array, right_chunk: jax.Array) -> jax.Array:
+        a = _integer_slices(left_chunk, left_exponent)
+        b = _integer_slices(right_chunk, right_exponent)
+        product = jnp.zeros((left.shape[0], right.shape[1]), left.dtype)
+        # Horner over orders, smallest first; each order's products
+        # (a[0] @ b[order] + ... + a[order] @ b[0]) form one exact product.
+        for order in reversed(range(_N_SLICES)):
+            pairs = range(order + 1)
+            product = product * step + jnp.matmul(
+                jnp.concatenate([a[i] for i in pairs], axis=1),
+                jnp.concatenate([b[order - i] for i in pairs], axis=0),
+                precision=jax.lax.Precision.HIGHEST,
+            )
+        return product
+
+    def add_chunk(chunk: jax.Array, total: jax.Array) -> jax.Array:
+        start = chunk * _EXACT_CHUNK
+        return total + chunk_product(
+            jax.lax.dynamic_slice_in_dim(left, start, _EXACT_CHUNK, axis=1),
+            jax.lax.dynamic_slice_in_dim(right, start, _EXACT_CHUNK, axis=0),
+        )
+
+    n_full, rest = divmod(left.shape[1], _EXACT_CHUNK)
+    total = jnp.zeros((left.shape[0], right.shape[1]), left.dtype)
+    if n_full:
+        total = jax.lax.fori_loop(0, n_full, add_chunk, total)
+    if rest:
+        total = total + chunk_product(
+            left[:, n_full * _EXACT_CHUNK :], right[n_full * _EXACT_CHUNK :]
+        )
+    return (
+        total
+        * _power_of_two(left_exponent)
+        * _power_of_two(right_exponent - 2 * _SLICE_BITS)
+    )
+
+
+@partial(jax.jit, static_argnames=("position_std",))
 def _kernel_columns(
     eigvals: jax.Array,
     eigvecs: jax.Array,
@@ -568,14 +697,15 @@ def _kernel_columns(
     sources: jax.Array,
     *,
     position_std: float,
-    n_components: int,
 ) -> jax.Array:
     """Diffusion of a unit mass from each source bin, shape (n_bins, n_sources).
 
     Column ``k`` is the heat kernel applied to bin ``sources[k]``: clipped to be
     non-negative, zero outside that bin's connected component, cut below
     ``FIELD_RESOLUTION`` of its peak (heat-kernel noise) and normalized to unit
-    mass. Every column depends only on its own source, so the model's one
+    mass. Every column depends only on its own source: its spectral product
+    (:func:`_exact_product`) is the same bit for bit in a tile of any width,
+    and only the rounding of its normalizing sum may differ. So the model's one
     spatial kernel ``H`` can be built in tiles of sources. Occupancy, the ground
     process and every spike's marked field are the same linear map ``H`` of
     their sources, so the marked intensity integrates over marks to exactly the
@@ -589,21 +719,19 @@ def _kernel_columns(
         Interior bin indices.
     position_std : float
         Heat-kernel bandwidth in position units.
-    n_components : int
-        Static number of connected components in the heat-kernel basis.
 
     Returns
     -------
     columns : jax.Array, shape (n_bins, n_sources)
     """
-    n_bins = eigvecs.shape[0]
-    onehot = (
-        jnp.zeros((n_bins, sources.shape[0]), eigvecs.dtype)
-        .at[sources, jnp.arange(sources.shape[0])]
-        .set(1.0)
-    )
-    columns = heat_kernel_apply(
-        eigvals, eigvecs, position_std, onehot, labels, n_components=n_components
+    # exp(-t L) applied to each source's indicator, as heat_kernel_apply would,
+    # but with an exact product: entries near the rounding floor then do not
+    # depend on how many sources a tile holds. heat_kernel_apply's mass rescale
+    # is left out; the cut is relative to the peak and the column is normalized.
+    coefficients = jnp.exp(-(position_std**2 / 2.0) * eigvals)
+    columns = _exact_product(eigvecs, (eigvecs[sources] * coefficients).T)
+    columns = jnp.where(
+        labels[:, None] == labels[sources][None, :], jnp.clip(columns, 0.0, None), 0.0
     )
     columns = jnp.where(
         columns >= FIELD_RESOLUTION * jnp.max(columns, axis=0, keepdims=True),
@@ -641,9 +769,7 @@ def spatial_kernel_columns(
         ``FIELD_RESOLUTION`` of its peak. ``resolved_rank`` and
         ``position_std`` must be the fitted model's.
     """
-    eigvals, eigvecs, labels, n_components = get_device_basis(
-        environment, resolved_rank
-    )
+    eigvals, eigvecs, labels, _ = get_device_basis(environment, resolved_rank)
     sources = np.asarray(sources, dtype=np.int32)
     # Pad to few sizes so callers with nearby source counts share one executable.
     padded = _pad_sources(sources, padded_sample_count(max(sources.size, 1)))
@@ -655,7 +781,6 @@ def spatial_kernel_columns(
             labels,
             jnp.asarray(padded),
             position_std=float(position_std),
-            n_components=n_components,
         )[:, : sources.size],
     )
 
@@ -677,7 +802,7 @@ def _dense_sources(n_bins: int, tile_budget: int) -> tuple[NDArray[np.int32], in
     return _pad_sources(np.arange(n_bins), -(-n_bins // tile) * tile), tile
 
 
-@partial(jax.jit, static_argnames=("tile", "position_std", "n_components"))
+@partial(jax.jit, static_argnames=("tile", "position_std"))
 def _dense_kernel(
     eigvals: jax.Array,
     eigvecs: jax.Array,
@@ -686,7 +811,6 @@ def _dense_kernel(
     *,
     tile: int,
     position_std: float,
-    n_components: int,
 ) -> jax.Array:
     """Kernel columns of every (padded) dense source, shape (n_bins, n_sources).
 
@@ -699,20 +823,33 @@ def _dense_kernel(
             labels,
             jax.lax.dynamic_slice_in_dim(sources, start, tile),
             position_std=position_std,
-            n_components=n_components,
         ),
         jnp.arange(sources.shape[0] // tile) * tile,
     )  # (n_tiles, n_bins, tile)
     return jnp.moveaxis(tiles, 0, 1).reshape(tiles.shape[1], -1)
 
 
+def _kernel_column_bytes(n_bins: int, rank: int) -> int:
+    """Working memory of one kernel column while :func:`_kernel_columns` builds it.
+
+    The exact product's slice-order products and their running sum (about
+    ``6 n_bins``), the source's scaled eigenvector row (``rank``) and the slices
+    of one chunk of it (``14 _EXACT_CHUNK``): measured at 2.6-6.7 ``n_bins``
+    plus ~1,800 floats per column on CPU. A further ~14 ``n_bins *
+    _EXACT_CHUNK`` floats per build, the slices of one chunk of the basis, do
+    not grow with the tile.
+    """
+    return _WORKING_ITEMSIZE * (6 * n_bins + rank + 14 * _EXACT_CHUNK)
+
+
 def _source_tile_size(memory_budget: int, n_bins: int, rank: int) -> int:
     """Return the kernel columns per tile.
 
-    A tile and its spectral temporaries fit half of ``memory_budget``. The
-    count is a power of two, for shared compiled kernels.
+    A tile and its spectral temporaries (:func:`_kernel_column_bytes`) fit half
+    of ``memory_budget``. The count is a power of two, for shared compiled
+    kernels.
     """
-    raw = max(memory_budget // (2 * _WORKING_ITEMSIZE * (3 * n_bins + rank)), 1)
+    raw = max(memory_budget // (2 * _kernel_column_bytes(n_bins, rank)), 1)
     return 1 << (raw.bit_length() - 1)
 
 
@@ -729,9 +866,7 @@ def _diffuse_fields(
     at fit time, by the same linear map as every spike's marked field. Only the
     bins with mass in some field contribute, in tiles of kernel columns.
     """
-    eigvals, eigvecs, labels, n_components = get_device_basis(
-        environment, resolved_rank
-    )
+    eigvals, eigvecs, labels, _ = get_device_basis(environment, resolved_rank)
     fields = np.asarray(fields, dtype=np.float64)
     sources = np.flatnonzero(np.any(fields != 0, axis=1))
     out = np.zeros(fields.shape)
@@ -745,7 +880,6 @@ def _diffuse_fields(
                 labels,
                 jnp.asarray(_pad_sources(chunk, tile)),
                 position_std=float(position_std),
-                n_components=n_components,
             ),
             dtype=np.float64,
         )[:, : chunk.size]
@@ -921,7 +1055,6 @@ def _tile_columns(
     start: jax.Array | int,
     *,
     position_std: float,
-    n_components: int,
     tile: int,
 ) -> jax.Array:
     """Kernel columns of ``sources[start:start + tile]``, shape (n_bins, tile).
@@ -940,12 +1073,11 @@ def _tile_columns(
             labels,
             jax.lax.dynamic_slice_in_dim(sources, start, tile),
             position_std=position_std,
-            n_components=n_components,
         ),
     )
 
 
-@partial(jax.jit, static_argnames=("tile", "position_std", "n_components"))
+@partial(jax.jit, static_argnames=("tile", "position_std"))
 def _kernel_bounds(
     eigvals: jax.Array,
     eigvecs: jax.Array,
@@ -956,7 +1088,6 @@ def _kernel_bounds(
     *,
     tile: int,
     position_std: float,
-    n_components: int,
 ) -> tuple[jax.Array, jax.Array]:
     """Per-source bounds for the exact-repair gate, one tile of columns at a time.
 
@@ -977,8 +1108,6 @@ def _kernel_bounds(
         Kernel columns per tile.
     position_std : float
         Heat-kernel bandwidth in position units.
-    n_components : int
-        Static number of connected components in the heat-kernel basis.
 
     Returns
     -------
@@ -995,7 +1124,6 @@ def _kernel_bounds(
         sources,
         kernel,
         position_std=position_std,
-        n_components=n_components,
         tile=tile,
     )
 
@@ -1119,7 +1247,6 @@ def _log_marked_field(
     jax.jit,
     static_argnames=(
         "position_std",
-        "n_components",
         "tile",
         "block_size",
         "indices_are_sorted",
@@ -1145,7 +1272,6 @@ def _add_electrode_diffusion_terms(
     log_background: jax.Array,
     *,
     position_std: float,
-    n_components: int,
     tile: int,
     block_size: int,
     indices_are_sorted: bool,
@@ -1185,8 +1311,6 @@ def _add_electrode_diffusion_terms(
         Log background intensity of each spike, in Hz.
     position_std : float
         Heat-kernel bandwidth in position units.
-    n_components : int
-        Static number of connected components in the heat-kernel basis.
     tile : int
         Kernel columns per tile (divides ``sources``' length).
     block_size : int
@@ -1204,7 +1328,6 @@ def _add_electrode_diffusion_terms(
         sources,
         kernel,
         position_std=position_std,
-        n_components=n_components,
         tile=tile,
     )
     n_tiles = sources.shape[0] // tile
@@ -1411,17 +1534,12 @@ def predict_clusterless_diffusion_log_likelihood(
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     n_bins = occupancy.shape[0]
 
-    eigvals, eigvecs, labels, n_components = get_device_basis(
-        environment, resolved_rank
-    )
+    eigvals, eigvecs, labels, _ = get_device_basis(environment, resolved_rank)
     tile_budget = _source_tile_size(memory_budget, n_bins, resolved_rank)
     dense = _dense_kernel_fits(n_bins, memory_budget)
     every_bin_host, every_bin_tile = _dense_sources(n_bins, tile_budget)
     every_bin = jnp.asarray(every_bin_host)
-    basis_static: dict[str, Any] = {
-        "position_std": position_std,
-        "n_components": n_components,
-    }
+    basis_static: dict[str, Any] = {"position_std": position_std}
     # One kernel per prediction, shared by every electrode, state and chunk.
     kernel = (
         rows.spike_time_order.memo(

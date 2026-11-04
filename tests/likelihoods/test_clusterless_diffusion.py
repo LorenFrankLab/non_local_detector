@@ -42,6 +42,7 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     _dense_kernel_fits,
     _electrode_layout,
     _kernel_bounds,
+    _kernel_column_bytes,
     _log_marked_field,
     _log_source_marks,
     _source_tile_size,
@@ -271,9 +272,7 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
             n_bins,
             8,
         )
-        eigvals, eigvecs, labels, n_components = get_device_basis(
-            s["env"], enc["resolved_rank"]
-        )
+        eigvals, eigvecs, labels, _ = get_device_basis(s["env"], enc["resolved_rank"])
         log_source = _log_source_marks(
             jnp.asarray(far * factor),
             marks,
@@ -293,7 +292,6 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
                         sources,
                         None,
                         position_std=enc["position_std"],
-                        n_components=n_components,
                         tile=tile,
                     ),
                     sources.shape[0] // tile,
@@ -1815,7 +1813,10 @@ def test_exact_repair_scores_flagged_spikes_among_others(n_flagged, streamed, is
     centers = 0.5 * (edges[:-1] + edges[1:])
     n_bins = len(enc["bin_sizes"])
     if streamed:
-        enc = {**enc, "memory_budget": 2 * 4 * 8 * (3 * n_bins + enc["resolved_rank"])}
+        enc = {
+            **enc,
+            "memory_budget": 2 * 8 * _kernel_column_bytes(n_bins, enc["resolved_rank"]),
+        }
         assert not _dense_kernel_fits(n_bins, enc["memory_budget"])
 
     def predict(spike_times, spike_marks):
@@ -1884,7 +1885,6 @@ def test_dense_scorer_stays_within_its_memory_budget():
         (jax.ShapeDtypeStruct((n_sources,), f32),) * 2,
         jax.ShapeDtypeStruct((block,), f32),
         position_std=1.0,
-        n_components=1,
         tile=tile,
         block_size=block,
         indices_are_sorted=True,
@@ -1923,7 +1923,6 @@ def test_scorer_workspace_does_not_grow_with_the_square_of_the_bins():
         (jax.ShapeDtypeStruct((n_sources,), f32),) * 2,
         jax.ShapeDtypeStruct((block,), f32),
         position_std=1.0,
-        n_components=1,
         tile=tile,
         block_size=block,
         indices_are_sorted=True,
@@ -1944,7 +1943,6 @@ def test_scorer_workspace_does_not_grow_with_the_square_of_the_bins():
         jax.ShapeDtypeStruct((n_bins,), f32),
         tile=bounds_tile,
         position_std=1.0,
-        n_components=1,
     ).compile()
     workspace = compiled.memory_analysis().temp_size_in_bytes
     assert workspace < 256 * 2**20, f"{workspace / 2**20:.0f} MiB"
@@ -2180,3 +2178,115 @@ def test_uniform_rate_is_recovered_under_sparse_tracking():
     np.testing.assert_allclose(
         np.sum(encoding["encoding_weights"][0]), len(spike_times[0])
     )
+
+
+@pytest.mark.unit
+# The default bandwidth on 10 cm bins, the regime where the one-column tile
+# differed; the fit warns that it barely smooths.
+@pytest.mark.filterwarnings(
+    "ignore:position_std .* is below the characteristic bin spacing:UserWarning"
+)
+def test_every_memory_budget_matches_the_dense_kernel():
+    """Budgets that tile the spatial kernel, down to one column per tile, give
+    the dense kernel's likelihood to float32 rounding.
+
+    With a float32 matrix product, a kernel column's rounding depended on the
+    tile width (one column took a matrix-vector product; on x86 wider tiles
+    differed too); near the field's resolution floor that changed the log
+    likelihood by up to 2.5e-4 relative.
+    """
+    import non_local_detector.likelihoods.clusterless_diffusion as diffusion
+
+    rng = np.random.default_rng(1)
+    position_time = np.arange(0.0, 60.0, 0.004)
+    position = np.stack(
+        [
+            50 + 45 * np.sin(2 * np.pi * position_time / 7.0),
+            50 + 45 * np.cos(2 * np.pi * position_time / 11.0),
+        ],
+        axis=1,
+    )
+    environment = Environment(
+        place_bin_size=10.0, position_range=((0.0, 100.0), (0.0, 100.0))
+    ).fit_place_grid(position=position, infer_track_interior=False)
+    spike_times, features = [], []
+    for _ in range(2):
+        times, marks = [], []
+        for center in rng.uniform(10, 90, size=(3, 2)):
+            near = np.linalg.norm(position - center, axis=1) < 15
+            times.append(np.sort(rng.choice(position_time[near], 100, replace=False)))
+            marks.append(rng.standard_normal((100, 4)) * 2 + center[0] / 10)
+        order = np.argsort(np.concatenate(times))
+        spike_times.append(np.concatenate(times)[order] + 0.001)
+        features.append(np.concatenate(marks)[order])
+    model = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        spike_times,
+        features,
+        environment=environment,
+        disable_progress_bar=True,
+    )
+    n_bins = model["occupancy"].shape[0]
+    rank = int(model["resolved_rank"])
+
+    def log_likelihood(memory_budget):
+        return np.asarray(
+            predict_clusterless_diffusion_log_likelihood(
+                position_time,
+                position,
+                spike_times,
+                features,
+                time_edges=time_edges_from_centers(position_time[:2000]),
+                **{**model, "memory_budget": memory_budget},
+                mark_reference=[None, None],
+            )
+        )
+
+    dense_budget = 2 * 4 * n_bins * n_bins
+    assert diffusion._dense_kernel_fits(n_bins, dense_budget)
+    dense = log_likelihood(dense_budget)
+    one_column = 2 * diffusion._kernel_column_bytes(n_bins, rank)
+    tiles = []
+    for budget in (4 * one_column, 2 * one_column, one_column, 1):
+        assert not diffusion._dense_kernel_fits(n_bins, budget)
+        tiles.append(diffusion._source_tile_size(budget, n_bins, rank))
+        np.testing.assert_allclose(log_likelihood(budget), dense, rtol=1e-6, atol=0)
+    assert tiles == [4, 2, 1, 1]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("k", [10, 128, 3 * 128, 3 * 128 + 17])
+def test_exact_product_is_accurate_and_independent_of_shape(k):
+    """Each element of the exact product depends only on its own row and
+    column, bit for bit, and is as accurate as a float32 matrix product.
+
+    Rows and columns span six decades so the slices' power-of-two scaling is
+    exercised; ``k`` covers a partial chunk, whole chunks and both.
+    """
+    import non_local_detector.likelihoods.clusterless_diffusion as diffusion
+
+    rng = np.random.default_rng(k)
+    left = (
+        rng.standard_normal((40, k)) * 10.0 ** rng.uniform(-3, 3, size=(40, 1))
+    ).astype(np.float32)
+    right = (
+        rng.standard_normal((k, 9)) * 10.0 ** rng.uniform(-3, 3, size=(1, 9))
+    ).astype(np.float32)
+    product = np.asarray(
+        diffusion._exact_product(jnp.asarray(left), jnp.asarray(right))
+    )
+
+    reference = left.astype(np.float64) @ right.astype(np.float64)
+    scale = np.abs(left).max(axis=1, keepdims=True) * np.abs(right).max(axis=0)
+    assert np.all(np.abs(product - reference) <= k * 2.0**-24 * scale)
+
+    for column in range(right.shape[1]):
+        alone = diffusion._exact_product(
+            jnp.asarray(left), jnp.asarray(right[:, column : column + 1])
+        )
+        np.testing.assert_array_equal(np.asarray(alone)[:, 0], product[:, column])
+    rows = np.asarray(
+        diffusion._exact_product(jnp.asarray(left[5:8]), jnp.asarray(right))
+    )
+    np.testing.assert_array_equal(rows, product[5:8])
