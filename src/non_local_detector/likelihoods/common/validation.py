@@ -307,9 +307,10 @@ def validate_encoding_contract(
         hint=(
             "The environment was refit (Environment.fit_place_grid) after this "
             "encoding model was fit, e.g. on other positions or by another "
-            "detector sharing the same Environment. Refit the encoding model "
-            "against the current environment, or give each fitted model its own "
-            "Environment."
+            "detector sharing the same Environment, or was rebuilt differently, "
+            "e.g. a saved model loaded on another platform or version. Refit the "
+            "encoding model against the current environment, or give each "
+            "fitted model its own Environment."
         ),
     )
 
