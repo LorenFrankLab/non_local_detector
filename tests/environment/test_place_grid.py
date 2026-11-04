@@ -22,6 +22,7 @@ from non_local_detector.exceptions import (
     NotFittedError,
     ValidationError,
 )
+from non_local_detector.graph_distances import LazyGraphDistances
 
 pytestmark = pytest.mark.unit
 
@@ -195,8 +196,10 @@ def test_legacy_open_field_without_distances_gets_those_of_a_fresh_fit(fitted):
         _legacy_state(fitted, drop=("distance_between_nodes_", "track_graphDD"))
     )
 
+    # Deferred, so unpickling a large grid computes no all-pairs distances.
+    assert isinstance(loaded.distance_between_nodes_, LazyGraphDistances)
     np.testing.assert_array_equal(
-        loaded.distance_between_nodes_, fitted.distance_between_nodes_
+        loaded.distance_between_nodes_.to_dense(), fitted.distance_between_nodes_
     )
     assert nx.utils.graphs_equal(loaded.track_graphDD, fitted.track_graphDD)
     centers = loaded.place_bin_centers_[loaded.is_track_interior_flat_]

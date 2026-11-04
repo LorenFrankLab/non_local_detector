@@ -399,13 +399,16 @@ def _legacy_place_grid(
     )
     if environment.track_graph is None:
         # Releases before 0.5.13 stored no graph or distances for an N-D
-        # grid; rebuild them as fit_place_grid does (dense, its default).
+        # grid; rebuild them as fit_place_grid does. The distances are
+        # deferred, so unpickling a large grid does not compute all pairs.
         if "track_graphDD" not in fitted:
             fitted["track_graphDD"] = _legacy_nd_track_graph(
                 fitted["place_bin_centers"], is_track_interior, fitted["edges"]
             )
         if "distance_between_nodes" not in fitted:
-            fitted["distance_between_nodes"] = _graph_distances(fitted["track_graphDD"])
+            fitted["distance_between_nodes"] = _graph_distances(
+                fitted["track_graphDD"], compute_all_pairs_distances=False
+            )
         # Released fits stored the infer_track_interior they used in the
         # configuration field.
         fitted.setdefault("infer_track_interior", environment.infer_track_interior)
