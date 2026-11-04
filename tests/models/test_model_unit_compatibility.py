@@ -2,6 +2,7 @@
 
 import copy
 import functools
+import pickle
 from dataclasses import replace
 
 import numpy as np
@@ -266,8 +267,9 @@ def test_legacy_file_loads_for_inspection_without_running_constructor(
         ):
             if name in model:
                 model[name] = np.asarray(model[name]) / 500
+    # Earlier releases pickled the detector; save_model no longer does.
     path = tmp_path / "legacy.pkl"
-    legacy.save_model(path)
+    path.write_bytes(pickle.dumps(legacy, protocol=pickle.HIGHEST_PROTOCOL))
 
     def unexpected_constructor(*args, **kwargs):
         pytest.fail("Unpickling must preserve legacy state for inspection")
