@@ -73,15 +73,13 @@ class TestPositionDimensionalityValidation:
         detector.fit(time, pos_2d, spike_times=[np.array([1.0, 2.0])])
 
     def test_fit_accepts_1d_position_without_track_graph(self):
-        """fit() with 1D position + no track_graph warns but proceeds."""
+        """fit() with 1D position + no track_graph fits a 1-D open field."""
         detector = NonLocalSortedSpikesDetector()  # default env: no track_graph
 
         time = np.linspace(0.0, 10.0, 100)
         pos_1d = np.linspace(0.0, 10.0, 100)
 
-        # Should not raise (a UserWarning is emitted but that's OK)
-        with pytest.warns(UserWarning, match="no track_graph"):
-            detector.fit(time, pos_1d, spike_times=[np.array([1.0, 2.0])])
+        detector.fit(time, pos_1d, spike_times=[np.array([1.0, 2.0])])
 
     def test_error_message_includes_shape_and_fix_hint(self):
         """Error message tells the user what shape they passed and how to fix it."""

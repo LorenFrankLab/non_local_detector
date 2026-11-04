@@ -175,10 +175,11 @@ def test_zero_exposure_is_data_quality(recording):
     assert _caught("zero training exposure", call) == {DataQualityWarning}
 
 
-def test_one_dimensional_position_is_data_quality(recording):
+def test_spikes_outside_the_recording_is_data_quality(recording):
+    in_ms = {**recording, "spike_times": [t * 1_000 for t in recording["spike_times"]]}
     detector = NonLocalSortedSpikesDetector()
-    call = lambda: detector.fit(**recording)  # noqa: E731
-    assert _caught("appears to be 1D", call) == {DataQualityWarning}
+    call = lambda: detector.fit(**in_ms)  # noqa: E731
+    assert _caught("None of the", call) == {DataQualityWarning}
 
 
 def test_em_not_converged_is_numerical(recording):

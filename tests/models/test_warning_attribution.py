@@ -40,16 +40,18 @@ def _past_tracking(time):
 
 
 @pytest.mark.parametrize("entry", ["fit", "estimate_parameters"])
-def test_one_dimensional_position_warning(recording, entry):
+def test_spikes_outside_the_recording_warning(recording, entry):
+    """Raised in fit_encoding_model, under fit or estimate_parameters."""
+    in_ms = {**recording, "spike_times": [t * 1_000 for t in recording["spike_times"]]}
     detector = NonLocalSortedSpikesDetector()
     if entry == "fit":
-        call = lambda: detector.fit(**recording)  # noqa: E731
+        call = lambda: detector.fit(**in_ms)  # noqa: E731
     else:
         edges = time_edges_from_centers(recording["position_time"])
         call = lambda: detector.estimate_parameters(  # noqa: E731
-            **recording, time_edges=edges, max_iter=1
+            **in_ms, time_edges=edges, max_iter=1
         )
-    assert _sources("appears to be 1D", call) == {__file__}
+    assert _sources("None of the", call) == {__file__}
 
 
 def test_em_not_converged_warning(recording):

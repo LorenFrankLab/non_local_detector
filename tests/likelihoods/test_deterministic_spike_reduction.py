@@ -376,8 +376,7 @@ def clusterless_log_likelihood(algorithm):
         infer_track_interior=False,
         clusterless_algorithm=algorithm,
     )
-    with pytest.warns(UserWarning, match="1D"):
-        model.fit(position_time, position, spikes, marks)
+    model.fit(position_time, position, spikes, marks)
     decode_spikes = [np.sort(rng.uniform(0, 1.6, 51)) for _ in range(2)]
     decode_marks = [rng.normal(size=(51, 2)) for _ in range(2)]
     # Three same-bin spikes with unequal marks on the first electrode.

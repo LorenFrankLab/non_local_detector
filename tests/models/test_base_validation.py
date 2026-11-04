@@ -17,7 +17,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryDiagonal,
     InitialDiscreteTransition,
 )
-from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.models import SortedSpikesDecoder
 from non_local_detector.observation_models import ObservationModel
 
@@ -165,9 +165,7 @@ class TestValidateProbabilityDistributions:
                 sorted_spikes_algorithm="sorted_spikes_kde",
                 sorted_spikes_algorithm_params={"disable_progress_bar": True},
             )
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DataQualityWarning)  # 1-D position
-                decoder.fit(time, position, spike_times)
+            decoder.fit(time, position, spike_times)
             initial_conditions[type(value).__name__] = decoder.initial_conditions_
         np.testing.assert_array_equal(
             initial_conditions["list"], initial_conditions["ndarray"]
@@ -453,67 +451,22 @@ class TestValidateDiscreteTransitionType:
 
 
 @pytest.mark.unit
-class TestPositionDimensionalityWarning:
-    """Test that 1D position without track_graph triggers a warning."""
+@pytest.mark.parametrize(
+    "position",
+    [np.linspace(0, 100, 50), np.linspace(0, 100, 50)[:, np.newaxis]],
+    ids=["1-D", "column"],
+)
+def test_1d_position_without_track_graph_fits_without_warning(position):
+    """1-D position without a track graph is a 1-D open field, fitted
+    silently; the Environment docstring explains when to pass a track graph."""
+    from non_local_detector.environment import Environment
 
-    def _fit_and_collect_warnings(self, decoder, position):
-        """Call _fit and return the 1-D-position warnings it emitted.
-
-        The fit must complete, so a negative case cannot pass by raising
-        before the warning check is reached.
-        """
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            decoder._fit(position=position)
-        return [
-            x for x in w if "1D" in str(x.message) and "track_graph" in str(x.message)
-        ]
-
-    def test_1d_position_no_track_graph_warns(self):
-        """1D position without track_graph should warn the user."""
-        from non_local_detector.environment import Environment
-
-        env = Environment(
-            place_bin_size=5.0,
-            position_range=((0.0, 100.0),),
-        )
-        decoder = SortedSpikesDecoder(environments=[env])
-        position_1d = np.linspace(0, 100, 50)
-
-        position_warnings = self._fit_and_collect_warnings(decoder, position_1d)
-        assert len(position_warnings) == 1
-        assert position_warnings[0].category is DataQualityWarning
-
-    def test_2d_position_no_warning(self):
-        """2D position should not trigger the warning."""
-        from non_local_detector.environment import Environment
-
-        env = Environment(
-            place_bin_size=5.0,
-            position_range=((0.0, 100.0), (0.0, 100.0)),
-        )
-        decoder = SortedSpikesDecoder(environments=[env])
-        position_2d = np.column_stack(
-            [np.linspace(0, 100, 50), np.linspace(0, 100, 50)]
-        )
-
-        position_warnings = self._fit_and_collect_warnings(decoder, position_2d)
-        assert len(position_warnings) == 0
-
-    def test_1d_column_position_no_track_graph_warns(self):
-        """1D column position (n, 1) without track_graph should warn."""
-        from non_local_detector.environment import Environment
-
-        env = Environment(
-            place_bin_size=5.0,
-            position_range=((0.0, 100.0),),
-        )
-        decoder = SortedSpikesDecoder(environments=[env])
-        position_col = np.linspace(0, 100, 50)[:, np.newaxis]
-
-        position_warnings = self._fit_and_collect_warnings(decoder, position_col)
-        assert len(position_warnings) == 1
-        assert position_warnings[0].category is DataQualityWarning
+    decoder = SortedSpikesDecoder(
+        environments=[Environment(place_bin_size=5.0, position_range=((0.0, 100.0),))]
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        decoder._fit(position=position)
 
 
 if __name__ == "__main__":
