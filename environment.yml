@@ -25,6 +25,7 @@ dependencies:
 - pytest-timeout
 - hypothesis
 - psutil
+- netcdf4
 - ruff
 - mypy
 - ipython
