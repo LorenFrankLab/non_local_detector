@@ -60,7 +60,7 @@ def _float64_jax() -> AbstractContextManager[Any]:
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
-    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate.
 
     Parameters
     ----------
@@ -88,7 +88,7 @@ def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
 
 
 def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
-    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate.
 
     Parameters
     ----------
@@ -909,7 +909,7 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
 
 @jax.jit
 def jax_centered_log_softmax_forward(y: jax.Array) -> jax.Array:
-    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate.
 
     The 1D and 2D input branches compile as separate JAX specializations.
     Only 1-D and 2-D inputs are supported.
@@ -974,8 +974,9 @@ def get_transition_prior(
 
 
 class CovariateTransitionFit(NamedTuple):
-    """A covariate-dependent discrete transition fit by
-    :func:`_fit_covariate_transition`.
+    """A covariate-dependent discrete transition.
+
+    It is fit by :func:`_fit_covariate_transition`.
 
     Attributes
     ----------
@@ -1130,8 +1131,10 @@ def _term_penalties(
 def _row_strengths(
     smoothness: float | np.ndarray, n_states: int, n_terms: int
 ) -> np.ndarray:
-    """Curvature-penalty strengths as (n_states, n_terms): a scalar for every
-    row and term, shape (n_states,) per row, or (n_states, n_terms).
+    """Broadcast curvature-penalty strengths to (n_states, n_terms).
+
+    Accepts a scalar for every row and term, shape (n_states,) per row, or
+    (n_states, n_terms).
     """
     values = np.asarray(smoothness, dtype=np.float64)
     if values.ndim == 1:
@@ -1140,8 +1143,9 @@ def _row_strengths(
 
 
 def _validate_smoothness(smoothness: float | np.ndarray | str) -> bool:
-    """Check a smoothness value: strengths that are finite and >= 0, or
-    ``"reml"``. Returns whether REML estimates the strengths.
+    """Check a smoothness value and return whether REML estimates the strengths.
+
+    Valid values are strengths that are finite and >= 0, or ``"reml"``.
     """
     if isinstance(smoothness, str):
         if smoothness != "reml":
@@ -1157,8 +1161,9 @@ def _validate_smoothness(smoothness: float | np.ndarray | str) -> bool:
 def _require_spline_term(
     smoothness: float | np.ndarray | str, smoothness_matrix: np.ndarray | None
 ) -> None:
-    """Check that a smoothness penalty (REML, or a positive strength) has a
-    spline term to penalize.
+    """Check that a smoothness penalty has a spline term to penalize.
+
+    The penalty is REML or a positive strength.
     """
     penalized = isinstance(smoothness, str) or np.any(np.asarray(smoothness) > 0.0)
     if penalized and (smoothness_matrix is None or not np.any(smoothness_matrix)):
@@ -1422,8 +1427,9 @@ def _covariate_transition_covariance(
     smoothness_matrix: np.ndarray | None,
     frozen_rows: np.ndarray | None,
 ) -> np.ndarray:
-    """Laplace covariance of each row's coefficients at a fit: the inverse
-    Hessian of the row's penalized loss.
+    """Return the Laplace covariance of each row's coefficients at a fit.
+
+    This is the inverse Hessian of the row's penalized loss.
 
     Parameters
     ----------
@@ -1482,8 +1488,9 @@ def _max_transition_change(
     old_coefficients: np.ndarray,
     new_coefficients: np.ndarray,
 ) -> float:
-    """Largest change of any covariate-dependent transition probability
-    between two sets of coefficients.
+    """Return the largest change of any covariate-dependent transition probability.
+
+    The change is between two sets of coefficients.
 
     Evaluated a block of time bins at a time, so no copy of the
     (n_time, n_states, n_states) transitions is held.
@@ -1510,8 +1517,7 @@ def _max_transition_change(
 
 
 def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
-    """Inverse of a symmetric positive definite matrix; NaN if it is
-    singular.
+    """Invert a symmetric positive definite matrix; NaN if it is singular.
 
     A singular penalized Hessian leaves some direction of the coefficients
     unidentified (e.g. a row without expected transitions and with a flat
@@ -1667,9 +1673,11 @@ def _reml_row(
     def search(
         point: Callable[[float], np.ndarray], grid: np.ndarray, start: np.ndarray
     ) -> float:
-        """The log10 strength ``x`` maximizing ``laml(point(x))``: a grid,
-        strongest first with each fit starting from the next-stronger one,
-        then a bounded refinement within a decade of the best.
+        """Return the log10 strength ``x`` maximizing ``laml(point(x))``.
+
+        The search is a grid, strongest first with each fit starting from the
+        next-stronger one, then a bounded refinement within a decade of the
+        best.
         """
         scores: dict[float, tuple[float, ...]] = {}
 
@@ -1752,8 +1760,9 @@ def _fit_covariate_row(
     from_state: int,
     warn: bool = True,
 ) -> np.ndarray:
-    """Minimize one row's :func:`dirichlet_neg_log_likelihood` over its
-    blocks of transitions. Call with JAX in float64.
+    """Minimize one row's :func:`dirichlet_neg_log_likelihood` over its blocks.
+
+    The blocks are of transitions. Call with JAX in float64.
 
     Parameters
     ----------
@@ -2193,8 +2202,9 @@ def _blocked_loss_and_gradient(
     prior_per_bin: jax.Array,
     penalty: np.ndarray,
 ) -> tuple[float, np.ndarray]:
-    """:func:`dirichlet_neg_log_likelihood` and its gradient over blocks of
-    transitions, for scipy. Call with JAX in float64.
+    """Return :func:`dirichlet_neg_log_likelihood` and its gradient, for scipy.
+
+    Evaluated over blocks of transitions. Call with JAX in float64.
     """
     coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
@@ -2219,8 +2229,9 @@ def _blocked_hessian(
     prior_per_bin: jax.Array,
     penalty: np.ndarray,
 ) -> np.ndarray:
-    """:func:`dirichlet_neg_log_likelihood`'s Hessian over blocks of
-    transitions, for scipy. Call with JAX in float64.
+    """Return the Hessian of :func:`dirichlet_neg_log_likelihood`, for scipy.
+
+    Evaluated over blocks of transitions. Call with JAX in float64.
     """
     coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
@@ -2361,8 +2372,9 @@ def dirichlet_hessian(
 
 
 def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
-    """Make a transition matrix where diagonal probabilities are `diag`,
-    and off-diagonal probabilities are uniform for the remaining probability.
+    """Make a transition matrix with diagonal probabilities `diag`.
+
+    Off-diagonal probabilities are uniform for the remaining probability.
 
     Parameters
     ----------
@@ -2791,9 +2803,10 @@ class _QuantileBSpline:
 def _curvature_gram(
     second: Callable[[np.ndarray], np.ndarray], breaks: np.ndarray, degree: int
 ) -> np.ndarray:
-    """``integral second(x).T @ second(x) dx`` between the first and last
-    break, for basis second derivatives ``second(x)`` of shape
-    (n_points, n_basis) that are polynomials between breaks.
+    """Integrate ``second(x).T @ second(x) dx`` between the first and last break.
+
+    ``second(x)`` are basis second derivatives of shape (n_points, n_basis)
+    that are polynomials between breaks.
 
     The second derivatives of a degree-``degree`` spline are polynomials of
     degree ``degree - 2`` between knots, so ``degree`` Gauss-Legendre points
@@ -2808,8 +2821,10 @@ def _curvature_gram(
 
 
 class _CyclicBSpline:
-    """Patsy stateful transform: a periodic cubic B-spline with knots at
-    data quantiles, for cyclic covariates such as phase or head direction.
+    """Patsy stateful transform for a periodic cubic B-spline.
+
+    Knots sit at data quantiles, for cyclic covariates such as phase or head
+    direction.
 
     The period is ``[lower, upper)``, given explicitly because the fitted
     values need not span it. Values outside it wrap. ``n_knots`` knots sit at
@@ -2865,9 +2880,10 @@ class _CyclicBSpline:
         return self._lower + np.mod(x - self._lower, self._upper - self._lower)
 
     def _extended(self) -> tuple[np.ndarray, float]:
-        """Knots extended by ``degree`` periods' worth on each side, so the
-        open B-spline basis over one period from the first knot can be
-        folded into the periodic one.
+        """Return knots extended by ``degree`` periods' worth on each side.
+
+        The open B-spline basis over one period from the first knot can then
+        be folded into the periodic one.
         """
         period, knots, degree = self._upper - self._lower, self._knots, self._degree
         extended = np.concatenate(
@@ -2876,8 +2892,9 @@ class _CyclicBSpline:
         return extended, knots[0]
 
     def _fold(self, basis: np.ndarray) -> np.ndarray:
-        """The periodic basis: open basis function ``j + n_knots`` is
-        function ``j`` one period later.
+        """Fold the open basis into the periodic basis.
+
+        Open basis function ``j + n_knots`` is function ``j`` one period later.
         """
         periodic = basis[:, : self._n_knots].copy()
         periodic[:, : self._degree] += basis[:, self._n_knots :]
@@ -3019,8 +3036,9 @@ class DiscreteTransition(Protocol):
 
     @property
     def smoothness(self) -> float | str:
-        """Curvature-penalty strength of covariate-dependent rows (or
-        ``"reml"``); 0.0 for a stationary transition.
+        """Curvature-penalty strength of covariate-dependent rows.
+
+        May be ``"reml"``; 0.0 for a stationary transition.
         """
         ...
 
@@ -3573,8 +3591,9 @@ def _transition_intervals(
     discrete_transition_covariate_data: pd.DataFrame | dict[str, Any],
     coverage: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """:func:`predict_discrete_state_transition_intervals`, with the
-    transition probabilities it centres them on.
+    """Return the intervals of :func:`predict_discrete_state_transition_intervals`.
+
+    Also returns the transition probabilities they are centred on.
 
     Returns
     -------

@@ -1200,8 +1200,9 @@ class _EMMixin:
         statistics: np.ndarray,
         coefficients: np.ndarray | None = None,
     ) -> float:
-        """Log prior of the current transitions (or covariate
-        ``coefficients``) under one M-step's prior.
+        """Return the log prior of the current transitions under one M-step's prior.
+
+        With covariate ``coefficients``, the prior of those.
         """
         return _transition_log_prior(
             statistics,

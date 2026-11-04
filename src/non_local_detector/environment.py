@@ -1848,8 +1848,10 @@ class Environment:
 def _accept_unset_legacy_fitted_arguments(
     init: Callable[..., None],
 ) -> Callable[..., None]:
-    """Wrap ``Environment.__init__`` to drop the unset fitted attributes that
-    ``vars(environment)`` rows of earlier releases hold.
+    """Wrap ``Environment.__init__`` to drop unset legacy fitted attributes.
+
+    These are the attributes that ``vars(environment)`` rows of earlier
+    releases hold.
 
     Those rows (main from 2025-10 to 2026-10, as Spyglass ``master`` passes
     them) hold every fitted attribute, None when unfitted, and ``_is_fitted``
@@ -1893,8 +1895,10 @@ _LEGACY_FITTED_ARGUMENTS = (*_LEGACY_FITTED_ATTRIBUTES, "_is_fitted")
 
 
 def _is_unset(name: str, value: Any) -> bool:
-    """Whether a legacy fitted argument holds no fitted value: None, or a
-    false ``_is_fitted`` (saved rows may hold it as a NumPy boolean).
+    """Whether a legacy fitted argument holds no fitted value.
+
+    That is None, or a false ``_is_fitted`` (saved rows may hold it as a NumPy
+    boolean).
     """
     if value is None:
         return True

@@ -118,8 +118,9 @@ def _condition_on_primal(
 
 @jax.custom_jvp
 def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jax.Array, jax.Array]:
-    """Condition on new emissions, given in the form of log likelihoods
-    for each discrete state, while avoiding numerical underflow.
+    """Condition on new emissions without numerical underflow.
+
+    The emissions are given as log likelihoods for each discrete state.
 
     Parameters
     ----------
@@ -449,8 +450,7 @@ def _safe_log(p: ArrayLike) -> jax.Array:
 
 
 def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jax.Array:
-    """Divides two arrays, while setting the result to 0.0
-    if the denominator is 0.0.
+    """Divide two arrays, setting the result to 0.0 where the denominator is 0.0.
 
     Parameters
     ----------

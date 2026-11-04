@@ -100,8 +100,9 @@ class ContinuousTransition(Protocol):
 
     @property
     def environment_name(self) -> str | None:
-        """Name of the environment of the source bins; None for a transition
-        without place bins, such as ``Discrete``.
+        """Name of the environment of the source bins.
+
+        None for a transition without place bins, such as ``Discrete``.
         """
         ...
 
@@ -176,8 +177,7 @@ def _random_walk_on_track_graph(
     place_bin_center_ind_to_node: np.ndarray,
     distance_between_nodes: dict[int, dict[int, float]] | LazyGraphDistances,
 ) -> np.ndarray:
-    """Estimates the random walk probabilities based on the spatial
-    topology given by the track graph.
+    """Estimate the random walk probabilities from the track graph topology.
 
     Parameters
     ----------
@@ -219,7 +219,7 @@ def _random_walk_on_track_graph(
 def _euclidean_random_walk(
     environment: Environment, movement_mean: float, movement_var: float
 ) -> np.ndarray:
-    """Estimates the random walk probabilities based on the Euclidean distance
+    """Estimate the random walk probabilities from the Euclidean distance.
 
     Parameters
     ----------
@@ -262,8 +262,7 @@ class _DropsLegacyEnvironment:
 
 
 class _EnvironmentBlock:
-    """``SupportsStructuredBlock`` defaults of a transition within one
-    environment.
+    """``SupportsStructuredBlock`` defaults of a transition within one environment.
 
     Its dense block spans the bins of ``environment_name`` in both
     directions, and it reads no graph distances.
@@ -272,9 +271,7 @@ class _EnvironmentBlock:
     environment_name: str
 
     def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:
-        """``(n_bins, n_bins)`` of ``environment_name``, without building
-        the block.
-        """
+        """Return ``(n_bins, n_bins)`` of ``environment_name``, unbuilt."""
         environment = find_environment_by_name(environments, self.environment_name)
         n_bins = len(environment.place_bin_centers_)
         return (n_bins, n_bins)
@@ -378,8 +375,9 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
         super().__setstate__(state)
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
-        """Separable Gaussian block of a Euclidean random walk on a complete
-        Cartesian grid.
+        """Separable Gaussian block of a Euclidean random walk on a complete grid.
+
+        The grid is Cartesian.
 
         Raises
         ------
@@ -397,8 +395,9 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     def graph_distance_environment(
         self, environments: Sequence[Environment]
     ) -> Environment | None:
-        """The environment whose graph distances a manifold-distance random
-        walk reads; None for a Euclidean one.
+        """Return the environment whose graph distances the walk reads.
+
+        A manifold-distance random walk reads them; None for a Euclidean one.
         """
         if not self.use_manifold_distance:
             return None
@@ -563,8 +562,10 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
     environment2_name: str | None = None
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
-        """Rank-one block from the interior of ``environment_name`` to the
-        interior of ``environment2_name`` (or the same environment).
+        """Rank-one block from the interior of ``environment_name`` to its target.
+
+        The target is the interior of ``environment2_name`` (or the same
+        environment).
         """
         from non_local_detector.transition_operators import UniformBlock
 
@@ -1043,8 +1044,9 @@ class _NamesDestinationEnvironment(Protocol):
 
 
 def _declared_destination(transition: ContinuousTransition) -> str | None:
-    """The environment a transition moves into: its ``environment2_name``
-    when set, else its ``environment_name``.
+    """Return the environment a transition moves into.
+
+    This is its ``environment2_name`` when set, else its ``environment_name``.
     """
     if (
         isinstance(transition, _NamesDestinationEnvironment)
@@ -1202,8 +1204,9 @@ def _make_transition_block(
     context: TransitionContext | None,
     shape: tuple[int, int],
 ) -> np.ndarray:
-    """Call ``transition.make_state_transition(environments, context)`` and
-    check the block it returns.
+    """Call ``transition.make_state_transition(environments, context)``.
+
+    The block it returns is checked.
 
     Parameters
     ----------

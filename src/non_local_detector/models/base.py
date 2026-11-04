@@ -4738,9 +4738,9 @@ class SortedSpikesDetector(_DetectorBase):
         result_path: str | Path | None = None,
         replay_cache_bytes: int | None = None,
     ) -> xr.Dataset:
-        """
-        Estimate the initial conditions and transition probabilities
-         using the Expectation-Maximization (EM) algorithm.
+        """Estimate the initial conditions and transition probabilities.
+
+        Uses the Expectation-Maximization (EM) algorithm.
 
         Parameters
         ----------

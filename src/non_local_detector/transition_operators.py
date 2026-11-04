@@ -981,9 +981,11 @@ _DENSE_GAUSSIAN_BLOCK_BYTES = 16 * 2**20
 
 
 def _small_gaussian_as_dense(block: Block, dense_budget: int) -> Block:
-    """A Gaussian (or restricted Gaussian) block as a ``DenseBlock`` when its
-    float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host
-    matrix fits ``dense_budget`` bytes; any other block as is.
+    """Return a Gaussian (or restricted Gaussian) block as a ``DenseBlock`` if small.
+
+    The block is converted when its float32 matrix fits
+    ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host matrix fits
+    ``dense_budget`` bytes; any other block is returned as is.
     """
     original = block.original if isinstance(block, RestrictedBlock) else block
     n_rows, n_columns = block.shape
@@ -1588,8 +1590,9 @@ def _gaussian_block(
 
 @runtime_checkable
 class SupportsStructuredBlock(Protocol):
-    """A continuous transition the operator builder can plan without
-    calling ``make_state_transition``.
+    """A continuous transition the operator builder can plan structurally.
+
+    The builder plans it without calling ``make_state_transition``.
 
     A transition opts into structured operators by implementing these
     methods alongside its ``make_state_transition``, as the package's
@@ -1629,9 +1632,10 @@ class SupportsStructuredBlock(Protocol):
     def graph_distance_environment(
         self, environments: Sequence[Environment]
     ) -> Environment | None:
-        """The environment whose graph distances ``make_state_transition``
-        reads, or None. Deferred distances are densified for it within the
-        dense budget.
+        """Return the environment whose graph distances ``make_state_transition`` reads.
+
+        None if there is none. Deferred distances are densified for it within
+        the dense budget.
         """
         ...
 

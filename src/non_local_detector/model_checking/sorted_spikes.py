@@ -306,8 +306,9 @@ class TimeRescaling:
 
 
 def _uniform_cdf_values(n_spikes: int) -> np.ndarray:
-    """Model based cumulative distribution function values. Used for
-    plotting the `uniform_rescaled_ISIs`.
+    """Return model based cumulative distribution function values.
+
+    Used for plotting the `uniform_rescaled_ISIs`.
 
     Parameters
     ----------

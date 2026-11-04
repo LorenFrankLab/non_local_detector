@@ -125,6 +125,7 @@ if sortingview_available():
     def get_base_track_information(
         base_probabilities: xr.DataArray,
     ) -> tuple[int, float, float, int, float, float]:
+        """Return the x/y bin counts, minima and widths of the base track."""
         x_count = len(base_probabilities.x_position)
         y_count = len(base_probabilities.y_position)
         x_min = np.min(base_probabilities.x_position).item()
@@ -366,6 +367,7 @@ if sortingview_available():
     def create_track_animation_object(
         *, static_track_animation: Any
     ) -> vvf.TrackPositionAnimationV1:
+        """Build the track animation object from a static track animation."""
         if "decodedData" in static_track_animation:
             decoded_data = static_track_animation["decodedData"]
             decoded_data_obj = vvf.DecodedPositionData(
@@ -460,7 +462,7 @@ if sortingview_available():
         posterior: xr.DataArray,
         head_dir: np.ndarray | None = None,
     ) -> vvf.TrackPositionAnimationV1:
-        """Creates a 2D decoding movie view
+        """Create a 2D decoding movie view.
 
         Parameters
         ----------

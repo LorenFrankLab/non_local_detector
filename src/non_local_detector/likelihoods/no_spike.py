@@ -60,7 +60,7 @@ def predict_no_spike_log_likelihood(
     _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
-    """Return the log likelihood of low spike rate for each time bin.
+    r"""Return the log likelihood of low spike rate for each time bin.
 
     This function computes the log-likelihood under a Poisson model with
     very low firing rates, typically used during quiescent periods when
