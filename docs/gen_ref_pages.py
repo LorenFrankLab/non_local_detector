@@ -5,10 +5,11 @@ from pathlib import Path
 
 import mkdocs_gen_files
 
-# The likelihood algorithms are internal; ``likelihoods.common`` keeps a
-# non-empty ``__all__`` only because it re-exports the names of the module it
-# replaced, so pickles and imports that name them still resolve.
-INTERNAL_PACKAGES = ("non_local_detector.likelihoods",)
+# ``likelihoods.common`` keeps a non-empty ``__all__`` only because it
+# re-exports the names of the module it replaced, so pickles and imports that
+# name them still resolve. Its public helpers are documented on the submodules
+# that define them.
+INTERNAL_MODULES = ("non_local_detector.likelihoods.common",)
 
 
 def read_dunder_all(path: Path) -> list[str] | None:
@@ -53,7 +54,7 @@ for path in sorted(package_root.rglob("*.py")):
     # internal module, and a module without ``__all__`` is a bug that
     # tests/test_public_api.py reports.
     public_names = read_dunder_all(path)
-    if not public_names or ident.startswith(INTERNAL_PACKAGES):
+    if not public_names or ident in INTERNAL_MODULES:
         continue
 
     nav[parts] = doc_path.as_posix()

@@ -141,8 +141,11 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "ClusterlessDiffusionEncodingModel",
+    "fit_clusterless_diffusion_encoding_model",
+    "predict_clusterless_diffusion_log_likelihood",
+]
 
 
 logger = logging.getLogger(__name__)

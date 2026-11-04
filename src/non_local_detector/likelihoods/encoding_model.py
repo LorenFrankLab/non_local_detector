@@ -15,8 +15,11 @@ import numpy as np
 
 from non_local_detector.environment import Environment
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "ClusterlessEncodingModel",
+    "EncodingModel",
+    "SortedSpikesEncodingModel",
+]
 
 
 class EncodingModel(TypedDict):

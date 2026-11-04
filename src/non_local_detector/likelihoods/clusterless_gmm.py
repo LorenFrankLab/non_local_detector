@@ -81,8 +81,11 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "ClusterlessGMMEncodingModel",
+    "fit_clusterless_gmm_encoding_model",
+    "predict_clusterless_gmm_log_likelihood",
+]
 
 
 # Default covariance regularization, in squared feature units.

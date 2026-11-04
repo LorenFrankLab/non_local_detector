@@ -98,8 +98,11 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "SortedSpikesKDEEncodingModel",
+    "fit_sorted_spikes_kde_encoding_model",
+    "predict_sorted_spikes_kde_log_likelihood",
+]
 
 
 # One group of stacked KDE leaves: samples, weights, standard deviations and

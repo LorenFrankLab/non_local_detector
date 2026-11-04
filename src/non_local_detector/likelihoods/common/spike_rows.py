@@ -24,8 +24,11 @@ from non_local_detector.time_edges import (
     validate_time_edges,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "get_spikecount_per_time_bin",
+    "select_spike_rows",
+    "select_spikes_in_rows",
+]
 
 
 # JAX exposes this exception only privately. Older supported releases predate

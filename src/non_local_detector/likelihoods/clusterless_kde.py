@@ -89,8 +89,11 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "ClusterlessKDEEncodingModel",
+    "fit_clusterless_kde_encoding_model",
+    "predict_clusterless_kde_log_likelihood",
+]
 
 
 # Encoding rows per reduction tile. Each tile is one GEMM over the whole query

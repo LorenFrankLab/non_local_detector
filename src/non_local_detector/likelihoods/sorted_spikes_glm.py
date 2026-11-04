@@ -106,8 +106,11 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "SortedSpikesGLMEncodingModel",
+    "fit_sorted_spikes_glm_encoding_model",
+    "predict_sorted_spikes_glm_log_likelihood",
+]
 
 
 @jax.jit

@@ -81,8 +81,11 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
 )
 from non_local_detector.time_edges import _DecodeTimeGrid, requires_time_edges
 
-# Internal module: no public API.
-__all__: list[str] = []
+__all__ = [
+    "SortedSpikesMRFEncodingModel",
+    "fit_sorted_spikes_mrf_encoding_model",
+    "predict_sorted_spikes_mrf_log_likelihood",
+]
 
 
 # The Newton/IRLS fit and REML score run in JAX (jit + GPU-ready), batched over

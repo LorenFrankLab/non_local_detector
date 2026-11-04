@@ -15,10 +15,12 @@ _NEEDS_SORTINGVIEW = {
         "create_interactive_2D_decoding_figurl",
     },
     "non_local_detector.visualization.figurl_1D": {
-        "create_interactive_1D_decoding_figurl"
+        "create_1D_decode_view",
+        "create_interactive_1D_decoding_figurl",
     },
     "non_local_detector.visualization.figurl_2D": {
-        "create_interactive_2D_decoding_figurl"
+        "create_2D_decode_view",
+        "create_interactive_2D_decoding_figurl",
     },
 }
 
@@ -85,10 +87,12 @@ SPYGLASS_IMPORTS = {
     "non_local_detector.models.base": ["ClusterlessDetector", "SortedSpikesDetector"],
     "non_local_detector.observation_models": ["ObservationModel"],
     "non_local_detector.visualization.figurl_1D": [
-        "create_interactive_1D_decoding_figurl"
+        "create_1D_decode_view",
+        "create_interactive_1D_decoding_figurl",
     ],
     "non_local_detector.visualization.figurl_2D": [
-        "create_interactive_2D_decoding_figurl"
+        "create_2D_decode_view",
+        "create_interactive_2D_decoding_figurl",
     ],
 }
 
