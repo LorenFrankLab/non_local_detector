@@ -3158,7 +3158,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 # structured operator's rule, so both representations agree.
                 _check_block_environments(
                     transition,
-                    self.environments,
+                    self.environments_,
                     self.observation_models[from_state].environment_name,
                     self.observation_models[to_state].environment_name,
                     n_row_bins,
