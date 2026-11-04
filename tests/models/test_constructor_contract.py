@@ -142,6 +142,24 @@ class TestSetParams:
         assert model.get_params(deep=False).keys() == original.keys()
 
 
+@pytest.mark.unit
+def test_multi_environment_classifier_normalizes_environments_to_a_tuple():
+    environments = [
+        Environment(environment_name="env1"),
+        Environment(environment_name="env2"),
+    ]
+    detector = models.MultiEnvironmentSortedSpikesClassifier(environments=environments)
+
+    assert detector.environments == tuple(environments)
+    assert isinstance(
+        models.MultiEnvironmentSortedSpikesClassifier().environments, tuple
+    )
+    # clone rebuilds from the tuple, which the constructor keeps as given.
+    cloned = clone(detector)
+    assert isinstance(cloned.environments, tuple)
+    assert cloned.environments is not detector.environments
+
+
 def _base_detector(n_states=3, **kwargs):
     return SortedSpikesDetector(
         discrete_initial_conditions=np.eye(n_states)[0],

@@ -2666,13 +2666,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         Returns
         -------
         tuple[Environment, ...]
-            Initialized environments as a tuple.
+            Initialized environments as a tuple. A tuple is returned as is, so
+            the parameter round-trips through scikit-learn's ``clone``.
         """
         normalized: Any = environments
         if normalized is None:
             normalized = (Environment(),)
         if not hasattr(normalized, "__iter__"):
             normalized = (normalized,)
+        if not isinstance(normalized, tuple):
+            normalized = tuple(normalized)
         return cast("tuple[Environment, ...]", normalized)
 
     def _initialize_observation_models(
