@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
+import numpy as np
+
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     clusterless_diffusion,
@@ -281,3 +283,62 @@ def _resolve_fit_params(
             f"{algorithm}: each algorithm accepts only its own fit parameters.",
         )
     return resolved
+
+
+# Where the encoding models of the clusterless algorithms that did not record
+# ``mark_dimensions`` before they recorded their algorithm keep each
+# electrode's encoding waveform features, shape (n_spikes, n_features).
+_LEGACY_ENCODING_MARKS: dict[str, str] = {
+    "clusterless_kde": "encoding_spike_waveform_features",
+    "clusterless_diffusion": "encoding_marks",
+}
+
+
+def _record_legacy_encoding_algorithm(
+    encoding_model: object,
+    algorithms: Mapping[str, LikelihoodAlgorithm],
+    configured: str | None,
+) -> None:
+    """Record the algorithm of an encoding model saved before models recorded it.
+
+    Such an encoding model holds exactly its type's keys except ``algorithm``
+    (and, for ``clusterless_kde`` and ``clusterless_diffusion``,
+    ``mark_dimensions``). The algorithm is the one in ``algorithms`` whose
+    type has those keys; the registered types differ, but should two match,
+    the detector's ``configured`` algorithm is chosen if it is one of them,
+    and otherwise nothing is recorded. ``mark_dimensions`` is derived from
+    the stored encoding waveform features. A model matching no type, such
+    as one fitted by a 0.6 release, is left unchanged, so decoding with it
+    asks for a refit. The model is updated in place.
+
+    Parameters
+    ----------
+    encoding_model : object
+        One entry of a detector's ``encoding_model_``.
+    algorithms : Mapping[str, LikelihoodAlgorithm]
+        The detector family's registry.
+    configured : str or None
+        The detector's ``*_algorithm`` parameter.
+    """
+    if not isinstance(encoding_model, dict) or "algorithm" in encoding_model:
+        return
+    matches = []
+    for name, record in algorithms.items():
+        model_type: Any = record.encoding_model_type  # a TypedDict
+        saved_keys = model_type.__required_keys__ | model_type.__optional_keys__
+        saved_keys -= {"algorithm"}
+        if name in _LEGACY_ENCODING_MARKS:
+            saved_keys -= {"mark_dimensions"}
+        if set(encoding_model) == saved_keys:
+            matches.append(name)
+    if len(matches) > 1:
+        matches = [name for name in matches if name == configured]
+    if len(matches) != 1:
+        return
+    (algorithm,) = matches
+    encoding_model["algorithm"] = algorithm
+    if algorithm in _LEGACY_ENCODING_MARKS:
+        encoding_model["mark_dimensions"] = [
+            int(np.shape(features)[1])
+            for features in encoding_model[_LEGACY_ENCODING_MARKS[algorithm]]
+        ]

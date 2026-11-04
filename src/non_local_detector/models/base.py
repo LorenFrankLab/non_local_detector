@@ -88,6 +88,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     ClusterlessLikelihoodAlgorithm,
     LikelihoodAlgorithm,
+    _record_legacy_encoding_algorithm,
     _resolve_fit_params,
 )
 from non_local_detector.likelihoods.common import (
@@ -3075,6 +3076,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     penalties,
                     self.discrete_transition_coefficients_.shape[1],
                 )[0]
+        # Encoding models fitted before each recorded its algorithm.
+        encoding_model = state.get("encoding_model_")
+        if isinstance(encoding_model, Mapping):
+            is_clusterless = isinstance(self, ClusterlessDetector)
+            algorithms = (
+                _CLUSTERLESS_ALGORITHMS if is_clusterless else _SORTED_SPIKES_ALGORITHMS
+            )
+            configured = state.get(
+                "clusterless_algorithm" if is_clusterless else "sorted_spikes_algorithm"
+            )
+            for entry in encoding_model.values():
+                _record_legacy_encoding_algorithm(entry, algorithms, configured)
 
     def _initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None = None
@@ -6418,7 +6431,10 @@ class ClusterlessDetector(_DetectorBase):
             local_position_std=local_position_std,
         )
         self.clusterless_algorithm = clusterless_algorithm
-        self._clusterless_algorithm()  # rejects an unregistered name
+        # A removed name that stored parameter sets, such as Spyglass rows,
+        # still hold: they construct, for inspection, and fitting raises.
+        if clusterless_algorithm != "clusterless_kde_log":
+            self._clusterless_algorithm()  # rejects an unregistered name
         # Stored as-is to keep sklearn's clone() contract intact; the dict
         # copy + default resolution happens lazily in
         # ``_resolve_clusterless_algorithm_params`` at fit time.
