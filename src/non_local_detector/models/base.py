@@ -5000,6 +5000,70 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             else inputs.environment_labels,
         )
 
+    def _fit_encoding_groups(
+        self,
+        fit_group: Callable[[Environment, np.ndarray], Any],
+        *,
+        is_training: np.ndarray,
+        encoding_group_labels: np.ndarray,
+        environment_labels: np.ndarray,
+        weights: np.ndarray | None,
+        support: EncodingSupport,
+    ) -> dict[tuple[Any, ...], Any]:
+        """Fit one encoding model per environment and encoding group.
+
+        Parameters
+        ----------
+        fit_group : callable
+            ``fit_group(environment, group_weights)`` fits the family's
+            algorithm to one group's spikes and returns its encoding model.
+        is_training : np.ndarray of bool, shape (n_time_position,)
+        encoding_group_labels : np.ndarray, shape (n_time_position,)
+        environment_labels : np.ndarray, shape (n_time_position,)
+            From ``_encoding_masks``.
+        weights : np.ndarray, shape (n_time_position,), or None
+            Training weights.
+        support : EncodingSupport
+
+        Returns
+        -------
+        encoding_model : dict
+            Encoding model of each ``(environment_name, encoding_group)``.
+            Built here, so a failed refit keeps the previous encoding model
+            and its stored log likelihood.
+        """
+        encoding_model: dict[tuple[Any, ...], Any] = {}
+
+        # An encoding model is shared by ``(environment_name, encoding_group)``;
+        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
+        # ``ObservationModel`` equality now distinguishes those flags,
+        # ``np.unique`` can return several entries that map to the same
+        # ``likelihood_name`` — fit each key once to avoid redundant work.
+        fitted_likelihood_names: set[tuple[Any, ...]] = set()
+        for obs in np.unique(cast("Any", self.observation_models)):
+            likelihood_name = (obs.environment_name, obs.encoding_group)
+            if likelihood_name in fitted_likelihood_names:
+                continue
+            fitted_likelihood_names.add(likelihood_name)
+
+            environment = self._get_environment_by_name(obs.environment_name)
+
+            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
+            is_environment = environment_labels == obs.environment_name
+            is_group = is_training & is_encoding & is_environment
+            # The mask is this model's exposure: a sample outside the selection
+            # must contribute no occupancy, because only in-group spikes are
+            # counted. Passing ``weights=None`` means "uniform over every
+            # supplied sample", which is only true when the mask selects
+            # everything -- otherwise occupancy accumulates over held-out
+            # samples and other environments / encoding groups while the spike
+            # count does not, biasing every place field low. The position array
+            # stays full-length so it remains aligned with the weights and with
+            # the grid used to interpolate per-spike weights.
+            group_weights = _group_weights(is_group, weights, likelihood_name, support)
+            encoding_model[likelihood_name] = fit_group(environment, group_weights)
+        return encoding_model
+
     @abc.abstractmethod
     def fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:
         """Fit the encoding model. To be implemented by inheriting class.
@@ -6798,58 +6862,43 @@ class ClusterlessDetector(_DetectorBase):
         )
 
         kwargs = self._resolve_clusterless_algorithm_params()
+        encoding_algorithm = self._clusterless_algorithm().fit
 
-        # Build the new models locally so a failed refit keeps the previous
-        # encoding model and its stored log likelihood.
-        encoding_model: dict[tuple[Any, ...], Any] = {}
-
-        # An encoding model is shared by ``(environment_name, encoding_group)``;
-        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
-        # ``ObservationModel`` equality now distinguishes those flags,
-        # ``np.unique`` can return several entries that map to the same
-        # ``likelihood_name`` — fit each key once to avoid redundant work.
-        fitted_likelihood_names: set[tuple[Any, ...]] = set()
-        for obs in np.unique(cast("Any", self.observation_models)):
-            likelihood_name = (obs.environment_name, obs.encoding_group)
-            if likelihood_name in fitted_likelihood_names:
-                continue
-            fitted_likelihood_names.add(likelihood_name)
-
-            environment = self._get_environment_by_name(obs.environment_name)
-
-            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
-
-            encoding_algorithm = self._clusterless_algorithm().fit
-            is_group = is_training & is_encoding & is_environment
-            # The mask is this model's exposure on the full timeline, as for
-            # sorted spikes: a subset timeline would let spike-weight
-            # interpolation bridge the mask's gaps.
-            group_weights = _group_weights(is_group, weights, likelihood_name, support)
+        def fit_group(environment: Environment, group_weights: np.ndarray) -> Any:
+            # The group's weights are its exposure on the full timeline: a
+            # subset timeline would let spike-weight interpolation bridge the
+            # mask's gaps.
             is_group_spike = [
                 _group_spike_mask(times, position_time, group_weights, support)
                 for times in spike_times
             ]
-            group_spike_times = [
-                times[mask]
-                for times, mask in zip(spike_times, is_group_spike, strict=True)
-            ]
-            group_spike_waveform_features = [
-                features[mask]
-                for features, mask in zip(
-                    spike_waveform_features, is_group_spike, strict=True
-                )
-            ]
-            encoding_model[likelihood_name] = encoding_algorithm(
+            return encoding_algorithm(
                 position_time=position_time,
                 position=position,
-                spike_times=group_spike_times,
-                spike_waveform_features=group_spike_waveform_features,
+                spike_times=[
+                    times[mask]
+                    for times, mask in zip(spike_times, is_group_spike, strict=True)
+                ],
+                spike_waveform_features=[
+                    features[mask]
+                    for features, mask in zip(
+                        spike_waveform_features, is_group_spike, strict=True
+                    )
+                ],
                 environment=environment,
                 _encoding_support=support,
                 weights=group_weights,
                 **kwargs,
             )
+
+        encoding_model = self._fit_encoding_groups(
+            fit_group,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            weights=weights,
+            support=support,
+        )
 
         mark_reference = (
             self._fit_mark_reference(
@@ -7806,41 +7855,10 @@ class SortedSpikesDetector(_DetectorBase):
         )
 
         kwargs = self._resolve_sorted_spikes_algorithm_params()
+        encoding_algorithm = self._sorted_spikes_algorithm().fit
 
-        # Build the new models locally so a failed refit keeps the previous
-        # encoding model and its stored log likelihood.
-        encoding_model: dict[tuple[Any, ...], Any] = {}
-
-        # An encoding model is shared by ``(environment_name, encoding_group)``;
-        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
-        # ``ObservationModel`` equality now distinguishes those flags,
-        # ``np.unique`` can return several entries that map to the same
-        # ``likelihood_name`` — fit each key once to avoid redundant work.
-        fitted_likelihood_names: set[tuple[Any, ...]] = set()
-        for obs in np.unique(cast("Any", self.observation_models)):
-            likelihood_name = (obs.environment_name, obs.encoding_group)
-            if likelihood_name in fitted_likelihood_names:
-                continue
-            fitted_likelihood_names.add(likelihood_name)
-
-            environment = self._get_environment_by_name(obs.environment_name)
-
-            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
-            encoding_algorithm = self._sorted_spikes_algorithm().fit
-            is_group = is_training & is_encoding & is_environment
-            # The mask is this model's exposure: a sample outside the selection
-            # must contribute no occupancy, because only in-group spikes are
-            # counted. Passing ``weights=None`` means "uniform over every
-            # supplied sample", which is only true when the mask selects
-            # everything -- otherwise occupancy accumulates over held-out
-            # samples and other environments / encoding groups while the spike
-            # count does not, biasing every place field low. The position array
-            # stays full-length so it remains aligned with the weights and with
-            # the grid used to interpolate per-spike weights.
-            group_weights = _group_weights(is_group, weights, likelihood_name, support)
-
-            encoding_model[likelihood_name] = encoding_algorithm(
+        def fit_group(environment: Environment, group_weights: np.ndarray) -> Any:
+            return encoding_algorithm(
                 position_time=position_time,
                 position=position,
                 spike_times=[
@@ -7856,6 +7874,15 @@ class SortedSpikesDetector(_DetectorBase):
                 weights=group_weights,
                 **kwargs,
             )
+
+        encoding_model = self._fit_encoding_groups(
+            fit_group,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            weights=weights,
+            support=support,
+        )
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
