@@ -575,8 +575,10 @@ def _group_spike_mask(
     group_weights : np.ndarray, shape (n_time_position,)
         Per-sample weights of this group (mask times any EM weight).
     encoding_support : EncodingSupport, optional
-        Support of the encoding fit used to decide which spikes are in bounds;
-        by default None, which uses the ends of ``position_time``.
+        Support of the encoding fit: decides which spikes are in bounds and
+        bounds the segments within which ``group_weights`` are interpolated to
+        spike times; by default None, which uses the ends of
+        ``position_time``.
 
     Returns
     -------

@@ -1882,7 +1882,8 @@ def _chunked_filter_smoother(
         Initial probability of each state bin.
     log_likelihood_func : callable
         Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)``.
+        is_missing=...)``; a callable marked by :func:`row_slice_aware` also
+        receives ``row_slice=slice(start, stop)`` per chunk.
     log_likelihood_args : tuple
         Extra positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), or None

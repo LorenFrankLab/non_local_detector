@@ -244,7 +244,7 @@ def padded_samples(
     spike_time_order : SpikeTimeOrder
         The prediction's preparation cache; results are reused per source arrays.
     samples : array, shape (n_samples, n_dims)
-        KDE sample positions.
+        Samples to pad: positions or waveform features.
     weights : array, shape (n_samples,), or None
         None means uniform weights.
     count : callable, optional

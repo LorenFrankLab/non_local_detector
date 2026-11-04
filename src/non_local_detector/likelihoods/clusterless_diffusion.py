@@ -1025,7 +1025,8 @@ def _log_marked_field(
     Parameters
     ----------
     log_source : jax.Array, shape (n_sources, n_block)
-        Log of each source's scaled mark density for each spike.
+        Log of each source's unscaled mark density for each spike
+        (``log sum_i w_i K_mark``); the peak scaling happens here.
     rows : jax.Array, shape (n_block,), or None
         Each spike's own bin (local), or None to read every bin (non-local).
     columns_of : callable

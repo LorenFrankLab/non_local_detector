@@ -113,7 +113,7 @@ def predict_no_spike_log_likelihood(
     The log-likelihood is computed as:
 
     .. math::
-        \\log P(n|\\lambda) = n \\log(\\lambda \\Delta t) - \\lambda \\Delta t
+        \log P(n|\lambda) = n \log(\lambda \Delta t) - \lambda \Delta t
 
     where n is the spike count, λ is the firing rate, and Δt is the bin duration.
 

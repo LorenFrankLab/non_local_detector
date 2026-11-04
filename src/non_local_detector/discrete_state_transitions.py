@@ -53,10 +53,10 @@ def _float64_jax() -> AbstractContextManager[Any]:
     ``jax.experimental.enable_x64`` in older releases such as 0.6.
     """
     if hasattr(jax, "enable_x64"):
-        return cast(AbstractContextManager[Any], jax.enable_x64(True))  # noqa: FBT003 -- JAX API takes the flag positionally
+        return cast(AbstractContextManager[Any], jax.enable_x64(new_val=True))
     from jax.experimental import enable_x64
 
-    return cast(AbstractContextManager[Any], enable_x64(True))  # noqa: FBT003 -- JAX API takes the flag positionally
+    return cast(AbstractContextManager[Any], enable_x64(True))  # noqa: FBT003 -- jax.experimental.enable_x64 in older JAX
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
