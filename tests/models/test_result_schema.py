@@ -7,6 +7,7 @@ The tables of ``docs/result_layout.md`` are checked against real results.
 """
 
 import re
+import sys
 import warnings
 from contextlib import suppress
 from pathlib import Path
@@ -174,23 +175,34 @@ def test_netcdf_round_trip_keeps_state_ind(fitted, result, tmp_path):
         np.testing.assert_array_equal(restored[name].values, result[name].values)
 
 
+@pytest.mark.parametrize("file_format", ["netCDF4", "netCDF3"])
 @pytest.mark.parametrize("kind", ["dense", "checkpointed", "em"])
-def test_netcdf_round_trip_keeps_every_dtype(fitted, kind, request, tmp_path):
-    """Integer variables and coordinates keep their dtypes through netCDF3.
+def test_netcdf_round_trip_keeps_every_dtype(
+    fitted, kind, file_format, request, tmp_path, monkeypatch
+):
+    """Integer variables and coordinates keep their dtypes through netCDF.
 
-    Without netCDF4 or h5netcdf, xarray writes netCDF3, which stores int64 as
-    int32. Strings come back as object arrays, as xarray reads them from any
-    netCDF file.
+    xarray writes netCDF4 when netCDF4 (or h5netcdf) is installed, and
+    netCDF3 otherwise, which stores int64 as int32. Strings come back as
+    object or fixed-width string arrays, depending on the format.
     """
+    if file_format == "netCDF4":
+        pytest.importorskip("netCDF4")
     result = request.getfixturevalue(kind)
     filename = tmp_path / "results.nc"
-    fitted.save_results(result, filename)
+    with monkeypatch.context() as patch:
+        if file_format == "netCDF3":  # written as without netCDF4, read with it
+            for writer in ("netCDF4", "h5netcdf"):
+                patch.setitem(sys.modules, writer, None)
+        fitted.save_results(result, filename)
+    magic = b"CDF" if file_format == "netCDF3" else b"\x89HDF"
+    assert filename.read_bytes().startswith(magic)
     with fitted.load_results(filename) as restored:
         restored = restored.load()
     assert set(restored.variables) == set(result.variables)
     assert any(v.dtype.kind in "iu" for v in result.variables.values())
     for name, variable in result.variables.items():
-        if variable.dtype.kind == "U":
+        if "U" in (variable.dtype.kind, restored[name].dtype.kind):
             np.testing.assert_array_equal(restored[name].values, variable.values)
         else:
             assert restored[name].dtype == variable.dtype, name

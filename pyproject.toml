@@ -244,6 +244,9 @@ test = [
     "hypothesis",
     # Benchmark scripts record memory with psutil; their smoke test runs in CI.
     "psutil",
+    # Reads the netCDF4 results Spyglass saves (tests/compat_data); without it
+    # xarray writes and reads only netCDF3.
+    "netCDF4",
 ]
 dev = [
     { include-group = "test" },
