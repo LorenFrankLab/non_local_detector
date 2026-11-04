@@ -1974,6 +1974,7 @@ class _DetectorBase(
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width(), row_slice=row_slice
         )
+        self._check_spike_data(spike_data)
         self._validate_decode_position(decode.position)
         context = self._decode_context(
             time_edges,
@@ -2293,6 +2294,7 @@ class _DetectorBase(
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
+        self._check_spike_data(spike_data)
         self._validate_decode_position(position)
         is_missing = _missing_bins(
             time_edges,
@@ -2571,6 +2573,7 @@ class _DetectorBase(
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
+        self._check_spike_data(spike_data)
         self._validate_decode_position(position)
         is_missing = _missing_bins(
             time_edges,
@@ -3291,7 +3294,8 @@ class ClusterlessDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray, len (n_electrodes,)
-            One 1-D array of spike times per electrode, in seconds.
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
@@ -3482,7 +3486,8 @@ class ClusterlessDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray, len (n_electrodes,)
-            One 1-D array of spike times per electrode, in seconds.
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_training : array_like of bool, shape (n_time_position,), optional
@@ -3661,7 +3666,8 @@ class ClusterlessDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims), or None
             Position data.
         spike_times : list of np.ndarray, len (n_electrodes,)
-            One 1-D array of spike times per electrode, in seconds.
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_missing : array_like of bool, shape (n_rows,), optional
@@ -3719,7 +3725,8 @@ class ClusterlessDetector(_DetectorBase):
         Parameters
         ----------
         spike_times : list of np.ndarray, len (n_electrodes,)
-            One 1-D array of spike times per electrode, in seconds.
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         time_edges : array_like, shape (n_bins + 1,)
@@ -3938,7 +3945,8 @@ class ClusterlessDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray, len (n_electrodes,)
-            One 1-D array of spike times per electrode, in seconds.
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         time_edges : array_like, shape (n_bins + 1,)
@@ -4131,7 +4139,8 @@ class ClusterlessDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims), optional
             Position data.
         spike_times : list of np.ndarray, len (n_electrodes,)
-            One 1-D array of spike times per electrode, in seconds.
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         time_edges : array_like, shape (n_bins + 1,)
@@ -4319,7 +4328,8 @@ class SortedSpikesDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray, len (n_neurons,)
-            One 1-D array of spike times per neuron, in seconds.
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4459,7 +4469,8 @@ class SortedSpikesDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims)
             Position data.
         spike_times : list of np.ndarray, len (n_neurons,)
-            One 1-D array of spike times per neuron, in seconds.
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4599,7 +4610,8 @@ class SortedSpikesDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims), or None
             Position data.
         spike_times : list of np.ndarray, len (n_neurons,)
-            One 1-D array of spike times per neuron, in seconds.
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
         is_missing : array_like of bool, shape (n_rows,), optional
             True (or 1) for the bins to decode as missing, one entry per
             requested decode bin, by default None.
@@ -4654,7 +4666,8 @@ class SortedSpikesDetector(_DetectorBase):
         Parameters
         ----------
         spike_times : list of np.ndarray, len (n_neurons,)
-            One 1-D array of spike times per neuron, in seconds.
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
@@ -4792,7 +4805,8 @@ class SortedSpikesDetector(_DetectorBase):
         position : np.ndarray, shape (n_time_position, n_position_dims)
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
-            One 1-D array of spike times per neuron, in seconds.
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
@@ -4983,7 +4997,8 @@ class SortedSpikesDetector(_DetectorBase):
         position : array_like, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
-            One 1-D array of spike times per neuron, in seconds.
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.

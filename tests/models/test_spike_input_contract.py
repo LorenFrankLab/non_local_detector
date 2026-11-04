@@ -1,14 +1,15 @@
 """Spike data is checked where it enters, the same way at fit and at decode.
 
 ``fit``, ``fit_encoding_model`` and ``estimate_parameters`` check the spike
-arrays' structure as ``predict`` does.
+arrays' structure as ``predict`` does, and every entry point rejects
+non-finite spike times (which were dropped silently).
 """
 
 import numpy as np
 import pytest
 
 from non_local_detector import ClusterlessDecoder, Environment, SortedSpikesDecoder
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataError, ValidationError
 from tests.models._helpers import _assert_unchanged, _snapshot
 
 N_TIME = 100
@@ -21,6 +22,7 @@ FEATURES = [
     np.array([[0.3], [-0.3]]),
 ]
 FIT_METHODS = ["fit", "fit_encoding_model", "estimate_parameters"]
+DECODE_METHODS = ["predict", "most_likely_sequence", "compute_log_likelihood"]
 
 
 def _environment():
@@ -111,3 +113,22 @@ def test_sorted_spike_structure_is_checked_before_fitting(monkeypatch, method):
     monkeypatch.setattr(type(detector), "_fit", unexpected_fit)
     with pytest.raises(ValidationError, match="neuron 0"):
         _call(detector, method, (SPIKE_TIMES[0],))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", FIT_METHODS + DECODE_METHODS)
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf], ids=["nan", "inf"])
+def test_non_finite_spike_times_raise(fitted, method, family, bad_value):
+    """NaN spike times were dropped silently (the posterior did not change);
+    they now raise, naming the unit and the count."""
+    unit = "neuron" if family == "sorted" else "electrode"
+    spike_times = [SPIKE_TIMES[0], np.append(SPIKE_TIMES[1], [bad_value, bad_value])]
+    spike_data = (spike_times,) if family == "sorted" else (spike_times, FEATURES)
+    if family == "clusterless":
+        spike_data = (spike_times, [FEATURES[0], np.vstack([FEATURES[1], [[0], [0]]])])
+    detector = fitted[family].copy()
+    snapshot = _snapshot(detector)
+    with pytest.raises(DataError, match=rf"{unit} 1: 2 of 4"):
+        _call(detector, method, spike_data)
+    _assert_unchanged(detector, snapshot)

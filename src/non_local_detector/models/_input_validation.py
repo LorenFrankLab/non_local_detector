@@ -26,7 +26,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods.common import (
     resolve_row_slice,
     validate_spike_feature_population,
@@ -333,8 +333,8 @@ def _validate_spike_data(
 ) -> None:
     """Check spike data where it enters a public fitting or decoding method.
 
-    Checks the structure (``_validate_spike_structure``) and that the
-    spike times are numeric.
+    Checks the structure (``_validate_spike_structure``), then that every
+    spike time is a finite number.
 
     Parameters
     ----------
@@ -349,6 +349,8 @@ def _validate_spike_data(
     ------
     ValidationError
         If the structure is wrong or spike times are not numeric.
+    DataError
+        If any spike time is NaN or infinite.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -361,6 +363,24 @@ def _validate_spike_data(
             raise ValidationError(
                 msg, expected="spike times in seconds", got=f"dtype {times.dtype}"
             )
+    n_non_finite = [int(np.count_nonzero(~np.isfinite(times))) for times in arrays]
+    if any(n_non_finite):
+        bad = [
+            f"{unit} {index}: {count} of {arrays[index].size}"
+            for index, count in enumerate(n_non_finite)
+            if count
+        ]
+        msg = "spike_times contain NaN or infinite values"
+        raise DataError(
+            msg,
+            data_name="spike_times",
+            expected="finite spike times in seconds",
+            got=", ".join(bad[:5])
+            + (f" and {len(bad) - 5} more" if len(bad) > 5 else ""),
+            hint="Non-finite spike times are not dropped: remove them (e.g. "
+            "times[np.isfinite(times)], with the matching feature rows) or "
+            "fix the spike export that produced them.",
+        )
 
 
 @dataclass(frozen=True)
