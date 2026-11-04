@@ -1,15 +1,18 @@
 """Spike data is checked where it enters, the same way at fit and at decode.
 
 ``fit``, ``fit_encoding_model`` and ``estimate_parameters`` check the spike
-arrays' structure as ``predict`` does, and every entry point rejects
-non-finite spike times (which were dropped silently).
+arrays' structure as ``predict`` does, every entry point rejects non-finite
+spike times (which were dropped silently), and a recording whose spikes all
+fall outside the fit or decode time range warns of a unit or clock mismatch.
 """
+
+import warnings
 
 import numpy as np
 import pytest
 
 from non_local_detector import ClusterlessDecoder, Environment, SortedSpikesDecoder
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from tests.models._helpers import _assert_unchanged, _snapshot
 
 N_TIME = 100
@@ -132,3 +135,60 @@ def test_non_finite_spike_times_raise(fitted, method, family, bad_value):
     with pytest.raises(DataError, match=rf"{unit} 1: 2 of 4"):
         _call(detector, method, spike_data)
     _assert_unchanged(detector, snapshot)
+
+
+@pytest.mark.unit
+# max_iter=1 is a speed cap, so EM stops before convergence.
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@pytest.mark.parametrize("method", ["fit", "fit_encoding_model", "estimate_parameters"])
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_spikes_all_outside_position_time_warn_at_fit(fitted, method, family):
+    """Spike times in ms against position_time in s leave every spike outside
+    the encoding period; the encoding model is fit to no spikes."""
+    _, spike_data = _family(family)
+    in_ms = ([times * 1_000 for times in spike_data[0]], *spike_data[1:])
+    detector = fitted[family].copy()
+    with pytest.warns(DataQualityWarning, match="None of the 6 spike times"):
+        _call(detector, method, in_ms)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", DECODE_METHODS)
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_spikes_all_outside_time_edges_warn_at_decode(fitted, method, family):
+    _, spike_data = _family(family)
+    in_ms = ([times * 1_000 for times in spike_data[0]], *spike_data[1:])
+    with pytest.warns(DataQualityWarning, match=r"decode time_edges \[0, 0.08\] s"):
+        _call(fitted[family], method, in_ms)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["fit", "predict"])
+def test_one_silent_neuron_does_not_warn(fitted, method):
+    """Only a recording with no spike in range warns; a neuron whose spikes
+    all lie outside is not a unit mismatch."""
+    spike_times = [SPIKE_TIMES[0], SPIKE_TIMES[1] + 10.0]
+    detector = fitted["sorted"].copy()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", "None of the", DataQualityWarning)
+        _call(detector, method, (spike_times,))
+
+
+@pytest.mark.unit
+def test_quiet_window_between_spikes_does_not_warn(fitted):
+    """A decode window with spikes before and after it but none in it is a
+    quiet period, not a clock mismatch."""
+    spike_times = [np.array([0.001, 0.15]), np.array([0.19])]
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", "None of the", DataQualityWarning)
+        fitted["sorted"].predict(spike_times, time_edges=EDGES[10:20])
+
+
+@pytest.mark.unit
+def test_no_spikes_does_not_warn(fitted):
+    detector = fitted["sorted"].copy()
+    empty = [np.array([]), np.array([])]
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", "None of the", DataQualityWarning)
+        detector.fit(TIME, POSITION, empty)
+        detector.predict(empty, time_edges=EDGES)

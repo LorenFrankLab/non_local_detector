@@ -12,6 +12,7 @@ Methods that read the detector's attributes annotate ``self`` as
 mixin.
 """
 
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,11 +23,16 @@ from numpy.typing import ArrayLike
 
 import non_local_detector
 from non_local_detector import _validation as val
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    DataError,
+    DataQualityWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.common import (
     resolve_row_slice,
     validate_spike_feature_population,
@@ -330,11 +336,18 @@ def _validate_spike_data(
     spike_waveform_features: Sequence[Any] | None = None,
     *,
     clusterless: bool,
+    time_range: tuple[float, float] | None = None,
+    range_name: str = "",
 ) -> None:
     """Check spike data where it enters a public fitting or decoding method.
 
     Checks the structure (``_validate_spike_structure``), then that every
-    spike time is a finite number.
+    spike time is a finite number. With ``time_range``, warns when every
+    spike of every unit lies before it, or every one after it: the spike times
+    are then most likely in other units (ms rather than s) or on another clock
+    than the times they are compared with. A range without spikes between
+    spikes (a quiet window) and a unit whose spikes all lie outside it are not
+    reported.
 
     Parameters
     ----------
@@ -344,6 +357,16 @@ def _validate_spike_data(
         Waveform features of each electrode; None for sorted spikes.
     clusterless : bool
         Whether the spikes are clusterless (electrodes with features).
+    time_range : tuple of float, optional
+        ``(start, stop)`` in seconds the spikes are expected in, by default
+        None (no warning).
+    range_name : str, optional
+        What ``time_range`` is, for the warning, e.g. "decode time_edges".
+
+    Warns
+    -----
+    DataQualityWarning
+        If there are spikes, all before or all after ``time_range``.
 
     Raises
     ------
@@ -381,6 +404,26 @@ def _validate_spike_data(
             "times[np.isfinite(times)], with the matching feature rows) or "
             "fix the spike export that produced them.",
         )
+    if time_range is None:
+        return
+    start, stop = time_range
+    n_spikes = sum(times.size for times in arrays)
+    if n_spikes == 0:
+        return
+    first = min(times.min() for times in arrays if times.size)
+    last = max(times.max() for times in arrays if times.size)
+    # A quiet window between spikes is data, not a clock mismatch.
+    if start <= last and first <= stop:
+        return
+    warnings.warn(
+        f"None of the {n_spikes} spike times lies within the {range_name} "
+        f"[{start:.6g}, {stop:.6g}] s; they span [{first:.6g}, {last:.6g}]. "
+        "The spike times are probably in other units (e.g. ms instead of s) "
+        f"or on another clock than the {range_name}, so no spike is used. "
+        "Convert them to seconds on the same clock.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
 
 
 @dataclass(frozen=True)

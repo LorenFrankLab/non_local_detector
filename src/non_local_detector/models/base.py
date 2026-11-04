@@ -118,6 +118,7 @@ from non_local_detector.models._input_validation import (
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
     _sample_mask,
+    _sample_times,
     _validate_covariate_time_length,
     _validate_inference_arguments,
     _validate_penalty_params,  # noqa: F401 -- imported from base by tests
@@ -1919,10 +1920,43 @@ class _DetectorBase(
                             "and decoding, including when tracking is missing.",
                         )
 
-    def _check_spike_data(self, spike_data: tuple[Any, ...]) -> None:
+    def _check_spike_data(
+        self,
+        spike_data: tuple[Any, ...],
+        *,
+        time_range: tuple[float, float] | None = None,
+        range_name: str = "",
+    ) -> None:
         """Check the spike arrays named by ``_SPIKE_DATA_NAMES`` (see ``_validate_spike_data``)."""
         _validate_spike_data(
-            *spike_data, clusterless=isinstance(self, ClusterlessDetector)
+            *spike_data,
+            clusterless=isinstance(self, ClusterlessDetector),
+            time_range=time_range,
+            range_name=range_name,
+        )
+
+    def _check_encoding_spike_data(
+        self, position_time: ArrayLike, spike_data: tuple[Any, ...]
+    ) -> None:
+        """Check encoding spike data, warning if none lies in the position_time span."""
+        times = _sample_times(position_time)
+        finite = times[np.isfinite(times)]
+        self._check_spike_data(
+            spike_data,
+            time_range=(float(finite.min()), float(finite.max()))
+            if finite.size
+            else None,
+            range_name="position_time span",
+        )
+
+    def _check_decode_spike_data(
+        self, time_edges: np.ndarray, spike_data: tuple[Any, ...]
+    ) -> None:
+        """Check decoding spike data, warning if none lies within ``time_edges``."""
+        self._check_spike_data(
+            spike_data,
+            time_range=(float(time_edges[0]), float(time_edges[-1])),
+            range_name="decode time_edges",
         )
 
     _SPIKE_DATA_NAMES: tuple[str, ...] = ()
@@ -1974,7 +2008,7 @@ class _DetectorBase(
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width(), row_slice=row_slice
         )
-        self._check_spike_data(spike_data)
+        self._check_decode_spike_data(time_edges, spike_data)
         self._validate_decode_position(decode.position)
         context = self._decode_context(
             time_edges,
@@ -2294,7 +2328,7 @@ class _DetectorBase(
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
-        self._check_spike_data(spike_data)
+        self._check_decode_spike_data(time_edges, spike_data)
         self._validate_decode_position(position)
         is_missing = _missing_bins(
             time_edges,
@@ -2478,6 +2512,7 @@ class _DetectorBase(
             environment_labels,
         )
         position_time, position = inputs.position_time, inputs.position
+        # The internal fit warns if no spike lies in the position_time span.
         self._check_spike_data(spike_data)
         position = position[:, np.newaxis] if position.ndim == 1 else position
         # Mirror predict(): bins without tracked position are missing
@@ -2573,7 +2608,7 @@ class _DetectorBase(
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
-        self._check_spike_data(spike_data)
+        self._check_decode_spike_data(time_edges, spike_data)
         self._validate_decode_position(position)
         is_missing = _missing_bins(
             time_edges,
@@ -3336,7 +3371,9 @@ class ClusterlessDetector(_DetectorBase):
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
         """
-        self._check_spike_data((spike_times, spike_waveform_features))
+        self._check_encoding_spike_data(
+            position_time, (spike_times, spike_waveform_features)
+        )
         self._fit_encoding_model(
             position_time,
             position,
@@ -3534,7 +3571,7 @@ class ClusterlessDetector(_DetectorBase):
             encoding_group_labels,
             environment_labels,
         )
-        # Before ``_fit``; fit_encoding_model checks again.
+        # Before ``_fit``; fit_encoding_model checks again and warns.
         self._check_spike_data((spike_times, spike_waveform_features))
         with self._restore_state_on_error():
             self._fit(
@@ -4358,7 +4395,7 @@ class SortedSpikesDetector(_DetectorBase):
             observation model configuration (environment, encoding group).
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
-        self._check_spike_data((spike_times,))
+        self._check_encoding_spike_data(position_time, (spike_times,))
         self._fit_encoding_model(
             position_time,
             position,
@@ -4515,7 +4552,7 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_group_labels,
             environment_labels,
         )
-        # Before ``_fit``; fit_encoding_model checks again.
+        # Before ``_fit``; fit_encoding_model checks again and warns.
         self._check_spike_data((spike_times,))
         with self._restore_state_on_error():
             self._fit(
