@@ -86,16 +86,13 @@ def state_bin_positions(detector: "_DetectorBase") -> list[np.ndarray]:
     ValueError
         If a state's environment has no place bin centers.
     """
-    n_position_dims = detector.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
+    n_position_dims = detector.environments_[0].place_bin_centers_.shape[1]
     positions: list[np.ndarray] = []
     for obs in detector.observation_models:
         if not has_place_bins(detector, obs):
             positions.append(np.full((1, n_position_dims), np.nan))
             continue
         environment = detector._get_environment_by_name(obs.environment_name)
-        if environment.place_bin_centers_ is None:
-            msg = f"place_bin_centers_ is None for environment {obs.environment_name}"
-            raise ValueError(msg)
         positions.append(environment.place_bin_centers_)
     return positions
 
@@ -244,7 +241,7 @@ def convert_results_to_xarray(
     encoding_group_names = [obs.encoding_group for obs in detector.observation_models]
 
     # Get position dimensionality
-    if not detector.environments:
+    if not getattr(detector, "environments_", ()):
         msg = "No environments found in model"
         raise ConfigurationError(
             msg,

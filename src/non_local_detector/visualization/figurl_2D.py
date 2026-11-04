@@ -552,12 +552,9 @@ if sortingview_available():
         -------
         url : str
         """
-        if env.is_track_interior_ is not None:
-            interior_place_bin_centers = env.place_bin_centers_[  # type: ignore[index]  # set by fit
-                env.is_track_interior_.ravel()
-            ]
-        else:
-            interior_place_bin_centers = env.place_bin_centers_
+        interior_place_bin_centers = env.place_bin_centers_[
+            env.is_track_interior_.ravel()
+        ]
         if posterior is None:
             posterior = get_spatial_posterior(results.acausal_posterior).sum("state")
         place_bin_size = (

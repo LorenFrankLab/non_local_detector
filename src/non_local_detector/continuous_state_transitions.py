@@ -231,11 +231,7 @@ def _euclidean_random_walk(
     transition : np.ndarray, shape (n_position_bins, n_position_bins)
 
     """
-    if environment.place_bin_centers_ is not None:
-        place_bin_centers = environment.place_bin_centers_
-    else:
-        msg = "Environment must have defined place bin centers"
-        raise ValueError(msg)
+    place_bin_centers = environment.place_bin_centers_
 
     return np.stack(
         [
@@ -278,7 +274,7 @@ class _EnvironmentBlock:
         """``(n_bins, n_bins)`` of ``environment_name``, without building
         the block."""
         environment = find_environment_by_name(environments, self.environment_name)
-        n_bins = len(cast(np.ndarray, environment.place_bin_centers_))
+        n_bins = len(environment.place_bin_centers_)
         return (n_bins, n_bins)
 
     def graph_distance_environment(
@@ -522,11 +518,7 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
 
     def _handle_with_track_graph(self, environment: Environment) -> np.ndarray:
         """Calculate transition for environments with a defined track graph (typically 1D)."""
-        if environment.place_bin_centers_ is not None:
-            n_position_dims = environment.place_bin_centers_.shape[1]
-        else:
-            msg = "Environment must have defined place bin centers"
-            raise ValueError(msg)
+        n_position_dims = environment.place_bin_centers_.shape[1]
         if n_position_dims != 1:
             msg = "Random walk with track graph is only implemented for 1D environments"
             raise NotImplementedError(msg)
@@ -537,12 +529,6 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
             )
         else:
             msg = "Environment must have defined place_bin_centers_nodes_df_ for track graph"
-            raise ValueError(msg)
-
-        if environment.distance_between_nodes_ is None:
-            msg = (
-                "Environment must have defined distance_between_nodes_ for track graph"
-            )
             raise ValueError(msg)
 
         return _random_walk_on_track_graph(
@@ -600,7 +586,7 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
         if self.environment2_name is None:
             return (n_bins1, n_bins1)
         environment2 = find_environment_by_name(environments, self.environment2_name)
-        return (n_bins1, len(cast(np.ndarray, environment2.place_bin_centers_)))
+        return (n_bins1, len(environment2.place_bin_centers_))
 
     def make_state_transition(
         self,
@@ -622,11 +608,7 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
             Row-normalized uniform transition probability matrix.
         """
         environment1 = find_environment_by_name(environments, self.environment_name)
-        if environment1.place_bin_centers_ is not None:
-            n_bins1 = environment1.place_bin_centers_.shape[0]
-        else:
-            msg = "Environment must have defined place bin centers"
-            raise ValueError(msg)
+        n_bins1 = environment1.place_bin_centers_.shape[0]
 
         is_track_interior1 = environment1.is_track_interior_flat_
 
@@ -637,11 +619,7 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
             environment2 = find_environment_by_name(
                 environments, self.environment2_name
             )
-            if environment2.place_bin_centers_ is not None:
-                n_bins2 = environment2.place_bin_centers_.shape[0]
-            else:
-                msg = "Environment must have defined place bin centers"
-                raise ValueError(msg)
+            n_bins2 = environment2.place_bin_centers_.shape[0]
 
             is_track_interior2 = environment2.is_track_interior_flat_
 
@@ -695,12 +673,7 @@ class Identity(_DropsLegacyEnvironment, _EnvironmentBlock):
             Identity matrix where invalid bins have zero probability.
         """
         environment = find_environment_by_name(environments, self.environment_name)
-        if environment.place_bin_centers_ is not None:
-            n_bins = environment.place_bin_centers_.shape[0]
-        else:
-            msg = "Environment must have defined place bin centers"
-            raise ValueError(msg)
-
+        n_bins = environment.place_bin_centers_.shape[0]
         transition_matrix = np.identity(n_bins)
 
         is_track_interior = environment.is_track_interior_flat_
@@ -803,7 +776,7 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
         # environments whose ranges were inferred from their position data.
         state_transition, _ = np.histogramdd(
             samples,
-            bins=cast(tuple[np.ndarray, ...], environment.edges_) * 2,
+            bins=environment.edges_ * 2,
         )
         original_shape = state_transition.shape
         n_position_dims = position.shape[1]

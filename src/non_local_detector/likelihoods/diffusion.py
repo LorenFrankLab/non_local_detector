@@ -58,7 +58,7 @@ _HEAT_KERNEL_RANK_START = 32
 # Diffused-field values below this fraction of their column's maximum are not
 # resolved: the float32 spectral product and the heat-kernel rank truncation
 # (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
-_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
+FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
 # Keys of this module's entries in the Environment cache (``Environment.get_cached``),
 # all cleared together by ``Environment.fit_place_grid``.
@@ -658,11 +658,11 @@ def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
     return np.where(mass > 0, smoothed / safe / bin_sizes[:, np.newaxis], 0.0)
 
 
-def _resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Array:
+def resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Array:
     """Bins whose diffused occupancy the heat kernel resolves.
 
     Occupancy is itself a diffused field, so in unvisited bins it is numerical
-    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
+    noise below ``FIELD_RESOLUTION`` of its maximum. Those bins carry no
     encoding information: a ratio of a diffused spike field to this noise is
     not a rate, so the likelihoods treat them as zero-occupancy bins. A bin
     with zero occupancy is never resolved, even when no bin has any.
@@ -675,7 +675,7 @@ def _resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.A
     -------
     resolved : array of bool, shape (n_bins,)
     """
-    return (occupancy > 0.0) & (occupancy >= _FIELD_RESOLUTION * occupancy.max())
+    return (occupancy > 0.0) & (occupancy >= FIELD_RESOLUTION * occupancy.max())
 
 
 def environment_graph(
@@ -732,7 +732,7 @@ def environment_graph(
     if cached is not None:
         return cast(tuple[nx.Graph, np.ndarray, np.ndarray], cached)
 
-    if environment.is_track_interior_ is None or environment.place_bin_centers_ is None:
+    if not environment._is_fitted:
         msg = "environment must be fitted before building the diffusion graph"
         raise ValidationError(
             msg,
@@ -1042,7 +1042,7 @@ def _nd_grid_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
     """Adapter branch for N-D / 1D grid environments (``track_graph is None``)."""
-    node_order = np.where(cast(np.ndarray, environment.is_track_interior_).ravel())[0]
+    node_order = np.where(environment.is_track_interior_.ravel())[0]
     track_graph = cast(nx.Graph, environment.track_graphDD)
     subgraph = track_graph.subgraph(node_order)
     positions = nx.get_node_attributes(track_graph, "pos")
@@ -1057,10 +1057,8 @@ def _nd_grid_graph(
             graph.add_edge(relabel[u], relabel[v], distance=data["distance"])
 
     # bin_sizes = product of per-dimension bin widths, over the interior bins.
-    widths = [
-        np.diff(edge) for edge in cast(tuple[np.ndarray, ...], environment.edges_)
-    ]
-    bin_volume = np.ones(cast(tuple[int, ...], environment.centers_shape_))
+    widths = [np.diff(edge) for edge in environment.edges_]
+    bin_volume = np.ones(environment.centers_shape_)
     for axis_width in np.meshgrid(*widths, indexing="ij"):
         bin_volume = bin_volume * axis_width
     bin_sizes = bin_volume.ravel()[node_order]
@@ -1072,7 +1070,7 @@ def _linearized_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
     """Adapter branch for linearized ``track_graph`` environments."""
-    is_interior = cast(np.ndarray, environment.is_track_interior_).ravel()
+    is_interior = environment.is_track_interior_.ravel()
     node_order = np.where(is_interior)[0]
 
     # Substrate node id for each interior place bin (gap bins carry -1 and are
@@ -1089,9 +1087,7 @@ def _linearized_graph(
         for neighbor, distance in _neighbor_centers(substrate, int(start), centers):
             graph.add_edge(local_of[int(start)], local_of[neighbor], distance=distance)
 
-    bin_sizes = np.diff(cast(np.ndarray, environment.place_bin_edges_).ravel())[
-        is_interior
-    ]
+    bin_sizes = np.diff(environment.place_bin_edges_.ravel())[is_interior]
     return graph, node_order, bin_sizes
 
 

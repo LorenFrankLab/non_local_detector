@@ -37,8 +37,8 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
         return values
 
     monkeypatch.setattr(model, "compute_log_likelihood", damaged)
-    # Prediction refreshes the private diagnostic for its own recording, while
-    # the public final-E-step attribute continues to describe training data.
+    # The result describes the predicted recording; the public final-E-step
+    # attribute continues to describe training data.
     model.degenerate_timesteps_ = np.array([98])
     missing = np.zeros(100, bool)
     missing[45] = neutralize_missing
@@ -53,7 +53,6 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
         chunk_size=13,
         selected_intervals=[[0.1, 0.2]],
     )
-    np.testing.assert_array_equal(model._degenerate_timesteps_, expected)
     np.testing.assert_array_equal(model.degenerate_timesteps_, [98])
     np.testing.assert_array_equal(result.source_row, np.arange(5, 10))
     assert result.attrs["n_degenerate"] == len(expected)
@@ -72,10 +71,12 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
 
 
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
-def test_dense_chunked_prediction_records_degenerate_rows_of_every_chunk(
+# max_iter=0 runs only the final E-step, which never converges.
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter=0:UserWarning")
+def test_dense_chunked_estimation_records_degenerate_rows_of_every_chunk(
     checkpoint_recording, monkeypatch, family
 ):
-    """Dense prediction collects all-``-inf`` rows from each of several chunks.
+    """Dense EM's final E-step collects all-``-inf`` rows from every chunk.
 
     With ``n_chunks=3`` the likelihood is evaluated per chunk and not cached,
     so the indices come only from the driver's ``degenerate_indices``.
@@ -99,7 +100,13 @@ def test_dense_chunked_prediction_records_degenerate_rows_of_every_chunk(
 
     requested = []
     monkeypatch.setattr(model, "compute_log_likelihood", damaged)
-    model.predict(**predict, n_chunks=3, cache_likelihood=False)
+    model.estimate_parameters(
+        **predict,
+        transition_representation="dense",
+        n_chunks=3,
+        cache_likelihood=False,
+        max_iter=0,
+    )
     assert requested == [(0, 34), (34, 67), (67, 100)]
-    np.testing.assert_array_equal(model._degenerate_timesteps_, degenerate_rows)
-    assert model._degenerate_timesteps_.dtype.kind == "i"
+    np.testing.assert_array_equal(model.degenerate_timesteps_, degenerate_rows)
+    assert model.degenerate_timesteps_.dtype.kind == "i"

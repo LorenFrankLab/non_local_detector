@@ -279,7 +279,7 @@ detector.fit(position_time, position, spike_times, is_training=is_running)
 # in `detector.encoding_model_`. They follow the simulated fields:
 
 # %%
-environment = detector.environments[0]
+environment = detector.environments_[0]
 bin_centers = environment.place_bin_centers_[environment.is_track_interior_.ravel(), 0]
 fitted_place_fields = next(iter(detector.encoding_model_.values()))["place_fields"]
 

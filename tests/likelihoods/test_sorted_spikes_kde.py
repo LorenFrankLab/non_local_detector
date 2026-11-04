@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.likelihoods.common import EPS, RATE_EPS_HZ, get_position_at_time
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
@@ -166,12 +166,12 @@ def test_nonlocal_with_no_spikes_equals_negative_summed_rates(kde_fit):
     assert jnp.allclose(ll, expected, rtol=1e-5, atol=1e-6)
 
 
-def test_fit_sorted_spikes_kde_raises_without_place_grid():
+def test_fit_sorted_spikes_kde_raises_on_an_unfitted_environment():
     env = Environment(environment_name="nofit")
     t_pos = jnp.linspace(0.0, 10.0, 11)
     pos = jnp.linspace(0.0, 10.0, 11)[:, None]
     spikes = [jnp.array([2.0]), jnp.array([3.0])]
-    with pytest.raises(ValueError, match="place_bin_centers_ is required"):
+    with pytest.raises(NotFittedError, match="fit_place_grid"):
         fit_sorted_spikes_kde_encoding_model(
             position_time=t_pos,
             position=pos,
@@ -196,13 +196,13 @@ def test_nan_marginal_density_warns(simple_1d_environment, monkeypatch):
     spikes = [jnp.array([2.0, 5.0, 5.1])]
     weights = jnp.ones_like(t)
 
-    real_densities = ss_kde._kde_log_densities
+    real_densities = ss_kde.kde_log_densities
 
     def densities_with_nan(models, points):
         first, *rest = real_densities(models, points)
         return [first.at[0].set(jnp.nan), *rest]
 
-    monkeypatch.setattr(ss_kde, "_kde_log_densities", densities_with_nan)
+    monkeypatch.setattr(ss_kde, "kde_log_densities", densities_with_nan)
 
     # Exactly one bin is forced to NaN, so the count in the message is 1.
     with pytest.warns(UserWarning, match=r"NaN at 1 \(neuron, bin\)"):

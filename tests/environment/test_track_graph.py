@@ -295,32 +295,6 @@ def test_get_distances_to_interior_bins_nd_array_path():
     assert distances.min() == 0.0
 
 
-def test_get_distances_to_interior_bins_euclidean_fallback():
-    """Defensive Euclidean fallback runs when no distance matrix is available.
-
-    This path is reached if ``distance_between_nodes_`` was not computed
-    (e.g. a partially-constructed environment). We simulate this by
-    clearing the precomputed matrix after fitting.
-    """
-    env = Environment(place_bin_size=1.0)
-    position_1d = np.linspace(0, 10, 20)[:, np.newaxis]
-    env = env.fit_place_grid(position_1d)
-
-    # Force Euclidean fallback by clearing the precomputed matrix
-    env.distance_between_nodes_ = None
-
-    query = np.array([[5.0]])
-    distances = env.get_distances_to_interior_bins(query)
-
-    n_interior = int(env.is_track_interior_.sum())
-    assert distances.shape == (1, n_interior)
-
-    # Verify values match Euclidean distances to each interior bin center
-    interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
-    expected = np.sqrt(((interior_centers - query[0]) ** 2).sum(axis=-1))
-    np.testing.assert_allclose(distances[0], expected, atol=1e-10)
-
-
 def test_get_distances_to_interior_bins_gap_position_snaps_to_nearest_interior():
     """Gap-position inputs snap to nearest interior bin via get_bin_ind.
 

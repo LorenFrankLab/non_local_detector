@@ -279,7 +279,10 @@ def _pickled_state(detector):
         if name != "log_likelihood_"
     }
     return pickle.dumps(
-        (state, [vars(env) for env in detector.environments]),
+        (
+            state,
+            [vars(env) for env in (*detector.environments, *detector.environments_)],
+        ),
         protocol=pickle.HIGHEST_PROTOCOL,
     )
 

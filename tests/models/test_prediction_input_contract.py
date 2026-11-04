@@ -91,8 +91,7 @@ def test_missing_tracking_cannot_hide_a_dropped_population(
     fitted_local_population, all_missing, path
 ):
     fitted, time, position, args = fitted_local_population
-    # Prediction validation must not mutate fitted state. A shallow copy also
-    # preserves Patsy's intentionally non-pickleable GLM DesignInfo.
+    # Prediction validation must not mutate fitted state.
     detector = copy.copy(fitted)
     position = np.full_like(position, np.nan) if all_missing else position
     dropped_args = tuple([] for _ in args)

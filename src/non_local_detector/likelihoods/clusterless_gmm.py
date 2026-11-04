@@ -31,11 +31,14 @@ from non_local_detector.encoding_time import (
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods.clusterless_spikes import (
+    ElectrodeSpikes,
+    add_background_only,
+    add_electrode_spike_terms,
+)
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
-    _pad_rows,
-    _padded_spike_count,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
@@ -43,7 +46,9 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
     log_nonnegative,
-    resolve_row_slice,
+    pad_rows,
+    padded_spike_count,
+    prepare_decode_rows,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -52,6 +57,7 @@ from non_local_detector.likelihoods.common import (
     sum_spikes_into_rows,
     validate_encoding_contract,
     validate_population_lengths,
+    validate_positive_int,
     validate_spike_feature_pair,
     weighted_mean_rate,
 )
@@ -59,10 +65,10 @@ from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingMod
 from non_local_detector.likelihoods.gmm import (
     CovType,
     GaussianMixtureModel,
-    _as_floating,
-    _compute_precision_cholesky,
-    _effective_sample_count,
-    _estimate_log_prob_resp,
+    as_floating,
+    compute_precision_cholesky,
+    effective_sample_count,
+    estimate_log_prob_resp,
 )
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -71,7 +77,6 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
@@ -97,7 +102,7 @@ def _as_jnp(x: Any) -> jax.Array:
     jax.Array
         JAX array version of input, in a floating dtype for integer input.
     """
-    return _as_floating(x)
+    return as_floating(x)
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jax.Array | np.ndarray) -> jax.Array:
@@ -182,7 +187,7 @@ def _gmm_score(
     means, precisions_chol, weights = parameters
     return cast(
         jax.Array,
-        _estimate_log_prob_resp(
+        estimate_log_prob_resp(
             points, means, precisions_chol, covariance_type, weights
         )[0],
     )
@@ -478,7 +483,7 @@ def _position_marginal(
     marginal.weights_ = joint.weights_
     marginal.means_ = joint.means_[:, :n_position_dims]
     marginal.covariances_ = covariance
-    marginal.precisions_chol_ = _compute_precision_cholesky(
+    marginal.precisions_chol_ = compute_precision_cholesky(
         covariance, joint.covariance_type
     )
     marginal.converged_ = joint.converged_
@@ -511,6 +516,12 @@ def _gmm_sample_weight(
     if weights_was_none or float(np.sum(weights)) == 0.0:
         return None
     return weights
+
+
+def _validate_execution_settings(spike_block_size: Any, bin_tile_size: Any) -> None:
+    """Reject block and tile settings the fit and the prediction cannot use."""
+    validate_positive_int("spike_block_size", spike_block_size)
+    validate_positive_int("bin_tile_size", bin_tile_size, allow_none=True)
 
 
 def mark_reference_scale(
@@ -664,6 +675,7 @@ def fit_clusterless_gmm_encoding_model(
         - rate_units ("Hz")
         - encoding_exposure_seconds (weighted encoding occupancy time, seconds)
     """
+    _validate_execution_settings(spike_block_size, bin_tile_size)
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -698,7 +710,7 @@ def fit_clusterless_gmm_encoding_model(
     # Count the rows the GMM will actually fit on, using the array it fits: its
     # zero-weight cutoff depends on that array's dtype, so counting every
     # positive weight here could reserve more components than there are rows.
-    occupancy_n_samples = _effective_sample_count(pos_for_occ, occupancy_sample_weight)
+    occupancy_n_samples = effective_sample_count(pos_for_occ, occupancy_sample_weight)
     if occupancy_n_samples < 1:
         msg = "clusterless GMM has no position samples to fit the occupancy density"
         raise ValidationError(
@@ -718,9 +730,7 @@ def fit_clusterless_gmm_encoding_model(
             stacklevel=user_stacklevel(),
         )
 
-    interior_place_bin_centers = cast(np.ndarray, environment.place_bin_centers_)[
-        is_track_interior
-    ]
+    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     # Fit occupancy GMM and precompute per-bin terms
     occupancy_model = _fit_gmm_density(
@@ -804,7 +814,7 @@ def fit_clusterless_gmm_encoding_model(
 
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         elect_sample_weight = None if weights_was_none else elect_weights
-        n_joint_spikes = _effective_sample_count(joint_samples, elect_sample_weight)
+        n_joint_spikes = effective_sample_count(joint_samples, elect_sample_weight)
         n_joint_components = min(gmm_components_joint, n_joint_spikes)
         effective_gpi_components.append(n_joint_components)
         effective_joint_components.append(n_joint_components)
@@ -903,7 +913,7 @@ def predict_clusterless_gmm_log_likelihood(
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """
@@ -993,7 +1003,7 @@ def predict_clusterless_gmm_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1009,10 +1019,8 @@ def predict_clusterless_gmm_log_likelihood(
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+    _validate_execution_settings(spike_block_size, bin_tile_size)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1043,7 +1051,7 @@ def predict_clusterless_gmm_log_likelihood(
     # prediction -- for a non-local likelihood that never reads it.
     if is_local:
         local = compute_local_log_likelihood(
-            time_edges=time_edges,
+            time_edges=rows.time_edges,
             position_time=position_time,
             position=position,
             spike_times=spike_times,
@@ -1056,110 +1064,73 @@ def predict_clusterless_gmm_log_likelihood(
             mark_reference=mark_reference,
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
-            _spike_time_order=_spike_time_order,
-            _time_grid=_time_grid,
+            _spike_time_order=rows.spike_time_order,
+            _time_grid=rows.time_grid,
         )
 
         return (
             local
             + log_bin_duration_evidence(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 row_slice,
-                _spike_time_order,
-                _time_grid=_time_grid,
+                rows.spike_time_order,
+                _time_grid=rows.time_grid,
             )[:, None]
         )
 
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = interior_place_bin_centers.shape[0]
 
-    # Start with the expected-counts (ground process) term, broadcast over time
-    log_likelihood = -jnp.asarray(_time_grid.durations(row_start, row_stop))[
-        :, None
-    ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
-
-    # Per-electrode contributions in log-space
-    for electrode, (
-        elect_feats,
-        elect_times,
-        joint_gmm,
-        mean_rate,
-        reference,
-    ) in enumerate(
-        tqdm(
-            zip(
-                spike_waveform_features,
-                spike_times,
-                joint_models,
-                mean_rates,
-                mark_reference,
-                strict=True,
-            ),
-            desc="Position-Bin Likelihood (GMM, log-space)",
-            unit="electrode",
-            disable=disable_progress_bar,
-        )
-    ):
+    def add_electrode(
+        log_likelihood: jax.Array,
+        spikes: ElectrodeSpikes,
+        model: tuple[GaussianMixtureModel | None, Any],
+    ) -> jax.Array:
+        joint_gmm, mean_rate = model
         # A None model marks a zero-rate electrode: it has no effective encoding
         # spikes, so no density was fit and each observed spike is explained by
         # the background alone, uniformly across position bins. This is *not*
         # the same as skipping the electrode: skipping would drop the negative
         # evidence an observed spike carries (e.g. against a state whose
         # encoding de-weighted this electrode).
-        selection = select_spikes_in_rows(
-            elect_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
-        )
-        n_spikes = selection.bin_ind.shape[0]
-        if n_spikes == 0:
-            continue
-        selected_feats = select_decode_marks(elect_feats, selection, electrode)
-        log_background: np.ndarray | jax.Array = background_log_intensity(
-            reference, selected_feats, LOG_RATE_EPS_HZ
-        )
         if joint_gmm is None:
-            log_likelihood = (
-                log_likelihood
-                + sum_spikes_into_rows(log_background, selection)[:, None]
-            )
-            continue
+            return add_background_only(log_likelihood, spikes)
 
         log_mean_rate = log_nonnegative(mean_rate)
+        n_spikes = spikes.n_spikes
 
         if bin_tile_size is None or bin_tile_size >= n_bins:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
             # Each spike is scored at every bin, so pad finely.
-            n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
-            log_likelihood = _add_electrode_gmm_intensities(
-                log_likelihood,
-                jnp.asarray(_pad_rows(selected_feats, n_padded)),
-                jnp.asarray(spike_row_ids(selection, n_padded)),
-                interior_place_bin_centers,
-                _gmm_parameters(joint_gmm),
-                log_mean_rate,
-                log_occupancy,
-                jnp.asarray(_pad_rows(log_background, n_padded)),
-                covariance_type=joint_gmm.covariance_type,
-                block_size=min(spike_block_size, n_padded),
-                indices_are_sorted=selection.indices_are_sorted,
+            n_padded = padded_spike_count(n_spikes, spike_block_size, fine=True)
+            return cast(
+                jax.Array,
+                _add_electrode_gmm_intensities(
+                    log_likelihood,
+                    jnp.asarray(pad_rows(spikes.marks, n_padded)),
+                    jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
+                    interior_place_bin_centers,
+                    _gmm_parameters(joint_gmm),
+                    log_mean_rate,
+                    log_occupancy,
+                    jnp.asarray(pad_rows(spikes.log_background, n_padded)),
+                    covariance_type=joint_gmm.covariance_type,
+                    block_size=min(spike_block_size, n_padded),
+                    indices_are_sorted=spikes.selection.indices_are_sorted,
+                ),
             )
-            continue
 
         # Bin tiling: accumulate per spike block and position tile directly.
         # Memory: O(spike_block_size × tile_size), with no full block×bins array.
         # Select FIRST, then convert: converting the whole array would
         # device-copy every decoding spike in the recording on every chunk call.
-        elect_feats = jnp.asarray(selected_feats)
-        log_background = jnp.asarray(log_background)
+        elect_feats = jnp.asarray(spikes.marks)
+        log_background = jnp.asarray(spikes.log_background)
         for spike_start in range(0, n_spikes, spike_block_size):
             spike_end = min(spike_start + spike_block_size, n_spikes)
             block_feats = elect_feats[spike_start:spike_end]
-            block_seg_ids = selection.bin_ind[spike_start:spike_end]
+            block_seg_ids = spikes.selection.bin_ind[spike_start:spike_end]
             block_size = block_feats.shape[0]
             for bin_start in range(0, n_bins, bin_tile_size):
                 bin_end = min(bin_start + bin_tile_size, n_bins)
@@ -1191,11 +1162,32 @@ def predict_clusterless_gmm_log_likelihood(
                     log_occupancy[bin_start:bin_end],
                     log_background[spike_start:spike_end],
                 )
+        return log_likelihood
+
+    # Start with the expected-counts (ground process) term, broadcast over
+    # time, then add each electrode's spikes in log space.
+    log_likelihood = add_electrode_spike_terms(
+        -jnp.asarray(rows.durations())[:, None]
+        * (summed_ground_process_intensity + background_rate(len(spike_times))),
+        spike_times,
+        spike_waveform_features,
+        mark_reference,
+        list(zip(joint_models, mean_rates, strict=True)),
+        add_electrode,
+        rows=rows,
+        log_background_floor=LOG_RATE_EPS_HZ,
+        desc="Position-Bin Likelihood (GMM, log-space)",
+        disable_progress_bar=disable_progress_bar,
+    )
 
     return (
         log_likelihood
         + log_bin_duration_evidence(
-            spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+            spike_times,
+            rows.time_edges,
+            row_slice,
+            rows.spike_time_order,
+            _time_grid=rows.time_grid,
         )[:, None]
     )
 
@@ -1215,7 +1207,7 @@ def compute_local_log_likelihood(
     row_slice: slice | None = None,
     *,
     mark_reference: list[MarkReference | None],
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Local log-likelihood at the animal's interpolated position.
@@ -1255,7 +1247,7 @@ def compute_local_log_likelihood(
     mark_reference : list of MarkReference or None
         Reference mark density per electrode for the background intensity (see
         ``predict_clusterless_gmm_log_likelihood``).
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1280,12 +1272,8 @@ def compute_local_log_likelihood(
     position = position if position.ndim > 1 else position[:, None]
     working_dtype = _as_jnp(position[:0]).dtype
 
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    n_rows = row_stop - row_start
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    n_rows = rows.stop - rows.start
 
     # Interpolate position at the requested rows' bin times (use bin centers)
 
@@ -1293,7 +1281,7 @@ def compute_local_log_likelihood(
         get_position_at_time(
             position_time,
             position,
-            decode_bin_centers(time_edges, row_start, row_stop),
+            decode_bin_centers(rows.time_edges, rows.start, rows.stop),
             environment,
         ),
         environment,
@@ -1333,10 +1321,10 @@ def compute_local_log_likelihood(
         # observed spike is negative evidence, not "no data".
         selection = select_spikes_in_rows(
             elect_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
+            rows.start,
+            rows.stop,
+            time_edges=rows.time_edges,
+            _spike_time_order=rows.spike_time_order,
         )
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes:
@@ -1354,7 +1342,7 @@ def compute_local_log_likelihood(
         if n_spikes:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
-            n_padded = _padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
+            n_padded = padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
             spike_positions = snap_off_track_positions(
                 get_position_at_time(
                     position_time,
@@ -1366,13 +1354,13 @@ def compute_local_log_likelihood(
             )
             log_likelihood = _add_electrode_gmm_spike_terms(
                 log_likelihood,
-                jnp.asarray(_pad_rows(spike_positions, n_padded), dtype=working_dtype),
-                jnp.asarray(_pad_rows(selected_feats, n_padded)),
+                jnp.asarray(pad_rows(spike_positions, n_padded), dtype=working_dtype),
+                jnp.asarray(pad_rows(selected_feats, n_padded)),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 _gmm_parameters(joint_gmm),
                 _gmm_parameters(occupancy_model),
                 mean_rate,
-                jnp.asarray(_pad_rows(log_background, n_padded), dtype=working_dtype),
+                jnp.asarray(pad_rows(log_background, n_padded), dtype=working_dtype),
                 joint_type=joint_gmm.covariance_type,
                 occupancy_type=occupancy_model.covariance_type,
                 indices_are_sorted=selection.indices_are_sorted,
@@ -1386,8 +1374,8 @@ def compute_local_log_likelihood(
             gpi_type=gpi_gmm.covariance_type,
         )
 
-    log_likelihood = log_likelihood - jnp.asarray(
-        _time_grid.durations(row_start, row_stop)
-    ) * (summed_expected_counts + background_rate(len(spike_times)))
+    log_likelihood = log_likelihood - jnp.asarray(rows.durations()) * (
+        summed_expected_counts + background_rate(len(spike_times))
+    )
 
     return log_likelihood[:, None]

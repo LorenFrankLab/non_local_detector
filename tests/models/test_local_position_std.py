@@ -134,7 +134,7 @@ class TestMultiBinLocalStateIndex:
         n_local_bins = detector.bin_sizes_[0]
         local_interior = detector.is_track_interior_state_bins_[:n_local_bins]
         # Should match the environment's track interior
-        env = detector.environments[0]
+        env = detector.environments_[0]
         expected_interior = env.is_track_interior_.ravel()
         np.testing.assert_array_equal(local_interior, expected_interior)
 
@@ -300,7 +300,7 @@ class TestComputeLocalPositionKernel:
         import jax.numpy as jnp
 
         detector, _position = self._make_fitted_detector(local_position_std=5.0)
-        env = detector.environments[0]
+        env = detector.environments_[0]
 
         n_time = 10
         time = np.linspace(0, 1, n_time)
@@ -327,7 +327,7 @@ class TestComputeLocalPositionKernel:
         import jax.numpy as jnp
 
         detector, _position = self._make_fitted_detector(local_position_std=5.0)
-        env = detector.environments[0]
+        env = detector.environments_[0]
 
         # Animal at position 50
         time = np.array([0.5])
@@ -360,7 +360,7 @@ class TestComputeLocalPositionKernel:
 
         # Wide kernel
         det_wide, _ = self._make_fitted_detector(local_position_std=20.0)
-        env = det_wide.environments[0]
+        env = det_wide.environments_[0]
         log_kernel_wide = det_wide._compute_local_position_kernel(
             jnp.array(time),
             jnp.array(position_time),
@@ -370,7 +370,7 @@ class TestComputeLocalPositionKernel:
 
         # Narrow kernel
         det_narrow, _ = self._make_fitted_detector(local_position_std=2.0)
-        env_n = det_narrow.environments[0]
+        env_n = det_narrow.environments_[0]
         log_kernel_narrow = det_narrow._compute_local_position_kernel(
             jnp.array(time),
             jnp.array(position_time),
@@ -386,7 +386,7 @@ class TestComputeLocalPositionKernel:
         import jax.numpy as jnp
 
         detector, _position = self._make_fitted_detector(local_position_std=5.0)
-        env = detector.environments[0]
+        env = detector.environments_[0]
 
         n_time = 7
         time = np.linspace(0, 1, n_time)
@@ -408,7 +408,7 @@ class TestComputeLocalPositionKernel:
         import jax.numpy as jnp
 
         detector, _position = self._make_fitted_detector(local_position_std=5.0)
-        env = detector.environments[0]
+        env = detector.environments_[0]
 
         # All NaN positions
         time = np.array([0.5])
@@ -457,7 +457,7 @@ class TestComputeLocalPositionKernel:
         env = env.fit_place_grid(position_1d, infer_track_interior=True)
 
         detector = NonLocalSortedSpikesDetector(local_position_std=10.0)
-        detector.environments = (env,)
+        detector.environments_ = (env,)
         detector._initialize_state_index()
 
         # Animal at position 50
@@ -499,7 +499,7 @@ class TestComputeLocalPositionKernel:
         env = make_two_arm_track()
 
         detector = NonLocalSortedSpikesDetector(local_position_std=10.0)
-        detector.environments = (env,)
+        detector.environments_ = (env,)
         detector._initialize_state_index()
 
         # Position exactly on the arm-A-end edge.
@@ -564,7 +564,7 @@ class TestDeltaKernel:
         position = np.linspace(0, 100, 50)[:, np.newaxis]
         detector.initialize_environments(position)
         detector._initialize_state_index()
-        return detector, detector.environments[0]
+        return detector, detector.environments_[0]
 
     def test_kernel_is_one_hot_at_animal_bin(self):
         """At σ=0 the kernel is log(n_bins) at one bin and -inf elsewhere."""
@@ -680,7 +680,7 @@ class TestDeltaKernel:
         env = make_two_arm_track()
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        detector.environments = (env,)
+        detector.environments_ = (env,)
         detector._initialize_state_index()
 
         is_interior = env.is_track_interior_.ravel()
@@ -726,7 +726,7 @@ class TestDeltaKernel:
         env = make_two_arm_track()
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        detector.environments = (env,)
+        detector.environments_ = (env,)
         detector._initialize_state_index()
 
         # Use the exact arm-A-end edge value, as real linearized data can.
@@ -778,7 +778,7 @@ class TestDeltaKernel:
         env = env.fit_place_grid(np.linspace(0, 100, 50), infer_track_interior=True)
 
         detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        detector.environments = (env,)
+        detector.environments_ = (env,)
         detector._initialize_state_index()
 
         time = np.array([0.5])

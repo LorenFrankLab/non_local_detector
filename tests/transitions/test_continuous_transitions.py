@@ -14,7 +14,7 @@ from non_local_detector.continuous_state_transitions import (
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
-from tests.conftest import assert_stochastic_matrix
+from tests.conftest import assert_stochastic_matrix, set_place_grid
 
 pytestmark = pytest.mark.unit
 
@@ -277,8 +277,7 @@ def test_random_walk_inward_no_trackgraphDD_raises(simple_1d_environment):
     # Simulate an environment whose direction-aware path has nothing to
     # operate on: no N-D track graph and no array-valued distance lookup.
     env.track_graph = None
-    env.track_graphDD = None
-    env.distance_between_nodes_ = None
+    set_place_grid(env, track_graphDD=None, distance_between_nodes=None)
 
     rw = RandomWalk(
         environment_name=env.environment_name,

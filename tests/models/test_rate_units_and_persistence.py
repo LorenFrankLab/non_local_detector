@@ -2,8 +2,8 @@
 
 - Every likelihood backend fits rates in Hz, so an empty bin's log likelihood
   is minus the rate times the bin width.
-- Serializable backends keep their units and decode results through
-  ``save_model`` / ``load_model``.
+- Every backend keeps its units and decode results through ``save_model`` /
+  ``load_model``.
 - An encoding entry with missing or unknown units is rejected, before any
   likelihood work, with a hint to refit; ``estimate_parameters`` refits such a
   model from the original recording.
@@ -72,19 +72,11 @@ def test_known_rate_is_calibrated_through_public_fit_and_predict(
 @pytest.mark.filterwarnings(
     r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
 )
-@pytest.mark.parametrize(
-    "algorithm",
-    # The GLMs' patsy spline basis (DesignInfo) cannot be pickled.
-    [
-        name
-        for name in ALGORITHMS
-        if name not in ("sorted_spikes_glm", "clusterless_mark_glm")
-    ],
-)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_serializable_backend_round_trip_preserves_units_and_predictions(
     algorithm, tmp_path
 ):
-    """Every serializable backend keeps exact decode results and units."""
+    """Every backend keeps exact decode results and units."""
     time = np.arange(100) * 0.002
     position = (50 + 8 * np.sin(time * 40))[:, None]
     spikes = [np.array([0.021, 0.067, 0.121, 0.167])]

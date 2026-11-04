@@ -21,7 +21,9 @@ Key functionalities include:
     - `make_spline_design_matrix`: Creates the spline basis using `patsy`
       natural cubic regression splines (`cr`) with the specified knot spacing.
       The fit defines it on the environment (interior bin centers plus the
-      track ends), not on the tracked positions.
+      track ends), not on the tracked positions, and stores it as a
+      `TensorSplineBasis`, which keeps the inputs that define it so that a
+      fitted model can be pickled.
     - `make_track_graph_basis`: On a track graph, cubic splines along each
       branch of the track (a path between leaves or junctions), sharing their
       values at junctions (`TrackGraphBasis`). A spline over linear position
@@ -62,8 +64,8 @@ interpolation.
 
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, field, replace
+from functools import cached_property, partial
 from typing import Any, cast
 
 import jax
@@ -85,29 +87,28 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
-    _blocked_nonlocal_poisson_log_likelihood,
-    _concatenate_row_blocks,
-    _spike_counts_matrix,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
+    blocked_nonlocal_poisson_log_likelihood,
+    concatenate_row_blocks,
     environment_grid_fingerprint,
     get_position_at_time,
-    resolve_row_slice,
+    poisson_row_log_likelihood,
+    prepare_decode_rows,
     snap_off_track_positions,
+    spike_counts_matrix,
     validate_encoding_contract,
     validate_population_lengths,
 )
 from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
-from non_local_detector.likelihoods.no_spike import _poisson_row_log_likelihood
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
 
 
 @jax.jit
-def _glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
+def glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
     """Floored rates at each design row, as the local likelihood computes them.
 
     Parameters
@@ -140,7 +141,7 @@ def _local_glm_log_likelihood(
         jnp.clip(rate, min=RATE_EPS_HZ, max=None)
     )
     expected = jax.lax.optimization_barrier(rate * durations[:, None])  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-    return cast(jax.Array, _poisson_row_log_likelihood(counts, expected))
+    return cast(jax.Array, poisson_row_log_likelihood(counts, expected))
 
 
 def _spline_inner_knots(
@@ -173,27 +174,22 @@ def _spline_inner_knots(
     return varying_dimensions, inner_knots
 
 
-def _narrowest_knot_interval(
-    design_info: "DesignInfo | TrackGraphBasis",
-    basis_positions: np.ndarray | None,
-    place_bin_edges: np.ndarray,
-    knot_spacing: float,
-) -> float:
+def _narrowest_knot_interval(basis: "TensorSplineBasis | TrackGraphBasis") -> float:
     """Narrowest interval between adjacent knots of a spline basis.
 
     The knots are those the basis was built with: along each branch of a
-    ``TrackGraphBasis``, or, for a tensor spline, each dimension's inner knots
-    and its boundary knots at the range of ``basis_positions``. An
-    intercept-only basis returns ``knot_spacing``.
+    ``TrackGraphBasis``, or, for a ``TensorSplineBasis``, each dimension's
+    inner knots and its boundary knots at the range of its ``basis_positions``.
+    An intercept-only basis returns its ``knot_spacing``.
     """
-    if isinstance(design_info, TrackGraphBasis):
-        return float(min(np.diff(knots).min() for knots in design_info.branch_knots))
-    assert basis_positions is not None  # only the track-graph basis has none
+    if isinstance(basis, TrackGraphBasis):
+        return float(min(np.diff(knots).min() for knots in basis.branch_knots))
+    basis_positions = basis.basis_positions
     varying_dimensions, inner_knots = _spline_inner_knots(
-        basis_positions, place_bin_edges, knot_spacing
+        basis_positions, basis.place_bin_edges, basis.knot_spacing
     )
     if not len(varying_dimensions):
-        return float(knot_spacing)
+        return float(basis.knot_spacing)
     return float(
         min(
             np.diff(
@@ -254,6 +250,134 @@ def make_spline_design_matrix(
 
     formula += 'constraints="center")'
     return cast(np.ndarray, dmatrix(formula, data))
+
+
+# A rebuilt spline design must reproduce the fitted one's fingerprint to this
+# relative tolerance, plus this absolute tolerance per basis point: the
+# entries are at most about 1, and the centered columns sum to about 0.
+_SPLINE_REBUILD_RTOL = 1e-10
+_SPLINE_REBUILD_ATOL_PER_POINT = 1e-12
+
+
+def _read_only_copy(array: ArrayLike) -> np.ndarray:
+    """A copy of ``array`` that cannot be written to."""
+    copied = np.array(array)
+    copied.setflags(write=False)
+    return copied
+
+
+@dataclass(frozen=True, eq=False)
+class TensorSplineBasis:
+    """Log-rate tensor-product cubic regression splines over position.
+
+    The basis of a GLM fitted without a track graph, in 1-D or 2-D: the patsy
+    design ``make_spline_design_matrix`` builds from ``basis_positions``,
+    restricted to ``columns``. patsy cannot pickle its design, so this keeps the
+    inputs that define it instead (read-only copies), and rebuilds the design
+    from them on first use after unpickling or copying. The knots and the
+    centering constraint depend only on these inputs, but their arithmetic can
+    change with the NumPy or patsy version, so the rebuilt design must match a
+    fingerprint of the fitted one.
+
+    Attributes
+    ----------
+    basis_positions : np.ndarray, shape (n_basis_points, n_position_dims)
+        Positions that define the spline: the environment's interior bin
+        centers plus each varying dimension's extent along it.
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+        Place-bin edge coordinates (``Environment.place_bin_edges_``).
+    knot_spacing : float
+        Spacing of the spline knots, in coordinate units.
+    columns : np.ndarray, shape (n_used_columns,), optional
+        Indices of the spline columns the fit uses, the intercept (column 0)
+        first; by default None, every column.
+    design_fingerprint : np.ndarray, shape (2, n_spline_columns)
+        Of the design of every column at ``basis_positions``: its column sums
+        weighted by a ramp from 1 to 2 over the basis points, and its column
+        sums of squares. Set on construction.
+    """
+
+    basis_positions: np.ndarray
+    place_bin_edges: np.ndarray
+    knot_spacing: float
+    columns: np.ndarray | None = None
+    design_fingerprint: np.ndarray = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "basis_positions", _read_only_copy(self.basis_positions)
+        )
+        object.__setattr__(
+            self, "place_bin_edges", _read_only_copy(self.place_bin_edges)
+        )
+        if self.columns is not None:
+            object.__setattr__(self, "columns", _read_only_copy(self.columns))
+        design_info, fingerprint = self._build_design()
+        object.__setattr__(self, "design_fingerprint", _read_only_copy(fingerprint))
+        self.__dict__["design_info"] = design_info
+
+    def _build_design(self) -> tuple[DesignInfo, np.ndarray]:
+        """The patsy design of every column, and its fingerprint."""
+        design = make_spline_design_matrix(
+            self.basis_positions, self.place_bin_edges, knot_spacing=self.knot_spacing
+        )
+        values = np.asarray(design, dtype=np.float64)
+        ramp = np.linspace(1.0, 2.0, len(values))
+        fingerprint = np.stack([ramp @ values, np.sum(values**2, axis=0)])
+        return cast(Any, design).design_info, fingerprint
+
+    @cached_property
+    def design_info(self) -> DesignInfo:
+        """The patsy design of every spline column, before ``columns`` selects.
+
+        Built on construction; rebuilt on first use after unpickling or copying.
+
+        Raises
+        ------
+        ValidationError
+            If the rebuilt design does not match ``design_fingerprint``.
+        """
+        design_info, fingerprint = self._build_design()
+        expected = self.design_fingerprint
+        if fingerprint.shape != expected.shape or not np.allclose(
+            fingerprint,
+            expected,
+            rtol=_SPLINE_REBUILD_RTOL,
+            atol=_SPLINE_REBUILD_ATOL_PER_POINT * len(self.basis_positions),
+        ):
+            if fingerprint.shape == expected.shape:
+                largest = np.max(np.abs(fingerprint - expected))
+                difference = f"largest fingerprint difference {largest:.3g}"
+            else:
+                difference = (
+                    f"{fingerprint.shape[1]} columns instead of {expected.shape[1]}"
+                )
+            msg = (
+                "The GLM's spline basis, rebuilt from the saved encoding model, "
+                f"differs from the one it was fitted with ({difference}), "
+                "probably because the NumPy or patsy version changed since the "
+                "model was saved. Refit the model with the installed versions."
+            )
+            raise ValidationError(msg)
+        return design_info
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Pickle without the patsy design, which cannot be pickled."""
+        state = dict(self.__dict__)
+        state.pop("design_info", None)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the inputs as read-only arrays; the design is rebuilt on use."""
+        for name in (
+            "basis_positions",
+            "place_bin_edges",
+            "columns",
+            "design_fingerprint",
+        ):
+            if state.get(name) is not None:
+                state[name] = _read_only_copy(state[name])
+        self.__dict__.update(state)
 
 
 def _track_branches(graph: Any) -> list[list[tuple[Any, Any]]]:
@@ -594,25 +718,9 @@ def make_track_graph_basis(
 _GLM_COLUMN_SUPPORT_TOL = 1e-2
 
 
-@dataclass(frozen=True, eq=False)
-class SelectedColumnsDesign:
-    """A patsy spline design restricted to the columns used by the fit.
-
-    Attributes
-    ----------
-    design_info : patsy.design_info.DesignInfo
-        The full spline design.
-    columns : np.ndarray, shape (n_used_columns,)
-        Indices of the used columns, the intercept (column 0) first.
-    """
-
-    design_info: DesignInfo
-    columns: np.ndarray
-
-
 def _select_supported_columns(
-    design_info: DesignInfo, positions: np.ndarray
-) -> "DesignInfo | SelectedColumnsDesign":
+    basis: TensorSplineBasis, positions: np.ndarray
+) -> TensorSplineBasis:
     """Drop spline columns with almost no support at ``positions``.
 
     The fit passes the interior bin centers, where place fields are reported,
@@ -623,10 +731,17 @@ def _select_supported_columns(
 
     Parameters
     ----------
-    design_info : patsy.design_info.DesignInfo
+    basis : TensorSplineBasis
+        A basis with every column.
     positions : np.ndarray, shape (n_points, n_position_dims)
+
+    Returns
+    -------
+    basis : TensorSplineBasis
+        ``basis`` itself if every column has support, otherwise ``basis``
+        restricted to the supported columns.
     """
-    full = np.asarray(make_spline_predict_matrix(design_info, positions))
+    full = np.asarray(make_spline_predict_matrix(basis, positions))
     support = (
         np.max(np.abs(full[:, 1:]), axis=0) if len(full) else np.ones(full.shape[1] - 1)
     )
@@ -634,8 +749,8 @@ def _select_supported_columns(
         [[0], 1 + np.flatnonzero(support > _GLM_COLUMN_SUPPORT_TOL)]
     )
     if columns.size == full.shape[1]:
-        return design_info
-    return SelectedColumnsDesign(design_info=design_info, columns=columns)
+        return basis
+    return replace(basis, columns=columns)
 
 
 # The fit sums counts and exposure over position cells this fraction of the knot
@@ -717,16 +832,17 @@ def _aggregate_by_position_cell(
 
 
 def make_spline_predict_matrix(
-    design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
+    design_info: "DesignInfo | TrackGraphBasis | TensorSplineBasis",
     position: jax.Array | np.ndarray,
 ) -> jax.Array:
     """Create a prediction matrix for a spline basis.
 
     Parameters
     ----------
-    design_info : patsy.design_info.DesignInfo, TrackGraphBasis or SelectedColumnsDesign
-        Description of the fitted basis, as stored in the encoding model's
-        ``emission_design_info``.
+    design_info : patsy.design_info.DesignInfo, TrackGraphBasis or TensorSplineBasis
+        Description of the basis: the encoding model's ``emission_design_info``
+        (a ``TrackGraphBasis`` or ``TensorSplineBasis``), or the design of a
+        ``make_spline_design_matrix`` result.
     position : jax.Array, shape (n_position_bins, n_position_dims)
         Positions; linear positions, shape ``(n_position_bins, 1)``, for a
         ``TrackGraphBasis``.
@@ -736,8 +852,10 @@ def make_spline_predict_matrix(
     predict_matrix : jax.Array, shape (n_position_bins, n_spline_basis)
         Basis evaluated at ``position``; rows with a NaN position are NaN.
     """
-    if isinstance(design_info, SelectedColumnsDesign):
+    if isinstance(design_info, TensorSplineBasis):
         full = make_spline_predict_matrix(design_info.design_info, position)
+        if design_info.columns is None:
+            return full
         return full[:, jnp.asarray(design_info.columns)]
     if isinstance(design_info, TrackGraphBasis):
         # Choose each position's edge before any float32 conversion: with no
@@ -1161,7 +1279,7 @@ def fit_poisson_regression(
     )[0]
 
 
-def _fit_rate_maps(
+def fit_rate_maps(
     environment: Environment,
     place_bin_edges: np.ndarray,
     interior_place_bin_centers: jax.Array,
@@ -1173,9 +1291,7 @@ def _fit_rate_maps(
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     l2_penalty: float | None = None,
     n_maps: int | None = None,
-) -> tuple[
-    "DesignInfo | TrackGraphBasis | SelectedColumnsDesign", jax.Array, jax.Array
-]:
+) -> tuple["TrackGraphBasis | TensorSplineBasis", jax.Array, jax.Array]:
     """Penalized Poisson GLM rate maps on the environment's spline basis.
 
     Shared by the sorted-spikes GLM (one map per neuron) and the clusterless
@@ -1210,7 +1326,7 @@ def _fit_rate_maps(
 
     Returns
     -------
-    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+    emission_design_info : TrackGraphBasis or TensorSplineBasis
     coefficients : jax.Array, shape (n_maps, n_coefficients)
     interior_rates : jax.Array, shape (n_interior_bins, n_maps)
         Floored rates in Hz at the interior bin centers.
@@ -1224,10 +1340,9 @@ def _fit_rate_maps(
     if environment.track_graph is not None:
         # Splines along the track's branches: one spline over linear position
         # would join segments that are only neighbors in edge_order.
-        emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign = (
+        emission_design_info: TrackGraphBasis | TensorSplineBasis = (
             make_track_graph_basis(environment, knot_spacing=emission_knot_spacing)
         )
-        basis_positions = None
     else:
         basis_positions = np.asarray(interior_place_bin_centers)
         varying_dimensions = np.ptp(basis_positions, axis=0) > 0
@@ -1237,12 +1352,13 @@ def _fit_rate_maps(
                 (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
             )[:, varying_dimensions]
             basis_positions = np.vstack((basis_positions, boundary_positions))
-        emission_design_info = cast(
-            Any,
-            make_spline_design_matrix(
-                basis_positions, place_bin_edges, knot_spacing=emission_knot_spacing
-            ),
-        ).design_info
+        # The basis keeps read-only copies, so it stays the fitted one if the
+        # caller later changes the environment's arrays.
+        emission_design_info = TensorSplineBasis(
+            basis_positions=basis_positions,
+            place_bin_edges=place_bin_edges,
+            knot_spacing=emission_knot_spacing,
+        )
 
     if n_maps is None:
         n_maps = cast(np.ndarray, event_counts).shape[0]
@@ -1255,12 +1371,7 @@ def _fit_rate_maps(
         # together than the requested spacing (an environment narrower than it).
         cell_size = _GLM_FIT_CELL_FRACTION * min(
             emission_knot_spacing,
-            _narrowest_knot_interval(
-                emission_design_info,
-                basis_positions,
-                place_bin_edges,
-                emission_knot_spacing,
-            ),
+            _narrowest_knot_interval(emission_design_info),
         )
         if isinstance(emission_design_info, TrackGraphBasis):
             linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
@@ -1321,7 +1432,7 @@ def _fit_rate_maps(
         l2_penalty=l2_penalty,
         rate_floor=RATE_EPS_HZ,
     )
-    interior_rates = _glm_rates(
+    interior_rates = glm_rates(
         jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
     )  # (n_interior_bins, n_maps)
     return emission_design_info, coefficients, interior_rates
@@ -1335,7 +1446,7 @@ class SortedSpikesGLMEncodingModel(SortedSpikesEncodingModel):
     """
 
     coefficients: jax.Array
-    emission_design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign"
+    emission_design_info: "TrackGraphBasis | TensorSplineBasis"
     no_spike_part_log_likelihood: jax.Array
     is_track_interior: np.ndarray
 
@@ -1424,7 +1535,7 @@ def fit_sorted_spikes_glm_encoding_model(
             ``"sorted_spikes_glm"``.
         coefficients : jax.Array, shape (n_neurons, n_coefficients)
             Fitted coefficients for each neuron.
-        emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+        emission_design_info : TrackGraphBasis or TensorSplineBasis
             The spline basis, or on a track graph the basis along the track.
         place_fields : jax.Array, shape (n_neurons, n_bins)
             Spatial firing rates in Hz for each neuron.
@@ -1455,7 +1566,7 @@ def fit_sorted_spikes_glm_encoding_model(
 
     is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
-        cast(np.ndarray, environment.place_bin_centers_)[is_track_interior]
+        environment.place_bin_centers_[is_track_interior]
     )
 
     # The spline is defined on the track's 1-D bin edges, as the KDE fits and
@@ -1474,9 +1585,9 @@ def fit_sorted_spikes_glm_encoding_model(
     else:
         event_counts = np.zeros((len(spike_times), 0))
         exposure = np.zeros(0)
-    emission_design_info, coefficients, interior_rates = _fit_rate_maps(
+    emission_design_info, coefficients, interior_rates = fit_rate_maps(
         environment,
-        cast(np.ndarray, environment.place_bin_edges_),
+        environment.place_bin_edges_,
         interior_place_bin_centers,
         encoding_positions,
         event_counts,
@@ -1515,7 +1626,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     *,
     environment: Environment,
     coefficients: jax.Array,
-    emission_design_info: "DesignInfo | TrackGraphBasis | SelectedColumnsDesign",
+    emission_design_info: "TrackGraphBasis | TensorSplineBasis",
     place_fields: jax.Array,
     no_spike_part_log_likelihood: jax.Array,
     is_track_interior: jax.Array,
@@ -1527,7 +1638,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
@@ -1548,9 +1659,9 @@ def predict_sorted_spikes_glm_log_likelihood(
         The spatial environment object containing track geometry information.
     coefficients : jax.Array, shape (n_neurons, n_coefficients)
         Fitted GLM coefficients for each neuron.
-    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
-        The encoding fit's basis (a patsy DesignInfo, or a ``TrackGraphBasis``
-        on a track graph), needed for prediction.
+    emission_design_info : TrackGraphBasis or TensorSplineBasis
+        The encoding fit's basis (a ``TensorSplineBasis``, or a
+        ``TrackGraphBasis`` on a track graph), needed for prediction.
     place_fields : jax.Array, shape (n_neurons, n_position_bins)
         Expected firing rate in Hz for each neuron in each position bin, derived
         from the fitted GLM (`exp(predict_matrix @ coefficients)`).
@@ -1590,7 +1701,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1606,19 +1717,15 @@ def predict_sorted_spikes_glm_log_likelihood(
         unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
         coefficients=coefficients,
         place_fields=place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
-    row_time = decode_bin_centers(time_edges, row_start, row_stop)
+    durations = jnp.asarray(rows.durations())
+    row_time = decode_bin_centers(rows.time_edges, rows.start, rows.stop)
 
     if is_local:
         # Need to interpolate position
@@ -1637,41 +1744,41 @@ def predict_sorted_spikes_glm_log_likelihood(
         coefficients = jnp.asarray(coefficients)
 
         def evaluate(start: int, stop: int) -> jax.Array:
-            rows = slice(start - row_start, stop - row_start)
-            counts = _spike_counts_matrix(
+            block = slice(start - rows.start, stop - rows.start)
+            counts = spike_counts_matrix(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 "Local Likelihood",
                 True,
                 slice(start, stop),
-                _spike_time_order=_spike_time_order,
+                _spike_time_order=rows.spike_time_order,
             )
             return cast(
                 jax.Array,
                 _local_glm_log_likelihood(
-                    design[rows], coefficients, jnp.asarray(counts), durations[rows]
+                    design[block], coefficients, jnp.asarray(counts), durations[block]
                 ),
             )
 
-        log_likelihood = _concatenate_row_blocks(
-            row_start,
-            row_stop,
+        log_likelihood = concatenate_row_blocks(
+            rows.start,
+            rows.stop,
             len(spike_times),
             evaluate,
             "Local Likelihood",
             disable_progress_bar,
         )[:, None]
     else:
-        log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
+        log_likelihood = blocked_nonlocal_poisson_log_likelihood(
             spike_times,
-            time_edges,
-            row_start,
-            row_stop,
+            rows.time_edges,
+            rows.start,
+            rows.stop,
             jnp.asarray(place_fields)[:, is_track_interior],
             durations,
             no_spike_part_log_likelihood[is_track_interior],
             disable_progress_bar=disable_progress_bar,
-            _spike_time_order=_spike_time_order,
+            _spike_time_order=rows.spike_time_order,
         )
 
     return log_likelihood

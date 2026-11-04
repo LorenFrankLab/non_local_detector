@@ -92,7 +92,7 @@ def make_single_environment_movie(
     )
 
     # Prepare data
-    is_track_interior = classifier.environments[0].is_track_interior_
+    is_track_interior = classifier.environments_[0].is_track_interior_
     posterior = _spatial_posterior_for_movie(results, time_slice, is_track_interior)
     # NaN (no dot) for frames with no mass on a position bin.
     map_position = maximum_a_posteriori_estimate(posterior)

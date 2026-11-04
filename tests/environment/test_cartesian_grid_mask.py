@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
 
 pytestmark = pytest.mark.unit
@@ -39,8 +39,12 @@ def test_supplied_mask_controls_grid_without_aliasing(
     assert isinstance(distances, (np.ndarray, LazyGraphDistances))
     assert distances[0, 2] == 2.0
     assert np.isinf(distances[0, 4])
+    fitted_mask = env.is_track_interior_
     mask[:] = False
-    np.testing.assert_array_equal(env.is_track_interior_, expected)
+    # The fit holds its own copy, and the edited configuration is detected.
+    np.testing.assert_array_equal(fitted_mask, expected)
+    with pytest.raises(NotFittedError, match="is_track_interior"):
+        _ = env.is_track_interior_
 
 
 def test_refit_copies_the_current_supplied_mask():

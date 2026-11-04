@@ -71,7 +71,7 @@ class UniformInitialConditions:
             environments, observation_model.environment_name
         )
         name = environment.environment_name
-        if environment.is_track_interior_ is None:
+        if not environment._is_fitted:
             msg = f"Environment {name!r} is not fitted, so it has no place bins"
             raise ValidationError(
                 msg,

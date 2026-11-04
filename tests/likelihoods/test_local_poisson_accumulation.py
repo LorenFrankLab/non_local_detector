@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     KDEModel,
+    poisson,
 )
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import spike_counts_by_edge_comparison, tolerance
@@ -129,14 +130,14 @@ def record_rows(monkeypatch, module, name, argument=0):
 
 
 def small_count_blocks(monkeypatch, n_neurons, block_rows=64):
-    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", block_rows * n_neurons * 8)
-    assert common._count_block_rows(n_neurons) == block_rows
+    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", block_rows * n_neurons * 8)
+    assert poisson._count_block_rows(n_neurons) == block_rows
 
 
 def test_large_no_spike_request_keeps_bounded_neuron_workspace(monkeypatch):
     events = spikes(3)
     small_count_blocks(monkeypatch, len(events))
-    rows = record_rows(monkeypatch, no_spike, "_poisson_row_log_likelihood")
+    rows = record_rows(monkeypatch, no_spike, "poisson_row_log_likelihood")
     edges = np.arange(3001) * 0.002
     result = no_spike.predict_no_spike_log_likelihood(events, time_edges=edges)
     expected = no_spike_reference(events, edges, 1e-10, slice(None))
@@ -256,7 +257,7 @@ def test_traced_block_kde_matches_block_kde(n_points, x64):
         weights = jnp.asarray(rng.uniform(0.1, 1, 9))
         std = jnp.asarray([0.7, 1.3])
         # Block size 7: up to 56 points are unrolled, 300 points use the loop.
-        actual = jax.jit(common._traced_block_kde, static_argnums=3)(
+        actual = jax.jit(common.traced_block_kde, static_argnums=3)(
             points, samples, std, 7, weights
         )
         expected = common.block_kde(points, samples, std, 7, weights)

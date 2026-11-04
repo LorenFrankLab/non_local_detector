@@ -11,7 +11,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
 )
-from non_local_detector.likelihoods.common import _padded_spike_count
+from non_local_detector.likelihoods.common import padded_spike_count
 from tests.likelihoods.conftest import (
     FLOAT32_ROUNDING,
     realistic_log_background,
@@ -141,7 +141,7 @@ def test_oversized_mark_blocks_do_not_allocate_requested_padding(
     chunks need at most 4.2 MB.
     """
     n_position_bins = 33_124
-    n_padded = _padded_spike_count(n_decoding, 10_000)
+    n_padded = padded_spike_count(n_decoding, 10_000)
     assert n_padded <= 2 * max(n_decoding, 16)
 
     def bounded_core(features, *args, log_background, **kwargs):

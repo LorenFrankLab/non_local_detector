@@ -355,12 +355,12 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
 
     def spy_predict(*args, **kwargs):
         result = original_predict(*args, **kwargs)
-        recorded["probabilities"].append(np.asarray(result[1]))
+        recorded["probabilities"].append(np.asarray(result.acausal_state_probabilities))
         return result
 
-    def spy_refit_encoding(weights):
+    def spy_refit_encoding(weights, encoding_fit_arguments):
         recorded["weights"].append(np.asarray(weights))
-        return original_refit_encoding(weights)
+        return original_refit_encoding(weights, encoding_fit_arguments)
 
     monkeypatch.setattr(detector, "_predict", spy_predict)
     monkeypatch.setattr(detector, "_refit_encoding_model", spy_refit_encoding)
@@ -531,9 +531,9 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
     weights = []
     original = detector._refit_encoding_model
 
-    def spy(local_weights):
+    def spy(local_weights, encoding_fit_arguments):
         weights.append(np.asarray(local_weights))
-        return original(local_weights)
+        return original(local_weights, encoding_fit_arguments)
 
     monkeypatch.setattr(detector, "_refit_encoding_model", spy)
     detector.estimate_parameters(
@@ -753,7 +753,7 @@ def test_row_aware_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
     times' precision: float32 edges with float64 spikes just below an edge."""
     from non_local_detector.core import accepts_row_slice, row_slice_aware
     from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
-    from non_local_detector.models.base import _prepare_likelihood_callback
+    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = np.array([0.0, 1.0, 2.0], dtype=edge_dtype)
     spikes = np.array([0.99999999, 1.0])
@@ -764,7 +764,7 @@ def test_row_aware_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
             spike_times, time_edges=time_edges, row_slice=row_slice
         )[:, None]
 
-    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=False)
+    callback = _custom_likelihood_callback(likelihood, edges)
     # The adapter takes the chunk's global row range from core, like a marked
     # callback, so it never has to recover it from the row coordinates.
     assert accepts_row_slice(callback)

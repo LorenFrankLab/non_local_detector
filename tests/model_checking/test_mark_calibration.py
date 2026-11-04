@@ -119,7 +119,7 @@ def test_mixture_responsibilities_condition_on_prior_features_and_order():
 def test_gmm_wrapper_snapshots_fitted_parameters_and_batches(covariance_type):
     from non_local_detector.likelihoods.gmm import (
         GaussianMixtureModel,
-        _compute_precision_cholesky,
+        compute_precision_cholesky,
     )
     from non_local_detector.model_checking.clusterless import (
         GaussianMixtureConditionalCDF,
@@ -135,7 +135,7 @@ def test_gmm_wrapper_snapshots_fitted_parameters_and_batches(covariance_type):
         "spherical": np.array([1.0, 2.0]),
     }[covariance_type]
     model.covariances_ = covariance
-    model.precisions_chol_ = _compute_precision_cholesky(covariance, covariance_type)
+    model.precisions_chol_ = compute_precision_cholesky(covariance, covariance_type)
     fitted = GaussianMixtureConditionalCDF.from_gmm(model, batch_size=2)
     marks = np.random.default_rng(11).normal(size=(17, 2))
     expected = GaussianMixtureConditionalCDF.from_gmm(model, batch_size=17).transform(

@@ -4,6 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import non_local_detector.likelihoods.clusterless_kde as clusterless_kde_module
+import non_local_detector.likelihoods.common.kernel_density as kde_module
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     common,
@@ -12,6 +14,7 @@ from non_local_detector.likelihoods import (
     predict_clusterless_kde_log_likelihood,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.common import spike_rows
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.time_edges import _DecodeTimeGrid
 
@@ -26,7 +29,7 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
     environment = Environment(place_bin_size=1.0).fit_place_grid(position)
     model = common.KDEModel(std=1.0).fit(jnp.asarray(position))
     grid = _DecodeTimeGrid(np.arange(5.0))
-    order = common._SpikeTimeOrder()
+    order = common.SpikeTimeOrder()
     interpolations, densities = [], []
     original_position = common.get_position_at_time
     original_density = common.kde_log_density
@@ -39,11 +42,11 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
         densities.append(1)
         return original_density(*args, **kwargs)
 
-    monkeypatch.setattr(common, "get_position_at_time", interpolate)
-    monkeypatch.setattr(common, "kde_log_density", density)
+    monkeypatch.setattr(kde_module, "get_position_at_time", interpolate)
+    monkeypatch.setattr(kde_module, "kde_log_density", density)
 
     def prepare(active_order=order, start=0, stop=4):
-        return common._prepare_kde_local_inputs(
+        return common.prepare_kde_local_inputs(
             model, time, position, environment, grid, start, stop, active_order
         )
 
@@ -58,14 +61,14 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
     assert len(densities) == 2
     assert not np.allclose(updated_density, first_density)
     prepare(start=1, stop=4)
-    prepare(common._SpikeTimeOrder())
+    prepare(common.SpikeTimeOrder())
     assert len(interpolations) == 3
     assert len(densities) == 4
 
 
 def test_prediction_density_preparation_respects_its_byte_budget(monkeypatch):
-    monkeypatch.setattr(common, "_KDE_PREPARATION_BYTES", 64)
-    order = common._SpikeTimeOrder()
+    monkeypatch.setattr(spike_rows, "_KDE_PREPARATION_BYTES", 64)
+    order = common.SpikeTimeOrder()
     sources = [object() for _ in range(20)]
     for source in sources:
         order.memo_kde("density", (source,), lambda: jnp.zeros(8, jnp.float32))
@@ -74,13 +77,13 @@ def test_prediction_density_preparation_respects_its_byte_budget(monkeypatch):
 
 
 def test_replaced_fitted_leaves_are_included_in_the_preparation_budget(monkeypatch):
-    monkeypatch.setattr(common, "_KDE_PREPARATION_BYTES", 128)
+    monkeypatch.setattr(spike_rows, "_KDE_PREPARATION_BYTES", 128)
     model = common.KDEModel(std=1.0).fit(jnp.zeros((12, 1)))
     points = jnp.zeros((1, 1))
-    order = common._SpikeTimeOrder()
+    order = common.SpikeTimeOrder()
     for number in range(5):
         model.weights_ = jnp.full(12, number + 1.0)
-        common._prepared_kde_log_density(model, points, order)
+        common.prepared_kde_log_density(model, points, order)
         assert len(order._kde_prepared) <= 1
         assert order._kde_prepared_bytes <= 128
         retained_sources = sum(
@@ -140,7 +143,7 @@ def test_public_local_kde_paths_share_prediction_geometry(
     if clusterless:
         model["mark_reference"] = fit_mark_references(args[3], kernel_scale=1.0)
     grid = _DecodeTimeGrid(np.arange(5.0))
-    order = common._SpikeTimeOrder()
+    order = common.SpikeTimeOrder()
     interpolations = []
     original = common.get_position_at_time
 
@@ -148,7 +151,7 @@ def test_public_local_kde_paths_share_prediction_geometry(
         interpolations.append(1)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(common, "get_position_at_time", interpolate)
+    monkeypatch.setattr(kde_module, "get_position_at_time", interpolate)
     decode_args = [time, position, [np.empty(0)]]
     if clusterless:
         decode_args.append([np.empty((0, 1))])
@@ -163,6 +166,66 @@ def test_public_local_kde_paths_share_prediction_geometry(
     second = predict(*decode_args, **kwargs)
     np.testing.assert_array_equal(first, second)
     assert len(interpolations) == 1
-    kwargs["_spike_time_order"] = common._SpikeTimeOrder()
+    kwargs["_spike_time_order"] = common.SpikeTimeOrder()
     predict(*decode_args, **kwargs)
     assert len(interpolations) == 2
+
+
+@pytest.mark.parametrize("is_local", [True, False])
+def test_clusterless_prediction_evaluates_fitted_densities_in_its_block_size(
+    is_local, monkeypatch
+):
+    """A block size given at predict also blocks the fitted occupancy and
+    ground-process densities, without changing the stored models."""
+    rng = np.random.default_rng(0)
+    time = np.arange(0.0, 20.0, 0.01)
+    position = (10.0 + 9.0 * np.sin(time))[:, None]
+    environment = Environment(place_bin_size=1.0).fit_place_grid(position)
+    spike_times = [np.sort(rng.uniform(0.0, 20.0, 200))]
+    marks = [rng.normal(size=(200, 2))]
+    model = fit_clusterless_kde_encoding_model(
+        time,
+        position,
+        spike_times,
+        marks,
+        environment=environment,
+        position_std=1.0,
+        waveform_std=1.0,
+        block_size=10_000,
+        disable_progress_bar=True,
+    )
+    model["mark_reference"] = fit_mark_references(marks, kernel_scale=1.0)
+    if not is_local:
+        model["log_occupancy"] = None  # computed from the occupancy model
+    blocks = []
+    original = kde_module.kde_log_density
+
+    def record(density_model, points):
+        blocks.append(density_model.block_size)
+        return original(density_model, points)
+
+    monkeypatch.setattr(kde_module, "kde_log_density", record)
+    monkeypatch.setattr(clusterless_kde_module, "kde_log_density", record)
+    edges = np.arange(0.0, 20.0 + 1e-9, 0.02)
+
+    def predict(**settings):
+        return np.asarray(
+            predict_clusterless_kde_log_likelihood(
+                time,
+                position,
+                spike_times,
+                marks,
+                time_edges=edges,
+                is_local=is_local,
+                **{**model, **settings},
+            )
+        )
+
+    fitted = predict()
+    assert set(blocks) == {10_000}
+    blocks.clear()
+    blocked = predict(block_size=7)
+    assert set(blocks) == {7}
+    assert model["occupancy_model"].block_size == 10_000
+    assert {gpi.block_size for gpi in model["gpi_models"]} == {10_000}
+    np.testing.assert_allclose(blocked, fitted, rtol=1e-5, atol=1e-4)

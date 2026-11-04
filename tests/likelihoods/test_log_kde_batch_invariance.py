@@ -14,10 +14,12 @@ from scipy.special import logsumexp
 
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
-    _compute_log_mark_kernel_gemm,
     _repair_flagged_in_groups,
     estimate_log_joint_mark_intensity,
     log_kde_distance,
+)
+from non_local_detector.likelihoods.common import (
+    compute_log_mark_kernel_gemm,
 )
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import realistic_log_background
@@ -327,8 +329,8 @@ def test_mark_kernel_preserves_distances_after_large_translation():
     decoded = jnp.asarray([[1.0]])
     encoded = jnp.asarray([[0.0]])
     std = jnp.asarray([1.0])
-    ordinary = _compute_log_mark_kernel_gemm(decoded, encoded, std)
-    translated = _compute_log_mark_kernel_gemm(decoded + 10000, encoded + 10000, std)
+    ordinary = compute_log_mark_kernel_gemm(decoded, encoded, std)
+    translated = compute_log_mark_kernel_gemm(decoded + 10000, encoded + 10000, std)
     np.testing.assert_allclose(translated, ordinary, atol=1e-6, rtol=1e-6)
 
 
@@ -379,7 +381,7 @@ def test_zero_weight_prefix_tiles_do_not_poison_feature_gradients():
 
 @pytest.mark.unit
 def test_broadcast_bandwidth_normalizes_every_mark_dimension():
-    kernel = _compute_log_mark_kernel_gemm(
+    kernel = compute_log_mark_kernel_gemm(
         jnp.zeros((1, 2)), jnp.zeros((1, 2)), jnp.asarray([2.0])
     )
     expected = -2 * np.log(2 * np.sqrt(2 * np.pi))

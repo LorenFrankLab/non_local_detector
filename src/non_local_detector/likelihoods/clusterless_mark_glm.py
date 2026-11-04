@@ -31,8 +31,6 @@ Limitations:
   position-specific mark differences are attenuated.
 - Weights count as spikes in the mark mixture's prior: a fit whose weights sum
   to few spikes (a rarely occupied state in EM) supports fewer components.
-- Off a track graph the rate maps use a patsy spline basis, which cannot be
-  pickled, as for ``sorted_spikes_glm``.
 """
 
 from __future__ import annotations
@@ -41,16 +39,14 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, TypeAlias, cast
+from typing import Any, NamedTuple, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from patsy.design_info import DesignInfo
 from scipy.special import logsumexp
 from sklearn.mixture import BayesianGaussianMixture  # type: ignore[import-untyped]
-from tqdm.autonotebook import tqdm
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
@@ -61,47 +57,48 @@ from non_local_detector.encoding_time import (
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
+from non_local_detector.likelihoods.clusterless_spikes import (
+    ElectrodeSpikes,
+    add_background_only,
+    add_electrode_spike_terms,
+)
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
-    _pad_rows,
-    _padded_spike_count,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
     get_position_at_time,
     log_bin_duration_evidence,
-    resolve_row_slice,
-    select_decode_marks,
+    pad_rows,
+    padded_spike_count,
+    prepare_decode_rows,
     select_spike_rows,
-    select_spikes_in_rows,
     snap_off_track_positions,
     spike_row_ids,
-    sum_spikes_into_rows,
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
+    validate_positive_int,
     validate_spike_feature_pair,
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
-from non_local_detector.likelihoods.gmm import _estimate_log_gaussian_prob
+from non_local_detector.likelihoods.gmm import estimate_log_gaussian_prob
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
-    background_log_intensity,
     background_rate,
 )
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     GLM_LOG_RATE_PRIOR_STD,
-    SelectedColumnsDesign,
+    TensorSplineBasis,
     TrackGraphBasis,
-    _fit_rate_maps,
-    _glm_rates,
+    fit_rate_maps,
+    glm_rates,
     make_spline_predict_matrix,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
@@ -413,7 +410,7 @@ class ClusterlessMarkGLMEncodingModel(ClusterlessEncodingModel):
     ``predict_clusterless_mark_glm_log_likelihood``, documented there.
     """
 
-    emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign
+    emission_design_info: TrackGraphBasis | TensorSplineBasis
     mark_mixtures: list[MarkMixture | None]
     rate_coefficients: list[np.ndarray | jax.Array | None]
     log_rate_maps: list[np.ndarray | None]
@@ -511,7 +508,7 @@ def fit_clusterless_mark_glm_encoding_model(
         Keys ``algorithm`` (``"clusterless_mark_glm"``), ``environment`` and
         ``environment_grid``, and:
 
-        emission_design_info : TrackGraphBasis, SelectedColumnsDesign or DesignInfo
+        emission_design_info : TrackGraphBasis or TensorSplineBasis
             The rate maps' spline basis.
         mark_mixtures : list of MarkMixture or None
             Per electrode; None for a zero-rate electrode (no positive-weight
@@ -532,6 +529,7 @@ def fit_clusterless_mark_glm_encoding_model(
         encoding_exposure_seconds : float
             Weighted encoding occupancy time in seconds.
     """
+    validate_positive_int("spike_block_size", spike_block_size)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -552,7 +550,7 @@ def fit_clusterless_mark_glm_encoding_model(
 
     is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
-        cast(np.ndarray, environment.place_bin_centers_)[is_track_interior]
+        environment.place_bin_centers_[is_track_interior]
     )
     encoding_positions = environment.decoding_position(position[support.indices])
 
@@ -620,9 +618,9 @@ def fit_clusterless_mark_glm_encoding_model(
             )
         )
 
-    emission_design_info, coefficients, interior_rates = _fit_rate_maps(
+    emission_design_info, coefficients, interior_rates = fit_rate_maps(
         environment,
-        cast(np.ndarray, environment.place_bin_edges_),
+        environment.place_bin_edges_,
         interior_place_bin_centers,
         encoding_positions,
         _soft_cell_counts(spike_events),
@@ -730,6 +728,17 @@ def _component_padding(mark_mixtures: list[MarkMixture | None]) -> int:
     return 1 << (largest - 1).bit_length()
 
 
+class _PaddedElectrode(NamedTuple):
+    """One fitted electrode's mixture and rate terms, padded for shared kernels."""
+
+    means: jax.Array
+    precisions_cholesky: jax.Array
+    is_component: jax.Array
+    coefficients: jax.Array
+    log_rates: np.ndarray | None
+    n_components: int
+
+
 def _padded_mixture(
     mixture: MarkMixture, n_components: int
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
@@ -778,7 +787,7 @@ def _masked_log_density(
     under every component, as for a finite mark whose squared distance
     overflows.
     """
-    log_density = _estimate_log_gaussian_prob(
+    log_density = estimate_log_gaussian_prob(
         features, means, precisions_cholesky, "full"
     )
     return cast(
@@ -925,7 +934,7 @@ def _device_marks(marks: np.ndarray, n_rows: int) -> jax.Array:
     so the cast need not warn.
     """
     with np.errstate(over="ignore"):
-        return jnp.asarray(_pad_rows(marks, n_rows))
+        return jnp.asarray(pad_rows(marks, n_rows))
 
 
 @requires_time_edges
@@ -936,7 +945,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     spike_waveform_features: list[np.ndarray],
     *,
     environment: Environment,
-    emission_design_info: DesignInfo | TrackGraphBasis | SelectedColumnsDesign,
+    emission_design_info: TrackGraphBasis | TensorSplineBasis,
     mark_mixtures: list[MarkMixture | None],
     rate_coefficients: list[np.ndarray | None],
     log_rate_maps: list[np.ndarray | None],
@@ -953,7 +962,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the (non-local or local) log likelihood of the mark-mixture GLM.
@@ -970,7 +979,7 @@ def predict_clusterless_mark_glm_log_likelihood(
         Decoding spike marks per electrode.
     environment : Environment
         The environment the model was fit on.
-    emission_design_info : DesignInfo, TrackGraphBasis or SelectedColumnsDesign
+    emission_design_info : TrackGraphBasis or TensorSplineBasis
         The rate maps' spline basis, from the fit.
     mark_mixtures : list of MarkMixture or None
         Per electrode, from the fit; None for a zero-rate electrode.
@@ -1009,7 +1018,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     environment_grid : dict | None, optional
         The fit's record of the environment's grid; prediction raises if the
         environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder, optional
+    _spike_time_order : SpikeTimeOrder, optional
         Internal ordering preparation shared across a detector's states and
         chunks; direct callers omit it.
     _time_grid : _DecodeTimeGrid, optional
@@ -1022,10 +1031,8 @@ def predict_clusterless_mark_glm_log_likelihood(
         ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+    validate_positive_int("spike_block_size", spike_block_size)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1048,9 +1055,8 @@ def predict_clusterless_mark_glm_log_likelihood(
                 hint="Use the same waveform feature representation at fit and predict.",
             )
 
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    n_rows = row_stop - row_start
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
+    n_rows = rows.stop - rows.start
+    durations = jnp.asarray(rows.durations())
     if is_local:
         position_time = np.asarray(position_time)
         position = np.asarray(position)
@@ -1059,7 +1065,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             get_position_at_time(
                 position_time,
                 position,
-                decode_bin_centers(time_edges, row_start, row_stop),
+                decode_bin_centers(rows.time_edges, rows.start, rows.stop),
                 environment,
             ),
             environment,
@@ -1076,119 +1082,128 @@ def predict_clusterless_mark_glm_log_likelihood(
         )
 
     n_components = _component_padding(mark_mixtures)
-    for electrode, (
-        electrode_times,
-        electrode_marks,
-        mixture,
-        coefficients,
-        log_rates,
-        reference,
-    ) in enumerate(
-        tqdm(
-            zip(
-                spike_times,
-                spike_waveform_features,
-                mark_mixtures,
-                rate_coefficients,
-                log_rate_maps,
-                mark_reference,
-                strict=True,
-            ),
-            desc=f"{'Local' if is_local else 'Position-Bin'} Likelihood (mark GLM)",
-            unit="electrode",
-            disable=disable_progress_bar,
-        )
+    # Each fitted electrode's mixture and rate coefficients, padded to a fixed
+    # component count so that electrodes share one compiled rate kernel;
+    # padded components are masked out. None marks a zero-rate electrode.
+    electrode_models: list[_PaddedElectrode | None] = []
+    for mixture, coefficients, log_rates in zip(
+        mark_mixtures, rate_coefficients, log_rate_maps, strict=True
     ):
-        if mixture is not None:
-            means, precisions_cholesky, is_component = _padded_mixture(
-                mixture, n_components
-            )
-            # Components padded to a fixed count share one compiled rate
-            # kernel; padded components are masked out.
-            padded_coefficients = jnp.asarray(_pad_rows(coefficients, n_components))
-            if is_local:
-                expected_rate = expected_rate + _glm_rates(
-                    row_design, padded_coefficients
-                ) @ is_component.astype(row_design.dtype)
-        selection = select_spikes_in_rows(
-            electrode_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
-        )
-        n_spikes = selection.bin_ind.shape[0]
-        if n_spikes == 0:
-            continue
-        marks = select_decode_marks(electrode_marks, selection, electrode)
-        log_background = background_log_intensity(reference, marks, LOG_RATE_EPS_HZ)
         if mixture is None:
+            electrode_models.append(None)
+            continue
+        means, precisions_cholesky, is_component = _padded_mixture(
+            mixture, n_components
+        )
+        # A fitted mixture has its rate coefficients.
+        padded_coefficients = jnp.asarray(
+            pad_rows(cast(np.ndarray, coefficients), n_components)
+        )
+        if is_local:
+            expected_rate = expected_rate + glm_rates(
+                row_design, padded_coefficients
+            ) @ is_component.astype(row_design.dtype)
+        electrode_models.append(
+            _PaddedElectrode(
+                means,
+                precisions_cholesky,
+                is_component,
+                padded_coefficients,
+                log_rates,
+                mixture.n_components,
+            )
+        )
+
+    def add_electrode(
+        log_likelihood: jax.Array,
+        spikes: ElectrodeSpikes,
+        model: _PaddedElectrode | None,
+    ) -> jax.Array:
+        if model is None:
             # A zero-rate electrode: each observed spike is explained by the
             # background alone, uniformly across position bins.
-            contribution = sum_spikes_into_rows(log_background, selection)
-            log_likelihood = log_likelihood + (
-                contribution if is_local else contribution[:, None]
-            )
-            continue
+            return add_background_only(log_likelihood, spikes)
         if is_local:
-            n_padded = _padded_spike_count(n_spikes, spike_block_size)
+            n_padded = padded_spike_count(spikes.n_spikes, spike_block_size)
             spike_position = snap_off_track_positions(
                 get_position_at_time(
                     position_time,
                     position,
-                    select_spike_rows(electrode_times, selection),
+                    select_spike_rows(spikes.times, spikes.selection),
                     environment,
                 ),
                 environment,
             )
             spike_log_rates = jnp.log(
-                _glm_rates(
+                glm_rates(
                     jnp.asarray(
-                        _pad_rows(
+                        pad_rows(
                             make_spline_predict_matrix(
                                 emission_design_info, spike_position
                             ),
                             n_padded,
                         )
                     ),
-                    padded_coefficients,
+                    model.coefficients,
                 )
             )
-            log_likelihood = _add_electrode_local_terms(
-                log_likelihood,
-                _device_marks(marks, n_padded),
-                jnp.asarray(spike_row_ids(selection, n_padded)),
-                means,
-                precisions_cholesky,
-                is_component,
-                spike_log_rates,
-                jnp.asarray(_pad_rows(log_background, n_padded)),
-                indices_are_sorted=selection.indices_are_sorted,
+            return cast(
+                jax.Array,
+                _add_electrode_local_terms(
+                    log_likelihood,
+                    _device_marks(spikes.marks, n_padded),
+                    jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
+                    model.means,
+                    model.precisions_cholesky,
+                    model.is_component,
+                    spike_log_rates,
+                    jnp.asarray(pad_rows(spikes.log_background, n_padded)),
+                    indices_are_sorted=spikes.selection.indices_are_sorted,
+                ),
             )
-            continue
-        n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
-        log_rates = jnp.asarray(log_rates)
+        n_padded = padded_spike_count(spikes.n_spikes, spike_block_size, fine=True)
+        log_rates = jnp.asarray(model.log_rates)
         log_rate_scale = jnp.max(log_rates, axis=1)
         scaled_rates = jnp.pad(
             jnp.exp(log_rates - log_rate_scale[:, None]).T,
-            ((0, n_components - mixture.n_components), (0, 0)),
+            ((0, n_components - model.n_components), (0, 0)),
         )
-        log_likelihood = _add_electrode_intensities(
-            log_likelihood,
-            _device_marks(marks, n_padded),
-            jnp.asarray(spike_row_ids(selection, n_padded)),
-            means,
-            precisions_cholesky,
-            is_component,
-            scaled_rates,
-            log_rate_scale,
-            jnp.asarray(_pad_rows(log_background, n_padded)),
-            block_size=min(spike_block_size, n_padded),
-            indices_are_sorted=selection.indices_are_sorted,
+        return cast(
+            jax.Array,
+            _add_electrode_intensities(
+                log_likelihood,
+                _device_marks(spikes.marks, n_padded),
+                jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
+                model.means,
+                model.precisions_cholesky,
+                model.is_component,
+                scaled_rates,
+                log_rate_scale,
+                jnp.asarray(pad_rows(spikes.log_background, n_padded)),
+                block_size=min(spike_block_size, n_padded),
+                indices_are_sorted=spikes.selection.indices_are_sorted,
+            ),
         )
 
+    log_likelihood = add_electrode_spike_terms(
+        log_likelihood,
+        spike_times,
+        spike_waveform_features,
+        mark_reference,
+        electrode_models,
+        add_electrode,
+        rows=rows,
+        log_background_floor=LOG_RATE_EPS_HZ,
+        desc=f"{'Local' if is_local else 'Position-Bin'} Likelihood (mark GLM)",
+        disable_progress_bar=disable_progress_bar,
+    )
+
     duration_evidence = log_bin_duration_evidence(
-        spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+        spike_times,
+        rows.time_edges,
+        row_slice,
+        rows.spike_time_order,
+        _time_grid=rows.time_grid,
     )
     if is_local:
         log_likelihood = log_likelihood - durations * (

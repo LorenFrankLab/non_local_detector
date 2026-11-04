@@ -11,7 +11,7 @@ for specified time bins based on the provided spike times and baseline rate.
 It utilizes JAX for efficient computation.
 """
 
-from typing import Any, cast
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -20,14 +20,14 @@ import numpy as np
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    _concatenate_row_blocks,
-    _spike_counts_matrix,
-    _SpikeTimeOrder,
-    resolve_row_slice,
+    SpikeTimeOrder,
+    concatenate_row_blocks,
+    poisson_row_log_likelihood,
+    prepare_decode_rows,
+    spike_counts_matrix,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     requires_time_edges,
 )
 
@@ -48,28 +48,6 @@ def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
     return np.diff(time_edges)
 
 
-@jax.jit
-def _poisson_row_log_likelihood(counts: Any, expected_counts: Any) -> jax.Array:
-    """Retain neuron addition order inside one compiled row-bounded scan."""
-    expected_counts = jnp.broadcast_to(expected_counts, counts.shape)
-    # xlogy's forward pass already promotes integer counts to this dtype.
-    # Explicit promotion also avoids float0 tangents in its rate derivative.
-    counts = counts.astype(expected_counts.dtype)
-
-    def add_unit(total: jax.Array, inputs: tuple[Any, Any]) -> tuple[jax.Array, None]:
-        count, expected = inputs
-        safe_expected = jnp.where(count == 0, 1.0, expected)
-        event = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-            jax.scipy.special.xlogy(count, safe_expected)
-        )
-        term = jax.lax.optimization_barrier(event - expected)  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-        return total + term, None
-
-    return jax.lax.scan(
-        add_unit, jnp.zeros((counts.shape[0],)), (counts.T, expected_counts.T)
-    )[0]
-
-
 @requires_time_edges
 def predict_no_spike_log_likelihood(
     spike_times: list[list[float]],
@@ -79,7 +57,7 @@ def predict_no_spike_log_likelihood(
     time_edges: np.ndarray,
     disable_progress_bar: bool = False,
     _time_bin_sizes: np.ndarray | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Return the log likelihood of low spike rate for each time bin.
@@ -111,7 +89,7 @@ def predict_no_spike_log_likelihood(
         Internal precomputed ``no_spike_time_bin_sizes(time_edges)`` for these edges.
         Detector predictions prepare it once and reuse it across chunks. Direct
         callers can omit it; only the requested durations are computed here.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -165,38 +143,34 @@ def predict_no_spike_log_likelihood(
     ):
         msg = "no_spike_rate must be a finite nonnegative scalar"
         raise ValidationError(msg)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     if _time_bin_sizes is None:
-        durations = _time_grid.durations(row_start, row_stop)
+        durations = rows.durations()
     else:
-        durations = _time_bin_sizes[row_start:row_stop]
+        durations = _time_bin_sizes[rows.start : rows.stop]
     no_spike_rates = no_spike_rate * jnp.asarray(durations)
 
     def evaluate(start: int, stop: int) -> jax.Array:
         """Return the log likelihood of rows ``start`` to ``stop`` (shape (stop - start, 1))."""
-        counts = _spike_counts_matrix(
+        counts = spike_counts_matrix(
             cast("list[np.ndarray]", spike_times),
-            time_edges,
+            rows.time_edges,
             "No Spike Likelihood",
             True,
             slice(start, stop),
-            _spike_time_order=_spike_time_order,
+            _spike_time_order=rows.spike_time_order,
         )
         return cast(
             jax.Array,
-            _poisson_row_log_likelihood(
+            poisson_row_log_likelihood(
                 jnp.asarray(counts),
-                no_spike_rates[start - row_start : stop - row_start, None],
+                no_spike_rates[start - rows.start : stop - rows.start, None],
             ),
         )
 
-    return _concatenate_row_blocks(
-        row_start,
-        row_stop,
+    return concatenate_row_blocks(
+        rows.start,
+        rows.stop,
         len(spike_times),
         evaluate,
         "No Spike Likelihood",
