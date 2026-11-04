@@ -425,13 +425,17 @@ def _environment_state(environment: Environment, encoder: Encoder, where: str) -
             np.asarray(grid.is_track_interior), f"{where}/is_track_interior"
         ),
     }
-    if environment.track_graph is None:
+    state["edges"] = [
+        encoder.encode(np.asarray(edge), f"{where}/edges_{i}")
+        for i, edge in enumerate(grid.edges)
+    ]
+    if environment.track_graph is not None:
+        state["place_bin_edges"] = encoder.encode(
+            np.asarray(grid.place_bin_edges), f"{where}/place_bin_edges"
+        )
+    else:
         distances = grid.distance_between_nodes
         state.update(
-            edges=[
-                encoder.encode(np.asarray(edge), f"{where}/edges_{i}")
-                for i, edge in enumerate(grid.edges)
-            ],
             infer_track_interior=grid.infer_track_interior,
             all_pairs_distances=not isinstance(distances, LazyGraphDistances),
             max_dense_distance_bytes=distances.max_dense_bytes
@@ -443,19 +447,78 @@ def _environment_state(environment: Environment, encoder: Encoder, where: str) -
 
 def _environment_from_state(state: dict[str, Any], decoder: Decoder) -> Environment:
     environment = cast(Environment, decoder.decode(state["config"]))
+    edges = [np.asarray(decoder.decode(edge)) for edge in state["edges"]]
     if environment.track_graph is not None:
-        return environment.fit_place_grid()
-    options: dict[str, Any] = {
-        "compute_all_pairs_distances": state["all_pairs_distances"]
+        environment.fit_place_grid()
+    else:
+        options: dict[str, Any] = {
+            "compute_all_pairs_distances": state["all_pairs_distances"]
+        }
+        if state["max_dense_distance_bytes"] is not None:
+            options["max_dense_distance_bytes"] = state["max_dense_distance_bytes"]
+        environment.fit_place_grid_from_edges(
+            edges,
+            decoder.decode(state["is_track_interior"]),
+            infer_track_interior=state["infer_track_interior"],
+            **options,
+        )
+    stored = {
+        "edges": tuple(edges),
+        "place_bin_centers": np.asarray(decoder.decode(state["place_bin_centers"])),
+        "is_track_interior": np.asarray(decoder.decode(state["is_track_interior"])),
     }
-    if state["max_dense_distance_bytes"] is not None:
-        options["max_dense_distance_bytes"] = state["max_dense_distance_bytes"]
-    return environment.fit_place_grid_from_edges(
-        [decoder.decode(edge) for edge in state["edges"]],
-        decoder.decode(state["is_track_interior"]),
-        infer_track_interior=state["infer_track_interior"],
-        **options,
+    if "place_bin_edges" in state:
+        stored["place_bin_edges"] = np.asarray(decoder.decode(state["place_bin_edges"]))
+    return _with_stored_grid(environment, stored)
+
+
+def _same_within_tolerance(rebuilt: Any, saved: np.ndarray) -> bool:
+    rebuilt = np.asarray(rebuilt)
+    if rebuilt.shape != saved.shape or rebuilt.dtype != saved.dtype:
+        return False
+    if saved.dtype.kind != "f":
+        return bool(np.array_equal(rebuilt, saved))
+    return bool(
+        np.allclose(
+            rebuilt,
+            saved,
+            rtol=_REBUILD_RTOL,
+            atol=_REBUILD_ATOL_PER_POINT,
+            equal_nan=True,
+        )
     )
+
+
+def _with_stored_grid(environment: Environment, stored: dict[str, Any]) -> Environment:
+    """``environment`` with the grid arrays the file stores, exactly.
+
+    The bin edges, centers and interior mask are stored, and encoding models
+    record an exact hash of them (``environment_grid_fingerprint``). A rebuild
+    on another platform can differ in the last bits (``np.interp`` is
+    FMA-fused on some), so when every rebuilt array matches its stored value
+    within the rebuild tolerance (booleans exactly), the grid takes the stored
+    values. Otherwise the rebuilt grid is kept, and the environment's
+    fingerprint check refuses to decode.
+    """
+    grid = environment.place_grid_
+    rebuilt = {
+        "edges": grid.edges,
+        "place_bin_centers": grid.place_bin_centers,
+        "is_track_interior": grid.is_track_interior,
+        "place_bin_edges": grid.place_bin_edges,
+    }
+    if len(stored["edges"]) != len(grid.edges) or not all(
+        _same_within_tolerance(a, b)
+        for a, b in zip(grid.edges, stored["edges"], strict=True)
+    ):
+        return environment
+    if not all(
+        _same_within_tolerance(rebuilt[name], value)
+        for name, value in stored.items()
+        if name != "edges"
+    ):
+        return environment
+    return environment._replace_place_grid(**stored)
 
 
 # ------------------------------------------------------------------ detector

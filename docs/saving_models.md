@@ -85,7 +85,9 @@ Before a loaded model first decodes, the rebuilt structures are compared with
 the fingerprints at a relative tolerance of 1e-10, which accepts last-bit
 differences between platforms. If they differ, decoding raises
 `ValidationError` asking for a refit; loading and inspecting the model still
-work.
+work. The bin edges, centers and interior mask are stored as well: a grid rebuilt
+within tolerance takes those exact values, so the encoding models, which record
+an exact hash of their grid, decode on any platform.
 
 ## Inspecting a model
 
