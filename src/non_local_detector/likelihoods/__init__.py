@@ -312,7 +312,7 @@ def _resolve_fit_params(
 def _execution_settings(
     record: LikelihoodAlgorithm, params: dict[str, Any] | None
 ) -> dict[str, Any]:
-    """The execution settings a detector's algorithm params set, for predict.
+    """Return the execution settings a detector's algorithm params set, for predict.
 
     A detector passes these to ``predict`` in place of the values its encoding
     model recorded at fit, so memory, tiling and progress options can change

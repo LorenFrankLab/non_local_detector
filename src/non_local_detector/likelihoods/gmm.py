@@ -24,6 +24,7 @@ from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 from threadpoolctl import threadpool_limits
 
 from non_local_detector._warnings import user_stacklevel
+from non_local_detector.exceptions import NumericalWarning
 from non_local_detector.likelihoods.common import padded_sample_count
 
 # ---------------------------------------------------------------------
@@ -53,7 +54,7 @@ def as_floating(x: Any) -> Array:
 
 
 def _has_negative_or_nonfinite(arr: Array) -> bool:
-    """True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
+    """Return True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
 
     Used for initial mixture weights: a NaN/negative weight becomes
     ``jnp.log(w) = NaN`` in EM and is otherwise misreported as a singular covariance.
@@ -209,7 +210,6 @@ def _estimate_gaussian_covariances_diag(
     covariances : Array, shape (n_components, n_features)
         Diagonal covariance for each component.
     """
-
     _, n_features = X.shape
 
     def add_dimension(d: Array, second_moment: Array) -> Array:
@@ -435,13 +435,16 @@ def estimate_log_gaussian_prob(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     means : Array, shape (n_components, n_features)
+        Component means.
     precisions_chol : Array
         For 'full': shape (n_components, n_features, n_features)
         For 'tied': shape (n_features, n_features)
         For 'diag': shape (n_components, n_features)
         For 'spherical': shape (n_components,)
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``precisions_chol``.
 
     Returns
     -------
@@ -527,10 +530,13 @@ def _estimate_weighted_log_prob(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     means : Array, shape (n_components, n_features)
+        Component means.
     precisions_chol : Array
         See `estimate_log_gaussian_prob`.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``precisions_chol``.
     weights : Array, shape (n_components,)
         Mixture weights summing to 1.
 
@@ -559,11 +565,15 @@ def estimate_log_prob_resp(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     means : Array, shape (n_components, n_features)
+        Component means.
     precisions_chol : Array
         See `estimate_log_gaussian_prob`.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``precisions_chol``.
     weights : Array, shape (n_components,)
+        Mixture weights.
 
     Returns
     -------
@@ -592,11 +602,13 @@ def _e_step_func(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     params : tuple(weights, means, covariances)
         weights : Array, shape (n_components,)
         means : Array, shape (n_components, n_features)
         covariances : Array, shape depends on covariance_type
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``params``.
 
     Returns
     -------
@@ -624,12 +636,15 @@ def _m_step_func(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     log_resp : Array, shape (n_samples, n_components)
         Log responsibilities.
     reg_covar : float
         Covariance regularization.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization to estimate.
     sample_weight : Array | None, shape (n_samples,), default=None
+        Per-sample weights; unweighted when None.
 
     Returns
     -------
@@ -663,14 +678,19 @@ def _em_fit_while_loop(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     init_params : tuple(weights, means, covariances)
+        Initial mixture parameters.
     tol : float
         Convergence tolerance on improvement of average lower bound.
     max_iter : int
         Maximum EM iterations.
     reg_covar : float
+        Covariance regularization.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization.
     sample_weight : Array | None, shape (n_samples,), default=None
+        Per-sample weights; unweighted when None.
 
     Returns
     -------
@@ -745,7 +765,9 @@ def _zero_weight_padded(
     Parameters
     ----------
     sample_weight : Array | np.ndarray, shape (n_samples,)
+        Per-sample weights.
     *arrays : Array | np.ndarray, shape (n_samples, ...)
+        Arrays whose rows are padded the same way as ``sample_weight``.
 
     Returns
     -------
@@ -806,8 +828,7 @@ def _effective_weight_mask(
 def effective_sample_count(
     X: Array | np.ndarray, sample_weight: np.ndarray | None
 ) -> int:
-    """
-    Number of rows ``GaussianMixtureModel.fit`` trains on for this ``X``.
+    """Return the number of rows ``GaussianMixtureModel.fit`` trains on for ``X``.
 
     Callers that size ``n_components`` before fitting must count with the dtype
     of the array actually fitted, since the zero-weight cutoff depends on it.
@@ -1053,7 +1074,9 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         sample_weight : Array | np.ndarray | None, shape (n_samples,)
+            Per-sample weights, or None for unweighted fitting.
 
         Returns
         -------
@@ -1346,7 +1369,7 @@ class GaussianMixtureModel:
                 f"{self.n_init - n_invalid}. Increase reg_covar, reduce "
                 f"n_components, or remove duplicate/degenerate samples so every "
                 f"restart is usable.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
 
@@ -1355,7 +1378,7 @@ class GaussianMixtureModel:
                 f"GaussianMixture did not converge within max_iter={self.max_iter} "
                 f"iterations (best restart ran {self.n_iter_}). Final lower-bound "
                 f"delta exceeded tol={self.tol:.3e}.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
 
@@ -1371,7 +1394,7 @@ class GaussianMixtureModel:
                 "1e-10 floor (a collapsed/near-singular component); its precision "
                 "was clamped rather than raised. Increase reg_covar or reduce "
                 "n_components.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
 
@@ -1451,7 +1474,9 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         key : jax.Array
+            PRNG key for the random responsibilities.
 
         Returns
         -------
@@ -1479,6 +1504,7 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         key : jax.Array
             Per-restart PRNG key. Used to derive a distinct KMeans seed for
             restarts beyond the first when ``random_state`` is set.
@@ -1568,8 +1594,11 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         key : jax.Array
+            PRNG key for the initialization.
         sample_weight : Array | None, shape (n_samples,), default=None
+            Per-sample weights; unweighted when None.
         init_index : int, default=0
             Index of the current restart within ``n_init``; forwarded to
             ``_initialize_kmeans_resp`` so restarts beyond the first get
@@ -1629,8 +1658,11 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         params : tuple(weights, means, covariances)
+            Initial mixture parameters.
         sample_weight : Array | None, shape (n_samples,), default=None
+            Per-sample weights; unweighted when None.
 
         Returns
         -------

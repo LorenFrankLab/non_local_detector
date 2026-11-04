@@ -19,6 +19,16 @@ from scipy import integrate
 from scipy.signal import correlate
 from scipy.stats import expon, norm
 
+__all__ = [
+    "TimeRescaling",
+    "ks_statistic",
+    "plot_ks",
+    "plot_qq",
+    "plot_rescaled_ISI_autocorrelation",
+    "point_process_residuals",
+    "uniform_rescaled_ISIs",
+]
+
 
 class TimeRescaling:
     """Evaluate the goodness of fit of a point process model.
@@ -71,8 +81,8 @@ class TimeRescaling:
         conditional_intensity: np.ndarray,
         is_spike: np.ndarray,
         trial_id: np.ndarray | None = None,
-        adjust_for_short_trials: bool = False,
         *,
+        adjust_for_short_trials: bool = False,
         rate_units: str = "expected_counts",
         time: np.ndarray | None = None,
         time_edges: np.ndarray | None = None,
@@ -135,7 +145,6 @@ class TimeRescaling:
         uniform_rescaled_ISIs : ndarray, shape (n_spikes,)
             Rescaled ISIs, uniform on [0, 1] if the model fits well.
         """
-
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
         for trial in trial_IDs:
@@ -158,7 +167,7 @@ class TimeRescaling:
                     uniform_rescaled_ISIs(
                         self.conditional_intensity[run],
                         self.is_spike[run],
-                        self.adjust_for_short_trials,
+                        adjust_for_short_trials=self.adjust_for_short_trials,
                         rate_units=self.rate_units,
                         time=time,
                         time_edges=edges,
@@ -307,8 +316,9 @@ class TimeRescaling:
 
 
 def _uniform_cdf_values(n_spikes: int) -> np.ndarray:
-    """Model based cumulative distribution function values. Used for
-    plotting the `uniform_rescaled_ISIs`.
+    """Return model based cumulative distribution function values.
+
+    Used for plotting the `uniform_rescaled_ISIs`.
 
     Parameters
     ----------
@@ -381,6 +391,7 @@ def _max_transformed_interval(
     is_spike : bool ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
     rescaled_ISIs : ndarray, shape (n_spikes,)
+        Time-rescaled inter-spike intervals.
 
     Returns
     -------
@@ -456,8 +467,8 @@ def _integrated_conditional_intensity(
 def uniform_rescaled_ISIs(
     conditional_intensity: np.ndarray,
     is_spike: np.ndarray,
-    adjust_for_short_trials: bool = True,
     *,
+    adjust_for_short_trials: bool = True,
     rate_units: str = "expected_counts",
     time: np.ndarray | None = None,
     time_edges: np.ndarray | None = None,

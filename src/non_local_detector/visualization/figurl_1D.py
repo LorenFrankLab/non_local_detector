@@ -2,6 +2,12 @@
 
 from non_local_detector.visualization._optional import sortingview_available
 
+__all__ = [
+    "create_1D_decode_view",
+    "create_interactive_1D_decoding_figurl",
+]
+
+
 if sortingview_available():
     from typing import cast
 
@@ -22,6 +28,8 @@ if sortingview_available():
         Parameters
         ----------
         series : xr.DataArray
+            Series with ``time`` and ``position`` dimensions and values in
+            [0, 1], such as a posterior.
 
         Returns
         -------
@@ -41,7 +49,11 @@ if sortingview_available():
         Parameters
         ----------
         trimmed_posterior : xr.DataArray
+            Discretized posterior stacked over (time, position), with a ``time``
+            coordinate per retained entry.
         base_data : xr.DataArray
+            Full-resolution data whose ``time`` coordinate defines the output
+            length.
 
         Returns
         -------
@@ -60,7 +72,8 @@ if sortingview_available():
 
         Parameters
         ----------
-        times : np.ndarray
+        times : np.ndarray, shape (n_time,)
+            Sample times in seconds.
 
         Returns
         -------
@@ -78,7 +91,9 @@ if sortingview_available():
         Parameters
         ----------
         place_bin_centers : np.ndarray, shape (n_position_bins, )
+            Sorted centers of all position bins.
         trimmed_place_bin_centers : np.ndarray, shape (n_trimmed_position_bins, )
+            Bin centers retained after trimming.
 
         Returns
         -------
@@ -93,12 +108,14 @@ if sortingview_available():
         linear_position: np.ndarray | None = None,
         ref_time_sec: float | None = None,
     ) -> vvf.DecodedLinearPositionData:
-        """Creates a view of an interactive heatmap of position vs. time.
+        """Create a view of an interactive heatmap of position vs. time.
 
         Parameters
         ----------
         posterior : xr.DataArray, shape (n_time, n_position_bins)
+            Posterior probability with ``time`` and ``position`` coordinates.
         linear_position : np.ndarray, shape (n_time, ), optional
+            Observed linear position at each time, shown alongside the posterior.
         ref_time_sec : np.float64, optional
             Reference time for the purpose of offsetting the start time
 

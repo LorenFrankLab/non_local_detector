@@ -38,10 +38,15 @@ import scipy.sparse.csgraph
 import scipy.sparse.linalg
 
 from non_local_detector._warnings import user_stacklevel
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    NumericalWarning,
+    ParameterWarning,
+    ValidationError,
+)
 
 if TYPE_CHECKING:
     from non_local_detector.environment import Environment
+
 
 # Defaults for heat_kernel_rank (bandwidth-aware auto-truncation): drop modes whose
 # heat-kernel weight exp(-t*lambda) is below _HEAT_KERNEL_RANK_TOL, and fall back to the
@@ -171,7 +176,7 @@ def _block_eigenbasis(
             "Shift-invert eigsh failed; falling back to the no-shift-invert "
             "which='SM' solver, which may return a lower-quality eigenbasis. "
             "Consider a smaller rank or the full (rank=None) decomposition.",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM", v0=v0)
@@ -352,7 +357,7 @@ def heat_kernel_rank(
     tol: float = _HEAT_KERNEL_RANK_TOL,
     dense_fraction: float = _HEAT_KERNEL_DENSE_FRACTION,
 ) -> int | None:
-    """Number of eigenmodes the heat kernel ``exp(-t L)`` needs at bandwidth ``sigma``.
+    """Return the number of eigenmodes the heat kernel ``exp(-t L)`` needs at bandwidth ``sigma``.
 
     :func:`diffuse` weights mode ``k`` by ``exp(-t λ_k)``, ``t = sigma**2 / 2``, so modes
     with ``exp(-t λ_k) < tol`` are negligible: dropping them changes the smoothed field
@@ -424,7 +429,7 @@ def connected_component_labels(graph: nx.Graph) -> np.ndarray:
 
 
 def n_connected_components(environment: "Environment") -> int:
-    """Number of connected components of the environment's interior-bin graph.
+    """Return the number of connected components of the environment's interior-bin graph.
 
     Each component contributes one Laplacian null (zero-eigenvalue) mode, so a truncated
     eigenbasis must keep **at least** this many modes (see :func:`diffusion_eigenbasis` /
@@ -670,6 +675,7 @@ def resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Ar
     Parameters
     ----------
     occupancy : array, shape (n_bins,)
+        Diffused occupancy per bin.
 
     Returns
     -------
@@ -801,7 +807,7 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
 
     Warns
     -----
-    UserWarning
+    ParameterWarning
         If ``sigma`` is below the characteristic (median) bin spacing, indicating
         the smoother will barely spread beyond a single bin.
     """
@@ -822,7 +828,7 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
                 f"({characteristic:g}); the diffusion smoother barely spreads beyond "
                 "one bin, so place fields will stay close to the raw spike counts. "
                 "Increase position_std or use a coarser grid.",
-                UserWarning,
+                ParameterWarning,
                 stacklevel=user_stacklevel(),
             )
 

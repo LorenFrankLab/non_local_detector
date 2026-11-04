@@ -22,7 +22,11 @@ _FIGURL_FUNCTIONS = {
     "create_interactive_2D_decoding_figurl": "figurl_2D",
 }
 
-__all__ = [*_FIGURL_FUNCTIONS, "plot_non_local_model"]
+__all__ = [
+    "create_interactive_1D_decoding_figurl",
+    "create_interactive_2D_decoding_figurl",
+    "plot_non_local_model",
+]
 
 
 def __dir__() -> list[str]:

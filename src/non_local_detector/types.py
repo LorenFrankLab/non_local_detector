@@ -18,6 +18,23 @@ from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.observation_models import ObservationModel
 
+__all__ = [
+    "ContinuousInitialConditions",
+    "ContinuousTransitions",
+    "DiscreteTransitions",
+    "Environments",
+    "FrozenTransitionRows",
+    "InferenceMode",
+    "Observations",
+    "OutputMode",
+    "OutputName",
+    "ReturnOutputs",
+    "StateNames",
+    "Stickiness",
+    "TransitionRepresentation",
+]
+
+
 Environments = Environment | list[Environment] | None
 """Type alias for environment specifications.
 

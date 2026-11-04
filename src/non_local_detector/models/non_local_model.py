@@ -15,10 +15,10 @@ from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
 )
+from non_local_detector.models._input_validation import _validate_penalty_params
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
-    _validate_penalty_params,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
@@ -31,6 +31,11 @@ from non_local_detector.types import (
     StateNames,
     Stickiness,
 )
+
+__all__ = [
+    "NonLocalClusterlessDetector",
+    "NonLocalSortedSpikesDetector",
+]
 
 
 def _get_conditional_non_local_posterior(
@@ -119,7 +124,7 @@ class _NonLocalMixin:
     non_local_penalty_std: float
 
     def _non_local_position_penalty(self) -> float:
-        """The non-local position penalty, validated where it is used.
+        """Return the non-local position penalty, validated where it is used.
 
         Validating at use, not only at construction, also checks values set
         later with ``set_params``.

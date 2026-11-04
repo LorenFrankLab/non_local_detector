@@ -299,9 +299,11 @@ def check_formula(
 def _check_expression(
     code: str, formula: str, covariate_names: Collection[str] | None
 ) -> int:
-    """Refuse a Python expression of ``formula`` outside the grammar, or one
-    naming a covariate missing from ``covariate_names``; return its number of
-    calls."""
+    """Refuse a Python expression of ``formula`` outside the grammar.
+
+    Also refuse one naming a covariate missing from ``covariate_names``.
+    Return the expression's number of calls.
+    """
     try:
         expression = ast.parse(code, mode="eval").body
     except SyntaxError:
@@ -326,7 +328,7 @@ def _check_expression(
 
 
 def _offending(node: ast.AST) -> str | None:
-    """Description of the first node of ``node`` outside the grammar, or None."""
+    """Describe the first node of ``node`` outside the grammar, or return None."""
     if isinstance(node, ast.Name):
         if node.id.startswith("__"):
             return f"the name {node.id}"
@@ -373,7 +375,7 @@ def _offending(node: ast.AST) -> str | None:
 
 
 def _offending_call(call: ast.Call) -> str | None:
-    """Description of what a call does outside the grammar, or None."""
+    """Describe what a call does outside the grammar, or return None."""
     function = call.func
     if isinstance(function, ast.Name):
         allowed = function.id in _FUNCTIONS
@@ -401,8 +403,7 @@ def _offending_call(call: ast.Call) -> str | None:
 
 
 def _offending_c(call: ast.Call) -> str | None:
-    """Description of what a call of patsy's ``C`` does outside the grammar,
-    or None.
+    """Describe what a call of patsy's ``C`` does outside the grammar, or return None.
 
     patsy calls the contrast, so it must be a call of one of ``_CONTRASTS``
     with literal arguments; the levels must be a list or tuple of literals.
@@ -436,7 +437,7 @@ def _offending_c(call: ast.Call) -> str | None:
 
 
 def _offending_spline(call: ast.Call, parameters: tuple[str, ...]) -> str | None:
-    """Description of a spline call's size outside its caps, or None.
+    """Describe a spline call's size outside its caps, or return None.
 
     ``df``, ``n_knots`` and ``degree`` must be integer literals in
     ``_COUNT_RANGES`` (or None), and ``knots`` a list or tuple of at most
@@ -476,8 +477,10 @@ def _offending_spline(call: ast.Call, parameters: tuple[str, ...]) -> str | None
 
 
 def _is_contrast(node: ast.expr) -> bool:
-    """Whether ``node`` is a call of one of patsy's contrasts whose arguments
-    are literals (or lists or tuples of literals)."""
+    """Check whether ``node`` is a call of one of patsy's contrasts.
+
+    Its arguments must be literals (or lists or tuples of literals).
+    """
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -509,8 +512,11 @@ def _depth(node: ast.AST) -> int:
 
 
 def _large_integer(expression: ast.expr) -> str | None:
-    """Description of the first integer computed from literals in
-    ``expression`` whose magnitude may reach int64's limit, or None."""
+    """Describe the first integer computed from literals that may reach int64.
+
+    Return a description of the first integer in ``expression`` computed from
+    literals alone whose magnitude may reach int64's limit, or None.
+    """
     for node in ast.walk(expression):
         bound = _integer_bound(node)
         if bound is not None and bound >= _INT_LIMIT:
@@ -519,9 +525,11 @@ def _large_integer(expression: ast.expr) -> str | None:
 
 
 def _integer_bound(node: ast.AST) -> int | None:
-    """An upper bound of the magnitude of ``node``, capped at ``_INT_LIMIT``,
-    if it is an integer computed from literals alone (which Python evaluates
-    exactly, however large), else None.
+    """Return an upper bound of the magnitude of an integer ``node``.
+
+    The bound is capped at ``_INT_LIMIT``, if ``node`` is an integer computed
+    from literals alone (which Python evaluates exactly, however large), else
+    None.
 
     Run on expressions within the grammar, whose ``**`` exponents are at most
     ``_MAX_EXPONENT``, so the capped arithmetic stays small.
@@ -549,7 +557,7 @@ def _integer_bound(node: ast.AST) -> int | None:
 
 
 def _number(node: ast.expr) -> float | None:
-    """The value of a (signed) int or float literal, or None for anything else."""
+    """Return the value of a (signed) int or float literal, or None otherwise."""
     sign = 1
     while isinstance(node, ast.UnaryOp) and isinstance(node.op, _UNARY_OPERATORS):
         if isinstance(node.op, ast.USub):
@@ -565,8 +573,10 @@ def _number(node: ast.expr) -> float | None:
 
 
 def _names(node: ast.AST) -> set[str]:
-    """Covariate names of a grammar-checked expression: its names, other than
-    the functions it calls and ``np``."""
+    """Return the covariate names of a grammar-checked expression.
+
+    These are its names, other than the functions it calls and ``np``.
+    """
     if isinstance(node, ast.Name):
         return {node.id}
     if isinstance(node, ast.Attribute):

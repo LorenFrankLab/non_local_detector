@@ -46,6 +46,18 @@ from non_local_detector._formula_grammar import (
 )
 from non_local_detector.exceptions import ValidationError
 
+__all__ = [
+    "DiscreteNonStationaryCustom",
+    "DiscreteNonStationaryDiagonal",
+    "DiscreteStationaryCustom",
+    "DiscreteStationaryDiagonal",
+    "DiscreteTransition",
+    "InitialDiscreteTransition",
+    "cyclic_bs",
+    "quantile_bs",
+]
+
+
 logger = logging.getLogger(__name__)
 
 # ``(design, response)`` blocks of one transition row; see ``_row_problem``.
@@ -53,20 +65,20 @@ _Blocks: TypeAlias = list[tuple[jax.Array, jax.Array]]
 
 
 def _float64_jax() -> AbstractContextManager[Any]:
-    """A context in which JAX computes in float64.
+    """Provide a context in which JAX computes in float64.
 
     The scoped switch is ``jax.enable_x64`` in current JAX and
     ``jax.experimental.enable_x64`` in older releases such as 0.6.
     """
     if hasattr(jax, "enable_x64"):
-        return cast(AbstractContextManager[Any], jax.enable_x64(True))
+        return cast(AbstractContextManager[Any], jax.enable_x64(new_val=True))
     from jax.experimental import enable_x64
 
-    return cast(AbstractContextManager[Any], enable_x64(True))
+    return cast(AbstractContextManager[Any], enable_x64(True))  # noqa: FBT003 -- jax.experimental.enable_x64 in older JAX
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
-    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate.
 
     Parameters
     ----------
@@ -94,7 +106,7 @@ def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
 
 
 def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
-    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate.
 
     Parameters
     ----------
@@ -143,7 +155,7 @@ def _n_states_from_state_ind(state_ind: np.ndarray) -> int:
 
 
 def _host_or_device(posterior: ArrayLike) -> np.ndarray | jax.Array:
-    """A posterior as an array, leaving a device array on the device.
+    """Return a posterior as an array, leaving a device array on the device.
 
     Converting a JAX array with ``np.asarray`` would copy it to the host only
     for the estimators to upload it again.
@@ -355,6 +367,7 @@ def _blocked_contraction(left: jax.Array, right: jax.Array) -> jax.Array:
     Parameters
     ----------
     left, right : jax.Array, shape (n_rows, n_bins)
+        Matrices whose rows are contracted: the product is ``left.T @ right``.
 
     Returns
     -------
@@ -393,7 +406,7 @@ def _stationary_counts_block(
     state_ind: jax.Array,
     n_states: int,
 ) -> jax.Array:
-    """Expected discrete transition counts over a block of consecutive rows.
+    """Return expected discrete transition counts over a block of consecutive rows.
 
     A stationary transition factors out of the sum over rows:
     ``sum_t causal_t[i] T[i, j] ratio_{t+1}[j] = T[i, j] * pair_sum[i, j]``,
@@ -416,7 +429,9 @@ def _stationary_counts_block(
     transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         The expanded stationary transition.
     state_ind : jax.Array, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
     n_states : int
+        Number of discrete states.
 
     Returns
     -------
@@ -456,7 +471,9 @@ def _stationary_counts(
     transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         The expanded stationary transition.
     state_ind : np.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
     n_states : int
+        Number of discrete states.
 
     Returns
     -------
@@ -915,7 +932,7 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
 
 @jax.jit
 def jax_centered_log_softmax_forward(y: jax.Array) -> jax.Array:
-    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+    """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate.
 
     The 1D and 2D input branches compile as separate JAX specializations.
     Only 1-D and 2-D inputs are supported.
@@ -980,8 +997,9 @@ def get_transition_prior(
 
 
 class CovariateTransitionFit(NamedTuple):
-    """A covariate-dependent discrete transition fit by
-    :func:`_fit_covariate_transition`.
+    """A covariate-dependent discrete transition.
+
+    It is fit by :func:`_fit_covariate_transition`.
 
     Attributes
     ----------
@@ -1032,6 +1050,7 @@ def estimate_non_stationary_state_transition_from_responses(
     transition_regularization: float = 0.1,
     optimization_method: str = "trust-exact",
     maxiter: int | None = 100,
+    *,
     disp: bool = False,
     frozen_rows: np.ndarray | None = None,
     smoothness: float | np.ndarray | str = 0.0,
@@ -1120,6 +1139,7 @@ def _term_penalties(
         (n_terms, n_coefficients, n_coefficients); one term's matrix, shape
         (n_coefficients, n_coefficients); or None (no spline terms).
     n_coefficients : int
+        Number of coefficients per logit (columns of the design matrix).
 
     Returns
     -------
@@ -1136,8 +1156,11 @@ def _term_penalties(
 def _row_strengths(
     smoothness: float | np.ndarray, n_states: int, n_terms: int
 ) -> np.ndarray:
-    """Curvature-penalty strengths as (n_states, n_terms): a scalar for every
-    row and term, shape (n_states,) per row, or (n_states, n_terms)."""
+    """Broadcast curvature-penalty strengths to (n_states, n_terms).
+
+    Accepts a scalar for every row and term, shape (n_states,) per row, or
+    (n_states, n_terms).
+    """
     values = np.asarray(smoothness, dtype=np.float64)
     if values.ndim == 1:
         values = values[:, np.newaxis]
@@ -1145,8 +1168,10 @@ def _row_strengths(
 
 
 def _validate_smoothness(smoothness: float | np.ndarray | str) -> bool:
-    """Check a smoothness value: strengths that are finite and >= 0, or
-    ``"reml"``. Returns whether REML estimates the strengths."""
+    """Check a smoothness value and return whether REML estimates the strengths.
+
+    Valid values are strengths that are finite and >= 0, or ``"reml"``.
+    """
     if isinstance(smoothness, str):
         if smoothness != "reml":
             msg = f'smoothness must be a float >= 0 or "reml", got {smoothness!r}.'
@@ -1161,8 +1186,10 @@ def _validate_smoothness(smoothness: float | np.ndarray | str) -> bool:
 def _require_spline_term(
     smoothness: float | np.ndarray | str, smoothness_matrix: np.ndarray | None
 ) -> None:
-    """Check that a smoothness penalty (REML, or a positive strength) has a
-    spline term to penalize."""
+    """Check that a smoothness penalty has a spline term to penalize.
+
+    The penalty is REML or a positive strength.
+    """
     penalized = isinstance(smoothness, str) or np.any(np.asarray(smoothness) > 0.0)
     if penalized and (smoothness_matrix is None or not np.any(smoothness_matrix)):
         msg = (
@@ -1178,7 +1205,7 @@ def _row_smoothness(
     smoothness_matrix: np.ndarray | None,
     n_states: int,
 ) -> tuple[np.ndarray, bool]:
-    """Validated per-row, per-term curvature-penalty strengths to start from.
+    """Return validated per-row, per-term curvature-penalty strengths to start from.
 
     Returns
     -------
@@ -1239,6 +1266,7 @@ def _fit_covariate_transition(
     initial_smoothness: np.ndarray | None = None,
     optimization_method: str = "trust-exact",
     maxiter: int | None = 100,
+    *,
     disp: bool = False,
     frozen_rows: np.ndarray | None = None,
     compute_covariance: bool = True,
@@ -1261,10 +1289,34 @@ def _fit_covariate_transition(
 
     Parameters
     ----------
-    transition_coefficients, design_matrix, response, concentration, stickiness,
-    transition_regularization, optimization_method, maxiter, disp, frozen_rows,
-    smoothness, smoothness_matrix
-        As in :func:`estimate_non_stationary_state_transition_from_responses`.
+    transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Initial estimate of the transition coefficients.
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+        Expected transition counts for each time and transition row.
+    concentration : float, optional
+        Dirichlet prior concentration parameter (uniform part).
+    stickiness : float or np.ndarray, optional
+        Dirichlet prior stickiness parameter (diagonal enhancement).
+    transition_regularization : float, optional
+        L2 penalty on coefficients (excluding intercept).
+    smoothness : float, np.ndarray, or "reml", optional
+        Strength of the curvature penalty on each spline term, or "reml" to
+        choose it per row and term; see
+        :func:`estimate_non_stationary_state_transition_from_responses`.
+    smoothness_matrix : np.ndarray, optional
+        Curvature penalties from :func:`_smoothness_matrix`, shape
+        (n_terms, n_coefficients, n_coefficients).
+    optimization_method : str, optional
+        Optimization method for `scipy.optimize.minimize`.
+    maxiter : int, optional
+        Maximum iterations for the optimizer; None uses the optimizer default.
+    disp : bool, optional
+        Display optimizer convergence messages.
+    frozen_rows : np.ndarray of bool, shape (n_states,), optional
+        Rows that keep their ``transition_coefficients`` instead of being
+        estimated. None estimates every row.
     initial_smoothness : np.ndarray, shape (n_states, n_terms), optional
         Strengths kept by rows REML does not fit (frozen rows), e.g. the
         previous EM iteration's; by default 1. REML searches its full range
@@ -1330,6 +1382,7 @@ def _fit_covariate_transition(
                     blocks: _Blocks = blocks,
                     prior_per_bin: jax.Array = prior_per_bin,
                     from_state: int = from_state,
+                    *,
                     warn: bool = True,
                 ) -> np.ndarray:
                     return _fit_covariate_row(
@@ -1340,7 +1393,7 @@ def _fit_covariate_transition(
                         optimization_method,
                         options,
                         from_state,
-                        warn,
+                        warn=warn,
                     )
 
                 strength = row_smoothness[from_state]
@@ -1425,16 +1478,28 @@ def _covariate_transition_covariance(
     smoothness_matrix: np.ndarray | None,
     frozen_rows: np.ndarray | None,
 ) -> np.ndarray:
-    """Laplace covariance of each row's coefficients at a fit: the inverse
-    Hessian of the row's penalized loss.
+    """Return the Laplace covariance of each row's coefficients at a fit.
+
+    This is the inverse Hessian of the row's penalized loss.
 
     Parameters
     ----------
     transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
         The fitted coefficients.
-    design_matrix, response, concentration, stickiness,
-    transition_regularization, smoothness_matrix, frozen_rows
-        As given to :func:`_fit_covariate_transition`.
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+        Expected transition counts for each time and transition row.
+    concentration : float
+        Dirichlet prior concentration parameter (uniform part).
+    stickiness : float or np.ndarray
+        Dirichlet prior stickiness parameter (diagonal enhancement).
+    transition_regularization : float
+        L2 penalty on coefficients (excluding intercept).
+    smoothness_matrix : np.ndarray or None
+        Curvature penalties, shape (n_terms, n_coefficients, n_coefficients).
+    frozen_rows : np.ndarray of bool, shape (n_states,), or None
+        Rows whose covariance is left at zero.
     smoothness : np.ndarray, shape (n_states, n_terms)
         The fit's strengths, :attr:`CovariateTransitionFit.smoothness`.
 
@@ -1485,8 +1550,9 @@ def _max_transition_change(
     old_coefficients: np.ndarray,
     new_coefficients: np.ndarray,
 ) -> float:
-    """Largest change of any covariate-dependent transition probability
-    between two sets of coefficients.
+    """Return the largest change of any covariate-dependent transition probability.
+
+    The change is between two sets of coefficients.
 
     Evaluated a block of time bins at a time, so no copy of the
     (n_time, n_states, n_states) transitions is held.
@@ -1494,6 +1560,7 @@ def _max_transition_change(
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
     old_coefficients, new_coefficients : np.ndarray
         Shape (n_coefficients, n_states, n_states - 1).
 
@@ -1513,8 +1580,7 @@ def _max_transition_change(
 
 
 def _inverse_symmetric(matrix: np.ndarray) -> np.ndarray:
-    """Inverse of a symmetric positive definite matrix; NaN if it is
-    singular.
+    """Invert a symmetric positive definite matrix; NaN if it is singular.
 
     A singular penalized Hessian leaves some direction of the coefficients
     unidentified (e.g. a row without expected transitions and with a flat
@@ -1670,9 +1736,12 @@ def _reml_row(
     def search(
         point: Callable[[float], np.ndarray], grid: np.ndarray, start: np.ndarray
     ) -> float:
-        """The log10 strength ``x`` maximizing ``laml(point(x))``: a grid,
-        strongest first with each fit starting from the next-stronger one,
-        then a bounded refinement within a decade of the best."""
+        """Return the log10 strength ``x`` maximizing ``laml(point(x))``.
+
+        The search is a grid, strongest first with each fit starting from the
+        next-stronger one, then a bounded refinement within a decade of the
+        best.
+        """
         scores: dict[float, tuple[float, ...]] = {}
 
         def score(x: float, start: np.ndarray) -> float:
@@ -1752,19 +1821,23 @@ def _fit_covariate_row(
     optimization_method: str,
     options: dict[str, Any],
     from_state: int,
+    *,
     warn: bool = True,
 ) -> np.ndarray:
-    """Minimize one row's :func:`dirichlet_neg_log_likelihood` over its
-    blocks of transitions. Call with JAX in float64.
+    """Minimize one row's :func:`dirichlet_neg_log_likelihood` over its blocks.
+
+    The blocks are of transitions. Call with JAX in float64.
 
     Parameters
     ----------
     initial_coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+        Starting point of the optimizer.
     blocks, prior_per_bin
         From :func:`_row_problem`.
     penalty : np.ndarray, shape (n_coefficients, n_coefficients)
         From :func:`_penalty_matrix`.
     optimization_method : str
+        Optimization method for `scipy.optimize.minimize`.
     options : dict
         Options for `scipy.optimize.minimize`.
     from_state : int
@@ -1877,7 +1950,9 @@ def _row_prior_weights(prior_weight: float | np.ndarray, n_states: int) -> np.nd
     Parameters
     ----------
     prior_weight : float or np.ndarray, shape (n_states,)
+        Data-adaptive prior weight: one for every row, or one per row.
     n_states : int
+        Number of discrete states.
 
     Returns
     -------
@@ -2017,8 +2092,11 @@ def _block_loss(
     Parameters
     ----------
     coefficients : jax.Array, shape (n_coefficients * (n_states - 1),)
+        Ordered (coefficient, logit).
     design_matrix : jax.Array, shape (n_block, n_coefficients)
+        Design matrix rows of the block.
     response : jax.Array, shape (n_block, n_states)
+        Expected transition counts of the block, for this row.
     prior_per_bin : jax.Array, shape (n_states,)
         The row's Dirichlet pseudo-counts ``alpha - 1`` divided by the number
         of time bins of the whole row, so that the prior counts once.
@@ -2054,8 +2132,12 @@ def _block_hessian(
     coefficients : jax.Array, shape (n_coefficients * (n_states - 1),)
         Ordered (coefficient, logit).
     design_matrix : jax.Array, shape (n_block, n_coefficients)
+        Design matrix rows of the block.
     response : jax.Array, shape (n_block, n_states)
+        Expected transition counts of the block, for this row.
     prior_per_bin : jax.Array, shape (n_states,)
+        The row's Dirichlet pseudo-counts per time bin, as in
+        :func:`_block_loss`.
 
     Returns
     -------
@@ -2107,7 +2189,9 @@ def _row_problem(
     design_blocks : list of jax.Array
         :func:`_transition_blocks` of the design matrix's transition rows.
     response : np.ndarray, shape (n_samples, n_states)
+        Expected transition counts of this row for each transition.
     alpha : float or np.ndarray, shape (n_states,)
+        Dirichlet prior of this row.
 
     Returns
     -------
@@ -2139,7 +2223,9 @@ def _penalty_matrix(
     Parameters
     ----------
     n_coefficients : int
+        Number of coefficients per logit.
     l2_penalty : float
+        Penalty strength on every coefficient but the intercept.
     smoothness : float or np.ndarray, shape (n_terms,), optional
         One strength for every term, or one per term.
     smoothness_matrix : np.ndarray, optional
@@ -2195,8 +2281,10 @@ def _blocked_loss_and_gradient(
     prior_per_bin: jax.Array,
     penalty: np.ndarray,
 ) -> tuple[float, np.ndarray]:
-    """:func:`dirichlet_neg_log_likelihood` and its gradient over blocks of
-    transitions, for scipy. Call with JAX in float64."""
+    """Return :func:`dirichlet_neg_log_likelihood` and its gradient, for scipy.
+
+    Evaluated over blocks of transitions. Call with JAX in float64.
+    """
     coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
     device_coefficients = jnp.asarray(coefficients)
@@ -2220,8 +2308,10 @@ def _blocked_hessian(
     prior_per_bin: jax.Array,
     penalty: np.ndarray,
 ) -> np.ndarray:
-    """:func:`dirichlet_neg_log_likelihood`'s Hessian over blocks of
-    transitions, for scipy. Call with JAX in float64."""
+    """Return the Hessian of :func:`dirichlet_neg_log_likelihood`, for scipy.
+
+    Evaluated over blocks of transitions. Call with JAX in float64.
+    """
     coefficients = np.asarray(coefficients, dtype=np.float64).ravel()
     # Summed on the device, so the blocks are not each copied to the host.
     device_coefficients = jnp.asarray(coefficients)
@@ -2361,8 +2451,9 @@ def dirichlet_hessian(
 
 
 def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
-    """Make a transition matrix where diagonal probabilities are `diag`,
-    and off-diagonal probabilities are uniform for the remaining probability.
+    """Make a transition matrix with diagonal probabilities `diag`.
+
+    Off-diagonal probabilities are uniform for the remaining probability.
 
     Parameters
     ----------
@@ -2398,7 +2489,7 @@ def _discrete_transition_statistics(
     discrete_transition_coefficients: np.ndarray | None,
     discrete_transition_design_matrix: DesignMatrix | None,
 ) -> np.ndarray:
-    """Expected discrete transition statistics from the expanded posteriors.
+    """Return expected discrete transition statistics from the expanded posteriors.
 
     Parameters
     ----------
@@ -2484,9 +2575,15 @@ def _transition_log_prior(
         covariate-dependent transition.
     discrete_transition_design_matrix : DesignMatrix, np.ndarray or None
         Shape (n_time, n_coefficients) for a covariate-dependent transition.
-    transition_concentration, transition_stickiness, transition_regularization,
-    transition_prior_weight
-        As in :func:`_discrete_transition_from_statistics`.
+    transition_concentration : float
+        Dirichlet prior concentration parameter (uniform part).
+    transition_stickiness : float or np.ndarray
+        Dirichlet prior stickiness parameter (diagonal enhancement).
+    transition_regularization : float
+        L2 penalty on covariate-dependent coefficients (excluding intercept).
+    transition_prior_weight : float or np.ndarray, optional
+        Data-adaptive prior weight for stationary transitions, as in
+        :func:`_discrete_transition_from_statistics`. By default 0.0.
     free_rows : np.ndarray of bool, shape (n_states,), optional
         Rows the M-step estimates. Frozen rows are constant and left out.
         All rows by default.
@@ -2791,9 +2888,10 @@ class _QuantileBSpline:
 def _curvature_gram(
     second: Callable[[np.ndarray], np.ndarray], breaks: np.ndarray, degree: int
 ) -> np.ndarray:
-    """``integral second(x).T @ second(x) dx`` between the first and last
-    break, for basis second derivatives ``second(x)`` of shape
-    (n_points, n_basis) that are polynomials between breaks.
+    """Integrate ``second(x).T @ second(x) dx`` between the first and last break.
+
+    ``second(x)`` are basis second derivatives of shape (n_points, n_basis)
+    that are polynomials between breaks.
 
     The second derivatives of a degree-``degree`` spline are polynomials of
     degree ``degree - 2`` between knots, so ``degree`` Gauss-Legendre points
@@ -2808,8 +2906,10 @@ def _curvature_gram(
 
 
 class _CyclicBSpline:
-    """Patsy stateful transform: a periodic cubic B-spline with knots at
-    data quantiles, for cyclic covariates such as phase or head direction.
+    """Patsy stateful transform for a periodic cubic B-spline.
+
+    Knots sit at data quantiles, for cyclic covariates such as phase or head
+    direction.
 
     The period is ``[lower, upper)``, given explicitly because the fitted
     values need not span it. Values outside it wrap. ``n_knots`` knots sit at
@@ -2865,9 +2965,11 @@ class _CyclicBSpline:
         return self._lower + np.mod(x - self._lower, self._upper - self._lower)
 
     def _extended(self) -> tuple[np.ndarray, float]:
-        """Knots extended by ``degree`` periods' worth on each side, so the
-        open B-spline basis over one period from the first knot can be
-        folded into the periodic one."""
+        """Return knots extended by ``degree`` periods' worth on each side.
+
+        The open B-spline basis over one period from the first knot can then
+        be folded into the periodic one.
+        """
         period, knots, degree = self._upper - self._lower, self._knots, self._degree
         extended = np.concatenate(
             [knots[-degree:] - period, knots, knots[: degree + 1] + period]
@@ -2875,8 +2977,10 @@ class _CyclicBSpline:
         return extended, knots[0]
 
     def _fold(self, basis: np.ndarray) -> np.ndarray:
-        """The periodic basis: open basis function ``j + n_knots`` is
-        function ``j`` one period later."""
+        """Fold the open basis into the periodic basis.
+
+        Open basis function ``j + n_knots`` is function ``j`` one period later.
+        """
         periodic = basis[:, : self._n_knots].copy()
         periodic[:, : self._degree] += basis[:, self._n_knots :]
         return periodic
@@ -3017,14 +3121,16 @@ class DiscreteTransition(Protocol):
 
     @property
     def smoothness(self) -> float | str:
-        """Curvature-penalty strength of covariate-dependent rows (or
-        ``"reml"``); 0.0 for a stationary transition."""
+        """Curvature-penalty strength of covariate-dependent rows.
+
+        May be ``"reml"``; 0.0 for a stationary transition.
+        """
         ...
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None
     ) -> InitialDiscreteTransition:
-        """The transition EM starts from.
+        """Return the transition EM starts from.
 
         Parameters
         ----------
@@ -3049,6 +3155,8 @@ def _check_initial_discrete_transition(
     initial : InitialDiscreteTransition
         Result of ``transition.make_state_transition``.
     transition : DiscreteTransition
+        Transition whose declared ``n_states`` and ``is_stationary`` the result
+        is checked against.
 
     Raises
     ------
@@ -3251,7 +3359,7 @@ def _initial_nonstationary_transition(
     covariate_data: pd.DataFrame | dict[str, Any] | None,
     smoothness: float | str,
 ) -> InitialDiscreteTransition:
-    """Initial structures of a covariate-driven transition from its intercept matrix.
+    """Return the initial structures of a covariate-driven transition from its intercept matrix.
 
     Parameters
     ----------
@@ -3498,7 +3606,7 @@ def _design_on(
     discrete_transition_design_matrix: DesignMatrix,
     covariate_data: pd.DataFrame | dict[str, Any],
 ) -> DesignMatrix:
-    """A fitted transition design evaluated on new covariates.
+    """Evaluate a fitted transition design on new covariates.
 
     Parameters
     ----------
@@ -3543,7 +3651,9 @@ def _transitions_on_design(
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
     coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Transition coefficients.
 
     Returns
     -------
@@ -3621,8 +3731,9 @@ def _transition_intervals(
     discrete_transition_covariate_data: pd.DataFrame | dict[str, Any],
     coverage: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """:func:`predict_discrete_state_transition_intervals`, with the
-    transition probabilities it centres them on.
+    """Return the intervals of :func:`predict_discrete_state_transition_intervals`.
+
+    Also returns the transition probabilities they are centred on.
 
     Returns
     -------

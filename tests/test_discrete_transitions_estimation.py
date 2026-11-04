@@ -1356,9 +1356,9 @@ class TestRemlInsideEM:
         marginal log-likelihood plus the log prior of the M-step's input
         coefficients under that M-step's strengths, here forced to jump by
         decades."""
-        from non_local_detector.models import base as base_module
+        from non_local_detector.models import _em as em_module
 
-        real_m_step = base_module._discrete_transition_from_statistics
+        real_m_step = em_module._discrete_transition_from_statistics
         m_steps = []
 
         def jumping_m_step(statistics, coefficients, *args, **kwargs):
@@ -1370,7 +1370,7 @@ class TestRemlInsideEM:
             return m_step
 
         monkeypatch.setattr(
-            base_module, "_discrete_transition_from_statistics", jumping_m_step
+            em_module, "_discrete_transition_from_statistics", jumping_m_step
         )
         detector, _, _ = _reml_detector()
         results = _estimate_transitions(detector, max_iter=3)
@@ -1397,9 +1397,9 @@ class TestRemlInsideEM:
     ):
         """REML changes the prior every M-step, so a flat objective is not
         enough: EM also needs the transitions to have stopped moving."""
-        from non_local_detector.models import base as base_module
+        from non_local_detector.models import _em as em_module
 
-        monkeypatch.setattr(base_module, "_max_transition_change", lambda *args: change)
+        monkeypatch.setattr(em_module, "_max_transition_change", lambda *args: change)
         detector, _, _ = _reml_detector()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")

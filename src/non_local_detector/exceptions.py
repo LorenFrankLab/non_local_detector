@@ -61,6 +61,19 @@ Examples
 ...     print(f"Package error: {e}")
 """
 
+__all__ = [
+    "CompatibilityWarning",
+    "ConfigurationError",
+    "DataError",
+    "DataQualityWarning",
+    "NonLocalDetectorError",
+    "NonLocalDetectorWarning",
+    "NotFittedError",
+    "NumericalWarning",
+    "ParameterWarning",
+    "ValidationError",
+]
+
 
 class NonLocalDetectorError(Exception):
     """Base exception for all non_local_detector errors.
@@ -250,4 +263,58 @@ class NotFittedError(ConfigurationError, AttributeError):
         What was found instead.
     hint : str, optional
         How to fit.
+    """
+
+
+class NonLocalDetectorWarning(UserWarning):
+    """Base class of every warning the package raises itself.
+
+    Filter on it to silence or escalate all of the package's warnings at once,
+    or on one of its subclasses to pick a kind. It is a ``UserWarning``, so
+    filters on ``UserWarning`` keep working. Warnings raised by third-party
+    code (JAX, scikit-learn, ...) are not instances of it.
+
+    Examples
+    --------
+    >>> import warnings
+    >>> from non_local_detector.exceptions import DataQualityWarning
+    >>> with warnings.catch_warnings():
+    ...     warnings.simplefilter("error", DataQualityWarning)
+    """
+
+
+class DataQualityWarning(NonLocalDetectorWarning):
+    """The data are sparse, missing or off the track.
+
+    For example tracking that moves farther between samples than
+    ``position_std``, positions snapped to the nearest bin, decode bins
+    outside the tracked period, and encoding groups or electrodes with zero
+    exposure or no encoding spikes.
+    """
+
+
+class NumericalWarning(NonLocalDetectorWarning):
+    """A fit did not converge or hit a degenerate numerical case.
+
+    For example EM that did not converge or lowered its objective, a Poisson
+    regression with a singular system, a Gaussian mixture with discarded
+    restarts, and a NaN kernel density.
+    """
+
+
+class ParameterWarning(NonLocalDetectorWarning):
+    """A setting is adjusted or likely to give a poor or costly fit.
+
+    For example ``position_std`` below the bin spacing, a basis rank or number
+    of mixture components reduced to fit the data, and dense EM that may not fit
+    in memory.
+    """
+
+
+class CompatibilityWarning(NonLocalDetectorWarning, DeprecationWarning):
+    """A deprecated argument or a legacy saved form was used.
+
+    Also a ``DeprecationWarning``, so Python's default filters (which hide
+    deprecations raised outside ``__main__``) and filters on
+    ``DeprecationWarning`` apply to it.
     """

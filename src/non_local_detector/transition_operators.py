@@ -981,9 +981,12 @@ _DENSE_GAUSSIAN_BLOCK_BYTES = 16 * 2**20
 
 
 def _small_gaussian_as_dense(block: Block, dense_budget: int) -> Block:
-    """A Gaussian (or restricted Gaussian) block as a ``DenseBlock`` when its
-    float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host
-    matrix fits ``dense_budget`` bytes; any other block as is."""
+    """Return a Gaussian (or restricted Gaussian) block as a ``DenseBlock`` if small.
+
+    The block is converted when its float32 matrix fits
+    ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host matrix fits
+    ``dense_budget`` bytes; any other block is returned as is.
+    """
     original = block.original if isinstance(block, RestrictedBlock) else block
     n_rows, n_columns = block.shape
     if (
@@ -1350,7 +1353,9 @@ class LazyDenseTransition:
         return int(np.prod(self.shape))
 
     def __array__(
-        self, dtype: DTypeLike | None = None, copy: bool | None = None
+        self,
+        dtype: DTypeLike | None = None,
+        copy: bool | None = None,  # noqa: FBT001 -- NumPy __array__ protocol
     ) -> np.ndarray:
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 
@@ -1587,8 +1592,9 @@ def _gaussian_block(
 
 @runtime_checkable
 class SupportsStructuredBlock(Protocol):
-    """A continuous transition the operator builder can plan without
-    calling ``make_state_transition``.
+    """A continuous transition the operator builder can plan structurally.
+
+    The builder plans it without calling ``make_state_transition``.
 
     A transition opts into structured operators by implementing these
     methods alongside its ``make_state_transition``, as the package's
@@ -1600,7 +1606,7 @@ class SupportsStructuredBlock(Protocol):
     """
 
     def structured_block(self, environments: Sequence[Environment]) -> Block:
-        """The exact block between two spatial (or two one-bin) states.
+        """Return the exact block between two spatial (or two one-bin) states.
 
         Parameters
         ----------
@@ -1628,14 +1634,16 @@ class SupportsStructuredBlock(Protocol):
     def graph_distance_environment(
         self, environments: Sequence[Environment]
     ) -> Environment | None:
-        """The environment whose graph distances ``make_state_transition``
-        reads, or None. Deferred distances are densified for it within the
-        dense budget."""
+        """Return the environment whose graph distances ``make_state_transition`` reads.
+
+        None if there is none. Deferred distances are densified for it within
+        the dense budget.
+        """
         ...
 
 
 def _planned(transition: object) -> SupportsStructuredBlock | None:
-    """The transition if its class plans its own blocks, else None.
+    """Return the transition if its class plans its own blocks, else None.
 
     Only a class that defines ``structured_block`` itself is trusted: a
     subclass inheriting it may change ``make_state_transition`` or any helper
@@ -1657,7 +1665,7 @@ def _one_bin_block(
     source_size: int,
     target_size: int,
 ) -> UniformBlock | None:
-    """The block between a one-bin state and a spatial state, or None.
+    """Return the block between a one-bin state and a spatial state, or None.
 
     From a one-bin state (No-Spike, or Local without ``local_position_std``)
     the block is uniform over the interior bins of the transition's
@@ -1670,7 +1678,9 @@ def _one_bin_block(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     environments : sequence of Environment
+        Environments in which the declared destination is looked up.
     source_size, target_size : int
         Bins of the source and destination states.
 

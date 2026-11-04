@@ -87,7 +87,7 @@ _DIMS = {
 
 
 def _member_name(where: str) -> str:
-    """A ``.npy`` member path for an array found at ``where``."""
+    """Return the ``.npy`` member path for an array found at ``where``."""
     parts = [re.sub(r"[^A-Za-z0-9_.-]", "_", part) or "_" for part in where.split("/")]
     return "arrays/" + "/".join(parts)
 
@@ -194,7 +194,7 @@ class Encoder:
         return ref
 
     def encode(self, value: Any, where: str) -> JSON:
-        """The JSON node of ``value``, found at ``where`` (used to name arrays)."""
+        """Return the JSON node of ``value``, found at ``where`` (used to name arrays)."""
         if value is None or isinstance(value, (bool, str)):
             return value
         # NumPy scalars first: np.float64 is a float.
@@ -235,7 +235,7 @@ class Encoder:
         return self.encode_object(value, where)
 
     def encode_object(self, value: Any, where: str) -> JSON:
-        """The ``$type`` node of ``value``, an object of a registered type.
+        """Return the ``$type`` node of ``value``, an object of a registered type.
 
         Raises
         ------
@@ -384,8 +384,11 @@ class Encoder:
         return {"values": self._array(index.to_numpy(), f"{where}/index")}
 
     def _column(self, column: pd.Series, where: str) -> JSON:
-        """The values of a Series or DataFrame column: an array, or a
-        categorical keeping its categories and their order."""
+        """Return the values of a Series or DataFrame column.
+
+        These are an array, or a categorical keeping its categories and their
+        order.
+        """
         if isinstance(column.dtype, pd.CategoricalDtype):
             return self._categorical(column.array, where)
         return self._array(column.to_numpy(), where)
@@ -442,7 +445,7 @@ class Decoder:
         self._refs: dict[int, Any] = {}
 
     def decode(self, node: JSON) -> Any:
-        """The value of ``node``."""
+        """Return the value of ``node``."""
         if node is None or isinstance(node, (bool, int, float, str)):
             return node
         if isinstance(node, list):
@@ -460,7 +463,7 @@ class Decoder:
             raise ValidationError(msg, hint="Upgrade non_local_detector to read it.")
         return handler(self, node)
 
-    def _as(self, array: np.ndarray, is_jax: bool) -> Any:
+    def _as(self, array: np.ndarray, *, is_jax: bool) -> Any:
         return jnp.asarray(array) if is_jax else array
 
     def _array(self, node: JSON) -> Any:
@@ -469,14 +472,14 @@ class Decoder:
             array = self.read_array(node["$array"])
             if node.get("object", False):
                 array = array.astype(object)
-            self._refs[ref] = self._as(array, node["jax"])
+            self._refs[ref] = self._as(array, is_jax=node["jax"])
         return self._refs[ref]
 
     def _fill(self, node: JSON) -> Any:
         ref = node["ref"]
         if ref not in self._refs:
             array = np.full(tuple(node["shape"]), node["$fill"], dtype=node["dtype"])
-            self._refs[ref] = self._as(array, node["jax"])
+            self._refs[ref] = self._as(array, is_jax=node["jax"])
         return self._refs[ref]
 
     def _ragged(self, node: JSON) -> Any:
@@ -485,7 +488,7 @@ class Decoder:
             data = np.asarray(self.decode(node["$ragged"]["data"]))
             offsets = np.asarray(self.decode(node["$ragged"]["offsets"]))
             self._refs[ref] = [
-                self._as(data[start:stop], node["jax"])
+                self._as(data[start:stop], is_jax=node["jax"])
                 for start, stop in itertools.pairwise(offsets)
             ]
         return self._refs[ref]

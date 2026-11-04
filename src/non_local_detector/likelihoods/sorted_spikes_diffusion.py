@@ -72,6 +72,13 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
+__all__ = [
+    "SortedSpikesDiffusionEncodingModel",
+    "fit_sorted_spikes_diffusion_encoding_model",
+    "predict_sorted_spikes_diffusion_log_likelihood",
+]
+
+
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
 
@@ -253,8 +260,8 @@ def pixellate_interior_fields(
     environment: Environment,
     node_order: np.ndarray,
     weights: np.ndarray,
-    disable_progress_bar: bool = False,
     *,
+    disable_progress_bar: bool = False,
     encoding_support: EncodingSupport | None = None,
 ) -> tuple[np.ndarray, list[np.ndarray], list[float]]:
     """Histogram weighted occupancy and per-neuron spike counts onto interior bins.
@@ -364,6 +371,7 @@ def assemble_place_fields(
     node_order : np.ndarray, shape (n_interior,)
         Interior flat-bin indices in graph order.
     n_total_bins : int
+        Number of bins in the full grid (interior and off-track).
 
     Returns
     -------
@@ -546,7 +554,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
         environment,
         node_order,
         weights,
-        disable_progress_bar,
+        disable_progress_bar=disable_progress_bar,
         encoding_support=support,
     )
 
@@ -749,8 +757,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
                     spike_times,
                     rows.time_edges,
                     "Local Likelihood",
-                    True,
-                    slice(start, stop),
+                    disable_progress_bar=True,
+                    row_slice=slice(start, stop),
                     _spike_time_order=rows.spike_time_order,
                 ),
                 dtype=block_rates.dtype,
@@ -768,7 +776,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
             len(spike_times),
             evaluate_local,
             "Local Likelihood",
-            disable_progress_bar,
+            disable_progress_bar=disable_progress_bar,
         )[:, None]
 
     # The shared non-local emission, as for the sorted KDE and GLM: interior

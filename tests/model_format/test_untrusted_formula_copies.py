@@ -21,7 +21,7 @@ from sklearn.base import clone
 import non_local_detector as nld
 from non_local_detector import time_edges_from_centers
 from non_local_detector._formula_grammar import LoadedFormula, UntrustedFormula
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import ParameterWarning, ValidationError
 from tests.model_format.conftest import algorithm_params, decode
 
 pytestmark = pytest.mark.integration
@@ -91,7 +91,7 @@ def loaded(request, sorted_recording, tmp_path, calls):
         path = tmp_path / "model.nld"
         detector.save_model(path)
         _with_formula(path, formula)
-        with pytest.warns(UserWarning, match="trust_formulas=True") as warned:
+        with pytest.warns(ParameterWarning, match="trust_formulas=True") as warned:
             model = nld.NonLocalSortedSpikesDetector.load_model(path)
         assert len(warned) == 1
         return model, request.param

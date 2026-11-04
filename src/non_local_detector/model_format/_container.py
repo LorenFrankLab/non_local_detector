@@ -63,7 +63,7 @@ class StoredModel:
     _open_member: Callable[[str], IO[bytes]] | None = field(default=None, repr=False)
 
     def read_array(self, member: str) -> np.ndarray:
-        """The array stored as ``member``, after checking its sha256.
+        """Return the array stored as ``member``, after checking its sha256.
 
         The member is decompressed straight into the array, hashing as it
         reads, so reading takes about the array's own memory.
@@ -146,6 +146,7 @@ def is_saved_model_format(path: str | Path) -> bool:
     Parameters
     ----------
     path : str or Path
+        File to check.
 
     Returns
     -------
@@ -157,7 +158,7 @@ def is_saved_model_format(path: str | Path) -> bool:
 
 
 def _npy_header(array: np.ndarray) -> bytes:
-    """The ``.npy`` header of ``array``: version 1.0, or 2.0 if it needs it."""
+    """Return the ``.npy`` header of ``array``: version 1.0, or 2.0 if it needs it."""
     header = io.BytesIO()
     fields = np.lib.format.header_data_from_array_1_0(array)
     try:
@@ -169,8 +170,10 @@ def _npy_header(array: np.ndarray) -> bytes:
 
 
 def _npy_chunks(array: np.ndarray) -> Iterator[memoryview]:
-    """The bytes of a C-contiguous ``array``'s ``.npy`` member, in chunks that
-    view the array's memory rather than copy it."""
+    """Yield the bytes of a C-contiguous ``array``'s ``.npy`` member.
+
+    The chunks view the array's memory rather than copy it.
+    """
     yield memoryview(_npy_header(array))
     data = array.reshape(-1).view(np.uint8)
     for start in range(0, data.size, _CHUNK_BYTES):
@@ -178,8 +181,10 @@ def _npy_chunks(array: np.ndarray) -> Iterator[memoryview]:
 
 
 def array_digest(array: np.ndarray) -> str:
-    """The sha256 of a C-contiguous ``array``'s ``.npy`` member, without
-    building the member."""
+    """Return the sha256 of a C-contiguous ``array``'s ``.npy`` member.
+
+    The member is not built.
+    """
     digest = hashlib.sha256()
     for chunk in _npy_chunks(array):
         digest.update(chunk)
@@ -187,7 +192,7 @@ def array_digest(array: np.ndarray) -> str:
 
 
 def _member_info(name: str, size: int) -> zipfile.ZipInfo:
-    """A member of fixed timestamp, deflated if over ``DEFLATE_THRESHOLD``."""
+    """Return a member info of fixed timestamp, deflated if over ``DEFLATE_THRESHOLD``."""
     info = zipfile.ZipInfo(name, date_time=_TIMESTAMP)
     if size > DEFLATE_THRESHOLD:
         info.compress_type = zipfile.ZIP_DEFLATED
@@ -202,8 +207,10 @@ def _member_info(name: str, size: int) -> zipfile.ZipInfo:
 
 
 def write_array_member(archive: zipfile.ZipFile, name: str, array: np.ndarray) -> None:
-    """Write a C-contiguous ``array`` as the ``.npy`` member ``name``,
-    streaming it in, so no copy of it is built."""
+    """Write a C-contiguous ``array`` as the ``.npy`` member ``name``.
+
+    The array is streamed in, so no copy of it is built.
+    """
     size = array.nbytes + _NPY_HEADER_BYTES
     with archive.open(
         _member_info(name, size), "w", force_zip64=size > 2**31 - 1
@@ -224,7 +231,7 @@ def write_document(archive: zipfile.ZipFile, name: str, document: Any) -> None:
 
 @contextlib.contextmanager
 def new_model_file(path: str | Path) -> Iterator[zipfile.ZipFile]:
-    """A zip to write a saved model into, moved to ``path`` once complete.
+    """Open a zip to write a saved model into, moved to ``path`` once complete.
 
     The file is written beside ``path`` and replaces it only if the ``with``
     block completes, so a failed save leaves an existing file unchanged.
@@ -278,7 +285,7 @@ class _Archive:
         self.limits: dict[str, int] = dict.fromkeys(_DOCUMENTS, _MAX_DOCUMENT_BYTES)
 
     def document(self, name: str) -> Any:
-        """The parsed JSON document ``name``."""
+        """Return the parsed JSON document ``name``."""
         if name not in self.infos:
             msg = f"The file has no {name}; it is not a saved non_local_detector model"
             raise DataError(msg)
@@ -306,7 +313,7 @@ class _Archive:
             raise DataError(msg, hint="The file is corrupt or was edited.")
 
     def open(self, name: str) -> IO[bytes]:
-        """A stream of the uncompressed bytes of member ``name``.
+        """Open a stream of the uncompressed bytes of member ``name``.
 
         Raises
         ------
@@ -330,7 +337,7 @@ class _Archive:
             raise DataError(msg, hint="Save the model again.") from None
 
     def read(self, name: str) -> bytes:
-        """The uncompressed bytes of member ``name`` (see :meth:`open`)."""
+        """Return the uncompressed bytes of member ``name`` (see :meth:`open`)."""
         try:
             with self.open(name) as stream:
                 return stream.read()
@@ -348,7 +355,7 @@ def _zip(source: str | Path | io.BytesIO) -> zipfile.ZipFile:
 
 
 def _open(archive: zipfile.ZipFile) -> tuple[StoredModel, int]:
-    """The documents of an opened archive and their format version."""
+    """Return the documents of an opened archive and their format version."""
     checked = _Archive(archive)
     manifest = checked.document("manifest.json")
     version = _check_version(manifest)

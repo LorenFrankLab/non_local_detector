@@ -22,7 +22,7 @@ import pytest
 import non_local_detector as nld
 from non_local_detector import discrete_state_transitions as dst
 from non_local_detector._formula_grammar import LoadedFormula, UntrustedFormula
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import ParameterWarning, ValidationError
 from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.model_format import read_model_summary
 from tests.model_format._compare import assert_same_fitted_state
@@ -109,7 +109,7 @@ def test_a_refused_stored_formula_loads_for_inspection_only(
     fitted.save_model(path)
     _with_formula(path, formula)
 
-    with pytest.warns(UserWarning, match="trust_formulas=True") as warned:
+    with pytest.warns(ParameterWarning, match="trust_formulas=True") as warned:
         loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
     summary = read_model_summary(path)
 
@@ -138,7 +138,7 @@ def test_a_formula_outside_the_grammar_is_not_evaluated_by_default(
         monkeypatch.setattr(module, "dmatrix", _patsy_must_not_run)
         monkeypatch.setattr(module, "build_design_matrices", _patsy_must_not_run)
 
-    with pytest.warns(UserWarning, match="trust_formulas=True") as warned:
+    with pytest.warns(ParameterWarning, match="trust_formulas=True") as warned:
         loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
 
     assert len(warned) == 1
@@ -302,7 +302,7 @@ def test_a_model_loaded_for_inspection_refuses_to_fit(
         monkeypatch.setattr(module, "dmatrix", _patsy_must_not_run)
         monkeypatch.setattr(module, "build_design_matrices", _patsy_must_not_run)
 
-    with pytest.warns(UserWarning, match="trust_formulas=True"):
+    with pytest.warns(ParameterWarning, match="trust_formulas=True"):
         loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
 
     with pytest.raises(ValidationError, match="trust_formulas=True") as refused:
@@ -338,7 +338,7 @@ def test_a_stored_spline_size_beyond_the_caps_is_not_evaluated(
     _with_formula(path, "1 + bs(speed, df=10**7)")
 
     start = time.perf_counter()
-    with pytest.warns(UserWarning, match="trust_formulas=True"):
+    with pytest.warns(ParameterWarning, match="trust_formulas=True"):
         loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
 
     assert time.perf_counter() - start < 5.0

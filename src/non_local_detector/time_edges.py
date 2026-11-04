@@ -28,6 +28,12 @@ from numpy.typing import ArrayLike
 
 from non_local_detector.exceptions import DataError, ValidationError
 
+__all__ = [
+    "calculate_time_edges",
+    "time_edges_from_centers",
+]
+
+
 # Allowed deviation of a bin width from the mean width, in ulp of max|edge|.
 _SPACING_TOLERANCE_ULPS = 4
 # Edges whose spacing tolerance exceeds this fraction of a bin width cannot
@@ -82,7 +88,7 @@ def _spacing_tolerance(time_edges: np.ndarray) -> float:
 
 
 def _uniformity_tolerance(time_edges: np.ndarray, width: float) -> float:
-    """Allowed deviation of a bin width from ``width``, in seconds."""
+    """Return the allowed deviation of a bin width from ``width``, in seconds."""
     return max(_spacing_tolerance(time_edges), _UNIFORMITY_RELATIVE_FLOOR * width)
 
 
@@ -391,7 +397,7 @@ def time_edges_from_centers(time: ArrayLike) -> np.ndarray:
 
 
 def calculate_time_edges(
-    time_range: ArrayLike, sampling_frequency: float, trim: bool = False
+    time_range: ArrayLike, sampling_frequency: float, *, trim: bool = False
 ) -> np.ndarray:
     """Uniform edges at ``1 / sampling_frequency`` spanning ``time_range``.
 

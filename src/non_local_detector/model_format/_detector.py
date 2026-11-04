@@ -57,7 +57,11 @@ from non_local_detector.continuous_state_transitions import (
     _no_structured_block,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import NotFittedError, ValidationError
+from non_local_detector.exceptions import (
+    NotFittedError,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.model_format._codec import (
     JSON,
@@ -85,6 +89,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from non_local_detector.models.base import _DetectorBase
+    from non_local_detector.types import TransitionRepresentation
 
 # (file name, detector attribute) of the fitted state stored as is. An
 # attribute the detector does not have is left out of the file.
@@ -166,8 +171,11 @@ def _column_summary(values: Any) -> np.ndarray:
 
 
 def _environment_fingerprint(environment: Environment) -> np.ndarray:
-    """Summary of a fitted grid: bin centers and edges, interior count and
-    the bin graph's edge distances (from which the distances follow)."""
+    """Summarize a fitted grid for comparison.
+
+    The summary holds bin centers and edges, interior count and the bin
+    graph's edge distances (from which the distances follow).
+    """
     graph = (
         environment.track_graphDD
         if environment.track_graph is None
@@ -186,8 +194,10 @@ def _environment_fingerprint(environment: Environment) -> np.ndarray:
 
 
 def _fingerprint_weights(n: int) -> np.ndarray:
-    """Two fixed weight patterns over ``n`` bins, shape (n, 2): a ramp from 1
-    to 2 and the fractional parts of multiples of the golden ratio, plus 1.
+    """Return two fixed weight patterns over ``n`` bins, shape (n, 2).
+
+    They are a ramp from 1 to 2 and the fractional parts of multiples of the
+    golden ratio, plus 1.
 
     The second is not a function of the first, so a change that keeps one
     weighted sum cannot keep both.
@@ -416,7 +426,7 @@ class _FittedBlock:
 
 
 def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]:
-    """The continuous blocks built from fit data, by (from_state, to_state)."""
+    """Return the continuous blocks built from fit data, by (from_state, to_state)."""
     state_ind = np.asarray(detector.state_ind_)
     blocks = {}
     for source, row in enumerate(detector.continuous_transition_types):
@@ -560,7 +570,7 @@ def _detector_spec(detector: "_DetectorBase") -> TypeSpec:
 def _fitted_attributes(
     detector: "_DetectorBase", params: Mapping[str, Any]
 ) -> set[str]:
-    """The detector's attributes that its constructor does not set.
+    """Return the detector's attributes that its constructor does not set.
 
     Attributes the constructor sets from the parameters (``params`` and any it
     derives, such as a model's fixed ``local_position_std``) are rebuilt by
@@ -594,7 +604,7 @@ def _fitted_attributes(
 def detector_documents(
     detector: "_DetectorBase", writer: ArrayWriter
 ) -> tuple[dict[str, Any], JSON, dict[str, Any]]:
-    """The manifest, config and state documents and the arrays of a detector.
+    """Return the manifest, config and state documents and the arrays of a detector.
 
     Raises
     ------
@@ -705,7 +715,7 @@ def _mark_file_formula(
 
     A formula within the formula grammar becomes a ``LoadedFormula``, checked
     again with the covariates whenever a design is built from it; one outside
-    it becomes an inert ``UntrustedFormula``, with a ``UserWarning``, so
+    it becomes an inert ``UntrustedFormula``, with a ``ParameterWarning``, so
     neither the detector nor any copy of it evaluates it.
 
     Parameters
@@ -735,7 +745,7 @@ def _mark_file_formula(
             f"evaluated (patsy evaluates formulas as Python): {reason} The "
             "model loaded for inspection only: decoding, fitting and saving it, "
             f"or any copy of it, are refused. {TRUST_HINT}",
-            UserWarning,
+            ParameterWarning,
             stacklevel=user_stacklevel(),
         )
         transition.formula = UntrustedFormula(formula)
@@ -826,7 +836,10 @@ def _rebuild_continuous(
     )
     detector._initialize_continuous_state_transition(
         cast(Any, building),
-        transition_representation="auto" if from_operator else representation,
+        transition_representation=cast(
+            "TransitionRepresentation",
+            "auto" if from_operator else representation,
+        ),
         max_dense_transition_bytes=detector._max_dense_transition_bytes_,
     )
     detector.continuous_transition_types = configured

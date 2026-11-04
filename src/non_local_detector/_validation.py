@@ -64,7 +64,7 @@ def ensure_probability_distribution(
 
 
 def ensure_positive_scalar(
-    value: float, name: str, minimum: float = 0.0, strict: bool = True
+    value: float, name: str, minimum: float = 0.0, *, strict: bool = True
 ) -> None:
     """Verify value is positive (or non-negative).
 
@@ -279,7 +279,7 @@ def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
 
 
 def _bad_rows_description(row_sums: np.ndarray, bad_rows: np.ndarray) -> str:
-    """The first ten rows whose sums are out of range, and their sums."""
+    """Return the first ten rows whose sums are out of range, and their sums."""
     bad_indices = np.flatnonzero(bad_rows)
     return (
         f"{len(bad_indices)} row(s) with invalid sums: rows "
@@ -400,7 +400,7 @@ def ensure_ndarray(value: Any, name: str) -> None:
 
 
 def ensure_monotonic_increasing(
-    arr: np.ndarray, name: str, strict: bool = False
+    arr: np.ndarray, name: str, *, strict: bool = False
 ) -> None:
     """Verify array is monotonically increasing.
 

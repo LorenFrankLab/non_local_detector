@@ -78,7 +78,7 @@ _CGROUP_UNLIMITED = 2**60
 
 
 def _read_cgroup_value(path: Path) -> int | None:
-    """An integer cgroup memory file, or None if absent, unlimited or unreadable."""
+    """Return a cgroup memory file as an int, or None if absent, unlimited or unreadable."""
     try:
         text = path.read_text().strip()
     except OSError:
@@ -360,7 +360,10 @@ def _prepare_chunk(
     Parameters
     ----------
     values : jax.Array, shape (n_rows, n_bins)
+        Chunk of values; rows flagged in ``missing`` are zeroed before the
+        masks and checksum are computed.
     missing : jax.Array of bool, shape (n_rows,)
+        True for rows to neutralize.
 
     Returns
     -------

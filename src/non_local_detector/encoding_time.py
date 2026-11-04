@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from non_local_detector._validation import validate_weights
 from non_local_detector._warnings import user_stacklevel
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from non_local_detector.time_edges import uniform_time_bin_width, validate_time_edges
 
 
@@ -272,7 +272,9 @@ class EncodingSupport:
         Parameters
         ----------
         segment_index : int
+            Index into ``self.segments``.
         spike_times : np.ndarray, shape (n_spikes,)
+            Spike times in seconds.
 
         Returns
         -------
@@ -483,7 +485,7 @@ def warn_if_no_encoding_exposure(
             f"{consequence} Check the weights (or is_training, "
             "encoding_group_labels and environment_labels), NaN positions, and "
             "encoding_time_range / valid_position_intervals.",
-            UserWarning,
+            DataQualityWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -546,6 +548,6 @@ def warn_if_tracking_is_sparse(
             "so place fields can be biased where spikes fall between distant "
             "samples. Use position sampled more often (or upsampled along the "
             "path), or a position_std at least as large as the largest step.",
-            UserWarning,
+            DataQualityWarning,
             stacklevel=user_stacklevel(),
         )

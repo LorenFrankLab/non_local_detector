@@ -289,7 +289,7 @@ def background_log_intensity(
 
 
 def background_rate(n_electrodes: int) -> float:
-    """Summed background rate of ``n_electrodes`` electrodes, in Hz.
+    """Return the summed background rate of ``n_electrodes`` electrodes, in Hz.
 
     Every electrode, including a zero-rate one, has background rate
     ``RATE_EPS_HZ``. Encoding fits store only the encoding model's ground

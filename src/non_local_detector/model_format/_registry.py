@@ -63,7 +63,7 @@ def read_fields(
     defaults: Mapping[str, Any],
     cls: type,
 ) -> dict[str, Any]:
-    """The ``names`` fields of a stored state, defaulting optional ones.
+    """Return the ``names`` fields of a stored state, defaulting optional ones.
 
     A field added to a type after files were written is absent from those
     files; ``defaults`` gives its value then (a copy).
@@ -260,7 +260,7 @@ def _register(
 
 
 def unregistered_type_error(cls: type, where: str) -> ValidationError:
-    """The error ``save_model`` raises for an object of an unregistered type."""
+    """Return the error ``save_model`` raises for an object of an unregistered type."""
     qualified = f"{cls.__module__}.{cls.__qualname__}"
     msg = f"Cannot save the {qualified} at {where}: its type is not registered"
     return ValidationError(
@@ -277,23 +277,24 @@ def unregistered_type_error(cls: type, where: str) -> ValidationError:
 
 
 def spec_for_object(obj: Any) -> TypeSpec | None:
-    """The spec of ``type(obj)``, or None if it is not registered."""
+    """Return the spec of ``type(obj)``, or None if it is not registered."""
     _register_builtins()
     return _BY_CLASS.get(type(obj))
 
 
 def spec_for_class(cls: type) -> TypeSpec | None:
-    """The spec of ``cls``, or None if it is not registered."""
+    """Return the spec of ``cls``, or None if it is not registered."""
     _register_builtins()
     return _BY_CLASS.get(cls)
 
 
 def spec_for_name(name: str, owner: str | None = None) -> TypeSpec:
-    """The spec registered as ``name``.
+    """Return the spec registered as ``name``.
 
     Parameters
     ----------
     name : str
+        Registered name of the type.
     owner : str, optional
         The registering package the file recorded, named in the error.
 

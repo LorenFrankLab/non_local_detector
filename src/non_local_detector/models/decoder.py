@@ -27,6 +27,11 @@ from non_local_detector.types import (
     Stickiness,
 )
 
+__all__ = [
+    "ClusterlessDecoder",
+    "SortedSpikesDecoder",
+]
+
 
 class SortedSpikesDecoder(SortedSpikesDetector):
     """Decoder of position from sorted spike data with a single continuous state.

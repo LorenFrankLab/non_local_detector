@@ -588,13 +588,13 @@ def test_auto_em_uses_dense_em_for_a_small_state_space(dense_fit):
 def test_auto_em_uses_structured_em_otherwise(reason, monkeypatch, tmp_path, dense_fit):
     import warnings
 
-    from non_local_detector.models import base
+    from non_local_detector.models import _em
 
     kwargs = {}
     if reason == "large_transition":
-        monkeypatch.setattr(base, "_AUTO_DENSE_TRANSITION_BYTES", 1)
+        monkeypatch.setattr(_em, "_AUTO_DENSE_TRANSITION_BYTES", 1)
     elif reason == "dense_does_not_fit":
-        monkeypatch.setattr(base, "_device_memory_limit", lambda: 1)
+        monkeypatch.setattr(_em, "_device_memory_limit", lambda: 1)
     else:
         kwargs["result_path"] = tmp_path / "store"
     dense = dense_fit("sorted")
@@ -676,7 +676,7 @@ def test_default_replay_cache_is_capped_by_available_memory(available, monkeypat
 )
 def test_auto_em_device_memory_boundary(monkeypatch):
     """Dense EM needs its arrays to fit in half the device memory."""
-    from non_local_detector.models import base
+    from non_local_detector.models import _em
 
     model, data = _recording("sorted")
     n_time = N_BINS
@@ -687,7 +687,7 @@ def test_auto_em_device_memory_boundary(monkeypatch):
         transition_representation="auto",
     )
     n_bins = int(model.is_track_interior_state_bins_.sum())
-    working = base._DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+    working = _em._DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
     for limit, dense in ((2 * working, True), (2 * working - 2, False)):
         model.fit(
             data["position_time"],
@@ -695,7 +695,7 @@ def test_auto_em_device_memory_boundary(monkeypatch):
             data["spike_times"],
             transition_representation="auto",
         )
-        monkeypatch.setattr(base, "_device_memory_limit", lambda limit=limit: limit)
+        monkeypatch.setattr(_em, "_device_memory_limit", lambda limit=limit: limit)
         model._choose_em_representation(n_time)
         assert _uses_operator(model) is not dense
 
@@ -711,7 +711,7 @@ def test_auto_em_warns_when_memory_alone_rules_out_dense_em(reason, monkeypatch)
     """
     import warnings
 
-    from non_local_detector.models import base
+    from non_local_detector.models import _em
 
     model, data = _recording("sorted")
     n_time = N_BINS
@@ -722,11 +722,11 @@ def test_auto_em_warns_when_memory_alone_rules_out_dense_em(reason, monkeypatch)
         transition_representation="auto",
     )
     n_bins = int(model.is_track_interior_state_bins_.sum())
-    working = base._DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
+    working = _em._DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
     limit = 2 * working if reason == "fits" else 2 * working - 2
-    monkeypatch.setattr(base, "_device_memory_limit", lambda: limit)
+    monkeypatch.setattr(_em, "_device_memory_limit", lambda: limit)
     if reason == "large_transition":
-        monkeypatch.setattr(base, "_AUTO_DENSE_TRANSITION_BYTES", 1)
+        monkeypatch.setattr(_em, "_AUTO_DENSE_TRANSITION_BYTES", 1)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         model._choose_em_representation(n_time)
@@ -808,9 +808,9 @@ def test_dense_em_warns_before_exceeding_device_memory(n_chunks, monkeypatch):
     """A dense EM that cannot fit says so before it runs, and names the fix."""
     import warnings
 
-    from non_local_detector.models import base
+    from non_local_detector.models import _em
 
-    monkeypatch.setattr(base, "_device_memory_limit", lambda: 1)
+    monkeypatch.setattr(_em, "_device_memory_limit", lambda: 1)
     model, data = _recording("sorted")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -828,9 +828,9 @@ def test_dense_em_warns_before_exceeding_device_memory(n_chunks, monkeypatch):
 def test_dense_em_within_memory_does_not_warn(monkeypatch):
     import warnings
 
-    from non_local_detector.models import base
+    from non_local_detector.models import _em
 
-    monkeypatch.setattr(base, "_device_memory_limit", lambda: 2**50)
+    monkeypatch.setattr(_em, "_device_memory_limit", lambda: 2**50)
     model, data = _recording("sorted")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

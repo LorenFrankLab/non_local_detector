@@ -60,7 +60,12 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    NumericalWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     SpikeTimeOrder,
@@ -80,6 +85,13 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     validate_local_interpolation,
 )
 from non_local_detector.time_edges import _DecodeTimeGrid, requires_time_edges
+
+__all__ = [
+    "SortedSpikesMRFEncodingModel",
+    "fit_sorted_spikes_mrf_encoding_model",
+    "predict_sorted_spikes_mrf_log_likelihood",
+]
+
 
 # The Newton/IRLS fit and REML score run in JAX (jit + GPU-ready), batched over
 # neurons. float32 is the package regime (core.py is float32-explicit, so no global
@@ -418,6 +430,7 @@ def mrf_penalized_poisson_fit(
     penalty: float,
     max_iter: int = 100,
     tol: float = 1e-10,
+    *,
     validate: bool = True,
     rate_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | bool]]:
@@ -502,7 +515,7 @@ def mrf_penalized_poisson_fit(
 
 
 def _penalty_rank(penalty_weights: np.ndarray) -> int:
-    """Number of penalized directions (positive eigenvalues) for the REML df term."""
+    """Return the number of penalized directions (positive eigenvalues) for the REML df term."""
     largest = penalty_weights.max()
     if largest <= 0:
         return 0
@@ -551,6 +564,7 @@ def mrf_reml_objective(
     penalty_weights: np.ndarray,
     max_iter: int = 100,
     tol: float = 1e-10,
+    *,
     validate: bool = True,
     rate_scale: float = 1.0,
 ) -> float:
@@ -925,12 +939,12 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     Warns
     -----
-    UserWarning
+    DataQualityWarning
         If some, but not all, connected components of the interior graph have
         exactly zero exposure. Their rates are unidentified, so spike counts binned
         there are ignored, their place fields are set to ``RATE_EPS_HZ`` and their
         modes' coefficients to zero.
-    UserWarning
+    DataQualityWarning
         If the exposure is zero everywhere. Every place field is then
         ``RATE_EPS_HZ``.
     """
@@ -979,7 +993,7 @@ def fit_sorted_spikes_mrf_encoding_model(
             f"MRF basis auto-capped at {effective_rank} of "
             f"{node_order.shape[0]} interior bins; the highest-frequency "
             f"eigenmodes are dropped. Pass an explicit `rank` to override.",
-            UserWarning,
+            ParameterWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -993,7 +1007,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         environment,
         node_order,
         weights,
-        disable_progress_bar,
+        disable_progress_bar=disable_progress_bar,
         encoding_support=support,
     )
     if spike_fields:
@@ -1025,7 +1039,7 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"connected components of the environment have zero encoding "
                 f"exposure; their rates are unidentified and set to the zero-exposure "
                 f"floor ({RATE_EPS_HZ:.1e} Hz).",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             # Spikes binned where there is no exposure carry no rate information and
@@ -1069,7 +1083,7 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"{diagnostics['n_iter']} iteration(s) (max coefficient step "
                 f"{diagnostics['max_step']:.2e}); place fields may be unreliable. "
                 f"Increase max_iter or the penalty.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
         rate_interior = np.exp(
