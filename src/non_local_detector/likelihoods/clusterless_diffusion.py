@@ -35,7 +35,7 @@ placed at their bins, as the samples' exposure is (one entry when both samples
 share a bin, else two with the spike's mark). ``K_mark`` is the Gaussian
 mark kernel with its normalizer, ``H`` is the fixed spatial kernel
 (:func:`_kernel_columns`: heat-kernel columns clipped, kept within their
-connected component, cut below ``_FIELD_RESOLUTION`` of their peak and
+connected component, cut below ``FIELD_RESOLUTION`` of their peak and
 normalized to unit mass) that also diffuses occupancy and the ground process,
 ``sum_i w_i`` the weighted encoding count, and ``dV(x) = bin_sizes`` the per-bin
 measure. Because ``H``'s columns sum to one, dividing by ``(sum_i w_i) * dV(x)``
@@ -118,14 +118,14 @@ from non_local_detector.likelihoods.common import (
     zero_if_neginf,
 )
 from non_local_detector.likelihoods.diffusion import (
-    _FIELD_RESOLUTION,
-    _resolved_occupancy,
+    FIELD_RESOLUTION,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
     environment_graph,
     get_device_basis,
     heat_kernel_apply,
+    resolved_occupancy,
 )
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.mark_reference import (
@@ -537,7 +537,7 @@ def fit_clusterless_diffusion_encoding_model(
         if w_total == 0:
             continue
         summed_ground_process_intensity += next(spike_fields_hat) * np.exp(
-            np.asarray(_log_intensity_scale(occupancy, bin_sizes, mean_rate, w_total))
+            np.asarray(log_intensity_scale(occupancy, bin_sizes, mean_rate, w_total))
         )
 
     return {
@@ -592,7 +592,7 @@ def _kernel_columns(
 
     Column ``k`` is the heat kernel applied to bin ``sources[k]``: clipped to be
     non-negative, zero outside that bin's connected component, cut below
-    ``_FIELD_RESOLUTION`` of its peak (heat-kernel noise) and normalized to unit
+    ``FIELD_RESOLUTION`` of its peak (heat-kernel noise) and normalized to unit
     mass. Every column depends only on its own source, so the model's one
     spatial kernel ``H`` can be built in tiles of sources. Occupancy, the ground
     process and every spike's marked field are the same linear map ``H`` of
@@ -623,7 +623,7 @@ def _kernel_columns(
         eigvals, eigvecs, position_std, onehot, labels, n_components=n_components
     )
     columns = jnp.where(
-        columns >= _FIELD_RESOLUTION * jnp.max(columns, axis=0, keepdims=True),
+        columns >= FIELD_RESOLUTION * jnp.max(columns, axis=0, keepdims=True),
         columns,
         0.0,
     )
@@ -655,7 +655,7 @@ def spatial_kernel_columns(
     columns : jax.Array, shape (n_bins, n_sources)
         Non-negative columns that each sum to one: the diffusion of a unit mass
         from each source bin, zero outside its connected component and below
-        ``_FIELD_RESOLUTION`` of its peak. ``resolved_rank`` and
+        ``FIELD_RESOLUTION`` of its peak. ``resolved_rank`` and
         ``position_std`` must be the fitted model's.
     """
     eigvals, eigvecs, labels, n_components = get_device_basis(
@@ -767,7 +767,7 @@ def _diffuse_fields(
     return out
 
 
-def _log_intensity_scale(
+def log_intensity_scale(
     occupancy: jax.Array | np.ndarray,
     bin_sizes: jax.Array | np.ndarray,
     mean_rate: jax.Array | float,
@@ -777,7 +777,7 @@ def _log_intensity_scale(
 
     Multiplying a diffused source field by this gives the intensity. Bins
     whose occupancy the heat kernel does not resolve (see
-    :func:`_resolved_occupancy`) carry no encoding information: their scale is
+    :func:`resolved_occupancy`) carry no encoding information: their scale is
     ``-inf``, so their marked and ground intensities are zero and their spikes
     are explained by the background alone. Shared by decoding and model
     checking.
@@ -793,7 +793,7 @@ def _log_intensity_scale(
     """
     occupancy = jnp.asarray(occupancy)
     return jnp.where(
-        _resolved_occupancy(occupancy),
+        resolved_occupancy(occupancy),
         log_density_intensity(
             mean_rate,
             -jnp.log(weight_total * jnp.asarray(bin_sizes)),
@@ -982,7 +982,7 @@ def _kernel_bounds(
     sources : jax.Array, shape (n_sources,)
         A whole number of tiles long.
     log_scale : jax.Array, shape (n_bins,)
-        :func:`_log_intensity_scale` for a unit rate and weight.
+        :func:`log_intensity_scale` for a unit rate and weight.
     tile : int
     position_std : float
     n_components : int
@@ -1179,7 +1179,7 @@ def _add_electrode_diffusion_terms(
         (:func:`_dense_kernel`); then ``sources`` are every bin. Otherwise
         kernel columns are built from the basis, tile by tile.
     log_scale : jax.Array, shape (n_bins,)
-        From :func:`_log_intensity_scale`.
+        From :func:`log_intensity_scale`.
     bounds : tuple of jax.Array, each shape (n_sources,)
         This electrode's ``(gain, floor)`` of ``sources`` (see
         :func:`_kernel_bounds`).
@@ -1452,7 +1452,7 @@ def predict_clusterless_diffusion_log_likelihood(
             labels,
             kernel,
             every_bin,
-            _log_intensity_scale(occupancy, bin_sizes, 1.0, 1.0),
+            log_intensity_scale(occupancy, bin_sizes, 1.0, 1.0),
             tile=every_bin_tile,
             **basis_static,
         ),
@@ -1610,7 +1610,7 @@ def predict_clusterless_diffusion_log_likelihood(
             eigvecs,
             labels,
             kernel,
-            _log_intensity_scale(
+            log_intensity_scale(
                 occupancy, bin_sizes, electrode_mean_rate, electrode_weight_total
             ),
             (kernel_gain[sources] + rate_offset, kernel_floor[sources]),

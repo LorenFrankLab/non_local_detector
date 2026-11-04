@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from non_local_detector.likelihoods import gmm
-from non_local_detector.likelihoods.gmm import _estimate_log_gaussian_prob
+from non_local_detector.likelihoods.gmm import estimate_log_gaussian_prob
 
 N_WARMUP_RUNS = 3
 N_TIMED_RUNS = 15
@@ -157,7 +157,7 @@ def main() -> None:
             (args.components, args.dimensions) if kind == "diag" else (args.components,)
         )
         precision = jnp.asarray(rng.uniform(0.5, 1.5, shape), dtype=jnp.float32)
-        executable = _estimate_log_gaussian_prob.lower(
+        executable = estimate_log_gaussian_prob.lower(
             X, means, precision, kind
         ).compile()
         result, stats = measure(executable, (X, means, precision))

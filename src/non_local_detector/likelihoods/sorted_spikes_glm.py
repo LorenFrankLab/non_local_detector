@@ -107,7 +107,7 @@ from non_local_detector.time_edges import (
 
 
 @jax.jit
-def _glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
+def glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
     """Floored rates at each design row, as the local likelihood computes them.
 
     Parameters
@@ -1161,7 +1161,7 @@ def fit_poisson_regression(
     )[0]
 
 
-def _fit_rate_maps(
+def fit_rate_maps(
     environment: Environment,
     place_bin_edges: np.ndarray,
     interior_place_bin_centers: jax.Array,
@@ -1321,7 +1321,7 @@ def _fit_rate_maps(
         l2_penalty=l2_penalty,
         rate_floor=RATE_EPS_HZ,
     )
-    interior_rates = _glm_rates(
+    interior_rates = glm_rates(
         jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
     )  # (n_interior_bins, n_maps)
     return emission_design_info, coefficients, interior_rates
@@ -1474,7 +1474,7 @@ def fit_sorted_spikes_glm_encoding_model(
     else:
         event_counts = np.zeros((len(spike_times), 0))
         exposure = np.zeros(0)
-    emission_design_info, coefficients, interior_rates = _fit_rate_maps(
+    emission_design_info, coefficients, interior_rates = fit_rate_maps(
         environment,
         cast(np.ndarray, environment.place_bin_edges_),
         interior_place_bin_centers,

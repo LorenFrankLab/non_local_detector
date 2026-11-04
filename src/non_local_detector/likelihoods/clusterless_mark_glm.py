@@ -85,7 +85,7 @@ from non_local_detector.likelihoods.common import (
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
-from non_local_detector.likelihoods.gmm import _estimate_log_gaussian_prob
+from non_local_detector.likelihoods.gmm import estimate_log_gaussian_prob
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
@@ -95,8 +95,8 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     GLM_LOG_RATE_PRIOR_STD,
     SelectedColumnsDesign,
     TrackGraphBasis,
-    _fit_rate_maps,
-    _glm_rates,
+    fit_rate_maps,
+    glm_rates,
     make_spline_predict_matrix,
 )
 from non_local_detector.time_edges import (
@@ -620,7 +620,7 @@ def fit_clusterless_mark_glm_encoding_model(
             )
         )
 
-    emission_design_info, coefficients, interior_rates = _fit_rate_maps(
+    emission_design_info, coefficients, interior_rates = fit_rate_maps(
         environment,
         cast(np.ndarray, environment.place_bin_edges_),
         interior_place_bin_centers,
@@ -778,7 +778,7 @@ def _masked_log_density(
     under every component, as for a finite mark whose squared distance
     overflows.
     """
-    log_density = _estimate_log_gaussian_prob(
+    log_density = estimate_log_gaussian_prob(
         features, means, precisions_cholesky, "full"
     )
     return cast(
@@ -1107,7 +1107,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             # kernel; padded components are masked out.
             padded_coefficients = jnp.asarray(pad_rows(coefficients, n_components))
             if is_local:
-                expected_rate = expected_rate + _glm_rates(
+                expected_rate = expected_rate + glm_rates(
                     row_design, padded_coefficients
                 ) @ is_component.astype(row_design.dtype)
         selection = select_spikes_in_rows(
@@ -1142,7 +1142,7 @@ def predict_clusterless_mark_glm_log_likelihood(
                 environment,
             )
             spike_log_rates = jnp.log(
-                _glm_rates(
+                glm_rates(
                     jnp.asarray(
                         pad_rows(
                             make_spline_predict_matrix(

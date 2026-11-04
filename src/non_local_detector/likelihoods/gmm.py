@@ -44,7 +44,7 @@ def _fitted_parameters_finite(parameters: tuple[Array, ...]) -> Array:
     return jnp.all(jnp.stack([jnp.all(jnp.isfinite(value)) for value in parameters]))
 
 
-def _as_floating(x: Any) -> Array:
+def as_floating(x: Any) -> Array:
     """``x`` as a JAX array, with integer or boolean measurements as floats."""
     x = jnp.asarray(x)
     if jnp.issubdtype(x.dtype, jnp.integer) or x.dtype == jnp.bool_:
@@ -274,7 +274,7 @@ def _estimate_gaussian_covariances_spherical(
 # Precision Cholesky and log-probability utilities
 # ---------------------------------------------------------------------
 @partial(jax.jit, static_argnames=("covariance_type",))
-def _compute_precision_cholesky(
+def compute_precision_cholesky(
     covariances: Array,
     covariance_type: CovType,
 ) -> Array:
@@ -423,7 +423,7 @@ def _estimate_gaussian_parameters(
 
 
 @partial(jax.jit, static_argnames=("covariance_type",))
-def _estimate_log_gaussian_prob(
+def estimate_log_gaussian_prob(
     X: Array,
     means: Array,
     precisions_chol: Array,
@@ -529,7 +529,7 @@ def _estimate_weighted_log_prob(
     X : Array, shape (n_samples, n_features)
     means : Array, shape (n_components, n_features)
     precisions_chol : Array
-        See `_estimate_log_gaussian_prob`.
+        See `estimate_log_gaussian_prob`.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
     weights : Array, shape (n_components,)
         Mixture weights summing to 1.
@@ -540,13 +540,13 @@ def _estimate_weighted_log_prob(
     """
     return cast(
         Array,
-        _estimate_log_gaussian_prob(X, means, precisions_chol, covariance_type)
+        estimate_log_gaussian_prob(X, means, precisions_chol, covariance_type)
         + jnp.log(weights),
     )
 
 
 @partial(jax.jit, static_argnames=("covariance_type",))
-def _estimate_log_prob_resp(
+def estimate_log_prob_resp(
     X: Array,
     means: Array,
     precisions_chol: Array,
@@ -561,7 +561,7 @@ def _estimate_log_prob_resp(
     X : Array, shape (n_samples, n_features)
     means : Array, shape (n_components, n_features)
     precisions_chol : Array
-        See `_estimate_log_gaussian_prob`.
+        See `estimate_log_gaussian_prob`.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
     weights : Array, shape (n_components,)
 
@@ -604,10 +604,10 @@ def _e_step_func(
     log_resp : Array, shape (n_samples, n_components)
     """
     weights, means, covariances = params
-    precisions_chol = _compute_precision_cholesky(covariances, covariance_type)
+    precisions_chol = compute_precision_cholesky(covariances, covariance_type)
     return cast(
         tuple[Array, Array],
-        _estimate_log_prob_resp(X, means, precisions_chol, covariance_type, weights),
+        estimate_log_prob_resp(X, means, precisions_chol, covariance_type, weights),
     )
 
 
@@ -803,7 +803,7 @@ def _effective_weight_mask(
     return np.asarray(mean_one >= 10 * np.finfo(dtype).eps, dtype=bool)
 
 
-def _effective_sample_count(
+def effective_sample_count(
     X: Array | np.ndarray, sample_weight: np.ndarray | None
 ) -> int:
     """
@@ -1246,7 +1246,7 @@ class GaussianMixtureModel:
         # subnormal weights to zero or narrow finite float64 weights to float32.
         # ``keep`` marks the rows EM will see; the count guards were applied to
         # exactly those rows, so the guards and the fitted data agree.
-        X = _as_floating(X)
+        X = as_floating(X)
         host_weights = None if sample_weight is None else np.asarray(sample_weight)
         keep = self._validate_fit_inputs(X, host_weights)
 
@@ -1303,7 +1303,7 @@ class GaussianMixtureModel:
             # A singular covariance makes the Cholesky (and hence the lower
             # bound) NaN; NaN never beats best_lower_bound, so such a restart is
             # discarded. Count it to give an actionable error if all fail.
-            final_precision = _compute_precision_cholesky(final_S, self.covariance_type)
+            final_precision = compute_precision_cholesky(final_S, self.covariance_type)
             valid_final = bool(np.isfinite(final_lb)) and bool(
                 _fitted_parameters_finite((final_w, final_m, final_S, final_precision))
             )
@@ -1418,7 +1418,7 @@ class GaussianMixtureModel:
             Posterior probability of each component for each sample.
         """
         self._check_fitted()
-        _, log_resp = _estimate_log_prob_resp(
+        _, log_resp = estimate_log_prob_resp(
             X, self.means_, self.precisions_chol_, self.covariance_type, self.weights_
         )
         return jnp.exp(log_resp)
@@ -1438,7 +1438,7 @@ class GaussianMixtureModel:
             Log density of the mixture at each sample.
         """
         self._check_fitted()
-        log_likelihoods, _ = _estimate_log_prob_resp(
+        log_likelihoods, _ = estimate_log_prob_resp(
             X, self.means_, self.precisions_chol_, self.covariance_type, self.weights_
         )
         return cast(Array, log_likelihoods)

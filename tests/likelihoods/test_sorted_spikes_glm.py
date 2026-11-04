@@ -1057,7 +1057,7 @@ def test_place_field_rates_request_highest_precision():
     design = jnp.ones((7, 4), jnp.float32)
     coefficients = jnp.ones((3, 4), jnp.float32)
     with jax.default_matmul_precision("default"):
-        traced = jax.make_jaxpr(sorted_spikes_glm._glm_rates)(design, coefficients)
+        traced = jax.make_jaxpr(sorted_spikes_glm.glm_rates)(design, coefficients)
     precisions = dot_general_precisions(traced.jaxpr)
     assert precisions
     assert all(
@@ -1065,7 +1065,7 @@ def test_place_field_rates_request_highest_precision():
         for precision in precisions
     )
     np.testing.assert_allclose(
-        sorted_spikes_glm._glm_rates(design, coefficients),
+        sorted_spikes_glm.glm_rates(design, coefficients),
         np.full((7, 3), np.exp(4.0)),
         rtol=1e-6,
     )

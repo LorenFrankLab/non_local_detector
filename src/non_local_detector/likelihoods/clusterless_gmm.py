@@ -59,10 +59,10 @@ from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingMod
 from non_local_detector.likelihoods.gmm import (
     CovType,
     GaussianMixtureModel,
-    _as_floating,
-    _compute_precision_cholesky,
-    _effective_sample_count,
-    _estimate_log_prob_resp,
+    as_floating,
+    compute_precision_cholesky,
+    effective_sample_count,
+    estimate_log_prob_resp,
 )
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -97,7 +97,7 @@ def _as_jnp(x: Any) -> jax.Array:
     jax.Array
         JAX array version of input, in a floating dtype for integer input.
     """
-    return _as_floating(x)
+    return as_floating(x)
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jax.Array | np.ndarray) -> jax.Array:
@@ -182,7 +182,7 @@ def _gmm_score(
     means, precisions_chol, weights = parameters
     return cast(
         jax.Array,
-        _estimate_log_prob_resp(
+        estimate_log_prob_resp(
             points, means, precisions_chol, covariance_type, weights
         )[0],
     )
@@ -478,7 +478,7 @@ def _position_marginal(
     marginal.weights_ = joint.weights_
     marginal.means_ = joint.means_[:, :n_position_dims]
     marginal.covariances_ = covariance
-    marginal.precisions_chol_ = _compute_precision_cholesky(
+    marginal.precisions_chol_ = compute_precision_cholesky(
         covariance, joint.covariance_type
     )
     marginal.converged_ = joint.converged_
@@ -698,7 +698,7 @@ def fit_clusterless_gmm_encoding_model(
     # Count the rows the GMM will actually fit on, using the array it fits: its
     # zero-weight cutoff depends on that array's dtype, so counting every
     # positive weight here could reserve more components than there are rows.
-    occupancy_n_samples = _effective_sample_count(pos_for_occ, occupancy_sample_weight)
+    occupancy_n_samples = effective_sample_count(pos_for_occ, occupancy_sample_weight)
     if occupancy_n_samples < 1:
         msg = "clusterless GMM has no position samples to fit the occupancy density"
         raise ValidationError(
@@ -804,7 +804,7 @@ def fit_clusterless_gmm_encoding_model(
 
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         elect_sample_weight = None if weights_was_none else elect_weights
-        n_joint_spikes = _effective_sample_count(joint_samples, elect_sample_weight)
+        n_joint_spikes = effective_sample_count(joint_samples, elect_sample_weight)
         n_joint_components = min(gmm_components_joint, n_joint_spikes)
         effective_gpi_components.append(n_joint_components)
         effective_joint_components.append(n_joint_components)

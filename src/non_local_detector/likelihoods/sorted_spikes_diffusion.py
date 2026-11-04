@@ -55,13 +55,13 @@ from non_local_detector.likelihoods.common import (
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
-    _resolved_occupancy,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
     connected_component_labels,
     diffuse,
     environment_graph,
+    resolved_occupancy,
     to_density,
 )
 from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
@@ -75,7 +75,7 @@ from non_local_detector.time_edges import (
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
 
-def _validate_local_interpolation(local_interpolation: str) -> str:
+def validate_local_interpolation(local_interpolation: str) -> str:
     """Validate the local place-field lookup mode."""
     if local_interpolation not in _LOCAL_INTERPOLATION_MODES:
         msg = (
@@ -213,7 +213,7 @@ def _local_place_field_rates(
     interpolation only where the interpolation stencil is interior and connected;
     every unsafe row falls back to the nearest-bin value.
     """
-    local_interpolation = _validate_local_interpolation(local_interpolation)
+    local_interpolation = validate_local_interpolation(local_interpolation)
     positions = np.asarray(positions, dtype=float)
     if positions.ndim == 1:
         positions = positions[:, np.newaxis]
@@ -356,7 +356,7 @@ def pixellate_interior_fields(
     return occupancy_field, spike_fields, mean_rates
 
 
-def _assemble_place_fields(
+def assemble_place_fields(
     rate_interior: np.ndarray, node_order: np.ndarray, n_total_bins: int
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Scatter per-neuron interior rates onto FULL-GRID place fields (0 off-track).
@@ -514,7 +514,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    local_interpolation = _validate_local_interpolation(local_interpolation)
+    local_interpolation = validate_local_interpolation(local_interpolation)
     # Coerce position_std to a plain float: it becomes part of the bandwidth-keyed rank
     # cache key, so a JAX scalar/array (unhashable) would raise. The heat kernel is
     # isotropic in graph distance, so per-dimension bandwidths are not supported.
@@ -581,13 +581,13 @@ def fit_sorted_spikes_diffusion_encoding_model(
     marginals = density[:, 1:]
 
     # rate(x) = mean_rate * marginal / occupancy on resolved bins, EPS elsewhere.
-    occupied = _resolved_occupancy(occupancy)
+    occupied = resolved_occupancy(occupancy)
     safe_occupancy = np.where(occupied, occupancy, 1.0)
     rate_interior = np.asarray(mean_rates)[np.newaxis, :] * np.where(
         occupied[:, np.newaxis], marginals / safe_occupancy[:, np.newaxis], EPS
     )
     place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
-        _assemble_place_fields(rate_interior, node_order, n_total_bins)
+        assemble_place_fields(rate_interior, node_order, n_total_bins)
     )
 
     return {
@@ -773,7 +773,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         return jnp.expand_dims(log_likelihood, axis=1)
 
     # Slice all neurons' fields to interior bins once. Interior fields are floored at
-    # RATE_EPS_HZ (see _assemble_place_fields), so log is finite and
+    # RATE_EPS_HZ (see assemble_place_fields), so log is finite and
     # xlogy(count, field) reduces to count * log(field). The per-neuron loop
     # accumulated sum_n count_n[:, None] * log(field_n)[None, :]; vectorize it as a
     # (n_block_rows, n_neurons) @ (n_neurons, n_interior_bins) matmul per row block

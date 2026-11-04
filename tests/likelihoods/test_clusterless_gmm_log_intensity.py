@@ -39,7 +39,7 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 from non_local_detector.likelihoods.common import EPS, LOG_EPS, RATE_EPS_HZ
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
-    _compute_precision_cholesky,
+    compute_precision_cholesky,
 )
 from non_local_detector.likelihoods.mark_reference import MarkReference
 
@@ -66,7 +66,7 @@ def _gaussian(mean, var: float) -> GaussianMixtureModel:
     gmm.weights_ = jnp.ones(1)
     gmm.means_ = mean[None]
     gmm.covariances_ = cov
-    gmm.precisions_chol_ = _compute_precision_cholesky(cov, "full")
+    gmm.precisions_chol_ = compute_precision_cholesky(cov, "full")
     return gmm
 
 

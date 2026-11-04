@@ -29,7 +29,7 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 )
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
-    _compute_precision_cholesky,
+    compute_precision_cholesky,
 )
 from non_local_detector.model_checking._clusterless_models import (
     _gaussian_log_kernel,
@@ -666,7 +666,7 @@ def _hand_built_gmm(means):
     model.means_ = jnp.asarray(means)
     model.weights_ = jnp.full(n_components, 1.0 / n_components)
     model.covariances_ = jnp.repeat(jnp.eye(n_dims)[None], n_components, axis=0)
-    model.precisions_chol_ = _compute_precision_cholesky(model.covariances_, "full")
+    model.precisions_chol_ = compute_precision_cholesky(model.covariances_, "full")
     return model
 
 

@@ -12,7 +12,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import clusterless_gmm
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
-    _compute_precision_cholesky,
+    compute_precision_cholesky,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
@@ -167,7 +167,7 @@ def test_two_position_dimensions_use_covariance_marginal(kind):
         "diag": np.diagonal(covariance, axis1=1, axis2=2),
         "spherical": np.array([0.5, 1.0, 2.0]),
     }[kind]
-    joint.precisions_chol_ = _compute_precision_cholesky(joint.covariances_, kind)
+    joint.precisions_chol_ = compute_precision_cholesky(joint.covariances_, kind)
     points = rng.normal(size=(7, 2))
     marginal = clusterless_gmm._position_marginal(joint, 2)
     np.testing.assert_allclose(

@@ -249,7 +249,7 @@ class DiffusionElectrode(_MarkKernelMixture):
 
     def __init__(self, model: dict[str, Any], electrode: int) -> None:
         from non_local_detector.likelihoods.clusterless_diffusion import (
-            _log_intensity_scale,
+            log_intensity_scale,
             spatial_kernel_columns,
         )
 
@@ -292,7 +292,7 @@ class DiffusionElectrode(_MarkKernelMixture):
         # log of mean_rate / (sum w * dV(b) * occupancy(b)) per bin, -inf where
         # the decoder treats the occupancy as unresolved.
         self._log_bin_scale = np.asarray(
-            _log_intensity_scale(
+            log_intensity_scale(
                 np.asarray(model["occupancy"], float),
                 np.asarray(model["bin_sizes"], float),
                 self.mean_rate,

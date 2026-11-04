@@ -13,7 +13,7 @@ from non_local_detector.likelihoods.gmm import (
     _estimate_gaussian_covariances_diag,
     _estimate_gaussian_covariances_spherical,
     _estimate_gaussian_covariances_tied,
-    _estimate_log_gaussian_prob,
+    estimate_log_gaussian_prob,
 )
 
 pytestmark = pytest.mark.unit
@@ -64,7 +64,7 @@ def test_gaussian_feature_accumulation_matches_reference(covariance_type, n_feat
     shape = means.shape if covariance_type == "diag" else (len(means),)
     precision = rng.uniform(0.5, 1.5, size=shape).astype(np.float32)
     expected = _reference_log_gaussian_prob(X, means, precision, covariance_type)
-    actual = _estimate_log_gaussian_prob(X, means, precision, covariance_type)
+    actual = estimate_log_gaussian_prob(X, means, precision, covariance_type)
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
@@ -75,7 +75,7 @@ def test_gaussian_evaluation_rejects_mismatched_feature_dimensions(
 ):
     precision = jnp.ones((2, 2)) if covariance_type == "diag" else jnp.ones(2)
     with pytest.raises(ValueError, match="feature"):
-        _estimate_log_gaussian_prob(
+        estimate_log_gaussian_prob(
             jnp.zeros((2, n_features)), jnp.ones((2, 2)), precision, covariance_type
         )
 
@@ -84,7 +84,7 @@ def test_gaussian_evaluation_rejects_mismatched_feature_dimensions(
 def test_gaussian_evaluation_rejects_mismatched_precision_shape(covariance_type):
     precision = jnp.ones((2, 1)) if covariance_type == "diag" else jnp.ones(1)
     with pytest.raises(ValueError, match="precisions"):
-        _estimate_log_gaussian_prob(
+        estimate_log_gaussian_prob(
             jnp.zeros((2, 2)), jnp.ones((2, 2)), precision, covariance_type
         )
 
@@ -164,10 +164,10 @@ def test_gaussian_scores_match_centered_float64_reference(covariance_type, offse
         else np.repeat(precision[:, None], 2, axis=1)
     )
     expected = _reference_log_gaussian_prob(X, means, precision, covariance_type)
-    actual = _estimate_log_gaussian_prob(
+    actual = estimate_log_gaussian_prob(
         jnp.asarray(X), jnp.asarray(means), jnp.asarray(precision), covariance_type
     )
-    full = _estimate_log_gaussian_prob(
+    full = estimate_log_gaussian_prob(
         jnp.asarray(X),
         jnp.asarray(means),
         jnp.asarray([np.diag(p) for p in diagonal]),
