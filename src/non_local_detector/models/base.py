@@ -3045,7 +3045,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 # Blocks between a one-bin and a spatial state follow the
                 # structured operator's rule, so both representations agree.
                 one_bin_block = _one_bin_block(
-                    transition, self.environments, n_row_bins, n_col_bins
+                    transition,
+                    self.environments,
+                    n_row_bins,
+                    n_col_bins,
+                    self.observation_models[to_state].environment_name,
                 )
                 if one_bin_block is not None:
                     self.continuous_state_transitions_[inds] = one_bin_block.entries(
