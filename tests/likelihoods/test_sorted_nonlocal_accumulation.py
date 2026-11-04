@@ -662,3 +662,33 @@ def test_matrix_blocks_compute_one_emission_product():
     # One cond per block chooses the matrix product or the xlogy fallback.
     assert len(branch_products) == 4, branch_products
     assert all(products == [0, 1] for products in branch_products), branch_products
+
+
+@pytest.mark.parametrize("zero_rate", [False, True])
+def test_emission_blocks_of_any_size_agree(zero_rate):
+    """The emission's block rows set its speed, not its values: blocks sized by
+    bytes give the 64-row blocks' result to rounding, on both the matrix and
+    the xlogy path."""
+    from non_local_detector.likelihoods.common.poisson import (
+        _emission_block_rows,
+        _poisson_nonlocal_log_likelihood,
+    )
+
+    rng = np.random.default_rng(11)
+    counts = jnp.asarray(rng.poisson(0.3, (700, 20)))
+    rates = rng.uniform(0.1, 40, (20, 30)).astype(np.float32)
+    if zero_rate:
+        rates[3, 7] = 0.0
+    rates = jnp.asarray(rates)
+    durations = jnp.asarray(rng.uniform(0.0019, 0.0021, 700).astype(np.float32))
+    summed = rates.sum(axis=0)
+    expected = _poisson_nonlocal_log_likelihood(counts, rates, durations, summed, 5)
+    assert _emission_block_rows(30) % 64 == 0
+    for block_rows in (128, 320, _emission_block_rows(30)):
+        np.testing.assert_allclose(
+            _poisson_nonlocal_log_likelihood(
+                counts, rates, durations, summed, 5 % block_rows, block_rows=block_rows
+            ),
+            expected,
+            rtol=1e-6,
+        )

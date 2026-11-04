@@ -1,6 +1,7 @@
 """Poisson emission terms of sorted spike counts and the bin-duration evidence."""
 
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import Any, cast
 
 import jax
@@ -74,6 +75,19 @@ def log_bin_duration_evidence(
 # Rows per non-local Poisson emission block. Every block has this shape, and a
 # row's position in its block is fixed by the decode grid.
 _EMISSION_BLOCK_ROWS = 64
+# Bytes of one emission block's float32 (rows x bins) product. Blocks are a
+# multiple of ``_EMISSION_BLOCK_ROWS`` rows set by the bin count alone, so a
+# row keeps its block position for every row range, and large blocks keep the
+# product one efficient matrix multiplication.
+_EMISSION_BLOCK_BYTES = 4 * 1024**2
+
+
+def _emission_block_rows(n_bins: int) -> int:
+    """Rows per emission block: a multiple of 64 within ``_EMISSION_BLOCK_BYTES``."""
+    rows = _EMISSION_BLOCK_BYTES // (4 * max(n_bins, 1))
+    return max(
+        _EMISSION_BLOCK_ROWS, rows // _EMISSION_BLOCK_ROWS * _EMISSION_BLOCK_ROWS
+    )
 
 
 def _matrix_emission_is_safe(
@@ -103,17 +117,19 @@ def _matrix_emission_is_safe(
     )
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("block_rows",))
 def _poisson_nonlocal_log_likelihood(
     counts: jax.Array,
     rates: jax.Array,
     durations: jax.Array,
     summed_rates: jax.Array,
     lead: int = 0,
+    *,
+    block_rows: int = _EMISSION_BLOCK_ROWS,
 ) -> jax.Array:
     """Batched Poisson emissions with fixed arithmetic across row partitions.
 
-    A fixed 64-row matrix kernel multiplies counts by the log rates, taken
+    A matrix kernel over fixed blocks of ``block_rows`` rows multiplies counts by the log rates, taken
     once per call, and adds each row's count-weighted log duration. Highest
     dot precision excludes a TF32 approximation. Exact zeros and non-finite
     rates retain xlogy.
@@ -126,10 +142,12 @@ def _poisson_nonlocal_log_likelihood(
     durations : jax.Array, shape (n_rows,)
     summed_rates : jax.Array, shape (n_bins,)
     lead : int, optional
-        Rows of the first 64-row block before the first row, in ``[0, 64)``;
-        0 by default. Passing the first row's decode-grid index modulo 64
-        keeps each row at one position in one block shape, whatever row
-        range is requested.
+        Rows of the first block before the first row, in ``[0, block_rows)``;
+        0 by default. Passing the first row's decode-grid index modulo
+        ``block_rows`` keeps each row at one position in one block shape,
+        whatever row range is requested.
+    block_rows : int, optional, keyword-only
+        Rows per emission block, by default 64 (see ``_emission_block_rows``).
 
     Returns
     -------
@@ -143,7 +161,6 @@ def _poisson_nonlocal_log_likelihood(
             jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
             - durations[:, None] * summed_rates
         )
-    block_rows = _EMISSION_BLOCK_ROWS
     # Enough blocks for any ``lead``, so the shape depends only on n_rows.
     n_blocks = (n_rows + 2 * block_rows - 2) // block_rows
     # Block rows outside the request have no counts and a unit duration.
@@ -267,8 +284,8 @@ def poisson_row_log_likelihood(counts: Any, expected_counts: Any) -> jax.Array:
 
 
 # Host bytes for one block of int64 spike counts, so full-grid requests never
-# build a rows-by-population count matrix. The non-local emission's 64-row
-# blocks are fixed to the decode grid, so blocked and unblocked requests are
+# build a rows-by-population count matrix. The non-local emission blocks are
+# fixed to the decode grid, so blocked and unblocked requests are
 # bitwise identical.
 COUNT_BLOCK_BYTES = 32 * 1024**2
 
@@ -365,6 +382,7 @@ def blocked_nonlocal_poisson_log_likelihood(
     if _spike_time_order is None:
         # Verify each neuron's spike ordering once, not once per block.
         _spike_time_order = SpikeTimeOrder()
+    block_rows = _emission_block_rows(rates.shape[1])
     if row_start == row_stop:
         return cast(
             jax.Array,
@@ -382,8 +400,9 @@ def blocked_nonlocal_poisson_log_likelihood(
             slice(start, stop),
             _spike_time_order=_spike_time_order,
         )
-        # Emission blocks start at multiples of 64 decode rows, so a row sits
-        # at the same position of the same block shape in every row range.
+        # Emission blocks start at multiples of block_rows decode rows, so a
+        # row sits at the same position of the same block shape in every row
+        # range.
         return cast(
             jax.Array,
             _poisson_nonlocal_log_likelihood(
@@ -391,7 +410,8 @@ def blocked_nonlocal_poisson_log_likelihood(
                 rates,
                 durations[start - row_start : stop - row_start],
                 summed_rates,
-                start % _EMISSION_BLOCK_ROWS,
+                start % block_rows,
+                block_rows=block_rows,
             ),
         )
 
