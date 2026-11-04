@@ -13,12 +13,14 @@ import pytest
 
 from non_local_detector import ClusterlessDecoder, Environment, SortedSpikesDecoder
 from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
+from non_local_detector.models._input_validation import _validate_spike_data
 from tests.models._helpers import _assert_unchanged, _snapshot
 
 N_TIME = 100
 TIME = np.arange(N_TIME) * 0.002
 POSITION = (50 + 8 * np.sin(TIME * 40))[:, None]
 EDGES = np.arange(41) * 0.002
+EPOCH = 1.6e9  # a Unix time in seconds (2020-09-13)
 SPIKE_TIMES = [np.array([0.021, 0.067, 0.121, 0.167]), np.array([0.03, 0.09])]
 FEATURES = [
     np.array([[0.1], [-0.1], [0.2], [-0.2]]),
@@ -143,13 +145,23 @@ def test_non_finite_spike_times_raise(fitted, method, family, bad_value):
 @pytest.mark.parametrize("method", ["fit", "fit_encoding_model", "estimate_parameters"])
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 def test_spikes_all_outside_position_time_warn_at_fit(fitted, method, family):
-    """Spike times in ms against position_time in s leave every spike outside
-    the encoding period; the encoding model is fit to no spikes."""
+    """Spike times on the Unix-epoch clock against position_time from 0 lie
+    far outside the encoding period; the encoding model is fit to no spikes."""
     _, spike_data = _family(family)
-    in_ms = ([times * 1_000 for times in spike_data[0]], *spike_data[1:])
+    on_epoch = ([times + EPOCH for times in spike_data[0]], *spike_data[1:])
     detector = fitted[family].copy()
     with pytest.warns(DataQualityWarning, match="None of the 6 spike times"):
-        _call(detector, method, in_ms)
+        _call(detector, method, on_epoch)
+
+
+@pytest.mark.unit
+def test_spikes_in_ms_warn_at_fit():
+    """Spike times in ms of a recording that starts at 100 s lie about 1e5 s
+    after its position_time span."""
+    with pytest.warns(DataQualityWarning, match="position_time span"):
+        _sorted_decoder().fit(
+            TIME + 100.0, POSITION, [(times + 100.0) * 1_000 for times in SPIKE_TIMES]
+        )
 
 
 @pytest.mark.unit
@@ -157,9 +169,46 @@ def test_spikes_all_outside_position_time_warn_at_fit(fitted, method, family):
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 def test_spikes_all_outside_time_edges_warn_at_decode(fitted, method, family):
     _, spike_data = _family(family)
-    in_ms = ([times * 1_000 for times in spike_data[0]], *spike_data[1:])
+    on_epoch = ([times + EPOCH for times in spike_data[0]], *spike_data[1:])
     with pytest.warns(DataQualityWarning, match=r"decode time_edges \[0, 0.08\] s"):
-        _call(fitted[family], method, in_ms)
+        _call(fitted[family], method, on_epoch)
+
+
+def _warns_out_of_range(spike_times, time_range):
+    """Whether ``_validate_spike_data`` warns that the spikes are out of range."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _validate_spike_data(
+            spike_times,
+            clusterless=False,
+            time_range=time_range,
+            range_name="decode time_edges",
+        )
+    return any("None of the" in str(warning.message) for warning in caught)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("spike_times", "time_range", "warns"),
+    [
+        # The last replay event of a session, after the last spike.
+        (SPIKE_TIMES, (0.18, 0.19), False),
+        # A window before the first spike.
+        (SPIKE_TIMES, (0.0, 0.01), False),
+        # Spike times in ms of a recording from 100 to 110 s.
+        ([np.array([100.021, 105.0, 109.9]) * 1_000], (100.0, 110.0), True),
+        # Spikes from 0 against Unix-epoch edges, and the reverse.
+        (SPIKE_TIMES, (EPOCH, EPOCH + 0.08), True),
+        ([times + EPOCH for times in SPIKE_TIMES], (0.0, 0.08), True),
+    ],
+    ids=["after_last_spike", "before_first_spike", "ms", "epoch_edges", "epoch_spikes"],
+)
+def test_out_of_range_warning_needs_a_gap_larger_than_the_spike_span(
+    spike_times, time_range, warns
+):
+    """A unit or clock mismatch puts the spikes farther from the range than
+    they span; a quiet window next to the spikes is data."""
+    assert _warns_out_of_range(spike_times, time_range) is warns
 
 
 @pytest.mark.unit
@@ -226,3 +275,51 @@ def test_sequence_and_object_array_containers_are_accepted(fitted, container):
     expected = detector.predict(SPIKE_TIMES, time_edges=EDGES).acausal_posterior
     result = detector.predict(container(SPIKE_TIMES), time_edges=EDGES)
     np.testing.assert_array_equal(result.acausal_posterior, expected)
+
+
+EQUAL_LENGTH_SPIKES = [
+    np.array([0.021, 0.067, 0.121, 0.167]),
+    np.array([0.03, 0.09, 0.1, 0.15]),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "container",
+    [
+        lambda times: np.array(times, dtype=object),  # 2-D object array
+        lambda times: [unit.astype(object) for unit in times],
+    ],
+    ids=["2d_object_array", "object_unit_arrays"],
+)
+@pytest.mark.parametrize("method", DECODE_METHODS)
+def test_object_dtype_spike_times_match_float_arrays(fitted, container, method):
+    """Object arrays of numbers decode as their float arrays, as before the
+    spike checks: a 2-D object array of equal-length units, and object-dtype
+    arrays per unit. (Fitting on them fails in np.interp, as it did before.)"""
+    detector = fitted["sorted"]
+    expected = _call(detector, method, (EQUAL_LENGTH_SPIKES,))
+    result = _call(detector, method, (container(EQUAL_LENGTH_SPIKES),))
+    if method == "predict":
+        expected, result = expected.acausal_posterior, result.acausal_posterior
+    elif method == "most_likely_sequence":
+        expected, result = expected.to_numpy(), result.to_numpy()
+    np.testing.assert_array_equal(np.asarray(result), np.asarray(expected))
+
+
+@pytest.mark.unit
+def test_single_unit_object_array_matches_float_array(fitted):
+    detector = fitted["sorted"]
+    one_unit = [EQUAL_LENGTH_SPIKES[0], np.array([])]
+    expected = detector.predict(one_unit, time_edges=EDGES).acausal_posterior
+    as_object = [np.array([EQUAL_LENGTH_SPIKES[0]], dtype=object)[0], np.array([])]
+    result = detector.predict(as_object, time_edges=EDGES).acausal_posterior
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.unit
+def test_non_numeric_object_spike_times_raise(fitted):
+    with pytest.raises(ValidationError, match="must be numeric"):
+        fitted["sorted"].predict(
+            [np.array(["a", "b"], dtype=object), SPIKE_TIMES[1]], time_edges=EDGES
+        )

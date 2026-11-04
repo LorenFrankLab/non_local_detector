@@ -12,6 +12,7 @@ Methods that read the detector's attributes annotate ``self`` as
 mixin.
 """
 
+import contextlib
 import warnings
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -350,6 +351,32 @@ def _validate_spike_structure(
             )
 
 
+def _numeric_spike_times(times: Any, unit: str, index: int) -> np.ndarray:
+    """One unit's spike times as a numeric array, shape (n_spikes,).
+
+    An object array of numbers (a row of ``np.array(spike_times,
+    dtype=object)`` for equal-length units, or ``times.astype(object)``) is
+    converted to float, as the spike binning reads it.
+
+    Raises
+    ------
+    ValidationError
+        If the times are not numbers.
+    """
+    array = np.asarray(times)
+    if array.dtype == np.dtype(object):
+        with contextlib.suppress(TypeError, ValueError):
+            array = array.astype(float)
+    if array.dtype.kind not in "iuf":
+        msg = f"spike_times for {unit} {index} must be numeric"
+        raise ValidationError(
+            msg,
+            expected="spike times in seconds",
+            got=f"dtype {np.asarray(times).dtype}",
+        )
+    return array
+
+
 def _validate_spike_data(
     spike_times: Sequence[Any],
     spike_waveform_features: Sequence[Any] | None = None,
@@ -361,12 +388,13 @@ def _validate_spike_data(
     """Check spike data where it enters a public fitting or decoding method.
 
     Checks the structure (``_validate_spike_structure``), then that every
-    spike time is a finite number. With ``time_range``, warns when every
-    spike of every unit lies before it, or every one after it: the spike times
-    are then most likely in other units (ms rather than s) or on another clock
-    than the times they are compared with. A range without spikes between
-    spikes (a quiet window) and a unit whose spikes all lie outside it are not
-    reported.
+    spike time is a finite number. With ``time_range``, warns when the span
+    of all the spike times, ``[min, max]`` over every unit, is disjoint from
+    it and farther from it than ``max - min``: the spike times are then most
+    likely in other units (ms rather than s) or on another clock than the
+    times they are compared with. A range without spikes next to them (a
+    quiet window before, between or after the spikes) and a unit whose spikes
+    all lie outside it are not reported.
 
     Parameters
     ----------
@@ -392,19 +420,16 @@ def _validate_spike_data(
     Warns
     -----
     DataQualityWarning
-        If there are spikes, all before or all after ``time_range``.
+        If the spikes lie farther from ``time_range`` than they span.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
     )
     unit = "electrode" if clusterless else "neuron"
-    arrays = [np.asarray(times) for times in spike_times]
-    for index, times in enumerate(arrays):
-        if times.dtype.kind not in "iuf":
-            msg = f"spike_times for {unit} {index} must be numeric"
-            raise ValidationError(
-                msg, expected="spike times in seconds", got=f"dtype {times.dtype}"
-            )
+    arrays = [
+        _numeric_spike_times(times, unit, index)
+        for index, times in enumerate(spike_times)
+    ]
     n_non_finite = [int(np.count_nonzero(~np.isfinite(times))) for times in arrays]
     if any(n_non_finite):
         bad = [
@@ -431,8 +456,11 @@ def _validate_spike_data(
         return
     first = min(times.min() for times in arrays if times.size)
     last = max(times.max() for times in arrays if times.size)
-    # A quiet window between spikes is data, not a clock mismatch.
-    if start <= last and first <= stop:
+    # A unit or clock mismatch (ms for s ~1000x, or spike times from 0
+    # against Unix-epoch edges) puts the spikes farther from the range than
+    # they span; a quiet window before, between or after the spikes is data.
+    gap = max(first - stop, start - last)
+    if gap <= last - first:
         return
     warnings.warn(
         f"None of the {n_spikes} spike times lies within the {range_name} "
@@ -620,7 +648,9 @@ def _require_sampling_frequency_width(
         got=f"bin width {width!r} s ({1.0 / width:.6g} Hz)",
         hint="The detector's transitions are per bin of 1 / sampling_frequency "
         f"seconds. Construct it with sampling_frequency={1.0 / width:.6g} to "
-        "decode these edges, or build the edges at the detector's rate with "
+        "decode these edges (a fitted or loaded detector keeps its fit with "
+        f"detector.set_params(sampling_frequency={1.0 / width:.6g})), or build "
+        "the edges at the detector's rate with "
         "detector.calculate_time_edges(time_range).",
     )
 

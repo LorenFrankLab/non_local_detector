@@ -177,9 +177,13 @@ def test_zero_exposure_is_data_quality(recording):
 
 
 def test_spikes_outside_the_recording_is_data_quality(recording):
-    in_ms = {**recording, "spike_times": [t * 1_000 for t in recording["spike_times"]]}
+    # Spike times on the Unix-epoch clock, position from 0.
+    on_epoch = {
+        **recording,
+        "spike_times": [t + 1.6e9 for t in recording["spike_times"]],
+    }
     detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
-    call = lambda: detector.fit(**in_ms)  # noqa: E731
+    call = lambda: detector.fit(**on_epoch)  # noqa: E731
     assert _caught("None of the", call) == {DataQualityWarning}
 
 

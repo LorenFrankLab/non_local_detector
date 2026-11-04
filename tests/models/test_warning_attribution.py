@@ -43,14 +43,18 @@ def _past_tracking(time):
 @pytest.mark.parametrize("entry", ["fit", "estimate_parameters"])
 def test_spikes_outside_the_recording_warning(recording, entry):
     """Raised in fit_encoding_model, under fit or estimate_parameters."""
-    in_ms = {**recording, "spike_times": [t * 1_000 for t in recording["spike_times"]]}
+    # Spike times on the Unix-epoch clock, position from 0.
+    on_epoch = {
+        **recording,
+        "spike_times": [t + 1.6e9 for t in recording["spike_times"]],
+    }
     detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
     if entry == "fit":
-        call = lambda: detector.fit(**in_ms)  # noqa: E731
+        call = lambda: detector.fit(**on_epoch)  # noqa: E731
     else:
         edges = time_edges_from_centers(recording["position_time"])
         call = lambda: detector.estimate_parameters(  # noqa: E731
-            **in_ms, time_edges=edges, max_iter=1
+            **on_epoch, time_edges=edges, max_iter=1
         )
     assert _sources("None of the", call) == {__file__}
 
