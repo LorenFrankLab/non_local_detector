@@ -11,7 +11,7 @@ for specified time bins based on the provided spike times and baseline rate.
 It utilizes JAX for efficient computation.
 """
 
-from typing import Any, cast
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +22,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     SpikeTimeOrder,
     concatenate_row_blocks,
+    poisson_row_log_likelihood,
     resolve_row_slice,
     spike_counts_matrix,
 )
@@ -46,28 +47,6 @@ def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
         Duration of each decoding bin, in seconds.
     """
     return np.diff(time_edges)
-
-
-@jax.jit
-def _poisson_row_log_likelihood(counts: Any, expected_counts: Any) -> jax.Array:
-    """Retain neuron addition order inside one compiled row-bounded scan."""
-    expected_counts = jnp.broadcast_to(expected_counts, counts.shape)
-    # xlogy's forward pass already promotes integer counts to this dtype.
-    # Explicit promotion also avoids float0 tangents in its rate derivative.
-    counts = counts.astype(expected_counts.dtype)
-
-    def add_unit(total: jax.Array, inputs: tuple[Any, Any]) -> tuple[jax.Array, None]:
-        count, expected = inputs
-        safe_expected = jnp.where(count == 0, 1.0, expected)
-        event = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-            jax.scipy.special.xlogy(count, safe_expected)
-        )
-        term = jax.lax.optimization_barrier(event - expected)  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-        return total + term, None
-
-    return jax.lax.scan(
-        add_unit, jnp.zeros((counts.shape[0],)), (counts.T, expected_counts.T)
-    )[0]
 
 
 @requires_time_edges
@@ -188,7 +167,7 @@ def predict_no_spike_log_likelihood(
         )
         return cast(
             jax.Array,
-            _poisson_row_log_likelihood(
+            poisson_row_log_likelihood(
                 jnp.asarray(counts),
                 no_spike_rates[start - row_start : stop - row_start, None],
             ),

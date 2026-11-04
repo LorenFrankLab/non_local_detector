@@ -137,7 +137,7 @@ def small_count_blocks(monkeypatch, n_neurons, block_rows=64):
 def test_large_no_spike_request_keeps_bounded_neuron_workspace(monkeypatch):
     events = spikes(3)
     small_count_blocks(monkeypatch, len(events))
-    rows = record_rows(monkeypatch, no_spike, "_poisson_row_log_likelihood")
+    rows = record_rows(monkeypatch, no_spike, "poisson_row_log_likelihood")
     edges = np.arange(3001) * 0.002
     result = no_spike.predict_no_spike_log_likelihood(events, time_edges=edges)
     expected = no_spike_reference(events, edges, 1e-10, slice(None))

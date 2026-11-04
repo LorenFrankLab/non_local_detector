@@ -45,7 +45,9 @@ from non_local_detector.likelihoods.common import (
     SpikeTimeOrder,
     concatenate_row_blocks,
     environment_grid_fingerprint,
+    full_to_local_index,
     get_position_at_time,
+    interior_bin_indices,
     resolve_row_slice,
     spike_counts_matrix,
     validate_encoding_contract,
@@ -71,24 +73,6 @@ from non_local_detector.time_edges import (
 )
 
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
-
-
-def _full_to_local(node_order: np.ndarray, n_total_bins: int) -> np.ndarray:
-    """Inverse permutation full-grid flat-bin index -> local interior index.
-
-    ``node_order`` maps local interior index -> full-grid flat index; this returns its
-    inverse, with ``-1`` for off-track (non-interior) bins.
-    """
-    full_to_local = np.full(n_total_bins, -1, dtype=int)
-    full_to_local[node_order] = np.arange(node_order.shape[0])
-    return full_to_local
-
-
-def _interior_bin_indices(
-    environment: Environment, positions: np.ndarray, full_to_local: np.ndarray
-) -> np.ndarray:
-    """Map sample positions to local interior-bin indices (``node_order`` order)."""
-    return cast(np.ndarray, full_to_local[environment.get_bin_ind(positions)])
 
 
 def _validate_local_interpolation(local_interpolation: str) -> str:
@@ -160,7 +144,7 @@ def _linear_interpolation_safe_mask(
 
     graph, graph_node_order, _ = environment_graph(environment)
     node_order = graph_node_order if node_order is None else np.asarray(node_order)
-    full_to_local = _full_to_local(node_order, is_interior.shape[0])
+    full_to_local = full_to_local_index(node_order, is_interior.shape[0])
 
     def _stencil_is_safe(corners: np.ndarray | None) -> bool:
         if corners is None or not np.all(is_interior[corners]):
@@ -334,13 +318,13 @@ def pixellate_interior_fields(
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
     n_interior = node_order.shape[0]
 
-    full_to_local = _full_to_local(node_order, n_total_bins)
+    full_to_local = full_to_local_index(node_order, n_total_bins)
 
     # A sample that receives event mass brackets a supported spike, so its basis
     # overlaps the support: binning the exposed samples covers every event.
     active = exposure_weights > 0
     sample_bins = (
-        _interior_bin_indices(
+        interior_bin_indices(
             environment,
             get_position_at_time(
                 position_time, position, position_time[active], environment

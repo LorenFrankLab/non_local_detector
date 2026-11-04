@@ -249,6 +249,28 @@ def _poisson_nonlocal_log_likelihood(
     return likelihood - durations[:, None] * summed_rates
 
 
+@jax.jit
+def poisson_row_log_likelihood(counts: Any, expected_counts: Any) -> jax.Array:
+    """Retain neuron addition order inside one compiled row-bounded scan."""
+    expected_counts = jnp.broadcast_to(expected_counts, counts.shape)
+    # xlogy's forward pass already promotes integer counts to this dtype.
+    # Explicit promotion also avoids float0 tangents in its rate derivative.
+    counts = counts.astype(expected_counts.dtype)
+
+    def add_unit(total: jax.Array, inputs: tuple[Any, Any]) -> tuple[jax.Array, None]:
+        count, expected = inputs
+        safe_expected = jnp.where(count == 0, 1.0, expected)
+        event = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+            jax.scipy.special.xlogy(count, safe_expected)
+        )
+        term = jax.lax.optimization_barrier(event - expected)  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+        return total + term, None
+
+    return jax.lax.scan(
+        add_unit, jnp.zeros((counts.shape[0],)), (counts.T, expected_counts.T)
+    )[0]
+
+
 # Host bytes for one block of int64 spike counts, so full-grid requests never
 # build a rows-by-population count matrix. The non-local emission's 64-row
 # blocks are fixed to the decode grid, so blocked and unblocked requests are

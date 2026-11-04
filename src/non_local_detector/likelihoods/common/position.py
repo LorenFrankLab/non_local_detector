@@ -1,4 +1,4 @@
-"""Position at spike times and snapping of off-track positions."""
+"""Position at spike times, snapping of off-track positions and interior bins."""
 
 import itertools
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -130,3 +130,21 @@ def snap_off_track_positions(
     snapped = points.copy()
     snapped[off_track] = interior_centers[nearest]
     return snapped.reshape(position.shape)
+
+
+def full_to_local_index(node_order: np.ndarray, n_total_bins: int) -> np.ndarray:
+    """Inverse permutation full-grid flat-bin index -> local interior index.
+
+    ``node_order`` maps local interior index -> full-grid flat index; this returns its
+    inverse, with ``-1`` for off-track (non-interior) bins.
+    """
+    full_to_local = np.full(n_total_bins, -1, dtype=int)
+    full_to_local[node_order] = np.arange(node_order.shape[0])
+    return full_to_local
+
+
+def interior_bin_indices(
+    environment: Environment, positions: np.ndarray, full_to_local: np.ndarray
+) -> np.ndarray:
+    """Map sample positions to local interior-bin indices (``node_order`` order)."""
+    return cast(np.ndarray, full_to_local[environment.get_bin_ind(positions)])

@@ -82,13 +82,6 @@ from non_local_detector.encoding_time import (
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
-    _compute_log_mark_kernel_gemm,
-    _masked_logaddexp,
-    _masked_logsumexp,
-    _repair_flagged,
-    _zero_if_neginf,
-)
-from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale as mark_reference_scale,
 )
 from non_local_detector.likelihoods.common import (
@@ -97,15 +90,21 @@ from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     SpikeTimeOrder,
     as_std_array,
+    compute_log_mark_kernel_gemm,
     deterministic_row_sum,
     environment_grid_fingerprint,
+    full_to_local_index,
     get_position_at_time,
+    interior_bin_indices,
     log_bin_duration_evidence,
     log_density_intensity,
     log_nonnegative,
+    masked_logaddexp,
+    masked_logsumexp,
     pad_rows,
     padded_sample_count,
     padded_spike_count,
+    repair_flagged,
     resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
@@ -116,6 +115,7 @@ from non_local_detector.likelihoods.common import (
     validate_finite,
     validate_population_lengths,
     weighted_mean_rate,
+    zero_if_neginf,
 )
 from non_local_detector.likelihoods.diffusion import (
     _FIELD_RESOLUTION,
@@ -132,10 +132,6 @@ from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
     background_log_intensity,
     background_rate,
-)
-from non_local_detector.likelihoods.sorted_spikes_diffusion import (
-    _full_to_local,
-    _interior_bin_indices,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -424,7 +420,7 @@ def fit_clusterless_diffusion_encoding_model(
     bin_sizes = np.asarray(bin_sizes)
     n_interior = node_order.shape[0]
     n_total_bins = cast(np.ndarray, environment.is_track_interior_).ravel().shape[0]
-    full_to_local = _full_to_local(node_order, n_total_bins)
+    full_to_local = full_to_local_index(node_order, n_total_bins)
 
     # Resolve the eigenbasis ONCE and record its rank; predict retrieves the device
     # basis via get_device_basis(environment, resolved_rank).
@@ -442,7 +438,7 @@ def fit_clusterless_diffusion_encoding_model(
     # exposure does even when the animal moves more than a bin per sample.
     sample_bins = np.full(n_time_position, -1)
     if support.indices.size:
-        sample_bins[support.indices] = _interior_bin_indices(
+        sample_bins[support.indices] = interior_bin_indices(
             environment,
             get_position_at_time(
                 position_time, position, position_time[support.indices], environment
@@ -912,13 +908,13 @@ def _log_source_marks(
         ``-inf`` for a source without positively weighted samples.
     """
     weighted = (
-        _compute_log_mark_kernel_gemm(decode_features, encoding_marks, waveform_std)
+        compute_log_mark_kernel_gemm(decode_features, encoding_marks, waveform_std)
         + log_nonnegative(encoding_weights)[:, None]
     )  # (n_samples, n_block)
     peak = jax.ops.segment_max(
         weighted, source_index, num_segments=n_sources, indices_are_sorted=True
     )
-    safe_peak = _zero_if_neginf(peak)
+    safe_peak = zero_if_neginf(peak)
     total = deterministic_row_sum(
         jnp.exp(weighted - safe_peak[source_index]),
         source_index,
@@ -1059,7 +1055,7 @@ def _log_marked_field(
     """
     local = rows is not None
     peak = jnp.max(log_source, axis=0)
-    safe_peak = _zero_if_neginf(peak)
+    safe_peak = zero_if_neginf(peak)
     scaled = jnp.exp(log_source - safe_peak[None, :])
     n_bins = jax.eval_shape(columns_of, 0).shape[0]
 
@@ -1095,7 +1091,7 @@ def _log_marked_field(
             terms = jnp.where(
                 jnp.isneginf(part)[None, :], -jnp.inf, log_columns + part[None, :]
             )
-            return _masked_logaddexp(value, _masked_logsumexp(terms.T))
+            return masked_logaddexp(value, masked_logsumexp(terms.T))
 
         n_read = n_bins if at is None else at.shape[0]
         return cast(
@@ -1119,7 +1115,7 @@ def _log_marked_field(
     # Flagged spikes are rare (none of 75,458 on a real recording). Each one
     # reduces every kernel tile in log space; streamed tiles are rebuilt from
     # the basis per spike, so many flags in one block are slow but exact.
-    return _repair_flagged(log_field, needs_exact, repaired)
+    return repair_flagged(log_field, needs_exact, repaired)
 
 
 @partial(
@@ -1472,7 +1468,7 @@ def predict_clusterless_diffusion_log_likelihood(
         # predict, not stored) and evaluate the diffused column at the animal's nearest
         # interior bin instead of returning the whole column.
         n_total_bins = cast(np.ndarray, environment.is_track_interior_).ravel().shape[0]
-        full_to_local = _full_to_local(node_order, n_total_bins)
+        full_to_local = full_to_local_index(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(
             position_time,
@@ -1480,7 +1476,7 @@ def predict_clusterless_diffusion_log_likelihood(
             decode_bin_centers(time_edges, row_start, row_stop),
             environment,
         )
-        animal_time_bins = _interior_bin_indices(
+        animal_time_bins = interior_bin_indices(
             environment, interpolated_position, full_to_local
         )
         # Ground-process term evaluated at the animal's position per decode time
@@ -1586,7 +1582,7 @@ def predict_clusterless_diffusion_log_likelihood(
             # (nearest-bin interpolation).
             spike_bins = jnp.asarray(
                 pad_rows(
-                    _interior_bin_indices(
+                    interior_bin_indices(
                         environment,
                         get_position_at_time(
                             position_time,

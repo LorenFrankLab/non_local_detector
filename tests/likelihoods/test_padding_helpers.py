@@ -6,10 +6,10 @@ import pytest
 
 from non_local_detector.likelihoods.common import (
     SpikeSelection,
+    SpikeTimeOrder,
     padded_occupancy_count,
     padded_sample_count,
     padded_spike_count,
-    SpikeTimeOrder,
     spike_row_ids,
 )
 

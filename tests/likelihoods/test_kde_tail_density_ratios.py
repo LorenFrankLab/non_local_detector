@@ -24,12 +24,12 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     _batched_kde_rows,
     _compiled_scaled_kde_log_density,
-    kde_log_densities,
-    log_space_kde_log_density,
     _sorted_sample_keys,
-    true_kde_log_density,
+    kde_log_densities,
     kde_log_density,
     log_density_intensity,
+    log_space_kde_log_density,
+    true_kde_log_density,
 )
 from tests.likelihoods.conftest import (
     realistic_log_background,

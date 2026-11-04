@@ -90,6 +90,7 @@ from non_local_detector.likelihoods.common import (
     concatenate_row_blocks,
     environment_grid_fingerprint,
     get_position_at_time,
+    poisson_row_log_likelihood,
     resolve_row_slice,
     snap_off_track_positions,
     spike_counts_matrix,
@@ -97,7 +98,6 @@ from non_local_detector.likelihoods.common import (
     validate_population_lengths,
 )
 from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
-from non_local_detector.likelihoods.no_spike import _poisson_row_log_likelihood
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
@@ -140,7 +140,7 @@ def _local_glm_log_likelihood(
         jnp.clip(rate, min=RATE_EPS_HZ, max=None)
     )
     expected = jax.lax.optimization_barrier(rate * durations[:, None])  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-    return cast(jax.Array, _poisson_row_log_likelihood(counts, expected))
+    return cast(jax.Array, poisson_row_log_likelihood(counts, expected))
 
 
 def _spline_inner_knots(

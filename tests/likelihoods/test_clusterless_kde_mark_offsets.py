@@ -11,8 +11,10 @@ from scipy.special import logsumexp  # type: ignore[import-untyped]
 from non_local_detector import ClusterlessDecoder
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
-    _compute_log_mark_kernel_gemm,
     estimate_log_joint_mark_intensity,
+)
+from non_local_detector.likelihoods.common import (
+    compute_log_mark_kernel_gemm,
 )
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import (
@@ -55,7 +57,7 @@ def test_mark_kernel_preserves_nearby_distances_in_separated_clusters(x64, n_fea
         decoding = np.array([100000, 100012, 0], dtype=dtype)[:, None] * direction
         std = np.full(n_features, 24.0, dtype=dtype)
         expected = _gaussian_log_kernel(decoding, encoding, std)
-        actual = jax.jit(_compute_log_mark_kernel_gemm)(
+        actual = jax.jit(compute_log_mark_kernel_gemm)(
             jnp.asarray(decoding), jnp.asarray(encoding), jnp.asarray(std)
         )
         assert np.isfinite(actual).all()
@@ -69,7 +71,7 @@ def test_mark_kernel_identical_large_features_do_not_produce_nan():
         encoding = np.array([base, np.nextafter(base, np.float32(np.inf))])[:, None]
         decoding = np.array([[base]], dtype=np.float32)
         std = np.ones(1, dtype=np.float32)
-        actual = jax.jit(_compute_log_mark_kernel_gemm)(
+        actual = jax.jit(compute_log_mark_kernel_gemm)(
             jnp.asarray(decoding), jnp.asarray(encoding), jnp.asarray(std)
         )
         assert np.isfinite(actual).all()
@@ -96,7 +98,7 @@ def test_mark_kernel_opposite_finite_features_with_large_bandwidth(x64):
         # normalizer separately: sigma * sqrt(2*pi) would overflow in float64.
         normalizer = -np.log(float(sigma)) - 0.5 * np.log(2 * np.pi)
         expected = normalizer - 0.5 * np.array([[32.0**2, 0.0], [0.0, 32.0**2]])
-        actual = jax.jit(_compute_log_mark_kernel_gemm)(
+        actual = jax.jit(compute_log_mark_kernel_gemm)(
             jnp.asarray(decoding), jnp.asarray(encoding), jnp.asarray(std)
         )
         assert np.isfinite(actual).all()
@@ -114,7 +116,7 @@ def test_mark_kernel_integer_features_do_not_wrap(
     encoding = np.array([[encoding_value]], dtype=dtype)
     decoding = np.array([[decoding_value]], dtype=dtype)
     std = np.array([24.0], dtype=np.float32)
-    actual = jax.jit(_compute_log_mark_kernel_gemm)(
+    actual = jax.jit(compute_log_mark_kernel_gemm)(
         jnp.asarray(decoding), jnp.asarray(encoding), jnp.asarray(std)
     )
     _assert_allclose(actual, _gaussian_log_kernel(decoding, encoding, std))

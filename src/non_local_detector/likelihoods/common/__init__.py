@@ -6,9 +6,10 @@ Submodules by responsibility, each depending only on those listed before it:
 - ``validation``: input validation and the fit/predict encoding contract.
 - ``weights``: encoding weights at spike times and weighted mean rates.
 - ``padding``: padded sizes shared by electrodes and chunks.
-- ``position``: position at spike times and off-track snapping.
+- ``position``: position at spike times, off-track snapping, interior bins.
 - ``reductions``: deterministic segment and row sums.
 - ``spike_rows``: spikes of a decode-row range, per-row sums and counts.
+- ``marks``: mark kernels and masked log-space sums.
 - ``poisson``: Poisson emission terms of sorted spike counts.
 - ``kernel_density``: weighted Gaussian kernel density estimation.
 
@@ -58,6 +59,14 @@ from non_local_detector.likelihoods.common.kernel_density import (
     traced_block_kde,
     true_kde_log_density,
 )
+from non_local_detector.likelihoods.common.marks import (
+    EXACT_REPAIR_SLOTS,
+    compute_log_mark_kernel_gemm,
+    masked_logaddexp,
+    masked_logsumexp,
+    repair_flagged,
+    zero_if_neginf,
+)
 from non_local_detector.likelihoods.common.numerics import (
     DEFAULT_WAVEFORM_STD,
     EPS,
@@ -85,9 +94,12 @@ from non_local_detector.likelihoods.common.poisson import (
     blocked_nonlocal_poisson_log_likelihood,
     concatenate_row_blocks,
     log_bin_duration_evidence,
+    poisson_row_log_likelihood,
 )
 from non_local_detector.likelihoods.common.position import (
+    full_to_local_index,
     get_position_at_time,
+    interior_bin_indices,
     snap_off_track_positions,
 )
 from non_local_detector.likelihoods.common.reductions import (
@@ -162,6 +174,7 @@ __all__ = [
     "COUNT_BLOCK_BYTES",
     "DEFAULT_WAVEFORM_STD",
     "EPS",
+    "EXACT_REPAIR_SLOTS",
     "LOG_EPS",
     "LOG_RATE_EPS_HZ",
     "RATE_EPS_HZ",
@@ -227,6 +240,7 @@ __all__ = [
     "block_kde",
     "block_log_kde",
     "blocked_nonlocal_poisson_log_likelihood",
+    "compute_log_mark_kernel_gemm",
     "concatenate_row_blocks",
     "decode_bin_centers",
     "deterministic_row_add",
@@ -234,9 +248,11 @@ __all__ = [
     "deterministic_segment_sum",
     "drop_zero_weight_samples",
     "environment_grid_fingerprint",
+    "full_to_local_index",
     "gaussian_pdf",
     "get_position_at_time",
     "get_spikecount_per_time_bin",
+    "interior_bin_indices",
     "interpolate_weights_at_spike_times",
     "kde",
     "kde_log_densities",
@@ -248,14 +264,18 @@ __all__ = [
     "log_kde",
     "log_nonnegative",
     "log_space_kde_log_density",
+    "masked_logaddexp",
+    "masked_logsumexp",
     "pad_rows",
     "padded_index",
     "padded_occupancy_count",
     "padded_sample_count",
     "padded_samples",
     "padded_spike_count",
+    "poisson_row_log_likelihood",
     "prepare_kde_local_inputs",
     "prepared_kde_log_density",
+    "repair_flagged",
     "requires_time_edges",
     "resolve_row_slice",
     "select_decode_marks",
@@ -276,4 +296,5 @@ __all__ = [
     "validate_time_edges",
     "validate_weights",
     "weighted_mean_rate",
+    "zero_if_neginf",
 ]

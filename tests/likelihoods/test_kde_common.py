@@ -674,8 +674,8 @@ def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
 def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
     """The population count matrix equals stacked per-neuron counts exactly."""
     from non_local_detector.likelihoods.common import (
-        spike_counts_matrix,
         SpikeTimeOrder,
+        spike_counts_matrix,
     )
 
     rng = np.random.default_rng(12)

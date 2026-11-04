@@ -30,11 +30,13 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
+    EXACT_REPAIR_SLOTS,
     LOG_EPS,
     RATE_REFERENCE_SECONDS,
     KDEModel,
     SpikeTimeOrder,
     as_std_array,
+    compute_log_mark_kernel_gemm,
     deterministic_row_sum,
     drop_zero_weight_samples,
     environment_grid_fingerprint,
@@ -47,6 +49,8 @@ from non_local_detector.likelihoods.common import (
     log_density_intensity,
     log_gaussian_pdf,
     log_nonnegative,
+    masked_logaddexp,
+    masked_logsumexp,
     pad_rows,
     padded_occupancy_count,
     padded_samples,
@@ -66,6 +70,7 @@ from non_local_detector.likelihoods.common import (
     validate_finite,
     validate_population_lengths,
     weighted_mean_rate,
+    zero_if_neginf,
 )
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.mark_reference import (
@@ -82,91 +87,10 @@ from non_local_detector.time_edges import (
 # Encoding rows per reduction tile. Each tile is one GEMM over the whole query
 # block, so temporaries scale with the tile rather than the encoding count.
 _LOG_REDUCTION_ENCODING_ROWS = 2048
-# Flagged indices per block repaired on a short path that visits only them;
-# more visit every index (``_repair_flagged``) or every group of flagged
-# indices (``_repair_flagged_in_groups``).
-_EXACT_REPAIR_SLOTS = 32
 # Target elements of one exact-repair temporary (encoding tile x flagged spikes
 # x position tile), 16 MiB in float32. It sets how many flagged spikes are
 # reduced together, at least one, so larger tiles exceed it.
 _EXACT_REPAIR_ELEMENTS = 1 << 22
-
-
-def _masked_logsumexp(values: jax.Array) -> jax.Array:
-    """Log-sum over encoding rows with a constant empty-support derivative."""
-    supported = jnp.any(~jnp.isneginf(values), axis=0)
-    safe_values = jnp.where(supported[None, :], values, 0.0)
-    reduced = jax.nn.logsumexp(safe_values, axis=0)
-    return jnp.where(supported, reduced, -jnp.inf)
-
-
-def _masked_logaddexp(left: jax.Array, right: jax.Array) -> jax.Array:
-    """Preserve the empty accumulation identity without -inf/-inf tangents."""
-    empty = jnp.isneginf(left) & jnp.isneginf(right)
-    reduced = jnp.logaddexp(jnp.where(empty, 0.0, left), jnp.where(empty, 0.0, right))
-    return jnp.where(empty, -jnp.inf, reduced)
-
-
-def _zero_if_neginf(log_max: jax.Array) -> jax.Array:
-    """Neutralize ``-inf`` maxima before subtraction; ``NaN`` stays visible."""
-    return jnp.where(jnp.isneginf(log_max), 0.0, log_max)
-
-
-def _repair_flagged(
-    values: jax.Array,
-    needs_exact: jax.Array,
-    repaired: Callable[[jax.Array, jax.Array, jax.Array], jax.Array],
-) -> jax.Array:
-    """Apply ``repaired(values, index, flag)`` at each flagged index.
-
-    At most ``_EXACT_REPAIR_SLOTS`` flagged indices visit only those; more visit
-    every index. Static loop bounds keep the repair differentiable.
-
-    Parameters
-    ----------
-    values : jax.Array
-        Estimates, updated in place by ``repaired``.
-    needs_exact : jax.Array of bool, shape (n,)
-    repaired : callable
-        ``repaired(values, index, flag) -> values``; leaves ``values`` unchanged
-        when ``flag`` is False.
-
-    Returns
-    -------
-    values : jax.Array
-    """
-    n = needs_exact.shape[0]
-    n_flagged = jnp.sum(needs_exact)
-    flagged = jnp.nonzero(needs_exact, size=n, fill_value=0)[0]
-    n_slots = min(n, _EXACT_REPAIR_SLOTS)
-
-    def repair(n_visits: int, current: jax.Array) -> jax.Array:
-        return cast(
-            jax.Array,
-            jax.lax.fori_loop(
-                0,
-                n_visits,
-                lambda slot, current: repaired(
-                    current, flagged[slot], slot < n_flagged
-                ),
-                current,
-            ),
-        )
-
-    return cast(
-        jax.Array,
-        jax.lax.cond(
-            n_flagged == 0,
-            lambda current: current,
-            lambda current: jax.lax.cond(
-                n_flagged <= n_slots,
-                partial(repair, n_slots),
-                partial(repair, n),
-                current,
-            ),
-            values,
-        ),
-    )
 
 
 def _repair_flagged_in_groups(
@@ -180,7 +104,7 @@ def _repair_flagged_in_groups(
     The indices of flagged rows are listed in order and split into groups of
     ``group_size``, each recomputed by one ``exact_rows`` call. No repair runs
     when no row is flagged. When the flagged rows fit in the groups covering
-    ``_EXACT_REPAIR_SLOTS`` slots, only those groups are visited; otherwise
+    ``EXACT_REPAIR_SLOTS`` slots, only those groups are visited; otherwise
     every group is visited, and groups past the flagged count are skipped.
     Static loop bounds keep the repair differentiable.
 
@@ -225,7 +149,7 @@ def _repair_flagged_in_groups(
     def repair(n_visits: int, current: jax.Array) -> jax.Array:
         return cast(jax.Array, jax.lax.fori_loop(0, n_visits, repair_group, current))
 
-    n_slot_groups = min(n_groups, -(-_EXACT_REPAIR_SLOTS // group_size))
+    n_slot_groups = min(n_groups, -(-EXACT_REPAIR_SLOTS // group_size))
     return cast(
         jax.Array,
         jax.lax.cond(
@@ -515,76 +439,6 @@ def log_kde_distance_streaming(
     )
 
 
-def _compute_log_mark_kernel_gemm(
-    decoding_features: jax.Array,
-    encoding_features: jax.Array,
-    waveform_stds: jax.Array,
-) -> jax.Array:
-    """Stable log Gaussian mark kernel for the GEMM marginal paths.
-
-    Subtract each pair's features before scaling and squaring. Expanding the
-    squared distance as ``||x||^2 + ||y||^2 - 2*x@y`` loses nearby distances
-    when features have large offsets, even at HIGHEST matmul precision. A
-    shared centering point cannot prevent this for widely separated clusters.
-
-    Accumulate one feature at a time, with only an ``(n_enc, n_dec)`` array
-    per feature rather than an ``(n_enc, n_dec, n_features)`` temporary. XLA
-    can fuse these elementwise operations. The historical function name is
-    retained; the marginal reduction applies GEMM to the exponentiated kernel.
-
-    Parameters
-    ----------
-    decoding_features : jax.Array, shape (n_decoding_spikes, n_features)
-        Waveform features for decoding spikes.
-    encoding_features : jax.Array, shape (n_encoding_spikes, n_features)
-        Waveform features for encoding spikes.
-    waveform_stds : jax.Array, shape (n_features,)
-        Standard deviations for each feature dimension.
-
-    Returns
-    -------
-    logK_mark : jax.Array, shape (n_encoding_spikes, n_decoding_spikes)
-        Log kernel matrix K[i, j] = log(Gaussian kernel between encoding spike i and decoding spike j).
-    """
-    n_features = encoding_features.shape[1]
-
-    # Preserve the shared bandwidth floor and Gaussian normalizer. Standalone
-    # callers can supply a length-one bandwidth for all features.
-    waveform_stds = jnp.clip(waveform_stds, min=EPS)
-    waveform_stds = jnp.broadcast_to(waveform_stds, (n_features,))
-
-    # Log normalization constant: -0.5 * (D * log(2π) + 2 * sum(log(sigma)))
-    # Factor of 2 because we have sum of log(sigma), not log(sigma^2)
-    log_norm_const = -0.5 * (
-        n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
-    )
-
-    feature_dtype = jnp.result_type(
-        decoding_features, encoding_features, waveform_stds, jnp.float32
-    )
-    # Raw ADC marks can be signed/unsigned integers; subtraction must not wrap.
-    decoding_features = decoding_features.astype(feature_dtype)
-    encoding_features = encoding_features.astype(feature_dtype)
-
-    # Halved features cannot overflow their subtraction, and a broad sigma can
-    # make a finite distance from features whose plain difference overflows.
-    # Scaling by a power of two commutes with rounding, so 4 * sum(half^2)
-    # equals sum(difference^2) bit for bit wherever the difference is finite
-    # and no scaled term is subnormal (those terms are below 1e-37).
-    # One branch-free expression keeps the loop fused with the exponentials
-    # that consume it and is traced once.
-    half_sq_dist = jnp.zeros(
-        (encoding_features.shape[0], decoding_features.shape[0]),
-        dtype=feature_dtype,
-    )
-    for decoding_dim, encoding_dim, sigma in zip(
-        0.5 * decoding_features.T, 0.5 * encoding_features.T, waveform_stds, strict=True
-    ):
-        half_difference = (encoding_dim[:, None] - decoding_dim[None, :]) / sigma
-        half_sq_dist += half_difference**2
-    return log_norm_const - 2.0 * half_sq_dist  # (n_enc, n_dec)
-
-
 def _encoding_log_weights(
     encoding_weights: jax.Array | None, n_encoding_spikes: int
 ) -> jax.Array:
@@ -637,7 +491,7 @@ def _occupancy_normalizer(log_occupancy: jax.Array) -> tuple[jax.Array, jax.Arra
         Occupancy left after the division: 1 where supported, 0 where it is
         zero, NaN where it is NaN.
     """
-    normalizer = _zero_if_neginf(log_occupancy)
+    normalizer = zero_if_neginf(log_occupancy)
     occupancy = jnp.where(
         jnp.isneginf(log_occupancy),
         0.0,
@@ -704,7 +558,7 @@ def _position_scale_terms(
     factor = jnp.exp(
         log_position_distance
         + log_w[:, None]
-        - _zero_if_neginf(position_peak)[None, :]
+        - zero_if_neginf(position_peak)[None, :]
         + shift
     )
     return position_peak, factor
@@ -802,7 +656,7 @@ def _estimate_with_enc_chunking(
     # is the conservative one.
     n_features = encoding_spike_waveform_features.shape[1]
     origin = jnp.zeros((1, n_features), dtype)
-    mark_peak = _compute_log_mark_kernel_gemm(origin, origin, waveform_stds)[0, 0]
+    mark_peak = compute_log_mark_kernel_gemm(origin, origin, waveform_stds)[0, 0]
     if use_streaming:
         position_origin = jnp.zeros(
             (1, cast(jax.Array, encoding_positions).shape[1]), dtype
@@ -840,7 +694,7 @@ def _estimate_with_enc_chunking(
         marks = jax.lax.dynamic_slice_in_dim(
             encoding_spike_waveform_features, enc_start, enc_tile_size
         )
-        log_mark = _compute_log_mark_kernel_gemm(queries, marks, waveform_stds)
+        log_mark = compute_log_mark_kernel_gemm(queries, marks, waveform_stds)
         weights = jax.lax.dynamic_slice_in_dim(log_w, enc_start, enc_tile_size)
         # Slice an overlapping final tile and mask its prefix, avoiding a
         # padded copy of the potentially very large precomputed matrix.
@@ -895,14 +749,14 @@ def _estimate_with_enc_chunking(
         # float32 shift matches the gate's window and cannot overflow any
         # wider dtype the operands may use.
         shift = _scaled_gemm_shift(n_enc, jnp.float32)
-        safe_position_peak = jnp.broadcast_to(_zero_if_neginf(position_peak), (n_pos,))
+        safe_position_peak = jnp.broadcast_to(zero_if_neginf(position_peak), (n_pos,))
 
         def process_enc_chunk(enc_idx: jax.Array, numerator: jax.Array) -> jax.Array:
             enc_start, log_mark, weights, positions = encoding_tile(
                 enc_idx, decoding_spike_waveform_features
             )
             # Zero-weight rows have zero position factors; NaN marks propagate.
-            mark_factor = jnp.exp(log_mark - _zero_if_neginf(mark_peak) + shift)
+            mark_factor = jnp.exp(log_mark - zero_if_neginf(mark_peak) + shift)
 
             def process_position_chunk(
                 pos_idx: jax.Array, numerator: jax.Array
@@ -952,7 +806,7 @@ def _estimate_with_enc_chunking(
         # The fixed peaks cannot carry a NaN from the marks; keep the product's.
         return (
             log_nonnegative(numerator)
-            + _zero_if_neginf(mark_peak)
+            + zero_if_neginf(mark_peak)
             + safe_position_peak[None, :]
             - 2.0 * shift
         )
@@ -972,7 +826,7 @@ def _estimate_with_enc_chunking(
                 pos_start, log_position, is_new = position_tile(
                     pos_idx, enc_start, positions
                 )
-                contribution = _masked_logsumexp(
+                contribution = masked_logsumexp(
                     log_mark[:, :, None]
                     + log_position[:, None, :]
                     + weights[:, None, None]
@@ -982,7 +836,7 @@ def _estimate_with_enc_chunking(
                 )
                 combined = jnp.where(
                     is_new[None, :],
-                    _masked_logaddexp(current, contribution),
+                    masked_logaddexp(current, contribution),
                     current,
                 )
                 return jax.lax.dynamic_update_slice(marginal, combined, (0, pos_start))
@@ -1005,7 +859,7 @@ def _estimate_with_enc_chunking(
     group_size = max(
         1,
         min(
-            _EXACT_REPAIR_SLOTS,
+            EXACT_REPAIR_SLOTS,
             _EXACT_REPAIR_ELEMENTS // (enc_tile_size * pos_tile_size),
         ),
     )

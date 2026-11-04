@@ -15,8 +15,8 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
-    padded_spike_count,
     get_position_at_time,
+    padded_spike_count,
     select_spike_rows,
     select_spikes_in_rows,
     sum_spikes_into_rows,
