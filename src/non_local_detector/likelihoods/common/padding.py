@@ -15,12 +15,12 @@ def _quarter_octave(n: int) -> int:
     return _octave_size(n, 2)
 
 
-def _padded_sample_count(n_samples: int) -> int:
+def padded_sample_count(n_samples: int) -> int:
     """Encoding samples per electrode: four sizes per octave, at most 25% padding."""
     return 16 if n_samples <= 16 else _quarter_octave(n_samples)
 
 
-def _padded_occupancy_count(n_samples: int) -> int:
+def padded_occupancy_count(n_samples: int) -> int:
     """Occupancy KDE samples: 64 sizes per octave, at most 1/64 padding.
 
     Occupancy samples grow with the recording and each one is evaluated at
@@ -32,7 +32,7 @@ def _padded_occupancy_count(n_samples: int) -> int:
     return _octave_size(n_samples, 6)
 
 
-def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
+def padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
     """Decoding spikes per electrode kernel call, from a few sizes.
 
     Up to one block: powers of two (at least 16), or with ``fine`` four sizes
@@ -53,7 +53,7 @@ def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -
     """
     if n_spikes <= block_size:
         size = (
-            _padded_sample_count(n_spikes)
+            padded_sample_count(n_spikes)
             if fine
             else 1 << max(n_spikes - 1, 15).bit_length()
         )
@@ -61,14 +61,14 @@ def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -
     return block_size * _quarter_octave(-(-n_spikes // block_size))
 
 
-def _pad_rows(array: ArrayLike, n_rows: int) -> np.ndarray:
+def pad_rows(array: ArrayLike, n_rows: int) -> np.ndarray:
     """Zero rows appended on the host to reach ``n_rows``."""
     array = np.asarray(array)
     padding = np.zeros((n_rows - array.shape[0], *array.shape[1:]), array.dtype)
     return np.concatenate([array, padding])
 
 
-def _padded_index(index: np.ndarray) -> np.ndarray:
+def padded_index(index: np.ndarray) -> np.ndarray:
     """Nonempty ``index`` padded to four sizes per octave (at least 16).
 
     Padding repeats the last entry, so a scatter through the padded index

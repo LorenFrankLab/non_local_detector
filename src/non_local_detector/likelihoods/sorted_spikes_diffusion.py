@@ -42,12 +42,12 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
-    _concatenate_row_blocks,
-    _spike_counts_matrix,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
+    concatenate_row_blocks,
     environment_grid_fingerprint,
     get_position_at_time,
     resolve_row_slice,
+    spike_counts_matrix,
     validate_encoding_contract,
     validate_population_lengths,
     weighted_mean_rate,
@@ -649,7 +649,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the Poisson log-likelihood of sorted spikes under the diffusion model.
@@ -721,7 +721,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -739,7 +739,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     # Both paths broadcast or contract over neurons, so a population mismatch would
     # otherwise surface as a JAX shape error or, on the local path, broadcast one
     # neuron's rates across the observed spike trains.
@@ -772,7 +772,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         # reduction. Local rates are floored at RATE_EPS_HZ, so xlogy equals
         # count * log(rate) here.
         spike_counts = jnp.asarray(
-            _spike_counts_matrix(
+            spike_counts_matrix(
                 spike_times,
                 time_edges,
                 "Local Likelihood",
@@ -806,7 +806,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     def evaluate(start: int, stop: int) -> jax.Array:
         """Return the log likelihood of rows ``start`` to ``stop``, shape (stop - start, n_interior_bins)."""
         spike_counts = jnp.asarray(
-            _spike_counts_matrix(
+            spike_counts_matrix(
                 spike_times,
                 time_edges,
                 "Position-Bin Likelihood",
@@ -830,7 +830,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         return evaluate(row_start, row_stop)
     # Bounded count blocks, so a full-grid request never builds the
     # rows-by-population count matrix.
-    return _concatenate_row_blocks(
+    return concatenate_row_blocks(
         row_start,
         row_stop,
         len(spike_times),

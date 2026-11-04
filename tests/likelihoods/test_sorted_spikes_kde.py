@@ -196,13 +196,13 @@ def test_nan_marginal_density_warns(simple_1d_environment, monkeypatch):
     spikes = [jnp.array([2.0, 5.0, 5.1])]
     weights = jnp.ones_like(t)
 
-    real_densities = ss_kde._kde_log_densities
+    real_densities = ss_kde.kde_log_densities
 
     def densities_with_nan(models, points):
         first, *rest = real_densities(models, points)
         return [first.at[0].set(jnp.nan), *rest]
 
-    monkeypatch.setattr(ss_kde, "_kde_log_densities", densities_with_nan)
+    monkeypatch.setattr(ss_kde, "kde_log_densities", densities_with_nan)
 
     # Exactly one bin is forced to NaN, so the count in the message is 1.
     with pytest.warns(UserWarning, match=r"NaN at 1 \(neuron, bin\)"):

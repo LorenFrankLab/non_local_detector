@@ -95,10 +95,7 @@ from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
     LOG_RATE_EPS_HZ,
-    _pad_rows,
-    _padded_sample_count,
-    _padded_spike_count,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     as_std_array,
     deterministic_row_sum,
     environment_grid_fingerprint,
@@ -106,6 +103,9 @@ from non_local_detector.likelihoods.common import (
     log_bin_duration_evidence,
     log_density_intensity,
     log_nonnegative,
+    pad_rows,
+    padded_sample_count,
+    padded_spike_count,
     resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
@@ -667,7 +667,7 @@ def spatial_kernel_columns(
     )
     sources = np.asarray(sources, dtype=np.int32)
     # Pad to few sizes so callers with nearby source counts share one executable.
-    padded = _pad_sources(sources, _padded_sample_count(max(sources.size, 1)))
+    padded = _pad_sources(sources, padded_sample_count(max(sources.size, 1)))
     return cast(
         jax.Array,
         _kernel_columns(
@@ -833,7 +833,7 @@ def _source_layout(
     """
     real = bins < n_bins
     distinct, inverse = np.unique(bins[real], return_inverse=True)
-    n_padded = _padded_sample_count(max(distinct.size, 1))
+    n_padded = padded_sample_count(max(distinct.size, 1))
     tile = min(tile_budget, n_padded)
     n_padded = -(-n_padded // tile) * tile
     source_index = np.full(bins.size, n_padded - 1, dtype=np.int32)
@@ -876,7 +876,7 @@ def _electrode_layout(
     if np.any(bins[1:] < bins[:-1]):
         order = np.argsort(bins, kind="stable")
         bins, marks, weights = bins[order], marks[order], weights[order]
-    n_padded = _padded_sample_count(bins.shape[0])
+    n_padded = padded_sample_count(bins.shape[0])
     padded_bins = np.full(n_padded, n_bins, dtype=bins.dtype)
     padded_bins[: bins.shape[0]] = bins
     if dense:
@@ -885,8 +885,8 @@ def _electrode_layout(
     else:
         sources, source_index, tile = _source_layout(padded_bins, n_bins, tile_budget)
     return (
-        jnp.asarray(_pad_rows(marks, n_padded)),
-        jnp.asarray(_pad_rows(weights, n_padded)),
+        jnp.asarray(pad_rows(marks, n_padded)),
+        jnp.asarray(pad_rows(weights, n_padded)),
         jnp.asarray(sources),
         jnp.asarray(source_index, dtype=jnp.int32),
         tile,
@@ -1285,7 +1285,7 @@ def predict_clusterless_diffusion_log_likelihood(
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the clusterless graph-diffusion log likelihood.
@@ -1371,7 +1371,7 @@ def predict_clusterless_diffusion_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1413,7 +1413,7 @@ def predict_clusterless_diffusion_log_likelihood(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = occupancy.shape[0]
 
@@ -1579,13 +1579,13 @@ def predict_clusterless_diffusion_log_likelihood(
         )
         # Padded spikes (dropped from the row sums) let chunks with nearby
         # spike counts share one compiled kernel.
-        n_padded = _padded_spike_count(n_decode, effective_block)
+        n_padded = padded_spike_count(n_decode, effective_block)
         spike_bins = None
         if is_local:
             # The animal's interior bin at each decode spike's own time
             # (nearest-bin interpolation).
             spike_bins = jnp.asarray(
-                _pad_rows(
+                pad_rows(
                     _interior_bin_indices(
                         environment,
                         get_position_at_time(
@@ -1602,7 +1602,7 @@ def predict_clusterless_diffusion_log_likelihood(
         rate_offset = float(np.log(electrode_mean_rate / electrode_weight_total))
         log_likelihood = _add_electrode_diffusion_terms(
             log_likelihood,
-            jnp.asarray(_pad_rows(decode_features, n_padded)),
+            jnp.asarray(pad_rows(decode_features, n_padded)),
             jnp.asarray(spike_row_ids(selection, n_padded)),
             spike_bins,
             enc_marks,
@@ -1618,7 +1618,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 occupancy, bin_sizes, electrode_mean_rate, electrode_weight_total
             ),
             (kernel_gain[sources] + rate_offset, kernel_floor[sources]),
-            jnp.asarray(_pad_rows(log_background, n_padded)),
+            jnp.asarray(pad_rows(log_background, n_padded)),
             tile=tile,
             block_size=min(effective_block, n_padded),
             indices_are_sorted=selection.indices_are_sorted,

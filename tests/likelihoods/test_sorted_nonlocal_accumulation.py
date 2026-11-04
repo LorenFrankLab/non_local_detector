@@ -242,7 +242,7 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
         else backend.predict_sorted_spikes_glm_log_likelihood
     )
     unblocked = function(**arguments, row_slice=rows)
-    original = poisson._spike_counts_matrix
+    original = poisson.spike_counts_matrix
     block_rows = []
 
     def spy(*args, **kwargs):
@@ -250,7 +250,7 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
         block_rows.append(counts.shape[0])
         return counts
 
-    monkeypatch.setattr(poisson, "_spike_counts_matrix", spy)
+    monkeypatch.setattr(poisson, "spike_counts_matrix", spy)
     # Three neurons of int64 counts: a 128-row block budget.
     monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
     blocked = function(**arguments, row_slice=rows)

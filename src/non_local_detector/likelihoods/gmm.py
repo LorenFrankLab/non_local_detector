@@ -24,7 +24,7 @@ from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 from threadpoolctl import threadpool_limits
 
 from non_local_detector._warnings import user_stacklevel
-from non_local_detector.likelihoods.common import _padded_sample_count
+from non_local_detector.likelihoods.common import padded_sample_count
 
 # ---------------------------------------------------------------------
 # Type aliases
@@ -755,7 +755,7 @@ def _zero_weight_padded(
     """
     sample_weight = np.asarray(sample_weight)
     n_samples = sample_weight.shape[0]
-    padding = _padded_sample_count(n_samples) - n_samples
+    padding = padded_sample_count(n_samples) - n_samples
     rows = np.concatenate([np.arange(n_samples), np.zeros(padding, dtype=int)])
     return (
         jnp.asarray(

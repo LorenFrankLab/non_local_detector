@@ -28,7 +28,7 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
     environment = Environment(place_bin_size=1.0).fit_place_grid(position)
     model = common.KDEModel(std=1.0).fit(jnp.asarray(position))
     grid = _DecodeTimeGrid(np.arange(5.0))
-    order = common._SpikeTimeOrder()
+    order = common.SpikeTimeOrder()
     interpolations, densities = [], []
     original_position = common.get_position_at_time
     original_density = common.kde_log_density
@@ -45,7 +45,7 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
     monkeypatch.setattr(kde_module, "kde_log_density", density)
 
     def prepare(active_order=order, start=0, stop=4):
-        return common._prepare_kde_local_inputs(
+        return common.prepare_kde_local_inputs(
             model, time, position, environment, grid, start, stop, active_order
         )
 
@@ -60,14 +60,14 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
     assert len(densities) == 2
     assert not np.allclose(updated_density, first_density)
     prepare(start=1, stop=4)
-    prepare(common._SpikeTimeOrder())
+    prepare(common.SpikeTimeOrder())
     assert len(interpolations) == 3
     assert len(densities) == 4
 
 
 def test_prediction_density_preparation_respects_its_byte_budget(monkeypatch):
     monkeypatch.setattr(spike_rows, "_KDE_PREPARATION_BYTES", 64)
-    order = common._SpikeTimeOrder()
+    order = common.SpikeTimeOrder()
     sources = [object() for _ in range(20)]
     for source in sources:
         order.memo_kde("density", (source,), lambda: jnp.zeros(8, jnp.float32))
@@ -79,10 +79,10 @@ def test_replaced_fitted_leaves_are_included_in_the_preparation_budget(monkeypat
     monkeypatch.setattr(spike_rows, "_KDE_PREPARATION_BYTES", 128)
     model = common.KDEModel(std=1.0).fit(jnp.zeros((12, 1)))
     points = jnp.zeros((1, 1))
-    order = common._SpikeTimeOrder()
+    order = common.SpikeTimeOrder()
     for number in range(5):
         model.weights_ = jnp.full(12, number + 1.0)
-        common._prepared_kde_log_density(model, points, order)
+        common.prepared_kde_log_density(model, points, order)
         assert len(order._kde_prepared) <= 1
         assert order._kde_prepared_bytes <= 128
         retained_sources = sum(
@@ -142,7 +142,7 @@ def test_public_local_kde_paths_share_prediction_geometry(
     if clusterless:
         model["mark_reference"] = fit_mark_references(args[3], kernel_scale=1.0)
     grid = _DecodeTimeGrid(np.arange(5.0))
-    order = common._SpikeTimeOrder()
+    order = common.SpikeTimeOrder()
     interpolations = []
     original = common.get_position_at_time
 
@@ -165,6 +165,6 @@ def test_public_local_kde_paths_share_prediction_geometry(
     second = predict(*decode_args, **kwargs)
     np.testing.assert_array_equal(first, second)
     assert len(interpolations) == 1
-    kwargs["_spike_time_order"] = common._SpikeTimeOrder()
+    kwargs["_spike_time_order"] = common.SpikeTimeOrder()
     predict(*decode_args, **kwargs)
     assert len(interpolations) == 2

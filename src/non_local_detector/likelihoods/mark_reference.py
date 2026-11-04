@@ -32,7 +32,7 @@ from scipy.special import gammaln
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     resolve_row_slice,
     select_decode_marks,
     select_spikes_in_rows,
@@ -314,7 +314,7 @@ def mark_reference_log_likelihood(
     spike_waveform_features: list[np.ndarray],
     time_edges: np.ndarray,
     row_slice: slice | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
 ) -> jax.Array:
     """Sum each decode bin's reference log densities over its spikes.
 
@@ -332,7 +332,7 @@ def mark_reference_log_likelihood(
         Full decoding bin edges.
     row_slice : slice, optional
         Requested decode bins; all bins by default.
-    _spike_time_order : _SpikeTimeOrder, optional
+    _spike_time_order : SpikeTimeOrder, optional
         Internal ordering preparation shared across a detector's states and
         chunks; direct callers omit it.
 

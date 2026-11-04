@@ -10,10 +10,10 @@ from numpy.typing import NDArray
 from tqdm.autonotebook import tqdm
 
 from non_local_detector.likelihoods.common.spike_rows import (
-    _spike_counts_matrix,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
+    spike_counts_matrix,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -25,7 +25,7 @@ def log_bin_duration_evidence(
     spike_times: Sequence[np.ndarray | jax.Array],
     time_edges: NDArray[np.float64],
     row_slice: slice | None,
-    spike_time_order: "_SpikeTimeOrder | None",
+    spike_time_order: "SpikeTimeOrder | None",
     *,
     intensity_time_scale: float = 1.0,
     _time_grid: _DecodeTimeGrid | None = None,
@@ -43,7 +43,7 @@ def log_bin_duration_evidence(
         FULL decoding bin edges, in seconds.
     row_slice : slice | None
         Contiguous range of decode bins to evaluate, or None for all bins.
-    spike_time_order : _SpikeTimeOrder | None
+    spike_time_order : SpikeTimeOrder | None
         Internal ordering preparation shared across states and chunks; None
         verifies the spike-time ordering on this call.
     intensity_time_scale : float, optional
@@ -61,7 +61,7 @@ def log_bin_duration_evidence(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if spike_time_order is None:
-        spike_time_order = _SpikeTimeOrder()
+        spike_time_order = SpikeTimeOrder()
     start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     counts = np.zeros(stop - start, dtype=int)
     for times in spike_times:
@@ -261,7 +261,7 @@ def _count_block_rows(n_neurons: int) -> int:
     return max(64, COUNT_BLOCK_BYTES // (8 * max(n_neurons, 1)) // 64 * 64)
 
 
-def _concatenate_row_blocks(
+def concatenate_row_blocks(
     row_start: int,
     row_stop: int,
     n_neurons: int,
@@ -303,7 +303,7 @@ def _concatenate_row_blocks(
     return blocks[0] if len(blocks) == 1 else jnp.concatenate(blocks)
 
 
-def _blocked_nonlocal_poisson_log_likelihood(
+def blocked_nonlocal_poisson_log_likelihood(
     spike_times: list[np.ndarray],
     time_edges: np.ndarray,
     row_start: int,
@@ -313,7 +313,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
     summed_rates: jax.Array,
     *,
     disable_progress_bar: bool = True,
-    _spike_time_order: "_SpikeTimeOrder | None" = None,
+    _spike_time_order: "SpikeTimeOrder | None" = None,
 ) -> jax.Array:
     """Non-local Poisson emission computed over bounded host count blocks.
 
@@ -332,7 +332,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
     summed_rates : jax.Array, shape (n_bins,)
         Population rate summed over neurons.
     disable_progress_bar : bool
-    _spike_time_order : _SpikeTimeOrder, optional
+    _spike_time_order : SpikeTimeOrder, optional
         Shared per-prediction spike ordering cache.
 
     Returns
@@ -347,7 +347,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
     """
     if _spike_time_order is None:
         # Verify each neuron's spike ordering once, not once per block.
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     if row_start == row_stop:
         return cast(
             jax.Array,
@@ -357,7 +357,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
         )
 
     def evaluate(start: int, stop: int) -> jax.Array:
-        counts = _spike_counts_matrix(
+        counts = spike_counts_matrix(
             spike_times,
             time_edges,
             "Position-Bin Likelihood",
@@ -378,7 +378,7 @@ def _blocked_nonlocal_poisson_log_likelihood(
             ),
         )
 
-    return _concatenate_row_blocks(
+    return concatenate_row_blocks(
         row_start,
         row_stop,
         len(spike_times),

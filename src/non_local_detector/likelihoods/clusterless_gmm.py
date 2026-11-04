@@ -33,9 +33,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
-    _pad_rows,
-    _padded_spike_count,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
@@ -43,6 +41,8 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
     log_nonnegative,
+    pad_rows,
+    padded_spike_count,
     resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
@@ -903,7 +903,7 @@ def predict_clusterless_gmm_log_likelihood(
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """
@@ -993,7 +993,7 @@ def predict_clusterless_gmm_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1012,7 +1012,7 @@ def predict_clusterless_gmm_log_likelihood(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1134,16 +1134,16 @@ def predict_clusterless_gmm_log_likelihood(
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
             # Each spike is scored at every bin, so pad finely.
-            n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
+            n_padded = padded_spike_count(n_spikes, spike_block_size, fine=True)
             log_likelihood = _add_electrode_gmm_intensities(
                 log_likelihood,
-                jnp.asarray(_pad_rows(selected_feats, n_padded)),
+                jnp.asarray(pad_rows(selected_feats, n_padded)),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 interior_place_bin_centers,
                 _gmm_parameters(joint_gmm),
                 log_mean_rate,
                 log_occupancy,
-                jnp.asarray(_pad_rows(log_background, n_padded)),
+                jnp.asarray(pad_rows(log_background, n_padded)),
                 covariance_type=joint_gmm.covariance_type,
                 block_size=min(spike_block_size, n_padded),
                 indices_are_sorted=selection.indices_are_sorted,
@@ -1215,7 +1215,7 @@ def compute_local_log_likelihood(
     row_slice: slice | None = None,
     *,
     mark_reference: list[MarkReference | None],
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Local log-likelihood at the animal's interpolated position.
@@ -1255,7 +1255,7 @@ def compute_local_log_likelihood(
     mark_reference : list of MarkReference or None
         Reference mark density per electrode for the background intensity (see
         ``predict_clusterless_gmm_log_likelihood``).
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1283,7 +1283,7 @@ def compute_local_log_likelihood(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
 
@@ -1354,7 +1354,7 @@ def compute_local_log_likelihood(
         if n_spikes:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
-            n_padded = _padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
+            n_padded = padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
             spike_positions = snap_off_track_positions(
                 get_position_at_time(
                     position_time,
@@ -1366,13 +1366,13 @@ def compute_local_log_likelihood(
             )
             log_likelihood = _add_electrode_gmm_spike_terms(
                 log_likelihood,
-                jnp.asarray(_pad_rows(spike_positions, n_padded), dtype=working_dtype),
-                jnp.asarray(_pad_rows(selected_feats, n_padded)),
+                jnp.asarray(pad_rows(spike_positions, n_padded), dtype=working_dtype),
+                jnp.asarray(pad_rows(selected_feats, n_padded)),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 _gmm_parameters(joint_gmm),
                 _gmm_parameters(occupancy_model),
                 mean_rate,
-                jnp.asarray(_pad_rows(log_background, n_padded), dtype=working_dtype),
+                jnp.asarray(pad_rows(log_background, n_padded), dtype=working_dtype),
                 joint_type=joint_gmm.covariance_type,
                 occupancy_type=occupancy_model.covariance_type,
                 indices_are_sorted=selection.indices_are_sorted,

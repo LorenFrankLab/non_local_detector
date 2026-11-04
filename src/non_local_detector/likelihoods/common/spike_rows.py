@@ -13,8 +13,8 @@ from tqdm.autonotebook import tqdm
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common.padding import (
-    _pad_rows,
-    _padded_sample_count,
+    pad_rows,
+    padded_sample_count,
 )
 from non_local_detector.likelihoods.common.reductions import deterministic_row_sum
 from non_local_detector.time_edges import (
@@ -83,7 +83,7 @@ _KDE_PREPARATION_BYTES = 32 * 1024**2
 _KDE_PREPARATION_ENTRIES = 256
 
 
-class _SpikeTimeOrder:
+class SpikeTimeOrder:
     """Host spike times, verified ordering and other preparation for one prediction.
 
     Each original input is converted and checked on first use, then reused by
@@ -177,7 +177,7 @@ def select_spikes_in_rows(
     row_stop: int,
     *,
     time_edges: np.ndarray,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
 ) -> SpikeSelection:
     """Select the spikes owned by the decode bins ``[row_start, row_stop)``.
 
@@ -203,7 +203,7 @@ def select_spikes_in_rows(
         End of the requested bins (exclusive), as returned by ``resolve_row_slice``.
     time_edges : np.ndarray, shape (n_bins + 1,)
         FULL decoding bin edges (not the chunk's).
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal prediction-local preparation shared across states and chunks.
         Direct callers omit it and verify ordering on each call.
 
@@ -233,7 +233,7 @@ def select_spikes_in_rows(
 
     # Direct callers get a fresh preparation: converted and checked once here.
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     spike_times, is_ascending = _spike_time_order.get(spike_times)
 
     lower = time_edges[row_start]
@@ -308,9 +308,9 @@ def sum_spikes_into_rows(
         msg = "Values must contain one entry per selected spike"
         raise ValueError(msg)
     # Padding rows are dropped from the sum.
-    n_padded = _padded_sample_count(len(indices)) if on_host else None
+    n_padded = padded_sample_count(len(indices)) if on_host else None
     return deterministic_row_sum(
-        jnp.asarray(_pad_rows(values, cast(int, n_padded))) if on_host else values,
+        jnp.asarray(pad_rows(values, cast(int, n_padded))) if on_host else values,
         spike_row_ids(selection, n_padded),
         selection.n_rows,
         indices_are_sorted=selection.indices_are_sorted,
@@ -502,7 +502,7 @@ def get_spikecount_per_time_bin(
     row_slice: slice | None = None,
     *,
     time_edges: np.ndarray,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
 ) -> np.ndarray:
     """Get the number of spikes in each requested decode bin.
 
@@ -519,7 +519,7 @@ def get_spikecount_per_time_bin(
         FULL decoding bin edges, which define the bin a spike belongs to (see
         ``select_spikes_in_rows``). Direct calls validate these edges. Internal
         calls with prepared spike ordering reuse the detector's validated grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -545,14 +545,14 @@ def get_spikecount_per_time_bin(
     return np.bincount(selection.bin_ind, minlength=selection.n_rows)
 
 
-def _spike_counts_matrix(
+def spike_counts_matrix(
     spike_times: list[np.ndarray],
     time_edges: np.ndarray,
     desc: str,
     disable_progress_bar: bool,
     row_slice: slice | None = None,
     *,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
 ) -> np.ndarray:
     """Per-neuron spike counts as a ``(n_rows, n_neurons)`` matrix.
 

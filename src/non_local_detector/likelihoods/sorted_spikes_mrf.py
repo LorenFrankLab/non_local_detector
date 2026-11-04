@@ -63,7 +63,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     environment_grid_fingerprint,
 )
 from non_local_detector.likelihoods.diffusion import (
@@ -1147,7 +1147,7 @@ def predict_sorted_spikes_mrf_log_likelihood(
     mrf_max_step: float | None = None,  # noqa: ARG001 -- fit diagnostic, unused
     mrf_log_penalty_bounds: tuple[float, float] | None = None,  # noqa: ARG001 -- fit diagnostic, unused
     mrf_penalty_selected_by_reml: bool | None = None,  # noqa: ARG001 -- fit diagnostic, unused
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the Poisson log likelihood of sorted spikes under the MRF-GAM.
@@ -1209,7 +1209,7 @@ def predict_sorted_spikes_mrf_log_likelihood(
         Fit diagnostics; unused.
     mrf_log_penalty_bounds, mrf_penalty_selected_by_reml : optional
         Fit diagnostics; unused.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation shared across a detector's states and
         chunks; direct callers omit it.
     _time_grid : _DecodeTimeGrid, optional

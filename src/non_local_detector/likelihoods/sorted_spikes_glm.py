@@ -85,14 +85,14 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
-    _blocked_nonlocal_poisson_log_likelihood,
-    _concatenate_row_blocks,
-    _spike_counts_matrix,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
+    blocked_nonlocal_poisson_log_likelihood,
+    concatenate_row_blocks,
     environment_grid_fingerprint,
     get_position_at_time,
     resolve_row_slice,
     snap_off_track_positions,
+    spike_counts_matrix,
     validate_encoding_contract,
     validate_population_lengths,
 )
@@ -1527,7 +1527,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
@@ -1590,7 +1590,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1609,7 +1609,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
@@ -1638,7 +1638,7 @@ def predict_sorted_spikes_glm_log_likelihood(
 
         def evaluate(start: int, stop: int) -> jax.Array:
             rows = slice(start - row_start, stop - row_start)
-            counts = _spike_counts_matrix(
+            counts = spike_counts_matrix(
                 spike_times,
                 time_edges,
                 "Local Likelihood",
@@ -1653,7 +1653,7 @@ def predict_sorted_spikes_glm_log_likelihood(
                 ),
             )
 
-        log_likelihood = _concatenate_row_blocks(
+        log_likelihood = concatenate_row_blocks(
             row_start,
             row_stop,
             len(spike_times),
@@ -1662,7 +1662,7 @@ def predict_sorted_spikes_glm_log_likelihood(
             disable_progress_bar,
         )[:, None]
     else:
-        log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
+        log_likelihood = blocked_nonlocal_poisson_log_likelihood(
             spike_times,
             time_edges,
             row_start,

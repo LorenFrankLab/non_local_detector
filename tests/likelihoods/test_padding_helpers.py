@@ -6,10 +6,10 @@ import pytest
 
 from non_local_detector.likelihoods.common import (
     SpikeSelection,
-    _padded_occupancy_count,
-    _padded_sample_count,
-    _padded_spike_count,
-    _SpikeTimeOrder,
+    padded_occupancy_count,
+    padded_sample_count,
+    padded_spike_count,
+    SpikeTimeOrder,
     spike_row_ids,
 )
 
@@ -17,9 +17,9 @@ pytestmark = pytest.mark.unit
 
 
 def test_padded_spike_counts_are_few_and_cover_each_count():
-    sizes = {_padded_spike_count(n, 100) for n in range(5001)}
+    sizes = {padded_spike_count(n, 100) for n in range(5001)}
     for n in range(5001):
-        size = _padded_spike_count(n, 100)
+        size = padded_spike_count(n, 100)
         assert size >= max(n, 16)
         assert size <= 100 or size % 100 == 0
         if n > 100:
@@ -33,17 +33,17 @@ def test_padded_spike_counts_are_few_and_cover_each_count():
 
 def test_padded_sample_counts_add_at_most_a_quarter():
     for n in range(17, 20000):
-        size = _padded_sample_count(n)
+        size = padded_sample_count(n)
         assert n <= size <= 1.25 * n
-    assert _padded_sample_count(0) == _padded_sample_count(16) == 16
-    assert len({_padded_sample_count(n) for n in range(1025, 2049)}) == 4
+    assert padded_sample_count(0) == padded_sample_count(16) == 16
+    assert len({padded_sample_count(n) for n in range(1025, 2049)}) == 4
 
 
 def test_padded_occupancy_counts_add_at_most_one_sixty_fourth():
     for n in range(1, 70000, 7):
-        size = _padded_occupancy_count(n)
+        size = padded_occupancy_count(n)
         assert n <= size <= n + n / 64
-    assert len({_padded_occupancy_count(n) for n in range(4097, 8193)}) == 64
+    assert len({padded_occupancy_count(n) for n in range(4097, 8193)}) == 64
 
 
 def test_spike_row_ids_normalize_invalid_rows_and_pad_with_dropped_row():
@@ -59,7 +59,7 @@ def test_spike_row_ids_normalize_invalid_rows_and_pad_with_dropped_row():
 
 
 def test_spike_time_order_memo_reuses_builds_per_source_identity():
-    order = _SpikeTimeOrder()
+    order = SpikeTimeOrder()
     first, second = np.zeros(3), np.zeros(3)
     calls = []
 

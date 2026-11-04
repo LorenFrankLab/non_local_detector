@@ -15,7 +15,7 @@ import pytest
 from scipy.special import logsumexp
 
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import _padded_sample_count
+from non_local_detector.likelihoods.common import padded_sample_count
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
@@ -425,7 +425,7 @@ def test_weighted_refits_with_nearby_kept_counts_share_compiled_kernels(key):
     first[:30] = 0.0
     second = np.ones(X.shape[0])
     second[:10] = 0.0
-    assert _padded_sample_count(270) == _padded_sample_count(290)
+    assert padded_sample_count(270) == padded_sample_count(290)
     kernels = (_estimate_gaussian_parameters, _em_fit_while_loop)
     for kernel in kernels:
         kernel.clear_cache()

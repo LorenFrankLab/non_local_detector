@@ -20,10 +20,10 @@ import numpy as np
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    _concatenate_row_blocks,
-    _spike_counts_matrix,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
+    concatenate_row_blocks,
     resolve_row_slice,
+    spike_counts_matrix,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -79,7 +79,7 @@ def predict_no_spike_log_likelihood(
     time_edges: np.ndarray,
     disable_progress_bar: bool = False,
     _time_bin_sizes: np.ndarray | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Return the log likelihood of low spike rate for each time bin.
@@ -111,7 +111,7 @@ def predict_no_spike_log_likelihood(
         Internal precomputed ``no_spike_time_bin_sizes(time_edges)`` for these edges.
         Detector predictions prepare it once and reuse it across chunks. Direct
         callers can omit it; only the requested durations are computed here.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -168,7 +168,7 @@ def predict_no_spike_log_likelihood(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     if _time_bin_sizes is None:
         durations = _time_grid.durations(row_start, row_stop)
@@ -178,7 +178,7 @@ def predict_no_spike_log_likelihood(
 
     def evaluate(start: int, stop: int) -> jax.Array:
         """Return the log likelihood of rows ``start`` to ``stop`` (shape (stop - start, 1))."""
-        counts = _spike_counts_matrix(
+        counts = spike_counts_matrix(
             cast("list[np.ndarray]", spike_times),
             time_edges,
             "No Spike Likelihood",
@@ -194,7 +194,7 @@ def predict_no_spike_log_likelihood(
             ),
         )
 
-    return _concatenate_row_blocks(
+    return concatenate_row_blocks(
         row_start,
         row_stop,
         len(spike_times),

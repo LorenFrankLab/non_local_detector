@@ -15,15 +15,15 @@ from non_local_detector._validation import validate_weights
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common.numerics import LOG_EPS
 from non_local_detector.likelihoods.common.padding import (
-    _pad_rows,
-    _padded_index,
-    _padded_sample_count,
+    pad_rows,
+    padded_index,
+    padded_sample_count,
 )
 from non_local_detector.likelihoods.common.position import (
     get_position_at_time,
     snap_off_track_positions,
 )
-from non_local_detector.likelihoods.common.spike_rows import _SpikeTimeOrder
+from non_local_detector.likelihoods.common.spike_rows import SpikeTimeOrder
 from non_local_detector.likelihoods.common.validation import (
     as_std_array,
     validate_bandwidth,
@@ -224,11 +224,11 @@ def block_kde(
     return jnp.concatenate(blocks)
 
 
-def _padded_samples(
-    spike_time_order: "_SpikeTimeOrder",
+def padded_samples(
+    spike_time_order: "SpikeTimeOrder",
     samples: np.ndarray | jax.Array,
     weights: np.ndarray | jax.Array | None,
-    count: Callable[[int], int] = _padded_sample_count,
+    count: Callable[[int], int] = padded_sample_count,
 ) -> tuple[jax.Array, jax.Array]:
     """Device KDE samples and weights padded with zero-weight rows, once per prediction.
 
@@ -237,13 +237,13 @@ def _padded_samples(
 
     Parameters
     ----------
-    spike_time_order : _SpikeTimeOrder
+    spike_time_order : SpikeTimeOrder
         The prediction's preparation cache; results are reused per source arrays.
     samples : array, shape (n_samples, n_dims)
     weights : array, shape (n_samples,), or None
         None means uniform weights.
     count : callable, optional
-        Padded size for a sample count, by default ``_padded_sample_count``.
+        Padded size for a sample count, by default ``padded_sample_count``.
 
     Returns
     -------
@@ -256,8 +256,8 @@ def _padded_samples(
             np.ones(np.shape(samples)[0]) if weights is None else np.asarray(weights)
         )
         return (
-            jnp.asarray(_pad_rows(samples, n_samples)),
-            jnp.asarray(_pad_rows(sample_weights, n_samples)),
+            jnp.asarray(pad_rows(samples, n_samples)),
+            jnp.asarray(pad_rows(sample_weights, n_samples)),
         )
 
     return spike_time_order.memo(
@@ -340,7 +340,7 @@ def _traced_blocks(
     return cast(jax.Array, values.reshape(-1)[:n_points])
 
 
-def _traced_block_kde(
+def traced_block_kde(
     points: jax.Array,
     samples: jax.Array,
     std: jax.Array,
@@ -376,7 +376,7 @@ def _traced_block_log_kde(
     block_size: int,
     weights: jax.Array,
 ) -> jax.Array:
-    """``block_log_kde`` inside a trace, blocked like :func:`_traced_block_kde`.
+    """``block_log_kde`` inside a trace, blocked like :func:`traced_block_kde`.
 
     Parameters
     ----------
@@ -397,7 +397,7 @@ def _traced_block_log_kde(
 
 # Eager block_kde/block_log_kde with more blocks than _UNROLLED_KDE_BLOCKS run
 # these: one compiled loop over the blocks instead of one dispatch per block.
-_compiled_block_kde = jax.jit(_traced_block_kde, static_argnames=("block_size",))
+_compiled_block_kde = jax.jit(traced_block_kde, static_argnames=("block_size",))
 
 
 _compiled_block_log_kde = jax.jit(
@@ -787,7 +787,7 @@ def kde_log_density(model: KDEModel, points: jax.Array | np.ndarray) -> jax.Arra
         points = jnp.asarray(points)
         if points.ndim == 1:
             points = points[:, None]
-        return _true_kde_log_density(
+        return true_kde_log_density(
             points,
             model.samples_,
             as_std_array(model.std, points.shape[1]),
@@ -803,7 +803,7 @@ def kde_log_density(model: KDEModel, points: jax.Array | np.ndarray) -> jax.Arra
     )
 
 
-def _true_kde_log_density(
+def true_kde_log_density(
     points: jax.Array,
     samples: jax.Array,
     std: jax.Array,
@@ -865,12 +865,12 @@ def _repair_in_log_space(
         return values
     index = np.flatnonzero(needs_log_space)
     exact = _compiled_log_space_kde_log_density(
-        points[_padded_index(index)], samples, std, block_size, weights
+        points[padded_index(index)], samples, std, block_size, weights
     )
     return values.at[index].set(exact[: index.size])
 
 
-def _kde_log_densities(
+def kde_log_densities(
     models: Sequence["KDEModel"], points: jax.Array | np.ndarray
 ) -> list[jax.Array]:
     """True log densities of several fitted KDEs at the same points.
@@ -906,7 +906,7 @@ def _kde_log_densities(
         assert model.weights_ is not None  # set together with samples_ in fit
         std_bytes = np.asarray(as_std_array(model.std, points.shape[1])).tobytes()
         key = (
-            _padded_sample_count(model.samples_.shape[0]),
+            padded_sample_count(model.samples_.shape[0]),
             points.shape[0] if model.block_size is None else model.block_size,
             std_bytes,
             np.dtype(model.samples_.dtype).str,
@@ -915,10 +915,10 @@ def _kde_log_densities(
         groups.setdefault(key, []).append(index)
     for (n_padded, block_size, _, _, _), members in groups.items():
         samples = np.stack(
-            [_pad_rows(cast(jax.Array, models[i].samples_), n_padded) for i in members]
+            [pad_rows(cast(jax.Array, models[i].samples_), n_padded) for i in members]
         )
         weights = np.stack(
-            [_pad_rows(cast(jax.Array, models[i].weights_), n_padded) for i in members]
+            [pad_rows(cast(jax.Array, models[i].weights_), n_padded) for i in members]
         )
         std = as_std_array(models[members[0]].std, points.shape[1])
         keys = None
@@ -958,7 +958,7 @@ def _kde_log_densities(
     return results
 
 
-def _log_space_kde_log_density(
+def log_space_kde_log_density(
     points: jax.Array,
     samples: jax.Array,
     std: jax.Array,
@@ -1247,14 +1247,14 @@ def _compiled_batched_scaled_kde_log_density(
 
 
 _compiled_log_space_kde_log_density = jax.jit(
-    _log_space_kde_log_density, static_argnames=("block_size",)
+    log_space_kde_log_density, static_argnames=("block_size",)
 )
 
 
-def _prepared_kde_log_density(
+def prepared_kde_log_density(
     model: KDEModel,
     points: np.ndarray,
-    spike_time_order: _SpikeTimeOrder,
+    spike_time_order: SpikeTimeOrder,
     *,
     predict_log: Callable[[KDEModel, Any], jax.Array] | None = None,
     policy: str = "",
@@ -1273,7 +1273,7 @@ def _prepared_kde_log_density(
     )
 
 
-def _prepare_kde_local_inputs(
+def prepare_kde_local_inputs(
     model: KDEModel,
     position_time: np.ndarray | jax.Array,
     position: np.ndarray | jax.Array,
@@ -1281,7 +1281,7 @@ def _prepare_kde_local_inputs(
     time_grid: _DecodeTimeGrid,
     row_start: int,
     row_stop: int,
-    spike_time_order: _SpikeTimeOrder,
+    spike_time_order: SpikeTimeOrder,
     *,
     predict_log: Callable[[KDEModel, Any], jax.Array] | None = None,
     policy: str = "",
@@ -1305,7 +1305,7 @@ def _prepare_kde_local_inputs(
             environment,
         ),
     )
-    return points, _prepared_kde_log_density(
+    return points, prepared_kde_log_density(
         model, points, spike_time_order, predict_log=predict_log, policy=policy
     )
 

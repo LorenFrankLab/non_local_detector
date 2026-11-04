@@ -579,7 +579,7 @@ def test_traced_block_kde_bounds_compiled_workspace(log_space):
     import non_local_detector.likelihoods.common.kernel_density as kde_module
 
     traced = (
-        kde_module._traced_block_log_kde if log_space else kde_module._traced_block_kde
+        kde_module._traced_block_log_kde if log_space else kde_module.traced_block_kde
     )
     compiled = (
         jax.jit(
@@ -674,8 +674,8 @@ def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
 def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
     """The population count matrix equals stacked per-neuron counts exactly."""
     from non_local_detector.likelihoods.common import (
-        _spike_counts_matrix,
-        _SpikeTimeOrder,
+        spike_counts_matrix,
+        SpikeTimeOrder,
     )
 
     rng = np.random.default_rng(12)
@@ -686,7 +686,7 @@ def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
         np.array([0.25, 0.25, 0.5, 10.0, 10.0]),  # duplicates, closed final edge
         np.array([]),
     ]
-    order = _SpikeTimeOrder() if prepared else None
+    order = SpikeTimeOrder() if prepared else None
     expected = np.stack(
         [
             get_spikecount_per_time_bin(
@@ -696,13 +696,13 @@ def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
         ],
         axis=1,
     )
-    actual = _spike_counts_matrix(
+    actual = spike_counts_matrix(
         spike_times, edges, "counts", True, rows, _spike_time_order=order
     )
 
     assert actual.dtype == expected.dtype
     np.testing.assert_array_equal(actual, expected)
-    assert _spike_counts_matrix([], edges, "counts", True, rows).shape == (
+    assert spike_counts_matrix([], edges, "counts", True, rows).shape == (
         expected.shape[0],
         0,
     )

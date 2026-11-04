@@ -1298,7 +1298,7 @@ def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypat
         "row_slice": rows,
     }
     unblocked = predict(time, position, spike_times, **arguments)
-    original = diffusion._spike_counts_matrix
+    original = diffusion.spike_counts_matrix
     block_rows = []
 
     def spy(*args, **kwargs):
@@ -1306,7 +1306,7 @@ def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypat
         block_rows.append(counts.shape[0])
         return counts
 
-    monkeypatch.setattr(diffusion, "_spike_counts_matrix", spy)
+    monkeypatch.setattr(diffusion, "spike_counts_matrix", spy)
     # Three neurons of int64 counts: a 128-row block budget.
     monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
     blocked = predict(time, position, spike_times, **arguments)

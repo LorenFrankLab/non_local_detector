@@ -19,9 +19,9 @@ from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
     KDEModel,
-    _padded_occupancy_count,
-    _padded_sample_count,
-    _padded_spike_count,
+    padded_occupancy_count,
+    padded_sample_count,
+    padded_spike_count,
     as_std_array,
     block_log_kde,
     get_position_at_time,
@@ -337,8 +337,8 @@ def test_ragged_final_encoding_tile_counts_each_sample_once():
     env = env.fit_place_grid(position, infer_track_interior=False)
     n_encoding = 2300
     tile_rows = clusterless_kde._LOG_REDUCTION_ENCODING_ROWS
-    assert _padded_sample_count(n_encoding) > tile_rows
-    assert _padded_sample_count(n_encoding) % tile_rows
+    assert padded_sample_count(n_encoding) > tile_rows
+    assert padded_sample_count(n_encoding) % tile_rows
     encoding_times = [np.sort(rng.uniform(0, 20, n_encoding))]
     encoding = fit_encoding(
         position_time=position_time,
@@ -387,8 +387,8 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels():
         environment=env,
         disable_progress_bar=True,
     )
-    assert _padded_sample_count(200) == _padded_sample_count(210)
-    assert _padded_spike_count(40, 100) == _padded_spike_count(50, 100)
+    assert padded_sample_count(200) == padded_sample_count(210)
+    assert padded_spike_count(40, 100) == padded_spike_count(50, 100)
     decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (40, 50)]
     recording = (
         env,
@@ -439,14 +439,14 @@ def test_tiled_electrodes_and_chunks_with_nearby_sizes_share_compiled_kernels(
         disable_progress_bar=True,
         **policy,
     )
-    assert _padded_sample_count(200) == _padded_sample_count(210)
+    assert padded_sample_count(200) == padded_sample_count(210)
     # Two row chunks per electrode; every chunk holds between 17 and 32
     # decoding spikes, which share one padded count.
     decode_times = [
         np.sort(np.concatenate([rng.uniform(0, 1, n0), rng.uniform(1, 2, n1)]))
         for n0, n1 in ((20, 30), (25, 18))
     ]
-    assert _padded_spike_count(17, 10_000) == _padded_spike_count(32, 10_000)
+    assert padded_spike_count(17, 10_000) == padded_spike_count(32, 10_000)
     edges = np.arange(0, 2.0 + 1e-9, 0.002)
     recording = (
         env,
@@ -498,7 +498,7 @@ def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
     )
     occupancy_model = encoding["occupancy_model"]
     n_samples = occupancy_model.samples_.shape[0]
-    assert _padded_occupancy_count(n_samples) == _padded_occupancy_count(n_samples - 1)
+    assert padded_occupancy_count(n_samples) == padded_occupancy_count(n_samples - 1)
     refit = KDEModel(
         std=occupancy_model.std, block_size=occupancy_model.block_size
     ).fit(occupancy_model.samples_[:-1], weights=occupancy_model.weights_[:-1])

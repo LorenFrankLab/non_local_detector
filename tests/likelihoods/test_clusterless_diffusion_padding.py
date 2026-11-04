@@ -14,7 +14,7 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     predict_clusterless_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
-    _padded_spike_count,
+    padded_spike_count,
 )
 from tests.likelihoods.conftest import training_mark_references
 
@@ -87,7 +87,7 @@ def test_electrodes_with_nearby_sizes_share_compiled_kernels(nearby_sizes_record
     assert [layout[0].shape for layout in layouts] == [layouts[0][0].shape] * 2
     assert [layout[2].shape for layout in layouts] == [layouts[0][2].shape] * 2
     assert [layout[4] for layout in layouts] == [layouts[0][4]] * 2
-    assert _padded_spike_count(40, 16) == _padded_spike_count(45, 16)
+    assert padded_spike_count(40, 16) == padded_spike_count(45, 16)
 
     scorer = clusterless_diffusion._add_electrode_diffusion_terms
     scorer.clear_cache()

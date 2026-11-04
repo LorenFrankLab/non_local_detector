@@ -31,32 +31,32 @@ from non_local_detector.likelihoods.common.kernel_density import (
     _compiled_log_space_kde_log_density,
     _compiled_scaled_kde_log_density,
     _kde_block_rows,
-    _kde_log_densities,
     _kde_log_scale,
     _log_kernel_matrix,
-    _log_space_kde_log_density,
     _nearest_sample_log_kernel,
-    _padded_samples,
-    _prepare_kde_local_inputs,
-    _prepared_kde_log_density,
     _relative_weights,
     _repair_in_log_space,
     _scaled_kde_log_density,
     _sorted_sample_keys,
-    _traced_block_kde,
     _traced_block_log_kde,
     _traced_blocks,
-    _true_kde_log_density,
     block_kde,
     block_log_kde,
     drop_zero_weight_samples,
     gaussian_pdf,
     kde,
+    kde_log_densities,
     kde_log_density,
     local_kde_log_ratio,
     log_density_intensity,
     log_gaussian_pdf,
     log_kde,
+    log_space_kde_log_density,
+    padded_samples,
+    prepare_kde_local_inputs,
+    prepared_kde_log_density,
+    traced_block_kde,
+    true_kde_log_density,
 )
 from non_local_detector.likelihoods.common.numerics import (
     DEFAULT_WAVEFORM_STD,
@@ -69,21 +69,21 @@ from non_local_detector.likelihoods.common.numerics import (
 )
 from non_local_detector.likelihoods.common.padding import (
     _octave_size,
-    _pad_rows,
-    _padded_index,
-    _padded_occupancy_count,
-    _padded_sample_count,
-    _padded_spike_count,
     _quarter_octave,
+    pad_rows,
+    padded_index,
+    padded_occupancy_count,
+    padded_sample_count,
+    padded_spike_count,
 )
 from non_local_detector.likelihoods.common.poisson import (
     _EMISSION_BLOCK_ROWS,
     COUNT_BLOCK_BYTES,
-    _blocked_nonlocal_poisson_log_likelihood,
-    _concatenate_row_blocks,
     _count_block_rows,
     _matrix_emission_is_safe,
     _poisson_nonlocal_log_likelihood,
+    blocked_nonlocal_poisson_log_likelihood,
+    concatenate_row_blocks,
     log_bin_duration_evidence,
 )
 from non_local_detector.likelihoods.common.position import (
@@ -105,15 +105,15 @@ from non_local_detector.likelihoods.common.spike_rows import (
     _KDE_PREPARATION_BYTES,
     _KDE_PREPARATION_ENTRIES,
     SpikeSelection,
+    SpikeTimeOrder,
     _normalized_row_ids,
-    _spike_counts_matrix,
     _spikes_are_ascending,
-    _SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
+    spike_counts_matrix,
     spike_row_ids,
     sum_spikes_into_rows,
 )
@@ -139,6 +139,25 @@ from non_local_detector.time_edges import (
     validate_time_edges,
 )
 
+# The former module's private names of the helpers above, which the
+# likelihood modules now import by their public names.
+_SpikeTimeOrder = SpikeTimeOrder
+_blocked_nonlocal_poisson_log_likelihood = blocked_nonlocal_poisson_log_likelihood
+_concatenate_row_blocks = concatenate_row_blocks
+_kde_log_densities = kde_log_densities
+_log_space_kde_log_density = log_space_kde_log_density
+_pad_rows = pad_rows
+_padded_index = padded_index
+_padded_occupancy_count = padded_occupancy_count
+_padded_sample_count = padded_sample_count
+_padded_samples = padded_samples
+_padded_spike_count = padded_spike_count
+_prepare_kde_local_inputs = prepare_kde_local_inputs
+_prepared_kde_log_density = prepared_kde_log_density
+_spike_counts_matrix = spike_counts_matrix
+_traced_block_kde = traced_block_kde
+_true_kde_log_density = true_kde_log_density
+
 __all__ = [
     "COUNT_BLOCK_BYTES",
     "DEFAULT_WAVEFORM_STD",
@@ -156,6 +175,7 @@ __all__ = [
     "Environment",
     "KDEModel",
     "SpikeSelection",
+    "SpikeTimeOrder",
     "ValidationError",
     "_DecodeTimeGrid",
     "_SpikeTimeOrder",
@@ -206,6 +226,8 @@ __all__ = [
     "as_std_array",
     "block_kde",
     "block_log_kde",
+    "blocked_nonlocal_poisson_log_likelihood",
+    "concatenate_row_blocks",
     "decode_bin_centers",
     "deterministic_row_add",
     "deterministic_row_sum",
@@ -217,6 +239,7 @@ __all__ = [
     "get_spikecount_per_time_bin",
     "interpolate_weights_at_spike_times",
     "kde",
+    "kde_log_densities",
     "kde_log_density",
     "local_kde_log_ratio",
     "log_bin_duration_evidence",
@@ -224,14 +247,26 @@ __all__ = [
     "log_gaussian_pdf",
     "log_kde",
     "log_nonnegative",
+    "log_space_kde_log_density",
+    "pad_rows",
+    "padded_index",
+    "padded_occupancy_count",
+    "padded_sample_count",
+    "padded_samples",
+    "padded_spike_count",
+    "prepare_kde_local_inputs",
+    "prepared_kde_log_density",
     "requires_time_edges",
     "resolve_row_slice",
     "select_decode_marks",
     "select_spike_rows",
     "select_spikes_in_rows",
     "snap_off_track_positions",
+    "spike_counts_matrix",
     "spike_row_ids",
     "sum_spikes_into_rows",
+    "traced_block_kde",
+    "true_kde_log_density",
     "validate_bandwidth",
     "validate_encoding_contract",
     "validate_finite",

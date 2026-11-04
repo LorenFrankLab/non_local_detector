@@ -24,10 +24,10 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     _batched_kde_rows,
     _compiled_scaled_kde_log_density,
-    _kde_log_densities,
-    _log_space_kde_log_density,
+    kde_log_densities,
+    log_space_kde_log_density,
     _sorted_sample_keys,
-    _true_kde_log_density,
+    true_kde_log_density,
     kde_log_density,
     log_density_intensity,
 )
@@ -285,7 +285,7 @@ def test_true_log_density_matches_log_space_evaluation_in_and_beyond_tails(
     """
     points, samples, std, weights = _tail_case(n_dims)
     actual = _true_log_density(points, samples, std, block_size, weights)
-    expected = _log_space_kde_log_density(points, samples, std, block_size, weights)
+    expected = log_space_kde_log_density(points, samples, std, block_size, weights)
     assert np.isfinite(expected).all()
     assert (np.asarray(expected[-3:]) < LOG_EPS).all()
     assert (np.asarray(expected[:-3]) > LOG_EPS).all()
@@ -298,7 +298,7 @@ def test_one_dimensional_pass_scales_distant_tails_without_log_space():
     values, needs_log_space = _compiled_scaled_kde_log_density(
         points, samples, std, 64, weights, _sorted_sample_keys(points, samples, weights)
     )
-    expected = _log_space_kde_log_density(points, samples, std, 64, weights)
+    expected = log_space_kde_log_density(points, samples, std, 64, weights)
     assert not np.asarray(needs_log_space).any()
     np.testing.assert_allclose(values, expected, rtol=1e-6, atol=2e-5)
 
@@ -314,7 +314,7 @@ def test_true_log_density_matches_log_space_for_extremely_light_neighbors():
     points = jnp.asarray([[0.0]])
     std = jnp.ones(1)
     actual = _true_log_density(points, samples, std, 64, weights)
-    expected = _log_space_kde_log_density(points, samples, std, 64, weights)
+    expected = log_space_kde_log_density(points, samples, std, 64, weights)
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-4)
 
 
@@ -401,7 +401,7 @@ def test_true_log_density_keeps_nan_points_and_samples_visible():
     assert np.isnan(with_nan_point[0])
     np.testing.assert_allclose(
         with_nan_point[1],
-        _log_space_kde_log_density(points, samples, std, 64, jnp.ones(3))[1],
+        log_space_kde_log_density(points, samples, std, 64, jnp.ones(3))[1],
         rtol=1e-6,
     )
     with_nan_sample = _true_log_density(
@@ -429,15 +429,15 @@ def test_unvalidated_true_log_density_keeps_nan_weights_visible():
     """A NaN weight passed straight to the kernel gives NaN, not a density.
 
     The local clusterless likelihood evaluates the occupancy density through
-    ``_true_kde_log_density`` without ``KDEModel.fit``'s validation.
+    ``true_kde_log_density`` without ``KDEModel.fit``'s validation.
     """
     samples = jnp.zeros((3, 1))
     points = jnp.asarray([[0.0], [50.0]])
     std = jnp.ones(1)
     nan_weights = jnp.asarray([1.0, jnp.nan, 1.0])
-    assert np.isnan(_true_kde_log_density(points, samples, std, 64, nan_weights)).all()
+    assert np.isnan(true_kde_log_density(points, samples, std, 64, nan_weights)).all()
     assert np.isneginf(
-        _true_kde_log_density(points, samples, std, 64, jnp.zeros(3))
+        true_kde_log_density(points, samples, std, 64, jnp.zeros(3))
     ).all()
 
 
@@ -464,7 +464,7 @@ def test_batched_log_densities_match_each_model(n_dims):
         ),
         jnp.float32,
     )
-    for batched, model in zip(_kde_log_densities(models, points), models, strict=True):
+    for batched, model in zip(kde_log_densities(models, points), models, strict=True):
         np.testing.assert_allclose(
             batched, kde_log_density(model, points), rtol=1e-6, atol=2e-5
         )

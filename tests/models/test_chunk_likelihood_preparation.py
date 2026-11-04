@@ -11,7 +11,7 @@ from non_local_detector import (
 )
 from non_local_detector.core import row_slice_aware
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import _SpikeTimeOrder, select_spikes_in_rows
+from non_local_detector.likelihoods.common import SpikeTimeOrder, select_spikes_in_rows
 
 
 @pytest.mark.unit
@@ -80,7 +80,7 @@ def test_prepared_spike_times_convert_original_input_only_once(monkeypatch, arra
             conversions.append(values)
         return original_asarray(values, *args, **kwargs)
 
-    order = _SpikeTimeOrder()
+    order = SpikeTimeOrder()
     monkeypatch.setattr(np, "asarray", tracked_asarray)
     for row_start, row_stop in [(0, 3), (3, 7), (7, 9)]:
         selection = select_spikes_in_rows(
@@ -113,7 +113,7 @@ def test_non_owning_rows_do_not_read_spike_times(monkeypatch, rows, prepared):
         spikes,
         *rows,
         time_edges=time,
-        _spike_time_order=_SpikeTimeOrder() if prepared else None,
+        _spike_time_order=SpikeTimeOrder() if prepared else None,
     )
     indexer, bin_ind = selection.indexer, selection.bin_ind
     assert spikes[indexer].size == 0
@@ -225,7 +225,7 @@ def test_cached_likelihood_skips_duration_preparation(fitted_detector, monkeypat
         pytest.fail("No-Spike duration is unused when likelihoods are supplied")
 
     monkeypatch.setattr(np, "median", unexpected_median)
-    monkeypatch.setattr(_SpikeTimeOrder, "get", unexpected_median)
+    monkeypatch.setattr(SpikeTimeOrder, "get", unexpected_median)
     result = detector._predict(time, log_likelihoods=expected, n_chunks=3)
     np.testing.assert_array_equal(result[5], expected)
 

@@ -37,7 +37,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.common import (
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
     select_spike_rows,
@@ -845,7 +845,7 @@ class TestShuffledSpikeOrder:
         optimization promises without requiring a GPU. Both the fitted and
         zero-rate electrodes pass through this check.
         """
-        order_cache = _SpikeTimeOrder() if prepared else None
+        order_cache = SpikeTimeOrder() if prepared else None
         check_order = spike_rows._spikes_are_ascending
         order_checks = []
 

@@ -63,14 +63,14 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
-    _pad_rows,
-    _padded_spike_count,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
     get_position_at_time,
     log_bin_duration_evidence,
+    pad_rows,
+    padded_spike_count,
     resolve_row_slice,
     select_decode_marks,
     select_spike_rows,
@@ -925,7 +925,7 @@ def _device_marks(marks: np.ndarray, n_rows: int) -> jax.Array:
     so the cast need not warn.
     """
     with np.errstate(over="ignore"):
-        return jnp.asarray(_pad_rows(marks, n_rows))
+        return jnp.asarray(pad_rows(marks, n_rows))
 
 
 @requires_time_edges
@@ -953,7 +953,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the (non-local or local) log likelihood of the mark-mixture GLM.
@@ -1009,7 +1009,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     environment_grid : dict | None, optional
         The fit's record of the environment's grid; prediction raises if the
         environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder, optional
+    _spike_time_order : SpikeTimeOrder, optional
         Internal ordering preparation shared across a detector's states and
         chunks; direct callers omit it.
     _time_grid : _DecodeTimeGrid, optional
@@ -1025,7 +1025,7 @@ def predict_clusterless_mark_glm_log_likelihood(
     _time_grid = _resolve_time_grid(time_edges, _time_grid)
     time_edges = _time_grid.edges
     if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+        _spike_time_order = SpikeTimeOrder()
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1105,7 +1105,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             )
             # Components padded to a fixed count share one compiled rate
             # kernel; padded components are masked out.
-            padded_coefficients = jnp.asarray(_pad_rows(coefficients, n_components))
+            padded_coefficients = jnp.asarray(pad_rows(coefficients, n_components))
             if is_local:
                 expected_rate = expected_rate + _glm_rates(
                     row_design, padded_coefficients
@@ -1131,7 +1131,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             )
             continue
         if is_local:
-            n_padded = _padded_spike_count(n_spikes, spike_block_size)
+            n_padded = padded_spike_count(n_spikes, spike_block_size)
             spike_position = snap_off_track_positions(
                 get_position_at_time(
                     position_time,
@@ -1144,7 +1144,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             spike_log_rates = jnp.log(
                 _glm_rates(
                     jnp.asarray(
-                        _pad_rows(
+                        pad_rows(
                             make_spline_predict_matrix(
                                 emission_design_info, spike_position
                             ),
@@ -1162,11 +1162,11 @@ def predict_clusterless_mark_glm_log_likelihood(
                 precisions_cholesky,
                 is_component,
                 spike_log_rates,
-                jnp.asarray(_pad_rows(log_background, n_padded)),
+                jnp.asarray(pad_rows(log_background, n_padded)),
                 indices_are_sorted=selection.indices_are_sorted,
             )
             continue
-        n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
+        n_padded = padded_spike_count(n_spikes, spike_block_size, fine=True)
         log_rates = jnp.asarray(log_rates)
         log_rate_scale = jnp.max(log_rates, axis=1)
         scaled_rates = jnp.pad(
@@ -1182,7 +1182,7 @@ def predict_clusterless_mark_glm_log_likelihood(
             is_component,
             scaled_rates,
             log_rate_scale,
-            jnp.asarray(_pad_rows(log_background, n_padded)),
+            jnp.asarray(pad_rows(log_background, n_padded)),
             block_size=min(spike_block_size, n_padded),
             indices_are_sorted=selection.indices_are_sorted,
         )
