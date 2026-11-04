@@ -1274,7 +1274,7 @@ def predict_clusterless_diffusion_log_likelihood(
     encoding_marks: list[jax.Array],
     encoding_weights: list[jax.Array],
     weight_total: list[float],
-    mean_rates: ArrayLike,
+    mean_rates: np.ndarray,
     resolved_rank: int,
     node_order: np.ndarray,
     bin_sizes: np.ndarray | jax.Array,
@@ -1326,7 +1326,7 @@ def predict_clusterless_diffusion_log_likelihood(
         Weight of each encoding entry.
     weight_total : list of float, length n_electrodes
         Total encoding weight of each electrode.
-    mean_rates : array_like, shape (n_electrodes,)
+    mean_rates : np.ndarray, shape (n_electrodes,)
         Mean rate of each electrode in Hz.
     resolved_rank : int
         Eigenbasis rank of the heat kernel.
@@ -1398,9 +1398,6 @@ def predict_clusterless_diffusion_log_likelihood(
     _validate_execution_settings(memory_budget, block_size)
     spike_times = as_arrays(spike_times)
     spike_waveform_features = as_arrays(spike_waveform_features)
-    # One Python float per electrode, as the fit stored before it stored an
-    # array, so the arithmetic is unchanged.
-    electrode_mean_rates: list[float] = np.asarray(mean_rates).tolist()
     fitted_occupancy = occupancy
     occupancy = jnp.asarray(occupancy)
     summed_ground_process_intensity = jnp.asarray(
@@ -1422,7 +1419,7 @@ def predict_clusterless_diffusion_log_likelihood(
         encoding_marks=encoding_marks,
         encoding_weights=encoding_weights,
         weight_total=weight_total,
-        mean_rates=electrode_mean_rates,
+        mean_rates=mean_rates,
         mark_reference=mark_reference,
     )
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
@@ -1620,7 +1617,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 encoding_marks,
                 encoding_weights,
                 weight_total,
-                electrode_mean_rates,
+                mean_rates,
                 strict=True,
             )
         ),

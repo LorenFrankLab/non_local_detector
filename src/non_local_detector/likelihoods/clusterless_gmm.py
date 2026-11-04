@@ -935,8 +935,8 @@ def predict_clusterless_gmm_log_likelihood(
     log_occupancy: jax.Array,
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
-    mean_rates: ArrayLike,
-    summed_ground_process_intensity: ArrayLike,
+    mean_rates: np.ndarray,
+    summed_ground_process_intensity: np.ndarray,
     is_local: bool = False,
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
@@ -988,9 +988,9 @@ def predict_clusterless_gmm_log_likelihood(
         electrode.
     joint_models : list of GaussianMixtureModel or None, length n_electrodes
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
-    mean_rates : array_like, shape (n_electrodes,)
+    mean_rates : np.ndarray, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
-    summed_ground_process_intensity : array_like, shape (n_interior_bins,)
+    summed_ground_process_intensity : np.ndarray, shape (n_interior_bins,)
         Sum over electrodes of ``rate * p_gpi(x) / p_occ(x)`` at the interior
         bins, in Hz (without the background rate).
     is_local : bool, default=False
@@ -1063,10 +1063,6 @@ def predict_clusterless_gmm_log_likelihood(
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     spike_times = as_arrays(spike_times)
     spike_waveform_features = as_arrays(spike_waveform_features)
-    # The fit stores these as NumPy arrays; prediction reads the device arrays
-    # the fit stored before, so the arithmetic is unchanged.
-    mean_rates = jnp.asarray(mean_rates)
-    summed_ground_process_intensity = jnp.asarray(summed_ground_process_intensity)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1251,7 +1247,7 @@ def compute_local_log_likelihood(
     occupancy_model: GaussianMixtureModel,
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
-    mean_rates: jax.Array,
+    mean_rates: np.ndarray,
     *,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
@@ -1285,7 +1281,7 @@ def compute_local_log_likelihood(
         electrode.
     joint_models : list of GaussianMixtureModel or None, length n_electrodes
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
-    mean_rates : jax.Array, shape (n_electrodes,)
+    mean_rates : np.ndarray, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
     disable_progress_bar : bool, optional
         Turn off progress bar display, by default False.
