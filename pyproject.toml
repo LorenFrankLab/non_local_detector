@@ -95,6 +95,7 @@ select = [
     "I",    # isort
     "B",    # flake8-bugbear
     "C4",   # flake8-comprehensions
+    "D",    # pydocstyle (numpy convention)
     "UP",   # pyupgrade
     "FA",   # flake8-future-annotations
     "NPY",  # numpy-specific rules
@@ -103,6 +104,7 @@ select = [
     "ARG",  # unused arguments
     "EM",   # exception messages assigned before the raise
     "EXE",  # shebangs
+    "FBT",  # boolean traps
     "FURB", # refurb modernizations
     "G",    # logging format
     "ICN",  # import conventions
@@ -126,15 +128,24 @@ ignore = [
     "PD008",
     "PD010",
     "PD011",
+    # Dunder methods (__repr__, __eq__, ...) have standard meanings; NumPy and
+    # SciPy leave them undocumented. Private modules/functions/classes are not
+    # "public" to pydocstyle, so D1xx does not apply to them either.
+    "D105",
 ]
 # Math notation in docstrings, comments and messages.
 allowed-confusables = ["×", "σ", "α", "γ", "∪"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "**/tests/**" = [
     "ARG",   # pytest fixtures are used by name, not by value
     "B011",
+    "D",     # test docstrings are not API documentation
+    "FBT",   # test helpers and parametrized flags
 ]
 "{scripts,benchmarks}/**" = ["T201"]  # scripts report to stdout
 # Tutorials print, and a bare expression in a cell displays its value.
