@@ -2115,9 +2115,10 @@ def chunked_filter_smoother(
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
-    *,
-    cache_log_likelihoods: bool = True,
+    # positional: ``dtype`` after it is public positional API (a test pins it)
+    cache_log_likelihoods: bool = True,  # noqa: FBT001, FBT002
     dtype: DTypeLike = jnp.float32,
+    *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
 ) -> FilterSmootherResult:
@@ -2582,9 +2583,10 @@ def chunked_filter_smoother_covariate_dependent(
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
-    *,
-    cache_log_likelihoods: bool = True,
+    # positional: ``dtype`` after it is public positional API (a test pins it)
+    cache_log_likelihoods: bool = True,  # noqa: FBT001, FBT002
     dtype: DTypeLike = jnp.float32,
+    *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
 ) -> FilterSmootherResult:

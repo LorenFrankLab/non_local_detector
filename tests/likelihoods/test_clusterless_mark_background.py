@@ -228,15 +228,13 @@ def test_unit_change_shifts_every_spike_term_by_the_jacobian(
     run_data, algorithm, is_local
 ):
     model = _fit(run_data, algorithm)
-    original = _predict(
-        run_data, algorithm, model, run_data["test_marks"], cache_likelihood=is_local
-    )
+    original = _predict(run_data, algorithm, model, run_data["test_marks"], is_local)
     transformed = _predict(
         run_data,
         algorithm,
         _transformed_model(run_data, algorithm, model),
         [m * SCALE + OFFSET for m in run_data["test_marks"]],
-        cache_likelihood=is_local,
+        is_local,
     )
     counts = np.histogram(
         np.concatenate(run_data["test_spikes"]),
@@ -265,21 +263,9 @@ def test_outlier_mark_scores_the_background_at_every_position(run_data, algorith
     edges = time_edges_from_centers(run_data["test_time"])
     row = np.searchsorted(edges, spike_time, "right") - 1
     for is_local in (False, True):
-        with_spike = _predict(
-            run_data,
-            algorithm,
-            model,
-            marks,
-            cache_likelihood=is_local,
-            n_chunks=spikes,
-        )
+        with_spike = _predict(run_data, algorithm, model, marks, is_local, spikes)
         without = _predict(
-            run_data,
-            algorithm,
-            model,
-            [np.zeros((0, 4))] * 5,
-            cache_likelihood=is_local,
-            n_chunks=silent,
+            run_data, algorithm, model, [np.zeros((0, 4))] * 5, is_local, silent
         )
         expected = (
             LOG_RATE_EPS_HZ
@@ -302,18 +288,12 @@ def test_diffusion_far_marks_keep_unit_invariance(run_data, is_local):
     # About 7 bandwidths per feature: in float32 a 4-feature kernel with its
     # normalizer underflows there in microvolts (24^-4) but not in millivolts.
     far = [m + 7.2 * 24.0 for m in run_data["test_marks"]]
-    original = _predict(
-        run_data, variant, _fit(run_data, variant), far, cache_likelihood=is_local
-    )
+    original = _predict(run_data, variant, _fit(run_data, variant), far, is_local)
     millivolts = _fit(
         run_data, variant, marks=[m * 1e-3 for m in run_data["train_marks"]], scale=1e-3
     )
     transformed = _predict(
-        run_data,
-        variant,
-        millivolts,
-        [m * 1e-3 for m in far],
-        cache_likelihood=is_local,
+        run_data, variant, millivolts, [m * 1e-3 for m in far], is_local
     )
     counts = np.histogram(
         np.concatenate(run_data["test_spikes"]),
@@ -348,21 +328,14 @@ def test_zero_rate_electrode_scores_background(run_data, algorithm, has_referenc
     spikes = [np.array([spike_time])] + [np.array([])] * 4
     marks = [mark] + [np.zeros((0, 4))] * 4
     for is_local in (False, True):
-        with_spike = _predict(
-            run_data,
-            algorithm,
-            model,
-            marks,
-            cache_likelihood=is_local,
-            n_chunks=spikes,
-        )
+        with_spike = _predict(run_data, algorithm, model, marks, is_local, spikes)
         without = _predict(
             run_data,
             algorithm,
             model,
             [np.zeros((0, 4))] * 5,
-            cache_likelihood=is_local,
-            n_chunks=[np.array([])] * 5,
+            is_local,
+            [np.array([])] * 5,
         )
         edges = time_edges_from_centers(run_data["test_time"])
         row = np.searchsorted(edges, spike_time, "right") - 1
@@ -483,15 +456,10 @@ def test_gmm_rate_below_the_background_still_sets_its_intensity(run_data, is_loc
     def spike_terms(rate):
         rated = {**model, "mean_rates": [rate] * n_electrodes}
         with_spikes = _predict(
-            run_data, variant, rated, run_data["test_marks"], cache_likelihood=is_local
+            run_data, variant, rated, run_data["test_marks"], is_local
         )
         silent = _predict(
-            run_data,
-            variant,
-            rated,
-            silent_marks,
-            cache_likelihood=is_local,
-            spikes=silent_spikes,
+            run_data, variant, rated, silent_marks, is_local, spikes=silent_spikes
         )
         return with_spikes - silent
 
@@ -524,12 +492,7 @@ def test_predict_adds_the_background_rate_that_fits_leave_out(
     )
 
     log_likelihood = _predict(
-        run_data,
-        algorithm,
-        model,
-        no_marks,
-        cache_likelihood=is_local,
-        spikes=no_spikes,
+        run_data, algorithm, model, no_marks, is_local, spikes=no_spikes
     )
     durations = np.diff(time_edges_from_centers(run_data["test_time"]))
     np.testing.assert_allclose(
