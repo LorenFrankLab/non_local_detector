@@ -856,13 +856,13 @@ def test_soft_counts_split_each_spike_by_its_sample_shares(monkeypatch, track_1d
     time, position = track_1d["time"], track_1d["position"]
     weights = np.random.default_rng(10).uniform(0.2, 1.0, time.size)
     captured = {}
-    original = clusterless_mark_glm._fit_rate_maps
+    original = clusterless_mark_glm.fit_rate_maps
 
     def spy(*args, **kwargs):
         captured["counts"], captured["n_maps"] = args[4], kwargs["n_maps"]
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(clusterless_mark_glm, "_fit_rate_maps", spy)
+    monkeypatch.setattr(clusterless_mark_glm, "fit_rate_maps", spy)
     encoding = fit_clusterless_mark_glm_encoding_model(
         time,
         position,

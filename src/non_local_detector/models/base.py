@@ -89,6 +89,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     ClusterlessLikelihoodAlgorithm,
     LikelihoodAlgorithm,
+    _execution_settings,
     _record_legacy_encoding_algorithm,
     _resolve_fit_params,
 )
@@ -3768,6 +3769,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         """Keyword arguments passed to every state's likelihood prediction."""
         return {}
 
+    def _likelihood_execution_settings(self) -> dict[str, Any]:
+        """Execution settings of the current algorithm params, over the fitted ones."""
+        return {}
+
     def _no_spike_mark_log_likelihood(
         self,
         spike_data: tuple[Any, ...],  # noqa: ARG002 -- subclasses override and use them
@@ -3859,6 +3864,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         position = _position_context.position
 
         likelihood_func = self._likelihood_predict_function()
+        execution_settings = self._likelihood_execution_settings()
 
         # Interior state bins per state. state_ind_ is built state by state, so
         # each state's bins are one contiguous block of columns.
@@ -3890,11 +3896,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     self.no_spike_rate,
                     time_edges=time_edges,
                     row_slice=row_slice,
-                    # The fitted setting, as the other likelihoods receive it.
-                    # No-Spike may have no encoding entry; default to showing the bar.
-                    disable_progress_bar=self.encoding_model_.get(
-                        likelihood_name[:2], {}
-                    ).get("disable_progress_bar", False),
+                    # The setting the other likelihoods receive. No-Spike may
+                    # have no encoding entry; default to showing the bar.
+                    disable_progress_bar=execution_settings.get(
+                        "disable_progress_bar",
+                        self.encoding_model_.get(likelihood_name[:2], {}).get(
+                            "disable_progress_bar", False
+                        ),
+                    ),
                     _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
                     _time_grid=_time_grid,
@@ -3913,7 +3922,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     position,
                     *spike_data,
                     time_edges=time_edges,
-                    **self.encoding_model_[likelihood_name[:2]],
+                    **{
+                        **self.encoding_model_[likelihood_name[:2]],
+                        **execution_settings,
+                    },
                     **self._likelihood_predict_kwargs(),
                     is_local=effective_is_local,
                     row_slice=row_slice,
@@ -6904,6 +6916,11 @@ class ClusterlessDetector(_DetectorBase):
     def _likelihood_predict_function(self) -> Callable[..., Any]:
         return self._clusterless_algorithm().predict
 
+    def _likelihood_execution_settings(self) -> dict[str, Any]:
+        return _execution_settings(
+            self._clusterless_algorithm(), self.clusterless_algorithm_params
+        )
+
     def _likelihood_predict_kwargs(self) -> dict[str, Any]:
         # One reference for every state and No-Spike, so their
         # mark densities cancel consistently between states.
@@ -7907,6 +7924,11 @@ class SortedSpikesDetector(_DetectorBase):
 
     def _likelihood_predict_function(self) -> Callable[..., Any]:
         return self._sorted_spikes_algorithm().predict
+
+    def _likelihood_execution_settings(self) -> dict[str, Any]:
+        return _execution_settings(
+            self._sorted_spikes_algorithm(), self.sorted_spikes_algorithm_params
+        )
 
     @row_slice_aware
     @requires_time_edges

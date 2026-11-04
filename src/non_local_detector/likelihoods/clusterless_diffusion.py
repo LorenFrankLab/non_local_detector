@@ -35,7 +35,7 @@ placed at their bins, as the samples' exposure is (one entry when both samples
 share a bin, else two with the spike's mark). ``K_mark`` is the Gaussian
 mark kernel with its normalizer, ``H`` is the fixed spatial kernel
 (:func:`_kernel_columns`: heat-kernel columns clipped, kept within their
-connected component, cut below ``_FIELD_RESOLUTION`` of their peak and
+connected component, cut below ``FIELD_RESOLUTION`` of their peak and
 normalized to unit mass) that also diffuses occupancy and the ground process,
 ``sum_i w_i`` the weighted encoding count, and ``dV(x) = bin_sizes`` the per-bin
 measure. Because ``H``'s columns sum to one, dividing by ``(sum_i w_i) * dV(x)``
@@ -82,64 +82,61 @@ from non_local_detector.encoding_time import (
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
-    _compute_log_mark_kernel_gemm,
-    _masked_logaddexp,
-    _masked_logsumexp,
-    _repair_flagged,
-    _zero_if_neginf,
-)
-from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale as mark_reference_scale,
+)
+from non_local_detector.likelihoods.clusterless_spikes import (
+    ElectrodeSpikes,
+    add_background_only,
+    add_electrode_spike_terms,
 )
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
     EPS,
     LOG_RATE_EPS_HZ,
-    _pad_rows,
-    _padded_sample_count,
-    _padded_spike_count,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     as_std_array,
+    compute_log_mark_kernel_gemm,
     deterministic_row_sum,
     environment_grid_fingerprint,
+    full_to_local_index,
     get_position_at_time,
+    interior_bin_indices,
     log_bin_duration_evidence,
     log_density_intensity,
     log_nonnegative,
-    resolve_row_slice,
-    select_decode_marks,
+    masked_logaddexp,
+    masked_logsumexp,
+    pad_rows,
+    padded_sample_count,
+    padded_spike_count,
+    prepare_decode_rows,
+    repair_flagged,
     select_spike_rows,
-    select_spikes_in_rows,
     spike_row_ids,
-    sum_spikes_into_rows,
     validate_encoding_contract,
     validate_finite,
     validate_population_lengths,
+    validate_positive_int,
     weighted_mean_rate,
+    zero_if_neginf,
 )
 from non_local_detector.likelihoods.diffusion import (
-    _FIELD_RESOLUTION,
-    _resolved_occupancy,
+    FIELD_RESOLUTION,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
     environment_graph,
     get_device_basis,
     heat_kernel_apply,
+    resolved_occupancy,
 )
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
-    background_log_intensity,
     background_rate,
-)
-from non_local_detector.likelihoods.sorted_spikes_diffusion import (
-    _full_to_local,
-    _interior_bin_indices,
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
@@ -149,6 +146,12 @@ logger = logging.getLogger(__name__)
 # float32 working dtype for the diffusion matmul; its item size drives the memory
 # policy -- do not hardcode 4 elsewhere.
 _WORKING_ITEMSIZE = np.dtype(np.float32).itemsize
+
+
+def _validate_execution_settings(memory_budget: Any, block_size: Any) -> None:
+    """Reject a memory budget (bytes) or block size the fit and prediction cannot use."""
+    validate_positive_int("memory_budget", memory_budget)
+    validate_positive_int("block_size", block_size)
 
 
 def _validate_diffusion_params(
@@ -210,32 +213,7 @@ def _validate_diffusion_params(
                 got=f"heat_kernel_rank = {heat_kernel_rank}",
             )
 
-    if isinstance(memory_budget, bool) or not isinstance(memory_budget, int):
-        msg = "memory_budget must be a positive integer number of bytes"
-        raise ValidationError(
-            msg,
-            expected="a positive int",
-            got=f"{memory_budget!r} (type {type(memory_budget).__name__})",
-        )
-    if memory_budget < 1:
-        msg = "memory_budget must be a positive integer number of bytes"
-        raise ValidationError(
-            msg,
-            expected="memory_budget >= 1",
-            got=f"memory_budget = {memory_budget}",
-        )
-
-    if (
-        isinstance(block_size, bool)
-        or not isinstance(block_size, int)  # type: ignore[redundant-expr]  # runtime check of user input
-        or block_size < 1
-    ):
-        msg = "block_size must be a positive integer"
-        raise ValidationError(
-            msg,
-            expected="a positive int >= 1",
-            got=f"{block_size!r}",
-        )
+    _validate_execution_settings(memory_budget, block_size)
 
     return position_std
 
@@ -417,7 +395,7 @@ def fit_clusterless_diffusion_encoding_model(
     bin_sizes = np.asarray(bin_sizes)
     n_interior = node_order.shape[0]
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
-    full_to_local = _full_to_local(node_order, n_total_bins)
+    full_to_local = full_to_local_index(node_order, n_total_bins)
 
     # Resolve the eigenbasis ONCE and record its rank; predict retrieves the device
     # basis via get_device_basis(environment, resolved_rank).
@@ -435,7 +413,7 @@ def fit_clusterless_diffusion_encoding_model(
     # exposure does even when the animal moves more than a bin per sample.
     sample_bins = np.full(n_time_position, -1)
     if support.indices.size:
-        sample_bins[support.indices] = _interior_bin_indices(
+        sample_bins[support.indices] = interior_bin_indices(
             environment,
             get_position_at_time(
                 position_time, position, position_time[support.indices], environment
@@ -534,7 +512,7 @@ def fit_clusterless_diffusion_encoding_model(
         if w_total == 0:
             continue
         summed_ground_process_intensity += next(spike_fields_hat) * np.exp(
-            np.asarray(_log_intensity_scale(occupancy, bin_sizes, mean_rate, w_total))
+            np.asarray(log_intensity_scale(occupancy, bin_sizes, mean_rate, w_total))
         )
 
     return {
@@ -589,7 +567,7 @@ def _kernel_columns(
 
     Column ``k`` is the heat kernel applied to bin ``sources[k]``: clipped to be
     non-negative, zero outside that bin's connected component, cut below
-    ``_FIELD_RESOLUTION`` of its peak (heat-kernel noise) and normalized to unit
+    ``FIELD_RESOLUTION`` of its peak (heat-kernel noise) and normalized to unit
     mass. Every column depends only on its own source, so the model's one
     spatial kernel ``H`` can be built in tiles of sources. Occupancy, the ground
     process and every spike's marked field are the same linear map ``H`` of
@@ -610,6 +588,23 @@ def _kernel_columns(
     -------
     columns : jax.Array, shape (n_bins, n_sources)
     """
+    if sources.shape[0] == 1:
+        # One column would take XLA's matrix-vector product, whose float32
+        # rounding differs from the matrix product of wider tiles and the dense
+        # kernel by ~4e-7. The log intensity amplifies that at bins near the
+        # resolution floor (to 1.5e-2 on a 144-bin grid), so a one-column tile
+        # would change results. Build two columns and keep the first.
+        return cast(
+            jax.Array,
+            _kernel_columns(
+                eigvals,
+                eigvecs,
+                labels,
+                jnp.concatenate([sources, sources]),
+                position_std=position_std,
+                n_components=n_components,
+            )[:, :1],
+        )
     n_bins = eigvecs.shape[0]
     onehot = (
         jnp.zeros((n_bins, sources.shape[0]), eigvecs.dtype)
@@ -620,7 +615,7 @@ def _kernel_columns(
         eigvals, eigvecs, position_std, onehot, labels, n_components=n_components
     )
     columns = jnp.where(
-        columns >= _FIELD_RESOLUTION * jnp.max(columns, axis=0, keepdims=True),
+        columns >= FIELD_RESOLUTION * jnp.max(columns, axis=0, keepdims=True),
         columns,
         0.0,
     )
@@ -652,7 +647,7 @@ def spatial_kernel_columns(
     columns : jax.Array, shape (n_bins, n_sources)
         Non-negative columns that each sum to one: the diffusion of a unit mass
         from each source bin, zero outside its connected component and below
-        ``_FIELD_RESOLUTION`` of its peak. ``resolved_rank`` and
+        ``FIELD_RESOLUTION`` of its peak. ``resolved_rank`` and
         ``position_std`` must be the fitted model's.
     """
     eigvals, eigvecs, labels, n_components = get_device_basis(
@@ -660,7 +655,7 @@ def spatial_kernel_columns(
     )
     sources = np.asarray(sources, dtype=np.int32)
     # Pad to few sizes so callers with nearby source counts share one executable.
-    padded = _pad_sources(sources, _padded_sample_count(max(sources.size, 1)))
+    padded = _pad_sources(sources, padded_sample_count(max(sources.size, 1)))
     return cast(
         jax.Array,
         _kernel_columns(
@@ -764,7 +759,7 @@ def _diffuse_fields(
     return out
 
 
-def _log_intensity_scale(
+def log_intensity_scale(
     occupancy: jax.Array | np.ndarray,
     bin_sizes: jax.Array | np.ndarray,
     mean_rate: jax.Array | float,
@@ -774,7 +769,7 @@ def _log_intensity_scale(
 
     Multiplying a diffused source field by this gives the intensity. Bins
     whose occupancy the heat kernel does not resolve (see
-    :func:`_resolved_occupancy`) carry no encoding information: their scale is
+    :func:`resolved_occupancy`) carry no encoding information: their scale is
     ``-inf``, so their marked and ground intensities are zero and their spikes
     are explained by the background alone. Shared by decoding and model
     checking.
@@ -790,7 +785,7 @@ def _log_intensity_scale(
     """
     occupancy = jnp.asarray(occupancy)
     return jnp.where(
-        _resolved_occupancy(occupancy),
+        resolved_occupancy(occupancy),
         log_density_intensity(
             mean_rate,
             -jnp.log(weight_total * jnp.asarray(bin_sizes)),
@@ -826,7 +821,7 @@ def _source_layout(
     """
     real = bins < n_bins
     distinct, inverse = np.unique(bins[real], return_inverse=True)
-    n_padded = _padded_sample_count(max(distinct.size, 1))
+    n_padded = padded_sample_count(max(distinct.size, 1))
     tile = min(tile_budget, n_padded)
     n_padded = -(-n_padded // tile) * tile
     source_index = np.full(bins.size, n_padded - 1, dtype=np.int32)
@@ -869,7 +864,7 @@ def _electrode_layout(
     if np.any(bins[1:] < bins[:-1]):
         order = np.argsort(bins, kind="stable")
         bins, marks, weights = bins[order], marks[order], weights[order]
-    n_padded = _padded_sample_count(bins.shape[0])
+    n_padded = padded_sample_count(bins.shape[0])
     padded_bins = np.full(n_padded, n_bins, dtype=bins.dtype)
     padded_bins[: bins.shape[0]] = bins
     if dense:
@@ -878,8 +873,8 @@ def _electrode_layout(
     else:
         sources, source_index, tile = _source_layout(padded_bins, n_bins, tile_budget)
     return (
-        jnp.asarray(_pad_rows(marks, n_padded)),
-        jnp.asarray(_pad_rows(weights, n_padded)),
+        jnp.asarray(pad_rows(marks, n_padded)),
+        jnp.asarray(pad_rows(weights, n_padded)),
         jnp.asarray(sources),
         jnp.asarray(source_index, dtype=jnp.int32),
         tile,
@@ -905,13 +900,13 @@ def _log_source_marks(
         ``-inf`` for a source without positively weighted samples.
     """
     weighted = (
-        _compute_log_mark_kernel_gemm(decode_features, encoding_marks, waveform_std)
+        compute_log_mark_kernel_gemm(decode_features, encoding_marks, waveform_std)
         + log_nonnegative(encoding_weights)[:, None]
     )  # (n_samples, n_block)
     peak = jax.ops.segment_max(
         weighted, source_index, num_segments=n_sources, indices_are_sorted=True
     )
-    safe_peak = _zero_if_neginf(peak)
+    safe_peak = zero_if_neginf(peak)
     total = deterministic_row_sum(
         jnp.exp(weighted - safe_peak[source_index]),
         source_index,
@@ -979,7 +974,7 @@ def _kernel_bounds(
     sources : jax.Array, shape (n_sources,)
         A whole number of tiles long.
     log_scale : jax.Array, shape (n_bins,)
-        :func:`_log_intensity_scale` for a unit rate and weight.
+        :func:`log_intensity_scale` for a unit rate and weight.
     tile : int
     position_std : float
     n_components : int
@@ -1052,7 +1047,7 @@ def _log_marked_field(
     """
     local = rows is not None
     peak = jnp.max(log_source, axis=0)
-    safe_peak = _zero_if_neginf(peak)
+    safe_peak = zero_if_neginf(peak)
     scaled = jnp.exp(log_source - safe_peak[None, :])
     n_bins = jax.eval_shape(columns_of, 0).shape[0]
 
@@ -1088,7 +1083,7 @@ def _log_marked_field(
             terms = jnp.where(
                 jnp.isneginf(part)[None, :], -jnp.inf, log_columns + part[None, :]
             )
-            return _masked_logaddexp(value, _masked_logsumexp(terms.T))
+            return masked_logaddexp(value, masked_logsumexp(terms.T))
 
         n_read = n_bins if at is None else at.shape[0]
         return cast(
@@ -1112,7 +1107,7 @@ def _log_marked_field(
     # Flagged spikes are rare (none of 75,458 on a real recording). Each one
     # reduces every kernel tile in log space; streamed tiles are rebuilt from
     # the basis per spike, so many flags in one block are slow but exact.
-    return _repair_flagged(log_field, needs_exact, repaired)
+    return repair_flagged(log_field, needs_exact, repaired)
 
 
 @partial(
@@ -1176,7 +1171,7 @@ def _add_electrode_diffusion_terms(
         (:func:`_dense_kernel`); then ``sources`` are every bin. Otherwise
         kernel columns are built from the basis, tile by tile.
     log_scale : jax.Array, shape (n_bins,)
-        From :func:`_log_intensity_scale`.
+        From :func:`log_intensity_scale`.
     bounds : tuple of jax.Array, each shape (n_sources,)
         This electrode's ``(gain, floor)`` of ``sources`` (see
         :func:`_kernel_bounds`).
@@ -1278,7 +1273,7 @@ def predict_clusterless_diffusion_log_likelihood(
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the clusterless graph-diffusion log likelihood.
@@ -1364,7 +1359,7 @@ def predict_clusterless_diffusion_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1379,6 +1374,7 @@ def predict_clusterless_diffusion_log_likelihood(
         is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
+    _validate_execution_settings(memory_budget, block_size)
     fitted_occupancy = occupancy
     occupancy = jnp.asarray(occupancy)
     summed_ground_process_intensity = jnp.asarray(
@@ -1403,11 +1399,7 @@ def predict_clusterless_diffusion_log_likelihood(
         mean_rates=mean_rates,
         mark_reference=mark_reference,
     )
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     n_bins = occupancy.shape[0]
 
     eigvals, eigvecs, labels, n_components = get_device_basis(
@@ -1423,7 +1415,7 @@ def predict_clusterless_diffusion_log_likelihood(
     }
     # One kernel per prediction, shared by every electrode, state and chunk.
     kernel = (
-        _spike_time_order.memo(
+        rows.spike_time_order.memo(
             f"diffusion_kernel:{position_std!r}:{every_bin_tile}",
             (eigvecs, labels),
             partial(
@@ -1440,7 +1432,7 @@ def predict_clusterless_diffusion_log_likelihood(
         else None
     )
     # Every bin's repair-gate bounds for a unit rate and weight, once per model.
-    kernel_gain, kernel_floor = _spike_time_order.memo(
+    kernel_gain, kernel_floor = rows.spike_time_order.memo(
         f"diffusion_kernel_bounds:{position_std!r}:{every_bin_tile}:{dense}",
         (eigvecs, labels, fitted_occupancy),
         lambda: _kernel_bounds(
@@ -1449,13 +1441,13 @@ def predict_clusterless_diffusion_log_likelihood(
             labels,
             kernel,
             every_bin,
-            _log_intensity_scale(occupancy, bin_sizes, 1.0, 1.0),
+            log_intensity_scale(occupancy, bin_sizes, 1.0, 1.0),
             tile=every_bin_tile,
             **basis_static,
         ),
     )
 
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
+    durations = jnp.asarray(rows.durations())
     if is_local:
         # The local path reads the animal's position; non-local ignores it and the
         # base API permits position=None (as clusterless_kde does), so position is
@@ -1465,15 +1457,15 @@ def predict_clusterless_diffusion_log_likelihood(
         # predict, not stored) and evaluate the diffused column at the animal's nearest
         # interior bin instead of returning the whole column.
         n_total_bins = environment.is_track_interior_.ravel().shape[0]
-        full_to_local = _full_to_local(node_order, n_total_bins)
+        full_to_local = full_to_local_index(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(
             position_time,
             position,
-            decode_bin_centers(time_edges, row_start, row_stop),
+            decode_bin_centers(rows.time_edges, rows.start, rows.stop),
             environment,
         )
-        animal_time_bins = _interior_bin_indices(
+        animal_time_bins = interior_bin_indices(
             environment, interpolated_position, full_to_local
         )
         # Ground-process term evaluated at the animal's position per decode time
@@ -1487,73 +1479,39 @@ def predict_clusterless_diffusion_log_likelihood(
     # starting sum too lets every electrode reuse one executable.
     log_likelihood = cast(jax.Array, jax.device_put(log_likelihood, eigvecs.sharding))
 
-    for electrode, (
-        electrode_bins,
-        electrode_marks,
-        electrode_weights,
-        electrode_weight_total,
-        electrode_mean_rate,
-        electrode_decode_features,
-        electrode_spike_times,
-        electrode_mark_reference,
-    ) in enumerate(
-        zip(
-            tqdm(
-                encoding_bin_indices,
-                unit="electrode",
-                desc="Local Likelihood" if is_local else "Position-Bin Likelihood",
-                disable=disable_progress_bar,
-            ),
-            encoding_marks,
-            encoding_weights,
-            weight_total,
-            mean_rates,
-            spike_waveform_features,
-            spike_times,
-            mark_reference,
-            strict=True,
-        )
-    ):
-        selection = select_spikes_in_rows(
-            electrode_spike_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
-        )
-        # Select FIRST, convert after: converting the whole array would cost
-        # every decoding spike in the recording on every chunk call.
-        decode_features = select_decode_marks(
-            electrode_decode_features, selection, electrode
-        )
-        n_decode = decode_features.shape[0]
-        if n_decode == 0:
-            continue
-        log_background = background_log_intensity(
-            electrode_mark_reference, decode_features, LOG_RATE_EPS_HZ
-        )
-
+    def add_electrode(
+        log_likelihood: jax.Array,
+        spikes: ElectrodeSpikes,
+        model: tuple[Any, Any, Any, Any, Any],
+    ) -> jax.Array:
+        (
+            electrode_bins,
+            electrode_marks,
+            electrode_weights,
+            electrode_weight_total,
+            electrode_mean_rate,
+        ) = model
         # Zero-rate electrode: the background explains every observed spike,
         # BEFORE any division (D_e == 0 and P_e / weight_total_e is 0/0). Its
         # contribution is identical across bins -- accumulate it per time bin
         # rather than materializing an (n_decode, n_bins) array.
         if electrode_weight_total == 0:
-            background_sum = sum_spikes_into_rows(log_background, selection)
-            log_likelihood += background_sum if is_local else background_sum[:, None]
-            continue
+            return add_background_only(log_likelihood, spikes)
 
-        enc_marks, enc_weights, sources, source_index, tile = _spike_time_order.memo(
-            f"diffusion_electrode_layout:{n_bins}:{tile_budget}:{dense}",
-            (electrode_bins, electrode_marks, electrode_weights),
-            partial(
-                _electrode_layout,
-                electrode_bins,
-                electrode_marks,
-                electrode_weights,
-                n_bins,
-                tile_budget,
-                dense,
-            ),
+        enc_marks, enc_weights, sources, source_index, tile = (
+            rows.spike_time_order.memo(
+                f"diffusion_electrode_layout:{n_bins}:{tile_budget}:{dense}",
+                (electrode_bins, electrode_marks, electrode_weights),
+                partial(
+                    _electrode_layout,
+                    electrode_bins,
+                    electrode_marks,
+                    electrode_weights,
+                    n_bins,
+                    tile_budget,
+                    dense,
+                ),
+            )
         )
         effective_block = _effective_block(
             memory_budget, enc_marks.shape[0], sources.shape[0], n_bins, block_size
@@ -1572,19 +1530,19 @@ def predict_clusterless_diffusion_log_likelihood(
         )
         # Padded spikes (dropped from the row sums) let chunks with nearby
         # spike counts share one compiled kernel.
-        n_padded = _padded_spike_count(n_decode, effective_block)
+        n_padded = padded_spike_count(spikes.n_spikes, effective_block)
         spike_bins = None
         if is_local:
             # The animal's interior bin at each decode spike's own time
             # (nearest-bin interpolation).
             spike_bins = jnp.asarray(
-                _pad_rows(
-                    _interior_bin_indices(
+                pad_rows(
+                    interior_bin_indices(
                         environment,
                         get_position_at_time(
                             position_time,
                             position,
-                            select_spike_rows(electrode_spike_times, selection),
+                            select_spike_rows(spikes.times, spikes.selection),
                             environment,
                         ),
                         full_to_local,
@@ -1593,33 +1551,62 @@ def predict_clusterless_diffusion_log_likelihood(
                 )
             )
         rate_offset = float(np.log(electrode_mean_rate / electrode_weight_total))
-        log_likelihood = _add_electrode_diffusion_terms(
-            log_likelihood,
-            jnp.asarray(_pad_rows(decode_features, n_padded)),
-            jnp.asarray(spike_row_ids(selection, n_padded)),
-            spike_bins,
-            enc_marks,
-            enc_weights,
-            source_index,
-            sources,
-            as_std_array(waveform_std, enc_marks.shape[1]),
-            eigvals,
-            eigvecs,
-            labels,
-            kernel,
-            _log_intensity_scale(
-                occupancy, bin_sizes, electrode_mean_rate, electrode_weight_total
+        return cast(
+            jax.Array,
+            _add_electrode_diffusion_terms(
+                log_likelihood,
+                jnp.asarray(pad_rows(spikes.marks, n_padded)),
+                jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
+                spike_bins,
+                enc_marks,
+                enc_weights,
+                source_index,
+                sources,
+                as_std_array(waveform_std, enc_marks.shape[1]),
+                eigvals,
+                eigvecs,
+                labels,
+                kernel,
+                log_intensity_scale(
+                    occupancy, bin_sizes, electrode_mean_rate, electrode_weight_total
+                ),
+                (kernel_gain[sources] + rate_offset, kernel_floor[sources]),
+                jnp.asarray(pad_rows(spikes.log_background, n_padded)),
+                tile=tile,
+                block_size=min(effective_block, n_padded),
+                indices_are_sorted=spikes.selection.indices_are_sorted,
+                **basis_static,
             ),
-            (kernel_gain[sources] + rate_offset, kernel_floor[sources]),
-            jnp.asarray(_pad_rows(log_background, n_padded)),
-            tile=tile,
-            block_size=min(effective_block, n_padded),
-            indices_are_sorted=selection.indices_are_sorted,
-            **basis_static,
         )
 
+    log_likelihood = add_electrode_spike_terms(
+        log_likelihood,
+        spike_times,
+        spike_waveform_features,
+        mark_reference,
+        list(
+            zip(
+                encoding_bin_indices,
+                encoding_marks,
+                encoding_weights,
+                weight_total,
+                mean_rates,
+                strict=True,
+            )
+        ),
+        add_electrode,
+        rows=rows,
+        log_background_floor=LOG_RATE_EPS_HZ,
+        desc="Local Likelihood" if is_local else "Position-Bin Likelihood",
+        disable_progress_bar=disable_progress_bar,
+    )
+
     evidence = log_bin_duration_evidence(
-        spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+        spike_times,
+        rows.time_edges,
+        row_slice,
+        rows.spike_time_order,
+        _time_grid=rows.time_grid,
     )
     if is_local:
         return (log_likelihood + evidence)[:, None]

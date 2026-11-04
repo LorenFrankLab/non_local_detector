@@ -24,7 +24,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
 from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
-    _compute_precision_cholesky,
+    compute_precision_cholesky,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
@@ -58,7 +58,7 @@ def _make_kde_matched_gmm(
     # Full covariance: (K, D, D) — same diagonal matrix for each component
     covariances = jnp.tile(jnp.diag(bandwidths**2)[None], (n_components, 1, 1))
 
-    precisions_chol = _compute_precision_cholesky(covariances, "full")
+    precisions_chol = compute_precision_cholesky(covariances, "full")
 
     gmm = GaussianMixtureModel(n_components=n_components, covariance_type="full")
     gmm.weights_ = weights

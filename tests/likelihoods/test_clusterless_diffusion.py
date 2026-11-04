@@ -55,7 +55,9 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
+    full_to_local_index,
     get_position_at_time,
+    interior_bin_indices,
     interpolate_weights_at_spike_times,
 )
 from non_local_detector.likelihoods.diffusion import (
@@ -66,10 +68,6 @@ from non_local_detector.likelihoods.diffusion import (
     get_device_basis,
     heat_kernel_apply,
     n_connected_components,
-)
-from non_local_detector.likelihoods.sorted_spikes_diffusion import (
-    _full_to_local,
-    _interior_bin_indices,
 )
 from tests.likelihoods._sorted_spikes_helpers import (
     make_two_room_env,
@@ -402,9 +400,9 @@ def _hand_log_likelihood(
     sum_w_pos = float(exposure.sum())
 
     # bins of encoding spikes via interpolation (independent of production internals)
-    f2l = _full_to_local(node_order, env.is_track_interior_.ravel().shape[0])
+    f2l = full_to_local_index(node_order, env.is_track_interior_.ravel().shape[0])
     enc_pos = get_position_at_time(position_time, position, enc_times, env)
-    enc_bins = _interior_bin_indices(env, enc_pos, f2l)
+    enc_bins = interior_bin_indices(env, enc_pos, f2l)
     w_enc = interpolate_weights_at_spike_times(enc_times, position_time, weights)
     w_total = float(w_enc.sum())
     mean_rate = w_total / sum_w_pos
@@ -423,7 +421,7 @@ def _hand_log_likelihood(
         S[b, 0] += w_enc[i]
 
     occ_pos = get_position_at_time(position_time, position, position_time, env)
-    occ_bins = _interior_bin_indices(env, occ_pos, f2l)
+    occ_bins = interior_bin_indices(env, occ_pos, f2l)
     occ_field = np.bincount(occ_bins, weights=exposure, minlength=n_bins)[:, None]
 
     P = diffuse(eigvals, eigvecs, position_std, D, component_labels=labels)
@@ -935,9 +933,9 @@ def test_local_equals_nonlocal_per_spike():
     assert np.all(np.isfinite(ll_local))
 
     n_total_bins = env.is_track_interior_.ravel().shape[0]
-    full_to_local = _full_to_local(np.asarray(enc["node_order"]), n_total_bins)
+    full_to_local = full_to_local_index(np.asarray(enc["node_order"]), n_total_bins)
     animal_position = get_position_at_time(position_time, position, dec_times[0], env)
-    animal_bin = int(_interior_bin_indices(env, animal_position, full_to_local)[0])
+    animal_bin = int(interior_bin_indices(env, animal_position, full_to_local)[0])
     t_bin = int(_decode_bin(dec_times[0], time_edges)[0])
     assert t_bin == 3  # [2.5, 3.5) owns t=3.3; its center is time[3]=3.0
     assert animal_bin == 3  # bin containing x_c = 3.2
@@ -1019,9 +1017,9 @@ def test_local_finite_and_zero_rate():
     assert np.all(np.isfinite(ll))
 
     n_total_bins = env.is_track_interior_.ravel().shape[0]
-    full_to_local = _full_to_local(np.asarray(enc["node_order"]), n_total_bins)
+    full_to_local = full_to_local_index(np.asarray(enc["node_order"]), n_total_bins)
     interpolated_position = get_position_at_time(position_time, position, time, env)
-    animal_bins = _interior_bin_indices(env, interpolated_position, full_to_local)
+    animal_bins = interior_bin_indices(env, interpolated_position, full_to_local)
     gpi = np.asarray(enc["summed_ground_process_intensity"])
     local_gpi = gpi[animal_bins]
 
@@ -2182,3 +2180,77 @@ def test_uniform_rate_is_recovered_under_sparse_tracking():
     np.testing.assert_allclose(
         np.sum(encoding["encoding_weights"][0]), len(spike_times[0])
     )
+
+
+@pytest.mark.unit
+# The default bandwidth on 10 cm bins, the regime where the one-column tile
+# differed; the fit warns that it barely smooths.
+@pytest.mark.filterwarnings(
+    "ignore:position_std .* is below the characteristic bin spacing:UserWarning"
+)
+def test_every_memory_budget_matches_the_dense_kernel():
+    """Budgets that tile the spatial kernel, down to one column per tile, give
+    the dense kernel's likelihood to float32 rounding.
+
+    A one-column tile took a matrix-vector product whose rounding differed from
+    the matrix product of wider tiles; near the field's resolution floor that
+    changed the log likelihood by up to 2.5e-4 relative.
+    """
+    import non_local_detector.likelihoods.clusterless_diffusion as diffusion
+
+    rng = np.random.default_rng(1)
+    position_time = np.arange(0.0, 60.0, 0.004)
+    position = np.stack(
+        [
+            50 + 45 * np.sin(2 * np.pi * position_time / 7.0),
+            50 + 45 * np.cos(2 * np.pi * position_time / 11.0),
+        ],
+        axis=1,
+    )
+    environment = Environment(
+        place_bin_size=10.0, position_range=((0.0, 100.0), (0.0, 100.0))
+    ).fit_place_grid(position=position, infer_track_interior=False)
+    spike_times, features = [], []
+    for _ in range(2):
+        times, marks = [], []
+        for center in rng.uniform(10, 90, size=(3, 2)):
+            near = np.linalg.norm(position - center, axis=1) < 15
+            times.append(np.sort(rng.choice(position_time[near], 100, replace=False)))
+            marks.append(rng.standard_normal((100, 4)) * 2 + center[0] / 10)
+        order = np.argsort(np.concatenate(times))
+        spike_times.append(np.concatenate(times)[order] + 0.001)
+        features.append(np.concatenate(marks)[order])
+    model = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        spike_times,
+        features,
+        environment=environment,
+        disable_progress_bar=True,
+    )
+    n_bins = model["occupancy"].shape[0]
+    rank = int(model["resolved_rank"])
+
+    def log_likelihood(memory_budget):
+        return np.asarray(
+            predict_clusterless_diffusion_log_likelihood(
+                position_time,
+                position,
+                spike_times,
+                features,
+                time_edges=time_edges_from_centers(position_time[:2000]),
+                **{**model, "memory_budget": memory_budget},
+                mark_reference=[None, None],
+            )
+        )
+
+    dense_budget = 2 * 4 * n_bins * n_bins
+    assert diffusion._dense_kernel_fits(n_bins, dense_budget)
+    dense = log_likelihood(dense_budget)
+    one_column = 2 * 4 * (3 * n_bins + rank)  # a tile of one column per budget unit
+    tiles = []
+    for budget in (8 * one_column, 4 * one_column, 2 * one_column, one_column, 1):
+        assert not diffusion._dense_kernel_fits(n_bins, budget)
+        tiles.append(diffusion._source_tile_size(budget, n_bins, rank))
+        np.testing.assert_allclose(log_likelihood(budget), dense, rtol=1e-6, atol=0)
+    assert tiles == [8, 4, 2, 1, 1]

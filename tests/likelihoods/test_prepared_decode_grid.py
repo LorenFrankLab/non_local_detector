@@ -11,7 +11,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
-from non_local_detector.likelihoods.common import _SpikeTimeOrder
+from non_local_detector.likelihoods.common import SpikeTimeOrder
 from tests.models._helpers import (
     ALGORITHMS,
     _decoder,
@@ -170,7 +170,7 @@ def test_prepared_backend_requests_allocate_only_requested_grid_rows(
         row_slice=slice(100, 120),
         is_local=is_local,
         _time_grid=context,
-        _spike_time_order=_SpikeTimeOrder(),
+        _spike_time_order=SpikeTimeOrder(),
         **encoding,
     )
     assert result.shape[0] == 20

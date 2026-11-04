@@ -126,12 +126,12 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffus
     assert encoding["local_interpolation"] == "linear"
 
 
-def test_fit_caches_interior_log_place_fields_and_predict_uses_them(
+def test_fit_stores_interior_log_place_fields_that_predict_does_not_read(
     env_2d, three_neuron_diffusion
 ):
-    """The fit precomputes log(interior place fields) so the non-local likelihood does not
-    recompute it per call. The cached value equals log(place_fields[:, interior]), and
-    predict reads it (zeroing it drops the spike term to -no_spike)."""
+    """The fit stores log(interior place fields); the non-local likelihood takes
+    the log of ``place_fields`` in the shared Poisson emission instead, so the
+    stored value, zeros or None give the same result."""
     env = env_2d
     time, position, spike_times, encoding = three_neuron_diffusion
 
@@ -140,27 +140,6 @@ def test_fit_caches_interior_log_place_fields_and_predict_uses_them(
     expected = np.log(np.asarray(encoding["place_fields"])[:, is_interior])
     assert cached.shape == (3, int(is_interior.sum()))
     np.testing.assert_allclose(cached, expected, rtol=1e-6)
-
-    # Predict reads interior_log_place_fields: zeroing it makes the spike-count term
-    # (spike_counts @ log_fields) vanish, leaving exactly -no_spike[interior].
-    zeroed = {**encoding, "interior_log_place_fields": np.zeros_like(cached)}
-    ll = np.asarray(
-        predict_sorted_spikes_diffusion_log_likelihood(
-            time, position, spike_times, time_edges=time[:100], is_local=False, **zeroed
-        )
-    )
-    no_spike = np.asarray(encoding["no_spike_part_log_likelihood"])[is_interior]
-    durations = np.diff(time[:100])
-    counts = sum(np.histogram(spikes, time[:100])[0] for spikes in spike_times)
-    expected_ll = (
-        counts[:, None] * np.log(durations)[:, None] - durations[:, None] * no_spike
-    )
-    np.testing.assert_allclose(ll, expected_ll, rtol=1e-5)
-
-
-def test_prediction_rebuilds_omitted_interior_log_fields(three_neuron_diffusion):
-    """Without the cached interior log fields, prediction rebuilds them."""
-    time, position, spike_times, encoding = three_neuron_diffusion
 
     def non_local(model):
         return np.asarray(
@@ -174,11 +153,11 @@ def test_prediction_rebuilds_omitted_interior_log_fields(three_neuron_diffusion)
             )
         )
 
-    np.testing.assert_allclose(
-        non_local({**encoding, "interior_log_place_fields": None}),
-        non_local(encoding),
-        rtol=1e-6,
-    )
+    fitted = non_local(encoding)
+    for log_fields in (np.zeros_like(cached), None):
+        np.testing.assert_array_equal(
+            non_local({**encoding, "interior_log_place_fields": log_fields}), fitted
+        )
 
 
 def test_fit_accepts_shared_sorted_spikes_params():
@@ -1287,8 +1266,7 @@ def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypat
     """Non-local spike counts are built in bounded row blocks, bitwise
     identically to one block, so a full-grid request never holds the whole
     rows-by-population count matrix."""
-    import non_local_detector.likelihoods.common as common
-    import non_local_detector.likelihoods.sorted_spikes_diffusion as diffusion
+    import non_local_detector.likelihoods.common.poisson as poisson
 
     predict, encoding, time, position, spike_times = three_neuron_fit
     arguments = {
@@ -1298,7 +1276,7 @@ def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypat
         "row_slice": rows,
     }
     unblocked = predict(time, position, spike_times, **arguments)
-    original = diffusion._spike_counts_matrix
+    original = poisson.spike_counts_matrix
     block_rows = []
 
     def spy(*args, **kwargs):
@@ -1306,11 +1284,47 @@ def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypat
         block_rows.append(counts.shape[0])
         return counts
 
-    monkeypatch.setattr(diffusion, "_spike_counts_matrix", spy)
+    monkeypatch.setattr(poisson, "spike_counts_matrix", spy)
     # Three neurons of int64 counts: a 128-row block budget.
-    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
+    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
     blocked = predict(time, position, spike_times, **arguments)
     np.testing.assert_array_equal(blocked, unblocked)
     start, stop, _ = (slice(None) if rows is None else rows).indices(1000)
     assert sum(block_rows) == stop - start
     assert max(block_rows, default=0) <= 128
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rows", [None, slice(37, 901), slice(100, 100)])
+def test_local_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypatch):
+    """Local spike counts are built in bounded row blocks, bitwise identically
+    to one block."""
+    import non_local_detector.likelihoods.common.poisson as poisson
+    import non_local_detector.likelihoods.sorted_spikes_diffusion as diffusion
+
+    predict, encoding, time, position, spike_times = three_neuron_fit
+    arguments = {
+        **encoding,
+        "is_local": True,
+        "time_edges": time[:1001],
+        "row_slice": rows,
+    }
+    unblocked = predict(time, position, spike_times, **arguments)
+    original = diffusion.spike_counts_matrix
+    block_rows = []
+
+    def spy(*args, **kwargs):
+        counts = original(*args, **kwargs)
+        block_rows.append(counts.shape[0])
+        return counts
+
+    monkeypatch.setattr(diffusion, "spike_counts_matrix", spy)
+    # Three neurons of int64 counts: a 128-row block budget.
+    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
+    blocked = predict(time, position, spike_times, **arguments)
+    np.testing.assert_array_equal(blocked, unblocked)
+    start, stop, _ = (slice(None) if rows is None else rows).indices(1000)
+    assert sum(block_rows) == stop - start
+    assert max(block_rows, default=0) <= 128
+    if stop - start > 128:
+        assert len(block_rows) > 1

@@ -118,7 +118,7 @@ cases pass at their unchanged tolerances (101 cases).
 
 Custom `KDEModel` subclasses retain their own `predict_log` behavior. Local
 prediction shares row interpolation, occupancy, and ground-process log densities
-through the prediction's `_SpikeTimeOrder`. Non-local scoring computes each
+through the prediction's `SpikeTimeOrder`. Non-local scoring computes each
 electrode's spatial log kernel inside its compiled scorer rather than caching
 it. Linear KDE derives probability and log position kernels from one
 calculation.

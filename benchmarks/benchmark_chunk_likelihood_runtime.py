@@ -185,7 +185,7 @@ def main():
                 preparation_ms = (time.perf_counter() - start) * 1000
             if "_spike_time_order" in parameters:
                 start = time.perf_counter()
-                spike_order = common._SpikeTimeOrder()
+                spike_order = common.SpikeTimeOrder()
                 for unit_times in spikes:
                     spike_order.get(unit_times)
                 extra["_spike_time_order"] = spike_order

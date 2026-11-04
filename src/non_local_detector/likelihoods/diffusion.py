@@ -58,7 +58,7 @@ _HEAT_KERNEL_RANK_START = 32
 # Diffused-field values below this fraction of their column's maximum are not
 # resolved: the float32 spectral product and the heat-kernel rank truncation
 # (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
-_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
+FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
 # Keys of this module's entries in the Environment cache (``Environment.get_cached``),
 # all cleared together by ``Environment.fit_place_grid``.
@@ -658,11 +658,11 @@ def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
     return np.where(mass > 0, smoothed / safe / bin_sizes[:, np.newaxis], 0.0)
 
 
-def _resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Array:
+def resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Array:
     """Bins whose diffused occupancy the heat kernel resolves.
 
     Occupancy is itself a diffused field, so in unvisited bins it is numerical
-    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
+    noise below ``FIELD_RESOLUTION`` of its maximum. Those bins carry no
     encoding information: a ratio of a diffused spike field to this noise is
     not a rate, so the likelihoods treat them as zero-occupancy bins. A bin
     with zero occupancy is never resolved, even when no bin has any.
@@ -675,7 +675,7 @@ def _resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.A
     -------
     resolved : array of bool, shape (n_bins,)
     """
-    return (occupancy > 0.0) & (occupancy >= _FIELD_RESOLUTION * occupancy.max())
+    return (occupancy > 0.0) & (occupancy >= FIELD_RESOLUTION * occupancy.max())
 
 
 def environment_graph(

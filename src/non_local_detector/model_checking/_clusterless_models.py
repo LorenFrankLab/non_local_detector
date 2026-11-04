@@ -31,10 +31,11 @@ from numpy.typing import ArrayLike
 from scipy.special import logsumexp
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.common import KDEModel, kde_log_density
-from non_local_detector.likelihoods.sorted_spikes_diffusion import (
-    _full_to_local,
-    _interior_bin_indices,
+from non_local_detector.likelihoods.common import (
+    KDEModel,
+    full_to_local_index,
+    interior_bin_indices,
+    kde_log_density,
 )
 from non_local_detector.model_checking.conditional_marks import (
     GaussianMixtureConditionalCDF,
@@ -83,7 +84,7 @@ def _gaussian_log_kernel(
 def _interior_bins(environment: Environment) -> tuple[np.ndarray, np.ndarray]:
     """Interior bin centers and a full-grid to interior index map."""
     interior = environment.is_track_interior_flat_
-    full_to_local = _full_to_local(np.flatnonzero(interior), interior.size)
+    full_to_local = full_to_local_index(np.flatnonzero(interior), interior.size)
     return np.asarray(environment.place_bin_centers_, float)[interior], full_to_local
 
 
@@ -91,7 +92,7 @@ def _require_interior_bins(
     environment: Environment, positions: np.ndarray, full_to_local: np.ndarray
 ) -> np.ndarray:
     """Interior-bin indices of ``positions``; raise if any is off the track."""
-    bins = _interior_bin_indices(environment, positions, full_to_local)
+    bins = interior_bin_indices(environment, positions, full_to_local)
     if np.any(bins < 0):
         msg = "positions must lie in interior bins of the environment"
         raise ValueError(msg)
@@ -248,7 +249,7 @@ class DiffusionElectrode(_MarkKernelMixture):
 
     def __init__(self, model: dict[str, Any], electrode: int) -> None:
         from non_local_detector.likelihoods.clusterless_diffusion import (
-            _log_intensity_scale,
+            log_intensity_scale,
             spatial_kernel_columns,
         )
 
@@ -260,7 +261,7 @@ class DiffusionElectrode(_MarkKernelMixture):
             raise ValueError(msg)
         node_order = np.asarray(model["node_order"])
         self.n_bins = node_order.size
-        self.full_to_local = _full_to_local(
+        self.full_to_local = full_to_local_index(
             node_order, len(self.environment.place_bin_centers_)
         )
         self.marks = np.asarray(model["encoding_marks"][electrode], float)
@@ -291,7 +292,7 @@ class DiffusionElectrode(_MarkKernelMixture):
         # log of mean_rate / (sum w * dV(b) * occupancy(b)) per bin, -inf where
         # the decoder treats the occupancy as unresolved.
         self._log_bin_scale = np.asarray(
-            _log_intensity_scale(
+            log_intensity_scale(
                 np.asarray(model["occupancy"], float),
                 np.asarray(model["bin_sizes"], float),
                 self.mean_rate,

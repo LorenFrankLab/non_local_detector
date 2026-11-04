@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import non_local_detector.likelihoods.common as common
+import non_local_detector.likelihoods.common.reductions as reductions
 from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -101,7 +102,7 @@ def reduction_path(request, monkeypatch):
     ``pytest_runtest_teardown``) instead of each clearing every JAX cache.
     """
     if request.param == "segmented_scan":
-        monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
+        monkeypatch.setattr(reductions, "_reduces_sequentially", lambda values: False)
         if not _SegmentedScanKernels.cached:
             # Kernels traced on the sequential path would bypass the patch.
             jax.clear_caches()

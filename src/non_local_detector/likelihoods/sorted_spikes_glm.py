@@ -87,29 +87,28 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
-    _blocked_nonlocal_poisson_log_likelihood,
-    _concatenate_row_blocks,
-    _spike_counts_matrix,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
+    blocked_nonlocal_poisson_log_likelihood,
+    concatenate_row_blocks,
     environment_grid_fingerprint,
     get_position_at_time,
-    resolve_row_slice,
+    poisson_row_log_likelihood,
+    prepare_decode_rows,
     snap_off_track_positions,
+    spike_counts_matrix,
     validate_encoding_contract,
     validate_population_lengths,
 )
 from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
-from non_local_detector.likelihoods.no_spike import _poisson_row_log_likelihood
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
     decode_bin_centers,
     requires_time_edges,
 )
 
 
 @jax.jit
-def _glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
+def glm_rates(design: jax.Array, coefficients: jax.Array) -> jax.Array:
     """Floored rates at each design row, as the local likelihood computes them.
 
     Parameters
@@ -142,7 +141,7 @@ def _local_glm_log_likelihood(
         jnp.clip(rate, min=RATE_EPS_HZ, max=None)
     )
     expected = jax.lax.optimization_barrier(rate * durations[:, None])  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-    return cast(jax.Array, _poisson_row_log_likelihood(counts, expected))
+    return cast(jax.Array, poisson_row_log_likelihood(counts, expected))
 
 
 def _spline_inner_knots(
@@ -1280,7 +1279,7 @@ def fit_poisson_regression(
     )[0]
 
 
-def _fit_rate_maps(
+def fit_rate_maps(
     environment: Environment,
     place_bin_edges: np.ndarray,
     interior_place_bin_centers: jax.Array,
@@ -1433,7 +1432,7 @@ def _fit_rate_maps(
         l2_penalty=l2_penalty,
         rate_floor=RATE_EPS_HZ,
     )
-    interior_rates = _glm_rates(
+    interior_rates = glm_rates(
         jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
     )  # (n_interior_bins, n_maps)
     return emission_design_info, coefficients, interior_rates
@@ -1586,7 +1585,7 @@ def fit_sorted_spikes_glm_encoding_model(
     else:
         event_counts = np.zeros((len(spike_times), 0))
         exposure = np.zeros(0)
-    emission_design_info, coefficients, interior_rates = _fit_rate_maps(
+    emission_design_info, coefficients, interior_rates = fit_rate_maps(
         environment,
         environment.place_bin_edges_,
         interior_place_bin_centers,
@@ -1639,7 +1638,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     environment_grid: dict[str, Any] | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
@@ -1702,7 +1701,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
@@ -1718,19 +1717,15 @@ def predict_sorted_spikes_glm_log_likelihood(
         unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
         coefficients=coefficients,
         place_fields=place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
-    row_time = decode_bin_centers(time_edges, row_start, row_stop)
+    durations = jnp.asarray(rows.durations())
+    row_time = decode_bin_centers(rows.time_edges, rows.start, rows.stop)
 
     if is_local:
         # Need to interpolate position
@@ -1749,41 +1744,41 @@ def predict_sorted_spikes_glm_log_likelihood(
         coefficients = jnp.asarray(coefficients)
 
         def evaluate(start: int, stop: int) -> jax.Array:
-            rows = slice(start - row_start, stop - row_start)
-            counts = _spike_counts_matrix(
+            block = slice(start - rows.start, stop - rows.start)
+            counts = spike_counts_matrix(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 "Local Likelihood",
                 True,
                 slice(start, stop),
-                _spike_time_order=_spike_time_order,
+                _spike_time_order=rows.spike_time_order,
             )
             return cast(
                 jax.Array,
                 _local_glm_log_likelihood(
-                    design[rows], coefficients, jnp.asarray(counts), durations[rows]
+                    design[block], coefficients, jnp.asarray(counts), durations[block]
                 ),
             )
 
-        log_likelihood = _concatenate_row_blocks(
-            row_start,
-            row_stop,
+        log_likelihood = concatenate_row_blocks(
+            rows.start,
+            rows.stop,
             len(spike_times),
             evaluate,
             "Local Likelihood",
             disable_progress_bar,
         )[:, None]
     else:
-        log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
+        log_likelihood = blocked_nonlocal_poisson_log_likelihood(
             spike_times,
-            time_edges,
-            row_start,
-            row_stop,
+            rows.time_edges,
+            rows.start,
+            rows.stop,
             jnp.asarray(place_fields)[:, is_track_interior],
             durations,
             no_spike_part_log_likelihood[is_track_interior],
             disable_progress_bar=disable_progress_bar,
-            _spike_time_order=_spike_time_order,
+            _spike_time_order=rows.spike_time_order,
         )
 
     return log_likelihood

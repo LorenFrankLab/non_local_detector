@@ -5,9 +5,11 @@ import numpy as np
 import pytest
 
 from non_local_detector.likelihoods.clusterless_kde import (
-    _compute_log_mark_kernel_gemm,
     estimate_log_joint_mark_intensity,
     log_gaussian_pdf,
+)
+from non_local_detector.likelihoods.common import (
+    compute_log_mark_kernel_gemm,
 )
 from tests.likelihoods.conftest import realistic_log_background
 
@@ -55,7 +57,7 @@ def test_gemm_vs_loop_mark_kernel(synthetic_waveform_data):
     waveform_stds = synthetic_waveform_data["waveform_stds"]
 
     # Compute using GEMM
-    logK_gemm = _compute_log_mark_kernel_gemm(
+    logK_gemm = compute_log_mark_kernel_gemm(
         decoding_features, encoding_features, waveform_stds
     )
 
@@ -138,7 +140,7 @@ def test_gemm_various_feature_dimensions():
         )
 
         # GEMM
-        logK_gemm = _compute_log_mark_kernel_gemm(
+        logK_gemm = compute_log_mark_kernel_gemm(
             decoding_features, encoding_features, waveform_stds
         )
 
@@ -166,7 +168,7 @@ def test_gemm_edge_cases():
     # Single encoding spike
     encoding_single = jnp.array([[1.0, 2.0, 3.0]])
     decoding_multi = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-    logK_gemm = _compute_log_mark_kernel_gemm(
+    logK_gemm = compute_log_mark_kernel_gemm(
         decoding_multi, encoding_single, waveform_stds
     )
     assert logK_gemm.shape == (1, 2)
@@ -175,7 +177,7 @@ def test_gemm_edge_cases():
     # Single decoding spike
     encoding_multi = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     decoding_single = jnp.array([[1.0, 2.0, 3.0]])
-    logK_gemm = _compute_log_mark_kernel_gemm(
+    logK_gemm = compute_log_mark_kernel_gemm(
         decoding_single, encoding_multi, waveform_stds
     )
     assert logK_gemm.shape == (2, 1)
@@ -184,13 +186,13 @@ def test_gemm_edge_cases():
     # Identical features (should give maximum kernel value)
     encoding_identical = jnp.array([[1.0, 2.0, 3.0]])
     decoding_identical = jnp.array([[1.0, 2.0, 3.0]])
-    logK_gemm_identical = _compute_log_mark_kernel_gemm(
+    logK_gemm_identical = compute_log_mark_kernel_gemm(
         decoding_identical, encoding_identical, waveform_stds
     )
 
     # Very different features (should give low kernel value)
     decoding_different = jnp.array([[10.0, 20.0, 30.0]])
-    logK_gemm_different = _compute_log_mark_kernel_gemm(
+    logK_gemm_different = compute_log_mark_kernel_gemm(
         decoding_different, encoding_identical, waveform_stds
     )
 
@@ -211,7 +213,7 @@ def test_gemm_normalization_constant():
     # For identical points, kernel should be exp(log_norm_const)
     # Test with same point
     same_point = jnp.array([[1.0, 2.0, 3.0, 4.0]])
-    logK_same = _compute_log_mark_kernel_gemm(same_point, same_point, waveform_stds)
+    logK_same = compute_log_mark_kernel_gemm(same_point, same_point, waveform_stds)
 
     # At identical points, ||x - y||^2 = 0, so logK = log_norm_const
     assert np.allclose(logK_same[0, 0], expected_log_norm, rtol=1e-5, atol=1e-6), (
@@ -232,7 +234,7 @@ def test_gemm_gradient_compatibility():
 
     # Define function to differentiate
     def loss_fn(dec_features):
-        logK = _compute_log_mark_kernel_gemm(
+        logK = compute_log_mark_kernel_gemm(
             dec_features, encoding_features, waveform_stds
         )
         return jnp.sum(logK)

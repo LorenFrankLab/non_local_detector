@@ -15,13 +15,13 @@ import pytest
 from scipy.special import logsumexp
 
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import _padded_sample_count
+from non_local_detector.likelihoods.common import padded_sample_count
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
-    _compute_precision_cholesky,
     _em_fit_while_loop,
     _estimate_gaussian_covariances_tied,
     _estimate_gaussian_parameters,
+    compute_precision_cholesky,
 )
 
 pytestmark = pytest.mark.unit
@@ -358,7 +358,7 @@ def test_tied_covariance_fractional_weights_divide_by_sum_w():
 def test_tied_score_samples_matches_analytic_gaussian():
     """A tied GMM's score_samples equals ``logsumexp_k[log w_k + log N(x|mu_k, Sigma)]``.
 
-    Exercises the ``tied`` branch of ``_estimate_log_gaussian_prob`` (the shared-
+    Exercises the ``tied`` branch of ``estimate_log_gaussian_prob`` (the shared-
     covariance Mahalanobis reduction), which no other test covered.
     """
     rng = np.random.default_rng(1)
@@ -374,7 +374,7 @@ def test_tied_score_samples_matches_analytic_gaussian():
     gmm.weights_ = jnp.asarray(weights)
     gmm.means_ = jnp.asarray(means)
     gmm.covariances_ = jnp.asarray(cov)
-    gmm.precisions_chol_ = _compute_precision_cholesky(jnp.asarray(cov), "tied")
+    gmm.precisions_chol_ = compute_precision_cholesky(jnp.asarray(cov), "tied")
 
     actual = np.asarray(gmm.score_samples(jnp.asarray(X)))
 
@@ -425,7 +425,7 @@ def test_weighted_refits_with_nearby_kept_counts_share_compiled_kernels(key):
     first[:30] = 0.0
     second = np.ones(X.shape[0])
     second[:10] = 0.0
-    assert _padded_sample_count(270) == _padded_sample_count(290)
+    assert padded_sample_count(270) == padded_sample_count(290)
     kernels = (_estimate_gaussian_parameters, _em_fit_while_loop)
     for kernel in kernels:
         kernel.clear_cache()
