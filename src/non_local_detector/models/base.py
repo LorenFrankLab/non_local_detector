@@ -2335,13 +2335,13 @@ class _DetectorBase(
         _validate_inference_arguments(
             inference_mode,
             output_mode,
-            cache_likelihood,
-            n_chunks,
-            chunk_size,
-            result_path,
-            checkpoint_dir,
-            selected_intervals,
-            replay_cache_bytes,
+            cache_likelihood=cache_likelihood,
+            n_chunks=n_chunks,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            selected_intervals=selected_intervals,
+            replay_cache_bytes=replay_cache_bytes,
         )
         return_log_likelihood = "log_likelihood" in requested_outputs
         if (
@@ -2450,16 +2450,16 @@ class _DetectorBase(
             n_chunks,
             chunk_size,
             result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
+            store_log_likelihood=store_log_likelihood,
+            replay_cache_bytes=replay_cache_bytes,
         )
         time_edges, _ = _validate_estimation_arguments(
             time_edges,
             n_chunks,
             return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
         )
         inputs = _EncodingInputs.from_arguments(
             position_time,
@@ -2600,6 +2600,7 @@ class _DetectorBase(
         log_likelihood_args: tuple[Any, ...] = (),
         is_missing: np.ndarray | None = None,
         log_likelihoods: np.ndarray | None = None,
+        *,
         cache_likelihood: bool = True,
         n_chunks: int = 1,
         discrete_state_transitions: np.ndarray | None = None,
@@ -2985,7 +2986,7 @@ class _DetectorBase(
         return convert_seq_to_df(self, sequence_ind, time_centers)
 
     def calculate_time_edges(
-        self, time_range: np.ndarray, trim: bool = False
+        self, time_range: np.ndarray, *, trim: bool = False
     ) -> np.ndarray:
         """Uniform decode edges at ``1 / sampling_frequency`` spanning a range.
 

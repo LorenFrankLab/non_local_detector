@@ -145,6 +145,7 @@ def make_simulated_run_data(
     n_tetrodes: int = N_TETRODES,
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
+    *,
     make_inbound_outbound_neurons: bool = False,
     seed: int | None = 0,
 ) -> ClusterlessSimOutput:

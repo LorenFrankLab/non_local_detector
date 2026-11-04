@@ -420,7 +420,7 @@ class TestInitializeEnvironmentsFitting:
 
         def spy(self, position, **kwargs):
             received.append(np.asarray(position))
-            return fit_place_grid(self, position, **kwargs)
+            return fit_place_grid(self, infer_track_interior=position, **kwargs)
 
         # The decoder fits a copy of ``env``, so spy on the class.
         monkeypatch.setattr(Environment, "fit_place_grid", spy)

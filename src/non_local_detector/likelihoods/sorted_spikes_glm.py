@@ -420,7 +420,7 @@ def _track_branches(graph: Any) -> list[list[tuple[Any, Any]]]:
 
 
 def _cubic_cardinal_basis(
-    knots: np.ndarray, x: np.ndarray, periodic: bool = False
+    knots: np.ndarray, x: np.ndarray, *, periodic: bool = False
 ) -> np.ndarray:
     """Cubic splines through unit values at each knot, evaluated at ``x``.
 
@@ -1118,7 +1118,7 @@ def fit_poisson_regressions(
     penalized = np.ones(n_coefficients)
     penalized[0] = 0.0
 
-    def evaluate(coefficients: np.ndarray, derivatives: bool) -> list[np.ndarray]:
+    def evaluate(coefficients: np.ndarray, *, derivatives: bool) -> list[np.ndarray]:
         """Evaluate the penalized negative log likelihood and its derivatives.
 
         Parameters
@@ -1764,8 +1764,8 @@ def predict_sorted_spikes_glm_log_likelihood(
                 spike_times,
                 rows.time_edges,
                 "Local Likelihood",
-                True,
-                slice(start, stop),
+                disable_progress_bar=True,
+                row_slice=slice(start, stop),
                 _spike_time_order=rows.spike_time_order,
             )
             return cast(
@@ -1781,7 +1781,7 @@ def predict_sorted_spikes_glm_log_likelihood(
             len(spike_times),
             evaluate,
             "Local Likelihood",
-            disable_progress_bar,
+            disable_progress_bar=disable_progress_bar,
         )[:, None]
     else:
         log_likelihood = blocked_nonlocal_poisson_log_likelihood(

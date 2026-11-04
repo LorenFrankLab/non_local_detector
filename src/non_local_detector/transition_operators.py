@@ -1353,7 +1353,9 @@ class LazyDenseTransition:
         return int(np.prod(self.shape))
 
     def __array__(
-        self, dtype: DTypeLike | None = None, copy: bool | None = None
+        self,
+        dtype: DTypeLike | None = None,
+        copy: bool | None = None,  # noqa: FBT001 -- NumPy __array__ protocol
     ) -> np.ndarray:
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 

@@ -517,7 +517,7 @@ def _position_marginal(
 
 
 def _gmm_sample_weight(
-    weights: np.ndarray, weights_was_none: bool
+    weights: np.ndarray, *, weights_was_none: bool
 ) -> np.ndarray | None:
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
@@ -720,7 +720,9 @@ def fit_clusterless_gmm_encoding_model(
     # time each sample covers (its integrated interpolation exposure).
     weight_sum = float(exposure_weights.sum())
     warn_if_no_encoding_exposure(exposure_weights, "Clusterless GMM", clusterless=True)
-    occupancy_sample_weight = _gmm_sample_weight(exposure_weights, False)
+    occupancy_sample_weight = _gmm_sample_weight(
+        exposure_weights, weights_was_none=False
+    )
 
     is_track_interior = environment.is_track_interior_flat_
 
@@ -1223,9 +1225,9 @@ def compute_local_log_likelihood(
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
     mean_rates: jax.Array,
+    *,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
-    *,
     mark_reference: list[MarkReference | None],
     _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,

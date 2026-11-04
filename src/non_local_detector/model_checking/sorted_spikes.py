@@ -71,8 +71,8 @@ class TimeRescaling:
         conditional_intensity: np.ndarray,
         is_spike: np.ndarray,
         trial_id: np.ndarray | None = None,
-        adjust_for_short_trials: bool = False,
         *,
+        adjust_for_short_trials: bool = False,
         rate_units: str = "expected_counts",
         time: np.ndarray | None = None,
         time_edges: np.ndarray | None = None,
@@ -157,7 +157,7 @@ class TimeRescaling:
                     uniform_rescaled_ISIs(
                         self.conditional_intensity[run],
                         self.is_spike[run],
-                        self.adjust_for_short_trials,
+                        adjust_for_short_trials=self.adjust_for_short_trials,
                         rate_units=self.rate_units,
                         time=time,
                         time_edges=edges,
@@ -457,8 +457,8 @@ def _integrated_conditional_intensity(
 def uniform_rescaled_ISIs(
     conditional_intensity: np.ndarray,
     is_spike: np.ndarray,
-    adjust_for_short_trials: bool = True,
     *,
+    adjust_for_short_trials: bool = True,
     rate_units: str = "expected_counts",
     time: np.ndarray | None = None,
     time_edges: np.ndarray | None = None,

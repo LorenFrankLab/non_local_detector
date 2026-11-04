@@ -661,8 +661,8 @@ def predict_sorted_spikes_kde_log_likelihood(
                 spike_times,
                 rows.time_edges,
                 "Local Likelihood",
-                True,
-                slice(start, stop),
+                disable_progress_bar=True,
+                row_slice=slice(start, stop),
                 _spike_time_order=rows.spike_time_order,
             )
             # Only rows in occupancy tails need log ratios; without any, the
@@ -687,7 +687,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             len(spike_times),
             evaluate,
             "Local Likelihood",
-            disable_progress_bar,
+            disable_progress_bar=disable_progress_bar,
         )[:, None]
     return blocked_nonlocal_poisson_log_likelihood(
         spike_times,

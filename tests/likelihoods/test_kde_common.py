@@ -697,12 +697,19 @@ def test_spike_counts_matrix_matches_per_neuron_counts(rows, prepared):
         axis=1,
     )
     actual = spike_counts_matrix(
-        spike_times, edges, "counts", True, rows, _spike_time_order=order
+        spike_times,
+        edges,
+        "counts",
+        disable_progress_bar=True,
+        row_slice=rows,
+        _spike_time_order=order,
     )
 
     assert actual.dtype == expected.dtype
     np.testing.assert_array_equal(actual, expected)
-    assert spike_counts_matrix([], edges, "counts", True, rows).shape == (
+    assert spike_counts_matrix(
+        [], edges, "counts", disable_progress_bar=True, row_slice=rows
+    ).shape == (
         expected.shape[0],
         0,
     )

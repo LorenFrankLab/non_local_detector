@@ -64,7 +64,7 @@ def ensure_probability_distribution(
 
 
 def ensure_positive_scalar(
-    value: float, name: str, minimum: float = 0.0, strict: bool = True
+    value: float, name: str, minimum: float = 0.0, *, strict: bool = True
 ) -> None:
     """Verify value is positive (or non-negative).
 
@@ -400,7 +400,7 @@ def ensure_ndarray(value: Any, name: str) -> None:
 
 
 def ensure_monotonic_increasing(
-    arr: np.ndarray, name: str, strict: bool = False
+    arr: np.ndarray, name: str, *, strict: bool = False
 ) -> None:
     """Verify array is monotonically increasing.
 

@@ -306,6 +306,7 @@ def concatenate_row_blocks(
     n_neurons: int,
     evaluate: Callable[[int, int], jax.Array],
     desc: str,
+    *,
     disable_progress_bar: bool,
 ) -> jax.Array:
     """Concatenate ``evaluate(start, stop)`` over spike-count row blocks.
@@ -404,8 +405,8 @@ def blocked_nonlocal_poisson_log_likelihood(
             spike_times,
             time_edges,
             "Position-Bin Likelihood",
-            True,
-            slice(start, stop),
+            disable_progress_bar=True,
+            row_slice=slice(start, stop),
             _spike_time_order=_spike_time_order,
         )
         # Emission blocks start at multiples of block_rows decode rows, so a
@@ -429,5 +430,5 @@ def blocked_nonlocal_poisson_log_likelihood(
         len(spike_times),
         evaluate,
         "Position-Bin Likelihood",
-        disable_progress_bar,
+        disable_progress_bar=disable_progress_bar,
     )

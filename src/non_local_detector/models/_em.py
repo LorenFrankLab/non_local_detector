@@ -139,6 +139,7 @@ def _structured_em_options(
 
 
 def _validate_em_options(
+    *,
     structured: bool,
     n_chunks: int,
     chunk_size: int | None,
@@ -284,6 +285,7 @@ def _resolve_em_options(
     n_chunks: int,
     chunk_size: int | None,
     result_path: str | Path | None,
+    *,
     store_log_likelihood: bool,
     replay_cache_bytes: int | None,
 ) -> TransitionRepresentation:
@@ -316,12 +318,12 @@ def _resolve_em_options(
             )
         transition_representation = "dense"
     _validate_em_options(
-        transition_representation != "dense",
-        n_chunks,
-        chunk_size,
-        result_path,
-        store_log_likelihood,
-        replay_cache_bytes,
+        structured=transition_representation != "dense",
+        n_chunks=n_chunks,
+        chunk_size=chunk_size,
+        result_path=result_path,
+        store_log_likelihood=store_log_likelihood,
+        replay_cache_bytes=replay_cache_bytes,
     )
     return transition_representation
 
@@ -330,6 +332,7 @@ def _validate_estimation_arguments(
     time_edges: ArrayLike,
     n_chunks: int,
     return_outputs: ReturnOutputs,
+    *,
     save_log_likelihood_to_results: bool | None,
     min_encoding_local_mass: float,
     min_encoding_local_ess: float,
@@ -643,6 +646,7 @@ class _EMMixin:
         fit: Callable[[str], Any],
         transition_representation: TransitionRepresentation,
         n_time: int,
+        *,
         structured_required: bool,
     ) -> None:
         """Run EM's internal fit and, for "auto", choose dense or structured EM.
@@ -742,6 +746,7 @@ class _EMMixin:
         time_edges: ArrayLike,
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
+        *,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
@@ -1013,9 +1018,9 @@ class _EMMixin:
             time_edges,
             n_chunks,
             return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
         )
         if (
             estimate_encoding_model
@@ -1034,12 +1039,12 @@ class _EMMixin:
             getattr(self, "_continuous_transition_operator_", None) is not None
         )
         _validate_em_options(
-            checkpointed,
-            n_chunks,
-            chunk_size,
-            result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
+            structured=checkpointed,
+            n_chunks=n_chunks,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            store_log_likelihood=store_log_likelihood,
+            replay_cache_bytes=replay_cache_bytes,
         )
         # Resolved once and recorded on the results, so users can tell which
         # EM path ran and with what chunks.

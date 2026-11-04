@@ -53,10 +53,10 @@ def _float64_jax() -> AbstractContextManager[Any]:
     ``jax.experimental.enable_x64`` in older releases such as 0.6.
     """
     if hasattr(jax, "enable_x64"):
-        return cast(AbstractContextManager[Any], jax.enable_x64(True))
+        return cast(AbstractContextManager[Any], jax.enable_x64(True))  # noqa: FBT003 -- JAX API takes the flag positionally
     from jax.experimental import enable_x64
 
-    return cast(AbstractContextManager[Any], enable_x64(True))
+    return cast(AbstractContextManager[Any], enable_x64(True))  # noqa: FBT003 -- JAX API takes the flag positionally
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
@@ -1032,6 +1032,7 @@ def estimate_non_stationary_state_transition_from_responses(
     transition_regularization: float = 0.1,
     optimization_method: str = "trust-exact",
     maxiter: int | None = 100,
+    *,
     disp: bool = False,
     frozen_rows: np.ndarray | None = None,
     smoothness: float | np.ndarray | str = 0.0,
@@ -1247,6 +1248,7 @@ def _fit_covariate_transition(
     initial_smoothness: np.ndarray | None = None,
     optimization_method: str = "trust-exact",
     maxiter: int | None = 100,
+    *,
     disp: bool = False,
     frozen_rows: np.ndarray | None = None,
     compute_covariance: bool = True,
@@ -1362,6 +1364,7 @@ def _fit_covariate_transition(
                     blocks: _Blocks = blocks,
                     prior_per_bin: jax.Array = prior_per_bin,
                     from_state: int = from_state,
+                    *,
                     warn: bool = True,
                 ) -> np.ndarray:
                     return _fit_covariate_row(
@@ -1372,7 +1375,7 @@ def _fit_covariate_transition(
                         optimization_method,
                         options,
                         from_state,
-                        warn,
+                        warn=warn,
                     )
 
                 strength = row_smoothness[from_state]
@@ -1800,6 +1803,7 @@ def _fit_covariate_row(
     optimization_method: str,
     options: dict[str, Any],
     from_state: int,
+    *,
     warn: bool = True,
 ) -> np.ndarray:
     """Minimize one row's :func:`dirichlet_neg_log_likelihood` over its blocks.

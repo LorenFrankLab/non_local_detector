@@ -88,6 +88,7 @@ def _validate_transition_arguments(
 def _validate_inference_arguments(
     inference_mode: InferenceMode,
     output_mode: OutputMode,
+    *,
     cache_likelihood: bool,
     n_chunks: int,
     chunk_size: int | None,

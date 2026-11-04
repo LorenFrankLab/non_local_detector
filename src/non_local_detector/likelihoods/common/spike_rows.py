@@ -291,7 +291,11 @@ def select_spikes_in_rows(
     n_rows = row_stop - row_start
     if n_spikes == 0 or n_rows <= 0:
         return SpikeSelection(
-            slice(0, 0), np.zeros((0,), dtype=int), True, n_spikes, n_rows
+            slice(0, 0),
+            np.zeros((0,), dtype=int),
+            indices_are_sorted=True,
+            n_spikes=n_spikes,
+            n_rows=n_rows,
         )
 
     # Direct callers get a fresh preparation: converted and checked once here.
@@ -614,9 +618,9 @@ def spike_counts_matrix(
     spike_times: list[np.ndarray],
     time_edges: np.ndarray,
     desc: str,
+    *,
     disable_progress_bar: bool,
     row_slice: slice | None = None,
-    *,
     _spike_time_order: SpikeTimeOrder | None = None,
 ) -> np.ndarray:
     """Per-neuron spike counts as a ``(n_rows, n_neurons)`` matrix.

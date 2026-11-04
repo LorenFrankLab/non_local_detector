@@ -418,6 +418,7 @@ def mrf_penalized_poisson_fit(
     penalty: float,
     max_iter: int = 100,
     tol: float = 1e-10,
+    *,
     validate: bool = True,
     rate_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | bool]]:
@@ -551,6 +552,7 @@ def mrf_reml_objective(
     penalty_weights: np.ndarray,
     max_iter: int = 100,
     tol: float = 1e-10,
+    *,
     validate: bool = True,
     rate_scale: float = 1.0,
 ) -> float:
@@ -993,7 +995,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         environment,
         node_order,
         weights,
-        disable_progress_bar,
+        disable_progress_bar=disable_progress_bar,
         encoding_support=support,
     )
     if spike_fields:

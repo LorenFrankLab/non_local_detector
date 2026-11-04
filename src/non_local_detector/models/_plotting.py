@@ -31,6 +31,7 @@ class _PlottingMixin:
         self: "_DetectorBase",
         cmap: str = "Oranges",
         ax: mpl.axes.Axes | None = None,
+        *,
         convert_to_seconds: bool = False,
         sampling_frequency: int = 1,
         covariate_data: pd.DataFrame | dict[str, Any] | None = None,

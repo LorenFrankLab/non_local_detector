@@ -607,7 +607,7 @@ class Environment:
             val.ensure_ndarray(self.is_track_interior, "is_track_interior")
             # Note: We can't validate shape until we know the grid dimensions
 
-    def get_params(self, deep: bool = True) -> dict[str, Any]:  # noqa: ARG002 -- scikit-learn signature
+    def get_params(self, deep: bool = True) -> dict[str, Any]:  # noqa: ARG002, FBT001, FBT002 -- scikit-learn signature
         """Return the constructor configuration of this environment.
 
         Only the configuration fields are returned, never the fitted
@@ -1125,8 +1125,8 @@ class Environment:
     def fit_place_grid(
         self,
         position: np.ndarray | None = None,
-        infer_track_interior: bool = True,
         *,
+        infer_track_interior: bool = True,
         compute_all_pairs_distances: bool = True,
         max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> "Environment":
@@ -1209,7 +1209,7 @@ class Environment:
                 )
             grid = self._fit_cartesian_grid(
                 position,
-                infer_track_interior,
+                infer_track_interior=infer_track_interior,
                 compute_all_pairs_distances=compute_all_pairs_distances,
                 max_dense_distance_bytes=max_dense_distance_bytes,
             )
@@ -1225,8 +1225,8 @@ class Environment:
     def _fit_cartesian_grid(
         self,
         position: np.ndarray,
-        infer_track_interior: bool,
         *,
+        infer_track_interior: bool,
         compute_all_pairs_distances: bool,
         max_dense_distance_bytes: int,
     ) -> PlaceGrid:
@@ -1276,9 +1276,9 @@ class Environment:
             is_track_interior = get_track_interior(
                 position,
                 edges,
-                self.fill_holes,
-                self.dilate,
-                self.bin_count_threshold,
+                fill_holes=self.fill_holes,
+                dilate=self.dilate,
+                bin_count_threshold=self.bin_count_threshold,
             )
         else:
             is_track_interior = np.ones(centers_shape, dtype=bool)
@@ -1779,6 +1779,7 @@ class Environment:
         position_time: np.ndarray | None = None,
         sigma: float = 0.1,
         sampling_frequency: float | None = None,
+        *,
         classify_stop: bool = False,
         stop_speed_threshold: float = 1e-3,
     ) -> np.ndarray:
@@ -2021,6 +2022,7 @@ def get_grid(
 def get_track_interior(
     position: np.ndarray,
     bins: int | Sequence[int] | Sequence[np.ndarray],
+    *,
     fill_holes: bool = False,
     dilate: bool = False,
     bin_count_threshold: int = 0,

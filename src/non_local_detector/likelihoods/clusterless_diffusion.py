@@ -825,6 +825,7 @@ def _electrode_layout(
     weights: ArrayLike,
     n_bins: int,
     tile_budget: int,
+    *,
     dense: bool = False,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, int]:
     """Return padded, bin-sorted encoding samples with their source layout, for one electrode.
@@ -1509,7 +1510,7 @@ def predict_clusterless_diffusion_log_likelihood(
                     electrode_weights,
                     n_bins,
                     tile_budget,
-                    dense,
+                    dense=dense,
                 ),
             )
         )

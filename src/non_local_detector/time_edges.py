@@ -391,7 +391,7 @@ def time_edges_from_centers(time: ArrayLike) -> np.ndarray:
 
 
 def calculate_time_edges(
-    time_range: ArrayLike, sampling_frequency: float, trim: bool = False
+    time_range: ArrayLike, sampling_frequency: float, *, trim: bool = False
 ) -> np.ndarray:
     """Uniform edges at ``1 / sampling_frequency`` spanning ``time_range``.
 
