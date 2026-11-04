@@ -307,3 +307,43 @@ class TestIntegration:
             NonLocalClusterlessDetector(
                 discrete_initial_conditions=np.full((4, 1), 0.25)
             )
+
+
+@pytest.mark.unit
+class TestArrayLikeInputs:
+    """The array checks accept lists and tuples, as they accept arrays."""
+
+    @pytest.mark.parametrize(
+        ("check", "args"),
+        [
+            (val.ensure_probability_distribution, ([0.5, 0.5], "arr")),
+            (val.ensure_array_1d, ([0.5, 0.5], "arr")),
+            (val.ensure_all_finite, ([0.5, 0.5], "arr")),
+            (val.ensure_all_non_negative, ([0, 1], "arr")),
+            (val.ensure_in_range, ([0.2, 0.8], "arr", 0.0, 1.0)),
+            (val.ensure_square_matrix, ([[1.0, 0.0], [0.0, 1.0]], "arr")),
+            (val.ensure_stochastic_matrix, ([[1.0, 0.0], [0.0, 1.0]], "arr")),
+            (val.ensure_substochastic_matrix, ([[0.5, 0.0], [0.0, 1.0]], "arr")),
+            (val.ensure_monotonic_increasing, ((1, 2, 3), "arr")),
+        ],
+        ids=lambda value: getattr(value, "__name__", ""),
+    )
+    def test_valid_list_passes(self, check, args):
+        check(*args)
+
+    @pytest.mark.parametrize(
+        ("check", "args", "exc"),
+        [
+            (val.ensure_array_1d, ([[0.5], [0.5]], "arr"), ValidationError),
+            (val.ensure_all_finite, ([0.5, float("nan")], "arr"), DataError),
+            (val.ensure_all_non_negative, ([-1, 1], "arr"), ValidationError),
+            (val.ensure_in_range, ([0.5, 1.5], "arr", 0.0, 1.0), ValidationError),
+            (val.ensure_square_matrix, ([[1.0, 0.0, 0.0]], "arr"), ValidationError),
+            (val.ensure_stochastic_matrix, ([[0.5, 0.0]], "arr"), ValidationError),
+            (val.ensure_monotonic_increasing, ([1, 3, 2], "arr"), DataError),
+        ],
+        ids=lambda value: getattr(value, "__name__", ""),
+    )
+    def test_invalid_list_raises_package_error(self, check, args, exc):
+        with pytest.raises(exc):
+            check(*args)

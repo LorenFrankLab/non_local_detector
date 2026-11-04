@@ -153,6 +153,26 @@ class TestValidateProbabilityDistributions:
                 two_state_environment, discrete_initial_conditions=initial_conditions
             )
 
+    def test_list_initial_conditions_fit_like_an_array(self):
+        """A list is validated and fitted as the equal array (it raised AttributeError)."""
+        time = np.arange(100) * 0.002
+        position = (50 + 8 * np.sin(time * 40))[:, None]
+        spike_times = [np.array([0.021, 0.067, 0.121, 0.167])]
+        initial_conditions = {}
+        for value in ([1.0], np.array([1.0])):
+            decoder = SortedSpikesDecoder(
+                discrete_initial_conditions=value,
+                sorted_spikes_algorithm="sorted_spikes_kde",
+                sorted_spikes_algorithm_params={"disable_progress_bar": True},
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DataQualityWarning)  # 1-D position
+                decoder.fit(time, position, spike_times)
+            initial_conditions[type(value).__name__] = decoder.initial_conditions_
+        np.testing.assert_array_equal(
+            initial_conditions["list"], initial_conditions["ndarray"]
+        )
+
     def test_valid_probability_distribution_passes(self, two_state_environment):
         """Test that valid probability distribution passes."""
         # Arrange & Act: Create decoder with valid probabilities

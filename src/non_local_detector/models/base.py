@@ -775,6 +775,9 @@ class _DetectorBase(
               typically centimeters) on the shortest-path track-graph
               distance; models spatial uncertainty.
         """
+        # A list or tuple is stored as an array, which fitting indexes; an
+        # array is stored as given, as ``sklearn.clone`` requires.
+        discrete_initial_conditions = np.asarray(discrete_initial_conditions)
         # Validate all parameters early
         self._validate_initial_conditions(
             discrete_initial_conditions,
