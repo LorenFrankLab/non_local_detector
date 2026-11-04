@@ -260,6 +260,48 @@ def test_custom_likelihood_signature_remains_supported(fitted_detector, monkeypa
 
 
 @pytest.mark.integration
+def test_likelihood_replaced_on_the_family_class_is_called(
+    fitted_detector, monkeypatch
+):
+    """A wrapper set on the detector family class (as profilers install)
+    replaces the package's likelihood for every decode, like one set on the
+    instance."""
+    from functools import wraps
+
+    from non_local_detector.models.base import (
+        ClusterlessDetector,
+        SortedSpikesDetector,
+    )
+
+    detector, args = fitted_detector
+    family = (
+        ClusterlessDetector
+        if isinstance(detector, ClusterlessDetector)
+        else SortedSpikesDetector
+    )
+    original = family.__dict__["compute_log_likelihood"]
+    time = np.arange(31) * 0.002
+    expected = np.asarray(detector.compute_log_likelihood(*args, time_edges=time))
+    rows = []
+
+    @wraps(original)
+    def counted(self, *args, **kwargs):
+        rows.append(kwargs.get("row_slice"))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(family, "compute_log_likelihood", counted)
+    result = detector._predict(
+        time,
+        log_likelihood_args=args,
+        cache_likelihood=False,
+        n_chunks=3,
+        accumulate_log_likelihoods=True,
+    )
+    assert rows == [slice(0, 10), slice(10, 20), slice(20, 30)]
+    np.testing.assert_allclose(result.log_likelihood, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.integration
 def test_direct_likelihood_uses_fresh_order_preparation(fitted_detector, monkeypatch):
     """Standalone likelihood calls share state work but never retain ordering."""
     detector, fitted_args = fitted_detector

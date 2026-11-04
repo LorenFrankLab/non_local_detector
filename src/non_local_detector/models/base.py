@@ -3924,16 +3924,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         )
 
     def _replaced_log_likelihood(self) -> Callable[..., Any] | None:
-        """``compute_log_likelihood`` when a subclass or the instance replaced it.
+        """``compute_log_likelihood`` when it is not the package's own.
 
-        None when it is the detector family's own, which decoding evaluates
-        through ``_log_likelihood_rows`` with its prepared context.
+        A replacement on the instance, in a subclass, or on a detector
+        family class is returned. None when it is the family's own method,
+        which decoding evaluates through ``_log_likelihood_rows`` with its
+        prepared context.
         """
         callback = self.compute_log_likelihood
-        if getattr(callback, "__func__", None) in (
-            ClusterlessDetector.compute_log_likelihood,
-            SortedSpikesDetector.compute_log_likelihood,
-        ):
+        if getattr(callback, "__func__", None) in _PACKAGE_LOG_LIKELIHOODS:
             return None
         return callback
 
@@ -8466,3 +8465,13 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing=is_missing,
             n_chunks=n_chunks,
         )
+
+
+# The families' own ``compute_log_likelihood``, recorded when the classes are
+# defined so that a later replacement on a family class is told apart from it.
+_PACKAGE_LOG_LIKELIHOODS: frozenset[Callable[..., Any]] = frozenset(
+    {
+        ClusterlessDetector.__dict__["compute_log_likelihood"],
+        SortedSpikesDetector.__dict__["compute_log_likelihood"],
+    }
+)
