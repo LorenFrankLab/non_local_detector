@@ -49,6 +49,7 @@ from non_local_detector.checkpointed_inference import (
 )
 from non_local_detector.continuous_state_transitions import (
     TransitionContext,
+    _check_block_environments,
     _check_continuous_transition,
     _make_transition_block,
     _multi_bin_local_transition,
@@ -457,6 +458,16 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
 
 # Dataset attribute in which ``save_results`` records integer dtypes.
 _INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
+
+# Constructor parameters added in 2026-04, with the value that reproduces how
+# a detector saved before then was fitted: the fixed-count Dirichlet prior,
+# no frozen discrete-transition rows (No-Spike was re-estimated too), and the
+# single-bin Local state.
+_PARAMETERS_BEFORE_THEY_EXISTED: dict[str, object] = {
+    "discrete_transition_prior_weight": 0.0,
+    "frozen_discrete_transition_rows": None,
+    "local_position_std": None,
+}
 
 
 class _ModelUnpickler(pickle.Unpickler):
@@ -3044,6 +3055,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
                 # Blocks between a one-bin and a spatial state follow the
                 # structured operator's rule, so both representations agree.
+                _check_block_environments(
+                    transition,
+                    self.environments,
+                    self.observation_models[from_state].environment_name,
+                    self.observation_models[to_state].environment_name,
+                    n_row_bins,
+                    n_col_bins,
+                )
                 one_bin_block = _one_bin_block(
                     transition, self.environments, n_row_bins, n_col_bins
                 )
@@ -3073,6 +3092,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
+        # Constructor parameters added after a detector was saved: the values
+        # under which it was fitted, so it prints and reports get_params.
+        for name, value in _PARAMETERS_BEFORE_THEY_EXISTED.items():
+            if name not in state:
+                setattr(self, name, value)
         covariate_data = state.get("_discrete_transition_covariate_data_")
         if covariate_data is not None and (
             self.discrete_transition_design_matrix_ is None
