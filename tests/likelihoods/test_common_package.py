@@ -8,8 +8,11 @@ from pathlib import Path
 import pytest
 
 import non_local_detector.likelihoods.common as common
+from non_local_detector.models.base import SortedSpikesDetector
 
 pytestmark = pytest.mark.unit
+
+COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
 
 # Every function, class and constant the single-module ``likelihoods.common``
 # defined, and the project names it imported. Code and pickles written
@@ -145,18 +148,33 @@ def test_former_private_names_alias_their_public_helpers():
     assert common._padded_samples is common.padded_samples
 
 
-def test_kde_model_pickled_under_the_former_module_path_loads():
-    """Detectors saved before the split name ``likelihoods.common.KDEModel``."""
+def test_kde_model_pickles_under_the_former_module_path():
+    """KDEModel pickles name ``non_local_detector.likelihoods.common.KDEModel``,
+    as detectors saved before the split do, so each version loads the other's."""
     model = common.KDEModel(std=2.0)
-    # Protocol 0 names classes as plain text, so the module path can be edited.
-    data = pickle.dumps(model, protocol=0).replace(
-        b"non_local_detector.likelihoods.common.kernel_density",
-        b"non_local_detector.likelihoods.common",
-    )
-    assert b"likelihoods.common.kernel_density" not in data
+    assert common.KDEModel.__module__ == "non_local_detector.likelihoods.common"
+    data = pickle.dumps(model, protocol=0)  # protocol 0 names classes as text
+    assert b"non_local_detector.likelihoods.common\nKDEModel" in data
+    assert b"kernel_density" not in data
     loaded = pickle.loads(data)
     assert type(loaded) is common.KDEModel
     assert float(loaded.std) == 2.0
+
+
+def test_detector_pickled_before_the_split_loads_its_kde_models():
+    """A detector saved by main before the split names the former module path."""
+    path = COMPAT_DATA / "main-d5f85823" / "nonlocal_sorted_1d_model.pkl"
+    data = path.read_bytes()
+    assert b"non_local_detector.likelihoods.common" in data
+    assert b"kernel_density" not in data
+    detector = SortedSpikesDetector.load_model(path)
+    models = [
+        model
+        for encoding_model in detector.encoding_model_.values()
+        for model in encoding_model["marginal_models"]
+    ]
+    assert models
+    assert all(type(model) is common.KDEModel for model in models)
 
 
 @pytest.mark.parametrize("layer", LAYERS)
