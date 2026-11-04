@@ -8,6 +8,8 @@ be used for particular data segments.
 
 from dataclasses import dataclass
 
+from non_local_detector.exceptions import ConfigurationError
+
 __all__ = [
     "ObservationModel",
 ]
@@ -34,6 +36,11 @@ class ObservationModel:
     is_no_spike : bool, default=False
         Whether this represents no-spike baseline conditions.
 
+    Raises
+    ------
+    ConfigurationError
+        If both ``is_local`` and ``is_no_spike`` are True.
+
     Examples
     --------
     >>> # Create observation model for non-local decoding in track1
@@ -56,3 +63,15 @@ class ObservationModel:
     encoding_group: str | int = 0
     is_local: bool = False
     is_no_spike: bool = False
+
+    def __post_init__(self) -> None:
+        if self.is_local and self.is_no_spike:
+            msg = "An observation model cannot set both is_local and is_no_spike"
+            raise ConfigurationError(
+                msg,
+                expected="at most one of is_local=True and is_no_spike=True",
+                got="is_local=True, is_no_spike=True",
+                hint="A Local state is decoded at the animal's position from the "
+                "spikes; a No-Spike state has no position and explains the "
+                "absence of spikes. Use one state of each.",
+            )
