@@ -15,6 +15,7 @@ because its rates and transition clocks cannot be converted safely.
 
 import copy
 import copyreg
+import dataclasses
 import pickle
 from pathlib import Path
 
@@ -40,7 +41,7 @@ from non_local_detector.observation_models import ObservationModel
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
 # Fitted before rates were recorded in Hz: refused at decode.
-LEGACY_VERSIONS = ("v0.6.0", "v0.6.9", "main-84259d49")
+LEGACY_VERSIONS = ("v0.5.0", "v0.5.12", "v0.5.13", "v0.6.0", "v0.6.9", "main-84259d49")
 VERSIONS = (*LEGACY_VERSIONS, "main-66047901", "main-d5f85823")
 MODELS = [
     (version, path.name.removesuffix("_model.pkl"))
@@ -182,7 +183,7 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
     assert isinstance(
         model, ClusterlessDetector if clusterless else SortedSpikesDetector
     )
-    environment = model.environments_[0]
+    environment = model.environments[0]
     assert (environment.track_graph is not None) == ("1d" in artifact)
     interior_centers = environment.place_bin_centers_[
         environment.is_track_interior_.ravel(order="C")
@@ -196,24 +197,17 @@ def test_saved_model_loads_with_the_attributes_spyglass_reads(version, artifact)
 
 
 @pytest.mark.parametrize(("version", "artifact"), MODELS)
-def test_saved_model_moves_fitted_environments_to_environments_(version, artifact):
+def test_saved_model_keeps_its_fitted_environments(version, artifact):
     """These versions kept a detector's fitted environments in its
-    ``environments`` parameter. Loading moves them to ``environments_`` and
-    leaves unfitted copies of their configuration in ``environments``, as a
-    fit does now, so the parameters of a loaded model hold no fitted state."""
+    ``environments`` parameter. A loaded model keeps them there, where code
+    that inspects old models reads them (``get_params()`` reports them, as it
+    always did), and ``environments_`` holds the same objects."""
     model = _load_model(version, artifact)
 
-    assert isinstance(model.environments, tuple)
     assert len(model.environments_) == len(model.environments) == 1
     for configured, fitted in zip(model.environments, model.environments_, strict=True):
-        assert configured is not fitted
-        assert not hasattr(configured, "place_bin_centers_")
-        assert not configured._is_fitted
-        assert configured.get_cached("bin_distance_matrix") is None
+        assert fitted is configured
         assert fitted.place_bin_centers_ is not None
-        fitted_params = fitted.get_params()
-        for name, value in configured.get_params().items():
-            assert value is fitted_params[name], name
     for obs in model.observation_models:
         assert model._get_environment_by_name(obs.environment_name) in (
             model.environments_
@@ -347,6 +341,31 @@ def test_environment_rows_holding_unset_fitted_keys_construct_unfiltered(
         assert not environment._is_fitted
         assert environment.get_params().keys() == config
         assert environment.environment_name == stored["environment_name"]
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_saved_model_can_be_displayed_and_its_parts_rebuilt(version, artifact):
+    """A loaded detector prints (as in a notebook), reports its parameters,
+    copies, and its transitions rebuild from their stored attributes."""
+    model = _load_model(version, artifact)
+
+    repr(model)
+    params = model.get_params(deep=False)
+    copy.deepcopy(model)
+    for transition in [t for row in model.continuous_transition_types for t in row]:
+        if dataclasses.is_dataclass(transition):
+            assert type(transition)(**vars(transition)) == transition
+    if version.startswith("v"):  # releases, saved before these parameters
+        assert params["discrete_transition_prior_weight"] == 0.0
+        assert params["frozen_discrete_transition_rows"] is None
+
+
+def test_random_walk_row_with_the_removed_diffusion_option_is_refused():
+    """Rows up to 0.5.12 store ``use_diffusion``; only its default rebuilds,
+    because the diffusion random walk it selected no longer exists."""
+    assert cst.RandomWalk(use_diffusion=False) == cst.RandomWalk()
+    with pytest.raises(ValidationError, match="use_diffusion"):
+        cst.RandomWalk(use_diffusion=True)
 
 
 @pytest.mark.parametrize(("version", "filename"), RESULTS)

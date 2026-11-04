@@ -751,25 +751,6 @@ class Environment:
         """All nodes of the augmented track graph, or None without a track graph."""
         return self.place_grid_.nodes_df
 
-    def _unfitted_copy(self) -> "Environment":
-        """A shallow copy holding this environment's configuration only.
-
-        Unlike ``Environment(**self.get_params())`` it does not run the
-        constructor's validation, so it also copies configurations stored by
-        earlier releases that the current validation would reject.
-
-        Returns
-        -------
-        Environment
-            Shares the configuration objects (``track_graph``, ...) with this
-            environment; it has no grid and an empty cache.
-        """
-        unfitted = object.__new__(type(self))
-        unfitted.__dict__.update(self.__dict__)
-        unfitted._place_grid = None
-        unfitted._cache = {}
-        return unfitted
-
     def _replace_place_grid(self, **changes: Any) -> "Environment":
         """A shallow copy whose grid has some fields replaced.
 

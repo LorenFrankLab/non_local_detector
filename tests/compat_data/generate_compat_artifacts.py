@@ -12,12 +12,18 @@ is imported::
         datajoint setuptools netCDF4
     v060/bin/python -I generate_compat_artifacts.py OUT_DIR
 
-The fixtures in this directory were generated on 2026-11-03 and 2026-11-04
+The fixtures in this directory were generated from 2026-11-03 to 2026-11-04
 (macOS, arm64), each with ``datajoint setuptools netCDF4`` added:
 
 ==============  ======  ===========================================  ======
 directory       Python  install                                      JAX
 ==============  ======  ===========================================  ======
+v0.5.0          3.10    ``non_local_detector==0.5.0 "numba>=0.57"``  0.4.18
+                        ``--exclude-newer 2023-08-30``
+v0.5.12         3.10    ``non_local_detector==0.5.12 "numba>=0.58"`` 0.4.18
+                        ``--exclude-newer 2023-10-10``
+v0.5.13         3.10    ``non_local_detector==0.5.13 "numba>=0.58"`` 0.4.18
+                        ``--exclude-newer 2023-10-13``
 v0.6.0          3.10    ``non_local_detector==0.6.0``                0.4.29
                         ``--exclude-newer 2024-06-10``
 v0.6.9          3.12    ``non_local_detector==0.6.9``                0.4.35
@@ -29,6 +35,15 @@ main-66047901   3.13    ``non_local_detector @ git+...@66047901``    0.12.0
 main-d5f85823   3.13    ``non_local_detector @ git+...@d5f85823``    0.12.0
                         ``--exclude-newer 2026-11-03 "pandas<3"``
 ==============  ======  ===========================================  ======
+
+Spyglass's v1 decoding (2024-01, unpinned) needs ``save_results``, added in
+0.5.0, so 0.5.0 is the oldest release it can use; 0.5.13 was current when it
+was merged. 0.5.12 is the last release whose open-field environments store
+no ``distance_between_nodes_`` or ``track_graphDD`` and whose ``RandomWalk``
+stores ``use_diffusion``. For the 0.5 releases ``jax`` and ``jaxlib`` are
+taken up to 2023-10-08 (``--exclude-newer-package``), because PyPI holds no
+jaxlib older than 0.4.17, and ``numba`` is bounded below, because without
+it the resolver backtracks to a numba that does not build.
 
 The main environments pin ``pandas<3`` (2.3.3): pandas 2.3, the supported
 floor, cannot read the track-graph DataFrames pandas 3 pickles. Each
@@ -371,7 +386,8 @@ def main(out_dir: Path) -> None:
     version = nld.__version__
     print(f"non_local_detector {version} from {nld.__file__}")  # noqa: T201
     data = simulate()
-    legacy_layout = version == "0.6.0"
+    # Spyglass master moved to labelled results after 0.6.0 (see decode).
+    legacy_layout = version.startswith("0.5.") or version == "0.6.0"
 
     track_env = Environment(
         environment_name="",

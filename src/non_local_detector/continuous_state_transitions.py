@@ -9,7 +9,7 @@ data-driven transitions such as :class:`EmpiricalMovement` read.
 
 import inspect
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import networkx as nx
@@ -330,11 +330,16 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
         If using manifold distance on a 2D track, constrain movement direction
         relative to the track center (case-insensitive). Defaults to None (no
         constraint).
+    use_diffusion : bool, optional
+        Not stored. Releases up to 0.5.12 stored it, so their parameter sets
+        (for example Spyglass rows) rebuild with it; only False, the default,
+        is accepted, as the diffusion random walk it selected was removed.
 
     Raises
     ------
     ValidationError
-        If ``direction`` is not None, "inward" or "outward".
+        If ``direction`` is not None, "inward" or "outward", or
+        ``use_diffusion`` is True.
     """
 
     environment_name: str = ""
@@ -342,9 +347,30 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     movement_mean: float = 0.0
     use_manifold_distance: bool = False
     direction: str | None = None
+    use_diffusion: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, use_diffusion: bool) -> None:
+        if use_diffusion:
+            msg = "RandomWalk(use_diffusion=True) is no longer supported"
+            raise ValidationError(
+                msg,
+                hint="The diffusion random walk of releases up to 0.5.12 was "
+                "removed in 0.5.13. use_manifold_distance=True is the closest: "
+                "a Gaussian in distance along the environment, not diffusion.",
+            )
         _validate_direction(self.direction)
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the fields, including those of releases up to 0.5.12.
+
+        Those stored ``use_diffusion`` and neither ``use_manifold_distance``
+        nor ``direction``; ``use_diffusion=False`` was this Euclidean walk.
+        """
+        if state.get("use_diffusion") is False:
+            del state["use_diffusion"]
+            state.setdefault("use_manifold_distance", False)
+            state.setdefault("direction", None)
+        super().__setstate__(state)
 
     def structured_block(self, environments: Sequence[Environment]) -> "Block":
         """Separable Gaussian block of a Euclidean random walk on a complete

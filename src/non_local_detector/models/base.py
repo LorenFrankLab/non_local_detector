@@ -458,6 +458,16 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
 # Dataset attribute in which ``save_results`` records integer dtypes.
 _INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
 
+# Constructor parameters added in 2026-04, with the value that reproduces how
+# a detector saved before then was fitted: the fixed-count Dirichlet prior,
+# no frozen discrete-transition rows (No-Spike was re-estimated too), and the
+# single-bin Local state.
+_PARAMETERS_BEFORE_THEY_EXISTED: dict[str, object] = {
+    "discrete_transition_prior_weight": 0.0,
+    "frozen_discrete_transition_rows": None,
+    "local_position_std": None,
+}
+
 
 class _ModelUnpickler(pickle.Unpickler):
     """Unpickle a detector, including one saved with JAX 0.4.30 or earlier.
@@ -3076,6 +3086,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
+        # Constructor parameters added after a detector was saved: the values
+        # under which it was fitted, so it prints and reports get_params.
+        for name, value in _PARAMETERS_BEFORE_THEY_EXISTED.items():
+            if name not in state:
+                setattr(self, name, value)
         covariate_data = state.get("_discrete_transition_covariate_data_")
         if covariate_data is not None and (
             self.discrete_transition_design_matrix_ is None
@@ -3107,14 +3122,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     self.discrete_transition_coefficients_.shape[1],
                 )[0]
         # Detectors fitted before ``environments_`` existed kept the fitted
-        # copies in ``environments``: move them, and leave the configuration.
+        # environments in ``environments``. They stay there, where code that
+        # inspects old models reads them, and ``environments_`` holds the same
+        # objects; only a new fit splits configuration from fitted copies.
         if "environments_" not in state and any(
             env._is_fitted for env in self.environments
         ):
             self.environments_ = tuple(self.environments)
-            self.environments = tuple(
-                env._unfitted_copy() for env in self.environments_
-            )
         # Encoding models fitted before each recorded its algorithm.
         encoding_model = state.get("encoding_model_")
         if isinstance(encoding_model, Mapping):
