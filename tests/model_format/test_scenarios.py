@@ -258,3 +258,52 @@ def test_zero_dimensional_parameters_keep_their_shape(sorted_recording, tmp_path
         detector, tmp_path, time, position, {"spike_times": spike_times}
     )
     assert loaded.continuous_transition_types[0][0].movement_var.shape == ()
+
+
+@pytest.mark.parametrize("transition", [nld.Identity(), nld.Uniform()])
+def test_one_bin_environment(transition, sorted_recording, tmp_path):
+    """A grid of one bin has no bin-graph edges to fingerprint."""
+    time, position, spike_times = sorted_recording
+    detector = nld.SortedSpikesDecoder(
+        environments=Environment(place_bin_size=100.0, position_range=((0.0, 30.0),)),
+        continuous_transition_types=[[transition]],
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+    )
+    detector.fit(time, position, spike_times)
+    assert detector.environments_[0].place_bin_centers_.shape == (1, 1)
+
+    _assert_round_trip(detector, tmp_path, time, position, {"spike_times": spike_times})
+
+
+def test_detector_with_no_units(sorted_recording, tmp_path):
+    time, position, _ = sorted_recording
+    detector = nld.SortedSpikesDecoder(
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde")
+    ).fit(time, position, [])
+
+    _assert_round_trip(detector, tmp_path, time, position, {"spike_times": []})
+
+
+@pytest.mark.filterwarnings("ignore:.*no effective encoding spikes:UserWarning")
+@pytest.mark.filterwarnings("ignore:.*zero total encoding weight:UserWarning")
+@pytest.mark.parametrize(
+    "algorithm",
+    [
+        "clusterless_kde",
+        "clusterless_gmm",
+        "clusterless_mark_glm",
+        "clusterless_diffusion",
+    ],
+)
+def test_electrode_without_spikes(algorithm, clusterless_recording, tmp_path):
+    time, position, spike_times, features = clusterless_recording
+    spikes = {
+        "spike_times": [spike_times[0], np.array([])],
+        "spike_waveform_features": [features[0], np.zeros((0, features[0].shape[1]))],
+    }
+    detector = nld.ClusterlessDecoder(
+        clusterless_algorithm=algorithm,
+        clusterless_algorithm_params=algorithm_params(algorithm),
+    ).fit(time, position, **spikes)
+
+    _assert_round_trip(detector, tmp_path, time, position, spikes)

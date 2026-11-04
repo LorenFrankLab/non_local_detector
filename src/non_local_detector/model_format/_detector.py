@@ -133,7 +133,11 @@ _REBUILD_ATOL_PER_POINT = 1e-12
 def _column_summary(values: Any) -> np.ndarray:
     """Ramp-weighted column sums and column sums of squares, shape (2, n_columns)."""
     values = np.asarray(values, dtype=np.float64)
-    values = values.reshape(len(values), -1)
+    # (n_points, n_columns): a vector is one column; n_points may be 0 (a
+    # one-bin grid has no bin-graph edges), which sums to zeros.
+    if values.ndim == 1:
+        values = values[:, np.newaxis]
+    values = values.reshape(values.shape[0], int(np.prod(values.shape[1:])))
     ramp = np.linspace(1.0, 2.0, len(values))
     return np.stack([ramp @ values, np.sum(values**2, axis=0)])
 
