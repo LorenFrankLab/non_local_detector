@@ -9,10 +9,6 @@ import jax.numpy as jnp
 
 from non_local_detector.likelihoods.common.numerics import EPS
 
-# Internal module: no public API.
-__all__: list[str] = []
-
-
 # Flagged indices per block repaired on a short path that visits only them;
 # more visit every index (``repair_flagged``) or every group of flagged
 # indices (``_repair_flagged_in_groups``).

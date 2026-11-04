@@ -31,9 +31,6 @@ from non_local_detector.time_edges import (
     requires_time_edges,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
-
 
 def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
     """Compute the duration of every bin of the full decode grid.

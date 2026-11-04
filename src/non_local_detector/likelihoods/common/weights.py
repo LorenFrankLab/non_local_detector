@@ -8,9 +8,6 @@ import numpy as np
 if TYPE_CHECKING:
     from non_local_detector.encoding_time import EncodingSupport
 
-# Internal module: no public API.
-__all__: list[str] = []
-
 
 def interpolate_weights_at_spike_times(
     spike_times: np.ndarray | jax.Array,

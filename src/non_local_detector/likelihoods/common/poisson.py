@@ -20,9 +20,6 @@ from non_local_detector.time_edges import (
     _DecodeTimeGrid,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
-
 
 def log_bin_duration_evidence(
     spike_times: Sequence[np.ndarray | jax.Array],

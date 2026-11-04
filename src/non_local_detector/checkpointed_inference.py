@@ -48,10 +48,6 @@ from non_local_detector.result_store import (
 )
 from non_local_detector.time_edges import decode_bin_centers, uniform_time_edges
 
-# Internal module: no public API.
-__all__: list[str] = []
-
-
 _SPATIAL = {
     "causal_posterior",
     "predictive_posterior",

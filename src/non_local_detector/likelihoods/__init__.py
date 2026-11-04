@@ -63,9 +63,6 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
     predict_sorted_spikes_mrf_log_likelihood,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
-
 
 @dataclass(frozen=True)
 class LikelihoodAlgorithm:

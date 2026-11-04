@@ -5,11 +5,19 @@ from pathlib import Path
 
 import mkdocs_gen_files
 
-# ``likelihoods.common`` keeps a non-empty ``__all__`` only because it
-# re-exports the names of the module it replaced, so pickles and imports that
-# name them still resolve. Its public helpers are documented on the submodules
-# that define them.
-INTERNAL_MODULES = ("non_local_detector.likelihoods.common",)
+# Internal modules and packages, read from a file the public-API test shares.
+INTERNAL_MODULES = tuple(
+    f"non_local_detector.{line.strip()}"
+    for line in (Path(__file__).parent / "internal_modules.txt")
+    .read_text()
+    .splitlines()
+    if line.strip() and not line.startswith("#")
+)
+
+
+def is_internal(ident: str) -> bool:
+    """Whether a dotted module name is, or is inside, an internal module."""
+    return any(ident == m or ident.startswith(f"{m}.") for m in INTERNAL_MODULES)
 
 
 def read_dunder_all(path: Path) -> list[str] | None:
@@ -50,11 +58,13 @@ for path in sorted(package_root.rglob("*.py")):
 
     ident = ".".join(parts)
 
-    # Only modules that export names are public API; ``__all__ = []`` marks an
-    # internal module, and a module without ``__all__`` is a bug that
-    # tests/test_public_api.py reports.
+    # Rule: a module is documented, with only its ``__all__`` names, when it
+    # defines a non-empty ``__all__`` and is not an internal package's
+    # ``__init__`` (``likelihoods.common`` re-exports names for pickles). An
+    # internal module without ``__all__`` is skipped; a public one without
+    # it is a bug that tests/test_public_api.py reports.
     public_names = read_dunder_all(path)
-    if not public_names or ident in INTERNAL_MODULES:
+    if not public_names or (path.name == "__init__.py" and is_internal(ident)):
         continue
 
     nav[parts] = doc_path.as_posix()

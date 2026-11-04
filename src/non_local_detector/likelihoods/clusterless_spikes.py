@@ -26,10 +26,6 @@ from non_local_detector.likelihoods.mark_reference import (
     background_log_intensity,
 )
 
-# Internal module: no public API.
-__all__: list[str] = []
-
-
 _Model = TypeVar("_Model")
 
 

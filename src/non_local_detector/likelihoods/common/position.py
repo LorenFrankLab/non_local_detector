@@ -13,9 +13,6 @@ from non_local_detector.environment import Environment
 if TYPE_CHECKING:
     from non_local_detector.encoding_time import EncodingSupport
 
-# Internal module: no public API.
-__all__: list[str] = []
-
 
 def get_position_at_time(
     time: np.ndarray | jax.Array,

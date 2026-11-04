@@ -2,6 +2,7 @@
 
 import importlib
 import pkgutil
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +26,20 @@ _NEEDS_SORTINGVIEW = {
 }
 
 
+_INTERNAL = [
+    line.strip()
+    for line in (Path(__file__).parents[1] / "docs" / "internal_modules.txt")
+    .read_text()
+    .splitlines()
+    if line.strip() and not line.startswith("#")
+]
+
+
+def _is_internal(name: str) -> bool:
+    relative = name.removeprefix("non_local_detector.")
+    return any(relative == m or relative.startswith(f"{m}.") for m in _INTERNAL)
+
+
 def _public_module_names() -> list[str]:
     infos = pkgutil.walk_packages(
         non_local_detector.__path__, prefix=f"{non_local_detector.__name__}."
@@ -43,7 +58,7 @@ PUBLIC_MODULES = _public_module_names()
 @pytest.mark.unit
 def test_public_modules_are_discovered():
     assert "non_local_detector.models.base" in PUBLIC_MODULES
-    assert "non_local_detector.likelihoods.common.kernel_density" in PUBLIC_MODULES
+    assert _is_internal("non_local_detector.likelihoods.common.kernel_density")
     assert not any("._" in name for name in PUBLIC_MODULES)
 
 
@@ -51,6 +66,8 @@ def test_public_modules_are_discovered():
 @pytest.mark.parametrize("module_name", PUBLIC_MODULES)
 def test_public_module_defines_all(module_name):
     module = importlib.import_module(module_name)
+    if _is_internal(module_name) and not hasattr(module, "__all__"):
+        return
     assert hasattr(module, "__all__"), f"{module_name} must define __all__"
     names = module.__all__
     assert isinstance(names, list)
@@ -62,6 +79,8 @@ def test_public_module_defines_all(module_name):
 @pytest.mark.parametrize("module_name", PUBLIC_MODULES)
 def test_every_name_in_all_exists(module_name):
     module = importlib.import_module(module_name)
+    if not hasattr(module, "__all__"):
+        pytest.skip("internal module without __all__")
     optional = (
         set() if sortingview_available() else _NEEDS_SORTINGVIEW.get(module_name, set())
     )
