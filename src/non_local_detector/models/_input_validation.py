@@ -12,6 +12,7 @@ Methods that read the detector's attributes annotate ``self`` as
 mixin.
 """
 
+import contextlib
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -349,6 +350,32 @@ def _validate_spike_structure(
             )
 
 
+def _numeric_spike_times(times: Any, unit: str, index: int) -> np.ndarray:
+    """One unit's spike times as a numeric array, shape (n_spikes,).
+
+    An object array of numbers (a row of ``np.array(spike_times,
+    dtype=object)`` for equal-length units, or ``times.astype(object)``) is
+    converted to float, as the spike binning reads it.
+
+    Raises
+    ------
+    ValidationError
+        If the times are not numbers.
+    """
+    array = np.asarray(times)
+    if array.dtype == np.dtype(object):
+        with contextlib.suppress(TypeError, ValueError):
+            array = array.astype(float)
+    if array.dtype.kind not in "iuf":
+        msg = f"spike_times for {unit} {index} must be numeric"
+        raise ValidationError(
+            msg,
+            expected="spike times in seconds",
+            got=f"dtype {np.asarray(times).dtype}",
+        )
+    return array
+
+
 def _validate_spike_data(
     spike_times: Sequence[Any],
     spike_waveform_features: Sequence[Any] | None = None,
@@ -397,13 +424,10 @@ def _validate_spike_data(
         spike_times, spike_waveform_features, clusterless=clusterless
     )
     unit = "electrode" if clusterless else "neuron"
-    arrays = [np.asarray(times) for times in spike_times]
-    for index, times in enumerate(arrays):
-        if times.dtype.kind not in "iuf":
-            msg = f"spike_times for {unit} {index} must be numeric"
-            raise ValidationError(
-                msg, expected="spike times in seconds", got=f"dtype {times.dtype}"
-            )
+    arrays = [
+        _numeric_spike_times(times, unit, index)
+        for index, times in enumerate(spike_times)
+    ]
     n_non_finite = [int(np.count_nonzero(~np.isfinite(times))) for times in arrays]
     if any(n_non_finite):
         bad = [

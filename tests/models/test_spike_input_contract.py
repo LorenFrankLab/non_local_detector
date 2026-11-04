@@ -226,3 +226,51 @@ def test_sequence_and_object_array_containers_are_accepted(fitted, container):
     expected = detector.predict(SPIKE_TIMES, time_edges=EDGES).acausal_posterior
     result = detector.predict(container(SPIKE_TIMES), time_edges=EDGES)
     np.testing.assert_array_equal(result.acausal_posterior, expected)
+
+
+EQUAL_LENGTH_SPIKES = [
+    np.array([0.021, 0.067, 0.121, 0.167]),
+    np.array([0.03, 0.09, 0.1, 0.15]),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "container",
+    [
+        lambda times: np.array(times, dtype=object),  # 2-D object array
+        lambda times: [unit.astype(object) for unit in times],
+    ],
+    ids=["2d_object_array", "object_unit_arrays"],
+)
+@pytest.mark.parametrize("method", DECODE_METHODS)
+def test_object_dtype_spike_times_match_float_arrays(fitted, container, method):
+    """Object arrays of numbers decode as their float arrays, as before the
+    spike checks: a 2-D object array of equal-length units, and object-dtype
+    arrays per unit. (Fitting on them fails in np.interp, as it did before.)"""
+    detector = fitted["sorted"]
+    expected = _call(detector, method, (EQUAL_LENGTH_SPIKES,))
+    result = _call(detector, method, (container(EQUAL_LENGTH_SPIKES),))
+    if method == "predict":
+        expected, result = expected.acausal_posterior, result.acausal_posterior
+    elif method == "most_likely_sequence":
+        expected, result = expected.to_numpy(), result.to_numpy()
+    np.testing.assert_array_equal(np.asarray(result), np.asarray(expected))
+
+
+@pytest.mark.unit
+def test_single_unit_object_array_matches_float_array(fitted):
+    detector = fitted["sorted"]
+    one_unit = [EQUAL_LENGTH_SPIKES[0], np.array([])]
+    expected = detector.predict(one_unit, time_edges=EDGES).acausal_posterior
+    as_object = [np.array([EQUAL_LENGTH_SPIKES[0]], dtype=object)[0], np.array([])]
+    result = detector.predict(as_object, time_edges=EDGES).acausal_posterior
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.unit
+def test_non_numeric_object_spike_times_raise(fitted):
+    with pytest.raises(ValidationError, match="must be numeric"):
+        fitted["sorted"].predict(
+            [np.array(["a", "b"], dtype=object), SPIKE_TIMES[1]], time_edges=EDGES
+        )
