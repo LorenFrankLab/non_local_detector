@@ -84,7 +84,7 @@ also stores small fingerprints of them (weighted sums and sums of squares).
 Before a loaded model first decodes, the rebuilt structures are compared with
 the fingerprints at a relative tolerance of 1e-6 (float32 rounding), which
 accepts last-bit differences between platforms and rounding-level changes to
-the code that rebuilds them. (The GLM spline basis keeps its own, tighter check, at 1e-10.) If they differ, decoding raises
+the code that rebuilds them. The GLM spline basis is checked the same way. If they differ, decoding raises
 `ValidationError` asking for a refit; loading and inspecting the model still
 work. The bin edges, centers and interior mask are stored as well: a grid rebuilt
 within tolerance takes those exact values, so the encoding models, which record

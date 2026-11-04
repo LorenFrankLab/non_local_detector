@@ -253,9 +253,11 @@ def make_spline_design_matrix(
 
 
 # A rebuilt spline design must reproduce the fitted one's fingerprint to this
-# relative tolerance, plus this absolute tolerance per basis point: the
-# entries are at most about 1, and the centered columns sum to about 0.
-_SPLINE_REBUILD_RTOL = 1e-10
+# relative tolerance (float32 rounding, the same as the saved-model rebuild
+# checks, so a rounding-level change to the basis code does not lock out
+# fitted models), plus this absolute tolerance per basis point: the entries
+# are at most about 1, and the centered columns sum to about 0.
+_SPLINE_REBUILD_RTOL = 1e-6
 _SPLINE_REBUILD_ATOL_PER_POINT = 1e-12
 
 
