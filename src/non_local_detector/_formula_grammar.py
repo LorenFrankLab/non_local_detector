@@ -1,9 +1,11 @@
-"""The allow-list of syntax a covariate-transition formula may use.
+"""The grammar a covariate-transition formula read from a saved model must use.
 
 patsy evaluates every term of a formula as Python, so a formula such as
 ``"__import__('os').system(...)"`` would run code when a design matrix is
-built. A transition formula may come from a saved model, so it is checked
-against a small grammar before patsy evaluates it.
+built. A formula the user writes in their own session is their own code and is
+not checked; one read from a saved model file may be someone else's, so
+``load_model`` checks it against a small grammar before patsy evaluates it
+(unless told the file is trusted).
 
 The check uses patsy's own parser (``ModelDesc.from_formula``), which splits a
 formula at its patsy operators (``+ - * / : ** ~`` and parentheses) without
@@ -46,8 +48,6 @@ from collections.abc import Collection
 from typing import NoReturn
 
 from patsy import ModelDesc, PatsyError
-from patsy.design_info import DesignInfo
-from patsy.eval import replace_bare_funcalls
 
 from non_local_detector.exceptions import ValidationError
 
@@ -126,11 +126,9 @@ _ALLOWED = (
     "are allowed only there)"
 )
 _HINT = (
-    "patsy evaluates a formula as Python, so transition formulas are limited "
-    "to this grammar. Compute any other transform of a covariate before "
-    "fitting and pass it as its own covariate, e.g. "
-    "covariate_data['log_speed'] = np.log(speed) with formula "
-    "'1 + quantile_bs(log_speed)'."
+    "patsy evaluates a formula as Python, so a formula read from a saved "
+    "model file is limited to this grammar. If you trust the file, load it "
+    "with load_model(path, trust_formulas=True)."
 )
 
 
@@ -183,66 +181,6 @@ def check_formula(
     for term in description.rhs_termlist:
         for factor in term.factors:
             _check_expression(factor.name(), formula, covariate_names)
-
-
-def check_design_info(
-    design_info: DesignInfo, covariate_names: Collection[str] | None = None
-) -> None:
-    """Check the Python a patsy design evaluates on new covariates.
-
-    ``build_design_matrices`` evaluates each factor's stored ``eval_code``:
-    its ``code`` with the stateful transforms (``center``, ``bs``,
-    ``quantile_bs``, ...) replaced by the objects fitted on the original
-    data. The code is checked against the grammar, and the ``eval_code``
-    must be exactly what patsy derives from it.
-
-    Parameters
-    ----------
-    design_info : patsy.DesignInfo
-        ``design_info`` of a transition design matrix.
-    covariate_names : collection of str, optional
-        Keys of the covariate data the design will be evaluated on. When
-        given, every covariate name of the design must be one of them.
-
-    Raises
-    ------
-    ValidationError
-        If the code of a factor uses syntax outside the grammar or names a
-        covariate missing from ``covariate_names``, or its ``eval_code`` is
-        missing or differs from the code.
-    """
-    formula = design_info.describe()
-    for factor, factor_info in design_info.factor_infos.items():
-        code = factor.name()
-        _check_expression(code, formula, covariate_names)
-        state = factor_info.state
-        transforms = state.get("transforms", {})
-        if state.get("eval_code") != _eval_code(code, transforms):
-            _refuse(
-                formula,
-                f"a stored eval_code {state.get('eval_code')!r} that is not "
-                f"the code {code!r} of its factor",
-            )
-
-
-def _eval_code(code: str, transforms: Collection[str]) -> str:
-    """The ``eval_code`` patsy derives from a factor's ``code``.
-
-    patsy (``EvalFactor.memorize_passes_needed``) names the stateful
-    transform called ``i``-th ``_patsy_stobj{i}__{name}__`` and replaces the
-    call ``name(...)`` with ``_patsy_stobj{i}__{name}__.transform(...)``.
-    """
-    count = 0
-
-    def transform_call(name: str) -> str:
-        nonlocal count
-        object_name = f"_patsy_stobj{count}__{name}__"
-        if object_name not in transforms:
-            return name
-        count += 1
-        return f"{object_name}.transform"
-
-    return str(replace_bare_funcalls(code, transform_call))
 
 
 def _check_expression(

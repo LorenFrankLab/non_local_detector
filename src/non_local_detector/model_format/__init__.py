@@ -79,9 +79,10 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
 
     Reads the configuration, each environment's grid and each encoding
     model's per-bin summaries (place fields, mean rates, occupancy, ...),
-    but not encoding spike samples or fitted mixtures. Nothing is built, so
-    this works whether or not the rebuilt structures of the model would still
-    match (see ``load_model``), and is fast on large clusterless models.
+    but not encoding spike samples or fitted mixtures. Nothing is built and
+    no transition formula is evaluated, so this works whether or not the
+    rebuilt structures of the model would still match (see ``load_model``),
+    on files you do not trust, and is fast on large clusterless models.
 
     Parameters
     ----------
@@ -203,7 +204,10 @@ def convert_model(pickle_path: str | Path, path: str | Path) -> None:
     ``path`` with ``save_model``. Only convert files you trust: loading a
     pickle can execute arbitrary code. The fingerprints the new file uses to
     check its rebuilt structures are computed now, from the structures the
-    pickle holds, not at the original fit.
+    pickle holds, not at the original fit. The transition formula is written
+    as the pickle has it; if it is outside the formula grammar, loading the
+    converted file evaluates it only with ``load_model(path,
+    trust_formulas=True)``.
 
     Parameters
     ----------

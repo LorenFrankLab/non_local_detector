@@ -69,13 +69,8 @@ Only what cannot be rebuilt is stored. Loading rebuilds:
 A transition block built from the fit data, such as `EmpiricalMovement`, is
 stored instead, since the training positions are not.
 
-patsy evaluates a covariate transition's formula as Python, so a stored
-formula is checked against the formula grammar before patsy sees it, and the
-covariates are stored only as numeric or string arrays (a categorical as its
-codes and categories). A file whose formula is outside
-the grammar loads for inspection only, as such a pickle does: `load_model`
-warns and does not rebuild the design (or the training-time
-`discrete_state_transitions_`), and decoding or saving it again is refused.
+A covariate transition's covariates are stored only as numeric or string
+arrays (a categorical as its codes and categories).
 
 Rebuilding repeats the fit's arithmetic, so on the same machine a reloaded
 model decodes exactly as the original. A newer NumPy, patsy or
@@ -89,6 +84,36 @@ the code that rebuilds them. The GLM spline basis is checked the same way. If th
 work. The bin edges, centers and interior mask are stored as well: a grid rebuilt
 within tolerance takes those exact values, so the encoding models, which record
 an exact hash of their grid, decode on any platform.
+
+## Transition formulas from a file
+
+patsy evaluates a covariate transition's formula as Python, and a saved file
+may be someone else's, so `load_model` checks a stored formula against a
+grammar before patsy sees it. The grammar allows the names of the stored
+covariates, numbers, arithmetic (`**` only with a small numeric exponent),
+lists of numbers, `np.pi`, the package's spline and transform functions
+(`quantile_bs`, `cyclic_bs`, `bs`, `cr`, `cc`, `te`, `center`, `standardize`,
+`I`), elementwise numpy functions (`np.log`, `np.log1p`, `np.log2`,
+`np.log10`, `np.exp`, `np.expm1`, `np.sqrt`, `np.square`, `np.abs`, `np.sign`,
+`np.floor`, `np.ceil`, `np.sin`, `np.cos`, `np.tan`, `np.arcsin`, `np.arccos`,
+`np.arctan`, `np.arctan2`, `np.minimum`, `np.maximum`) and `C()` with
+`levels=` and a contrast of patsy's `Treatment`, `Sum`, `Helmert`, `Poly` or
+`Diff` called with literal arguments, such as `C(arm, Treatment('b'))`.
+
+A file whose formula is outside the grammar loads for inspection only:
+`load_model` warns, naming the formula, and does not call patsy, so the design
+(and the training-time `discrete_state_transitions_`) is not rebuilt, and
+decoding or saving the model again raises `ValidationError`. If you trust the
+file, for example because you saved it yourself, load it with
+`load_model(path, trust_formulas=True)`, which rebuilds any formula.
+`read_model_summary` never evaluates a formula, so it reads any file.
+
+Formulas you write in your own session are your own code and are not checked:
+any patsy formula fits and decodes. Pickles are not checked either, and
+`trust_formulas` does not apply to them: unpickling can run arbitrary code
+anyway, so only load pickles you trust. `convert_model` writes the pickle's
+formula unchanged, so a converted model with a formula outside the grammar
+needs `trust_formulas=True` when loaded.
 
 ## Inspecting a model
 

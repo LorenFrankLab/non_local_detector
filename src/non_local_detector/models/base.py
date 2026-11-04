@@ -65,7 +65,6 @@ from non_local_detector.core import (
 from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _check_initial_discrete_transition,
-    _check_transition_formula,
     _covariate_transition_covariance,
     _design_on,
     _discrete_transition_from_statistics,
@@ -3211,26 +3210,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if covariate_data is not None and (
             self.discrete_transition_design_matrix_ is None
         ):
-            try:
-                _check_transition_formula(self.discrete_transition_type)
-            except ValidationError as error:
-                # Rebuilding the design would evaluate the formula. The
-                # detector still loads for inspection; predict checks the
-                # formula again and refuses to decode.
-                warnings.warn(
-                    "The detector's transition formula is outside the allowed "
-                    "formula grammar, so its design matrix was not rebuilt. It "
-                    "can be inspected, but decoding with covariates is refused."
-                    f"\n{error}",
-                    UserWarning,
-                    stacklevel=user_stacklevel(),
-                )
-            else:
-                self.discrete_transition_design_matrix_ = (
-                    self.discrete_transition_type.make_state_transition(
-                        covariate_data
-                    ).design_matrix
-                )
+            self.discrete_transition_design_matrix_ = (
+                self.discrete_transition_type.make_state_transition(
+                    covariate_data
+                ).design_matrix
+            )
         # Detectors fitted before transition smoothing existed: no penalty
         # strengths and no covariance, so EM and intervals see an unsmoothed
         # fit that has not estimated its uncertainty.
@@ -4324,9 +4308,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             if self.discrete_transition_coefficients_ is None:
                 msg = "discrete_transition_coefficients_ is None but covariate data provided"
                 raise ValueError(msg)
-            # Also refuses a detector unpickled with a refused formula, whose
-            # design matrix was not rebuilt.
-            _check_transition_formula(self.discrete_transition_type)
             predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
@@ -6459,7 +6440,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         save_detector(self, filename)
 
     @staticmethod
-    def load_model(filename: str | Path = "model.nld") -> "_DetectorBase":
+    def load_model(
+        filename: str | Path = "model.nld", *, trust_formulas: bool = False
+    ) -> "_DetectorBase":
         """
         Load a detector saved with ``save_model``, or pickled by earlier releases.
 
@@ -6474,6 +6457,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         model always works. A file written in a newer format version is
         refused, naming the version to upgrade to.
 
+        patsy evaluates a covariate transition's formula as Python, and a
+        saved file may be someone else's. Unless ``trust_formulas`` is True,
+        a formula outside the formula grammar for files (covariate names,
+        numbers, arithmetic, the package's spline transforms, elementwise
+        numpy functions such as ``np.log`` and ``np.sin``, and ``C()`` with
+        patsy's contrasts) is not evaluated: the model loads for inspection
+        only, with a ``UserWarning`` naming the formula, and decoding raises
+        ``ValidationError``.
+
         A pickle saved by an earlier release loads for inspection, including
         one pickled with JAX 0.4.30 or earlier. Decoding with one fitted
         before rates were fitted in Hz (the 0.6 releases) raises
@@ -6483,12 +6475,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         .. warning::
 
             Only load pickles from trusted sources. Pickle files can execute
-            arbitrary code during deserialization.
+            arbitrary code during deserialization, so a pickle's formula is
+            not checked and ``trust_formulas`` does not apply to it.
 
         Parameters
         ----------
         filename : str or Path, optional
             Filename to load the model from, by default "model.nld".
+        trust_formulas : bool, optional
+            Evaluate a saved model's covariate transition formula even if it
+            is outside the formula grammar, by default False. Pass True only
+            for a file you trust, such as one you saved yourself.
 
         Returns
         -------
@@ -6510,7 +6507,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if is_saved_model_format(filename):
             from non_local_detector.model_format._detector import load_detector
 
-            return load_detector(filename)
+            return load_detector(filename, trust_formulas=trust_formulas)
         with Path(filename).open("rb") as f:
             return cast("_DetectorBase", _ModelUnpickler(f).load())
 

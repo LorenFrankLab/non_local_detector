@@ -1,17 +1,18 @@
-"""The allow-list of formula syntax that may reach patsy.
+"""The grammar a transition formula read from a saved model file must use.
 
-patsy evaluates each term of a formula as Python, so a transition formula is
-checked against a small grammar before patsy sees it. These tests pin which
-formulas pass (every formula the package, its tests, documentation and
-notebooks use, and common elementwise transforms and contrasts) and that
-code-execution tricks are refused before evaluation.
+patsy evaluates each term of a formula as Python, so ``load_model`` checks a
+saved model's transition formula against a grammar before patsy sees it
+(unless the file is trusted). These tests pin which formulas pass (every
+formula the package, its tests, documentation and notebooks use, and common
+elementwise transforms and contrasts) and that code-execution tricks are
+refused before evaluation.
 """
 
 import numpy as np
 import pytest
 from patsy import dmatrix
 
-from non_local_detector._formula_grammar import check_design_info, check_formula
+from non_local_detector._formula_grammar import check_formula
 from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.unit
@@ -278,6 +279,7 @@ def test_error_names_the_offending_element_and_the_allowed_set():
     for name in ("quantile_bs", "cyclic_bs", "bs", "np.log1p", "np.pi"):
         assert name in message
     assert "Hint:" in message
+    assert "trust_formulas=True" in message
 
 
 @pytest.mark.parametrize(
@@ -330,50 +332,3 @@ def test_check_does_not_evaluate_the_formula(monkeypatch):
         check_formula("__import__('os').system('x')")
     check_formula("1 + quantile_bs(speed)")
     assert calls == []
-
-
-def test_design_info_of_an_allowed_formula_passes():
-    speed = np.linspace(0.0, 10.0, 50)
-    design = dmatrix(
-        "1 + bs(speed, df=4) + center(speed) + np.log1p(speed)", {"speed": speed}
-    )
-    check_design_info(design.design_info, covariate_names=["speed"])
-
-
-def test_design_info_with_a_name_missing_from_the_covariates_fails():
-    design = dmatrix("1 + speed", {"speed": np.linspace(0.0, 10.0, 50)})
-    with pytest.raises(ValidationError, match="not a covariate"):
-        check_design_info(design.design_info, covariate_names=["velocity"])
-
-
-def _single_factor_state(design):
-    (factor,) = design.design_info.factor_infos
-    return design.design_info.factor_infos[factor].state
-
-
-def test_design_info_whose_eval_code_differs_from_its_code_fails():
-    """build_design_matrices evaluates the factor's stored ``eval_code``, not
-    its ``code``, so the stored code is checked against the code."""
-    design = dmatrix("1 + center(speed)", {"speed": np.linspace(0.0, 10.0, 50)})
-    state = _single_factor_state(design)
-    state["eval_code"] = "(open('f', 'w'), speed)[1]"
-    with pytest.raises(ValidationError, match="eval_code"):
-        check_design_info(design.design_info)
-
-
-def test_design_info_without_eval_code_fails():
-    design = dmatrix("1 + speed", {"speed": np.linspace(0.0, 10.0, 50)})
-    del _single_factor_state(design)["eval_code"]
-    with pytest.raises(ValidationError, match="eval_code"):
-        check_design_info(design.design_info)
-
-
-def test_design_info_whose_factor_code_is_refused_fails():
-    """A design whose stored factor code would run something else is refused
-    before it is evaluated on new covariates."""
-    speed = np.linspace(0.0, 10.0, 50)
-    design = dmatrix("1 + I(speed)", {"speed": speed})
-    (factor,) = (factor for factor in design.design_info.factor_infos)
-    factor.code = "__import__('os').system('x')"
-    with pytest.raises(ValidationError, match="not allowed"):
-        check_design_info(design.design_info)
