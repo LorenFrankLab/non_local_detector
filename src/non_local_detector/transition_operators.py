@@ -1676,7 +1676,9 @@ def _one_bin_block(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     environments : sequence of Environment
+        Environments in which the declared destination is looked up.
     source_size, target_size : int
         Bins of the source and destination states.
 

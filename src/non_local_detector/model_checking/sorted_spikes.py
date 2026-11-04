@@ -381,6 +381,7 @@ def _max_transformed_interval(
     is_spike : bool ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
     rescaled_ISIs : ndarray, shape (n_spikes,)
+        Time-rescaled inter-spike intervals.
 
     Returns
     -------

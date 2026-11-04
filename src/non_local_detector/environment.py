@@ -239,6 +239,8 @@ def _graph_distances(
     track_graph : networkx.Graph
         Graph of the grid's bin centers (``_make_nD_track_graph``).
     compute_all_pairs_distances : bool, optional
+        If True, build the all-pairs distance matrix; otherwise keep an exact
+        sparse query view. See :meth:`Environment.fit_place_grid`.
     max_dense_distance_bytes : int, optional
         See :meth:`Environment.fit_place_grid`.
 
@@ -352,7 +354,9 @@ def _legacy_nd_track_graph(
     Parameters
     ----------
     place_bin_centers : np.ndarray, shape (n_bins, n_dims)
+        Bin centers in the stored bin order.
     is_track_interior : np.ndarray of bool, shape (n_x, n_y, ...)
+        Interior flag of each bin, in the grid's shape.
     edges : sequence of np.ndarray
         The stored bin edges of each dimension.
 
@@ -871,6 +875,7 @@ class Environment:
         Parameters
         ----------
         points : np.ndarray, shape (n_points, n_position_dims)
+            Positions to project onto the track graph.
 
         Returns
         -------
@@ -1230,8 +1235,11 @@ class Environment:
         Parameters
         ----------
         position : np.ndarray, shape (n_time, n_dims)
+            Position samples that set the grid and, if inferred, its interior.
         infer_track_interior : bool
+            Whether to infer the track interior from ``position``.
         compute_all_pairs_distances : bool
+            Whether to build the all-pairs graph-distance matrix.
         max_dense_distance_bytes : int
             See :meth:`fit_place_grid`.
 
@@ -2135,10 +2143,17 @@ def _calculate_linear_position(
     Parameters
     ----------
     track_graph : nx.Graph
+        Track graph whose edges carry a ``distance`` attribute.
     position : np.ndarray, shape (n_time, n_position_dims)
+        Position of the animal.
     track_segment_id : np.ndarray, shape (n_time,)
+        Index of the track segment each position is assigned to; NaN is
+        treated as segment 0.
     edge_order : list of 2-tuples
+        Order in which the edges are laid out in 1D.
     edge_spacing : float or list, len n_edges - 1
+        Spacing between consecutive edges in 1D, either one value or one per
+        gap.
 
     Returns
     -------
@@ -2568,8 +2583,11 @@ def _make_nD_track_graph(
     Parameters
     ----------
     place_bin_centers : np.ndarray, shape (n_bins, n_dims)
+        Bin centers of the grid.
     is_track_interior : np.ndarray of bool, shape ``centers_shape``
+        Interior flag of each bin, in the grid's shape.
     centers_shape : tuple[int, ...]
+        Number of bin centers along each dimension.
 
     Returns
     -------

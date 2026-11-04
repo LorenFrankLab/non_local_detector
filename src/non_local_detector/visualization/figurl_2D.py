@@ -78,12 +78,20 @@ if sortingview_available():
         Parameters
         ----------
         track_rect_width : float
+            Width of each track bin rectangle.
         track_rect_height : float
+            Height of each track bin rectangle.
         ul_corners : np.ndarray, shape (2, n_corners)
+            x and y coordinates of the upper left corner of each track bin.
         timestamps : np.ndarray, shape (n_time,)
+            Position sample times; shifted in place when the first exceeds 5000.
         positions : np.ndarray, shape (2, n_time)
+            x and y position at each timestamp.
         compute_real_time_rate : bool, optional
+            If True, store the sampling frequency in Hz estimated from the
+            median timestamp difference.
         head_dir : np.ndarray, shape (n_time,), optional
+            Head direction at each timestamp.
 
         Returns
         -------
@@ -155,12 +163,20 @@ if sortingview_available():
         Parameters
         ----------
         t : tuple[float, float, float]
+            Entry of the stacked index; the last two elements are the y and x
+            positions.
         location_lookup : dict[tuple[float, float], int]
+            Cache from ``(x, y)`` to linear index; updated in place.
         x_count : int
+            Number of x positions.
         x_min : float
+            Smallest x position.
         x_width : float
+            Spacing between x positions.
         y_min : float
+            Smallest y position.
         y_width : float
+            Spacing between y positions.
 
         Returns
         -------
@@ -186,11 +202,17 @@ if sortingview_available():
         Parameters
         ----------
         location_lookup : dict[tuple[float, float], int]
+            Cache from ``(x, y)`` to linear index; updated in place.
         x_count : int
+            Number of x positions.
         x_min : float
+            Smallest x position.
         x_width : float
+            Spacing between x positions.
         y_min : float
+            Smallest y position.
         y_width : float
+            Spacing between y positions.
 
         Returns
         -------
@@ -216,6 +238,8 @@ if sortingview_available():
         Parameters
         ----------
         base_slice : xr.DataArray
+            Probabilities with ``time``, ``y_position`` and ``x_position``
+            dimensions and values in [0, 1].
 
         Returns
         -------
@@ -237,7 +261,9 @@ if sortingview_available():
         Parameters
         ----------
         i_trim : xr.Dataset
+            Discretized, trimmed probabilities with a stacked ``unified_index``.
         linearization_fn : Callable[[tuple[float, float, float]], int]
+            Maps a ``unified_index`` entry to a linear position index.
 
         Returns
         -------
@@ -254,7 +280,10 @@ if sortingview_available():
         Parameters
         ----------
         i_trim : xr.DataArray
+            Discretized, trimmed probabilities with a ``time`` coordinate per
+            retained entry.
         base_slice : xr.DataArray
+            Full-resolution data whose ``time`` coordinate defines the frames.
 
         Returns
         -------
@@ -275,7 +304,10 @@ if sortingview_available():
         Parameters
         ----------
         base_slice : xr.DataArray
+            Probabilities with ``time``, ``y_position`` and ``x_position``
+            dimensions.
         location_fn : Callable[[tuple[float, float, float]], int]
+            Maps a stacked index entry to a linear position index.
 
         Returns
         -------
@@ -295,6 +327,7 @@ if sortingview_available():
         Parameters
         ----------
         posterior : xr.DataArray
+            Posterior over ``time``, ``y_position`` and ``x_position``.
 
         Returns
         -------
@@ -411,8 +444,11 @@ if sortingview_available():
         Parameters
         ----------
         width : float
+            Bin width.
         height : float
+            Bin height.
         centers : np.ndarray, shape (n_centers, 2)
+            x and y coordinates of the bin centers.
 
         Returns
         -------
@@ -431,7 +467,9 @@ if sortingview_available():
         Parameters
         ----------
         position : np.ndarray, shape (n_time, 2)
+            x and y position samples used to build the grid.
         bin_size : float, optional
+            Side length of a grid bin.
 
         Returns
         -------
@@ -467,11 +505,17 @@ if sortingview_available():
         Parameters
         ----------
         position_time : np.ndarray, shape (n_time,)
+            Position sample times.
         position : np.ndarray, shape (n_time, 2)
-        interior_place_bin_centers: np.ndarray, shape (n_track_bins, 2)
+            x and y position at each time.
+        interior_place_bin_centers : np.ndarray, shape (n_track_bins, 2)
+            Centers of the bins in the track interior.
         place_bin_size : np.ndarray, shape (2, 1)
+            Bin width and height.
         posterior : xr.DataArray, shape (n_time, n_position_bins)
+            Posterior over the position bins at each time.
         head_dir : np.ndarray, optional
+            Head direction at each time.
 
         Returns
         -------
@@ -536,8 +580,12 @@ if sortingview_available():
         position_time : np.ndarray, shape (n_time_position,)
             Sample times for the position data.
         position : np.ndarray, shape (n_time_position, 2)
+            x and y position at each position sample time.
         env : Environment
+            Environment whose track interior defines the displayed bins.
         results : xr.Dataset
+            Decoding results; provides the time axis, state probabilities and,
+            by default, the posterior.
         posterior : xr.DataArray, optional
             Defaults to the posterior over position summed over the states that
             have a position (Local and No-Spike excluded).

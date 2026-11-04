@@ -363,9 +363,11 @@ def _time_in_bins(
     Parameters
     ----------
     sample_times : np.ndarray, shape (n_time,)
+        Time of each position sample.
     sample_bins : np.ndarray, shape (n_time,)
         Bin of the position at each sample.
     n_bins : int
+        Number of bins.
     query_times : np.ndarray, shape (n_queries,)
         Ordered times within ``sample_times``.
 

@@ -106,8 +106,11 @@ def _log_kernel_matrix(
     Parameters
     ----------
     eval_points : jax.Array, shape (n_eval_points, n_dims)
+        Points at which the kernels are evaluated.
     samples : jax.Array, shape (n_samples, n_dims)
+        Kernel centers.
     std : jax.Array, shape (n_dims,)
+        Kernel standard deviation in each dimension.
 
     Returns
     -------
@@ -241,6 +244,7 @@ def padded_samples(
     spike_time_order : SpikeTimeOrder
         The prediction's preparation cache; results are reused per source arrays.
     samples : array, shape (n_samples, n_dims)
+        KDE sample positions.
     weights : array, shape (n_samples,), or None
         None means uniform weights.
     count : callable, optional
@@ -291,7 +295,9 @@ def _kde_block_rows(
     block_size : int
         Requested rows per block.
     eval_points : jax.Array, shape (n_eval_points, n_dims)
+        Points at which the kernels are evaluated.
     samples : jax.Array, shape (n_samples, n_dims)
+        KDE sample positions.
     std, weights : array-like
         The other kernel operands. With the points, samples and the kernel's
         accumulator (the default float, float64 under x64) they set the
@@ -358,10 +364,15 @@ def traced_block_kde(
     Parameters
     ----------
     points : jax.Array, shape (n_points, n_dims)
+        Evaluation points.
     samples : jax.Array, shape (n_samples, n_dims)
+        KDE sample positions.
     std : jax.Array, shape (n_dims,)
+        Kernel bandwidth in each dimension.
     block_size : int
+        Evaluation points per block.
     weights : jax.Array, shape (n_samples,)
+        Sample weights.
 
     Returns
     -------
@@ -382,10 +393,15 @@ def _traced_block_log_kde(
     Parameters
     ----------
     points : jax.Array, shape (n_points, n_dims)
+        Evaluation points.
     samples : jax.Array, shape (n_samples, n_dims)
+        KDE sample positions.
     std : jax.Array, shape (n_dims,)
+        Kernel bandwidth in each dimension.
     block_size : int
+        Evaluation points per block.
     weights : jax.Array, shape (n_samples,)
+        Sample weights.
 
     Returns
     -------
@@ -828,10 +844,15 @@ def true_kde_log_density(
     Parameters
     ----------
     points : jax.Array, shape (n_points, n_dims)
+        Evaluation points.
     samples : jax.Array, shape (n_samples, n_dims)
+        KDE sample positions.
     std : jax.Array, shape (n_dims,)
+        Kernel bandwidth in each dimension.
     block_size : int
+        Evaluation points per block.
     weights : jax.Array, shape (n_samples,)
+        Sample weights.
     keys : jax.Array, shape (n_samples,), optional
         From :func:`_sorted_sample_keys`.
 
@@ -861,7 +882,9 @@ def _repair_in_log_space(
     Parameters
     ----------
     values : jax.Array, shape (n_points,)
+        Log densities from the scaled pass.
     needs_log_space : np.ndarray of bool, shape (n_points,)
+        Points to recompute in log space.
     points, samples, std, block_size, weights
         The pass's inputs.
 
@@ -892,7 +915,9 @@ def kde_log_densities(
     Parameters
     ----------
     models : sequence of KDEModel
+        Fitted KDE models.
     points : jax.Array, shape (n_points, n_dims) or (n_points,)
+        Points at which every model is evaluated.
 
     Returns
     -------
@@ -999,8 +1024,11 @@ def _sorted_sample_keys(
     Parameters
     ----------
     points : array, shape (n_points, n_dims)
+        Evaluation points; only their dimensionality is used.
     samples : array, shape (n_samples, n_dims)
+        KDE sample positions.
     weights : array, shape (n_samples,)
+        Sample weights; samples without positive weight sort last.
 
     Returns
     -------
@@ -1022,10 +1050,12 @@ def _nearest_sample_log_kernel(
     Parameters
     ----------
     points : jax.Array, shape (n_points, 1)
+        Evaluation points.
     keys : jax.Array, shape (n_samples,)
         Sorted positions of the samples with positive weight, ``inf`` for
         the rest.
     std : jax.Array, shape (1,)
+        Kernel standard deviation.
 
     Returns
     -------
@@ -1055,8 +1085,11 @@ def _kde_log_scale(
     Parameters
     ----------
     points : jax.Array, shape (n_points, n_dims)
+        Evaluation points.
     std : jax.Array, shape (n_dims,)
+        Kernel standard deviation in each dimension.
     keys : jax.Array, shape (n_samples,), optional
+        Sorted 1D sample keys; None bounds by the kernel's peak.
 
     Returns
     -------
@@ -1094,10 +1127,15 @@ def _scaled_kde_log_density(
     Parameters
     ----------
     points : jax.Array, shape (n_points, n_dims)
+        Evaluation points.
     samples : jax.Array, shape (n_samples, n_dims)
+        KDE sample positions.
     std : jax.Array, shape (n_dims,)
+        Kernel bandwidth in each dimension.
     block_size : int
+        Evaluation points per block.
     weights : jax.Array, shape (n_samples,)
+        Sample weights.
     keys : jax.Array, shape (n_samples,), optional
         Sorted 1D keys for an exact per-point scale; None scales by the
         kernel's peak.
@@ -1201,7 +1239,9 @@ def _batched_kde_rows(
     block_size : int
         Requested rows per block.
     n_models : int
+        Number of models to evaluate.
     points : array, shape (n_points, n_dims)
+        Evaluation points.
     samples : array, shape (n_samples, n_dims)
         One model's (padded) samples.
     std, weights : array-like

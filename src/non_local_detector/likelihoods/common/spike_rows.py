@@ -388,7 +388,9 @@ def _normalized_row_ids(
     Parameters
     ----------
     indices : array-like, shape (n_selected,), integer
+        Row index of each selected spike.
     n_rows : int
+        Number of rows; ids at or above it are dropped.
     n_padded : int, optional
         Length to pad to. Padded entries use the dropped id ``n_rows``, which
         keeps sorted ids sorted.

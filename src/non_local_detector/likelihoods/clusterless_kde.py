@@ -185,7 +185,9 @@ def _log_marginal_floor(mean_rate: float, occupancy: jax.Array) -> jax.Array:
     Parameters
     ----------
     mean_rate : float
+        Electrode's mean rate.
     occupancy : jax.Array, shape (n_position_bins,)
+        Occupancy density at each position bin.
 
     Returns
     -------
@@ -455,7 +457,9 @@ def _encoding_log_weights(
     Parameters
     ----------
     encoding_weights : jax.Array, shape (n_encoding_spikes,), or None
+        Encoding spike weights; None weights all spikes equally.
     n_encoding_spikes : int
+        Number of encoding spikes.
 
     Returns
     -------
@@ -487,6 +491,7 @@ def _occupancy_normalizer(log_occupancy: jax.Array) -> tuple[jax.Array, jax.Arra
     Parameters
     ----------
     log_occupancy : jax.Array, shape (n_position_bins,)
+        Log occupancy density at each position bin.
 
     Returns
     -------
@@ -1274,17 +1279,29 @@ def _add_electrode_log_mark_intensities(
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     encoding_features : jax.Array, shape (n_padded_samples, n_features)
+        Waveform features of the encoding samples.
     encoding_positions : jax.Array, shape (n_padded_samples, n_position_dims)
+        Positions of the encoding samples.
     encoding_weights : jax.Array, shape (n_padded_samples,)
         Zero for padding samples, which then drop out of every reduction.
     waveform_stds : jax.Array, shape (n_features,)
+        Waveform-feature kernel bandwidths.
     position_std : jax.Array, shape (n_position_dims,)
+        Position kernel bandwidths.
     place_bin_centers : jax.Array, shape (n_bins, n_position_dims)
+        Place bin centers.
     mean_rate : float
         Mean rate times ``RATE_REFERENCE_SECONDS``.
     log_occupancy : jax.Array, shape (n_bins,)
+        Log occupancy density at each bin.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in the units of ``mean_rate``.
+    block_size : int
+        Decoding spikes per block.
+    pos_tile_size : int or None
+        Place bins per tile of the position kernel; None for no tiling.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -1381,11 +1398,13 @@ def _add_electrode_local_terms(
     spike_positions : jax.Array, shape (n_padded_spikes, n_position_dims)
         Position at each decoding spike; padding rows are zero.
     decoding_features : jax.Array, shape (n_padded_spikes, n_features)
+        Waveform features of each decoding spike.
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     encoding_positions, encoding_features, encoding_weights
         Padded joint KDE samples and weights (zero for padding).
     position_std, waveform_stds : jax.Array
+        Position and waveform-feature kernel bandwidths.
     log_occupancy_at_spikes : jax.Array, shape (n_padded_spikes,)
         True log occupancy density at ``spike_positions``.
     log_gpi_density : jax.Array, shape (n_rows,)
@@ -1399,6 +1418,10 @@ def _add_electrode_local_terms(
         Mean rate in Hz.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in the units of ``scaled_rate``.
+    block_size : int
+        Decoding spikes per block.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------

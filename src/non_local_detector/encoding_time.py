@@ -272,7 +272,9 @@ class EncodingSupport:
         Parameters
         ----------
         segment_index : int
+            Index into ``self.segments``.
         spike_times : np.ndarray, shape (n_spikes,)
+            Spike times in seconds.
 
         Returns
         -------

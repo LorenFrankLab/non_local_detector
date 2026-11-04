@@ -364,6 +364,7 @@ def assemble_place_fields(
     node_order : np.ndarray, shape (n_interior,)
         Interior flat-bin indices in graph order.
     n_total_bins : int
+        Number of bins in the full grid (interior and off-track).
 
     Returns
     -------

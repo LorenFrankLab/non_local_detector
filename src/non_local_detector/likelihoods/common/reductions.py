@@ -22,6 +22,7 @@ def _segmented_inclusive_sum(starts: jax.Array, values: jax.Array) -> jax.Array:
     starts : jax.Array, shape (n,), bool
         True at the first row of each segment; ``starts[0]`` must be True.
     values : jax.Array, shape (n, ...)
+        Values to sum within each segment.
 
     Returns
     -------
@@ -60,9 +61,13 @@ def _segment_totals(
     Parameters
     ----------
     values : jax.Array, shape (n, ...), n > 0
+        Values to total within each segment.
     segment_ids : jax.Array, shape (n,), integer
+        Segment of each row.
     num_segments : int
+        Number of segments.
     indices_are_sorted : bool
+        Whether ``segment_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -106,6 +111,7 @@ def _scatter_add_segment_totals(
     Parameters
     ----------
     output : jax.Array, shape (num_segments, ...)
+        Array whose rows receive the segment totals.
     sums, targets : jax.Array
         From ``_segment_totals``.
     column_start : int or scalar array, optional

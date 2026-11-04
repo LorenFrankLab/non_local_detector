@@ -750,6 +750,7 @@ def _padded_mixture(
     Parameters
     ----------
     mixture : MarkMixture
+        Fitted mark mixture of one electrode.
     n_components : int
         Padded number of components, at least ``mixture.n_components``.
 
@@ -840,6 +841,10 @@ def _add_electrode_intensities(
         ``b(x)``.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    block_size : int
+        Decoding spikes per block.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -899,6 +904,7 @@ def _add_electrode_local_terms(
     log_likelihood : jax.Array, shape (n_rows,)
         Running sum over electrodes; donated.
     features : jax.Array, shape (n_padded_spikes, n_features)
+        Waveform features of each decoding spike.
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     means, precisions_cholesky, is_component : jax.Array
@@ -906,6 +912,9 @@ def _add_electrode_local_terms(
     spike_log_rates : jax.Array, shape (n_padded_spikes, n_components)
         Log rate of each component at each spike's position, in Hz.
     log_background : jax.Array, shape (n_padded_spikes,)
+        Log background intensity of each spike, in Hz.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------

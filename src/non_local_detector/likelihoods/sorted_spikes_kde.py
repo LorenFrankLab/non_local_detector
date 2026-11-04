@@ -190,9 +190,15 @@ def _local_kde_log_likelihood(
     Parameters
     ----------
     points : jax.Array, shape (n_rows, n_dims) or (n_rows,)
-    occupancy, durations : jax.Array, shape (n_rows,)
+        Position at which each row's KDE is evaluated.
+    occupancy : jax.Array, shape (n_rows,)
+        Occupancy density at each point; the marginal KDE is divided by it.
     counts : jax.Array, shape (n_rows, n_neurons)
+        Spike count of each neuron in each row.
     mean_rates : jax.Array, shape (n_neurons,)
+        Mean firing rate of each neuron.
+    durations : jax.Array, shape (n_rows,)
+        Duration of each row, multiplying the rate to give expected counts.
     groups, order, block_sizes
         From ``_kde_leaf_groups``.
     log_occupancy : jax.Array, optional

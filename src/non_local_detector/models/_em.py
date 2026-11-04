@@ -70,6 +70,7 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
     Parameters
     ----------
     encoding_update_damping : float
+        Requested damping of encoding updates; only 0.0 is accepted.
 
     Raises
     ------
@@ -341,11 +342,18 @@ def _validate_estimation_arguments(
     Parameters
     ----------
     time_edges : array_like, shape (n_bins + 1,)
+        Time bin edges; must be uniform.
     n_chunks : int
+        Number of chunks the bins are split into; at most ``n_bins``.
     return_outputs : str or list of str or set of str, optional
+        Requested outputs; cannot be combined with
+        ``save_log_likelihood_to_results``.
     save_log_likelihood_to_results : bool, optional
+        Deprecated flag to store the log likelihood in the results.
     min_encoding_local_mass : float
+        Minimum local mass for an encoding update; must be >= 0.
     min_encoding_local_ess : float
+        Minimum local effective sample size for an encoding update; must be >= 0.
 
     Returns
     -------
@@ -623,6 +631,7 @@ class _EMMixin:
         Parameters
         ----------
         weights : np.ndarray, shape (n_time_position,)
+            Posterior weight of each time sample in the refit.
         encoding_fit_arguments : dict
             The other keyword arguments of ``_fit_encoding_model``: the
             estimation's position, spike data, training mask and labels.
@@ -1482,7 +1491,9 @@ class _EMMixin:
         Parameters
         ----------
         settings : _EMSettings
+            Resolved options of this EM run.
         state : _EMState
+            Mutable EM loop state; updated in place.
         marginal_log_likelihood : float
             This iteration's E-step marginal log-likelihood.
         log_prior_before, log_prior_after : float

@@ -98,6 +98,7 @@ def _matrix_emission_is_safe(
     Parameters
     ----------
     rates : jax.Array, shape (n_neurons, n_bins)
+        Place-field rates.
     durations : jax.Array, shape (n_rows,)
         Only their dtype is used.
     accumulator_dtype : dtype
@@ -138,9 +139,13 @@ def _poisson_nonlocal_log_likelihood(
     Parameters
     ----------
     counts : jax.Array, shape (n_rows, n_neurons)
+        Spike count of each neuron in each row.
     rates : jax.Array, shape (n_neurons, n_bins)
+        Place-field rates.
     durations : jax.Array, shape (n_rows,)
+        Bin durations.
     summed_rates : jax.Array, shape (n_bins,)
+        Population rate summed over neurons.
     lead : int, optional
         Rows of the first block before the first row, in ``[0, block_rows)``;
         0 by default. Passing the first row's decode-grid index modulo
@@ -315,7 +320,9 @@ def concatenate_row_blocks(
         ``evaluate(start, stop)`` returns the result for global rows
         ``[start, stop)``, rows on the first axis.
     desc : str
+        Progress bar label.
     disable_progress_bar : bool
+        Whether to hide the progress bar.
 
     Returns
     -------
@@ -366,6 +373,7 @@ def blocked_nonlocal_poisson_log_likelihood(
     summed_rates : jax.Array, shape (n_bins,)
         Population rate summed over neurons.
     disable_progress_bar : bool
+        Whether to hide the progress bar.
     _spike_time_order : SpikeTimeOrder, optional
         Shared per-prediction spike ordering cache.
 

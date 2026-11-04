@@ -135,6 +135,7 @@ def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     x : np.ndarray, shape (n_rows, n_cols)
+        Unnormalized transition matrix.
 
     Returns
     -------
@@ -224,8 +225,11 @@ def _euclidean_random_walk(
     Parameters
     ----------
     environment : Environment
+        Environment whose ``place_bin_centers_`` define the bins.
     movement_mean : float
+        Mean displacement added to each bin center.
     movement_var : float
+        Covariance of the Gaussian step distribution.
 
     Returns
     -------
@@ -970,6 +974,7 @@ def _multi_bin_local_transition(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     from_observation, to_observation : ObservationModel
         Observation models of the block's source and destination states.
     local_position_std : float or None
@@ -1074,7 +1079,9 @@ def _check_block_environments(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     environments : sequence of Environment
+        Environments in which the declared names are looked up.
     source_environment_name, destination_environment_name : str or None
         Environments of the block's source and destination states (their
         observation models' ``environment_name``); None when unknown, which
@@ -1137,7 +1144,9 @@ def _scalar_to_spatial_destination(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition declared for the block.
     environments : sequence of Environment
+        Environments in which the declared destination is looked up.
 
     Returns
     -------
@@ -1211,8 +1220,11 @@ def _make_transition_block(
     Parameters
     ----------
     transition : ContinuousTransition
+        Continuous transition whose block is built.
     environments : sequence of Environment
+        Environments passed to ``make_state_transition``.
     context : TransitionContext or None
+        Context passed to ``make_state_transition``.
     shape : tuple of int
         ``(n_source_bins, n_destination_bins)`` of the two states.
 

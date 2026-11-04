@@ -434,13 +434,16 @@ def estimate_log_gaussian_prob(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     means : Array, shape (n_components, n_features)
+        Component means.
     precisions_chol : Array
         For 'full': shape (n_components, n_features, n_features)
         For 'tied': shape (n_features, n_features)
         For 'diag': shape (n_components, n_features)
         For 'spherical': shape (n_components,)
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``precisions_chol``.
 
     Returns
     -------
@@ -526,10 +529,13 @@ def _estimate_weighted_log_prob(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     means : Array, shape (n_components, n_features)
+        Component means.
     precisions_chol : Array
         See `estimate_log_gaussian_prob`.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``precisions_chol``.
     weights : Array, shape (n_components,)
         Mixture weights summing to 1.
 
@@ -558,11 +564,15 @@ def estimate_log_prob_resp(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     means : Array, shape (n_components, n_features)
+        Component means.
     precisions_chol : Array
         See `estimate_log_gaussian_prob`.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``precisions_chol``.
     weights : Array, shape (n_components,)
+        Mixture weights.
 
     Returns
     -------
@@ -591,11 +601,13 @@ def _e_step_func(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     params : tuple(weights, means, covariances)
         weights : Array, shape (n_components,)
         means : Array, shape (n_components, n_features)
         covariances : Array, shape depends on covariance_type
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization of ``params``.
 
     Returns
     -------
@@ -623,12 +635,15 @@ def _m_step_func(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     log_resp : Array, shape (n_samples, n_components)
         Log responsibilities.
     reg_covar : float
         Covariance regularization.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization to estimate.
     sample_weight : Array | None, shape (n_samples,), default=None
+        Per-sample weights; unweighted when None.
 
     Returns
     -------
@@ -662,14 +677,19 @@ def _em_fit_while_loop(
     Parameters
     ----------
     X : Array, shape (n_samples, n_features)
+        Samples.
     init_params : tuple(weights, means, covariances)
+        Initial mixture parameters.
     tol : float
         Convergence tolerance on improvement of average lower bound.
     max_iter : int
         Maximum EM iterations.
     reg_covar : float
+        Covariance regularization.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
+        Covariance parameterization.
     sample_weight : Array | None, shape (n_samples,), default=None
+        Per-sample weights; unweighted when None.
 
     Returns
     -------
@@ -744,7 +764,9 @@ def _zero_weight_padded(
     Parameters
     ----------
     sample_weight : Array | np.ndarray, shape (n_samples,)
+        Per-sample weights.
     *arrays : Array | np.ndarray, shape (n_samples, ...)
+        Arrays whose rows are padded the same way as ``sample_weight``.
 
     Returns
     -------
@@ -1051,7 +1073,9 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         sample_weight : Array | np.ndarray | None, shape (n_samples,)
+            Per-sample weights, or None for unweighted fitting.
 
         Returns
         -------
@@ -1449,7 +1473,9 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         key : jax.Array
+            PRNG key for the random responsibilities.
 
         Returns
         -------
@@ -1477,6 +1503,7 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         key : jax.Array
             Per-restart PRNG key. Used to derive a distinct KMeans seed for
             restarts beyond the first when ``random_state`` is set.
@@ -1566,8 +1593,11 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         key : jax.Array
+            PRNG key for the initialization.
         sample_weight : Array | None, shape (n_samples,), default=None
+            Per-sample weights; unweighted when None.
         init_index : int, default=0
             Index of the current restart within ``n_init``; forwarded to
             ``_initialize_kmeans_resp`` so restarts beyond the first get
@@ -1627,8 +1657,11 @@ class GaussianMixtureModel:
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+            Samples.
         params : tuple(weights, means, covariances)
+            Initial mixture parameters.
         sample_weight : Array | None, shape (n_samples,), default=None
+            Per-sample weights; unweighted when None.
 
         Returns
         -------

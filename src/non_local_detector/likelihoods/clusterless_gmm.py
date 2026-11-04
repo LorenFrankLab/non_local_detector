@@ -223,12 +223,21 @@ def _add_electrode_gmm_intensities(
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     bin_centers : jax.Array, shape (n_bins, n_position_dims)
+        Place bin centers.
     parameters : tuple of jax.Array
         The joint GMM's fitted means, Cholesky precisions and weights.
     log_rate : jax.Array, scalar
+        Log of the electrode's mean rate.
     log_occupancy : jax.Array, shape (n_bins,)
+        Log occupancy density at each bin.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    covariance_type : str
+        Covariance structure of the joint GMM.
+    block_size : int
+        Decoding spikes per block.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -294,13 +303,21 @@ def _add_electrode_gmm_spike_terms(
     spike_positions : jax.Array, shape (n_padded_spikes, n_position_dims)
         Position at each decoding spike; padding rows are zero.
     features : jax.Array, shape (n_padded_spikes, n_features)
+        Waveform features of each decoding spike.
     row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
     joint, occupancy : tuple of jax.Array
         Fitted means, Cholesky precisions and weights of each GMM.
     mean_rate : jax.Array, scalar
+        Electrode's mean rate.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    joint_type : str
+        Covariance structure of the joint GMM.
+    occupancy_type : str
+        Covariance structure of the occupancy GMM.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
@@ -349,6 +366,9 @@ def _add_gmm_expected_counts(
     log_occupancy : jax.Array, shape (n_rows,)
         Log occupancy density at ``positions``.
     mean_rate : jax.Array, scalar
+        Electrode's mean rate.
+    gpi_type : str
+        Covariance structure of the ground-process-intensity GMM.
 
     Returns
     -------

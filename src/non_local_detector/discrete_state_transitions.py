@@ -349,6 +349,7 @@ def _blocked_contraction(left: jax.Array, right: jax.Array) -> jax.Array:
     Parameters
     ----------
     left, right : jax.Array, shape (n_rows, n_bins)
+        Matrices whose rows are contracted: the product is ``left.T @ right``.
 
     Returns
     -------
@@ -410,7 +411,9 @@ def _stationary_counts_block(
     transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         The expanded stationary transition.
     state_ind : jax.Array, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
     n_states : int
+        Number of discrete states.
 
     Returns
     -------
@@ -450,7 +453,9 @@ def _stationary_counts(
     transition_matrix : jax.Array, shape (n_state_bins, n_state_bins)
         The expanded stationary transition.
     state_ind : np.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
     n_states : int
+        Number of discrete states.
 
     Returns
     -------
@@ -1115,6 +1120,7 @@ def _term_penalties(
         (n_terms, n_coefficients, n_coefficients); one term's matrix, shape
         (n_coefficients, n_coefficients); or None (no spline terms).
     n_coefficients : int
+        Number of coefficients per logit (columns of the design matrix).
 
     Returns
     -------
@@ -1263,10 +1269,34 @@ def _fit_covariate_transition(
 
     Parameters
     ----------
-    transition_coefficients, design_matrix, response, concentration, stickiness,
-    transition_regularization, optimization_method, maxiter, disp, frozen_rows,
-    smoothness, smoothness_matrix
-        As in :func:`estimate_non_stationary_state_transition_from_responses`.
+    transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Initial estimate of the transition coefficients.
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+        Expected transition counts for each time and transition row.
+    concentration : float, optional
+        Dirichlet prior concentration parameter (uniform part).
+    stickiness : float or np.ndarray, optional
+        Dirichlet prior stickiness parameter (diagonal enhancement).
+    transition_regularization : float, optional
+        L2 penalty on coefficients (excluding intercept).
+    smoothness : float, np.ndarray, or "reml", optional
+        Strength of the curvature penalty on each spline term, or "reml" to
+        choose it per row and term; see
+        :func:`estimate_non_stationary_state_transition_from_responses`.
+    smoothness_matrix : np.ndarray, optional
+        Curvature penalties from :func:`_smoothness_matrix`, shape
+        (n_terms, n_coefficients, n_coefficients).
+    optimization_method : str, optional
+        Optimization method for `scipy.optimize.minimize`.
+    maxiter : int, optional
+        Maximum iterations for the optimizer; None uses the optimizer default.
+    disp : bool, optional
+        Display optimizer convergence messages.
+    frozen_rows : np.ndarray of bool, shape (n_states,), optional
+        Rows that keep their ``transition_coefficients`` instead of being
+        estimated. None estimates every row.
     initial_smoothness : np.ndarray, shape (n_states, n_terms), optional
         Strengths kept by rows REML does not fit (frozen rows), e.g. the
         previous EM iteration's; by default 1. REML searches its full range
@@ -1435,9 +1465,20 @@ def _covariate_transition_covariance(
     ----------
     transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
         The fitted coefficients.
-    design_matrix, response, concentration, stickiness,
-    transition_regularization, smoothness_matrix, frozen_rows
-        As given to :func:`_fit_covariate_transition`.
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+        Expected transition counts for each time and transition row.
+    concentration : float
+        Dirichlet prior concentration parameter (uniform part).
+    stickiness : float or np.ndarray
+        Dirichlet prior stickiness parameter (diagonal enhancement).
+    transition_regularization : float
+        L2 penalty on coefficients (excluding intercept).
+    smoothness_matrix : np.ndarray or None
+        Curvature penalties, shape (n_terms, n_coefficients, n_coefficients).
+    frozen_rows : np.ndarray of bool, shape (n_states,), or None
+        Rows whose covariance is left at zero.
     smoothness : np.ndarray, shape (n_states, n_terms)
         The fit's strengths, :attr:`CovariateTransitionFit.smoothness`.
 
@@ -1498,6 +1539,7 @@ def _max_transition_change(
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
     old_coefficients, new_coefficients : np.ndarray
         Shape (n_coefficients, n_states, n_states - 1).
 
@@ -1767,11 +1809,13 @@ def _fit_covariate_row(
     Parameters
     ----------
     initial_coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
+        Starting point of the optimizer.
     blocks, prior_per_bin
         From :func:`_row_problem`.
     penalty : np.ndarray, shape (n_coefficients, n_coefficients)
         From :func:`_penalty_matrix`.
     optimization_method : str
+        Optimization method for `scipy.optimize.minimize`.
     options : dict
         Options for `scipy.optimize.minimize`.
     from_state : int
@@ -1884,7 +1928,9 @@ def _row_prior_weights(prior_weight: float | np.ndarray, n_states: int) -> np.nd
     Parameters
     ----------
     prior_weight : float or np.ndarray, shape (n_states,)
+        Data-adaptive prior weight: one for every row, or one per row.
     n_states : int
+        Number of discrete states.
 
     Returns
     -------
@@ -2024,8 +2070,11 @@ def _block_loss(
     Parameters
     ----------
     coefficients : jax.Array, shape (n_coefficients * (n_states - 1),)
+        Ordered (coefficient, logit).
     design_matrix : jax.Array, shape (n_block, n_coefficients)
+        Design matrix rows of the block.
     response : jax.Array, shape (n_block, n_states)
+        Expected transition counts of the block, for this row.
     prior_per_bin : jax.Array, shape (n_states,)
         The row's Dirichlet pseudo-counts ``alpha - 1`` divided by the number
         of time bins of the whole row, so that the prior counts once.
@@ -2061,8 +2110,12 @@ def _block_hessian(
     coefficients : jax.Array, shape (n_coefficients * (n_states - 1),)
         Ordered (coefficient, logit).
     design_matrix : jax.Array, shape (n_block, n_coefficients)
+        Design matrix rows of the block.
     response : jax.Array, shape (n_block, n_states)
+        Expected transition counts of the block, for this row.
     prior_per_bin : jax.Array, shape (n_states,)
+        The row's Dirichlet pseudo-counts per time bin, as in
+        :func:`_block_loss`.
 
     Returns
     -------
@@ -2114,7 +2167,9 @@ def _row_problem(
     design_blocks : list of jax.Array
         :func:`_transition_blocks` of the design matrix's transition rows.
     response : np.ndarray, shape (n_samples, n_states)
+        Expected transition counts of this row for each transition.
     alpha : float or np.ndarray, shape (n_states,)
+        Dirichlet prior of this row.
 
     Returns
     -------
@@ -2146,7 +2201,9 @@ def _penalty_matrix(
     Parameters
     ----------
     n_coefficients : int
+        Number of coefficients per logit.
     l2_penalty : float
+        Penalty strength on every coefficient but the intercept.
     smoothness : float or np.ndarray, shape (n_terms,), optional
         One strength for every term, or one per term.
     smoothness_matrix : np.ndarray, optional
@@ -2496,9 +2553,15 @@ def _transition_log_prior(
         covariate-dependent transition.
     discrete_transition_design_matrix : DesignMatrix, np.ndarray or None
         Shape (n_time, n_coefficients) for a covariate-dependent transition.
-    transition_concentration, transition_stickiness, transition_regularization,
-    transition_prior_weight
-        As in :func:`_discrete_transition_from_statistics`.
+    transition_concentration : float
+        Dirichlet prior concentration parameter (uniform part).
+    transition_stickiness : float or np.ndarray
+        Dirichlet prior stickiness parameter (diagonal enhancement).
+    transition_regularization : float
+        L2 penalty on covariate-dependent coefficients (excluding intercept).
+    transition_prior_weight : float or np.ndarray, optional
+        Data-adaptive prior weight for stationary transitions, as in
+        :func:`_discrete_transition_from_statistics`. By default 0.0.
     free_rows : np.ndarray of bool, shape (n_states,), optional
         Rows the M-step estimates. Frozen rows are constant and left out.
         All rows by default.
@@ -3070,6 +3133,8 @@ def _check_initial_discrete_transition(
     initial : InitialDiscreteTransition
         Result of ``transition.make_state_transition``.
     transition : DiscreteTransition
+        Transition whose declared ``n_states`` and ``is_stationary`` the result
+        is checked against.
 
     Raises
     ------
@@ -3513,7 +3578,9 @@ def _transitions_on_design(
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
     coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Transition coefficients.
 
     Returns
     -------

@@ -670,6 +670,7 @@ def resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Ar
     Parameters
     ----------
     occupancy : array, shape (n_bins,)
+        Diffused occupancy per bin.
 
     Returns
     -------

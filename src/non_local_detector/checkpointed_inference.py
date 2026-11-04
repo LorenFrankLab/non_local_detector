@@ -360,7 +360,10 @@ def _prepare_chunk(
     Parameters
     ----------
     values : jax.Array, shape (n_rows, n_bins)
+        Chunk of values; rows flagged in ``missing`` are zeroed before the
+        masks and checksum are computed.
     missing : jax.Array of bool, shape (n_rows,)
+        True for rows to neutralize.
 
     Returns
     -------

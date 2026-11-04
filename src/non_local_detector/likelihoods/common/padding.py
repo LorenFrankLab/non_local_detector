@@ -44,8 +44,11 @@ def padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) ->
     Parameters
     ----------
     n_spikes : int
+        Number of decoding spikes.
     block_size : int
+        Largest spikes per block.
     fine : bool, optional
+        Pad to four sizes per octave below one block, by default False.
 
     Returns
     -------

@@ -71,7 +71,9 @@ def add_background_only(
     Parameters
     ----------
     log_likelihood : jax.Array, shape (n_rows,) or (n_rows, n_bins)
+        Running log likelihood to add the background terms to.
     spikes : ElectrodeSpikes
+        The electrode's decoding spikes, with their rows and log background.
 
     Returns
     -------
@@ -124,6 +126,7 @@ def add_electrode_spike_terms(
     desc : str
         Progress bar label.
     disable_progress_bar : bool
+        Whether to hide the progress bar.
 
     Returns
     -------
