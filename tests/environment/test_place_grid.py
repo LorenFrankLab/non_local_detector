@@ -221,3 +221,15 @@ def test_legacy_track_graph_grid_without_distances_gets_them():
         _legacy_state(environment, drop=("distance_between_nodes_",))
     )
     assert loaded.distance_between_nodes_ == environment.distance_between_nodes_
+
+
+def test_legacy_unset_fitted_arguments_are_dropped_with_a_warning():
+    """``vars(environment)`` rows of main (2025-10 to 2026-10) hold the fitted
+    attributes as None; the constructor drops them and warns."""
+    with pytest.warns(DeprecationWarning, match="place_bin_centers_") as record:
+        environment = Environment(
+            place_bin_size=3.0, place_bin_centers_=None, _is_fitted=False
+        )
+    assert len(record) == 1
+    assert "_is_fitted" in str(record[0].message)
+    assert environment.get_params() == Environment(place_bin_size=3.0).get_params()

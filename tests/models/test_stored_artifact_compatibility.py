@@ -327,6 +327,30 @@ def test_open_field_pickled_before_its_distances_were_stored_rebuilds_them(
     )
 
 
+UNFILTERED_ROWS = [row for row in ROWS if row[0] in ("main-84259d49", "main-66047901")]
+
+
+@pytest.mark.parametrize(("version", "preset", "row_format"), UNFILTERED_ROWS)
+def test_environment_rows_holding_unset_fitted_keys_construct_unfiltered(
+    version, preset, row_format
+):
+    """Rows of main (2025-10 to 2026-10) hold every fitted attribute as None,
+    and Spyglass ``master`` passes them to ``Environment`` unfiltered: they
+    construct, with a deprecation warning naming the dropped keys."""
+    config = Environment().get_params().keys()
+    for stored in _row(version, preset, row_format)["environments"]:
+        stored = dict(stored)
+        if stored.get("track_graph") is not None:
+            stored["track_graph"] = make_track_graph(**stored["track_graph"])
+
+        with pytest.warns(DeprecationWarning, match="place_bin_centers_"):
+            environment = Environment(**stored)
+
+        assert not environment._is_fitted
+        assert environment.get_params().keys() == config
+        assert environment.environment_name == stored["environment_name"]
+
+
 @pytest.mark.parametrize(("version", "filename"), RESULTS)
 def test_saved_results_support_spyglass_result_operations(version, filename):
     """``fetch_results`` and the operations Spyglass applies to it."""

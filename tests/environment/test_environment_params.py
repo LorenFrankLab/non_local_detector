@@ -94,19 +94,20 @@ def test_get_params_keeps_the_track_graph_a_graph():
 
 
 @pytest.mark.parametrize("is_fitted", [False, np.False_])
-def test_legacy_rows_construct_from_their_configuration_keys(is_fitted):
+def test_legacy_rows_with_unset_fitted_keys_construct(is_fitted):
     """Rows saved as ``vars(environment)`` by earlier releases hold the fitted
-    attributes too (None when unfitted). The constructor takes configuration
-    only, so the row is filtered to ``get_params()`` keys, as Spyglass does."""
+    attributes too, None when unfitted. The constructor drops them and warns
+    once, naming them."""
     row = {
         **_grid_environment().get_params(),
         **dict.fromkeys(LEGACY_FITTED_NAMES),
         "_is_fitted": is_fitted,
     }
-    with pytest.raises(TypeError, match="unexpected keyword"):
-        Environment(**row)
-    config = Environment().get_params().keys()
-    environment = Environment(**{k: v for k, v in row.items() if k in config})
+    with pytest.warns(DeprecationWarning, match="get_params") as record:
+        environment = Environment(**row)
+    assert len(record) == 1
+    for name in (*LEGACY_FITTED_NAMES, "_is_fitted"):
+        assert name in str(record[0].message)
     assert environment.get_params() == _grid_environment().get_params()
     np.testing.assert_array_equal(
         _fit(environment).place_bin_centers_,
@@ -114,9 +115,15 @@ def test_legacy_rows_construct_from_their_configuration_keys(is_fitted):
     )
 
 
-@pytest.mark.parametrize("name", [*LEGACY_FITTED_NAMES, "_is_fitted", "_place_grid"])
-@pytest.mark.parametrize("value", [None, np.zeros((3, 1))])
-def test_fitted_attributes_are_not_constructor_arguments(name, value):
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        *((name, np.zeros((3, 1))) for name in LEGACY_FITTED_NAMES),
+        ("_is_fitted", True),
+        ("_place_grid", None),
+    ],
+)
+def test_fitted_values_in_the_constructor_raise(name, value):
     with pytest.raises(TypeError, match=name):
         Environment(**{name: value})
 

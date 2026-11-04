@@ -53,11 +53,12 @@ unfitted; `save_environment` and `load_environment` pickle a fitted one.
 import contextlib
 import copy
 import dataclasses
+import functools
 import hashlib
 import pickle
 import warnings
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -441,7 +442,9 @@ class Environment:
     Notes
     -----
     All arguments are keyword-only, and are the configuration only: the
-    fitted attributes are set by :meth:`fit_place_grid`. :meth:`get_params`
+    fitted attributes are set by :meth:`fit_place_grid`. (Unset fitted
+    attributes, as in ``vars(environment)`` rows saved by earlier releases,
+    are dropped with a ``DeprecationWarning``.) :meth:`get_params`
     returns the configuration, so ``Environment(**environment.get_params())``
     rebuilds an unfitted environment with the same configuration. Environments
     pickled by earlier releases, which stored the fitted attributes
@@ -1770,6 +1773,63 @@ class Environment:
             direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
 
         return direction
+
+
+def _accept_unset_legacy_fitted_arguments(
+    init: Callable[..., None],
+) -> Callable[..., None]:
+    """Wrap ``Environment.__init__`` to drop the unset fitted attributes that
+    ``vars(environment)`` rows of earlier releases hold.
+
+    Those rows (main from 2025-10 to 2026-10, as Spyglass ``master`` passes
+    them) hold every fitted attribute, None when unfitted, and ``_is_fitted``
+    False. They are dropped with one ``DeprecationWarning`` naming them; a
+    fitted value raises ``TypeError``.
+    """
+
+    @functools.wraps(init)
+    def __init__(self: "Environment", **kwargs: Any) -> None:
+        legacy = [name for name in _LEGACY_FITTED_ARGUMENTS if name in kwargs]
+        if legacy:
+            given = [name for name in legacy if not _is_unset(name, kwargs[name])]
+            if given:
+                msg = (
+                    f"Environment() got fitted attributes {given}, which "
+                    "fit_place_grid sets; pass the configuration only, e.g. "
+                    "Environment(**environment.get_params())"
+                )
+                raise TypeError(msg)
+            warnings.warn(
+                f"Environment() ignores the unset fitted attributes {legacy}, "
+                "which parameter rows saved as vars(environment) hold; this "
+                "will raise TypeError in a future release. Pass the "
+                "configuration only (Environment().get_params() keys).",
+                DeprecationWarning,
+                stacklevel=user_stacklevel(),
+            )
+            kwargs = {
+                name: value for name, value in kwargs.items() if name not in legacy
+            }
+        init(self, **kwargs)
+
+    return __init__
+
+
+# The fitted attributes ``vars(environment)`` rows of earlier releases hold.
+_LEGACY_FITTED_ARGUMENTS = (*_LEGACY_FITTED_ATTRIBUTES, "_is_fitted")
+
+
+def _is_unset(name: str, value: Any) -> bool:
+    """Whether a legacy fitted argument holds no fitted value: None, or a
+    false ``_is_fitted`` (saved rows may hold it as a NumPy boolean)."""
+    if value is None:
+        return True
+    return name == "_is_fitted" and isinstance(value, (bool, np.bool_)) and not value
+
+
+Environment.__init__ = _accept_unset_legacy_fitted_arguments(  # type: ignore[method-assign]  # wraps the dataclass-generated __init__
+    Environment.__init__
+)
 
 
 def get_n_bins(
