@@ -65,6 +65,7 @@ class ObservationModel:
     is_no_spike: bool = False
 
     def __post_init__(self) -> None:
+        """Reject a model that is both Local and No-Spike."""
         if self.is_local and self.is_no_spike:
             msg = "An observation model cannot set both is_local and is_no_spike"
             raise ConfigurationError(

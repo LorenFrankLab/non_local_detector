@@ -1912,7 +1912,19 @@ class _DetectorBase(
         time_range: tuple[float, float] | None = None,
         range_name: str = "",
     ) -> None:
-        """Check the spike arrays named by ``_SPIKE_DATA_NAMES`` (see ``_validate_spike_data``)."""
+        """Check the spike arrays named by ``_SPIKE_DATA_NAMES``.
+
+        See ``_validate_spike_data`` for what is checked.
+
+        Parameters
+        ----------
+        spike_data : tuple
+            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+        time_range : tuple of float, optional
+            ``(start, stop)`` in seconds to warn against, by default None.
+        range_name : str, optional
+            What ``time_range`` is, for the warning.
+        """
         _validate_spike_data(
             *spike_data,
             clusterless=isinstance(self, ClusterlessDetector),
@@ -1923,7 +1935,15 @@ class _DetectorBase(
     def _check_encoding_spike_data(
         self, position_time: ArrayLike, spike_data: tuple[Any, ...]
     ) -> None:
-        """Check encoding spike data, warning if none lies in the position_time span."""
+        """Check encoding spike data; warn if all lie on one side of the position_time span.
+
+        Parameters
+        ----------
+        position_time : array_like, shape (n_time_position,)
+            Times of the position samples, in seconds.
+        spike_data : tuple
+            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+        """
         times = _sample_times(position_time)
         finite = times[np.isfinite(times)]
         self._check_spike_data(
@@ -1937,7 +1957,15 @@ class _DetectorBase(
     def _check_decode_spike_data(
         self, time_edges: np.ndarray, spike_data: tuple[Any, ...]
     ) -> None:
-        """Check decoding spike data, warning if none lies within ``time_edges``."""
+        """Check decoding spike data; warn if all lie on one side of ``time_edges``.
+
+        Parameters
+        ----------
+        time_edges : np.ndarray, shape (n_bins + 1,)
+            Validated decode edges, in seconds.
+        spike_data : tuple
+            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+        """
         self._check_spike_data(
             spike_data,
             time_range=(float(time_edges[0]), float(time_edges[-1])),
@@ -2506,7 +2534,7 @@ class _DetectorBase(
             environment_labels,
         )
         position_time, position = inputs.position_time, inputs.position
-        # The internal fit warns if no spike lies in the position_time span.
+        # The internal fit warns if every spike lies outside the position_time span.
         self._check_spike_data(spike_data)
         position = position[:, np.newaxis] if position.ndim == 1 else position
         # Mirror predict(): bins without tracked position are missing

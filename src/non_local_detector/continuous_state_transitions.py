@@ -450,6 +450,11 @@ def _validate_movement_var(movement_var: Any, owner: str) -> None:
 def _validate_movement_mean(movement_mean: Any) -> None:
     """Check that ``RandomWalk.movement_mean`` is numeric and finite.
 
+    Parameters
+    ----------
+    movement_mean : float or array_like, shape () or (n_dims,)
+        Mean displacement in one time step.
+
     Raises
     ------
     ValidationError
@@ -874,6 +879,7 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
     is_time_reversed: bool = False
 
     def __post_init__(self) -> None:
+        """Reject a ``speedup`` that is not an integer >= 1."""
         # matrix_power(M, 0) is the identity (no movement) and a negative
         # power inverts M; neither is a faster version of the movement.
         try:
@@ -996,6 +1002,7 @@ class RandomWalkDirection1(_DropsLegacyEnvironment, _EnvironmentBlock):
     movement_var: float = 6.0
 
     def __post_init__(self) -> None:
+        """Reject a ``movement_var`` that is not a positive variance."""
         _validate_movement_var(self.movement_var, "RandomWalkDirection1")
 
     def structured_block(
@@ -1054,6 +1061,7 @@ class RandomWalkDirection2(_DropsLegacyEnvironment, _EnvironmentBlock):
     movement_var: float = 6.0
 
     def __post_init__(self) -> None:
+        """Reject a ``movement_var`` that is not a positive variance."""
         _validate_movement_var(self.movement_var, "RandomWalkDirection2")
 
     def structured_block(

@@ -219,7 +219,8 @@ def _sample_mask(
 
     Returns
     -------
-    mask : np.ndarray of bool, shape (n_time,)
+    np.ndarray of bool, shape (n_time,)
+        True where the entry is True or 1.
 
     Raises
     ------
@@ -363,17 +364,17 @@ def _validate_spike_data(
     range_name : str, optional
         What ``time_range`` is, for the warning, e.g. "decode time_edges".
 
-    Warns
-    -----
-    DataQualityWarning
-        If there are spikes, all before or all after ``time_range``.
-
     Raises
     ------
     ValidationError
         If the structure is wrong or spike times are not numeric.
     DataError
         If any spike time is NaN or infinite.
+
+    Warns
+    -----
+    DataQualityWarning
+        If there are spikes, all before or all after ``time_range``.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
