@@ -424,3 +424,84 @@ def test_random_walk_direction_without_manifold_distance_raises(simple_1d_enviro
     )
     with pytest.raises(ConfigurationError, match="use_manifold_distance"):
         rw.make_state_transition((env,))
+
+
+_INVALID_MOVEMENT_VARS = [
+    -1.0,
+    0.0,
+    float("nan"),
+    float("inf"),
+    np.array([1.0, 0.0]),
+    np.array([[1.0, 2.0], [2.0, 1.0]]),  # symmetric, not positive definite
+    np.ones((2, 2, 2)),
+    "large",
+]
+_INVALID_MOVEMENT_VAR_IDS = [
+    "negative",
+    "zero",
+    "nan",
+    "inf",
+    "zero-variance-dim",
+    "indefinite",
+    "3-d",
+    "string",
+]
+
+
+@pytest.mark.parametrize(
+    "transition_class", [RandomWalk, RandomWalkDirection1, RandomWalkDirection2]
+)
+@pytest.mark.parametrize(
+    "movement_var", _INVALID_MOVEMENT_VARS, ids=_INVALID_MOVEMENT_VAR_IDS
+)
+def test_invalid_movement_var_raises_at_construction(transition_class, movement_var):
+    """A variance the Gaussian step cannot use is rejected when the transition
+    is made; it constructed and failed at fit with a SciPy error."""
+    with pytest.raises(ValidationError, match="movement_var"):
+        transition_class(movement_var=movement_var)
+
+
+@pytest.mark.parametrize(
+    "movement_var",
+    [
+        6.0,
+        1e-310,
+        3,
+        np.array(6.0),
+        np.array([0.9, 1.7]),
+        np.diag([0.9, 1.7]),
+        np.array([[1.0, 0.2], [0.2, 1.0]]),
+    ],
+    ids=["float", "tiny", "int", "0-d", "diagonal", "diagonal-matrix", "full"],
+)
+def test_valid_movement_var_constructs(movement_var):
+    """Scalars, per-dimension variances and positive-definite covariances,
+    as stored by saved models and Spyglass rows, still construct."""
+    assert RandomWalk(movement_var=movement_var).movement_var is movement_var
+
+
+@pytest.mark.parametrize(
+    "movement_mean",
+    [float("nan"), float("inf"), np.array([0.0, np.nan]), "east"],
+    ids=["nan", "inf", "nan-dim", "string"],
+)
+def test_invalid_movement_mean_raises_at_construction(movement_mean):
+    with pytest.raises(ValidationError, match="movement_mean"):
+        RandomWalk(movement_mean=movement_mean)
+
+
+@pytest.mark.parametrize(
+    "speedup",
+    [0, -1, 1.0, 2.5, True, "2", None],
+    ids=["zero", "negative", "float-one", "fraction", "bool", "string", "none"],
+)
+def test_invalid_speedup_raises_at_construction(speedup):
+    """``speedup`` is the matrix power of the one-step transition: 0 gave the
+    identity (no movement), a negative value the inverse."""
+    with pytest.raises(ValidationError, match="speedup"):
+        EmpiricalMovement(speedup=speedup)
+
+
+@pytest.mark.parametrize("speedup", [1, 3, np.int64(2)], ids=["one", "three", "int64"])
+def test_valid_speedup_constructs(speedup):
+    assert EmpiricalMovement(speedup=speedup).speedup == speedup

@@ -8,6 +8,7 @@ data-driven transitions such as :class:`EmpiricalMovement` read.
 """
 
 import inspect
+import operator
 from collections.abc import Sequence
 from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
@@ -396,6 +397,78 @@ def _validate_direction(direction: str | None) -> None:
         )
 
 
+def _validate_movement_var(movement_var: Any, owner: str) -> None:
+    """Check a random walk's ``movement_var`` as its Gaussian step reads it.
+
+    The step is ``scipy.stats.multivariate_normal(cov=movement_var)``, so the
+    accepted values are those SciPy accepts without ``allow_singular``: a
+    positive variance, one positive variance per dimension, or a positive
+    definite covariance matrix.
+
+    Parameters
+    ----------
+    movement_var : float or array_like, shape (), (n_dims,) or (n_dims, n_dims)
+        The variance (or covariance) of the displacement in one time step.
+    owner : str
+        Class name for the error message.
+
+    Raises
+    ------
+    ValidationError
+        If it is not numeric and finite, or not a positive variance or
+        positive definite covariance.
+    """
+    expected = (
+        "a finite variance > 0, one per dimension, or a positive definite "
+        "covariance matrix"
+    )
+    hint = (
+        "movement_var is the variance of the Gaussian step per time bin, in "
+        "squared position units (cm**2), e.g. 6.0."
+    )
+    msg = f"{owner}.movement_var must be {expected}"
+    try:
+        covariance = np.asarray(movement_var, dtype=float)
+    except (TypeError, ValueError):
+        raise ValidationError(
+            msg, expected=expected, got=repr(movement_var), hint=hint
+        ) from None
+    if covariance.ndim > 2 or not np.all(np.isfinite(covariance)):
+        raise ValidationError(msg, expected=expected, got=repr(movement_var), hint=hint)
+    n_dims = 1 if covariance.ndim == 0 else covariance.shape[0]
+    try:
+        # Only a probe: a valid but extreme variance (1e-310) overflows in
+        # SciPy's pseudo-inverse, which the transition build reports itself.
+        with np.errstate(all="ignore"):
+            multivariate_normal(mean=np.zeros(n_dims), cov=covariance)
+    except (ValueError, np.linalg.LinAlgError) as error:
+        raise ValidationError(
+            msg, expected=expected, got=f"{movement_var!r} ({error})", hint=hint
+        ) from None
+
+
+def _validate_movement_mean(movement_mean: Any) -> None:
+    """Check that ``RandomWalk.movement_mean`` is numeric and finite.
+
+    Raises
+    ------
+    ValidationError
+        If it is not numeric or holds NaN or infinity.
+    """
+    try:
+        mean = np.asarray(movement_mean, dtype=float)
+    except (TypeError, ValueError):
+        mean = np.array(np.nan)
+    if not np.all(np.isfinite(mean)):
+        msg = "RandomWalk.movement_mean must be finite"
+        raise ValidationError(
+            msg,
+            expected="a finite displacement, or one per dimension",
+            got=repr(movement_mean),
+            hint="movement_mean is the mean step per time bin; 0.0 is unbiased.",
+        )
+
+
 @dataclass
 class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     """A transition where the movement stays locally close in space.
@@ -423,8 +496,9 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     Raises
     ------
     ValidationError
-        If ``direction`` is not None, "inward" or "outward", or
-        ``use_diffusion`` is True.
+        If ``direction`` is not None, "inward" or "outward",
+        ``use_diffusion`` is True, ``movement_var`` is not a positive variance
+        (or positive definite covariance), or ``movement_mean`` is not finite.
     """
 
     environment_name: str = ""
@@ -444,6 +518,8 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
                 "a Gaussian in distance along the environment, not diffusion.",
             )
         _validate_direction(self.direction)
+        _validate_movement_var(self.movement_var, "RandomWalk")
+        _validate_movement_mean(self.movement_mean)
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore the fields, including those of releases up to 0.5.12.
@@ -785,12 +861,35 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
     is_time_reversed : bool, optional
         If True, estimate transitions based on p(z_{t-1} | z_t) instead of p(z_{t+1} | z_t).
         Defaults to False.
+
+    Raises
+    ------
+    ValidationError
+        If ``speedup`` is not an integer >= 1.
     """
 
     environment_name: str = ""
     encoding_group: str | int = 0
     speedup: int = 1
     is_time_reversed: bool = False
+
+    def __post_init__(self) -> None:
+        # matrix_power(M, 0) is the identity (no movement) and a negative
+        # power inverts M; neither is a faster version of the movement.
+        try:
+            power = operator.index(self.speedup)
+        except TypeError:
+            power = 0
+        if isinstance(self.speedup, (bool, np.bool_)) or power < 1:
+            msg = "EmpiricalMovement.speedup must be an integer >= 1"
+            raise ValidationError(
+                msg,
+                expected="an integer >= 1",
+                got=repr(self.speedup),
+                hint="speedup is the number of observed movement steps per "
+                "time bin (the power of the one-step transition matrix); "
+                "1 is the observed movement.",
+            )
 
     def structured_block(
         self,
@@ -886,10 +985,18 @@ class RandomWalkDirection1(_DropsLegacyEnvironment, _EnvironmentBlock):
         Name of environment to fit. Defaults to "".
     movement_var : float, optional
         Variance of the displacement. Defaults to 6.0.
+
+    Raises
+    ------
+    ValidationError
+        If ``movement_var`` is not a positive variance.
     """
 
     environment_name: str = ""
     movement_var: float = 6.0
+
+    def __post_init__(self) -> None:
+        _validate_movement_var(self.movement_var, "RandomWalkDirection1")
 
     def structured_block(
         self,
@@ -936,10 +1043,18 @@ class RandomWalkDirection2(_DropsLegacyEnvironment, _EnvironmentBlock):
         Name of environment to fit. Defaults to "".
     movement_var : float, optional
         Variance of the displacement. Defaults to 6.0.
+
+    Raises
+    ------
+    ValidationError
+        If ``movement_var`` is not a positive variance.
     """
 
     environment_name: str = ""
     movement_var: float = 6.0
+
+    def __post_init__(self) -> None:
+        _validate_movement_var(self.movement_var, "RandomWalkDirection2")
 
     def structured_block(
         self,
