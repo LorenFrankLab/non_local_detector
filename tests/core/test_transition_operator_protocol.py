@@ -217,11 +217,20 @@ def test_checkpointed_rejects_nonfinite_operator_rows():
 
 def test_checkpointed_rejects_operator_of_another_size():
     rng = np.random.default_rng(6)
-    matrix = rng.random((N_BINS + 1, N_BINS + 1), dtype=np.float32)
+    square = rng.random((N_BINS + 1, N_BINS + 1), dtype=np.float32)
+    # A square operator of another size cannot multiply n_bins values.
     _rejects_before_any_callback(
-        _ForwardBackwardOnly(jnp.asarray(matrix / matrix.sum(1, keepdims=True))),
+        _ForwardBackwardOnly(jnp.asarray(square / square.sum(1, keepdims=True))),
+        "transition_operator could not be applied to an all-ones vector",
+        "TypeError",
+    )
+    # One with n_bins columns but more rows returns too many row sums.
+    rows = square[:, :N_BINS]
+    _rejects_before_any_callback(
+        _ForwardBackwardOnly(jnp.asarray(rows / rows.sum(1, keepdims=True))),
         "transition_operator gives row sums of the wrong shape",
         f"Expected: shape ({N_BINS},)",
+        f"Got: shape ({N_BINS + 1},)",
     )
 
 
@@ -300,3 +309,18 @@ def test_checkpointed_accepts_valid_operators(name):
         state_ind=state_ind,
         **weights,
     )
+
+
+def test_checkpointed_reports_an_operator_that_cannot_be_applied():
+    """An operator that raises on the all-ones product is reported as such.
+
+    A covariate operator passed without ``discrete_transition_matrix`` gets
+    no per-row weights; its own error is kept, not reported as a shape
+    mismatch.
+    """
+    message = _rejects_before_any_callback(
+        _CovariateTransition.create(_matrix(), STATE_IND, 2),
+        "transition_operator could not be applied to an all-ones vector",
+        "needs each row's discrete weights",
+    )
+    assert "wrong shape" not in message, message

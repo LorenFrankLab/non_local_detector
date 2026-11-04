@@ -106,6 +106,7 @@ def _check_state_initial_conditions(
     state_name: str,
     initial_conditions: object,
     is_interior: np.ndarray,
+    discrete_weight: float,
 ) -> None:
     """Raise unless ``values`` is a distribution over one state's interior bins.
 
@@ -114,7 +115,8 @@ def _check_state_initial_conditions(
     so the joint initial distribution sums to 1 only if each state's values
     over its interior bins do. Checking each state names the state and the
     initial-condition class that broke this, instead of the joint
-    distribution at decoding.
+    distribution at decoding. A state of discrete weight 0 adds nothing to
+    the joint distribution, so its sum is not checked.
 
     Parameters
     ----------
@@ -127,12 +129,15 @@ def _check_state_initial_conditions(
     is_interior : np.ndarray of bool, shape (n_state_bins,)
         Which of the state's bins are on the track; one True for a state
         without place bins.
+    discrete_weight : float
+        The state's discrete initial probability.
 
     Raises
     ------
     ValidationError
         If ``values`` does not have one entry per bin of the state, has a
-        negative or non-finite entry, or does not sum to 1 (within
+        negative or non-finite entry, or, for a state of nonzero
+        ``discrete_weight``, does not sum to 1 (within
         ``PROBABILITY_SUM_TOLERANCE``) over the interior bins.
     """
     label = (
@@ -155,7 +160,9 @@ def _check_state_initial_conditions(
         got = "non-finite entries (nan or inf)"
     elif values.min() < 0:
         got = f"minimum entry {values.min():.6g} at bin {int(np.argmin(values))}"
-    elif not abs(interior_sum - 1) <= PROBABILITY_SUM_TOLERANCE:
+    elif (
+        discrete_weight != 0 and not abs(interior_sum - 1) <= PROBABILITY_SUM_TOLERANCE
+    ):
         got = f"sums to {interior_sum:.6g} over its {int(is_interior.sum())} interior bins"
     if got is not None:
         msg = f"{label} must be a probability distribution over the state's bins"

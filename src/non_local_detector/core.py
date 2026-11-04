@@ -1191,7 +1191,9 @@ def filter(
     ----------
     initial_distribution : jax.Array, shape (n_states,)
         Probability distribution of the initial state, P(z_1): nonnegative,
-        summing to 1.
+        summing to at most 1. A sum below 1 is accepted so that a previous
+        call's ``predicted_probs_next`` can start the next call even when
+        some transition rows lose mass.
     transition_matrix : jax.Array, shape (n_states, n_states)
         State transition probability matrix, P(z_t | z_{t-1}): nonnegative,
         each row summing to at most 1.
@@ -1250,6 +1252,7 @@ def filter(
             initial_distribution=initial_distribution,
             transition_matrix=transition_matrix,
             log_likelihoods=log_likelihoods,
+            initial_mass_loss=True,
         )
     (marginal, predicted_probs_next), (filtered, predicted, _) = _filter_jit(
         initial_distribution, transition_matrix, log_likelihoods
@@ -1552,18 +1555,32 @@ def _bad_entries(
     return None
 
 
-def _check_distribution(name: str, values: np.ndarray) -> None:
-    """Raise unless ``values`` is nonnegative, finite and sums to 1."""
+def _check_distribution(
+    name: str, values: np.ndarray, *, allow_mass_loss: bool = False
+) -> None:
+    """Raise unless ``values`` is nonnegative, finite and sums to 1.
+
+    With ``allow_mass_loss``, a sum below 1 is accepted too: the final
+    prediction of a filter whose transition loses mass (a row below 1)
+    sums below 1 and starts the next pass over the recording.
+    """
     total = values.sum(dtype=np.float64)
     got = _bad_entries(values, total, lambda where: f"state bin {where[0]}")
-    if got is None and not abs(total - 1) <= PROBABILITY_SUM_TOLERANCE:
+    lowest = -np.inf if allow_mass_loss else 1 - PROBABILITY_SUM_TOLERANCE
+    if got is None and not lowest <= total <= 1 + PROBABILITY_SUM_TOLERANCE:
         got = f"sums to {total:.6g}"
     if got is not None:
         msg = f"{name} must be a probability distribution over state bins"
         raise ValidationError(
             msg,
-            expected="nonnegative, finite entries summing to 1 (within "
-            f"{PROBABILITY_SUM_TOLERANCE:g})",
+            expected="nonnegative, finite entries summing to "
+            + ("at most " if allow_mass_loss else "")
+            + f"1 (within {PROBABILITY_SUM_TOLERANCE:g})"
+            + (
+                "; a sum below 1 is mass a previous pass's transitions lost"
+                if allow_mass_loss
+                else ""
+            ),
             got=got,
             hint=f"Pass nonnegative probabilities normalized to sum to 1, e.g. "
             f"{name} / {name}.sum().",
@@ -1757,26 +1774,38 @@ def _check_operator_rows(
     Raises
     ------
     ValidationError
-        If the operator cannot be applied to ``n_bins`` state bins, or its
-        row sums are not finite, are negative, or exceed 1 (per target state
+        If applying the operator to an all-ones vector raises ``TypeError``
+        or ``ValueError``, or the row sums do not have one entry per state
+        bin, are not finite, are negative, or exceed 1 (per target state
         with weights) beyond ``PROBABILITY_SUM_TOLERANCE``.
     """
     name = "transition_operator"
+    weight = (
+        "None"
+        if n_states is None
+        else f"each ({n_states}, {n_states}) column-indicator weight"
+    )
     try:
         sums = np.asarray(
             _operator_row_sums(operator, n_bins, np.dtype(dtype), n_states),
             dtype=np.float64,
         )
-        failure = None if sums.shape[:1] == (n_bins,) else f"shape {sums.shape[:1]}"
     except (TypeError, ValueError) as error:
-        # A product of another size fails inside JAX's shape checks.
-        failure = f"{type(error).__name__}: {error}"
-    if failure is not None:
+        msg = f"{name} could not be applied to an all-ones vector"
+        raise ValidationError(
+            msg,
+            expected=f"backward(ones({n_bins}), {weight}) to return row sums",
+            got=f"{type(error).__name__}: {error}",
+            hint="The operator must act on the state bins of "
+            "initial_distribution, and take per-row weights exactly when "
+            "discrete_transition_matrix is given.",
+        ) from error
+    if sums.shape[:1] != (n_bins,):
         msg = f"{name} gives row sums of the wrong shape"
         raise ValidationError(
             msg,
             expected=f"shape ({n_bins},), one sum per state bin",
-            got=failure,
+            got=f"shape {sums.shape[:1]}",
             hint="The operator's state bins must be those of "
             "initial_distribution and state_ind.",
         )
@@ -1899,12 +1928,15 @@ def _check_hmm_arrays(
     continuous_transition_matrix: Any = None,
     is_missing: Any = None,
     log_likelihoods: Any = None,
+    initial_mass_loss: bool = False,
 ) -> int | None:
     """Check the shapes and probabilities of :func:`_validate_hmm_inputs`.
 
     Everything that function checks except the dtype, for the passes that
     compute in their inputs' dtype. The smoothers have no
-    ``initial_distribution`` and pass ``n_bins`` instead.
+    ``initial_distribution`` and pass ``n_bins`` instead. The public passes
+    set ``initial_mass_loss``, accepting an initial distribution that sums
+    below 1, such as a previous call's final prediction.
 
     Parameters
     ----------
@@ -1916,6 +1948,8 @@ def _check_hmm_arrays(
         Number of state bins, without ``initial_distribution``.
     state_ind, n_states, transition_matrix, discrete_transition_matrix, continuous_transition_matrix, is_missing, log_likelihoods : optional
         As in :func:`_validate_hmm_inputs`.
+    initial_mass_loss : bool, optional
+        Accept an ``initial_distribution`` summing below 1. By default False.
 
     Returns
     -------
@@ -1940,7 +1974,9 @@ def _check_hmm_arrays(
                 hint="Pass one initial probability per state bin.",
             )
         n_bins, bins_source = initial.size, "len(initial_distribution)"
-        _check_distribution("initial_distribution", initial)
+        _check_distribution(
+            "initial_distribution", initial, allow_mass_loss=initial_mass_loss
+        )
     assert n_bins is not None  # given directly or by initial_distribution
     shape_hint = (
         f"n_time = {n_time} decoding time bins and n_state_bins = {n_bins} "
@@ -2595,7 +2631,8 @@ def viterbi(
     Parameters
     ----------
     initial_distribution : jax.Array, shape (n_states,)
-        Initial state distribution: nonnegative, summing to 1.
+        Initial state distribution: nonnegative, summing to at most 1, as
+        for :func:`filter`.
     transition_matrix : jax.Array, shape (n_states, n_states)
         State transition probability matrix: nonnegative, each row summing
         to at most 1.
@@ -2626,6 +2663,7 @@ def viterbi(
             initial_distribution=initial_distribution,
             transition_matrix=transition_matrix,
             log_likelihoods=log_likelihoods,
+            initial_mass_loss=True,
         )
     return cast(
         jax.Array,
@@ -2788,7 +2826,10 @@ def filter_covariate_dependent(
     Parameters
     ----------
     initial_distribution : jax.Array, shape (n_state_bins,)
-        Initial probability of each state bin: nonnegative, summing to 1.
+        Initial probability of each state bin: nonnegative, summing to at
+        most 1. A sum below 1 is accepted so that a previous call's
+        ``predicted_probs_next`` can start the next call even when some
+        transition rows lose mass.
     discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
         Discrete state transition probabilities at each time bin:
         nonnegative, each row summing to 1.
@@ -2854,6 +2895,7 @@ def filter_covariate_dependent(
             discrete_transition_matrix=discrete_transition_matrix,
             continuous_transition_matrix=continuous_transition_matrix,
             log_likelihoods=log_likelihoods,
+            initial_mass_loss=True,
         )
     (marginal, predicted_probs_next), (filtered, predicted, _) = (
         _filter_covariate_dependent_jit(
@@ -3259,7 +3301,8 @@ def viterbi_covariate_dependent(
     Parameters
     ----------
     initial_distribution : jax.Array, shape (n_state_bins,)
-        Initial state distribution: nonnegative, summing to 1.
+        Initial state distribution: nonnegative, summing to at most 1, as
+        for :func:`filter_covariate_dependent`.
     discrete_transition_matrix : jax.Array, shape (n_time, n_states, n_states)
         Time-varying discrete transition matrices: nonnegative, each row
         summing to 1.
@@ -3303,6 +3346,7 @@ def viterbi_covariate_dependent(
             discrete_transition_matrix=discrete_transition_matrix,
             continuous_transition_matrix=continuous_transition_matrix,
             log_likelihoods=log_likelihoods,
+            initial_mass_loss=True,
         )
     return cast(
         jax.Array,

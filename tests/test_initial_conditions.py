@@ -223,12 +223,13 @@ def test_fit_names_the_state_of_an_invalid_initial_condition(
     """
     time, position, spike_times = short_recording
     detector = NonLocalSortedSpikesDetector(
+        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0]),
         continuous_initial_conditions_types=[
             UniformInitialConditions(),
             UniformInitialConditions(),
             initial_conditions,
             UniformInitialConditions(),
-        ]
+        ],
     )
     with pytest.raises(ValidationError) as caught:
         detector.fit(time, position, spike_times)
@@ -237,3 +238,37 @@ def test_fit_names_the_state_of_an_invalid_initial_condition(
     assert "CustomInitialConditions" in message, message
     assert got in message, message
     assert "Hint:" in message, message
+
+
+@pytest.mark.integration
+def test_fit_accepts_any_initial_mass_for_a_zero_weight_state(short_recording):
+    """A state with zero discrete initial probability adds nothing to the
+    joint initial distribution, so its values need not sum to 1."""
+    time, position, spike_times = short_recording
+    detector = NonLocalSortedSpikesDetector(
+        discrete_initial_conditions=np.array([1.0, 0.0, 0.0, 0.0]),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions(),
+            UniformInitialConditions(),
+            _scaled(scale=0.0),
+            UniformInitialConditions(),
+        ],
+    )
+    detector.fit(time, position, spike_times)
+    np.testing.assert_allclose(detector.initial_conditions_.sum(), 1.0, rtol=1e-6)
+
+
+@pytest.mark.integration
+def test_fit_checks_entries_of_a_zero_weight_state(short_recording):
+    time, position, spike_times = short_recording
+    detector = NonLocalSortedSpikesDetector(
+        discrete_initial_conditions=np.array([1.0, 0.0, 0.0, 0.0]),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions(),
+            UniformInitialConditions(),
+            _scaled(shift=-1.0),
+            UniformInitialConditions(),
+        ],
+    )
+    with pytest.raises(ValidationError, match="minimum entry"):
+        detector.fit(time, position, spike_times)
