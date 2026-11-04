@@ -1084,9 +1084,14 @@ def _viterbi_scan(
         return best_next_score, best_next_state
 
     num_timesteps, num_states = log_likelihoods.shape
+    # The terminal cost takes the scores' dtype. A default-dtype zeros carry
+    # is float64 under x64, which promoted every step of a float32 scan.
+    score_dtype = jnp.result_type(
+        log_likelihoods, *jax.tree_util.tree_leaves((log_operator, log_weights))
+    )
     best_second_score, best_next_states = jax.lax.scan(
         _backward_step,
-        jnp.zeros(num_states),
+        jnp.zeros(num_states, dtype=score_dtype),
         (
             jnp.arange(num_timesteps - 1),
             None if log_weights is None else log_weights[:-1],

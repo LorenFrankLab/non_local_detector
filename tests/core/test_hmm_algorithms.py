@@ -30,6 +30,7 @@ from non_local_detector.core import (
     smoother,
     viterbi,
 )
+from tests.conftest import precision_mode
 
 
 @pytest.mark.unit
@@ -379,6 +380,41 @@ class TestViterbi:
         # likelihood outweighs the higher initial probability of state 1.
         assert states.shape == (1,)
         assert int(states[0]) == 0
+
+    @pytest.mark.parametrize("covariate", [False, True])
+    def test_viterbi_scan_keeps_float32_with_x64(self, covariate):
+        """With 64-bit mode on, float32 inputs keep the scan in float32.
+
+        The backward carry used to start as ``jnp.zeros(n_state_bins)``, which
+        is float64 under x64, so every step promoted the (n_state_bins,
+        n_state_bins) max-plus scores to float64.
+        """
+        with precision_mode(True):
+            n_bins, n_time = 4, 6
+            arguments = [
+                jnp.full(n_bins, 1 / n_bins, jnp.float32),
+                jnp.full((n_bins, n_bins), 1 / n_bins, jnp.float32),
+                jnp.zeros((n_time, n_bins), jnp.float32),
+            ]
+            if covariate:
+                function = core_module._viterbi_covariate_dependent_impl
+                arguments[1:2] = [
+                    jnp.full((n_time, 2, 2), 0.5, jnp.float32),
+                    arguments[1],
+                    jnp.array([0, 0, 1, 1]),
+                ]
+            else:
+                function = core_module._viterbi_impl
+            jaxpr = jax.make_jaxpr(function)(*arguments).jaxpr
+            scans = [eqn for eqn in jaxpr.eqns if eqn.primitive.name == "scan"]
+            float_dtypes = {
+                var.aval.dtype
+                for eqn in scans
+                for var in (*eqn.invars, *eqn.outvars)
+                if jnp.issubdtype(var.aval.dtype, jnp.floating)
+            }
+        assert scans
+        assert float_dtypes == {jnp.dtype(jnp.float32)}, float_dtypes
 
     @pytest.mark.parametrize("n_states", [2, 5, 10])
     def test_viterbi_scales_to_many_states(self, n_states):
